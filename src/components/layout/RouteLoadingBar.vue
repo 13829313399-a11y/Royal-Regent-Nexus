@@ -1,38 +1,36 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { Progress } from '@/components/ui/progress'
 
 const appStore = useAppStore()
+
+const progressValue = computed(() => appStore.isRouteLoading ? null : 0)
+
+const trackClass = computed(() => [
+  'h-1.5 transition-colors duration-150',
+  appStore.isRouteLoading ? 'bg-emerald-100/80' : 'bg-transparent',
+])
+
+const indicatorClass = computed(() => [
+  'rounded-full bg-gradient-to-r from-emerald-600 via-green-400 to-lime-500 shadow-[0_0_18px_rgba(22,163,74,0.55)]',
+  appStore.isRouteLoading ? 'route-loading-bar opacity-100' : 'opacity-0',
+])
 </script>
 
 <template>
-  <div
-    class="h-2 w-full overflow-hidden rounded-full transition-colors duration-150"
-    :class="appStore.isRouteLoading ? 'bg-slate-200/80' : 'bg-transparent'"
+  <Progress
+    :model-value="progressValue"
+    :class="trackClass"
+    :indicator-class="indicatorClass"
     aria-hidden="true"
-  >
-    <Transition name="route-loading">
-      <div
-        v-if="appStore.isRouteLoading"
-        class="route-loading-bar h-full w-full rounded-full bg-gradient-to-r from-teal-600 via-cyan-400 to-sky-600 shadow-[0_0_18px_rgba(8,145,178,0.55)]"
-      />
-    </Transition>
-  </div>
+  />
 </template>
 
 <style scoped>
 .route-loading-bar {
   transform-origin: left center;
   animation: route-loading-sweep 820ms cubic-bezier(0.65, 0, 0.35, 1) infinite;
-}
-
-.route-loading-enter-active,
-.route-loading-leave-active {
-  transition: opacity 160ms ease;
-}
-
-.route-loading-enter-from,
-.route-loading-leave-to {
-  opacity: 0;
 }
 
 @keyframes route-loading-sweep {
