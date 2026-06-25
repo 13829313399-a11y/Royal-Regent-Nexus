@@ -1,0 +1,134 @@
+<svg width="1440" height="960" viewBox="0 0 1440 960" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .bg { fill: #f5f7fa; }
+    .panel { fill: #ffffff; stroke: #dbe3ea; stroke-width: 1; }
+    .soft { fill: #f8fafc; stroke: #dbe3ea; stroke-width: 1; }
+    .muted { fill: #667085; font-size: 13px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .tiny { fill: #667085; font-size: 11px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .body { fill: #344054; font-size: 14px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .title { fill: #101828; font-size: 30px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .h2 { fill: #101828; font-size: 18px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .h3 { fill: #101828; font-size: 15px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .chipText { font-size: 12px; font-weight: 600; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .navText { fill: #344054; font-size: 14px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .navActive { fill: #0f766e; font-size: 14px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+  </style>
+
+  <rect class="bg" width="1440" height="960"/>
+  <rect x="0" y="0" width="1440" height="72" class="panel"/>
+  <rect x="24" y="18" width="36" height="36" rx="8" fill="#0f766e"/>
+  <text x="34" y="41" fill="#fff" font-size="16" font-weight="700" font-family="Arial">RR</text>
+  <text x="76" y="30" fill="#101828" font-size="16" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">Royal Regent Nexus</text>
+  <text x="76" y="50" class="tiny">业务部 · 审批工作台</text>
+  <rect x="310" y="18" width="520" height="36" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="332" y="41" class="muted">搜索客户、订单、合同、审批单号</text>
+  <rect x="964" y="18" width="76" height="36" rx="8" fill="#0f766e"/>
+  <text x="985" y="41" fill="#fff" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">华康A</text>
+  <rect x="1048" y="18" width="76" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1069" y="41" class="body">华康B</text>
+  <rect x="1132" y="18" width="68" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1153" y="41" class="body">华登</text>
+  <rect x="1208" y="18" width="68" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1229" y="41" class="body">华兴</text>
+  <circle cx="1326" cy="36" r="18" fill="#eef2f7" stroke="#dbe3ea"/>
+  <text x="1319" y="41" fill="#344054" font-size="13" font-weight="700" font-family="Arial">吴</text>
+
+  <rect x="0" y="72" width="260" height="888" class="panel"/>
+  <text x="24" y="112" class="tiny">FACTORY</text>
+  <text x="60" y="157" class="navText">管理驾驶舱</text>
+  <text x="60" y="201" class="navText">工程部</text>
+  <text x="60" y="245" class="navText">PMC / 仓管</text>
+  <text x="60" y="289" class="navText">生产部</text>
+  <text x="60" y="333" class="navText">QA 部</text>
+  <rect x="18" y="360" width="224" height="40" rx="8" fill="#ecfdf5"/>
+  <text x="60" y="385" class="navActive">业务部</text>
+  <line x1="24" y1="430" x2="236" y2="430" stroke="#e4e7ec"/>
+  <text x="24" y="464" class="tiny">BUSINESS</text>
+  <text x="60" y="500" class="navText">订单管理</text>
+  <text x="60" y="544" class="navText">报价与合同</text>
+  <text x="60" y="588" class="navText">客户档案</text>
+  <text x="60" y="632" class="navText">收款跟进</text>
+
+  <text x="300" y="122" class="title">业务审批与订单工作台</text>
+  <text x="300" y="151" class="muted">左侧列表高效筛选，右侧固定详情面板承载审批、进度、风险</text>
+
+  <rect x="300" y="184" width="712" height="84" rx="8" class="panel"/>
+  <rect x="324" y="208" width="240" height="36" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="344" y="231" class="muted">订单号 / 客户 / 合同号</text>
+  <rect x="576" y="208" width="110" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="600" y="231" class="body">全部状态</text>
+  <rect x="698" y="208" width="110" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="722" y="231" class="body">全部厂区</text>
+  <rect x="820" y="208" width="80" height="36" rx="8" fill="#0f766e"/>
+  <text x="847" y="231" fill="#fff" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">查询</text>
+  <rect x="912" y="208" width="76" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="936" y="231" class="body">重置</text>
+
+  <rect x="300" y="292" width="712" height="596" rx="8" class="panel"/>
+  <text x="324" y="330" class="h2">审批列表</text>
+  <text x="906" y="330" class="muted">共 128 条</text>
+  <rect x="324" y="354" width="664" height="42" rx="8" fill="#f8fafc"/>
+  <text x="344" y="381" class="tiny">单号</text><text x="498" y="381" class="tiny">客户</text><text x="640" y="381" class="tiny">厂区</text><text x="724" y="381" class="tiny">状态</text><text x="830" y="381" class="tiny">负责人</text><text x="922" y="381" class="tiny">SLA</text>
+
+  <rect x="324" y="410" width="664" height="64" rx="8" fill="#ecfdf5" stroke="#0f766e"/>
+  <text x="344" y="439" class="h3">HK-A-260626-018</text><text x="498" y="439" class="body">宁波盛源</text><text x="640" y="439" class="body">华康A</text>
+  <rect x="724" y="422" width="76" height="24" rx="12" fill="#fef3c7"/><text x="738" y="438" fill="#b7791f" class="chipText">待审批</text>
+  <text x="830" y="439" class="body">李经理</text><text x="922" y="439" fill="#b42318" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">2h</text>
+  <text x="344" y="462" class="tiny">报价变更，需工程与 PMC 二次确认</text>
+
+  <rect x="324" y="488" width="664" height="64" rx="8" fill="#fff" stroke="#e4e7ec"/>
+  <text x="344" y="517" class="h3">HD-260626-044</text><text x="498" y="517" class="body">广州嘉和</text><text x="640" y="517" class="body">华登</text>
+  <rect x="724" y="500" width="76" height="24" rx="12" fill="#dbeafe"/><text x="738" y="516" fill="#2563eb" class="chipText">跟进中</text>
+  <text x="830" y="517" class="body">周主管</text><text x="922" y="517" class="body">8h</text>
+  <text x="344" y="540" class="tiny">客户交期提前，生产排程待确认</text>
+
+  <rect x="324" y="566" width="664" height="64" rx="8" fill="#fff" stroke="#e4e7ec"/>
+  <text x="344" y="595" class="h3">HX-260626-071</text><text x="498" y="595" class="body">深圳奥联</text><text x="640" y="595" class="body">华兴</text>
+  <rect x="724" y="578" width="76" height="24" rx="12" fill="#fee2e2"/><text x="738" y="594" fill="#b42318" class="chipText">风险</text>
+  <text x="830" y="595" class="body">王业务</text><text x="922" y="595" class="body">1d</text>
+  <text x="344" y="618" class="tiny">QA 异常未关闭，不建议放行</text>
+
+  <rect x="324" y="644" width="664" height="64" rx="8" fill="#fff" stroke="#e4e7ec"/>
+  <text x="344" y="673" class="h3">HKB-260626-102</text><text x="498" y="673" class="body">杭州凯铭</text><text x="640" y="673" class="body">华康B</text>
+  <rect x="724" y="656" width="76" height="24" rx="12" fill="#dcfce7"/><text x="738" y="672" fill="#047857" class="chipText">已通过</text>
+  <text x="830" y="673" class="body">陈专员</text><text x="922" y="673" class="body">完成</text>
+  <text x="344" y="696" class="tiny">报价审批完成，等待合同归档</text>
+
+  <rect x="324" y="722" width="664" height="64" rx="8" fill="#fff" stroke="#e4e7ec"/>
+  <text x="344" y="751" class="h3">HKA-260626-118</text><text x="498" y="751" class="body">上海联志</text><text x="640" y="751" class="body">华康A</text>
+  <rect x="724" y="734" width="76" height="24" rx="12" fill="#dbeafe"/><text x="738" y="750" fill="#2563eb" class="chipText">跟进中</text>
+  <text x="830" y="751" class="body">李经理</text><text x="922" y="751" class="body">6h</text>
+  <text x="344" y="774" class="tiny">客户信用额度需复核</text>
+
+  <rect x="1036" y="184" width="358" height="704" rx="8" class="panel"/>
+  <text x="1060" y="224" class="h2">审批详情</text>
+  <text x="1060" y="250" class="muted">HK-A-260626-018</text>
+  <rect x="1294" y="214" width="76" height="24" rx="12" fill="#fef3c7"/>
+  <text x="1308" y="230" fill="#b7791f" class="chipText">待审批</text>
+
+  <rect x="1060" y="280" width="310" height="102" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="1080" y="312" class="h3">宁波盛源 · 报价变更</text>
+  <text x="1080" y="340" class="body">厂区：华康A</text>
+  <text x="1188" y="340" class="body">金额：¥ 428,600</text>
+  <text x="1080" y="366" class="tiny">客户要求提前交期，涉及工程工艺和 PMC 物料复核</text>
+
+  <text x="1060" y="426" class="h3">流程进度</text>
+  <circle cx="1072" cy="462" r="7" fill="#0f766e"/><text x="1094" y="468" class="body">业务提交</text><text x="1256" y="468" class="tiny">已完成</text>
+  <line x1="1072" y1="470" x2="1072" y2="514" stroke="#dbe3ea"/>
+  <circle cx="1072" cy="526" r="7" fill="#0f766e"/><text x="1094" y="532" class="body">工程确认</text><text x="1256" y="532" class="tiny">已完成</text>
+  <line x1="1072" y1="534" x2="1072" y2="578" stroke="#dbe3ea"/>
+  <circle cx="1072" cy="590" r="7" fill="#b7791f"/><text x="1094" y="596" class="body">PMC 复核</text><text x="1256" y="596" fill="#b7791f" font-size="11" font-family="Microsoft YaHei, PingFang SC, Arial">进行中</text>
+  <line x1="1072" y1="598" x2="1072" y2="642" stroke="#dbe3ea"/>
+  <circle cx="1072" cy="654" r="7" fill="#e4e7ec"/><text x="1094" y="660" class="body">总经理审批</text><text x="1256" y="660" class="tiny">待处理</text>
+
+  <rect x="1060" y="700" width="310" height="72" rx="8" fill="#fff7ed" stroke="#f3d19e"/>
+  <text x="1080" y="730" fill="#92400e" font-size="14" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">风险提示</text>
+  <text x="1080" y="754" fill="#92400e" font-size="12" font-family="Microsoft YaHei, PingFang SC, Arial">物料到料日期晚于客户要求交期 1 天，建议审批前确认替代料。</text>
+
+  <rect x="1060" y="804" width="92" height="40" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1088" y="829" class="body">退回</text>
+  <rect x="1164" y="804" width="92" height="40" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1192" y="829" class="body">转交</text>
+  <rect x="1268" y="804" width="102" height="40" rx="8" fill="#0f766e"/>
+  <text x="1300" y="829" fill="#fff" font-size="14" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">通过</text>
+</svg>

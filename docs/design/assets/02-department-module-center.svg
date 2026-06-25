@@ -1,0 +1,139 @@
+<svg width="1440" height="960" viewBox="0 0 1440 960" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .bg { fill: #f5f7fa; }
+    .panel { fill: #ffffff; stroke: #dbe3ea; stroke-width: 1; }
+    .soft { fill: #f8fafc; stroke: #dbe3ea; stroke-width: 1; }
+    .muted { fill: #667085; font-size: 13px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .tiny { fill: #667085; font-size: 11px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .body { fill: #344054; font-size: 14px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .title { fill: #101828; font-size: 30px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .h2 { fill: #101828; font-size: 18px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .h3 { fill: #101828; font-size: 15px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .chipText { font-size: 12px; font-weight: 600; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .navText { fill: #344054; font-size: 14px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .navActive { fill: #0f766e; font-size: 14px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+  </style>
+
+  <rect class="bg" width="1440" height="960"/>
+  <rect x="0" y="0" width="1440" height="72" class="panel"/>
+  <rect x="24" y="18" width="36" height="36" rx="8" fill="#0f766e"/>
+  <text x="34" y="41" fill="#fff" font-size="16" font-weight="700" font-family="Arial">RR</text>
+  <text x="76" y="30" fill="#101828" font-size="16" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">Royal Regent Nexus</text>
+  <text x="76" y="50" class="tiny">华康A · 部门模块中心</text>
+  <rect x="310" y="18" width="520" height="36" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="332" y="41" class="muted">搜索模块、菜单、角色、权限、流程单</text>
+  <rect x="964" y="18" width="76" height="36" rx="8" fill="#0f766e"/>
+  <text x="985" y="41" fill="#fff" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">华康A</text>
+  <rect x="1048" y="18" width="76" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1069" y="41" class="body">华康B</text>
+  <rect x="1132" y="18" width="68" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1153" y="41" class="body">华登</text>
+  <rect x="1208" y="18" width="68" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1229" y="41" class="body">华兴</text>
+  <circle cx="1326" cy="36" r="18" fill="#eef2f7" stroke="#dbe3ea"/>
+  <text x="1319" y="41" fill="#344054" font-size="13" font-weight="700" font-family="Arial">吴</text>
+
+  <rect x="0" y="72" width="260" height="888" class="panel"/>
+  <text x="24" y="112" class="tiny">FACTORY</text>
+  <text x="60" y="157" class="navText">管理驾驶舱</text>
+  <rect x="18" y="184" width="224" height="40" rx="8" fill="#ecfdf5"/>
+  <text x="60" y="209" class="navActive">工程部</text>
+  <text x="60" y="253" class="navText">PMC / 仓管</text>
+  <text x="60" y="297" class="navText">生产部</text>
+  <text x="60" y="341" class="navText">QA 部</text>
+  <text x="60" y="385" class="navText">业务部</text>
+  <line x1="24" y1="424" x2="236" y2="424" stroke="#e4e7ec"/>
+  <text x="24" y="458" class="tiny">CONFIG</text>
+  <text x="60" y="494" class="navText">模块配置</text>
+  <text x="60" y="538" class="navText">角色权限</text>
+  <text x="60" y="582" class="navText">流程中心</text>
+
+  <text x="300" y="122" class="title">华康A · 部门模块中心</text>
+  <text x="300" y="151" class="muted">按部门承载模块，先把入口、权限、状态、待办统一起来</text>
+  <rect x="300" y="184" width="102" height="38" rx="8" fill="#0f766e"/>
+  <text x="327" y="208" fill="#fff" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">工程部</text>
+  <rect x="414" y="184" width="128" height="38" rx="8" fill="#fff" stroke="#dbe3ea"/>
+  <text x="443" y="208" class="body">PMC / 仓管</text>
+  <rect x="554" y="184" width="102" height="38" rx="8" fill="#fff" stroke="#dbe3ea"/>
+  <text x="581" y="208" class="body">生产部</text>
+  <rect x="668" y="184" width="82" height="38" rx="8" fill="#fff" stroke="#dbe3ea"/>
+  <text x="693" y="208" class="body">QA 部</text>
+  <rect x="762" y="184" width="102" height="38" rx="8" fill="#fff" stroke="#dbe3ea"/>
+  <text x="789" y="208" class="body">业务部</text>
+  <rect x="1252" y="184" width="142" height="38" rx="8" fill="#0f172a"/>
+  <text x="1280" y="208" fill="#fff" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">新增系统模块</text>
+
+  <rect x="300" y="250" width="690" height="638" rx="8" class="panel"/>
+  <text x="324" y="290" class="h2">工程部模块</text>
+  <text x="324" y="316" class="muted">模块卡片统一展示负责人、状态、待办、关键数据</text>
+
+  <rect x="324" y="346" width="300" height="154" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <rect x="346" y="370" width="38" height="38" rx="10" fill="#ecfdf5"/>
+  <path d="M356 389 h18 M365 380 v18" stroke="#0f766e" stroke-width="3" stroke-linecap="round"/>
+  <text x="398" y="383" class="h3">BOM / 工艺路线</text>
+  <text x="398" y="407" class="tiny">工程部 · 负责人 陈工</text>
+  <text x="346" y="446" class="body">版本管理、物料结构、工艺步骤、变更追踪</text>
+  <rect x="346" y="464" width="76" height="22" rx="11" fill="#dcfce7"/>
+  <text x="359" y="479" fill="#047857" class="chipText">已上线</text>
+  <text x="470" y="480" class="tiny">待办 12 · 今日变更 4</text>
+
+  <rect x="646" y="346" width="300" height="154" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <rect x="668" y="370" width="38" height="38" rx="10" fill="#eff6ff"/>
+  <path d="M676 389 h22" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/>
+  <text x="720" y="383" class="h3">ECN 工程变更</text>
+  <text x="720" y="407" class="tiny">跨工程 / 生产 / QA</text>
+  <text x="668" y="446" class="body">变更申请、影响分析、审批流、版本冻结</text>
+  <rect x="668" y="464" width="76" height="22" rx="11" fill="#dbeafe"/>
+  <text x="681" y="479" fill="#2563eb" class="chipText">设计中</text>
+  <text x="792" y="480" class="tiny">待审批 8 · 超时 1</text>
+
+  <rect x="324" y="522" width="300" height="154" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <rect x="346" y="546" width="38" height="38" rx="10" fill="#fff7ed"/>
+  <circle cx="365" cy="565" r="9" fill="#b7791f"/>
+  <text x="398" y="559" class="h3">图纸与模具资料</text>
+  <text x="398" y="583" class="tiny">图纸库 · 版本锁定</text>
+  <text x="346" y="622" class="body">图纸归档、模具台账、借阅、变更关联</text>
+  <rect x="346" y="640" width="76" height="22" rx="11" fill="#fef3c7"/>
+  <text x="359" y="655" fill="#b7791f" class="chipText">规划中</text>
+  <text x="470" y="656" class="tiny">资料 248 · 缺失 9</text>
+
+  <rect x="646" y="522" width="300" height="154" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <rect x="668" y="546" width="38" height="38" rx="10" fill="#f3f4f6"/>
+  <rect x="678" y="556" width="18" height="18" rx="4" fill="#344054"/>
+  <text x="720" y="559" class="h3">设备与治具维护</text>
+  <text x="720" y="583" class="tiny">工程 / 生产共用</text>
+  <text x="668" y="622" class="body">点检计划、维修记录、寿命预警、保养任务</text>
+  <rect x="668" y="640" width="76" height="22" rx="11" fill="#e5e7eb"/>
+  <text x="681" y="655" fill="#344054" class="chipText">待拆分</text>
+  <text x="792" y="656" class="tiny">设备 76 · 预警 3</text>
+
+  <rect x="324" y="706" width="622" height="138" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="346" y="738" class="h3">推荐下一批模块</text>
+  <text x="346" y="768" class="body">工程问题单、样品承认书、物料替代申请、客户图纸评审</text>
+  <rect x="346" y="794" width="560" height="8" rx="4" fill="#e4e7ec"/>
+  <rect x="346" y="794" width="224" height="8" rx="4" fill="#0f766e"/>
+  <text x="346" y="826" class="tiny">优先级建议：先做会牵动生产/QA/PMC 的跨部门流程模块</text>
+
+  <rect x="1014" y="250" width="380" height="300" rx="8" class="panel"/>
+  <text x="1038" y="290" class="h2">角色与权限矩阵</text>
+  <text x="1038" y="316" class="muted">模块级入口按厂区、部门、岗位控制</text>
+  <text x="1038" y="360" class="tiny">角色</text><text x="1162" y="360" class="tiny">查看</text><text x="1226" y="360" class="tiny">编辑</text><text x="1290" y="360" class="tiny">审批</text>
+  <line x1="1038" y1="372" x2="1368" y2="372" stroke="#e4e7ec"/>
+  <text x="1038" y="404" class="body">工程主管</text><rect x="1168" y="390" width="18" height="18" rx="4" fill="#0f766e"/><rect x="1232" y="390" width="18" height="18" rx="4" fill="#0f766e"/><rect x="1296" y="390" width="18" height="18" rx="4" fill="#0f766e"/>
+  <text x="1038" y="444" class="body">工程师</text><rect x="1168" y="430" width="18" height="18" rx="4" fill="#0f766e"/><rect x="1232" y="430" width="18" height="18" rx="4" fill="#0f766e"/><rect x="1296" y="430" width="18" height="18" rx="4" fill="#e4e7ec"/>
+  <text x="1038" y="484" class="body">生产主管</text><rect x="1168" y="470" width="18" height="18" rx="4" fill="#0f766e"/><rect x="1232" y="470" width="18" height="18" rx="4" fill="#e4e7ec"/><rect x="1296" y="470" width="18" height="18" rx="4" fill="#0f766e"/>
+  <text x="1038" y="524" class="body">QA 主管</text><rect x="1168" y="510" width="18" height="18" rx="4" fill="#0f766e"/><rect x="1232" y="510" width="18" height="18" rx="4" fill="#e4e7ec"/><rect x="1296" y="510" width="18" height="18" rx="4" fill="#0f766e"/>
+
+  <rect x="1014" y="574" width="380" height="314" rx="8" class="panel"/>
+  <text x="1038" y="614" class="h2">部门待办队列</text>
+  <text x="1038" y="640" class="muted">聚合该部门所有模块的事项</text>
+  <rect x="1038" y="670" width="330" height="54" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="1058" y="700" class="h3">ECN-260626-014 变更影响确认</text>
+  <text x="1058" y="716" class="tiny">华康A · 生产/QA 待确认</text>
+  <rect x="1038" y="738" width="330" height="54" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="1058" y="768" class="h3">BOM-PA-802 版本发布</text>
+  <text x="1058" y="784" class="tiny">工程主管审批 · 今日到期</text>
+  <rect x="1038" y="806" width="330" height="54" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="1058" y="836" class="h3">模具 M-771 保养异常</text>
+  <text x="1058" y="852" class="tiny">设备维护 · 待分派</text>
+</svg>

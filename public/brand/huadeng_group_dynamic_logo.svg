@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1448 1086" role="img" aria-label="华登集团动态双R Logo">
+  <title>华登集团动态双R Logo</title>
+  <desc>双R标志先进行两次白色条纹渐变刷新，然后翻转显示华登集团文字，文字也进行两次白色条纹渐变刷新，如此循环。</desc>
+
+  <defs>
+    <linearGradient id="leftRGradient" x1="195" y1="520" x2="755" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#03371f"/>
+      <stop offset="0.55" stop-color="#004a2a"/>
+      <stop offset="1" stop-color="#075f36"/>
+    </linearGradient>
+
+    <linearGradient id="rightRGradient" x1="610" y1="520" x2="1288" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00a944"/>
+      <stop offset="0.52" stop-color="#00bd4f"/>
+      <stop offset="1" stop-color="#05cf63"/>
+    </linearGradient>
+
+    <linearGradient id="textGradient" x1="340" y1="540" x2="1108" y2="540" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#043a22"/>
+      <stop offset="0.46" stop-color="#018b42"/>
+      <stop offset="1" stop-color="#05ca5f"/>
+    </linearGradient>
+
+    <linearGradient id="shineFade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.18" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.48" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.68" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+
+    <clipPath id="logoClip" clipPathUnits="userSpaceOnUse">
+      <path d="M 658 163 L 658 192 L 677 202 L 702 220 L 736 253 L 759 284 L 770 303 L 781 328 L 951 328 L 976 334 L 989 340 L 1001 348 L 1022 369 L 1034 389 L 1040 406 L 1043 421 L 1044 439 L 1041 462 L 1035 482 L 1024 505 L 1010 525 L 992 543 L 974 556 L 959 563 L 943 567 L 762 567 L 742 599 L 713 634 L 713 637 L 997 922 L 1291 922 L 1291 920 L 1075 707 L 1076 702 L 1104 684 L 1142 651 L 1173 615 L 1191 588 L 1206 559 L 1217 532 L 1227 496 L 1233 455 L 1233 409 L 1227 369 L 1220 343 L 1208 312 L 1191 281 L 1173 256 L 1141 223 L 1107 198 L 1063 177 L 1022 166 L 996 163 Z"/>
+      <path d="M 195 164 L 195 327 L 503 327 L 521 330 L 536 335 L 551 343 L 562 351 L 577 366 L 585 377 L 594 395 L 601 424 L 601 445 L 598 463 L 588 491 L 578 509 L 565 526 L 549 542 L 536 552 L 515 563 L 501 567 L 203 567 L 199 568 L 199 570 L 283 651 L 552 921 L 839 921 L 839 919 L 624 708 L 625 702 L 658 682 L 682 663 L 712 635 L 734 609 L 759 571 L 771 547 L 782 520 L 792 486 L 798 443 L 798 412 L 795 384 L 790 359 L 780 327 L 766 297 L 753 276 L 737 255 L 706 224 L 685 208 L 662 194 L 619 176 L 577 166 L 559 164 Z"/>
+    </clipPath>
+
+    <clipPath id="textClip" clipPathUnits="userSpaceOnUse">
+      <text x="724" y="550" text-anchor="middle" dominant-baseline="central"
+            font-size="188" font-weight="800" letter-spacing="22"
+            font-family="Microsoft YaHei, PingFang SC, Noto Sans SC, Source Han Sans SC, Arial, sans-serif">华登集团</text>
+    </clipPath>
+  </defs>
+
+  <style><![CDATA[
+
+    svg {
+      background: transparent;
+      overflow: visible;
+    }
+
+    .stage {
+      transform-box: view-box;
+      transform-origin: 50% 50%;
+      transform-style: preserve-3d;
+      backface-visibility: hidden;
+    }
+
+    .logoStage {
+      animation: logoStage 14s cubic-bezier(.68, 0, .22, 1) infinite;
+    }
+
+    .textStage {
+      opacity: 0;
+      animation: textStage 14s cubic-bezier(.68, 0, .22, 1) infinite;
+    }
+
+    .sweep {
+      transform-box: view-box;
+      transform-origin: 50% 50%;
+      opacity: 0;
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    .sweep line {
+      stroke: #fff;
+      stroke-width: 13;
+      stroke-linecap: round;
+      opacity: .7;
+    }
+
+    .sweep .core {
+      opacity: .42;
+    }
+
+    .logoSweep {
+      animation: logoSweep 14s linear infinite;
+    }
+
+    .textSweep {
+      animation: textSweep 14s linear infinite;
+    }
+
+    @keyframes logoStage {
+      0%, 34% { opacity: 1; transform: perspective(1200px) rotateY(0deg) scale(1); }
+      42% { opacity: 0; transform: perspective(1200px) rotateY(88deg) scale(.96); }
+      50%, 84% { opacity: 0; transform: perspective(1200px) rotateY(90deg) scale(.96); }
+      92% { opacity: 1; transform: perspective(1200px) rotateY(0deg) scale(1); }
+      100% { opacity: 1; transform: perspective(1200px) rotateY(0deg) scale(1); }
+    }
+
+    @keyframes textStage {
+      0%, 42% { opacity: 0; transform: perspective(1200px) rotateY(-88deg) scale(.96); }
+      50%, 84% { opacity: 1; transform: perspective(1200px) rotateY(0deg) scale(1); }
+      92%, 100% { opacity: 0; transform: perspective(1200px) rotateY(88deg) scale(.96); }
+    }
+
+    /* Logo阶段：左到右刷新两次，中间停顿，不高频。 */
+    @keyframes logoSweep {
+      0%   { opacity: 0; transform: translateX(-660px); }
+      2%   { opacity: .98; }
+      9%   { opacity: .92; transform: translateX(1460px); }
+      11%  { opacity: 0; transform: translateX(1570px); }
+      17%  { opacity: 0; transform: translateX(-660px); }
+      19%  { opacity: .98; }
+      26%  { opacity: .92; transform: translateX(1460px); }
+      28%  { opacity: 0; transform: translateX(1570px); }
+      100% { opacity: 0; transform: translateX(1570px); }
+    }
+
+    /* 文字阶段：翻转完成后，再进行两次同样的白色条纹刷新。 */
+    @keyframes textSweep {
+      0%, 51% { opacity: 0; transform: translateX(-660px); }
+      53%     { opacity: .98; }
+      60%     { opacity: .92; transform: translateX(1460px); }
+      62%     { opacity: 0; transform: translateX(1570px); }
+      68%     { opacity: 0; transform: translateX(-660px); }
+      70%     { opacity: .98; }
+      77%     { opacity: .92; transform: translateX(1460px); }
+      79%     { opacity: 0; transform: translateX(1570px); }
+      100%    { opacity: 0; transform: translateX(1570px); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .logoStage, .textStage, .logoSweep, .textSweep { animation: none; }
+      .textStage { opacity: 0; }
+    }
+  ]]></style>
+
+  <g class="stage logoStage">
+    <g>
+      <path d="M 658 163 L 658 192 L 677 202 L 702 220 L 736 253 L 759 284 L 770 303 L 781 328 L 951 328 L 976 334 L 989 340 L 1001 348 L 1022 369 L 1034 389 L 1040 406 L 1043 421 L 1044 439 L 1041 462 L 1035 482 L 1024 505 L 1010 525 L 992 543 L 974 556 L 959 563 L 943 567 L 762 567 L 742 599 L 713 634 L 713 637 L 997 922 L 1291 922 L 1291 920 L 1075 707 L 1076 702 L 1104 684 L 1142 651 L 1173 615 L 1191 588 L 1206 559 L 1217 532 L 1227 496 L 1233 455 L 1233 409 L 1227 369 L 1220 343 L 1208 312 L 1191 281 L 1173 256 L 1141 223 L 1107 198 L 1063 177 L 1022 166 L 996 163 Z" fill="url(#rightRGradient)"/>
+      <path d="M 195 164 L 195 327 L 503 327 L 521 330 L 536 335 L 551 343 L 562 351 L 577 366 L 585 377 L 594 395 L 601 424 L 601 445 L 598 463 L 588 491 L 578 509 L 565 526 L 549 542 L 536 552 L 515 563 L 501 567 L 203 567 L 199 568 L 199 570 L 283 651 L 552 921 L 839 921 L 839 919 L 624 708 L 625 702 L 658 682 L 682 663 L 712 635 L 734 609 L 759 571 L 771 547 L 782 520 L 792 486 L 798 443 L 798 412 L 795 384 L 790 359 L 780 327 L 766 297 L 753 276 L 737 255 L 706 224 L 685 208 L 662 194 L 619 176 L 577 166 L 559 164 Z" fill="url(#leftRGradient)"/>
+    </g>
+
+    <g clip-path="url(#logoClip)">
+      <g class="sweep logoSweep" opacity="0">
+        <rect class="core" x="0" y="-90" width="520" height="1260" fill="url(#shineFade)"/>
+        <g transform="skewX(-17)">
+          <line x1="-300" y1="-80" x2="60" y2="1180" />
+        <line x1="-246" y1="-80" x2="114" y2="1180" />
+        <line x1="-192" y1="-80" x2="168" y2="1180" />
+        <line x1="-138" y1="-80" x2="222" y2="1180" />
+        <line x1="-84" y1="-80" x2="276" y2="1180" />
+        <line x1="-30" y1="-80" x2="330" y2="1180" />
+        <line x1="24" y1="-80" x2="384" y2="1180" />
+        <line x1="78" y1="-80" x2="438" y2="1180" />
+        <line x1="132" y1="-80" x2="492" y2="1180" />
+        <line x1="186" y1="-80" x2="546" y2="1180" />
+        <line x1="240" y1="-80" x2="600" y2="1180" />
+        <line x1="294" y1="-80" x2="654" y2="1180" />
+        <line x1="348" y1="-80" x2="708" y2="1180" />
+        <line x1="402" y1="-80" x2="762" y2="1180" />
+        <line x1="456" y1="-80" x2="816" y2="1180" />
+        <line x1="510" y1="-80" x2="870" y2="1180" />
+        <line x1="564" y1="-80" x2="924" y2="1180" />
+        <line x1="618" y1="-80" x2="978" y2="1180" />
+        <line x1="672" y1="-80" x2="1032" y2="1180" />
+        <line x1="726" y1="-80" x2="1086" y2="1180" />
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <g class="stage textStage" opacity="0">
+    <text x="724" y="550" text-anchor="middle" dominant-baseline="central"
+          font-size="188" font-weight="800" letter-spacing="22"
+          font-family="Microsoft YaHei, PingFang SC, Noto Sans SC, Source Han Sans SC, Arial, sans-serif"
+          fill="url(#textGradient)">华登集团</text>
+
+    <g clip-path="url(#textClip)">
+      <g class="sweep textSweep" opacity="0">
+        <rect class="core" x="0" y="-90" width="520" height="1260" fill="url(#shineFade)"/>
+        <g transform="skewX(-17)">
+          <line x1="-300" y1="-80" x2="60" y2="1180" />
+        <line x1="-246" y1="-80" x2="114" y2="1180" />
+        <line x1="-192" y1="-80" x2="168" y2="1180" />
+        <line x1="-138" y1="-80" x2="222" y2="1180" />
+        <line x1="-84" y1="-80" x2="276" y2="1180" />
+        <line x1="-30" y1="-80" x2="330" y2="1180" />
+        <line x1="24" y1="-80" x2="384" y2="1180" />
+        <line x1="78" y1="-80" x2="438" y2="1180" />
+        <line x1="132" y1="-80" x2="492" y2="1180" />
+        <line x1="186" y1="-80" x2="546" y2="1180" />
+        <line x1="240" y1="-80" x2="600" y2="1180" />
+        <line x1="294" y1="-80" x2="654" y2="1180" />
+        <line x1="348" y1="-80" x2="708" y2="1180" />
+        <line x1="402" y1="-80" x2="762" y2="1180" />
+        <line x1="456" y1="-80" x2="816" y2="1180" />
+        <line x1="510" y1="-80" x2="870" y2="1180" />
+        <line x1="564" y1="-80" x2="924" y2="1180" />
+        <line x1="618" y1="-80" x2="978" y2="1180" />
+        <line x1="672" y1="-80" x2="1032" y2="1180" />
+        <line x1="726" y1="-80" x2="1086" y2="1180" />
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

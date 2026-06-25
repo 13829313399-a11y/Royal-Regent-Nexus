@@ -1,0 +1,167 @@
+<svg width="1440" height="960" viewBox="0 0 1440 960" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .bg { fill: #f5f7fa; }
+    .panel { fill: #ffffff; stroke: #dbe3ea; stroke-width: 1; }
+    .soft { fill: #f8fafc; stroke: #dbe3ea; stroke-width: 1; }
+    .muted { fill: #667085; font-size: 13px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .tiny { fill: #667085; font-size: 11px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .body { fill: #344054; font-size: 14px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .title { fill: #101828; font-size: 30px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .h2 { fill: #101828; font-size: 18px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .h3 { fill: #101828; font-size: 15px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .num { fill: #101828; font-size: 28px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .brand { fill: #0f766e; }
+    .blue { fill: #2563eb; }
+    .amber { fill: #b7791f; }
+    .red { fill: #b42318; }
+    .green { fill: #047857; }
+    .chipText { font-size: 12px; font-weight: 600; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .navText { fill: #344054; font-size: 14px; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+    .navActive { fill: #0f766e; font-size: 14px; font-weight: 700; font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+  </style>
+
+  <rect class="bg" width="1440" height="960"/>
+
+  <rect x="0" y="0" width="1440" height="72" class="panel"/>
+  <rect x="24" y="18" width="36" height="36" rx="8" fill="#0f766e"/>
+  <text x="34" y="41" fill="#fff" font-size="16" font-weight="700" font-family="Arial">RR</text>
+  <text x="76" y="30" fill="#101828" font-size="16" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">Royal Regent Nexus</text>
+  <text x="76" y="50" class="tiny">集团级业务中台</text>
+
+  <rect x="310" y="18" width="520" height="36" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="332" y="41" class="muted">搜索订单、图纸、BOM、审批单、客户或模块</text>
+
+  <rect x="868" y="18" width="88" height="36" rx="8" fill="#0f766e"/>
+  <text x="889" y="41" fill="#fff" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">集团总览</text>
+  <rect x="964" y="18" width="76" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="985" y="41" class="body">华康A</text>
+  <rect x="1048" y="18" width="76" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1069" y="41" class="body">华康B</text>
+  <rect x="1132" y="18" width="68" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1153" y="41" class="body">华登</text>
+  <rect x="1208" y="18" width="68" height="36" rx="8" fill="#ffffff" stroke="#dbe3ea"/>
+  <text x="1229" y="41" class="body">华兴</text>
+  <circle cx="1326" cy="36" r="18" fill="#eef2f7" stroke="#dbe3ea"/>
+  <text x="1319" y="41" fill="#344054" font-size="13" font-weight="700" font-family="Arial">吴</text>
+
+  <rect x="0" y="72" width="260" height="888" class="panel"/>
+  <text x="24" y="112" class="tiny">MAIN</text>
+  <rect x="18" y="132" width="224" height="40" rx="8" fill="#ecfdf5"/>
+  <rect x="32" y="144" width="16" height="16" rx="4" class="brand"/>
+  <text x="60" y="157" class="navActive">管理驾驶舱</text>
+  <text x="60" y="203" class="navText">工程部</text>
+  <text x="60" y="247" class="navText">PMC / 仓管</text>
+  <text x="60" y="291" class="navText">生产部</text>
+  <text x="60" y="335" class="navText">QA 部</text>
+  <text x="60" y="379" class="navText">业务部</text>
+  <line x1="24" y1="414" x2="236" y2="414" stroke="#e4e7ec"/>
+  <text x="24" y="448" class="tiny">CROSS FACTORY</text>
+  <text x="60" y="484" class="navText">跨厂区审批</text>
+  <text x="60" y="528" class="navText">异常与预警</text>
+  <text x="60" y="572" class="navText">权限与组织</text>
+  <rect x="18" y="844" width="224" height="84" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="34" y="872" class="h3">系统健康</text>
+  <text x="34" y="897" class="muted">在线服务 23 / 24</text>
+  <rect x="34" y="910" width="176" height="6" rx="3" fill="#e4e7ec"/>
+  <rect x="34" y="910" width="154" height="6" rx="3" fill="#0f766e"/>
+
+  <text x="300" y="122" class="title">集团运营总览</text>
+  <text x="300" y="151" class="muted">4 个厂区 · 5 个核心部门 · 统一模块入口与跨厂区事项</text>
+  <rect x="1182" y="108" width="104" height="36" rx="8" fill="#fff" stroke="#dbe3ea"/>
+  <text x="1205" y="131" class="body">本周</text>
+  <rect x="1298" y="108" width="96" height="36" rx="8" fill="#0f172a"/>
+  <text x="1320" y="131" fill="#fff" font-size="13" font-weight="700" font-family="Microsoft YaHei, PingFang SC, Arial">导出报表</text>
+
+  <rect x="300" y="184" width="258" height="128" rx="8" class="panel"/>
+  <text x="324" y="220" class="muted">待处理审批</text>
+  <text x="324" y="263" class="num">128</text>
+  <text x="324" y="291" class="tiny">跨厂区 37 · 超时 8</text>
+  <rect x="493" y="214" width="38" height="38" rx="10" fill="#ecfdf5"/>
+  <circle cx="512" cy="233" r="9" class="brand"/>
+
+  <rect x="574" y="184" width="258" height="128" rx="8" class="panel"/>
+  <text x="598" y="220" class="muted">今日生产单</text>
+  <text x="598" y="263" class="num">46</text>
+  <text x="598" y="291" class="tiny">准时率 94.6%</text>
+  <rect x="767" y="214" width="38" height="38" rx="10" fill="#eff6ff"/>
+  <rect x="782" y="224" width="10" height="20" rx="2" class="blue"/>
+
+  <rect x="848" y="184" width="258" height="128" rx="8" class="panel"/>
+  <text x="872" y="220" class="muted">QA 异常</text>
+  <text x="872" y="263" class="num">9</text>
+  <text x="872" y="291" class="tiny">严重 1 · 待复判 4</text>
+  <rect x="1041" y="214" width="38" height="38" rx="10" fill="#fff7ed"/>
+  <path d="M1051 244 L1060 224 L1069 244 Z" fill="#b7791f"/>
+
+  <rect x="1122" y="184" width="272" height="128" rx="8" class="panel"/>
+  <text x="1146" y="220" class="muted">库存预警</text>
+  <text x="1146" y="263" class="num">17</text>
+  <text x="1146" y="291" class="tiny">原料 11 · 成品 6</text>
+  <rect x="1328" y="214" width="38" height="38" rx="10" fill="#fef2f2"/>
+  <circle cx="1347" cy="233" r="9" class="red"/>
+
+  <rect x="300" y="336" width="720" height="360" rx="8" class="panel"/>
+  <text x="324" y="376" class="h2">厂区运行热力图</text>
+  <text x="324" y="402" class="muted">按厂区查看工程、PMC、生产、QA、业务的模块状态</text>
+
+  <rect x="324" y="432" width="318" height="110" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="346" y="464" class="h3">华康A</text>
+  <rect x="568" y="445" width="48" height="24" rx="12" fill="#dcfce7"/>
+  <text x="580" y="461" fill="#047857" class="chipText">良好</text>
+  <rect x="346" y="487" width="252" height="8" rx="4" fill="#e4e7ec"/>
+  <rect x="346" y="487" width="220" height="8" rx="4" fill="#0f766e"/>
+  <text x="346" y="521" class="tiny">工程 96 · PMC 91 · 生产 94 · QA 88 · 业务 93</text>
+
+  <rect x="666" y="432" width="318" height="110" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="688" y="464" class="h3">华康B</text>
+  <rect x="910" y="445" width="48" height="24" rx="12" fill="#fef3c7"/>
+  <text x="922" y="461" fill="#b7791f" class="chipText">关注</text>
+  <rect x="688" y="487" width="252" height="8" rx="4" fill="#e4e7ec"/>
+  <rect x="688" y="487" width="188" height="8" rx="4" fill="#b7791f"/>
+  <text x="688" y="521" class="tiny">PMC 库存预警增加，QA 复判排队</text>
+
+  <rect x="324" y="562" width="318" height="110" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="346" y="594" class="h3">华登</text>
+  <rect x="568" y="575" width="48" height="24" rx="12" fill="#dcfce7"/>
+  <text x="580" y="591" fill="#047857" class="chipText">良好</text>
+  <rect x="346" y="617" width="252" height="8" rx="4" fill="#e4e7ec"/>
+  <rect x="346" y="617" width="230" height="8" rx="4" fill="#0f766e"/>
+  <text x="346" y="651" class="tiny">生产达成率最高，业务回款跟进稳定</text>
+
+  <rect x="666" y="562" width="318" height="110" rx="8" fill="#f8fafc" stroke="#dbe3ea"/>
+  <text x="688" y="594" class="h3">华兴</text>
+  <rect x="910" y="575" width="48" height="24" rx="12" fill="#fee2e2"/>
+  <text x="922" y="591" fill="#b42318" class="chipText">预警</text>
+  <rect x="688" y="617" width="252" height="8" rx="4" fill="#e4e7ec"/>
+  <rect x="688" y="617" width="158" height="8" rx="4" fill="#b42318"/>
+  <text x="688" y="651" class="tiny">工程变更积压，生产排程需二次确认</text>
+
+  <rect x="1044" y="336" width="350" height="360" rx="8" class="panel"/>
+  <text x="1068" y="376" class="h2">跨厂区事项</text>
+  <text x="1068" y="402" class="muted">按 SLA 排序的重点事项</text>
+  <circle cx="1082" cy="448" r="6" class="red"/>
+  <text x="1102" y="454" class="h3">华兴生产排程冲突</text>
+  <text x="1102" y="478" class="tiny">生产部 · 还剩 1.5 小时</text>
+  <line x1="1082" y1="462" x2="1082" y2="514" stroke="#dbe3ea"/>
+  <circle cx="1082" cy="526" r="6" class="amber"/>
+  <text x="1102" y="532" class="h3">华康B 原料库存预警</text>
+  <text x="1102" y="556" class="tiny">PMC/仓管 · 今日需处理</text>
+  <line x1="1082" y1="540" x2="1082" y2="592" stroke="#dbe3ea"/>
+  <circle cx="1082" cy="604" r="6" class="brand"/>
+  <text x="1102" y="610" class="h3">华登 QA 批次复核完成</text>
+  <text x="1102" y="634" class="tiny">QA 部 · 等待业务确认</text>
+
+  <rect x="300" y="720" width="1094" height="168" rx="8" class="panel"/>
+  <text x="324" y="760" class="h2">模块健康度</text>
+  <text x="324" y="787" class="muted">用于判断哪些部门模块优先建设、优先优化</text>
+  <text x="324" y="832" class="body">工程部</text>
+  <rect x="410" y="820" width="180" height="10" rx="5" fill="#e4e7ec"/><rect x="410" y="820" width="154" height="10" rx="5" fill="#0f766e"/>
+  <text x="632" y="832" class="body">PMC/仓管</text>
+  <rect x="742" y="820" width="180" height="10" rx="5" fill="#e4e7ec"/><rect x="742" y="820" width="132" height="10" rx="5" fill="#2563eb"/>
+  <text x="966" y="832" class="body">生产部</text>
+  <rect x="1052" y="820" width="180" height="10" rx="5" fill="#e4e7ec"/><rect x="1052" y="820" width="146" height="10" rx="5" fill="#0f766e"/>
+  <text x="324" y="868" class="body">QA 部</text>
+  <rect x="410" y="856" width="180" height="10" rx="5" fill="#e4e7ec"/><rect x="410" y="856" width="118" height="10" rx="5" fill="#b7791f"/>
+  <text x="632" y="868" class="body">业务部</text>
+  <rect x="742" y="856" width="180" height="10" rx="5" fill="#e4e7ec"/><rect x="742" y="856" width="140" height="10" rx="5" fill="#0f766e"/>
+</svg>
