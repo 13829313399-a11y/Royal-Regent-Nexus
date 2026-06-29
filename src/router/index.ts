@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import DashboardView from '@/views/DashboardView.vue'
+import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
 const routes: RouteRecordRaw[] = [
@@ -13,10 +14,44 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/modules',
-    name: 'modules',
+    redirect: '/modules/engineering',
+  },
+  {
+    path: '/modules/:department',
+    name: 'modules-department',
     component: () => import('@/views/ModuleCenterView.vue'),
     meta: {
       title: '部门模块中心',
+    },
+    beforeEnter: (to) => {
+      const department = String(to.params.department ?? '')
+      if (!isModuleDepartmentId(department)) {
+        return { path: '/modules/engineering', replace: true }
+      }
+
+      return true
+    },
+  },
+  {
+    path: '/modules/:department/:module',
+    name: 'module-detail',
+    component: () => import('@/views/ModuleDetailView.vue'),
+    meta: {
+      title: '模块详情',
+    },
+    beforeEnter: (to) => {
+      const department = String(to.params.department ?? '')
+      const moduleId = String(to.params.module ?? '')
+
+      if (!isModuleDepartmentId(department)) {
+        return { path: '/modules/engineering', replace: true }
+      }
+
+      if (!getDepartmentModule(department, moduleId)) {
+        return { path: `/modules/${department}`, replace: true }
+      }
+
+      return true
     },
   },
   {
@@ -73,7 +108,13 @@ router.beforeEach(() => {
 })
 
 router.afterEach((to) => {
-  const title = typeof to.meta.title === 'string' ? to.meta.title : 'Workspace'
+  const routeTitle = typeof to.meta.title === 'string' ? to.meta.title : 'Workspace'
+  const department = String(to.params.department ?? '')
+  const moduleId = String(to.params.module ?? '')
+
+  const title = isModuleDepartmentId(department) && moduleId
+    ? getDepartmentModule(department, moduleId)?.title ?? routeTitle
+    : routeTitle
 
   document.title = `${title} | Royal Regent Nexus`
   finishRouteLoading()
