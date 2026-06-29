@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { RouterLink } from 'vue-router'
 import type { EnterpriseModule, Tone } from '@/data/enterpriseMock'
 import StatusPill from '@/components/common/StatusPill.vue'
 
@@ -17,7 +18,12 @@ const iconClasses: Record<Tone, string> = {
 </script>
 
 <template>
-  <article class="rounded-lg border border-slate-200 bg-slate-50 p-5">
+  <component
+    :is="module.to ? RouterLink : 'article'"
+    :to="module.to"
+    class="block rounded-lg border border-slate-200 bg-slate-50 p-5 transition-colors"
+    :class="module.to ? 'hover:border-teal-300 hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700' : ''"
+  >
     <div class="mb-5 flex items-start gap-4">
       <span
         class="flex size-10 shrink-0 items-center justify-center rounded-xl"
@@ -35,5 +41,5 @@ const iconClasses: Record<Tone, string> = {
       <StatusPill :label="module.status" :tone="module.statusTone" compact />
       <span class="text-xs text-slate-500">{{ module.stats }}</span>
     </div>
-  </article>
+  </component>
 </template>
