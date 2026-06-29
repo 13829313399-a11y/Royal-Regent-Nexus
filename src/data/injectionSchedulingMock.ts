@@ -163,6 +163,102 @@ export interface ConfigRuleCard {
   items: string[]
 }
 
+export interface PendingOrderField {
+  label: string
+  required: boolean
+  source: string
+  summary: string
+}
+
+export interface PendingOrderFieldGroup {
+  title: string
+  owner: string
+  fields: PendingOrderField[]
+}
+
+export interface PendingOrderValidationRule {
+  label: string
+  hit: string
+  detail: string
+  tone: Tone
+}
+
+export interface PendingOrderDetailRow {
+  orderNo: string
+  customer: string
+  productName: string
+  moldCode: string
+  color: string
+  material: string
+  quantity: string
+  dueDate: string
+  cavity: string
+  unitWeight: string
+  source: string
+  planner: string
+  machineAdvice: string
+  issue: string
+  tone: Tone
+}
+
+export interface MachineMasterRow {
+  machine: string
+  tonnage: string
+  screw: string
+  robot: string
+  workshop: string
+  processRange: string
+  colorPolicy: string
+  activeMolds: string
+  maintenance: string
+  status: string
+  tone: Tone
+}
+
+export interface MoldTargetDetailRow {
+  moldCode: string
+  productName: string
+  cavity: string
+  cycleTime: string
+  target24h: string
+  target11h: string
+  preferredMachine: string
+  source: string
+  lastVerified: string
+  health: string
+  tone: Tone
+}
+
+export interface ShiftReportChecklistItem {
+  title: string
+  owner: string
+  status: string
+  detail: string
+  tone: Tone
+}
+
+export interface ShiftHandoverRow {
+  shift: string
+  machine: string
+  orderNo: string
+  carryOverQty: string
+  nextOwner: string
+  note: string
+  tone: Tone
+}
+
+export interface InboundWritebackRow {
+  deliveryCode: string
+  orderNo: string
+  inboundQty: string
+  shortageAfter: string
+  warehouseStatus: string
+  erpStatus: string
+  schedulerStatus: string
+  owner: string
+  tone: Tone
+}
+
 export const injectionSectionNav: InjectionNavItem[] = [
   {
     id: 'dashboard',
@@ -526,5 +622,325 @@ export const injectionConfigRuleCards: ConfigRuleCard[] = [
     status: '基础已就绪',
     tone: 'blue',
     items: ['计划员可排机', '生产主管可微调', 'PMC 可看回报与入库', '文员可维护订单池'],
+  },
+]
+
+export const injectionPendingOrderFieldGroups: PendingOrderFieldGroup[] = [
+  {
+    title: '订单识别字段',
+    owner: '文员 / 计划',
+    fields: [
+      { label: '单号', required: true, source: 'PDF / Excel', summary: '排产、入库、回写三端统一主键。' },
+      { label: '客户 / 款号', required: true, source: '订单主表', summary: '区分业务优先级和同款合并。' },
+      { label: '产品编码', required: true, source: 'ERP', summary: '关联模具、BOM 与历史命中。' },
+      { label: '交期', required: true, source: '业务下单', summary: '决定待排优先级和插单判断。' },
+    ],
+  },
+  {
+    title: '工艺匹配字段',
+    owner: '工程 / 生产',
+    fields: [
+      { label: '模具编码', required: true, source: '模具台账', summary: '用于同模同机和目标产能计算。' },
+      { label: '穴数', required: true, source: '模具台账', summary: '影响单班产出和欠数折算。' },
+      { label: '单位啤重', required: true, source: '历史数据库', summary: '用于机台适配和材料损耗估算。' },
+      { label: '颜色 / 色粉号', required: true, source: '生产单', summary: '用于颜色切换顺序判断。' },
+      { label: '料型', required: true, source: 'BOM', summary: '用于工艺限制和特殊机台筛选。' },
+    ],
+  },
+  {
+    title: '排程执行字段',
+    owner: '计划员',
+    fields: [
+      { label: '待排数量', required: true, source: '业务欠数', summary: '决定本轮排机欠数。' },
+      { label: '结转标记', required: true, source: '上一班回报', summary: '是否锁原机台延续。' },
+      { label: '建议机台', required: false, source: '历史学习', summary: '给智能排机初步命中。' },
+      { label: '插单等级', required: false, source: 'PMC / 业务', summary: '重点插单可提高优先级。' },
+    ],
+  },
+]
+
+export const injectionPendingOrderValidationRules: PendingOrderValidationRule[] = [
+  { label: '缺交期', hit: '3 单', detail: '无法准确排序，默认被压到人工确认池。', tone: 'amber' },
+  { label: '缺模具目标', hit: '2 单', detail: '24H / 11H 目标缺失会导致天数预估失真。', tone: 'red' },
+  { label: '缺色粉号', hit: '1 单', detail: '颜色链无法判断，需人工锁顺序。', tone: 'amber' },
+  { label: '结转锁机', hit: '8 单', detail: '优先延续原机台，不参与普通新单抢机。', tone: 'blue' },
+  { label: '重点插单', hit: '5 单', detail: '需排在普通待排单前，并保留主管确认。', tone: 'red' },
+]
+
+export const injectionPendingOrderDetailRows: PendingOrderDetailRow[] = [
+  {
+    orderNo: 'CMC260234',
+    customer: 'CMC / 飞机杯',
+    productName: '喷水组件',
+    moldCode: 'MCKP-17M-01',
+    color: '877C 金属银',
+    material: 'ABS KF-740',
+    quantity: '8,600',
+    dueDate: '2026-06-30',
+    cavity: '4 穴',
+    unitWeight: '18.6 g',
+    source: 'PDF 导入',
+    planner: 'LY',
+    machineAdvice: 'A-06# / A-23#',
+    issue: '重点插单',
+    tone: 'red',
+  },
+  {
+    orderNo: 'ZWY260002/B',
+    customer: '智玩云',
+    productName: '奶嘴',
+    moldCode: 'RBCA-08M-01',
+    color: '金色',
+    material: 'LDPE 260GG',
+    quantity: '4,138',
+    dueDate: '2026-07-01',
+    cavity: '2 穴',
+    unitWeight: '12.4 g',
+    source: 'Excel 导入',
+    planner: 'LY',
+    machineAdvice: 'A-12#',
+    issue: '夜班结转',
+    tone: 'blue',
+  },
+  {
+    orderNo: 'LWW20260317006/B',
+    customer: '乐玩屋',
+    productName: '吃尺转动轴',
+    moldCode: 'RC01854',
+    color: '黑色',
+    material: 'ABS AG15AIH',
+    quantity: '2,800',
+    dueDate: '2026-06-29',
+    cavity: '8 穴',
+    unitWeight: '9.8 g',
+    source: '图片识别',
+    planner: 'LY',
+    machineAdvice: '待确认',
+    issue: '缺色粉号 / 人工确认',
+    tone: 'red',
+  },
+  {
+    orderNo: 'CMC260301',
+    customer: 'CMC / 早教系列',
+    productName: '透明按钮',
+    moldCode: 'FUGG-07M-01',
+    color: '透明蓝',
+    material: 'TPE',
+    quantity: '5,200',
+    dueDate: '2026-07-02',
+    cavity: '6 穴',
+    unitWeight: '10.2 g',
+    source: 'ERP 同步',
+    planner: 'LY',
+    machineAdvice: 'A-19#',
+    issue: '缺模具目标',
+    tone: 'amber',
+  },
+]
+
+export const injectionMachineMasterRows: MachineMasterRow[] = [
+  {
+    machine: 'A-06#',
+    tonnage: '260T',
+    screw: '52 mm',
+    robot: '五轴双臂',
+    workshop: 'A车间',
+    processRange: 'ABS / PP / HIPS',
+    colorPolicy: '浅到深可延续',
+    activeMolds: 'MCKP-17M-01, MNVN-17M-01',
+    maintenance: '2026-07-03 点检',
+    status: '运行',
+    tone: 'green',
+  },
+  {
+    machine: 'A-12#',
+    tonnage: '150T',
+    screw: '42 mm',
+    robot: '三轴单臂',
+    workshop: 'A车间',
+    processRange: 'LDPE / PP 小件',
+    colorPolicy: '黑后接白需拦截',
+    activeMolds: 'RBCA-08M-01',
+    maintenance: '2026-07-01 保养',
+    status: '运行',
+    tone: 'green',
+  },
+  {
+    machine: 'A-19#',
+    tonnage: '260T',
+    screw: '52 mm',
+    robot: '五轴双臂',
+    workshop: 'A车间',
+    processRange: 'TPE / 透明料',
+    colorPolicy: '透明料优先固定机台',
+    activeMolds: 'FUGG-07M-01',
+    maintenance: '2026-06-30 校机',
+    status: '运行',
+    tone: 'blue',
+  },
+  {
+    machine: 'A-31#',
+    tonnage: '150T',
+    screw: '待维护',
+    robot: '未维护',
+    workshop: 'A车间',
+    processRange: '资料待补',
+    colorPolicy: '未知',
+    activeMolds: '-',
+    maintenance: '机械手资料缺失',
+    status: '待确认',
+    tone: 'amber',
+  },
+]
+
+export const injectionMoldTargetDetailRows: MoldTargetDetailRow[] = [
+  {
+    moldCode: 'MCKP-17M-01',
+    productName: '喷水组件',
+    cavity: '4 穴',
+    cycleTime: '19.2 s',
+    target24h: '18,000',
+    target11h: '8,250',
+    preferredMachine: 'A-06# / A-23#',
+    source: '历史众数',
+    lastVerified: '2026-06-22',
+    health: '稳定',
+    tone: 'green',
+  },
+  {
+    moldCode: 'RBCA-08M-01',
+    productName: '奶嘴',
+    cavity: '2 穴',
+    cycleTime: '25.4 s',
+    target24h: '12,500',
+    target11h: '5,730',
+    preferredMachine: 'A-12#',
+    source: '人工维护',
+    lastVerified: '2026-06-27',
+    health: '稳定',
+    tone: 'green',
+  },
+  {
+    moldCode: 'FUGG-07M-01',
+    productName: '透明按钮',
+    cavity: '6 穴',
+    cycleTime: '-',
+    target24h: '-',
+    target11h: '-',
+    preferredMachine: 'A-19#',
+    source: '缺失',
+    lastVerified: '未维护',
+    health: '待补',
+    tone: 'red',
+  },
+  {
+    moldCode: 'MNVN-17M-01',
+    productName: '结构件',
+    cavity: '4 穴',
+    cycleTime: '21.8 s',
+    target24h: '15,800',
+    target11h: '7,240',
+    preferredMachine: 'A-23#',
+    source: '历史 + 人工',
+    lastVerified: '2026-06-20',
+    health: '需复核',
+    tone: 'amber',
+  },
+]
+
+export const injectionShiftReportChecklistItems: ShiftReportChecklistItem[] = [
+  {
+    title: '白班实际产量回报',
+    owner: '车间组长',
+    status: '待提交',
+    detail: 'A-19# 透明按钮因目标缺失暂未锁日报。',
+    tone: 'amber',
+  },
+  {
+    title: '夜班停机原因归档',
+    owner: '生产主管',
+    status: '已完成',
+    detail: '2 条停机已区分为换色和缺料，允许月结统计。',
+    tone: 'green',
+  },
+  {
+    title: '结转交接确认',
+    owner: 'PMC / 计划',
+    status: '待确认',
+    detail: '8 条结转需确认原机锁定是否延续到白班。',
+    tone: 'blue',
+  },
+  {
+    title: '入库与欠数回写',
+    owner: '仓库 / PMC',
+    status: '风险',
+    detail: '2 张送货单已入库但欠数未回写排产池。',
+    tone: 'red',
+  },
+]
+
+export const injectionShiftHandoverRows: ShiftHandoverRow[] = [
+  {
+    shift: '夜班 → 白班',
+    machine: 'A-12#',
+    orderNo: 'ZWY260002/B',
+    carryOverQty: '1,740',
+    nextOwner: '白班组长',
+    note: '维持原机延续，禁止先切白色单。',
+    tone: 'blue',
+  },
+  {
+    shift: '夜班 → 白班',
+    machine: 'A-19#',
+    orderNo: 'CMC260301',
+    carryOverQty: '2,960',
+    nextOwner: '计划员',
+    note: '待补模具目标后再锁今日天数。',
+    tone: 'amber',
+  },
+  {
+    shift: '白班 → 夜班',
+    machine: 'A-06#',
+    orderNo: 'CMC260234',
+    carryOverQty: '4,800',
+    nextOwner: '夜班组长',
+    note: '重点插单，优先保机不中断。',
+    tone: 'red',
+  },
+]
+
+export const injectionInboundWritebackRows: InboundWritebackRow[] = [
+  {
+    deliveryCode: 'A2511514',
+    orderNo: 'CMC260234',
+    inboundQty: '3,800',
+    shortageAfter: '4,800',
+    warehouseStatus: '待入库',
+    erpStatus: '未回写',
+    schedulerStatus: '待更新',
+    owner: 'PMC 陈梦楚',
+    tone: 'amber',
+  },
+  {
+    deliveryCode: 'A2511515',
+    orderNo: 'ZWY260002/B',
+    inboundQty: '2,400',
+    shortageAfter: '1,738',
+    warehouseStatus: '已入库',
+    erpStatus: '已回写',
+    schedulerStatus: '已更新',
+    owner: '仓库 罗良庆',
+    tone: 'green',
+  },
+  {
+    deliveryCode: 'A2511516',
+    orderNo: 'CMC260301',
+    inboundQty: '1,650',
+    shortageAfter: '3,550',
+    warehouseStatus: '待核对',
+    erpStatus: '待回写',
+    schedulerStatus: '排产池未刷新',
+    owner: 'PMC 陈梦楚',
+    tone: 'red',
   },
 ]

@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { BarChart3, FileText, Package } from '@lucide/vue'
+import { BarChart3, FileText, Package, RefreshCcw, Truck } from '@lucide/vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import {
+  injectionInboundWritebackRows,
   injectionReportingMetrics,
+  injectionShiftHandoverRows,
+  injectionShiftReportChecklistItems,
   injectionShiftReportRows,
   injectionWarehouseInboundRows,
 } from '@/data/injectionSchedulingMock'
@@ -28,10 +31,37 @@ import {
       </article>
     </section>
 
-    <div class="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+    <SectionPanel
+      title="班次回报闭环清单"
+      subtitle="这里把班次日报、停机、结转交接和入库回写拆成一屏闭环动作，而不是只放几张说明卡片"
+    >
+      <div class="grid gap-4 xl:grid-cols-4">
+        <article
+          v-for="item in injectionShiftReportChecklistItems"
+          :key="item.title"
+          class="rounded-2xl border border-slate-200 bg-white p-5"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <span class="flex size-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
+                <FileText class="size-5" aria-hidden="true" />
+              </span>
+              <div>
+                <h3 class="font-semibold text-slate-950">{{ item.title }}</h3>
+                <p class="mt-1 text-xs text-slate-500">{{ item.owner }}</p>
+              </div>
+            </div>
+            <StatusPill :label="item.status" :tone="item.tone" />
+          </div>
+          <p class="mt-4 text-sm leading-6 text-slate-600">{{ item.detail }}</p>
+        </article>
+      </div>
+    </SectionPanel>
+
+    <div class="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
       <SectionPanel
         title="班次日报"
-        subtitle="这块建议后面直接承接车间回报、达成率、停机与责任人分析"
+        subtitle="这块直接承接车间回报、达成率、停机与责任人分析，后续最适合接真实录入表单"
       >
         <div class="overflow-x-auto">
           <table class="min-w-full text-left text-sm">
@@ -66,81 +96,127 @@ import {
       </SectionPanel>
 
       <SectionPanel
-        title="回报动作"
-        subtitle="这页不是只看数字，而是要推进回报、入库和月结闭环"
+        title="班次交接"
+        subtitle="结转单如果交接不清，第二班就很容易乱掉，这块最好单独保留"
       >
-        <div class="space-y-4">
-          <article class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div class="flex items-center gap-3">
-              <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
-                <FileText class="size-4" aria-hidden="true" />
-              </span>
-              <div>
-                <h3 class="font-semibold text-slate-950">车间日报回报</h3>
-                <p class="mt-1 text-xs text-slate-500">按班次提交实际产量、停机、报废与交接班备注</p>
+        <div class="space-y-3">
+          <article
+            v-for="row in injectionShiftHandoverRows"
+            :key="`${row.shift}-${row.machine}-${row.orderNo}`"
+            class="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
+                  <RefreshCcw class="size-4" aria-hidden="true" />
+                </span>
+                <div>
+                  <h3 class="font-semibold text-slate-950">{{ row.shift }} · {{ row.machine }}</h3>
+                  <p class="mt-1 text-xs text-slate-500">{{ row.orderNo }} · 接手人 {{ row.nextOwner }}</p>
+                </div>
               </div>
+              <StatusPill :label="row.carryOverQty" :tone="row.tone" compact />
             </div>
-          </article>
-          <article class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div class="flex items-center gap-3">
-              <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
-                <Package class="size-4" aria-hidden="true" />
-              </span>
-              <div>
-                <h3 class="font-semibold text-slate-950">入库与欠数回写</h3>
-                <p class="mt-1 text-xs text-slate-500">同步入库数量、剩余欠数，并回写下一轮排产池</p>
-              </div>
-            </div>
-          </article>
-          <article class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div class="flex items-center gap-3">
-              <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
-                <BarChart3 class="size-4" aria-hidden="true" />
-              </span>
-              <div>
-                <h3 class="font-semibold text-slate-950">月结与绩效口径</h3>
-                <p class="mt-1 text-xs text-slate-500">沉淀啤货工资、效率和异常损耗的统计口径</p>
-              </div>
-            </div>
+            <p class="mt-4 text-sm leading-6 text-slate-600">{{ row.note }}</p>
           </article>
         </div>
       </SectionPanel>
     </div>
 
-    <SectionPanel
-      title="入库与 PMC 闭环"
-      subtitle="把入库、PMC、交付状态拉通后，排产才真正闭环"
-    >
-      <div class="overflow-x-auto">
-        <table class="min-w-full text-left text-sm">
-          <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
-            <tr>
-              <th class="pb-3 pr-4 font-medium">送货单</th>
-              <th class="pb-3 pr-4 font-medium">单号</th>
-              <th class="pb-3 pr-4 font-medium">啤数</th>
-              <th class="pb-3 pr-4 font-medium">用料 KG</th>
-              <th class="pb-3 pr-4 font-medium">PMC</th>
-              <th class="pb-3 font-medium">状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="row in injectionWarehouseInboundRows"
-              :key="row.deliveryCode"
-              class="border-b border-slate-100 align-top last:border-b-0"
-            >
-              <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.deliveryCode }}</td>
-              <td class="py-4 pr-4 text-slate-600">{{ row.orderNo }}</td>
-              <td class="py-4 pr-4 text-slate-600">{{ row.shots }}</td>
-              <td class="py-4 pr-4 text-slate-600">{{ row.materialKg }}</td>
-              <td class="py-4 pr-4 text-slate-600">{{ row.pmc }}</td>
-              <td class="py-4">
-                <StatusPill :label="row.status" :tone="row.tone" compact />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </SectionPanel>
+    <div class="grid gap-6 xl:grid-cols-[1fr_1fr]">
+      <SectionPanel
+        title="入库与 PMC 闭环"
+        subtitle="把入库、PMC、交付状态拉通后，排产才真正闭环"
+      >
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">送货单</th>
+                <th class="pb-3 pr-4 font-medium">单号</th>
+                <th class="pb-3 pr-4 font-medium">啤数</th>
+                <th class="pb-3 pr-4 font-medium">用料 KG</th>
+                <th class="pb-3 pr-4 font-medium">PMC</th>
+                <th class="pb-3 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in injectionWarehouseInboundRows"
+                :key="row.deliveryCode"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.deliveryCode }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.orderNo }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.shots }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.materialKg }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.pmc }}</td>
+                <td class="py-4">
+                  <StatusPill :label="row.status" :tone="row.tone" compact />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionPanel>
+
+      <SectionPanel
+        title="入库回写状态"
+        subtitle="这块才是回报页最值得继续接接口的地方，直接决定待排池是否会刷新"
+      >
+        <div class="space-y-3">
+          <article
+            v-for="row in injectionInboundWritebackRows"
+            :key="`${row.deliveryCode}-${row.orderNo}`"
+            class="rounded-2xl border border-slate-200 bg-white p-5"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <span class="flex size-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
+                  <Truck class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h3 class="font-semibold text-slate-950">{{ row.deliveryCode }} · {{ row.orderNo }}</h3>
+                  <p class="mt-1 text-xs text-slate-500">{{ row.owner }}</p>
+                </div>
+              </div>
+              <StatusPill :label="row.schedulerStatus" :tone="row.tone" />
+            </div>
+
+            <div class="mt-5 grid gap-3 sm:grid-cols-2">
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">入库数量</p>
+                <p class="mt-2 text-sm font-semibold text-slate-900">{{ row.inboundQty }}</p>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">回写后欠数</p>
+                <p class="mt-2 text-sm font-semibold text-slate-900">{{ row.shortageAfter }}</p>
+              </div>
+            </div>
+
+            <div class="mt-4 flex flex-wrap gap-2">
+              <span class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
+                仓库：{{ row.warehouseStatus }}
+              </span>
+              <span class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
+                ERP：{{ row.erpStatus }}
+              </span>
+              <span class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
+                排产池：{{ row.schedulerStatus }}
+              </span>
+            </div>
+          </article>
+        </div>
+
+        <div class="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
+          <div class="flex items-center gap-3">
+            <Package class="size-5 text-slate-500" aria-hidden="true" />
+            <p class="text-sm text-slate-600">
+              下一步最值得接的是“仓库入库成功后自动回写 ERP 与排产欠数”，这样结转和次日待排会明显更准。
+            </p>
+          </div>
+        </div>
+      </SectionPanel>
+    </div>
   </div>
 </template>
