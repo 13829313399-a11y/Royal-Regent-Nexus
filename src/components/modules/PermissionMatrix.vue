@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { Check } from '@lucide/vue'
-import { permissionRows } from '@/data/enterpriseMock'
+import type { PermissionRow } from '@/data/enterpriseMock'
 import SectionPanel from '@/components/common/SectionPanel.vue'
+
+defineProps<{
+  rows: PermissionRow[]
+  title?: string
+  subtitle?: string
+}>()
 
 const columns = [
   { key: 'view', label: '查看' },
@@ -11,14 +17,14 @@ const columns = [
 </script>
 
 <template>
-  <SectionPanel title="角色与权限矩阵" subtitle="模块级入口按厂区、部门、岗位控制">
+  <SectionPanel :title="title ?? '角色与权限矩阵'" :subtitle="subtitle ?? '模块级入口按厂区、部门、岗位控制'">
     <div class="grid grid-cols-[1fr_repeat(3,56px)] items-center gap-y-4 text-sm">
       <span class="text-xs text-slate-500">角色</span>
       <span v-for="column in columns" :key="column.key" class="text-center text-xs text-slate-500">
         {{ column.label }}
       </span>
 
-      <template v-for="row in permissionRows" :key="row.role">
+      <template v-for="row in rows" :key="row.role">
         <span class="font-medium text-slate-800">{{ row.role }}</span>
         <span v-for="column in columns" :key="`${row.role}-${column.key}`" class="flex justify-center">
           <span

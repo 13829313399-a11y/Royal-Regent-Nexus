@@ -5,12 +5,13 @@ import {
   factoryContexts,
   type DepartmentId,
   type FactoryContextId,
+  type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
 
 export const useAppStore = defineStore('app', {
   state: () => ({
     activeFactoryId: 'group' as FactoryContextId,
-    activeDepartmentId: 'overview' as DepartmentId,
+    activeDepartmentId: 'engineering' as ModuleDepartmentId,
     selectedApprovalId: approvalRows[0]?.id ?? '',
     isRouteLoading: false,
   }),
@@ -21,9 +22,7 @@ export const useAppStore = defineStore('app', {
     activeProductionFactory(state) {
       const activeFactory = factoryContexts.find((factory) => factory.id === state.activeFactoryId)
 
-      return activeFactory?.id === 'group'
-        ? factoryContexts.find((factory) => factory.id === 'huakang-a') ?? factoryContexts[1]
-        : activeFactory ?? factoryContexts[1]
+      return activeFactory ?? factoryContexts[0]
     },
     activeDepartment(state) {
       return departments.find((department) => department.id === state.activeDepartmentId) ?? departments[0]
@@ -39,7 +38,7 @@ export const useAppStore = defineStore('app', {
     setActiveFactory(factoryId: FactoryContextId) {
       this.activeFactoryId = factoryId
     },
-    setActiveDepartment(departmentId: DepartmentId) {
+    setActiveDepartment(departmentId: ModuleDepartmentId) {
       this.activeDepartmentId = departmentId
     },
     selectApproval(approvalId: string) {

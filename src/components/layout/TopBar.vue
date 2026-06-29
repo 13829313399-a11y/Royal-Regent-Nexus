@@ -10,7 +10,7 @@ const route = useRoute()
 const appStore = useAppStore()
 
 const searchPlaceholder = computed(() => {
-  if (route.name === 'modules') return '搜索模块、菜单、角色、权限、流程单'
+  if (route.path.startsWith('/modules')) return '搜索模块、菜单、角色、权限、流程单'
   if (route.name === 'workbench') return '搜索客户、订单、合同、审批单号'
 
   return '搜索订单、图纸、BOM、审批单、客户或模块'

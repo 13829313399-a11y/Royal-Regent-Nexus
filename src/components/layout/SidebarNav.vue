@@ -1,19 +1,21 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router'
-import { navigationGroups, type NavigationItem } from '@/data/enterpriseMock'
+import { isModuleDepartmentId, navigationGroups, type NavigationItem } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
 const appStore = useAppStore()
 
 function isActive(item: NavigationItem) {
-  if (item.departmentId && item.departmentId === appStore.activeDepartmentId) return true
+  if (item.departmentId && route.path.startsWith('/modules')) {
+    return item.departmentId === appStore.activeDepartmentId
+  }
 
   return route.path === item.to && !item.departmentId
 }
 
 function handleSelect(item: NavigationItem) {
-  if (item.departmentId) {
+  if (item.departmentId && isModuleDepartmentId(item.departmentId)) {
     appStore.setActiveDepartment(item.departmentId)
   }
 }
