@@ -20,7 +20,7 @@ function handleSelect(item: NavigationItem) {
 </script>
 
 <template>
-  <aside class="hidden min-h-[calc(100vh-72px)] w-[260px] shrink-0 border-r border-slate-200 bg-white lg:flex lg:flex-col">
+  <aside class="hidden h-[calc(100vh-78px)] w-[260px] shrink-0 self-start overflow-y-auto border-r border-slate-200 bg-white lg:sticky lg:top-[78px] lg:flex lg:flex-col">
     <div class="flex-1 space-y-7 px-4 py-7">
       <div v-for="group in navigationGroups" :key="group.label" class="space-y-2">
         <p class="px-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">
