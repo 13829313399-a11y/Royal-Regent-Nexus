@@ -55,6 +55,15 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/molding-sample',
+    name: 'molding-sample',
+    component: () => import('@/views/MoldingSampleView.vue'),
+    meta: {
+      title: '啤办进度追踪',
+      fullPage: true,
+    },
+  },
+  {
     path: '/workbench',
     name: 'workbench',
     component: () => import('@/views/ApprovalWorkbenchView.vue'),

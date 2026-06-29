@@ -20,6 +20,8 @@ export type Tone = 'teal' | 'blue' | 'amber' | 'red' | 'slate' | 'green'
 
 export type FactoryContextId = 'group' | 'huakang-a' | 'huakang-b' | 'huadeng' | 'huaxing'
 
+export type ProductionFactoryContextId = Exclude<FactoryContextId, 'group'>
+
 export type DepartmentId =
   | 'overview'
   | 'engineering'
@@ -115,6 +117,55 @@ export interface EnterpriseModule {
   children: ModuleChildLink[]
 }
 
+export interface MoldingSampleSummary {
+  label: string
+  value: string
+  detail: string
+  tone: Tone
+}
+
+export interface MoldingSampleLine {
+  id: string
+  customerMoldNo: string
+  moldName: string
+  material: string
+  color: string
+  pms: string
+  toner: string
+  shotsPerSet: string
+  quantity: number
+  requiredDate: string
+  owner: string
+  status: string
+  statusTone: Tone
+}
+
+export interface MoldingSampleOrder {
+  customer: string
+  productNo: string
+  productName: string
+  source: string
+  documentNo: string
+  requester: string
+  requestDate: string
+  requiredDate: string
+  note: string
+}
+
+export interface MoldingProgressStage {
+  label: string
+  detail: string
+  status: string
+  tone: Tone
+}
+
+export interface MoldingSampleFactoryRecord {
+  factoryId: ProductionFactoryContextId
+  order: MoldingSampleOrder
+  stages: MoldingProgressStage[]
+  lines: MoldingSampleLine[]
+}
+
 export interface PermissionRow {
   role: string
   view: boolean
@@ -207,6 +258,13 @@ export const factoryContexts: FactoryContext[] = [
     health: 74,
     tone: 'red',
   },
+]
+
+export const productionFactoryContextIds: ProductionFactoryContextId[] = [
+  'huakang-a',
+  'huakang-b',
+  'huadeng',
+  'huaxing',
 ]
 
 export const departments: Department[] = [
@@ -366,6 +424,28 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     panelTitle: '工程部模块',
     panelSubtitle: '面向 BOM、资料、变更和设备维保的统一模块层',
     modules: [
+      {
+        id: 'molding-sample',
+        title: '啤办进度追踪',
+        owner: '工程部 · 负责人 肖科',
+        summary: '啤办单登记、颜色用料、试啤进度、出办确认',
+        status: '已上线',
+        statusTone: 'green',
+        stats: '明细 14 · 风险 2',
+        icon: ClipboardCheck,
+        route: '/modules/molding-sample',
+        statusMetrics: [
+          { label: '明细', value: '14', tone: 'blue' },
+          { label: '风险', value: '2', tone: 'red' },
+          { label: '厂区', value: '4', tone: 'teal' },
+        ],
+        todos: ['按厂区切换啤办单明细', '补 QA 对办与出办留样闭环'],
+        children: [
+          { label: '通知单导入', summary: '拆分啤办单头与明细字段，统一导入来源' },
+          { label: '试啤进度', summary: '按模具、颜色、色粉与状态追踪试啤过程' },
+          { label: 'QA 对办', summary: '沉淀颜色、外观和留样确认节点' },
+        ],
+      },
       {
         id: 'bom-process',
         title: 'BOM / 工艺路线',
@@ -829,6 +909,529 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     ],
   },
 }
+
+export const moldingSampleOrder: MoldingSampleOrder = {
+  customer: 'BuzzBee',
+  productNo: '62437',
+  productName: '链条枪',
+  source: '62437三弹、四弹枪新色啤办单',
+  documentNo: 'W-G026-00',
+  requester: '肖科',
+  requestDate: '2026-04-09',
+  requiredDate: '2026-04-13',
+  note: '见客样办，枪身不可刮花，颜色要对办，工程订色粉。',
+}
+
+export const moldingSampleSummary: MoldingSampleSummary[] = [
+  { label: '啤办单', value: '62437', detail: 'BuzzBee · 链条枪', tone: 'teal' },
+  { label: '明细行', value: '14', detail: '按模具与颜色拆分', tone: 'blue' },
+  { label: '目标啤数', value: '420', detail: '14项 × 30啤', tone: 'green' },
+  { label: '需办日期', value: '04-13', detail: '落单 2026-04-09', tone: 'amber' },
+]
+
+export const moldingProgressStages: MoldingProgressStage[] = [
+  { label: '通知单导入', detail: 'Excel 字段已拆成单头和明细', status: '完成', tone: 'green' },
+  { label: '备料配色', detail: '色粉 71120 / 71139 / 70040 / 70039 / 71137', status: '进行中', tone: 'blue' },
+  { label: '排机试啤', detail: '按模具与颜色逐项登记现场状态', status: '待排程', tone: 'amber' },
+  { label: 'QA 对办', detail: '颜色、刮花、外观按客样确认', status: '待确认', tone: 'slate' },
+]
+
+export const moldingSampleLines: MoldingSampleLine[] = [
+  {
+    id: 'BP-62437-001',
+    customerMoldNo: 'BBT62450-A-01',
+    moldName: '左右枪身A款',
+    material: 'HIPS 425',
+    color: '深绿色',
+    pms: '2272C',
+    toner: '71139',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '待排机',
+    statusTone: 'amber',
+  },
+  {
+    id: 'BP-62437-002',
+    customerMoldNo: 'BBT62450-A-02',
+    moldName: 'A款装饰件',
+    material: 'ABS 740',
+    color: '暗蓝色',
+    pms: '2935C',
+    toner: '71120',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '配色中',
+    statusTone: 'blue',
+  },
+  {
+    id: 'BP-62437-003',
+    customerMoldNo: 'BBT62450-A-02-2',
+    moldName: '手柄饰件',
+    material: 'ABS 740',
+    color: '暗蓝色',
+    pms: '2935C',
+    toner: '71120',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '配色中',
+    statusTone: 'blue',
+  },
+  {
+    id: 'BP-62437-004',
+    customerMoldNo: 'BBT62450-B-01',
+    moldName: '左右枪身B款',
+    material: 'HIPS 425',
+    color: '暗蓝色',
+    pms: '2935C',
+    toner: '70039',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '待试啤',
+    statusTone: 'amber',
+  },
+  {
+    id: 'BP-62437-005',
+    customerMoldNo: 'BBT62450-B-02',
+    moldName: 'B款装饰件',
+    material: 'ABS 740',
+    color: '深绿色',
+    pms: '2272C',
+    toner: '70040',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '待试啤',
+    statusTone: 'amber',
+  },
+  {
+    id: 'BP-62437-006',
+    customerMoldNo: 'BBT62450-04',
+    moldName: '拉环',
+    material: 'PP AV161',
+    color: '深蓝色',
+    pms: '7694C',
+    toner: '71137',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '已备料',
+    statusTone: 'green',
+  },
+  {
+    id: 'BP-62437-007',
+    customerMoldNo: 'BBT62659-01',
+    moldName: '左右枪身',
+    material: 'HIPS 425',
+    color: '暗蓝色',
+    pms: '2935C',
+    toner: '70039',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '试啤中',
+    statusTone: 'teal',
+  },
+  {
+    id: 'BP-62437-008',
+    customerMoldNo: 'BBT62659-01',
+    moldName: '左右枪身',
+    material: 'HIPS 425',
+    color: '深绿色',
+    pms: '2272C',
+    toner: '71139',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '颜色复核',
+    statusTone: 'red',
+  },
+  {
+    id: 'BP-62437-009',
+    customerMoldNo: 'BBT62659-02',
+    moldName: '左右手柄',
+    material: 'ABS 740',
+    color: '暗蓝色',
+    pms: '2935C',
+    toner: '71120',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '待试啤',
+    statusTone: 'amber',
+  },
+  {
+    id: 'BP-62437-010',
+    customerMoldNo: 'BBT62659-02',
+    moldName: '左右手柄',
+    material: 'ABS 740',
+    color: '深绿色',
+    pms: '2272C',
+    toner: '70040',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '待配色',
+    statusTone: 'blue',
+  },
+  {
+    id: 'BP-62437-011',
+    customerMoldNo: 'BBT62659-03',
+    moldName: '左右枪身装饰件',
+    material: 'ABS 740',
+    color: '暗蓝色',
+    pms: '2935C',
+    toner: '71120',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '试啤中',
+    statusTone: 'teal',
+  },
+  {
+    id: 'BP-62437-012',
+    customerMoldNo: 'BBT62659-03',
+    moldName: '左右枪身装饰件',
+    material: 'ABS 740',
+    color: '深绿色',
+    pms: '2272C',
+    toner: '70040',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '颜色复核',
+    statusTone: 'red',
+  },
+  {
+    id: 'BP-62437-013',
+    customerMoldNo: 'BBT62659-04',
+    moldName: '左右枪身长装饰件',
+    material: 'PP AV161',
+    color: '暗蓝色',
+    pms: '2935C',
+    toner: '71120',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '待试啤',
+    statusTone: 'amber',
+  },
+  {
+    id: 'BP-62437-014',
+    customerMoldNo: 'BBT62659-04',
+    moldName: '左右枪身长装饰件',
+    material: 'PP AV161',
+    color: '深绿色',
+    pms: '2272C',
+    toner: '70040',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-13',
+    owner: '肖科',
+    status: '待配色',
+    statusTone: 'blue',
+  },
+]
+
+const huakangBMoldingSampleOrder: MoldingSampleOrder = {
+  customer: 'Zuru',
+  productNo: '73120',
+  productName: '泡泡枪',
+  source: '73120双色泡泡枪啤办单',
+  documentNo: 'W-G031-00',
+  requester: '林科',
+  requestDate: '2026-04-11',
+  requiredDate: '2026-04-16',
+  note: '透明件不可混点，外壳蓝色需按首办确认，试啤后交 QA 留样。',
+}
+
+const huakangBMoldingSampleLines: MoldingSampleLine[] = [
+  {
+    id: 'BP-73120-001',
+    customerMoldNo: 'ZUR73120-01',
+    moldName: '左右外壳',
+    material: 'ABS 757',
+    color: '湖蓝色',
+    pms: '2995C',
+    toner: '81210',
+    shotsPerSet: '1/1',
+    quantity: 40,
+    requiredDate: '2026-04-16',
+    owner: '林科',
+    status: '试啤中',
+    statusTone: 'teal',
+  },
+  {
+    id: 'BP-73120-002',
+    customerMoldNo: 'ZUR73120-02',
+    moldName: '透明水箱',
+    material: 'PC 110',
+    color: '透明',
+    pms: 'Clear',
+    toner: 'N/A',
+    shotsPerSet: '1/1',
+    quantity: 40,
+    requiredDate: '2026-04-16',
+    owner: '林科',
+    status: '外观复核',
+    statusTone: 'red',
+  },
+  {
+    id: 'BP-73120-003',
+    customerMoldNo: 'ZUR73120-03',
+    moldName: '扳机',
+    material: 'POM 900P',
+    color: '白色',
+    pms: 'White',
+    toner: '81002',
+    shotsPerSet: '1/1',
+    quantity: 40,
+    requiredDate: '2026-04-16',
+    owner: '林科',
+    status: '已备料',
+    statusTone: 'green',
+  },
+  {
+    id: 'BP-73120-004',
+    customerMoldNo: 'ZUR73120-04',
+    moldName: '装饰盖',
+    material: 'ABS 757',
+    color: '橙色',
+    pms: '1655C',
+    toner: '81233',
+    shotsPerSet: '1/1',
+    quantity: 40,
+    requiredDate: '2026-04-16',
+    owner: '林科',
+    status: '待排机',
+    statusTone: 'amber',
+  },
+]
+
+const huadengMoldingSampleOrder: MoldingSampleOrder = {
+  customer: 'Spin Master',
+  productNo: '90818',
+  productName: '飞盘发射器',
+  source: '90818新款飞盘发射器啤办单',
+  documentNo: 'W-G041-00',
+  requester: '周工',
+  requestDate: '2026-04-12',
+  requiredDate: '2026-04-18',
+  note: '结构件需先确认装配间隙，齿轮件试啤后提交寿命测试样。',
+}
+
+const huadengMoldingSampleLines: MoldingSampleLine[] = [
+  {
+    id: 'BP-90818-001',
+    customerMoldNo: 'SM90818-01',
+    moldName: '上盖',
+    material: 'ABS 747',
+    color: '石墨灰',
+    pms: 'Cool Gray 10C',
+    toner: '92018',
+    shotsPerSet: '1/1',
+    quantity: 25,
+    requiredDate: '2026-04-18',
+    owner: '周工',
+    status: '已出办',
+    statusTone: 'green',
+  },
+  {
+    id: 'BP-90818-002',
+    customerMoldNo: 'SM90818-02',
+    moldName: '下盖',
+    material: 'ABS 747',
+    color: '石墨灰',
+    pms: 'Cool Gray 10C',
+    toner: '92018',
+    shotsPerSet: '1/1',
+    quantity: 25,
+    requiredDate: '2026-04-18',
+    owner: '周工',
+    status: '已出办',
+    statusTone: 'green',
+  },
+  {
+    id: 'BP-90818-003',
+    customerMoldNo: 'SM90818-03',
+    moldName: '齿轮组',
+    material: 'POM 100P',
+    color: '本色',
+    pms: 'Natural',
+    toner: 'N/A',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-18',
+    owner: '周工',
+    status: '寿命测试',
+    statusTone: 'blue',
+  },
+  {
+    id: 'BP-90818-004',
+    customerMoldNo: 'SM90818-04',
+    moldName: '安全锁',
+    material: 'PP K8003',
+    color: '红色',
+    pms: '186C',
+    toner: '92044',
+    shotsPerSet: '1/1',
+    quantity: 30,
+    requiredDate: '2026-04-18',
+    owner: '周工',
+    status: '待 QA',
+    statusTone: 'amber',
+  },
+]
+
+const huaxingMoldingSampleOrder: MoldingSampleOrder = {
+  customer: 'Target',
+  productNo: '56206',
+  productName: '软弹枪',
+  source: '56206软弹枪配色啤办单',
+  documentNo: 'W-G052-00',
+  requester: '陈科',
+  requestDate: '2026-04-10',
+  requiredDate: '2026-04-15',
+  note: '枪身表面不可刮花，橙色枪口为安全色，颜色偏差需当天复核。',
+}
+
+const huaxingMoldingSampleLines: MoldingSampleLine[] = [
+  {
+    id: 'BP-56206-001',
+    customerMoldNo: 'TGT56206-01',
+    moldName: '左右枪身',
+    material: 'HIPS 425',
+    color: '军绿色',
+    pms: '5743C',
+    toner: '76012',
+    shotsPerSet: '1/1',
+    quantity: 35,
+    requiredDate: '2026-04-15',
+    owner: '陈科',
+    status: '颜色复核',
+    statusTone: 'red',
+  },
+  {
+    id: 'BP-56206-002',
+    customerMoldNo: 'TGT56206-02',
+    moldName: '枪口',
+    material: 'ABS 740',
+    color: '安全橙',
+    pms: 'Orange 021C',
+    toner: '76088',
+    shotsPerSet: '1/1',
+    quantity: 35,
+    requiredDate: '2026-04-15',
+    owner: '陈科',
+    status: '待试啤',
+    statusTone: 'amber',
+  },
+  {
+    id: 'BP-56206-003',
+    customerMoldNo: 'TGT56206-03',
+    moldName: '弹匣',
+    material: 'PP AV161',
+    color: '黑色',
+    pms: 'Black C',
+    toner: '76001',
+    shotsPerSet: '1/1',
+    quantity: 35,
+    requiredDate: '2026-04-15',
+    owner: '陈科',
+    status: '试啤中',
+    statusTone: 'teal',
+  },
+  {
+    id: 'BP-56206-004',
+    customerMoldNo: 'TGT56206-04',
+    moldName: '装饰件',
+    material: 'ABS 740',
+    color: '浅灰色',
+    pms: '421C',
+    toner: '76032',
+    shotsPerSet: '1/1',
+    quantity: 35,
+    requiredDate: '2026-04-15',
+    owner: '陈科',
+    status: '颜色复核',
+    statusTone: 'red',
+  },
+]
+
+export const moldingSampleFactoryRecords: Record<ProductionFactoryContextId, MoldingSampleFactoryRecord> = {
+  'huakang-a': {
+    factoryId: 'huakang-a',
+    order: moldingSampleOrder,
+    stages: moldingProgressStages,
+    lines: moldingSampleLines,
+  },
+  'huakang-b': {
+    factoryId: 'huakang-b',
+    order: huakangBMoldingSampleOrder,
+    stages: moldingProgressStages,
+    lines: huakangBMoldingSampleLines,
+  },
+  huadeng: {
+    factoryId: 'huadeng',
+    order: huadengMoldingSampleOrder,
+    stages: moldingProgressStages,
+    lines: huadengMoldingSampleLines,
+  },
+  huaxing: {
+    factoryId: 'huaxing',
+    order: huaxingMoldingSampleOrder,
+    stages: moldingProgressStages,
+    lines: huaxingMoldingSampleLines,
+  },
+}
+
+export function isProductionFactoryContextId(factoryId: string): factoryId is ProductionFactoryContextId {
+  return productionFactoryContextIds.includes(factoryId as ProductionFactoryContextId)
+}
+
+export function getMoldingSampleRecord(factoryId: FactoryContextId | string | undefined) {
+  const resolvedFactoryId = isProductionFactoryContextId(factoryId ?? '')
+    ? factoryId as ProductionFactoryContextId
+    : 'huakang-a'
+
+  return moldingSampleFactoryRecords[resolvedFactoryId]
+}
+
+export function getMoldingSampleModuleStats(factoryId: FactoryContextId | string | undefined) {
+  const record = getMoldingSampleRecord(factoryId)
+  const riskCount = record.lines.filter((line) => line.statusTone === 'red').length
+
+  return `明细 ${record.lines.length} · 风险 ${riskCount}`
+}
+
+export const permissionRows: PermissionRow[] = [
+  { role: '工程主管', view: true, edit: true, approve: true },
+  { role: '工程师', view: true, edit: true, approve: false },
+  { role: '生产主管', view: true, edit: false, approve: true },
+  { role: 'QA 主管', view: true, edit: false, approve: true },
+]
+
+export const departmentTodos: TodoItem[] = [
+  { id: 'ECN-260626-014', title: '变更影响确认', meta: '华康A · 生产/QA 待确认' },
+  { id: 'BOM-PA-802', title: '版本发布', meta: '工程主管审批 · 今日到期' },
+  { id: 'M-771', title: '保养异常', meta: '设备维护 · 待分派' },
+]
 
 export const approvalRows: ApprovalRow[] = [
   {

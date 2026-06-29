@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import {
   departmentMap,
   departmentModuleRegistry,
+  getMoldingSampleModuleStats,
   isModuleDepartmentId,
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
@@ -29,7 +30,26 @@ const departmentEntry = computed(() => departmentModuleRegistry[currentDepartmen
 const currentDepartment = computed(() => departmentMap[currentDepartmentId.value])
 const title = computed(() => `${appStore.activeProductionFactory.name} · ${currentDepartment.value.name}模块中心`)
 
-const featuredModule = computed(() => departmentEntry.value.modules[0])
+const visibleModules = computed(() => {
+  if (currentDepartmentId.value !== 'engineering') {
+    return departmentEntry.value.modules
+  }
+
+  return departmentEntry.value.modules.map((module) => {
+    if (module.id !== 'molding-sample') {
+      return module
+    }
+
+    return {
+      ...module,
+      owner: `${appStore.activeProductionFactory.shortName} · 工程部公共模块`,
+      stats: getMoldingSampleModuleStats(appStore.activeProductionFactory.id),
+      route: `/modules/molding-sample?factory=${appStore.activeProductionFactory.id}`,
+    }
+  })
+})
+
+const featuredModule = computed(() => visibleModules.value[0])
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)
@@ -60,7 +80,7 @@ watch(currentDepartmentId, (departmentId) => {
       >
         <div class="grid gap-5 md:grid-cols-2">
           <ModuleCard
-            v-for="module in departmentEntry.modules"
+            v-for="module in visibleModules"
             :key="module.id"
             :module="module"
             :active="featuredModule.id === module.id"

@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { computed } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
+
+const route = useRoute()
+
+const isFullPage = computed(() => Boolean(route.meta.fullPage))
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-100 text-slate-950">
+  <RouterView v-if="isFullPage" />
+
+  <div v-else class="min-h-screen bg-slate-100 text-slate-950">
     <TopBar />
     <div class="flex">
       <SidebarNav />
