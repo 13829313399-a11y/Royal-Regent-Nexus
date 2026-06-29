@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { Plus } from '@lucide/vue'
 import { computed } from 'vue'
-import { engineeringModules, quickModuleCandidates } from '@/data/enterpriseMock'
+import {
+  engineeringModules,
+  getMoldingSampleModuleStats,
+  quickModuleCandidates,
+} from '@/data/enterpriseMock'
 import DepartmentTabs from '@/components/modules/DepartmentTabs.vue'
 import ModuleCard from '@/components/modules/ModuleCard.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'
@@ -13,6 +17,17 @@ import { useAppStore } from '@/stores/app'
 const appStore = useAppStore()
 
 const title = computed(() => `${appStore.activeProductionFactory.name} · 部门模块中心`)
+const activeFactoryId = computed(() => appStore.activeProductionFactory.id)
+const activeFactoryModules = computed(() => engineeringModules.map((module) => {
+  if (module.id !== 'molding-sample') return module
+
+  return {
+    ...module,
+    owner: `${appStore.activeProductionFactory.shortName} · 工程部公共模块`,
+    stats: getMoldingSampleModuleStats(activeFactoryId.value),
+    to: `/modules/molding-sample?factory=${activeFactoryId.value}`,
+  }
+}))
 </script>
 
 <template>
@@ -38,7 +53,7 @@ const title = computed(() => `${appStore.activeProductionFactory.name} · 部门
         subtitle="模块卡片统一展示负责人、状态、待办、关键数据"
       >
         <div class="grid gap-5 md:grid-cols-2">
-          <ModuleCard v-for="module in engineeringModules" :key="module.id" :module="module" />
+          <ModuleCard v-for="module in activeFactoryModules" :key="module.id" :module="module" />
         </div>
 
         <div class="mt-7 rounded-lg border border-slate-200 bg-white p-5">
