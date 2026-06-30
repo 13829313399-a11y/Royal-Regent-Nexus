@@ -1,4 +1,9 @@
 import type { Tone } from '@/data/enterpriseMock'
+import {
+  huaxingMachineImportSummary,
+  huaxingMachineMasterImportRows,
+  huaxingMachineProfileImportRows,
+} from '@/data/huaxingMachineImport'
 
 export type InjectionSectionId =
   | 'dashboard'
@@ -116,6 +121,23 @@ export interface ExecutionOrderRow {
   target24h: string
   shortage: string
   priority: string
+  tone: Tone
+}
+
+export interface ExecutionRuleMetric {
+  label: string
+  value: string
+  detail: string
+  tone: Tone
+}
+
+export interface ExecutionConstraintRow {
+  machine: string
+  workshop: string
+  tonnage: string
+  robot: string
+  limit: string
+  action: string
   tone: Tone
 }
 
@@ -342,7 +364,7 @@ export const injectionDataSourceStatus: DataSourceStatus[] = [
     freshness: '昨日同步',
     status: '待补',
     statusTone: 'amber',
-    summary: '34 台机台已建档，但仍缺 6 台详细机械手与工艺范围。',
+    summary: `已导入 ${huaxingMachineImportSummary.rowCount} 台设备（新车间 ${huaxingMachineImportSummary.areas['新车间']} / 老车间 ${huaxingMachineImportSummary.areas['老车间']}），但工艺限制仍有部分停留在备注自由文本。`,
   },
   {
     name: '模具目标',
@@ -415,11 +437,11 @@ export const injectionDataCenterDatasets: DataCenterDataset[] = [
     name: '机台主数据',
     owner: '生产主管',
     freshness: '昨日',
-    completeness: 81,
+    completeness: 88,
     status: '待补',
     statusTone: 'amber',
-    summary: '机台基本台账齐全，但工艺适配和机械手信息仍不完整。',
-    issues: ['6 台缺工艺范围', '2 台状态未更新'],
+    summary: `已收到 ${huaxingMachineImportSummary.rowCount} 台机台台账，吨位、机械手和周边设备基础信息可用，但工艺适配和活跃模具仍需结构化。`,
+    issues: ['PVC / PC / 抽芯限制仍写在备注里', '活跃模具与保养日期尚未结构化'],
   },
   {
     name: '模具目标数据',
@@ -490,12 +512,9 @@ export const injectionOrderSnapshotRows: OrderSnapshotRow[] = [
   },
 ]
 
-export const injectionMachineProfileRows: MachineProfileRow[] = [
-  { machine: 'A-06#', tonnage: '260T', armType: '五轴双臂', workshop: 'A车间', status: '运行', tone: 'green', fit: '适合 ABS / 同模延续' },
-  { machine: 'A-12#', tonnage: '150T', armType: '三轴单臂', workshop: 'A车间', status: '运行', tone: 'green', fit: '本白 / 小件' },
-  { machine: 'A-19#', tonnage: '260T', armType: '五轴双臂', workshop: 'A车间', status: '运行', tone: 'blue', fit: '透明料 / TPE' },
-  { machine: 'A-31#', tonnage: '150T', armType: '未维护', workshop: 'A车间', status: '待确认', tone: 'amber', fit: '资料待补' },
-]
+export const injectionMachineProfileRows: MachineProfileRow[] = huaxingMachineProfileImportRows
+  .slice(0, 8)
+  .map((row) => ({ ...row }))
 
 export const injectionMoldTargetRows: MoldTargetRow[] = [
   { moldCode: 'MCKP-17M-01', target24h: '18,000', target11h: '8,250', source: '历史众数', health: '稳定', tone: 'green' },
@@ -545,6 +564,79 @@ export const injectionExecutionQueueRows: ExecutionOrderRow[] = [
     priority: '人工确认',
     tone: 'red',
   },
+]
+
+const machineCountByTone = huaxingMachineMasterImportRows.reduce(
+  (accumulator, row) => {
+    accumulator[row.tone] = (accumulator[row.tone] ?? 0) + 1
+    return accumulator
+  },
+  {} as Record<Tone, number>,
+)
+
+const specialProcessMachines = huaxingMachineMasterImportRows.filter(
+  (row) =>
+    row.processRange.includes('PVC')
+    || row.processRange.includes('PC')
+    || row.processRange.includes('不适合PVC')
+    || row.processRange.includes('全电动机')
+    || row.processRange.includes('立式')
+    || row.processRange.includes('双色'),
+)
+
+const cautionMachines = huaxingMachineMasterImportRows.filter(
+  (row) => row.status !== '运行' || row.maintenance.includes('抽芯') || row.maintenance.includes('不稳定'),
+)
+
+export const injectionExecutionRuleMetrics: ExecutionRuleMetric[] = [
+  {
+    label: '设备台账',
+    value: `${huaxingMachineImportSummary.rowCount} 台`,
+    detail: `新车间 ${huaxingMachineImportSummary.areas['新车间']} · 老车间 ${huaxingMachineImportSummary.areas['老车间']}`,
+    tone: 'teal',
+  },
+  {
+    label: '五轴双臂',
+    value: `${huaxingMachineImportSummary.robotTypes['五轴双臂']} 台`,
+    detail: '三板模 / 热流道 / 细水口优先进入这组候选池',
+    tone: 'blue',
+  },
+  {
+    label: '特殊工艺机',
+    value: `${specialProcessMachines.length} 台`,
+    detail: '包含 PVC / PC / 全电动 / 立式 / 双色 等非普通通用机台',
+    tone: 'amber',
+  },
+  {
+    label: '注意 / 新购',
+    value: `${(machineCountByTone.amber ?? 0) + (machineCountByTone.blue ?? 0)} 台`,
+    detail: `注意 ${machineCountByTone.amber ?? 0} · 新购 ${machineCountByTone.blue ?? 0}`,
+    tone: 'red',
+  },
+]
+
+export const injectionExecutionConstraintRows: ExecutionConstraintRow[] = [
+  ...specialProcessMachines.slice(0, 4).map((row) => ({
+    machine: row.machine,
+    workshop: row.workshop,
+    tonnage: row.tonnage,
+    robot: row.robot,
+    limit: `${row.processRange} / ${row.colorPolicy}`,
+    action: row.maintenance,
+    tone: row.tone,
+  })),
+  ...cautionMachines
+    .filter((row) => !specialProcessMachines.some((machine) => machine.machine === row.machine))
+    .slice(0, 4)
+    .map((row) => ({
+      machine: row.machine,
+      workshop: row.workshop,
+      tonnage: row.tonnage,
+      robot: row.robot,
+      limit: `${row.processRange} / ${row.status}`,
+      action: row.maintenance,
+      tone: row.tone,
+    })),
 ]
 
 export const injectionManualActionRows: ManualActionRow[] = [
@@ -738,60 +830,9 @@ export const injectionPendingOrderDetailRows: PendingOrderDetailRow[] = [
   },
 ]
 
-export const injectionMachineMasterRows: MachineMasterRow[] = [
-  {
-    machine: 'A-06#',
-    tonnage: '260T',
-    screw: '52 mm',
-    robot: '五轴双臂',
-    workshop: 'A车间',
-    processRange: 'ABS / PP / HIPS',
-    colorPolicy: '浅到深可延续',
-    activeMolds: 'MCKP-17M-01, MNVN-17M-01',
-    maintenance: '2026-07-03 点检',
-    status: '运行',
-    tone: 'green',
-  },
-  {
-    machine: 'A-12#',
-    tonnage: '150T',
-    screw: '42 mm',
-    robot: '三轴单臂',
-    workshop: 'A车间',
-    processRange: 'LDPE / PP 小件',
-    colorPolicy: '黑后接白需拦截',
-    activeMolds: 'RBCA-08M-01',
-    maintenance: '2026-07-01 保养',
-    status: '运行',
-    tone: 'green',
-  },
-  {
-    machine: 'A-19#',
-    tonnage: '260T',
-    screw: '52 mm',
-    robot: '五轴双臂',
-    workshop: 'A车间',
-    processRange: 'TPE / 透明料',
-    colorPolicy: '透明料优先固定机台',
-    activeMolds: 'FUGG-07M-01',
-    maintenance: '2026-06-30 校机',
-    status: '运行',
-    tone: 'blue',
-  },
-  {
-    machine: 'A-31#',
-    tonnage: '150T',
-    screw: '待维护',
-    robot: '未维护',
-    workshop: 'A车间',
-    processRange: '资料待补',
-    colorPolicy: '未知',
-    activeMolds: '-',
-    maintenance: '机械手资料缺失',
-    status: '待确认',
-    tone: 'amber',
-  },
-]
+export const injectionMachineMasterRows: MachineMasterRow[] = huaxingMachineMasterImportRows
+  .slice(0, 12)
+  .map((row) => ({ ...row }))
 
 export const injectionMoldTargetDetailRows: MoldTargetDetailRow[] = [
   {
