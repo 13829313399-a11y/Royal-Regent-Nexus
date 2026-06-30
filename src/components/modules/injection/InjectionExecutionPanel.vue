@@ -5,7 +5,9 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import {
   injectionColorTransitionRisks,
+  injectionExecutionConstraintRows,
   injectionExecutionQueueRows,
+  injectionExecutionRuleMetrics,
   injectionMachineLoad,
   injectionManualActionRows,
   injectionWorkflowStages,
@@ -15,6 +17,15 @@ const workflowTone = {
   done: 'green',
   active: 'blue',
   pending: 'slate',
+} as const
+
+const toneSurfaceClasses = {
+  green: 'bg-emerald-50 border-emerald-100',
+  blue: 'bg-blue-50 border-blue-100',
+  amber: 'bg-amber-50 border-amber-100',
+  red: 'bg-red-50 border-red-100',
+  teal: 'bg-teal-50 border-teal-100',
+  slate: 'bg-slate-100 border-slate-200',
 } as const
 </script>
 
@@ -45,11 +56,27 @@ const workflowTone = {
       </div>
     </SectionPanel>
 
+    <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <article
+        v-for="metric in injectionExecutionRuleMetrics"
+        :key="metric.label"
+        class="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+      >
+        <p class="text-sm text-slate-500">{{ metric.label }}</p>
+        <p class="mt-4 text-3xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
+        <p class="mt-3 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+      </article>
+    </section>
+
     <div class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
       <SectionPanel
         title="待排与结果候选池"
         subtitle="把当前要排的订单、落在哪台机、缺什么条件全部放到同一张执行表里"
       >
+        <div class="mb-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          这一屏现在已经接入真实设备台账约束。当前候选结果仍是演示订单，但机台选择条件已经开始参考真实
+          `五轴双臂 / PC / PVC / 新购 / 注意机台` 分层。
+        </div>
         <div class="overflow-x-auto">
           <table class="min-w-full text-left text-sm">
             <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
@@ -85,28 +112,34 @@ const workflowTone = {
       </SectionPanel>
 
       <SectionPanel
-        title="人工干预清单"
-        subtitle="这里就是计划员和生产主管真正会盯的一屏"
+        title="机台拦截与候选限制"
+        subtitle="这些不是排机后才发现的问题，而是候选机台阶段就该拦下来的真实设备约束"
       >
         <div class="space-y-4">
           <article
-            v-for="item in injectionManualActionRows"
-            :key="item.title"
-            class="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+            v-for="item in injectionExecutionConstraintRows"
+            :key="item.machine"
+            class="rounded-2xl border p-4"
+            :class="toneSurfaceClasses[item.tone]"
           >
-            <div class="flex items-start justify-between gap-3">
-              <div class="flex items-center gap-3">
-                <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
-                  <ShieldAlert class="size-4" aria-hidden="true" />
-                </span>
-                <div>
-                  <h3 class="font-semibold text-slate-950">{{ item.title }}</h3>
-                  <p class="mt-1 text-xs text-slate-500">{{ item.owner }}</p>
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0">
+                <div class="flex items-center gap-3">
+                  <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
+                    <ShieldAlert class="size-4" aria-hidden="true" />
+                  </span>
+                  <div>
+                    <h3 class="font-semibold text-slate-950">{{ item.machine }}</h3>
+                    <p class="mt-1 text-xs text-slate-500">
+                      {{ item.workshop }} · {{ item.tonnage }} · {{ item.robot }}
+                    </p>
+                  </div>
                 </div>
+                <p class="mt-4 text-sm leading-6 text-slate-700">{{ item.limit }}</p>
+                <p class="mt-2 text-xs leading-5 text-slate-500">{{ item.action }}</p>
               </div>
-              <StatusPill :label="item.action" :tone="item.tone" compact />
+              <StatusPill :label="item.tone === 'red' ? '硬拦截' : item.tone === 'amber' ? '需确认' : '可候选'" :tone="item.tone" compact />
             </div>
-            <p class="mt-4 text-sm leading-6 text-slate-600">{{ item.reason }}</p>
           </article>
         </div>
       </SectionPanel>
@@ -139,8 +172,8 @@ const workflowTone = {
       </SectionPanel>
 
       <SectionPanel
-        title="执行动作入口"
-        subtitle="先把核心动作做成两个大入口，后续再接按钮行为和弹窗"
+        title="人工微调与执行动作"
+        subtitle="系统先给候选结果，计划员和生产主管在这里处理真实冲突"
       >
         <div class="grid gap-4 md:grid-cols-2">
           <article class="rounded-2xl border border-slate-200 bg-[linear-gradient(180deg,rgba(15,23,42,0.98),rgba(30,41,59,0.98))] p-5 text-white">
@@ -150,12 +183,12 @@ const workflowTone = {
               </span>
               <div>
                 <h3 class="font-semibold">执行智能排机</h3>
-                <p class="mt-1 text-xs text-slate-300">根据同模、颜色、结转和机台适配自动出结果</p>
+                <p class="mt-1 text-xs text-slate-300">先跑结转优先、同套模、颜色顺序和机台适配，再给人工看候选结果</p>
               </div>
             </div>
             <div class="mt-5 space-y-3 text-sm text-slate-200">
               <div class="rounded-xl bg-white/5 px-4 py-3">勾选订单池与结转单</div>
-              <div class="rounded-xl bg-white/5 px-4 py-3">锁定重点插单与限制条件</div>
+              <div class="rounded-xl bg-white/5 px-4 py-3">读取机台限制与例外规则</div>
               <div class="rounded-xl bg-white/5 px-4 py-3">生成候选排机结果</div>
             </div>
           </article>
@@ -167,7 +200,7 @@ const workflowTone = {
               </span>
               <div>
                 <h3 class="font-semibold text-slate-950">人工微调</h3>
-                <p class="mt-1 text-xs text-slate-500">处理颜色逆序、目标缺失和重点插单冲突</p>
+                <p class="mt-1 text-xs text-slate-500">处理颜色逆序、目标缺失、特殊料型和注意机台冲突</p>
               </div>
             </div>
             <div class="mt-5 space-y-3 text-sm text-slate-700">
@@ -178,25 +211,49 @@ const workflowTone = {
           </article>
         </div>
 
-        <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <h3 class="font-semibold text-slate-950">颜色切换预警</h3>
-          <div class="mt-4 space-y-3">
-            <article
-              v-for="risk in injectionColorTransitionRisks"
-              :key="risk.machine"
-              class="rounded-xl border border-slate-200 bg-white px-4 py-3"
-            >
-              <div class="flex items-center justify-between gap-3">
+        <div class="mt-4 space-y-3">
+          <article
+            v-for="item in injectionManualActionRows"
+            :key="item.title"
+            class="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
+                  <ShieldAlert class="size-4" aria-hidden="true" />
+                </span>
                 <div>
-                  <p class="font-medium text-slate-900">{{ risk.machine }}</p>
-                  <p class="mt-1 text-xs text-slate-500">{{ risk.route.join(' → ') }}</p>
+                  <h3 class="font-semibold text-slate-950">{{ item.title }}</h3>
+                  <p class="mt-1 text-xs text-slate-500">{{ item.owner }}</p>
                 </div>
-                <StatusPill :label="risk.risk" :tone="risk.tone" compact />
               </div>
-            </article>
-          </div>
+              <StatusPill :label="item.action" :tone="item.tone" compact />
+            </div>
+            <p class="mt-4 text-sm leading-6 text-slate-600">{{ item.reason }}</p>
+          </article>
         </div>
       </SectionPanel>
     </div>
+
+    <SectionPanel
+      title="颜色切换预警"
+      subtitle="真实机台约束已经接入后，颜色链就不再只是美观问题，而是直接影响换色风险和人工微调成本"
+    >
+      <div class="grid gap-4 lg:grid-cols-2">
+        <article
+          v-for="risk in injectionColorTransitionRisks"
+          :key="risk.machine"
+          class="rounded-2xl border border-slate-200 bg-white px-5 py-4"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="font-medium text-slate-900">{{ risk.machine }}</p>
+              <p class="mt-1 text-xs text-slate-500">{{ risk.route.join(' → ') }}</p>
+            </div>
+            <StatusPill :label="risk.risk" :tone="risk.tone" compact />
+          </div>
+        </article>
+      </div>
+    </SectionPanel>
   </div>
 </template>
