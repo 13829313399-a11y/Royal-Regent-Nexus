@@ -2,7 +2,9 @@
 import { Settings2, SlidersHorizontal, Users } from '@lucide/vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
-import { injectionConfigRuleCards } from '@/data/injectionSchedulingMock'
+import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
+
+const { injectionConfigRuleCards } = useInjectionModuleData()
 </script>
 
 <template>

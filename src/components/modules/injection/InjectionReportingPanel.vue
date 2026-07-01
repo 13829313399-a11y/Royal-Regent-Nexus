@@ -2,14 +2,16 @@
 import { BarChart3, FileText, Package, RefreshCcw, Truck } from '@lucide/vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
-import {
+import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
+
+const {
   injectionInboundWritebackRows,
   injectionReportingMetrics,
   injectionShiftHandoverRows,
   injectionShiftReportChecklistItems,
   injectionShiftReportRows,
   injectionWarehouseInboundRows,
-} from '@/data/injectionSchedulingMock'
+} = useInjectionModuleData()
 </script>
 
 <template>

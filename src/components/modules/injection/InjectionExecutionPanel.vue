@@ -3,15 +3,7 @@ import { ArrowRight, PlayCircle, RefreshCw, ShieldAlert } from '@lucide/vue'
 import ProgressMeter from '@/components/common/ProgressMeter.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
-import {
-  injectionColorTransitionRisks,
-  injectionExecutionConstraintRows,
-  injectionExecutionQueueRows,
-  injectionExecutionRuleMetrics,
-  injectionMachineLoad,
-  injectionManualActionRows,
-  injectionWorkflowStages,
-} from '@/data/injectionSchedulingMock'
+import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
 
 const workflowTone = {
   done: 'green',
@@ -27,6 +19,19 @@ const toneSurfaceClasses = {
   teal: 'bg-teal-50 border-teal-100',
   slate: 'bg-slate-100 border-slate-200',
 } as const
+
+const {
+  injectionColorTransitionRisks,
+  injectionExecutionCandidateRows,
+  injectionExecutionConstraintRows,
+  injectionExecutionRuleMetrics,
+  injectionExecutionScheduleRows,
+  injectionMachineLoad,
+  injectionManualActionRows,
+  injectionPendingOrderDetailRows,
+  injectionPendingOrderValidationRules,
+  injectionWorkflowStages,
+} = useInjectionModuleData()
 </script>
 
 <template>
@@ -70,44 +75,137 @@ const toneSurfaceClasses = {
 
     <div class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
       <SectionPanel
-        title="待排与结果候选池"
-        subtitle="把当前要排的订单、落在哪台机、缺什么条件全部放到同一张执行表里"
+        title="待排订单池"
+        subtitle="先看真实排产输入，不是直接看结果。这里优先确认单号、模具、颜色、料型、数量、交期和建议机台。"
       >
         <div class="mb-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          这一屏现在已经接入真实设备台账约束。当前候选结果仍是演示订单，但机台选择条件已经开始参考真实
-          `五轴双臂 / PC / PVC / 新购 / 注意机台` 分层。
+          这一屏现在已经把执行中心和数据中心接起来了。订单字段仍是标准化 mock，但已经按真实排机前会核对的字段结构来展示。
         </div>
         <div class="overflow-x-auto">
           <table class="min-w-full text-left text-sm">
             <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
               <tr>
-                <th class="pb-3 pr-4 font-medium">机台</th>
                 <th class="pb-3 pr-4 font-medium">单号</th>
-                <th class="pb-3 pr-4 font-medium">模具</th>
-                <th class="pb-3 pr-4 font-medium">颜色</th>
-                <th class="pb-3 pr-4 font-medium">24H 目标</th>
-                <th class="pb-3 pr-4 font-medium">欠数</th>
-                <th class="pb-3 font-medium">优先级</th>
+                <th class="pb-3 pr-4 font-medium">客户 / 产品</th>
+                <th class="pb-3 pr-4 font-medium">模具 / 穴数</th>
+                <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
+                <th class="pb-3 pr-4 font-medium">数量 / 啤重</th>
+                <th class="pb-3 pr-4 font-medium">交期 / 来源</th>
+                <th class="pb-3 pr-4 font-medium">建议机台</th>
+                <th class="pb-3 font-medium">异常</th>
               </tr>
             </thead>
             <tbody>
               <tr
-                v-for="row in injectionExecutionQueueRows"
-                :key="`${row.machine}-${row.orderNo}`"
+                v-for="row in injectionPendingOrderDetailRows"
+                :key="row.orderNo"
                 class="border-b border-slate-100 align-top last:border-b-0"
               >
-                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.machine }}</td>
-                <td class="py-4 pr-4 text-slate-600">{{ row.orderNo }}</td>
-                <td class="py-4 pr-4 text-slate-600">{{ row.moldName }}</td>
-                <td class="py-4 pr-4 text-slate-600">{{ row.color }}</td>
-                <td class="py-4 pr-4 text-slate-600">{{ row.target24h }}</td>
-                <td class="py-4 pr-4 text-slate-600">{{ row.shortage }}</td>
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.orderNo }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.customer }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.productName }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.moldCode }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.cavity }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.color }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.material }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.quantity }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.unitWeight }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.dueDate }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.source }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.machineAdvice }}</div>
+                  <div class="mt-1 text-xs text-slate-500">计划员：{{ row.planner }}</div>
+                </td>
                 <td class="py-4">
-                  <StatusPill :label="row.priority" :tone="row.tone" compact />
+                  <StatusPill :label="row.issue" :tone="row.tone" compact />
                 </td>
               </tr>
             </tbody>
           </table>
+        </div>
+      </SectionPanel>
+
+      <SectionPanel
+        title="字段校验与导入提醒"
+        subtitle="排机页真正省时间的关键不是多一个按钮，而是先把缺字段和高风险单筛出来"
+      >
+        <div class="space-y-4">
+          <article
+            v-for="rule in injectionPendingOrderValidationRules"
+            :key="rule.label"
+            class="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <span class="flex size-10 items-center justify-center rounded-2xl bg-white text-slate-700">
+                  <ShieldAlert class="size-4" aria-hidden="true" />
+                </span>
+                <div class="flex items-center gap-3">
+                  <div>
+                    <h3 class="font-semibold text-slate-950">{{ rule.label }}</h3>
+                    <p class="mt-1 text-xs text-slate-500">{{ rule.hit }}</p>
+                  </div>
+                </div>
+              </div>
+              <StatusPill :label="rule.hit" :tone="rule.tone" />
+            </div>
+            <p class="mt-4 text-sm leading-6 text-slate-600">{{ rule.detail }}</p>
+          </article>
+        </div>
+
+        <div class="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">导入建议</p>
+          <p class="mt-3 text-sm leading-6 text-slate-600">
+            真实接入时建议把 PDF / Excel / 图片导入都统一到一张“待排订单标准表”，先做字段补齐，再允许进入排机执行。
+          </p>
+        </div>
+      </SectionPanel>
+    </div>
+
+    <div class="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+      <SectionPanel
+        title="候选机台推荐"
+        subtitle="系统不会直接告诉你结果，它应该先解释推荐哪台机、备选哪台机、还缺什么条件。"
+      >
+        <div class="space-y-4">
+          <article
+            v-for="row in injectionExecutionCandidateRows"
+            :key="`${row.orderNo}-${row.recommendedMachine}`"
+            class="rounded-2xl border border-slate-200 bg-white p-5"
+          >
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-xs uppercase tracking-[0.2em] text-slate-500">{{ row.orderNo }}</p>
+                <h3 class="mt-2 text-lg font-semibold text-slate-950">{{ row.moldCode }}</h3>
+              </div>
+              <StatusPill :label="row.recommendedMachine" :tone="row.tone" />
+            </div>
+            <div class="mt-4 grid gap-3 md:grid-cols-2">
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.2em] text-slate-500">主推荐 / 备选</p>
+                <p class="mt-2 text-sm font-semibold text-slate-900">{{ row.recommendedMachine }}</p>
+                <p class="mt-1 text-xs text-slate-500">{{ row.backupMachine }}</p>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.2em] text-slate-500">推荐理由</p>
+                <p class="mt-2 text-sm leading-6 text-slate-700">{{ row.reason }}</p>
+              </div>
+            </div>
+            <div class="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">当前阻塞</p>
+              <p class="mt-2 text-sm leading-6 text-slate-700">{{ row.blocker }}</p>
+            </div>
+          </article>
         </div>
       </SectionPanel>
 
@@ -144,6 +242,47 @@ const toneSurfaceClasses = {
         </div>
       </SectionPanel>
     </div>
+
+    <SectionPanel
+      title="建议开机时段"
+      subtitle="候选机台确认后，执行页还要继续给出开机窗口、班次占用和下发前依赖，这一步才是真正能落地的排产结果。"
+    >
+      <div class="grid gap-4 xl:grid-cols-3">
+        <article
+          v-for="row in injectionExecutionScheduleRows"
+          :key="`${row.orderNo}-${row.machine}`"
+          class="rounded-2xl border border-slate-200 bg-white p-5"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">{{ row.orderNo }}</p>
+              <h3 class="mt-2 text-lg font-semibold text-slate-950">{{ row.machine }}</h3>
+            </div>
+            <StatusPill :label="row.shiftPlan" :tone="row.tone" compact />
+          </div>
+
+          <div class="mt-4 space-y-3">
+            <div class="rounded-xl bg-slate-50 px-4 py-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">建议开机</p>
+              <p class="mt-2 text-sm font-semibold text-slate-900">{{ row.startWindow }}</p>
+            </div>
+            <div class="rounded-xl bg-slate-50 px-4 py-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">预计完工</p>
+              <p class="mt-2 text-sm font-semibold text-slate-900">{{ row.endWindow }}</p>
+            </div>
+            <div class="rounded-xl bg-slate-50 px-4 py-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">产出预估</p>
+              <p class="mt-2 text-sm font-semibold text-slate-900">{{ row.expectedOutput }}</p>
+            </div>
+          </div>
+
+          <div class="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
+            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">下发前依赖</p>
+            <p class="mt-2 text-sm leading-6 text-slate-700">{{ row.dependency }}</p>
+          </div>
+        </article>
+      </div>
+    </SectionPanel>
 
     <div class="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
       <SectionPanel

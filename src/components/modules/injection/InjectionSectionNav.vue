@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Boxes, Database, Settings2, SquareTerminal, Waypoints } from '@lucide/vue'
 import type { InjectionSectionId } from '@/data/injectionSchedulingMock'
-import { injectionSectionNav } from '@/data/injectionSchedulingMock'
+import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
 
 defineProps<{
   activeSection: InjectionSectionId
@@ -10,6 +10,8 @@ defineProps<{
 defineEmits<{
   (e: 'change', section: InjectionSectionId): void
 }>()
+
+const { injectionSectionNav } = useInjectionModuleData()
 
 const sectionIcons = {
   dashboard: Boxes,

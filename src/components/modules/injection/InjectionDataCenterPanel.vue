@@ -3,16 +3,20 @@ import { AlertTriangle, ClipboardList, Database, Factory, Layers3 } from '@lucid
 import ProgressMeter from '@/components/common/ProgressMeter.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
-import {
+import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
+
+const {
   injectionDataCenterDatasets,
   injectionMachineMasterRows,
   injectionMachineProfileRows,
+  injectionMoldMachineMappingRows,
   injectionMoldTargetDetailRows,
   injectionMoldTargetRows,
+  injectionOrderImportTasks,
   injectionPendingOrderDetailRows,
   injectionPendingOrderFieldGroups,
   injectionPendingOrderValidationRules,
-} from '@/data/injectionSchedulingMock'
+} = useInjectionModuleData()
 </script>
 
 <template>
@@ -193,6 +197,77 @@ import {
       </SectionPanel>
     </div>
 
+    <div class="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+      <SectionPanel
+        title="订单池接入清单"
+        subtitle="这块先把华兴真实订单导入拆成几步，后面拿到 Excel / PDF 时就能直接对位承接"
+      >
+        <div class="space-y-3">
+          <article
+            v-for="task in injectionOrderImportTasks"
+            :key="task.step"
+            class="rounded-2xl border border-slate-200 bg-white p-4"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <span class="flex size-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
+                  <ClipboardList class="size-4" aria-hidden="true" />
+                </span>
+                <div>
+                  <h3 class="font-semibold text-slate-950">{{ task.step }}</h3>
+                  <p class="mt-1 text-xs text-slate-500">{{ task.owner }}</p>
+                </div>
+              </div>
+              <StatusPill :label="task.status" :tone="task.tone" compact />
+            </div>
+            <p class="mt-4 text-sm leading-6 text-slate-600">{{ task.detail }}</p>
+          </article>
+        </div>
+      </SectionPanel>
+
+      <SectionPanel
+        title="模具 → 机台映射承接位"
+        subtitle="规则是通用的，但这张表的数据是各厂独立维护的。这里先给华兴做第一版映射看板。"
+      >
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">模具</th>
+                <th class="pb-3 pr-4 font-medium">客户 / 产品</th>
+                <th class="pb-3 pr-4 font-medium">候选池</th>
+                <th class="pb-3 pr-4 font-medium">主推荐 / 备选</th>
+                <th class="pb-3 pr-4 font-medium">说明</th>
+                <th class="pb-3 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in injectionMoldMachineMappingRows"
+                :key="`${row.moldCode}-${row.recommendedMachine}`"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.moldCode }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.customer }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.productName }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.candidatePool }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.recommendedMachine }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.backupMachine }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.detail }}</td>
+                <td class="py-4">
+                  <StatusPill :label="row.status" :tone="row.tone" compact />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionPanel>
+    </div>
+
     <div class="grid gap-6 xl:grid-cols-[1fr_1fr]">
       <SectionPanel
         title="机台主数据台账"
@@ -270,7 +345,7 @@ import {
 
     <SectionPanel
       title="模具目标主数据台账"
-      subtitle="24H / 11H 目标、节拍、优选机台和维护时间都应该在这里形成正式主数据"
+      subtitle="华兴模具总表已经接进来了，这里先按真实模具清单展示；24H / 11H、穴数、节拍和优选机台下一步继续补成正式主数据"
     >
       <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <article
@@ -310,7 +385,8 @@ import {
           <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
             <tr>
               <th class="pb-3 pr-4 font-medium">模具</th>
-              <th class="pb-3 pr-4 font-medium">产品</th>
+              <th class="pb-3 pr-4 font-medium">客户 / 产品</th>
+              <th class="pb-3 pr-4 font-medium">总表状态</th>
               <th class="pb-3 pr-4 font-medium">穴数 / 节拍</th>
               <th class="pb-3 pr-4 font-medium">24H / 11H</th>
               <th class="pb-3 pr-4 font-medium">优选机台</th>
@@ -326,7 +402,13 @@ import {
               class="border-b border-slate-100 align-top last:border-b-0"
             >
               <td class="py-4 pr-4 font-semibold text-slate-950">{{ mold.moldCode }}</td>
-              <td class="py-4 pr-4 text-slate-600">{{ mold.productName }}</td>
+              <td class="py-4 pr-4 text-slate-600">
+                <div>{{ mold.customer }}</div>
+                <div class="mt-1 text-xs text-slate-500">{{ mold.productName }}</div>
+              </td>
+              <td class="py-4 pr-4">
+                <StatusPill :label="mold.catalogStatus" :tone="mold.catalogStatus === '废模' ? 'red' : 'blue'" compact />
+              </td>
               <td class="py-4 pr-4 text-slate-600">
                 <div>{{ mold.cavity }}</div>
                 <div class="mt-1 text-xs text-slate-500">{{ mold.cycleTime }}</div>

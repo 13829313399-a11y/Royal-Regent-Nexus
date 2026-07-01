@@ -3,16 +3,8 @@ import { AlertTriangle, Database, PlayCircle, RefreshCw } from '@lucide/vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import ProgressMeter from '@/components/common/ProgressMeter.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
-import {
-  injectionColorTransitionRisks,
-  injectionDataSourceStatus,
-  injectionExecutionTasks,
-  injectionMachineLoad,
-  injectionOverviewMetrics,
-  injectionShiftSummaries,
-  injectionWorkflowStages,
-} from '@/data/injectionSchedulingMock'
 import type { Tone } from '@/data/enterpriseMock'
+import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
 
 const toneTextClasses: Record<Tone, string> = {
   teal: 'text-teal-700',
@@ -37,6 +29,16 @@ const workflowTone = {
   active: 'blue',
   pending: 'slate',
 } as const
+
+const {
+  injectionColorTransitionRisks,
+  injectionDataSourceStatus,
+  injectionExecutionTasks,
+  injectionMachineLoad,
+  injectionOverviewMetrics,
+  injectionShiftSummaries,
+  injectionWorkflowStages,
+} = useInjectionModuleData()
 </script>
 
 <template>
