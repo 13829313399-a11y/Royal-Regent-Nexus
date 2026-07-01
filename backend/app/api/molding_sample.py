@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -50,6 +50,7 @@ from app.services.molding_sample import (
     update_requisition_status,
     verify_pin,
 )
+from app.services.molding_sample_excel import XLSX_MIME, export_order_to_excel, parse_order_excel
 
 router = APIRouter()
 
@@ -74,6 +75,32 @@ def get_injection_order(order_id: str, db: Session = Depends(get_db)):
 
 @router.post("/api/injection", response_model=MoldingSampleDetailResponse, status_code=status.HTTP_201_CREATED)
 def post_injection_order(payload: MoldingSampleCreateRequest, db: Session = Depends(get_db)):
+    return serialize_order(create_order(db, payload))
+
+
+@router.get("/api/injection/{order_id}/export-excel")
+def export_injection_order_excel(order_id: str, db: Session = Depends(get_db)):
+    order = load_order(db, order_id)
+    content = export_order_to_excel(order)
+    filename = f"{order.id}-molding-sample.xlsx"
+    return Response(
+        content=content,
+        media_type=XLSX_MIME,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/api/injection/import-excel", response_model=MoldingSampleDetailResponse, status_code=status.HTTP_201_CREATED)
+def import_injection_order_excel(
+    body: bytes = Body(..., media_type=XLSX_MIME),
+    order_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = parse_order_excel(body, order_id_override=order_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return serialize_order(create_order(db, payload))
 
 

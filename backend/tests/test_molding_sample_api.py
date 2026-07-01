@@ -554,6 +554,33 @@ def test_sensitive_audit_logs_return_latest_200_rows(client):
     assert logs[-1]["action"] == "审计5"
 
 
+def test_export_and_import_molding_sample_excel_template(client):
+    client.post("/api/injection", json=sample_order_payload("BP-XLSX-001"))
+
+    export_response = client.get("/api/injection/BP-XLSX-001/export-excel")
+    assert export_response.status_code == 200
+    assert export_response.content[:2] == b"PK"
+    assert export_response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    import_response = client.post(
+        "/api/injection/import-excel",
+        params={"order_id": "BP-XLSX-002"},
+        content=export_response.content,
+        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    )
+    assert import_response.status_code == 201
+    imported = import_response.json()
+    assert imported["order"]["id"] == "BP-XLSX-002"
+    assert imported["order"]["product_name"] == "链条枪"
+    assert imported["order"]["client_name"] == "BuzzBee"
+    assert imported["items"][0]["id"] == "BP-XLSX-002-001"
+    assert imported["items"][0]["material"] == "HIPS 425"
+    assert imported["items"][0]["gross_weight_g"] == 82
+    assert imported["items"][0]["required_material_kg"] == 2.46
+
+
 def test_engineering_can_edit_and_delete_unlocked_orders(client):
     client.post("/api/injection", json=sample_order_payload("BP-EDIT-001"))
 

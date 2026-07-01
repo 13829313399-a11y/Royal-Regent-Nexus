@@ -4,12 +4,14 @@ import {
   Archive,
   ArrowLeft,
   CheckCircle2,
+  Download,
   Play,
   Plus,
   RotateCcw,
   Save,
   Send,
   ShieldCheck,
+  Upload,
   XCircle,
 } from '@lucide/vue'
 import { useRoute } from 'vue-router'
@@ -48,6 +50,7 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import { useAppStore } from '@/stores/app'
 import {
+  MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
   type InventoryBatchResponse,
   type InventoryMovementResponse,
@@ -94,6 +97,8 @@ const activeTab = ref<RoleTabId>('engineering')
 const rejectReason = ref('资料不齐，请补充用料或交期说明。')
 const supervisorPin = ref('')
 const managerPin = ref('')
+const excelFileInput = ref<HTMLInputElement | null>(null)
+const excelImportOrderId = ref('')
 const productionProblem = ref('现场反馈：请工程确认色粉比例。')
 const actionMessage = ref('')
 const activeReportTab = ref<'materials' | 'injection' | 'total'>('materials')
@@ -439,6 +444,62 @@ async function syncCurrentMockToApi() {
   }
   catch (error) {
     actionMessage.value = `同步失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function exportCurrentOrderExcel() {
+  if (!apiRecord.value) {
+    actionMessage.value = '当前为前端 mock 数据，不能导出后端 Excel。'
+    return
+  }
+
+  try {
+    const workbook = await moldingSampleApi.exportOrderExcel(activeOrder.value.id)
+    const blob = new Blob([workbook], { type: MOLDING_SAMPLE_XLSX_MIME })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${activeOrder.value.id}-啤办单.xlsx`
+    link.click()
+    URL.revokeObjectURL(url)
+    actionMessage.value = '当前啤办单 Excel 已导出。'
+  }
+  catch (error) {
+    actionMessage.value = `导出 Excel 失败：${getApiErrorMessage(error)}`
+  }
+}
+
+function openExcelImportPicker() {
+  if (apiState.value === 'fallback') {
+    actionMessage.value = '当前为前端 mock 数据，不能导入后端 Excel。'
+    return
+  }
+
+  excelFileInput.value?.click()
+}
+
+async function importMoldingSampleExcel(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) {
+    return
+  }
+
+  try {
+    const workbook = await file.arrayBuffer()
+    const imported = await moldingSampleApi.importOrderExcel(workbook, {
+      order_id: excelImportOrderId.value.trim() || undefined,
+    })
+    await loadApiData()
+    setApiRecord(imported)
+    excelImportOrderId.value = ''
+    actionMessage.value = `已从 Excel 导入啤办单 ${imported.order.id}。`
+  }
+  catch (error) {
+    actionMessage.value = `导入 Excel 失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    input.value = ''
   }
 }
 
@@ -1195,6 +1256,13 @@ watchEffect(() => {
           <span>{{ apiMessage }}</span>
         </div>
         <div class="flex flex-wrap gap-2">
+          <input
+            ref="excelFileInput"
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            class="hidden"
+            @change="importMoldingSampleExcel"
+          >
           <button
             type="button"
             class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
@@ -1212,6 +1280,30 @@ watchEffect(() => {
           >
             <Save class="size-4" aria-hidden="true" />
             同步当前示例
+          </button>
+          <button
+            type="button"
+            :disabled="!apiRecord"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-white/60 disabled:text-slate-400"
+            @click="exportCurrentOrderExcel"
+          >
+            <Download class="size-4" aria-hidden="true" />
+            导出 Excel
+          </button>
+          <input
+            v-model="excelImportOrderId"
+            type="text"
+            placeholder="导入新单ID"
+            class="h-9 w-36 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
+          >
+          <button
+            type="button"
+            :disabled="apiState === 'fallback'"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white/60 disabled:text-slate-400"
+            @click="openExcelImportPicker"
+          >
+            <Upload class="size-4" aria-hidden="true" />
+            导入 Excel
           </button>
         </div>
       </div>

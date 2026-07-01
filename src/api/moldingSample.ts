@@ -8,12 +8,14 @@ import type {
 import type { MoldingSampleMaterialPrice } from '../lib/moldingSampleBusiness.js'
 
 export interface HttpLikeClient {
-  get<T = unknown>(url: string): Promise<{ data: T }>
-  post<T = unknown>(url: string, data?: unknown): Promise<{ data: T }>
+  get<T = unknown>(url: string, config?: unknown): Promise<{ data: T }>
+  post<T = unknown>(url: string, data?: unknown, config?: unknown): Promise<{ data: T }>
   put<T = unknown>(url: string, data?: unknown): Promise<{ data: T }>
   patch<T = unknown>(url: string, data?: unknown): Promise<{ data: T }>
   delete<T = unknown>(url: string): Promise<{ data: T }>
 }
+
+export const MOLDING_SAMPLE_XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 export type MoldingSampleOrderDraft = Partial<MoldingSampleOrder>
   & Pick<MoldingSampleOrder, 'id' | 'product_name' | 'client_name' | 'date' | 'workshop' | 'supervisor' | 'eng_name'>
@@ -35,6 +37,10 @@ export interface MoldingSampleDeleteRequest {
   actor_name: string
   actor_role: MoldingSampleRole
   pin?: string
+}
+
+export interface MoldingSampleExcelImportOptions {
+  order_id?: string
 }
 
 export interface MoldingSampleDetailResponse {
@@ -231,6 +237,29 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
         params.set('pin', payload.pin)
       }
       const response = await client.delete(`/injection/${orderId}?${params.toString()}`)
+      return response.data
+    },
+    async exportOrderExcel(orderId: string) {
+      const response = await client.get<ArrayBuffer>(`/injection/${orderId}/export-excel`, {
+        responseType: 'arraybuffer',
+      })
+      return response.data
+    },
+    async importOrderExcel(workbook: ArrayBuffer, options: MoldingSampleExcelImportOptions = {}) {
+      const params = new URLSearchParams()
+      if (options.order_id) {
+        params.set('order_id', options.order_id)
+      }
+      const query = params.toString()
+      const response = await client.post<MoldingSampleDetailResponse>(
+        query ? `/injection/import-excel?${query}` : '/injection/import-excel',
+        workbook,
+        {
+          headers: {
+            'content-type': MOLDING_SAMPLE_XLSX_MIME,
+          },
+        },
+      )
       return response.data
     },
     async updateStatus(orderId: string, payload: MoldingSampleStatusRequest) {

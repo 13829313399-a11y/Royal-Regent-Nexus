@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict'
 import { createMoldingSampleApi } from '../moldingSample.js'
 
-const calls: Array<{ method: string, url: string, data?: unknown }> = []
+const calls: Array<{ method: string, url: string, data?: unknown, config?: unknown }> = []
 
 const client = {
-  async get(url: string) {
-    calls.push({ method: 'get', url })
+  async get(url: string, config?: unknown) {
+    calls.push({ method: 'get', url, config })
     return { data: { url } }
   },
-  async post(url: string, data?: unknown) {
-    calls.push({ method: 'post', url, data })
+  async post(url: string, data?: unknown, config?: unknown) {
+    calls.push({ method: 'post', url, data, config })
     return { data: { url, data } }
   },
   async patch(url: string, data?: unknown) {
@@ -71,6 +71,10 @@ await api.deleteOrder('BP-1', {
   actor_name: '肖科',
   actor_role: '工程部',
 })
+
+const importBuffer = new ArrayBuffer(4)
+await api.exportOrderExcel('BP-1')
+await api.importOrderExcel(importBuffer, { order_id: 'BP-2' })
 
 await api.verifyPin({
   name: '王经理',
@@ -149,6 +153,8 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'patch /injection/BP-1/status',
   'put /injection/BP-1',
   'delete /injection/BP-1?actor_name=%E8%82%96%E7%A7%91&actor_role=%E5%B7%A5%E7%A8%8B%E9%83%A8',
+  'get /injection/BP-1/export-excel',
+  'post /injection/import-excel?order_id=BP-2',
   'post /verify-pin',
   'post /change-pin',
   'post /reset-supervisor-pin',
@@ -184,6 +190,7 @@ assert.deepEqual(calls.find((call) => call.method === 'put' && call.url === '/in
   },
   items: [{ id: 'BP-1-001', mold_name: '左右枪身' }],
 })
+assert.equal(calls.find((call) => call.url === '/injection/import-excel?order_id=BP-2')?.data, importBuffer)
 assert.deepEqual(calls.find((call) => call.url === '/manager-update-prices')?.data, {
   prices: [{ material: 'HIPS 425', unit_price: 6, notes: '新经理价' }],
   rmb_to_hkd_rate: 1.1,
