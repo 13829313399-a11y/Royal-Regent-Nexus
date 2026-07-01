@@ -123,6 +123,14 @@ interface ImportedOrderPreviewRow {
   warnings: string[]
 }
 
+interface PendingOrderMachineRow {
+  orderNo: string
+  moldCode: string
+  machineAdvice: string
+  issue: string
+  tone: ImportTone
+}
+
 const expectedImportFields: ExpectedImportField[] = [
   { key: 'orderNo', label: '订单号', required: true, aliases: ['订单号', '订单编号', '单号', '工单号', '生产单号', '排单号', 'orderNo', 'order no'] },
   { key: 'customer', label: '客户', required: false, aliases: ['客户', '客户名称', '客人', 'customer'] },
@@ -147,6 +155,7 @@ const importedSheetName = ref('')
 const importHeaders = ref<string[]>([])
 const importedRows = ref<ImportedOrderPreviewRow[]>([])
 const importErrorMessage = ref('')
+const selectedPendingOrderMachines = ref<Record<string, string>>({})
 
 const importPreviewRows = computed(() => importedRows.value.slice(0, 8))
 const importProblemRows = computed(() =>
@@ -536,6 +545,52 @@ const clearImportedOrderPreview = () => {
 const openImportFilePicker = () => {
   importFileInput.value?.click()
 }
+
+const getPendingOrderMachineKey = (row: Pick<PendingOrderMachineRow, 'orderNo' | 'moldCode'>) =>
+  `${row.orderNo}::${row.moldCode}`
+
+const splitMachineOptions = (value = '') =>
+  value
+    .split('/')
+    .map((item) => item.trim())
+    .filter((item) =>
+      item
+      && !['待确认', '待系统推荐', '待补备选机台', '待补机台映射'].includes(item)
+      && !item.includes('待补'),
+    )
+
+const getPendingOrderMachineOptions = (row: PendingOrderMachineRow) => {
+  const mapping = injectionMoldMachineMappingRows.value.find((item) => item.moldCode === row.moldCode)
+  const options = [
+    selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)],
+    row.machineAdvice,
+    mapping?.recommendedMachine,
+    mapping?.backupMachine,
+  ].flatMap((item) => splitMachineOptions(item))
+
+  return [...new Set(options)]
+}
+
+const getSelectedPendingOrderMachine = (row: PendingOrderMachineRow) => {
+  const key = getPendingOrderMachineKey(row)
+  const options = getPendingOrderMachineOptions(row)
+
+  return selectedPendingOrderMachines.value[key] || options[0] || row.machineAdvice || '待确认'
+}
+
+const handlePendingOrderMachineChange = (row: PendingOrderMachineRow, event: Event) => {
+  const target = event.target as HTMLSelectElement
+  selectedPendingOrderMachines.value = {
+    ...selectedPendingOrderMachines.value,
+    [getPendingOrderMachineKey(row)]: target.value,
+  }
+}
+
+const getPendingOrderStatusLabel = (row: PendingOrderMachineRow) =>
+  selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)] ? '已选机' : row.issue
+
+const getPendingOrderStatusTone = (row: PendingOrderMachineRow): ImportTone =>
+  selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)] ? 'green' : row.tone
 </script>
 
 <template>
@@ -730,7 +785,7 @@ const openImportFilePicker = () => {
                     <th class="pb-3 pr-4 font-medium">订单</th>
                     <th class="pb-3 pr-4 font-medium">产品 / 模具</th>
                     <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
-                    <th class="pb-3 pr-4 font-medium">推荐机型</th>
+                    <th class="pb-3 pr-4 font-medium">F列推荐机型</th>
                     <th class="pb-3 pr-4 font-medium">数量 / 交期</th>
                     <th class="pb-3 font-medium">状态</th>
                   </tr>
@@ -870,7 +925,7 @@ const openImportFilePicker = () => {
                 <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
                 <th class="pb-3 pr-4 font-medium">待排数量</th>
                 <th class="pb-3 pr-4 font-medium">交期</th>
-                <th class="pb-3 pr-4 font-medium">机台</th>
+                <th class="pb-3 pr-4 font-medium">系统推荐</th>
                 <th class="pb-3 font-medium">状态</th>
               </tr>
             </thead>
@@ -892,9 +947,33 @@ const openImportFilePicker = () => {
                 </td>
                 <td class="py-4 pr-4 text-slate-600">{{ row.quantity }}</td>
                 <td class="py-4 pr-4 text-slate-600">{{ row.dueDate }}</td>
-                <td class="py-4 pr-4 text-slate-600">{{ row.machineAdvice }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <select
+                    v-if="getPendingOrderMachineOptions(row).length > 0"
+                    class="min-w-36 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                    :value="getSelectedPendingOrderMachine(row)"
+                    @change="handlePendingOrderMachineChange(row, $event)"
+                  >
+                    <option
+                      v-for="machine in getPendingOrderMachineOptions(row)"
+                      :key="`${row.orderNo}-${row.moldCode}-${machine}`"
+                      :value="machine"
+                    >
+                      {{ machine }}
+                    </option>
+                  </select>
+                  <div
+                    v-else
+                    class="inline-flex rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700"
+                  >
+                    待补规则
+                  </div>
+                  <p class="mt-1 text-xs text-slate-500">
+                    {{ selectedPendingOrderMachines[getPendingOrderMachineKey(row)] ? '人工已确认' : '系统推荐，可改选' }}
+                  </p>
+                </td>
                 <td class="py-4">
-                  <StatusPill :label="row.issue" :tone="row.tone" compact />
+                  <StatusPill :label="getPendingOrderStatusLabel(row)" :tone="getPendingOrderStatusTone(row)" compact />
                 </td>
               </tr>
             </tbody>

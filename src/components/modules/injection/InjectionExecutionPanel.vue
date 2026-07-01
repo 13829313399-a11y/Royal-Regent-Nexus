@@ -76,7 +76,7 @@ const {
     <div class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
       <SectionPanel
         title="待排订单池"
-        subtitle="先看真实排产输入，不是直接看结果。这里优先确认单号、模具、颜色、料型、数量、交期和建议机台。"
+        subtitle="先看真实排产输入，不是直接看结果。这里优先确认单号、模具、颜色、料型、数量、交期和系统推荐机台。"
       >
         <div class="mb-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
           这一屏现在已经把执行中心和数据中心接起来了。订单字段仍是标准化 mock，但已经按真实排机前会核对的字段结构来展示。
@@ -91,7 +91,7 @@ const {
                 <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
                 <th class="pb-3 pr-4 font-medium">数量 / 啤重</th>
                 <th class="pb-3 pr-4 font-medium">交期 / 来源</th>
-                <th class="pb-3 pr-4 font-medium">建议机台</th>
+                <th class="pb-3 pr-4 font-medium">系统推荐</th>
                 <th class="pb-3 font-medium">异常</th>
               </tr>
             </thead>

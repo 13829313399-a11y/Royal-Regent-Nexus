@@ -259,7 +259,7 @@ const huaxingDerivedOrderAnalysis = huaxingNormalizedOrderRows.map((row) => {
     : `${row.machineModel || '待补机型'} / ${row.material || '待补料型'}`
 
   const reasonParts = [
-    assignedMachine ? `沿用日排表机台 ${assignedMachine}` : '原表未指定机台，转为候选匹配',
+    assignedMachine ? `沿用日排表机台 ${assignedMachine}` : '按 F 列推荐机型转为候选匹配',
     historicalMachines.length > 0 ? `同模历史 ${historicalMachines.slice(0, 2).join(' / ')}` : '暂无同模历史机台命中',
     machineBand ? `按 ${row.machineModel} 落入 ${machineBand.label} 候选池` : '缺机型区间，采用料型与历史优先',
   ]
@@ -269,7 +269,7 @@ const huaxingDerivedOrderAnalysis = huaxingNormalizedOrderRows.map((row) => {
   }
 
   const blockerParts = [
-    !assignedMachine ? '原表未挂机台' : '',
+    !assignedMachine ? '系统推荐待计划确认' : '',
     historicalMachines.length === 0 ? '缺同模历史命中' : '',
     row.remark.includes('转') ? `涉及${row.remark}` : '',
     rankedCandidates.length === 0 ? '未匹配到可用设备' : '',
@@ -312,11 +312,15 @@ const huaxingPrioritizedOrderAnalysis = [...huaxingDerivedOrderAnalysis].sort((l
   return rightShortage - leftShortage
 })
 
+const huaxingOrderAnalysisMap = new Map(
+  huaxingDerivedOrderAnalysis.map((row) => [`${row.orderNo}::${row.moldCode}`, row] as const),
+)
+
 const injectionOverviewMetrics = [
   {
     label: '待排订单',
     value: `${huaxingOrderImportSummary.pendingOrderCount}`,
-    detail: `交期风险 ${huaxingOrderImportSummary.overdueCount} · 待分机 ${huaxingOrderImportSummary.missingMachineCount}`,
+    detail: `交期风险 ${huaxingOrderImportSummary.overdueCount} · 系统推荐待确认 ${huaxingOrderImportSummary.missingMachineCount}`,
     tone: 'amber',
   },
   {
@@ -329,7 +333,7 @@ const injectionOverviewMetrics = [
   {
     label: '排产异常',
     value: `${huaxingOrderImportSummary.overdueCount + huaxingOrderImportSummary.missingMachineCount}`,
-    detail: `交期风险 ${huaxingOrderImportSummary.overdueCount} · 机台待确认 ${huaxingOrderImportSummary.missingMachineCount}`,
+    detail: `交期风险 ${huaxingOrderImportSummary.overdueCount} · 推荐机台待确认 ${huaxingOrderImportSummary.missingMachineCount}`,
     tone: 'red',
   },
 ] as const
@@ -439,7 +443,7 @@ const injectionDataSourceStatus = [
     freshness: `${huaxingOrderImportSummary.importedAt} 导入`,
     status: '正常',
     statusTone: 'green',
-    summary: `华兴日排版表已接入 ${huaxingOrderImportSummary.pendingOrderCount} 条待排订单，当前交期风险 ${huaxingOrderImportSummary.overdueCount} 条，待分机 ${huaxingOrderImportSummary.missingMachineCount} 条。`,
+    summary: `华兴日排版表已接入 ${huaxingOrderImportSummary.pendingOrderCount} 条待排订单，当前交期风险 ${huaxingOrderImportSummary.overdueCount} 条，系统推荐待确认 ${huaxingOrderImportSummary.missingMachineCount} 条。`,
   },
   {
     name: '机台主数据',
@@ -482,7 +486,7 @@ const injectionDataCenterDatasets = [
     summary: `已导入华兴日排版表待排订单 ${huaxingOrderImportSummary.pendingOrderCount} 条，主要料型为 ${topHuaxingOrderMaterials}。`,
     issues: [
       `交期风险 ${huaxingOrderImportSummary.overdueCount} 条`,
-      `待分机 ${huaxingOrderImportSummary.missingMachineCount} 条`,
+      `系统推荐待确认 ${huaxingOrderImportSummary.missingMachineCount} 条`,
       `高频颜色 ${topHuaxingOrderColors}`,
     ],
   },
@@ -528,7 +532,7 @@ const injectionOrderSnapshotRows = huaxingPendingOrderImportDetailRows
     material: row.material,
     quantity: row.shortageQty,
     due: row.deliveryEnd,
-    state: row.overdue ? '交期风险' : row.machine ? '待排' : '待分机',
+    state: row.overdue ? '交期风险' : row.machine ? '待排' : '系统推荐待确认',
     tone: row.overdue ? 'red' : row.machine ? 'amber' : 'blue',
   })) satisfies InjectionModuleData['orderSnapshotRows']
 
@@ -668,10 +672,10 @@ const huaxingShiftReportBaseRows = huaxingPrioritizedOrderAnalysis
 
 const injectionManualActionRows = [
   huaxingPrioritizedOrderAnalysis.find((row) => !row.normalizedMachine) && {
-    title: '补待分机订单',
-    reason: `仍有 ${huaxingOrderImportSummary.missingMachineCount} 单原表未挂机台，自动排机只能给候选不能直接下发。`,
+    title: '确认系统推荐订单',
+    reason: `仍有 ${huaxingOrderImportSummary.missingMachineCount} 单由 F 列推荐机型自动生成候选机台，系统可排候选，但下发前仍建议计划员批量确认。`,
     owner: '计划员',
-    action: `先处理 ${huaxingPrioritizedOrderAnalysis.find((row) => !row.normalizedMachine)?.orderNo ?? '首条待分机单'} 的锁机确认，再批量下发。`,
+    action: `先处理 ${huaxingPrioritizedOrderAnalysis.find((row) => !row.normalizedMachine)?.orderNo ?? '首条待确认单'} 的候选确认，再批量下发。`,
     tone: 'red' as Tone,
   },
   huaxingPrioritizedOrderAnalysis.find((row) => row.remark.includes('转')) && {
@@ -938,9 +942,9 @@ const injectionPendingOrderValidationRules = [
     tone: 'red',
   },
   {
-    label: '待分机',
+    label: '推荐待确认',
     hit: `${huaxingOrderImportSummary.missingMachineCount} 单`,
-    detail: '日排版表中当前未挂机台的订单，需要先补机台候选池或人工锁机。',
+    detail: '日排版表没有要求人工填具体机台，系统会按 F 列推荐机型、料型和设备台账生成候选机台，下发前由计划员批量确认。',
     tone: 'amber',
   },
   {
@@ -1028,7 +1032,7 @@ const injectionShiftReportChecklistItems = [
     title: '夜班停机原因归档',
     owner: '生产主管',
     status: redDowntimeCount > 0 ? '待补原因' : '已完成',
-    detail: `停机 / 调机异常 ${redDowntimeCount} 台，主要集中在待分机或转模衔接订单。`,
+    detail: `停机 / 调机异常 ${redDowntimeCount} 台，主要集中在系统推荐待确认或转模衔接订单。`,
     tone: redDowntimeCount > 0 ? 'red' : 'green',
   },
   {
@@ -1080,7 +1084,7 @@ const injectionExecutionQueueRows = huaxingPrioritizedOrderAnalysis
             ? '待刷新'
             : '待核对'
       : !row.normalizedMachine
-          ? '待分机'
+          ? '系统推荐待确认'
           : row.overdue
               ? '交期优先'
               : row.keyOrder
@@ -1114,7 +1118,7 @@ const injectionExecutionScheduleRows = huaxingPrioritizedOrderAnalysis
           ? '转模 / 转色后执行'
           : row.normalizedMachine
               ? '沿用当前机台'
-              : '待确认后下发'
+              : '系统推荐待确认后下发'
     const dependency = writebackState
       ? `${row.blocker} · ${writebackState.warehouseStatus} / ${writebackState.erpStatus} / ${writebackState.schedulerStatus}`
       : row.blocker
@@ -1135,9 +1139,25 @@ const injectionExecutionScheduleRows = huaxingPrioritizedOrderAnalysis
 
 const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) => {
   const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
+  const analysis = huaxingOrderAnalysisMap.get(`${row.orderNo}::${row.moldCode}`)
+  const machineAdvice = analysis?.recommendedMachine ?? row.machineAdvice
 
   if (!writebackState) {
-    return { ...row }
+    const issue = analysis
+      ? analysis.tone === 'green'
+        ? '已推荐'
+        : analysis.tone === 'amber'
+            ? '候选待确认'
+            : '需补规则'
+      : row.issue
+
+    return {
+      ...row,
+      machineAdvice,
+      issue,
+      planner: analysis?.machineModel ? `${row.planner} / ${analysis.machineModel}` : row.planner,
+      tone: analysis?.tone ?? row.tone,
+    }
   }
 
   const issue = writebackState.tone === 'green'
@@ -1149,6 +1169,7 @@ const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) 
   return {
     ...row,
     quantity: writebackState.shortageAfter,
+    machineAdvice,
     issue,
     planner: `${row.planner} / ${writebackState.deliveryCode}`,
     tone: writebackState.tone,
