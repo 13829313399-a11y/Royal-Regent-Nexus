@@ -10,17 +10,24 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.tmp/
+.tmp-tests/
 *.local
 
 # Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 .mypy_cache/
 .ruff_cache/
 .venv/
 venv/
 backend/.venv/
+backend/.pytest-tmp/
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/*.sqlite3
 .env
 .env.*
 !.env.example
