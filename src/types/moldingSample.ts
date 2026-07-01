@@ -94,8 +94,12 @@ export interface MoldingSampleRequisition {
   requested_weight_kg: number | null
   applicant: string
   notes: string
+  inventory_batch_id: string
+  inventory_batch_no: string
   status: MoldingSampleRequisitionStatus
   issued_at: string
+  created_at: string
+  updated_at: string
 }
 
 export type MoldingSampleProblemStatus = '待处理' | '已解决'

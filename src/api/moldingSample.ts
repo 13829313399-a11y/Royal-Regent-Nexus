@@ -103,6 +103,7 @@ export interface RequisitionCreateRequest {
 export interface RequisitionStatusRequest {
   status: '待出库' | '已出库'
   issued_at?: string
+  inventory_batch_id?: string
 }
 
 export interface RequisitionResponse {
@@ -115,8 +116,28 @@ export interface RequisitionResponse {
   requested_weight_kg: number
   applicant: string
   notes: string
+  inventory_batch_id: string
+  inventory_batch_no: string
   status: '待出库' | '已出库'
   issued_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface InventoryBatchCreateRequest {
+  material: string
+  batch_no: string
+  location?: string
+  initial_weight_kg: number
+}
+
+export interface InventoryBatchResponse {
+  id: string
+  material: string
+  batch_no: string
+  location: string
+  initial_weight_kg: number
+  available_weight_kg: number
   created_at: string
   updated_at: string
 }
@@ -191,6 +212,15 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
     async listRequisitions(orderId?: string) {
       const url = orderId ? `/requisitions?${new URLSearchParams({ order_id: orderId }).toString()}` : '/requisitions'
       const response = await client.get<RequisitionResponse[]>(url)
+      return response.data
+    },
+    async listInventoryBatches(material?: string) {
+      const url = material ? `/inventory-batches?${new URLSearchParams({ material }).toString()}` : '/inventory-batches'
+      const response = await client.get<InventoryBatchResponse[]>(url)
+      return response.data
+    },
+    async createInventoryBatch(payload: InventoryBatchCreateRequest) {
+      const response = await client.post<InventoryBatchResponse>('/inventory-batches', payload)
       return response.data
     },
     async createRequisition(payload: RequisitionCreateRequest) {

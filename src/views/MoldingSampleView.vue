@@ -40,6 +40,7 @@ import type {
   MoldingSampleAuditLog,
   MoldingSampleItem,
   MoldingSampleOrder,
+  MoldingSampleRequisition,
   MoldingSampleRole,
   MoldingSampleStatus,
 } from '@/types/moldingSample'
@@ -48,6 +49,7 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import { useAppStore } from '@/stores/app'
 import {
   moldingSampleApi,
+  type InventoryBatchResponse,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
   type RequisitionResponse,
@@ -101,6 +103,14 @@ const pricingErrors = ref<string[]>([])
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiRecord = ref<MoldingSampleDetailResponse | null>(null)
 const apiRequisitions = ref<RequisitionResponse[]>([])
+const apiInventoryBatches = ref<InventoryBatchResponse[]>([])
+const selectedInventoryBatchIds = ref<Record<string, string>>({})
+const inventoryBatchDraft = ref({
+  material: '',
+  batch_no: '',
+  location: '试啤仓',
+  initial_weight_kg: '5',
+})
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
 const apiMessage = ref('正在检查后端 API...')
 
@@ -188,6 +198,8 @@ const activeProblems = computed(() => [
   ...(problemOverrides.value[activeOrder.value.id] ?? []),
 ])
 const activeRequisitions = computed(() => activeRecord.value.requisitions)
+const activeInventoryBatches = computed(() => apiInventoryBatches.value)
+const warehouseMaterials = computed(() => Array.from(new Set(activeItems.value.map((item) => item.material).filter(Boolean))))
 const isExternalOrder = computed(() => isExternalMoldingSampleOrder(activeOrder.value))
 const completionGate = computed(() => buildCompletionGate(activeOrder.value, activeItems.value))
 const reportSummary = computed(() => buildMoldingSampleReportSummary(activeOrder.value, activeItems.value))
@@ -221,6 +233,26 @@ const factoryQueue = computed(() =>
     }
   }),
 )
+
+function inventoryBatchesForMaterial(material: string) {
+  return activeInventoryBatches.value.filter((batch) => batch.material === material)
+}
+
+function defaultInventoryBatchId(requisition: MoldingSampleRequisition) {
+  const selectedBatchId = selectedInventoryBatchIds.value[requisition.id]
+  if (selectedBatchId) {
+    return selectedBatchId
+  }
+
+  return inventoryBatchesForMaterial(requisition.material)
+    .find((batch) => batch.available_weight_kg >= (requisition.requested_weight_kg ?? 0))?.id ?? ''
+}
+
+function syncInventoryBatchDraftMaterial() {
+  if (!inventoryBatchDraft.value.material) {
+    inventoryBatchDraft.value.material = activeItems.value[0]?.material ?? ''
+  }
+}
 
 const summaryCards = computed<SummaryCard[]>(() => [
   {
@@ -293,6 +325,34 @@ async function refreshActiveRequisitions() {
   apiRequisitions.value = await moldingSampleApi.listRequisitions(apiRecord.value.order.id)
 }
 
+async function refreshInventoryBatches() {
+  if (!apiRecord.value) {
+    apiInventoryBatches.value = []
+    selectedInventoryBatchIds.value = {}
+    return
+  }
+
+  apiInventoryBatches.value = await moldingSampleApi.listInventoryBatches()
+  syncInventoryBatchDraftMaterial()
+}
+
+async function refreshWarehouseData() {
+  if (!apiRecord.value) {
+    apiRequisitions.value = []
+    apiInventoryBatches.value = []
+    selectedInventoryBatchIds.value = {}
+    return
+  }
+
+  const [requisitions, inventoryBatches] = await Promise.all([
+    moldingSampleApi.listRequisitions(apiRecord.value.order.id),
+    moldingSampleApi.listInventoryBatches(),
+  ])
+  apiRequisitions.value = requisitions
+  apiInventoryBatches.value = inventoryBatches
+  syncInventoryBatchDraftMaterial()
+}
+
 async function loadApiData() {
   apiState.value = 'checking'
   apiMessage.value = '正在检查后端 API...'
@@ -310,7 +370,7 @@ async function loadApiData() {
 
     const selectedRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value) ?? records[0] ?? null
     setApiRecord(selectedRecord)
-    await refreshActiveRequisitions()
+    await refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
     apiMessage.value = selectedRecord
       ? '已连接后端 API，当前操作会写入数据库。'
@@ -319,6 +379,8 @@ async function loadApiData() {
   catch (error) {
     apiRecords.value = []
     apiRequisitions.value = []
+    apiInventoryBatches.value = []
+    selectedInventoryBatchIds.value = {}
     setApiRecord(null)
     apiState.value = 'fallback'
     apiMessage.value = `后端 API 暂不可用，当前使用前端 mock：${getApiErrorMessage(error)}`
@@ -715,7 +777,7 @@ async function createRequisitionsFromItems() {
       })),
     })
     setApiRecord(updated)
-    await refreshActiveRequisitions()
+    await refreshWarehouseData()
     actionMessage.value = `已生成 ${created.length} 张后端领料单。`
   }
   catch (error) {
@@ -723,18 +785,54 @@ async function createRequisitionsFromItems() {
   }
 }
 
-async function markRequisitionIssued(requisitionId: string) {
+async function createInventoryBatchFromDraft() {
+  if (!apiRecord.value) {
+    actionMessage.value = '当前为前端 mock 数据，不能新增库存批次。'
+    return
+  }
+
+  const initialWeight = Number(inventoryBatchDraft.value.initial_weight_kg)
+  if (!inventoryBatchDraft.value.material || !inventoryBatchDraft.value.batch_no || !Number.isFinite(initialWeight) || initialWeight <= 0) {
+    actionMessage.value = '请补齐原料、批次号和有效库存重量。'
+    return
+  }
+
+  try {
+    await moldingSampleApi.createInventoryBatch({
+      material: inventoryBatchDraft.value.material,
+      batch_no: inventoryBatchDraft.value.batch_no,
+      location: inventoryBatchDraft.value.location,
+      initial_weight_kg: initialWeight,
+    })
+    inventoryBatchDraft.value.batch_no = ''
+    inventoryBatchDraft.value.initial_weight_kg = '5'
+    await refreshInventoryBatches()
+    actionMessage.value = '库存批次已新增。'
+  }
+  catch (error) {
+    actionMessage.value = `新增库存批次失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function markRequisitionIssued(requisition: MoldingSampleRequisition) {
   if (!apiRecord.value) {
     actionMessage.value = '当前为前端 mock 数据，不能更新后端领料单。'
     return
   }
 
+  const inventoryBatchId = defaultInventoryBatchId(requisition)
+  if (!inventoryBatchId) {
+    actionMessage.value = '请选择可用库存批次后再出库。'
+    return
+  }
+
   try {
-    await moldingSampleApi.updateRequisitionStatus(requisitionId, {
+    await moldingSampleApi.updateRequisitionStatus(requisition.id, {
       status: '已出库',
       issued_at: `${today} 15:30`,
+      inventory_batch_id: inventoryBatchId,
     })
-    await refreshActiveRequisitions()
+    await refreshWarehouseData()
     actionMessage.value = '领料单已标记出库。'
   }
   catch (error) {
@@ -754,7 +852,7 @@ async function deleteRequisitionRow(requisitionId: string) {
 
   try {
     await moldingSampleApi.deleteRequisition(requisitionId)
-    await refreshActiveRequisitions()
+    await refreshWarehouseData()
     actionMessage.value = '领料单已删除。'
   }
   catch (error) {
@@ -890,7 +988,7 @@ watch(selectedFactoryId, () => {
   if (apiRecords.value.length) {
     const selectedRecord = apiRecords.value.find((record) => record.order.factory_id === selectedFactoryId.value) ?? null
     setApiRecord(selectedRecord)
-    void refreshActiveRequisitions()
+    void refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
     apiMessage.value = selectedRecord ? '已连接后端 API，当前操作会写入数据库。' : '当前厂区暂无后端单据，可同步示例单据。'
   }
@@ -1349,8 +1447,97 @@ watchEffect(() => {
               </div>
             </div>
 
+            <div class="mb-4 grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <div class="grid gap-3">
+                  <label class="text-xs font-semibold text-slate-500">
+                    原料
+                    <select
+                      v-model="inventoryBatchDraft.material"
+                      :disabled="!apiRecord"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <option value="">选择原料</option>
+                      <option v-for="material in warehouseMaterials" :key="material" :value="material">
+                        {{ material }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    批次号
+                    <input
+                      v-model="inventoryBatchDraft.batch_no"
+                      :disabled="!apiRecord"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                      placeholder="HIPS-20260701-A"
+                    >
+                  </label>
+                  <div class="grid grid-cols-2 gap-3">
+                    <label class="text-xs font-semibold text-slate-500">
+                      仓位
+                      <input
+                        v-model="inventoryBatchDraft.location"
+                        :disabled="!apiRecord"
+                        class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                      >
+                    </label>
+                    <label class="text-xs font-semibold text-slate-500">
+                      初始KG
+                      <input
+                        v-model="inventoryBatchDraft.initial_weight_kg"
+                        :disabled="!apiRecord"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-right text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                      >
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    :disabled="!apiRecord"
+                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                    @click="createInventoryBatchFromDraft"
+                  >
+                    <Plus class="size-4" aria-hidden="true" />
+                    新增批次
+                  </button>
+                </div>
+              </div>
+
+              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table class="min-w-[720px] divide-y divide-slate-200 text-sm">
+                  <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                    <tr>
+                      <th class="px-4 py-3">原料</th>
+                      <th class="px-4 py-3">批次号</th>
+                      <th class="px-4 py-3">仓位</th>
+                      <th class="px-4 py-3 text-right">初始KG</th>
+                      <th class="px-4 py-3 text-right">可用KG</th>
+                    </tr>
+                  </thead>
+                  <tbody v-if="activeInventoryBatches.length" class="divide-y divide-slate-100">
+                    <tr v-for="batch in activeInventoryBatches" :key="batch.id">
+                      <td class="px-4 py-3 font-medium">{{ batch.material }}</td>
+                      <td class="px-4 py-3">{{ batch.batch_no }}</td>
+                      <td class="px-4 py-3">{{ batch.location || '未填' }}</td>
+                      <td class="px-4 py-3 text-right">{{ formatWeight(batch.initial_weight_kg) }}</td>
+                      <td class="px-4 py-3 text-right">{{ formatWeight(batch.available_weight_kg) }}</td>
+                    </tr>
+                  </tbody>
+                  <tbody v-else>
+                    <tr>
+                      <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">
+                        暂无库存批次。
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[960px] divide-y divide-slate-200 text-sm">
+              <table class="min-w-[1120px] divide-y divide-slate-200 text-sm">
                 <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                   <tr>
                     <th class="px-4 py-3">领料单号</th>
@@ -1359,6 +1546,7 @@ watchEffect(() => {
                     <th class="px-4 py-3">原料</th>
                     <th class="px-4 py-3 text-right">申请KG</th>
                     <th class="px-4 py-3">申请人</th>
+                    <th class="px-4 py-3">库存批次</th>
                     <th class="px-4 py-3">状态</th>
                     <th class="px-4 py-3">出库时间</th>
                     <th class="px-4 py-3 text-right">操作</th>
@@ -1373,6 +1561,28 @@ watchEffect(() => {
                     <td class="px-4 py-3 text-right">{{ formatWeight(requisition.requested_weight_kg) }}</td>
                     <td class="px-4 py-3">{{ requisition.applicant }}</td>
                     <td class="px-4 py-3">
+                      <span v-if="requisition.status === '已出库'" class="text-slate-700">
+                        {{ requisition.inventory_batch_no || '未记录' }}
+                      </span>
+                      <select
+                        v-else
+                        :value="defaultInventoryBatchId(requisition)"
+                        :disabled="!apiRecord"
+                        class="h-9 w-48 rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                        @change="selectedInventoryBatchIds = { ...selectedInventoryBatchIds, [requisition.id]: readInputValue($event) }"
+                      >
+                        <option value="">选择批次</option>
+                        <option
+                          v-for="batch in inventoryBatchesForMaterial(requisition.material)"
+                          :key="batch.id"
+                          :value="batch.id"
+                          :disabled="batch.available_weight_kg < (requisition.requested_weight_kg ?? 0)"
+                        >
+                          {{ batch.batch_no }} / {{ formatWeight(batch.available_weight_kg) }}KG
+                        </option>
+                      </select>
+                    </td>
+                    <td class="px-4 py-3">
                       <StatusPill
                         :label="requisition.status"
                         :tone="requisition.status === '已出库' ? 'green' : 'amber'"
@@ -1386,7 +1596,7 @@ watchEffect(() => {
                           type="button"
                           :disabled="requisition.status === '已出库' || !apiRecord"
                           class="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-200 px-2 text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                          @click="markRequisitionIssued(requisition.id)"
+                          @click="markRequisitionIssued(requisition)"
                         >
                           <CheckCircle2 class="size-3.5" aria-hidden="true" />
                           出库
@@ -1406,7 +1616,7 @@ watchEffect(() => {
                 </tbody>
                 <tbody v-else>
                   <tr>
-                    <td colspan="9" class="px-4 py-8 text-center text-sm text-slate-500">
+                    <td colspan="10" class="px-4 py-8 text-center text-sm text-slate-500">
                       暂无领料单，确认用料重量后可生成。
                     </td>
                   </tr>

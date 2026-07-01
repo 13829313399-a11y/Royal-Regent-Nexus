@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.molding_sample import (
+    InventoryBatchCreateRequest,
+    InventoryBatchOut,
     MaterialPricesResponse,
     MaterialPricesUpdateRequest,
     MoldingSampleCreateRequest,
@@ -21,6 +23,7 @@ from app.schemas.molding_sample import (
 )
 from app.services.molding_sample import (
     build_total_cost_summary,
+    create_inventory_batch,
     change_pin,
     create_order,
     create_requisition,
@@ -29,6 +32,7 @@ from app.services.molding_sample import (
     get_exchange_rate,
     get_prices,
     list_auth_roles,
+    list_inventory_batches,
     list_orders,
     list_requisitions,
     load_order,
@@ -130,6 +134,16 @@ def post_change_pin(payload: PinChangeRequest, db: Session = Depends(get_db)):
 @router.get("/api/requisitions", response_model=list[RequisitionOut])
 def get_requisitions(order_id: str | None = None, db: Session = Depends(get_db)):
     return list_requisitions(db, order_id=order_id)
+
+
+@router.get("/api/inventory-batches", response_model=list[InventoryBatchOut])
+def get_inventory_batches(material: str | None = None, db: Session = Depends(get_db)):
+    return list_inventory_batches(db, material=material)
+
+
+@router.post("/api/inventory-batches", response_model=InventoryBatchOut, status_code=status.HTTP_201_CREATED)
+def post_inventory_batch(payload: InventoryBatchCreateRequest, db: Session = Depends(get_db)):
+    return create_inventory_batch(db, payload)
 
 
 @router.post("/api/requisitions", response_model=RequisitionOut, status_code=status.HTTP_201_CREATED)

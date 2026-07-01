@@ -188,6 +188,7 @@ class RequisitionCreateRequest(BaseModel):
 class RequisitionStatusRequest(BaseModel):
     status: str
     issued_at: str = ""
+    inventory_batch_id: str = ""
 
 
 class RequisitionOut(BaseModel):
@@ -200,8 +201,30 @@ class RequisitionOut(BaseModel):
     requested_weight_kg: float
     applicant: str
     notes: str
+    inventory_batch_id: str
+    inventory_batch_no: str
     status: str
     issued_at: str
+    created_at: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryBatchCreateRequest(BaseModel):
+    material: str
+    batch_no: str
+    location: str = ""
+    initial_weight_kg: float
+
+
+class InventoryBatchOut(BaseModel):
+    id: str
+    material: str
+    batch_no: str
+    location: str
+    initial_weight_kg: float
+    available_weight_kg: float
     created_at: str
     updated_at: str
 

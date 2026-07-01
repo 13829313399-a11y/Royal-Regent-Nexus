@@ -525,3 +525,85 @@ def test_warehouse_requisition_rejects_duplicate_line(client):
     duplicate_response = client.post("/api/requisitions", json=payload)
     assert duplicate_response.status_code == 409
     assert duplicate_response.json()["detail"] == "该明细已生成领料单"
+
+
+def test_warehouse_inventory_batch_is_deducted_when_requisition_is_issued(client):
+    client.post("/api/injection", json=sample_order_payload("BP-STOCK-001"))
+
+    batch_response = client.post(
+        "/api/inventory-batches",
+        json={
+            "material": "HIPS 425",
+            "batch_no": "HIPS-20260701-A",
+            "location": "A-01",
+            "initial_weight_kg": 3,
+        },
+    )
+    assert batch_response.status_code == 201
+    batch = batch_response.json()
+    assert batch["available_weight_kg"] == 3
+
+    requisition_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-01",
+            "order_id": "BP-STOCK-001",
+            "material": "HIPS 425",
+            "requested_weight_kg": 2.46,
+            "applicant": "肖科",
+            "notes": "M-001 · 左右枪身",
+        },
+    )
+    assert requisition_response.status_code == 201
+    requisition = requisition_response.json()
+
+    issue_response = client.patch(
+        f"/api/requisitions/{requisition['id']}/status",
+        json={
+            "status": "已出库",
+            "issued_at": "2026-07-01 15:30",
+            "inventory_batch_id": batch["id"],
+        },
+    )
+    assert issue_response.status_code == 200
+    issued = issue_response.json()
+    assert issued["inventory_batch_id"] == batch["id"]
+    assert issued["inventory_batch_no"] == "HIPS-20260701-A"
+
+    batches_response = client.get("/api/inventory-batches", params={"material": "HIPS 425"})
+    assert batches_response.status_code == 200
+    batches = batches_response.json()
+    assert batches[0]["available_weight_kg"] == 0.54
+
+    short_batch_response = client.post(
+        "/api/inventory-batches",
+        json={
+            "material": "ABS 740",
+            "batch_no": "ABS-20260701-A",
+            "location": "A-02",
+            "initial_weight_kg": 0.5,
+        },
+    )
+    short_batch = short_batch_response.json()
+    short_requisition_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-01",
+            "order_id": "BP-STOCK-001",
+            "material": "ABS 740",
+            "requested_weight_kg": 1,
+            "applicant": "肖科",
+            "notes": "M-002 · 弹匣",
+        },
+    )
+    short_requisition = short_requisition_response.json()
+
+    blocked_response = client.patch(
+        f"/api/requisitions/{short_requisition['id']}/status",
+        json={
+            "status": "已出库",
+            "inventory_batch_id": short_batch["id"],
+        },
+    )
+    assert blocked_response.status_code == 400
+    assert blocked_response.json()["detail"] == "库存不足"

@@ -130,9 +130,24 @@ class MoldingSampleRequisition(Base):
     requested_weight_kg: Mapped[float] = mapped_column(Float)
     applicant: Mapped[str] = mapped_column(String(128), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    inventory_batch_id: Mapped[str] = mapped_column(String(96), default="")
+    inventory_batch_no: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(32), default="待出库", index=True)
     issued_at: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[str] = mapped_column(String(32), default="")
     updated_at: Mapped[str] = mapped_column(String(32), default="")
 
     order: Mapped[MoldingSampleOrder] = relationship(back_populates="requisitions")
+
+
+class MoldingSampleInventoryBatch(Base):
+    __tablename__ = "molding_sample_inventory_batches"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    material: Mapped[str] = mapped_column(String(255), index=True)
+    batch_no: Mapped[str] = mapped_column(String(128), index=True)
+    location: Mapped[str] = mapped_column(String(128), default="")
+    initial_weight_kg: Mapped[float] = mapped_column(Float)
+    available_weight_kg: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")

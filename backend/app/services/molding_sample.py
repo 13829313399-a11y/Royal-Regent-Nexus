@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.molding_sample import (
     MoldingSampleAuditLog,
     MoldingSampleAuthPin,
+    MoldingSampleInventoryBatch,
     MoldingSampleItem,
     MoldingSampleMaterialPrice,
     MoldingSampleOrder,
@@ -19,6 +20,7 @@ from app.models.molding_sample import (
     MoldingSampleSetting,
 )
 from app.schemas.molding_sample import (
+    InventoryBatchCreateRequest,
     MaterialPriceIn,
     MoldingSampleCreateRequest,
     MoldingSampleEditRequest,
@@ -67,6 +69,10 @@ def now_text() -> str:
 
 def round_money(value: float) -> float:
     return round(value + 1e-9, 2)
+
+
+def round_weight(value: float) -> float:
+    return round(value + 1e-9, 3)
 
 
 def hash_pin(pin: str, salt: str) -> str:
@@ -399,6 +405,49 @@ def delete_order(
     db.commit()
 
 
+def list_inventory_batches(db: Session, material: str | None = None) -> list[MoldingSampleInventoryBatch]:
+    statement = select(MoldingSampleInventoryBatch).order_by(
+        MoldingSampleInventoryBatch.material,
+        MoldingSampleInventoryBatch.batch_no,
+    )
+    if material:
+        statement = statement.where(MoldingSampleInventoryBatch.material == material.strip())
+
+    return list(db.scalars(statement).all())
+
+
+def create_inventory_batch(db: Session, payload: InventoryBatchCreateRequest) -> MoldingSampleInventoryBatch:
+    if payload.initial_weight_kg <= 0:
+        raise HTTPException(status_code=400, detail="批次初始重量必须大于 0")
+
+    material = payload.material.strip()
+    batch_no = payload.batch_no.strip()
+    existing_batch = db.scalar(
+        select(MoldingSampleInventoryBatch).where(
+            MoldingSampleInventoryBatch.material == material,
+            MoldingSampleInventoryBatch.batch_no == batch_no,
+        )
+    )
+    if existing_batch:
+        raise HTTPException(status_code=409, detail="库存批次已存在")
+
+    now = now_text()
+    batch = MoldingSampleInventoryBatch(
+        id=f"batch-{uuid4().hex}",
+        material=material,
+        batch_no=batch_no,
+        location=payload.location.strip(),
+        initial_weight_kg=round_weight(payload.initial_weight_kg),
+        available_weight_kg=round_weight(payload.initial_weight_kg),
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
 def next_requisition_number(db: Session, date: str) -> str:
     date_token = date.replace("-", "")
     prefix = f"LL-{date_token}-"
@@ -455,6 +504,8 @@ def create_requisition(db: Session, payload: RequisitionCreateRequest) -> Moldin
         requested_weight_kg=payload.requested_weight_kg,
         applicant=payload.applicant.strip(),
         notes=notes,
+        inventory_batch_id="",
+        inventory_batch_no="",
         status="待出库",
         issued_at="",
         created_at=now_text(),
@@ -477,6 +528,32 @@ def update_requisition_status(
     if payload.status not in {"待出库", "已出库"}:
         raise HTTPException(status_code=400, detail="领料单状态无效")
 
+    previous_status = requisition.status
+    if payload.status == "已出库" and payload.inventory_batch_id:
+        if previous_status == "已出库" and requisition.inventory_batch_id:
+            raise HTTPException(status_code=400, detail="领料单已出库")
+
+        batch = db.get(MoldingSampleInventoryBatch, payload.inventory_batch_id)
+        if not batch:
+            raise HTTPException(status_code=404, detail="库存批次不存在")
+        if batch.material != requisition.material:
+            raise HTTPException(status_code=400, detail="批次原料不匹配")
+        if batch.available_weight_kg < requisition.requested_weight_kg:
+            raise HTTPException(status_code=400, detail="库存不足")
+
+        batch.available_weight_kg = round_weight(batch.available_weight_kg - requisition.requested_weight_kg)
+        batch.updated_at = now_text()
+        requisition.inventory_batch_id = batch.id
+        requisition.inventory_batch_no = batch.batch_no
+
+    if payload.status == "待出库" and previous_status == "已出库" and requisition.inventory_batch_id:
+        batch = db.get(MoldingSampleInventoryBatch, requisition.inventory_batch_id)
+        if batch:
+            batch.available_weight_kg = round_weight(batch.available_weight_kg + requisition.requested_weight_kg)
+            batch.updated_at = now_text()
+        requisition.inventory_batch_id = ""
+        requisition.inventory_batch_no = ""
+
     requisition.status = payload.status
     requisition.issued_at = payload.issued_at if payload.status == "已出库" else ""
     if payload.status == "已出库" and not requisition.issued_at:
@@ -491,6 +568,12 @@ def delete_requisition(db: Session, requisition_id: str) -> None:
     requisition = db.get(MoldingSampleRequisition, requisition_id)
     if not requisition:
         raise HTTPException(status_code=404, detail="领料单不存在")
+
+    if requisition.status == "已出库" and requisition.inventory_batch_id:
+        batch = db.get(MoldingSampleInventoryBatch, requisition.inventory_batch_id)
+        if batch:
+            batch.available_weight_kg = round_weight(batch.available_weight_kg + requisition.requested_weight_kg)
+            batch.updated_at = now_text()
 
     db.delete(requisition)
     db.commit()

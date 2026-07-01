@@ -104,6 +104,15 @@ await api.updateMaterialPrices({
 
 await api.listRequisitions('BP-1')
 
+await api.listInventoryBatches('HIPS 425')
+
+await api.createInventoryBatch({
+  material: 'HIPS 425',
+  batch_no: 'HIPS-20260701-A',
+  location: 'A-01',
+  initial_weight_kg: 3,
+})
+
 await api.createRequisition({
   date: '2026-07-01',
   order_id: 'BP-1',
@@ -116,6 +125,7 @@ await api.createRequisition({
 await api.updateRequisitionStatus('REQ-1', {
   status: '已出库',
   issued_at: '2026-07-01 15:30',
+  inventory_batch_id: 'BATCH-1',
 })
 
 await api.deleteRequisition('REQ-1')
@@ -133,6 +143,8 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'patch /injection/BP-1/items',
   'post /manager-update-prices',
   'get /requisitions?order_id=BP-1',
+  'get /inventory-batches?material=HIPS+425',
+  'post /inventory-batches',
   'post /requisitions',
   'patch /requisitions/REQ-1/status',
   'delete /requisitions/REQ-1',
@@ -172,7 +184,14 @@ assert.deepEqual(calls.find((call) => call.url === '/requisitions')?.data, {
   applicant: '肖科',
   notes: '左右枪身试啤领料',
 })
+assert.deepEqual(calls.find((call) => call.url === '/inventory-batches')?.data, {
+  material: 'HIPS 425',
+  batch_no: 'HIPS-20260701-A',
+  location: 'A-01',
+  initial_weight_kg: 3,
+})
 assert.deepEqual(calls.find((call) => call.url === '/requisitions/REQ-1/status')?.data, {
   status: '已出库',
   issued_at: '2026-07-01 15:30',
+  inventory_batch_id: 'BATCH-1',
 })
