@@ -445,3 +445,83 @@ def test_locked_orders_reject_engineering_edit_and_delete_but_allow_manager_with
     manager_edit_response = client.put("/api/injection/BP-LOCK-001", json=manager_edit_payload)
     assert manager_edit_response.status_code == 200
     assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
+
+
+def test_warehouse_requisitions_create_filter_issue_and_delete(client):
+    client.post("/api/injection", json=sample_order_payload("BP-REQ-001"))
+    client.post("/api/injection", json=sample_order_payload("BP-REQ-002"))
+
+    first_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-01",
+            "order_id": "BP-REQ-001",
+            "material": "HIPS 425",
+            "requested_weight_kg": 2.46,
+            "applicant": "肖科",
+            "notes": "左右枪身试啤领料",
+        },
+    )
+    assert first_response.status_code == 201
+    first = first_response.json()
+    assert first["req_number"] == "LL-20260701-001"
+    assert first["order_id"] == "BP-REQ-001"
+    assert first["order_number"] == "62437"
+    assert first["status"] == "待出库"
+    assert first["issued_at"] == ""
+
+    second_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-01",
+            "order_id": "BP-REQ-002",
+            "material": "ABS 740",
+            "requested_weight_kg": 1.2,
+            "applicant": "肖科",
+        },
+    )
+    assert second_response.status_code == 201
+    second = second_response.json()
+    assert second["req_number"] == "LL-20260701-002"
+
+    filtered_response = client.get("/api/requisitions", params={"order_id": "BP-REQ-001"})
+    assert filtered_response.status_code == 200
+    filtered = filtered_response.json()
+    assert [row["id"] for row in filtered] == [first["id"]]
+
+    issue_response = client.patch(
+        f"/api/requisitions/{first['id']}/status",
+        json={
+            "status": "已出库",
+            "issued_at": "2026-07-01 15:30",
+        },
+    )
+    assert issue_response.status_code == 200
+    assert issue_response.json()["status"] == "已出库"
+    assert issue_response.json()["issued_at"] == "2026-07-01 15:30"
+
+    delete_response = client.delete(f"/api/requisitions/{first['id']}")
+    assert delete_response.status_code == 204
+
+    after_delete_response = client.get("/api/requisitions", params={"order_id": "BP-REQ-001"})
+    assert after_delete_response.status_code == 200
+    assert after_delete_response.json() == []
+
+
+def test_warehouse_requisition_rejects_duplicate_line(client):
+    client.post("/api/injection", json=sample_order_payload("BP-REQ-DUP"))
+    payload = {
+        "date": "2026-07-01",
+        "order_id": "BP-REQ-DUP",
+        "material": "HIPS 425",
+        "requested_weight_kg": 2.46,
+        "applicant": "肖科",
+        "notes": "M-001 · 左右枪身",
+    }
+
+    first_response = client.post("/api/requisitions", json=payload)
+    assert first_response.status_code == 201
+
+    duplicate_response = client.post("/api/requisitions", json=payload)
+    assert duplicate_response.status_code == 409
+    assert duplicate_response.json()["detail"] == "该明细已生成领料单"

@@ -102,6 +102,24 @@ await api.updateMaterialPrices({
   manager_pin: '6789',
 })
 
+await api.listRequisitions('BP-1')
+
+await api.createRequisition({
+  date: '2026-07-01',
+  order_id: 'BP-1',
+  material: 'HIPS 425',
+  requested_weight_kg: 2.46,
+  applicant: '肖科',
+  notes: '左右枪身试啤领料',
+})
+
+await api.updateRequisitionStatus('REQ-1', {
+  status: '已出库',
+  issued_at: '2026-07-01 15:30',
+})
+
+await api.deleteRequisition('REQ-1')
+
 assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'get /injection',
   'get /injection/BP-1',
@@ -114,6 +132,10 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'post /change-pin',
   'patch /injection/BP-1/items',
   'post /manager-update-prices',
+  'get /requisitions?order_id=BP-1',
+  'post /requisitions',
+  'patch /requisitions/REQ-1/status',
+  'delete /requisitions/REQ-1',
 ])
 
 assert.deepEqual(calls.find((call) => call.url === '/injection/BP-1/status')?.data, {
@@ -141,4 +163,16 @@ assert.deepEqual(calls.find((call) => call.url === '/manager-update-prices')?.da
   rmb_to_hkd_rate: 1.1,
   manager_name: '王经理',
   manager_pin: '6789',
+})
+assert.deepEqual(calls.find((call) => call.url === '/requisitions')?.data, {
+  date: '2026-07-01',
+  order_id: 'BP-1',
+  material: 'HIPS 425',
+  requested_weight_kg: 2.46,
+  applicant: '肖科',
+  notes: '左右枪身试啤领料',
+})
+assert.deepEqual(calls.find((call) => call.url === '/requisitions/REQ-1/status')?.data, {
+  status: '已出库',
+  issued_at: '2026-07-01 15:30',
 })

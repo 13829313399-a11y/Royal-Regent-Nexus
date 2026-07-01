@@ -174,3 +174,35 @@ class RoleEntry(BaseModel):
 class RolesResponse(BaseModel):
     supervisors: list[RoleEntry]
     managers: list[RoleEntry]
+
+
+class RequisitionCreateRequest(BaseModel):
+    date: str
+    order_id: str
+    material: str
+    requested_weight_kg: float
+    applicant: str = ""
+    notes: str = ""
+
+
+class RequisitionStatusRequest(BaseModel):
+    status: str
+    issued_at: str = ""
+
+
+class RequisitionOut(BaseModel):
+    id: str
+    req_number: str
+    date: str
+    order_id: str
+    order_number: str
+    material: str
+    requested_weight_kg: float
+    applicant: str
+    notes: str
+    status: str
+    issued_at: str
+    created_at: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)

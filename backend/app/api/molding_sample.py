@@ -13,6 +13,9 @@ from app.schemas.molding_sample import (
     PinChangeRequest,
     PinVerifyRequest,
     PinVerifyResponse,
+    RequisitionCreateRequest,
+    RequisitionOut,
+    RequisitionStatusRequest,
     RolesResponse,
     TotalCostSummary,
 )
@@ -20,16 +23,20 @@ from app.services.molding_sample import (
     build_total_cost_summary,
     change_pin,
     create_order,
+    create_requisition,
     delete_order,
+    delete_requisition,
     get_exchange_rate,
     get_prices,
     list_auth_roles,
     list_orders,
+    list_requisitions,
     load_order,
     replace_material_prices,
     transition_status,
     update_order,
     update_order_items,
+    update_requisition_status,
     verify_pin,
 )
 
@@ -118,6 +125,31 @@ def post_verify_pin(payload: PinVerifyRequest, db: Session = Depends(get_db)):
 @router.post("/api/change-pin", response_model=PinVerifyResponse)
 def post_change_pin(payload: PinChangeRequest, db: Session = Depends(get_db)):
     return change_pin(db, payload)
+
+
+@router.get("/api/requisitions", response_model=list[RequisitionOut])
+def get_requisitions(order_id: str | None = None, db: Session = Depends(get_db)):
+    return list_requisitions(db, order_id=order_id)
+
+
+@router.post("/api/requisitions", response_model=RequisitionOut, status_code=status.HTTP_201_CREATED)
+def post_requisition(payload: RequisitionCreateRequest, db: Session = Depends(get_db)):
+    return create_requisition(db, payload)
+
+
+@router.patch("/api/requisitions/{requisition_id}/status", response_model=RequisitionOut)
+def patch_requisition_status(
+    requisition_id: str,
+    payload: RequisitionStatusRequest,
+    db: Session = Depends(get_db),
+):
+    return update_requisition_status(db, requisition_id, payload)
+
+
+@router.delete("/api/requisitions/{requisition_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_requisition_route(requisition_id: str, db: Session = Depends(get_db)):
+    delete_requisition(db, requisition_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/api/injection-total-costs", response_model=list[TotalCostSummary])

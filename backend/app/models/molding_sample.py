@@ -37,6 +37,11 @@ class MoldingSampleOrder(Base):
         cascade="all, delete-orphan",
         order_by="desc(MoldingSampleAuditLog.id)",
     )
+    requisitions: Mapped[list["MoldingSampleRequisition"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="MoldingSampleRequisition.req_number",
+    )
 
 
 class MoldingSampleItem(Base):
@@ -111,3 +116,23 @@ class MoldingSampleAuthPin(Base):
     pin_hash: Mapped[str] = mapped_column(String(128))
     must_change: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class MoldingSampleRequisition(Base):
+    __tablename__ = "molding_sample_requisitions"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    req_number: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    date: Mapped[str] = mapped_column(String(20), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_orders.id", ondelete="CASCADE"), index=True)
+    order_number: Mapped[str] = mapped_column(String(128), default="")
+    material: Mapped[str] = mapped_column(String(255), default="")
+    requested_weight_kg: Mapped[float] = mapped_column(Float)
+    applicant: Mapped[str] = mapped_column(String(128), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="待出库", index=True)
+    issued_at: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+    order: Mapped[MoldingSampleOrder] = relationship(back_populates="requisitions")

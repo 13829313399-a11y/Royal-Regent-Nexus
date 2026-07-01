@@ -91,6 +91,36 @@ export interface RolesResponse {
   managers: Array<{ name: string, role: MoldingSampleRole, must_change: boolean }>
 }
 
+export interface RequisitionCreateRequest {
+  date: string
+  order_id: string
+  material: string
+  requested_weight_kg: number
+  applicant?: string
+  notes?: string
+}
+
+export interface RequisitionStatusRequest {
+  status: '待出库' | '已出库'
+  issued_at?: string
+}
+
+export interface RequisitionResponse {
+  id: string
+  req_number: string
+  date: string
+  order_id: string
+  order_number: string
+  material: string
+  requested_weight_kg: number
+  applicant: string
+  notes: string
+  status: '待出库' | '已出库'
+  issued_at: string
+  created_at: string
+  updated_at: string
+}
+
 export interface InjectionTotalCostSummary {
   order_id: string
   order_number: string
@@ -156,6 +186,23 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
     },
     async updateMaterialPrices(payload: MaterialPricesUpdateRequest) {
       const response = await client.post<MaterialPricesResponse>('/manager-update-prices', payload)
+      return response.data
+    },
+    async listRequisitions(orderId?: string) {
+      const url = orderId ? `/requisitions?${new URLSearchParams({ order_id: orderId }).toString()}` : '/requisitions'
+      const response = await client.get<RequisitionResponse[]>(url)
+      return response.data
+    },
+    async createRequisition(payload: RequisitionCreateRequest) {
+      const response = await client.post<RequisitionResponse>('/requisitions', payload)
+      return response.data
+    },
+    async updateRequisitionStatus(requisitionId: string, payload: RequisitionStatusRequest) {
+      const response = await client.patch<RequisitionResponse>(`/requisitions/${requisitionId}/status`, payload)
+      return response.data
+    },
+    async deleteRequisition(requisitionId: string) {
+      const response = await client.delete(`/requisitions/${requisitionId}`)
       return response.data
     },
     async verifyPin(payload: PinVerifyRequest) {

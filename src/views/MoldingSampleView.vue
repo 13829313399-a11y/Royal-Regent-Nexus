@@ -50,6 +50,7 @@ import {
   moldingSampleApi,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
+  type RequisitionResponse,
 } from '@/api/moldingSample'
 import { getApiErrorMessage } from '@/lib/http'
 
@@ -99,6 +100,7 @@ const editableRmbToHkdRate = ref(String(moldingSampleRmbToHkdRate))
 const pricingErrors = ref<string[]>([])
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiRecord = ref<MoldingSampleDetailResponse | null>(null)
+const apiRequisitions = ref<RequisitionResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
 const apiMessage = ref('正在检查后端 API...')
 
@@ -152,7 +154,7 @@ const activeRecord = computed(() => {
       order: apiRecord.value.order,
       items: apiRecord.value.items,
       audit_logs: apiRecord.value.audit_logs,
-      requisitions: [],
+      requisitions: apiRequisitions.value,
       problems: [],
     }
   }
@@ -185,6 +187,7 @@ const activeProblems = computed(() => [
   ...activeRecord.value.problems.map((problem) => problem.description),
   ...(problemOverrides.value[activeOrder.value.id] ?? []),
 ])
+const activeRequisitions = computed(() => activeRecord.value.requisitions)
 const isExternalOrder = computed(() => isExternalMoldingSampleOrder(activeOrder.value))
 const completionGate = computed(() => buildCompletionGate(activeOrder.value, activeItems.value))
 const reportSummary = computed(() => buildMoldingSampleReportSummary(activeOrder.value, activeItems.value))
@@ -281,6 +284,15 @@ function setApiRecord(record: MoldingSampleDetailResponse | null) {
   }
 }
 
+async function refreshActiveRequisitions() {
+  if (!apiRecord.value) {
+    apiRequisitions.value = []
+    return
+  }
+
+  apiRequisitions.value = await moldingSampleApi.listRequisitions(apiRecord.value.order.id)
+}
+
 async function loadApiData() {
   apiState.value = 'checking'
   apiMessage.value = '正在检查后端 API...'
@@ -298,6 +310,7 @@ async function loadApiData() {
 
     const selectedRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value) ?? records[0] ?? null
     setApiRecord(selectedRecord)
+    await refreshActiveRequisitions()
     apiState.value = selectedRecord ? 'connected' : 'empty'
     apiMessage.value = selectedRecord
       ? '已连接后端 API，当前操作会写入数据库。'
@@ -305,6 +318,7 @@ async function loadApiData() {
   }
   catch (error) {
     apiRecords.value = []
+    apiRequisitions.value = []
     setApiRecord(null)
     apiState.value = 'fallback'
     apiMessage.value = `后端 API 暂不可用，当前使用前端 mock：${getApiErrorMessage(error)}`
@@ -645,6 +659,109 @@ async function fillWarehouseSample() {
   actionMessage.value = '仓库领料示例已回填。'
 }
 
+async function createRequisitionsFromItems() {
+  if (!isWarehouseEditable.value) {
+    actionMessage.value = '当前状态不能生成领料单。'
+    return
+  }
+
+  if (!apiRecord.value) {
+    actionMessage.value = '当前为前端 mock 数据，不能生成后端领料单。'
+    return
+  }
+
+  const requisitionItems = activeItems.value
+    .map((item) => ({
+      item,
+      requestedWeight: item.collected_weight_kg ?? item.required_material_kg ?? 0,
+      notes: `${item.mold_id} · ${item.mold_name}`,
+    }))
+    .filter((entry) => {
+      if (entry.requestedWeight <= 0) {
+        return false
+      }
+
+      return !activeRequisitions.value.some((requisition) =>
+        requisition.material === entry.item.material && requisition.notes === entry.notes
+      )
+    })
+
+  if (!requisitionItems.length) {
+    actionMessage.value = activeRequisitions.value.length
+      ? '当前明细已生成领料单，无需重复生成。'
+      : '没有可生成领料单的用料重量。'
+    return
+  }
+
+  try {
+    const created = []
+    for (const entry of requisitionItems) {
+      const requisition = await moldingSampleApi.createRequisition({
+        date: today,
+        order_id: activeOrder.value.id,
+        material: entry.item.material,
+        requested_weight_kg: entry.requestedWeight,
+        applicant: activeOrder.value.eng_name || '工程部',
+        notes: entry.notes,
+      })
+      created.push({ requisition, item: entry.item, requestedWeight: entry.requestedWeight })
+    }
+
+    const updated = await moldingSampleApi.updateItems(activeOrder.value.id, {
+      items: created.map((entry) => ({
+        id: entry.item.id,
+        receipt_no: entry.requisition.req_number,
+        collected_weight_kg: entry.requestedWeight,
+      })),
+    })
+    setApiRecord(updated)
+    await refreshActiveRequisitions()
+    actionMessage.value = `已生成 ${created.length} 张后端领料单。`
+  }
+  catch (error) {
+    actionMessage.value = `生成领料单失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function markRequisitionIssued(requisitionId: string) {
+  if (!apiRecord.value) {
+    actionMessage.value = '当前为前端 mock 数据，不能更新后端领料单。'
+    return
+  }
+
+  try {
+    await moldingSampleApi.updateRequisitionStatus(requisitionId, {
+      status: '已出库',
+      issued_at: `${today} 15:30`,
+    })
+    await refreshActiveRequisitions()
+    actionMessage.value = '领料单已标记出库。'
+  }
+  catch (error) {
+    actionMessage.value = `领料单出库失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function deleteRequisitionRow(requisitionId: string) {
+  if (!apiRecord.value) {
+    actionMessage.value = '当前为前端 mock 数据，不能删除后端领料单。'
+    return
+  }
+
+  if (!globalThis.confirm?.('确认删除这张领料单？')) {
+    return
+  }
+
+  try {
+    await moldingSampleApi.deleteRequisition(requisitionId)
+    await refreshActiveRequisitions()
+    actionMessage.value = '领料单已删除。'
+  }
+  catch (error) {
+    actionMessage.value = `领料单删除失败：${getApiErrorMessage(error)}`
+  }
+}
+
 async function fillProductionSample() {
   const patches = activeItems.value.map((item, index) => ({
     id: item.id,
@@ -773,6 +890,7 @@ watch(selectedFactoryId, () => {
   if (apiRecords.value.length) {
     const selectedRecord = apiRecords.value.find((record) => record.order.factory_id === selectedFactoryId.value) ?? null
     setApiRecord(selectedRecord)
+    void refreshActiveRequisitions()
     apiState.value = selectedRecord ? 'connected' : 'empty'
     apiMessage.value = selectedRecord ? '已连接后端 API，当前操作会写入数据库。' : '当前厂区暂无后端单据，可同步示例单据。'
   }
@@ -1207,16 +1325,93 @@ watchEffect(() => {
               <p class="text-sm text-slate-600">
                 {{ isExternalOrder ? '外厂单不走内部仓库发料。' : `当前可维护：${isWarehouseEditable ? '是' : '否'}` }}
               </p>
-              <button
-                type="button"
-                :disabled="!isWarehouseEditable"
-                class="inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="isWarehouseEditable ? 'border-slate-950 bg-slate-950 text-white' : ''"
-                @click="fillWarehouseSample"
-              >
-                <Archive class="size-4" aria-hidden="true" />
-                批量出库
-              </button>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  :disabled="!isWarehouseEditable || !apiRecord"
+                  class="inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  :class="isWarehouseEditable && apiRecord ? 'border-slate-950 bg-slate-950 text-white' : ''"
+                  @click="createRequisitionsFromItems"
+                >
+                  <Plus class="size-4" aria-hidden="true" />
+                  生成领料单
+                </button>
+                <button
+                  type="button"
+                  :disabled="!isWarehouseEditable"
+                  class="inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  :class="isWarehouseEditable ? 'border-blue-700 bg-blue-700 text-white' : ''"
+                  @click="fillWarehouseSample"
+                >
+                  <Archive class="size-4" aria-hidden="true" />
+                  批量出库
+                </button>
+              </div>
+            </div>
+
+            <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table class="min-w-[960px] divide-y divide-slate-200 text-sm">
+                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                  <tr>
+                    <th class="px-4 py-3">领料单号</th>
+                    <th class="px-4 py-3">日期</th>
+                    <th class="px-4 py-3">啤办单号</th>
+                    <th class="px-4 py-3">原料</th>
+                    <th class="px-4 py-3 text-right">申请KG</th>
+                    <th class="px-4 py-3">申请人</th>
+                    <th class="px-4 py-3">状态</th>
+                    <th class="px-4 py-3">出库时间</th>
+                    <th class="px-4 py-3 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody v-if="activeRequisitions.length" class="divide-y divide-slate-100">
+                  <tr v-for="requisition in activeRequisitions" :key="requisition.id">
+                    <td class="px-4 py-3 font-medium">{{ requisition.req_number }}</td>
+                    <td class="px-4 py-3">{{ requisition.date }}</td>
+                    <td class="px-4 py-3">{{ requisition.order_number }}</td>
+                    <td class="px-4 py-3">{{ requisition.material }}</td>
+                    <td class="px-4 py-3 text-right">{{ formatWeight(requisition.requested_weight_kg) }}</td>
+                    <td class="px-4 py-3">{{ requisition.applicant }}</td>
+                    <td class="px-4 py-3">
+                      <StatusPill
+                        :label="requisition.status"
+                        :tone="requisition.status === '已出库' ? 'green' : 'amber'"
+                        compact
+                      />
+                    </td>
+                    <td class="px-4 py-3">{{ requisition.issued_at || '未出库' }}</td>
+                    <td class="px-4 py-3">
+                      <div class="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          :disabled="requisition.status === '已出库' || !apiRecord"
+                          class="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-200 px-2 text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                          @click="markRequisitionIssued(requisition.id)"
+                        >
+                          <CheckCircle2 class="size-3.5" aria-hidden="true" />
+                          出库
+                        </button>
+                        <button
+                          type="button"
+                          :disabled="!apiRecord"
+                          class="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 px-2 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                          @click="deleteRequisitionRow(requisition.id)"
+                        >
+                          <XCircle class="size-3.5" aria-hidden="true" />
+                          删除
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+                <tbody v-else>
+                  <tr>
+                    <td colspan="9" class="px-4 py-8 text-center text-sm text-slate-500">
+                      暂无领料单，确认用料重量后可生成。
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
 
             <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">

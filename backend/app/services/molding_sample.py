@@ -15,6 +15,7 @@ from app.models.molding_sample import (
     MoldingSampleItem,
     MoldingSampleMaterialPrice,
     MoldingSampleOrder,
+    MoldingSampleRequisition,
     MoldingSampleSetting,
 )
 from app.schemas.molding_sample import (
@@ -25,6 +26,8 @@ from app.schemas.molding_sample import (
     MoldingSampleStatusRequest,
     PinChangeRequest,
     PinVerifyRequest,
+    RequisitionCreateRequest,
+    RequisitionStatusRequest,
 )
 
 KG_TO_LB = 2.20462
@@ -393,6 +396,103 @@ def delete_order(
     order = load_order(db, order_id)
     ensure_order_write_allowed(db, order, actor_name, actor_role, pin)
     db.delete(order)
+    db.commit()
+
+
+def next_requisition_number(db: Session, date: str) -> str:
+    date_token = date.replace("-", "")
+    prefix = f"LL-{date_token}-"
+    existing_numbers = db.scalars(
+        select(MoldingSampleRequisition.req_number).where(MoldingSampleRequisition.req_number.like(f"{prefix}%"))
+    ).all()
+    max_sequence = 0
+
+    for req_number in existing_numbers:
+        try:
+            max_sequence = max(max_sequence, int(req_number.rsplit("-", 1)[1]))
+        except (IndexError, ValueError):
+            continue
+
+    return f"{prefix}{max_sequence + 1:03d}"
+
+
+def list_requisitions(db: Session, order_id: str | None = None) -> list[MoldingSampleRequisition]:
+    statement = select(MoldingSampleRequisition).order_by(
+        MoldingSampleRequisition.date.desc(),
+        MoldingSampleRequisition.req_number.desc(),
+    )
+    if order_id:
+        statement = statement.where(MoldingSampleRequisition.order_id == order_id)
+
+    return list(db.scalars(statement).all())
+
+
+def create_requisition(db: Session, payload: RequisitionCreateRequest) -> MoldingSampleRequisition:
+    if payload.requested_weight_kg <= 0:
+        raise HTTPException(status_code=400, detail="申请重量必须大于 0")
+
+    order = load_order(db, payload.order_id)
+    material = payload.material.strip()
+    notes = payload.notes.strip()
+    if notes:
+        existing_requisition = db.scalar(
+            select(MoldingSampleRequisition).where(
+                MoldingSampleRequisition.order_id == order.id,
+                MoldingSampleRequisition.material == material,
+                MoldingSampleRequisition.notes == notes,
+            )
+        )
+        if existing_requisition:
+            raise HTTPException(status_code=409, detail="该明细已生成领料单")
+
+    requisition = MoldingSampleRequisition(
+        id=f"req-{uuid4().hex}",
+        req_number=next_requisition_number(db, payload.date),
+        date=payload.date,
+        order_id=order.id,
+        order_number=order.order_number,
+        material=material,
+        requested_weight_kg=payload.requested_weight_kg,
+        applicant=payload.applicant.strip(),
+        notes=notes,
+        status="待出库",
+        issued_at="",
+        created_at=now_text(),
+        updated_at=now_text(),
+    )
+    db.add(requisition)
+    db.commit()
+    db.refresh(requisition)
+    return requisition
+
+
+def update_requisition_status(
+    db: Session,
+    requisition_id: str,
+    payload: RequisitionStatusRequest,
+) -> MoldingSampleRequisition:
+    requisition = db.get(MoldingSampleRequisition, requisition_id)
+    if not requisition:
+        raise HTTPException(status_code=404, detail="领料单不存在")
+    if payload.status not in {"待出库", "已出库"}:
+        raise HTTPException(status_code=400, detail="领料单状态无效")
+
+    requisition.status = payload.status
+    requisition.issued_at = payload.issued_at if payload.status == "已出库" else ""
+    if payload.status == "已出库" and not requisition.issued_at:
+        requisition.issued_at = now_text()
+    requisition.updated_at = now_text()
+    db.commit()
+    db.refresh(requisition)
+    return requisition
+
+
+def delete_requisition(db: Session, requisition_id: str) -> None:
+    requisition = db.get(MoldingSampleRequisition, requisition_id)
+    if not requisition:
+        raise HTTPException(status_code=404, detail="领料单不存在")
+
+    db.delete(requisition)
     db.commit()
 
 
