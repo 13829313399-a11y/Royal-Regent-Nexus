@@ -118,6 +118,30 @@ class MoldingSampleAuthPin(Base):
     updated_at: Mapped[str] = mapped_column(String(32), default="")
 
 
+class MoldingSamplePinAttempt(Base):
+    __tablename__ = "molding_sample_pin_attempts"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    role: Mapped[str] = mapped_column(String(64), index=True)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class MoldingSampleSensitiveAuditLog(Base):
+    __tablename__ = "molding_sample_sensitive_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    actor_name: Mapped[str] = mapped_column(String(128), default="")
+    actor_role: Mapped[str] = mapped_column(String(64), default="")
+    target_type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    target_name: Mapped[str] = mapped_column(String(128), default="", index=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+
+
 class MoldingSampleRequisition(Base):
     __tablename__ = "molding_sample_requisitions"
 
@@ -130,9 +154,42 @@ class MoldingSampleRequisition(Base):
     requested_weight_kg: Mapped[float] = mapped_column(Float)
     applicant: Mapped[str] = mapped_column(String(128), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    inventory_batch_id: Mapped[str] = mapped_column(String(96), default="")
+    inventory_batch_no: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[str] = mapped_column(String(32), default="待出库", index=True)
     issued_at: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[str] = mapped_column(String(32), default="")
     updated_at: Mapped[str] = mapped_column(String(32), default="")
 
     order: Mapped[MoldingSampleOrder] = relationship(back_populates="requisitions")
+
+
+class MoldingSampleInventoryBatch(Base):
+    __tablename__ = "molding_sample_inventory_batches"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    material: Mapped[str] = mapped_column(String(255), index=True)
+    batch_no: Mapped[str] = mapped_column(String(128), index=True)
+    location: Mapped[str] = mapped_column(String(128), default="")
+    initial_weight_kg: Mapped[float] = mapped_column(Float)
+    available_weight_kg: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class MoldingSampleInventoryMovement(Base):
+    __tablename__ = "molding_sample_inventory_movements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(String(96), index=True)
+    batch_no: Mapped[str] = mapped_column(String(128), index=True)
+    requisition_id: Mapped[str] = mapped_column(String(96), default="", index=True)
+    req_number: Mapped[str] = mapped_column(String(32), default="", index=True)
+    material: Mapped[str] = mapped_column(String(255), index=True)
+    movement_type: Mapped[str] = mapped_column(String(64), index=True)
+    quantity_kg: Mapped[float] = mapped_column(Float)
+    before_weight_kg: Mapped[float] = mapped_column(Float)
+    after_weight_kg: Mapped[float] = mapped_column(Float)
+    actor_name: Mapped[str] = mapped_column(String(128), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")

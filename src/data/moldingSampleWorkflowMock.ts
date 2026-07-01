@@ -97,8 +97,12 @@ function createRequisitions(order: MoldingSampleOrder, items: MoldingSampleItem[
     requested_weight_kg: item.required_material_kg,
     applicant: order.eng_name,
     notes: item.color,
+    inventory_batch_id: '',
+    inventory_batch_no: '',
     status: item.collected_weight_kg ? '已出库' : '待出库',
     issued_at: item.collected_weight_kg ? `${order.date} 15:20` : '',
+    created_at: `${order.date} 09:00`,
+    updated_at: `${order.date} 09:00`,
   }))
 }
 

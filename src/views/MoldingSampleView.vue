@@ -4,12 +4,14 @@ import {
   Archive,
   ArrowLeft,
   CheckCircle2,
+  Download,
   Play,
   Plus,
   RotateCcw,
   Save,
   Send,
   ShieldCheck,
+  Upload,
   XCircle,
 } from '@lucide/vue'
 import { useRoute } from 'vue-router'
@@ -40,6 +42,7 @@ import type {
   MoldingSampleAuditLog,
   MoldingSampleItem,
   MoldingSampleOrder,
+  MoldingSampleRequisition,
   MoldingSampleRole,
   MoldingSampleStatus,
 } from '@/types/moldingSample'
@@ -47,10 +50,14 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import { useAppStore } from '@/stores/app'
 import {
+  MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
+  type InventoryBatchResponse,
+  type InventoryMovementResponse,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
   type RequisitionResponse,
+  type SensitiveAuditLogResponse,
 } from '@/api/moldingSample'
 import { getApiErrorMessage } from '@/lib/http'
 
@@ -76,6 +83,12 @@ interface EditableMaterialPrice {
   notes: string
 }
 
+interface PinChangeDraft {
+  old_pin: string
+  new_pin: string
+  confirm_pin: string
+}
+
 const route = useRoute()
 const appStore = useAppStore()
 
@@ -84,6 +97,8 @@ const activeTab = ref<RoleTabId>('engineering')
 const rejectReason = ref('资料不齐，请补充用料或交期说明。')
 const supervisorPin = ref('')
 const managerPin = ref('')
+const excelFileInput = ref<HTMLInputElement | null>(null)
+const excelImportOrderId = ref('')
 const productionProblem = ref('现场反馈：请工程确认色粉比例。')
 const actionMessage = ref('')
 const activeReportTab = ref<'materials' | 'injection' | 'total'>('materials')
@@ -101,6 +116,30 @@ const pricingErrors = ref<string[]>([])
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiRecord = ref<MoldingSampleDetailResponse | null>(null)
 const apiRequisitions = ref<RequisitionResponse[]>([])
+const apiInventoryBatches = ref<InventoryBatchResponse[]>([])
+const apiInventoryMovements = ref<InventoryMovementResponse[]>([])
+const apiSensitiveAuditLogs = ref<SensitiveAuditLogResponse[]>([])
+const selectedInventoryBatchIds = ref<Record<string, string>>({})
+const inventoryBatchDraft = ref({
+  material: '',
+  batch_no: '',
+  location: '试啤仓',
+  initial_weight_kg: '5',
+})
+const supervisorPinResetDraft = ref({
+  supervisor_name: '李主管',
+  new_pin: '1234',
+})
+const supervisorPinChangeDraft = ref<PinChangeDraft>({
+  old_pin: '',
+  new_pin: '',
+  confirm_pin: '',
+})
+const managerPinChangeDraft = ref<PinChangeDraft>({
+  old_pin: '',
+  new_pin: '',
+  confirm_pin: '',
+})
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
 const apiMessage = ref('正在检查后端 API...')
 
@@ -188,6 +227,10 @@ const activeProblems = computed(() => [
   ...(problemOverrides.value[activeOrder.value.id] ?? []),
 ])
 const activeRequisitions = computed(() => activeRecord.value.requisitions)
+const activeInventoryBatches = computed(() => apiInventoryBatches.value)
+const activeInventoryMovements = computed(() => apiInventoryMovements.value)
+const activeSensitiveAuditLogs = computed(() => apiSensitiveAuditLogs.value)
+const warehouseMaterials = computed(() => Array.from(new Set(activeItems.value.map((item) => item.material).filter(Boolean))))
 const isExternalOrder = computed(() => isExternalMoldingSampleOrder(activeOrder.value))
 const completionGate = computed(() => buildCompletionGate(activeOrder.value, activeItems.value))
 const reportSummary = computed(() => buildMoldingSampleReportSummary(activeOrder.value, activeItems.value))
@@ -221,6 +264,32 @@ const factoryQueue = computed(() =>
     }
   }),
 )
+
+function inventoryBatchesForMaterial(material: string) {
+  return activeInventoryBatches.value.filter((batch) => batch.material === material)
+}
+
+function defaultInventoryBatchId(requisition: MoldingSampleRequisition) {
+  const selectedBatchId = selectedInventoryBatchIds.value[requisition.id]
+  if (selectedBatchId) {
+    return selectedBatchId
+  }
+
+  return inventoryBatchesForMaterial(requisition.material)
+    .find((batch) => batch.available_weight_kg >= (requisition.requested_weight_kg ?? 0))?.id ?? ''
+}
+
+function syncInventoryBatchDraftMaterial() {
+  if (!inventoryBatchDraft.value.material) {
+    inventoryBatchDraft.value.material = activeItems.value[0]?.material ?? ''
+  }
+}
+
+function syncSupervisorPinResetDraft() {
+  if (!supervisorPinResetDraft.value.supervisor_name) {
+    supervisorPinResetDraft.value.supervisor_name = activeOrder.value.supervisor || '李主管'
+  }
+}
 
 const summaryCards = computed<SummaryCard[]>(() => [
   {
@@ -293,16 +362,47 @@ async function refreshActiveRequisitions() {
   apiRequisitions.value = await moldingSampleApi.listRequisitions(apiRecord.value.order.id)
 }
 
+async function refreshWarehouseData() {
+  if (!apiRecord.value) {
+    apiRequisitions.value = []
+    apiInventoryBatches.value = []
+    apiInventoryMovements.value = []
+    selectedInventoryBatchIds.value = {}
+    return
+  }
+
+  const [requisitions, inventoryBatches, inventoryMovements] = await Promise.all([
+    moldingSampleApi.listRequisitions(apiRecord.value.order.id),
+    moldingSampleApi.listInventoryBatches(),
+    moldingSampleApi.listInventoryMovements(),
+  ])
+  apiRequisitions.value = requisitions
+  apiInventoryBatches.value = inventoryBatches
+  apiInventoryMovements.value = inventoryMovements
+  syncInventoryBatchDraftMaterial()
+}
+
+async function refreshSensitiveAuditLogs() {
+  if (apiState.value === 'fallback') {
+    apiSensitiveAuditLogs.value = []
+    return
+  }
+
+  apiSensitiveAuditLogs.value = await moldingSampleApi.listSensitiveAuditLogs()
+}
+
 async function loadApiData() {
   apiState.value = 'checking'
   apiMessage.value = '正在检查后端 API...'
 
   try {
-    const [records, pricing] = await Promise.all([
+    const [records, pricing, sensitiveAuditLogs] = await Promise.all([
       moldingSampleApi.listOrders(),
       moldingSampleApi.getMaterialPrices(),
+      moldingSampleApi.listSensitiveAuditLogs(),
     ])
     apiRecords.value = records
+    apiSensitiveAuditLogs.value = sensitiveAuditLogs
     appliedMaterialPrices.value = clonePrices(pricing.prices)
     appliedRmbToHkdRate.value = pricing.rmb_to_hkd_rate
     editableMaterialPrices.value = createEditablePrices(pricing.prices)
@@ -310,7 +410,8 @@ async function loadApiData() {
 
     const selectedRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value) ?? records[0] ?? null
     setApiRecord(selectedRecord)
-    await refreshActiveRequisitions()
+    syncSupervisorPinResetDraft()
+    await refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
     apiMessage.value = selectedRecord
       ? '已连接后端 API，当前操作会写入数据库。'
@@ -319,6 +420,10 @@ async function loadApiData() {
   catch (error) {
     apiRecords.value = []
     apiRequisitions.value = []
+    apiInventoryBatches.value = []
+    apiInventoryMovements.value = []
+    apiSensitiveAuditLogs.value = []
+    selectedInventoryBatchIds.value = {}
     setApiRecord(null)
     apiState.value = 'fallback'
     apiMessage.value = `后端 API 暂不可用，当前使用前端 mock：${getApiErrorMessage(error)}`
@@ -339,6 +444,62 @@ async function syncCurrentMockToApi() {
   }
   catch (error) {
     actionMessage.value = `同步失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function exportCurrentOrderExcel() {
+  if (!apiRecord.value) {
+    actionMessage.value = '当前为前端 mock 数据，不能导出后端 Excel。'
+    return
+  }
+
+  try {
+    const workbook = await moldingSampleApi.exportOrderExcel(activeOrder.value.id)
+    const blob = new Blob([workbook], { type: MOLDING_SAMPLE_XLSX_MIME })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${activeOrder.value.id}-啤办单.xlsx`
+    link.click()
+    URL.revokeObjectURL(url)
+    actionMessage.value = '当前啤办单 Excel 已导出。'
+  }
+  catch (error) {
+    actionMessage.value = `导出 Excel 失败：${getApiErrorMessage(error)}`
+  }
+}
+
+function openExcelImportPicker() {
+  if (apiState.value === 'fallback') {
+    actionMessage.value = '当前为前端 mock 数据，不能导入后端 Excel。'
+    return
+  }
+
+  excelFileInput.value?.click()
+}
+
+async function importMoldingSampleExcel(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) {
+    return
+  }
+
+  try {
+    const workbook = await file.arrayBuffer()
+    const imported = await moldingSampleApi.importOrderExcel(workbook, {
+      order_id: excelImportOrderId.value.trim() || undefined,
+    })
+    await loadApiData()
+    setApiRecord(imported)
+    excelImportOrderId.value = ''
+    actionMessage.value = `已从 Excel 导入啤办单 ${imported.order.id}。`
+  }
+  catch (error) {
+    actionMessage.value = `导入 Excel 失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    input.value = ''
   }
 }
 
@@ -366,6 +527,10 @@ function formatMoney(value: number | null | undefined) {
 
 function formatWeight(value: number | null | undefined) {
   return value === null || value === undefined ? '待填写' : `${value} KG`
+}
+
+function formatMovementWeight(value: number) {
+  return `${value > 0 ? '+' : ''}${value} KG`
 }
 
 function setOrderPatch(patch: Partial<MoldingSampleOrder>) {
@@ -715,7 +880,7 @@ async function createRequisitionsFromItems() {
       })),
     })
     setApiRecord(updated)
-    await refreshActiveRequisitions()
+    await refreshWarehouseData()
     actionMessage.value = `已生成 ${created.length} 张后端领料单。`
   }
   catch (error) {
@@ -723,18 +888,54 @@ async function createRequisitionsFromItems() {
   }
 }
 
-async function markRequisitionIssued(requisitionId: string) {
+async function createInventoryBatchFromDraft() {
+  if (!apiRecord.value) {
+    actionMessage.value = '当前为前端 mock 数据，不能新增库存批次。'
+    return
+  }
+
+  const initialWeight = Number(inventoryBatchDraft.value.initial_weight_kg)
+  if (!inventoryBatchDraft.value.material || !inventoryBatchDraft.value.batch_no || !Number.isFinite(initialWeight) || initialWeight <= 0) {
+    actionMessage.value = '请补齐原料、批次号和有效库存重量。'
+    return
+  }
+
+  try {
+    await moldingSampleApi.createInventoryBatch({
+      material: inventoryBatchDraft.value.material,
+      batch_no: inventoryBatchDraft.value.batch_no,
+      location: inventoryBatchDraft.value.location,
+      initial_weight_kg: initialWeight,
+    })
+    inventoryBatchDraft.value.batch_no = ''
+    inventoryBatchDraft.value.initial_weight_kg = '5'
+    await refreshWarehouseData()
+    actionMessage.value = '库存批次已新增。'
+  }
+  catch (error) {
+    actionMessage.value = `新增库存批次失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function markRequisitionIssued(requisition: MoldingSampleRequisition) {
   if (!apiRecord.value) {
     actionMessage.value = '当前为前端 mock 数据，不能更新后端领料单。'
     return
   }
 
+  const inventoryBatchId = defaultInventoryBatchId(requisition)
+  if (!inventoryBatchId) {
+    actionMessage.value = '请选择可用库存批次后再出库。'
+    return
+  }
+
   try {
-    await moldingSampleApi.updateRequisitionStatus(requisitionId, {
+    await moldingSampleApi.updateRequisitionStatus(requisition.id, {
       status: '已出库',
       issued_at: `${today} 15:30`,
+      inventory_batch_id: inventoryBatchId,
     })
-    await refreshActiveRequisitions()
+    await refreshWarehouseData()
     actionMessage.value = '领料单已标记出库。'
   }
   catch (error) {
@@ -754,7 +955,7 @@ async function deleteRequisitionRow(requisitionId: string) {
 
   try {
     await moldingSampleApi.deleteRequisition(requisitionId)
-    await refreshActiveRequisitions()
+    await refreshWarehouseData()
     actionMessage.value = '领料单已删除。'
   }
   catch (error) {
@@ -854,6 +1055,89 @@ async function applyPricingSettings() {
   actionMessage.value = normalized.errors.length ? '价格口径已保存，但存在需要修正的提示。' : '价格口径已保存。'
 }
 
+async function resetSupervisorPin() {
+  if (apiState.value === 'fallback') {
+    actionMessage.value = '当前为前端 mock 数据，不能重置后端主管 PIN。'
+    return
+  }
+
+  if (!managerPin.value.trim()) {
+    actionMessage.value = '请输入经理 PIN 后重置主管 PIN。'
+    return
+  }
+
+  const supervisorName = supervisorPinResetDraft.value.supervisor_name.trim()
+  const newPin = supervisorPinResetDraft.value.new_pin.trim()
+  if (!supervisorName || newPin.length < 4) {
+    actionMessage.value = '请填写主管姓名，并输入至少 4 位的新 PIN。'
+    return
+  }
+
+  try {
+    const updated = await moldingSampleApi.resetSupervisorPin({
+      manager_name: '王经理',
+      manager_pin: managerPin.value.trim(),
+      supervisor_name: supervisorName,
+      new_pin: newPin,
+    })
+    supervisorPinResetDraft.value.new_pin = '1234'
+    await refreshSensitiveAuditLogs()
+    actionMessage.value = `${updated.name} 的主管 PIN 已重置，并要求首次修改。`
+  }
+  catch (error) {
+    actionMessage.value = `重置主管 PIN 失败：${getApiErrorMessage(error)}`
+  }
+}
+
+async function changeWorkbenchPin(role: '主管' | '经理') {
+  if (apiState.value === 'fallback') {
+    actionMessage.value = '当前为前端 mock 数据，不能修改后端 PIN。'
+    return
+  }
+
+  const draft = role === '主管' ? supervisorPinChangeDraft.value : managerPinChangeDraft.value
+  const oldPin = draft.old_pin.trim()
+  const newPin = draft.new_pin.trim()
+  const confirmPin = draft.confirm_pin.trim()
+  const name = role === '主管' ? (activeOrder.value.supervisor || '李主管') : '王经理'
+
+  if (!oldPin || newPin.length < 4) {
+    actionMessage.value = `${role}旧 PIN 和至少 4 位的新 PIN 都必须填写。`
+    return
+  }
+  if (newPin !== confirmPin) {
+    actionMessage.value = `${role}两次输入的新 PIN 不一致。`
+    return
+  }
+  if (newPin === oldPin) {
+    actionMessage.value = `${role}新 PIN 不能与旧 PIN 相同。`
+    return
+  }
+
+  try {
+    const updated = await moldingSampleApi.changePin({
+      name,
+      role,
+      old_pin: oldPin,
+      new_pin: newPin,
+    })
+    draft.old_pin = ''
+    draft.new_pin = ''
+    draft.confirm_pin = ''
+    if (role === '主管') {
+      supervisorPin.value = newPin
+    }
+    else {
+      managerPin.value = newPin
+    }
+    await refreshSensitiveAuditLogs()
+    actionMessage.value = `${updated.name} 的 PIN 已修改，可以继续执行${role}操作。`
+  }
+  catch (error) {
+    actionMessage.value = `${role} PIN 修改失败：${getApiErrorMessage(error)}`
+  }
+}
+
 function resetPricingSettings() {
   appliedMaterialPrices.value = clonePrices(moldingSampleMaterialPrices)
   appliedRmbToHkdRate.value = moldingSampleRmbToHkdRate
@@ -890,7 +1174,7 @@ watch(selectedFactoryId, () => {
   if (apiRecords.value.length) {
     const selectedRecord = apiRecords.value.find((record) => record.order.factory_id === selectedFactoryId.value) ?? null
     setApiRecord(selectedRecord)
-    void refreshActiveRequisitions()
+    void refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
     apiMessage.value = selectedRecord ? '已连接后端 API，当前操作会写入数据库。' : '当前厂区暂无后端单据，可同步示例单据。'
   }
@@ -972,6 +1256,13 @@ watchEffect(() => {
           <span>{{ apiMessage }}</span>
         </div>
         <div class="flex flex-wrap gap-2">
+          <input
+            ref="excelFileInput"
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            class="hidden"
+            @change="importMoldingSampleExcel"
+          >
           <button
             type="button"
             class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
@@ -989,6 +1280,30 @@ watchEffect(() => {
           >
             <Save class="size-4" aria-hidden="true" />
             同步当前示例
+          </button>
+          <button
+            type="button"
+            :disabled="!apiRecord"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-white/60 disabled:text-slate-400"
+            @click="exportCurrentOrderExcel"
+          >
+            <Download class="size-4" aria-hidden="true" />
+            导出 Excel
+          </button>
+          <input
+            v-model="excelImportOrderId"
+            type="text"
+            placeholder="导入新单ID"
+            class="h-9 w-36 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
+          >
+          <button
+            type="button"
+            :disabled="apiState === 'fallback'"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white/60 disabled:text-slate-400"
+            @click="openExcelImportPicker"
+          >
+            <Upload class="size-4" aria-hidden="true" />
+            导入 Excel
           </button>
         </div>
       </div>
@@ -1151,7 +1466,7 @@ watchEffect(() => {
                   type="password"
                   inputmode="numeric"
                   autocomplete="current-password"
-                  placeholder="默认 1234"
+                  placeholder="首次需先修改"
                   class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
                 >
               </div>
@@ -1181,6 +1496,55 @@ watchEffect(() => {
               rows="3"
               class="mt-4 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6"
             />
+            <div class="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 class="font-semibold">修改主管 PIN</h3>
+                  <p class="mt-1 text-xs text-slate-500">首次使用默认 PIN 时，必须先改 PIN 才能审核。</p>
+                </div>
+                <button
+                  type="button"
+                  :disabled="apiState === 'fallback'"
+                  class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="changeWorkbenchPin('主管')"
+                >
+                  <ShieldCheck class="size-4" aria-hidden="true" />
+                  修改 PIN
+                </button>
+              </div>
+              <div class="mt-4 grid gap-3 md:grid-cols-3">
+                <label class="text-xs font-semibold text-slate-500">
+                  旧 PIN
+                  <input
+                    v-model="supervisorPinChangeDraft.old_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="current-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  新 PIN
+                  <input
+                    v-model="supervisorPinChangeDraft.new_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  确认新 PIN
+                  <input
+                    v-model="supervisorPinChangeDraft.confirm_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+              </div>
+            </div>
           </SectionPanel>
 
           <SectionPanel v-else-if="activeTab === 'manager'" title="经理工作台" subtitle="终审、外厂自动完成、价格表与汇率维护">
@@ -1198,7 +1562,7 @@ watchEffect(() => {
                   type="password"
                   inputmode="numeric"
                   autocomplete="current-password"
-                  placeholder="默认 1234"
+                  placeholder="首次需先修改"
                   class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
                 >
               </div>
@@ -1224,6 +1588,56 @@ watchEffect(() => {
               </button>
             </div>
 
+            <div class="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 class="font-semibold">修改经理 PIN</h3>
+                  <p class="mt-1 text-xs text-slate-500">默认 PIN 只能用于首次验证和修改，终审、价格维护和重置主管 PIN 前必须先修改。</p>
+                </div>
+                <button
+                  type="button"
+                  :disabled="apiState === 'fallback'"
+                  class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="changeWorkbenchPin('经理')"
+                >
+                  <ShieldCheck class="size-4" aria-hidden="true" />
+                  修改 PIN
+                </button>
+              </div>
+              <div class="mt-4 grid gap-3 md:grid-cols-3">
+                <label class="text-xs font-semibold text-slate-500">
+                  旧 PIN
+                  <input
+                    v-model="managerPinChangeDraft.old_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="current-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  新 PIN
+                  <input
+                    v-model="managerPinChangeDraft.new_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  确认新 PIN
+                  <input
+                    v-model="managerPinChangeDraft.confirm_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+              </div>
+            </div>
+
             <div class="mt-5 grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
               <div class="rounded-lg border border-slate-200 bg-white p-4">
                 <label class="text-xs font-semibold text-slate-500">RMB -> HKD</label>
@@ -1240,7 +1654,7 @@ watchEffect(() => {
                   type="password"
                   inputmode="numeric"
                   autocomplete="current-password"
-                  placeholder="默认 1234"
+                  placeholder="首次需先修改"
                   class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
                 >
                 <div class="mt-4 grid gap-2">
@@ -1318,6 +1732,72 @@ watchEffect(() => {
                 </table>
               </div>
             </div>
+
+            <div class="mt-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <h3 class="font-semibold">主管 PIN 重置</h3>
+                <div class="mt-4 grid gap-3">
+                  <label class="text-xs font-semibold text-slate-500">
+                    主管姓名
+                    <input
+                      v-model="supervisorPinResetDraft.supervisor_name"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                    >
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    新 PIN
+                    <input
+                      v-model="supervisorPinResetDraft.new_pin"
+                      type="password"
+                      inputmode="numeric"
+                      autocomplete="new-password"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                    >
+                  </label>
+                  <button
+                    type="button"
+                    :disabled="apiState === 'fallback'"
+                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                    @click="resetSupervisorPin"
+                  >
+                    <ShieldCheck class="size-4" aria-hidden="true" />
+                    重置主管 PIN
+                  </button>
+                </div>
+              </div>
+
+              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table class="min-w-[860px] divide-y divide-slate-200 text-sm">
+                  <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                    <tr>
+                      <th class="px-4 py-3">时间</th>
+                      <th class="px-4 py-3">动作</th>
+                      <th class="px-4 py-3">操作人</th>
+                      <th class="px-4 py-3">对象</th>
+                      <th class="px-4 py-3">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody v-if="activeSensitiveAuditLogs.length" class="divide-y divide-slate-100">
+                    <tr v-for="log in activeSensitiveAuditLogs" :key="log.id">
+                      <td class="px-4 py-3">{{ log.created_at }}</td>
+                      <td class="px-4 py-3">
+                        <StatusPill :label="log.action" tone="blue" compact />
+                      </td>
+                      <td class="px-4 py-3">{{ log.actor_name }} · {{ log.actor_role }}</td>
+                      <td class="px-4 py-3">{{ log.target_name || log.target_type }}</td>
+                      <td class="px-4 py-3 text-slate-600">{{ log.detail }}</td>
+                    </tr>
+                  </tbody>
+                  <tbody v-else>
+                    <tr>
+                      <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">
+                        暂无敏感操作审计。
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </SectionPanel>
 
           <SectionPanel v-else-if="activeTab === 'warehouse'" title="仓库工作台" subtitle="领料单与出库重量维护">
@@ -1349,8 +1829,148 @@ watchEffect(() => {
               </div>
             </div>
 
+            <div class="mb-4 grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <div class="grid gap-3">
+                  <label class="text-xs font-semibold text-slate-500">
+                    原料
+                    <select
+                      v-model="inventoryBatchDraft.material"
+                      :disabled="!apiRecord"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <option value="">选择原料</option>
+                      <option v-for="material in warehouseMaterials" :key="material" :value="material">
+                        {{ material }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    批次号
+                    <input
+                      v-model="inventoryBatchDraft.batch_no"
+                      :disabled="!apiRecord"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                      placeholder="HIPS-20260701-A"
+                    >
+                  </label>
+                  <div class="grid grid-cols-2 gap-3">
+                    <label class="text-xs font-semibold text-slate-500">
+                      仓位
+                      <input
+                        v-model="inventoryBatchDraft.location"
+                        :disabled="!apiRecord"
+                        class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                      >
+                    </label>
+                    <label class="text-xs font-semibold text-slate-500">
+                      初始KG
+                      <input
+                        v-model="inventoryBatchDraft.initial_weight_kg"
+                        :disabled="!apiRecord"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-right text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                      >
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    :disabled="!apiRecord"
+                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                    @click="createInventoryBatchFromDraft"
+                  >
+                    <Plus class="size-4" aria-hidden="true" />
+                    新增批次
+                  </button>
+                </div>
+              </div>
+
+              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table class="min-w-[720px] divide-y divide-slate-200 text-sm">
+                  <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                    <tr>
+                      <th class="px-4 py-3">原料</th>
+                      <th class="px-4 py-3">批次号</th>
+                      <th class="px-4 py-3">仓位</th>
+                      <th class="px-4 py-3 text-right">初始KG</th>
+                      <th class="px-4 py-3 text-right">可用KG</th>
+                    </tr>
+                  </thead>
+                  <tbody v-if="activeInventoryBatches.length" class="divide-y divide-slate-100">
+                    <tr v-for="batch in activeInventoryBatches" :key="batch.id">
+                      <td class="px-4 py-3 font-medium">{{ batch.material }}</td>
+                      <td class="px-4 py-3">{{ batch.batch_no }}</td>
+                      <td class="px-4 py-3">{{ batch.location || '未填' }}</td>
+                      <td class="px-4 py-3 text-right">{{ formatWeight(batch.initial_weight_kg) }}</td>
+                      <td class="px-4 py-3 text-right">{{ formatWeight(batch.available_weight_kg) }}</td>
+                    </tr>
+                  </tbody>
+                  <tbody v-else>
+                    <tr>
+                      <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">
+                        暂无库存批次。
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[960px] divide-y divide-slate-200 text-sm">
+              <table class="min-w-[1120px] divide-y divide-slate-200 text-sm">
+                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                  <tr>
+                    <th class="px-4 py-3">时间</th>
+                    <th class="px-4 py-3">类型</th>
+                    <th class="px-4 py-3">原料</th>
+                    <th class="px-4 py-3">批次号</th>
+                    <th class="px-4 py-3">领料单</th>
+                    <th class="px-4 py-3 text-right">变动KG</th>
+                    <th class="px-4 py-3 text-right">变动前</th>
+                    <th class="px-4 py-3 text-right">变动后</th>
+                    <th class="px-4 py-3">操作人</th>
+                    <th class="px-4 py-3">说明</th>
+                  </tr>
+                </thead>
+                <tbody v-if="activeInventoryMovements.length" class="divide-y divide-slate-100">
+                  <tr v-for="movement in activeInventoryMovements" :key="movement.id">
+                    <td class="px-4 py-3">{{ movement.created_at }}</td>
+                    <td class="px-4 py-3">
+                      <StatusPill
+                        :label="movement.movement_type"
+                        :tone="movement.quantity_kg < 0 ? 'amber' : 'green'"
+                        compact
+                      />
+                    </td>
+                    <td class="px-4 py-3 font-medium">{{ movement.material }}</td>
+                    <td class="px-4 py-3">{{ movement.batch_no }}</td>
+                    <td class="px-4 py-3">{{ movement.req_number || '无' }}</td>
+                    <td
+                      class="px-4 py-3 text-right font-semibold"
+                      :class="movement.quantity_kg < 0 ? 'text-amber-700' : 'text-emerald-700'"
+                    >
+                      {{ formatMovementWeight(movement.quantity_kg) }}
+                    </td>
+                    <td class="px-4 py-3 text-right">{{ formatWeight(movement.before_weight_kg) }}</td>
+                    <td class="px-4 py-3 text-right">{{ formatWeight(movement.after_weight_kg) }}</td>
+                    <td class="px-4 py-3">{{ movement.actor_name || '仓库' }}</td>
+                    <td class="px-4 py-3 text-slate-600">{{ movement.reason || '库存变动' }}</td>
+                  </tr>
+                </tbody>
+                <tbody v-else>
+                  <tr>
+                    <td colspan="10" class="px-4 py-8 text-center text-sm text-slate-500">
+                      暂无库存流水。
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table class="min-w-[1120px] divide-y divide-slate-200 text-sm">
                 <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                   <tr>
                     <th class="px-4 py-3">领料单号</th>
@@ -1359,6 +1979,7 @@ watchEffect(() => {
                     <th class="px-4 py-3">原料</th>
                     <th class="px-4 py-3 text-right">申请KG</th>
                     <th class="px-4 py-3">申请人</th>
+                    <th class="px-4 py-3">库存批次</th>
                     <th class="px-4 py-3">状态</th>
                     <th class="px-4 py-3">出库时间</th>
                     <th class="px-4 py-3 text-right">操作</th>
@@ -1373,6 +1994,28 @@ watchEffect(() => {
                     <td class="px-4 py-3 text-right">{{ formatWeight(requisition.requested_weight_kg) }}</td>
                     <td class="px-4 py-3">{{ requisition.applicant }}</td>
                     <td class="px-4 py-3">
+                      <span v-if="requisition.status === '已出库'" class="text-slate-700">
+                        {{ requisition.inventory_batch_no || '未记录' }}
+                      </span>
+                      <select
+                        v-else
+                        :value="defaultInventoryBatchId(requisition)"
+                        :disabled="!apiRecord"
+                        class="h-9 w-48 rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                        @change="selectedInventoryBatchIds = { ...selectedInventoryBatchIds, [requisition.id]: readInputValue($event) }"
+                      >
+                        <option value="">选择批次</option>
+                        <option
+                          v-for="batch in inventoryBatchesForMaterial(requisition.material)"
+                          :key="batch.id"
+                          :value="batch.id"
+                          :disabled="batch.available_weight_kg < (requisition.requested_weight_kg ?? 0)"
+                        >
+                          {{ batch.batch_no }} / {{ formatWeight(batch.available_weight_kg) }}KG
+                        </option>
+                      </select>
+                    </td>
+                    <td class="px-4 py-3">
                       <StatusPill
                         :label="requisition.status"
                         :tone="requisition.status === '已出库' ? 'green' : 'amber'"
@@ -1386,7 +2029,7 @@ watchEffect(() => {
                           type="button"
                           :disabled="requisition.status === '已出库' || !apiRecord"
                           class="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-200 px-2 text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                          @click="markRequisitionIssued(requisition.id)"
+                          @click="markRequisitionIssued(requisition)"
                         >
                           <CheckCircle2 class="size-3.5" aria-hidden="true" />
                           出库
@@ -1406,7 +2049,7 @@ watchEffect(() => {
                 </tbody>
                 <tbody v-else>
                   <tr>
-                    <td colspan="9" class="px-4 py-8 text-center text-sm text-slate-500">
+                    <td colspan="10" class="px-4 py-8 text-center text-sm text-slate-500">
                       暂无领料单，确认用料重量后可生成。
                     </td>
                   </tr>

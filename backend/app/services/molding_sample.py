@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -12,13 +12,18 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.molding_sample import (
     MoldingSampleAuditLog,
     MoldingSampleAuthPin,
+    MoldingSampleInventoryBatch,
+    MoldingSampleInventoryMovement,
     MoldingSampleItem,
     MoldingSampleMaterialPrice,
     MoldingSampleOrder,
+    MoldingSamplePinAttempt,
     MoldingSampleRequisition,
+    MoldingSampleSensitiveAuditLog,
     MoldingSampleSetting,
 )
 from app.schemas.molding_sample import (
+    InventoryBatchCreateRequest,
     MaterialPriceIn,
     MoldingSampleCreateRequest,
     MoldingSampleEditRequest,
@@ -28,6 +33,7 @@ from app.schemas.molding_sample import (
     PinVerifyRequest,
     RequisitionCreateRequest,
     RequisitionStatusRequest,
+    ResetSupervisorPinRequest,
 )
 
 KG_TO_LB = 2.20462
@@ -50,6 +56,11 @@ DEFAULT_AUTH_USERS = [
 ]
 DEFAULT_PIN = "1234"
 PIN_HASH_ITERATIONS = 120_000
+PIN_MAX_FAILED_ATTEMPTS = 5
+PIN_LOCK_MINUTES = 15
+PIN_LOCKED_DETAIL = f"PIN 已锁定，请 {PIN_LOCK_MINUTES} 分钟后再试"
+PIN_MUST_CHANGE_DETAIL = "请先修改默认 PIN 后再执行此操作"
+SENSITIVE_AUDIT_LIST_LIMIT = 200
 
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
 ALLOWED_ITEM_PATCH_FIELDS = {
@@ -65,8 +76,22 @@ def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+def parse_time_text(value: str) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
 def round_money(value: float) -> float:
     return round(value + 1e-9, 2)
+
+
+def round_weight(value: float) -> float:
+    return round(value + 1e-9, 3)
 
 
 def hash_pin(pin: str, salt: str) -> str:
@@ -130,14 +155,88 @@ def get_auth_pin(db: Session, name: str, role: str) -> MoldingSampleAuthPin | No
     )
 
 
-def require_valid_pin(db: Session, name: str, role: str, pin: str) -> MoldingSampleAuthPin:
+def pin_attempt_key(name: str, role: str) -> str:
+    return f"{role}-{name}"
+
+
+def get_pin_attempt(db: Session, name: str, role: str) -> MoldingSamplePinAttempt | None:
+    return db.get(MoldingSamplePinAttempt, pin_attempt_key(name, role))
+
+
+def get_or_create_pin_attempt(db: Session, name: str, role: str) -> MoldingSamplePinAttempt:
+    attempt = get_pin_attempt(db, name, role)
+    if attempt is not None:
+        return attempt
+
+    attempt = MoldingSamplePinAttempt(
+        id=pin_attempt_key(name, role),
+        name=name,
+        role=role,
+        failed_count=0,
+        locked_until="",
+        updated_at=now_text(),
+    )
+    db.add(attempt)
+    return attempt
+
+
+def ensure_pin_not_locked(db: Session, name: str, role: str) -> None:
+    attempt = get_pin_attempt(db, name, role)
+    if attempt is None or not attempt.locked_until:
+        return
+
+    locked_until = parse_time_text(attempt.locked_until)
+    if locked_until and locked_until > datetime.now():
+        raise HTTPException(status_code=429, detail=PIN_LOCKED_DETAIL)
+
+    attempt.failed_count = 0
+    attempt.locked_until = ""
+    attempt.updated_at = now_text()
+    db.commit()
+
+
+def record_pin_failure(db: Session, name: str, role: str) -> None:
+    attempt = get_or_create_pin_attempt(db, name, role)
+    attempt.failed_count += 1
+    attempt.updated_at = now_text()
+
+    if attempt.failed_count >= PIN_MAX_FAILED_ATTEMPTS:
+        attempt.locked_until = (datetime.now() + timedelta(minutes=PIN_LOCK_MINUTES)).strftime("%Y-%m-%d %H:%M")
+        db.commit()
+        raise HTTPException(status_code=429, detail=PIN_LOCKED_DETAIL)
+
+    db.commit()
+    raise HTTPException(status_code=401, detail="PIN 无效")
+
+
+def reset_pin_failures(db: Session, name: str, role: str) -> None:
+    attempt = get_pin_attempt(db, name, role)
+    if attempt is None:
+        return
+
+    attempt.failed_count = 0
+    attempt.locked_until = ""
+    attempt.updated_at = now_text()
+    db.commit()
+
+
+def require_valid_pin(db: Session, name: str, role: str, pin: str, allow_must_change: bool = False) -> MoldingSampleAuthPin:
+    if name and role:
+        ensure_pin_not_locked(db, name, role)
+
     auth_pin = get_auth_pin(db, name, role)
     if not auth_pin or not pin:
+        if name and role:
+            record_pin_failure(db, name, role)
         raise HTTPException(status_code=401, detail="PIN 无效")
 
     expected = hash_pin(pin, auth_pin.pin_salt)
     if not hmac.compare_digest(expected, auth_pin.pin_hash):
-        raise HTTPException(status_code=401, detail="PIN 无效")
+        record_pin_failure(db, name, role)
+
+    reset_pin_failures(db, name, role)
+    if auth_pin.must_change and not allow_must_change:
+        raise HTTPException(status_code=403, detail=PIN_MUST_CHANGE_DETAIL)
 
     return auth_pin
 
@@ -158,7 +257,7 @@ def list_auth_roles(db: Session) -> dict[str, list[dict[str, Any]]]:
 
 
 def verify_pin(db: Session, payload: PinVerifyRequest) -> dict[str, Any]:
-    auth_pin = require_valid_pin(db, payload.name, payload.role, payload.pin)
+    auth_pin = require_valid_pin(db, payload.name, payload.role, payload.pin, allow_must_change=True)
     return {
         "valid": True,
         "name": auth_pin.name,
@@ -167,16 +266,61 @@ def verify_pin(db: Session, payload: PinVerifyRequest) -> dict[str, Any]:
     }
 
 
-def change_pin(db: Session, payload: PinChangeRequest) -> dict[str, Any]:
-    if len(payload.new_pin.strip()) < 4:
-        raise HTTPException(status_code=400, detail="新 PIN 至少需要 4 位")
+def append_sensitive_audit(
+    db: Session,
+    action: str,
+    actor_name: str,
+    actor_role: str,
+    target_type: str,
+    target_name: str,
+    detail: str,
+) -> None:
+    db.add(
+        MoldingSampleSensitiveAuditLog(
+            action=action,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            target_type=target_type,
+            target_name=target_name,
+            detail=detail,
+            created_at=now_text(),
+        )
+    )
 
-    auth_pin = require_valid_pin(db, payload.name, payload.role, payload.old_pin)
+
+def list_sensitive_audit_logs(db: Session) -> list[MoldingSampleSensitiveAuditLog]:
+    return list(
+        db.scalars(
+            select(MoldingSampleSensitiveAuditLog)
+            .order_by(MoldingSampleSensitiveAuditLog.id.desc())
+            .limit(SENSITIVE_AUDIT_LIST_LIMIT)
+        ).all()
+    )
+
+
+def change_pin(db: Session, payload: PinChangeRequest) -> dict[str, Any]:
+    old_pin = payload.old_pin.strip()
+    new_pin = payload.new_pin.strip()
+    if len(new_pin) < 4:
+        raise HTTPException(status_code=400, detail="新 PIN 至少需要 4 位")
+    if new_pin == old_pin:
+        raise HTTPException(status_code=400, detail="新 PIN 不能与旧 PIN 相同")
+
+    auth_pin = require_valid_pin(db, payload.name, payload.role, old_pin, allow_must_change=True)
     salt = secrets.token_hex(16)
     auth_pin.pin_salt = salt
-    auth_pin.pin_hash = hash_pin(payload.new_pin.strip(), salt)
+    auth_pin.pin_hash = hash_pin(new_pin, salt)
     auth_pin.must_change = 0
     auth_pin.updated_at = now_text()
+    append_sensitive_audit(
+        db,
+        action="修改PIN",
+        actor_name=payload.name,
+        actor_role=payload.role,
+        target_type="auth_pin",
+        target_name=payload.name,
+        detail=f"{payload.role} {payload.name} 修改了自己的 PIN。",
+    )
     db.commit()
 
     return {
@@ -184,6 +328,45 @@ def change_pin(db: Session, payload: PinChangeRequest) -> dict[str, Any]:
         "name": auth_pin.name,
         "role": auth_pin.role,
         "must_change": False,
+    }
+
+
+def reset_supervisor_pin(db: Session, payload: ResetSupervisorPinRequest) -> dict[str, Any]:
+    new_pin = payload.new_pin.strip()
+    if len(new_pin) < 4:
+        raise HTTPException(status_code=400, detail="新 PIN 至少需要 4 位")
+
+    require_valid_pin(db, payload.manager_name, "经理", payload.manager_pin)
+    supervisor_name = payload.supervisor_name.strip()
+    if not supervisor_name:
+        raise HTTPException(status_code=400, detail="主管姓名不能为空")
+
+    auth_pin = get_auth_pin(db, supervisor_name, "主管")
+    if not auth_pin:
+        auth_pin = make_auth_pin(supervisor_name, "主管", new_pin)
+        db.add(auth_pin)
+    else:
+        salt = secrets.token_hex(16)
+        auth_pin.pin_salt = salt
+        auth_pin.pin_hash = hash_pin(new_pin, salt)
+        auth_pin.must_change = 1
+        auth_pin.updated_at = now_text()
+
+    append_sensitive_audit(
+        db,
+        action="重置主管PIN",
+        actor_name=payload.manager_name,
+        actor_role="经理",
+        target_type="auth_pin",
+        target_name=supervisor_name,
+        detail=f"经理 {payload.manager_name} 重置主管 {supervisor_name} 的 PIN，已要求首次修改。",
+    )
+    db.commit()
+
+    return {
+        "name": supervisor_name,
+        "role": "主管",
+        "must_change": True,
     }
 
 
@@ -399,6 +582,105 @@ def delete_order(
     db.commit()
 
 
+def list_inventory_batches(db: Session, material: str | None = None) -> list[MoldingSampleInventoryBatch]:
+    statement = select(MoldingSampleInventoryBatch).order_by(
+        MoldingSampleInventoryBatch.material,
+        MoldingSampleInventoryBatch.batch_no,
+    )
+    if material:
+        statement = statement.where(MoldingSampleInventoryBatch.material == material.strip())
+
+    return list(db.scalars(statement).all())
+
+
+def create_inventory_batch(db: Session, payload: InventoryBatchCreateRequest) -> MoldingSampleInventoryBatch:
+    if payload.initial_weight_kg <= 0:
+        raise HTTPException(status_code=400, detail="批次初始重量必须大于 0")
+
+    material = payload.material.strip()
+    batch_no = payload.batch_no.strip()
+    existing_batch = db.scalar(
+        select(MoldingSampleInventoryBatch).where(
+            MoldingSampleInventoryBatch.material == material,
+            MoldingSampleInventoryBatch.batch_no == batch_no,
+        )
+    )
+    if existing_batch:
+        raise HTTPException(status_code=409, detail="库存批次已存在")
+
+    now = now_text()
+    batch = MoldingSampleInventoryBatch(
+        id=f"batch-{uuid4().hex}",
+        material=material,
+        batch_no=batch_no,
+        location=payload.location.strip(),
+        initial_weight_kg=round_weight(payload.initial_weight_kg),
+        available_weight_kg=round_weight(payload.initial_weight_kg),
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(batch)
+    append_inventory_movement(
+        db,
+        batch=batch,
+        movement_type="新增批次",
+        quantity_kg=batch.initial_weight_kg,
+        before_weight_kg=0,
+        after_weight_kg=batch.available_weight_kg,
+        actor_name="仓库",
+        reason="新增库存批次。",
+    )
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+def append_inventory_movement(
+    db: Session,
+    batch: MoldingSampleInventoryBatch,
+    movement_type: str,
+    quantity_kg: float,
+    before_weight_kg: float,
+    after_weight_kg: float,
+    requisition: MoldingSampleRequisition | None = None,
+    actor_name: str = "仓库",
+    reason: str = "",
+) -> None:
+    db.add(
+        MoldingSampleInventoryMovement(
+            batch_id=batch.id,
+            batch_no=batch.batch_no,
+            requisition_id=requisition.id if requisition else "",
+            req_number=requisition.req_number if requisition else "",
+            material=batch.material,
+            movement_type=movement_type,
+            quantity_kg=round_weight(quantity_kg),
+            before_weight_kg=round_weight(before_weight_kg),
+            after_weight_kg=round_weight(after_weight_kg),
+            actor_name=actor_name,
+            reason=reason,
+            created_at=now_text(),
+        )
+    )
+
+
+def list_inventory_movements(
+    db: Session,
+    batch_id: str | None = None,
+    material: str | None = None,
+    requisition_id: str | None = None,
+) -> list[MoldingSampleInventoryMovement]:
+    statement = select(MoldingSampleInventoryMovement).order_by(MoldingSampleInventoryMovement.id.desc())
+    if batch_id:
+        statement = statement.where(MoldingSampleInventoryMovement.batch_id == batch_id)
+    if material:
+        statement = statement.where(MoldingSampleInventoryMovement.material == material.strip())
+    if requisition_id:
+        statement = statement.where(MoldingSampleInventoryMovement.requisition_id == requisition_id)
+
+    return list(db.scalars(statement).all())
+
+
 def next_requisition_number(db: Session, date: str) -> str:
     date_token = date.replace("-", "")
     prefix = f"LL-{date_token}-"
@@ -455,6 +737,8 @@ def create_requisition(db: Session, payload: RequisitionCreateRequest) -> Moldin
         requested_weight_kg=payload.requested_weight_kg,
         applicant=payload.applicant.strip(),
         notes=notes,
+        inventory_batch_id="",
+        inventory_batch_no="",
         status="待出库",
         issued_at="",
         created_at=now_text(),
@@ -477,6 +761,56 @@ def update_requisition_status(
     if payload.status not in {"待出库", "已出库"}:
         raise HTTPException(status_code=400, detail="领料单状态无效")
 
+    previous_status = requisition.status
+    if payload.status == "已出库" and payload.inventory_batch_id:
+        if previous_status == "已出库" and requisition.inventory_batch_id:
+            raise HTTPException(status_code=400, detail="领料单已出库")
+
+        batch = db.get(MoldingSampleInventoryBatch, payload.inventory_batch_id)
+        if not batch:
+            raise HTTPException(status_code=404, detail="库存批次不存在")
+        if batch.material != requisition.material:
+            raise HTTPException(status_code=400, detail="批次原料不匹配")
+        if batch.available_weight_kg < requisition.requested_weight_kg:
+            raise HTTPException(status_code=400, detail="库存不足")
+
+        before_weight = batch.available_weight_kg
+        after_weight = round_weight(before_weight - requisition.requested_weight_kg)
+        batch.available_weight_kg = after_weight
+        batch.updated_at = now_text()
+        requisition.inventory_batch_id = batch.id
+        requisition.inventory_batch_no = batch.batch_no
+        append_inventory_movement(
+            db,
+            batch=batch,
+            movement_type="出库扣减",
+            quantity_kg=-requisition.requested_weight_kg,
+            before_weight_kg=before_weight,
+            after_weight_kg=after_weight,
+            requisition=requisition,
+            reason="领料单出库扣减库存。",
+        )
+
+    if payload.status == "待出库" and previous_status == "已出库" and requisition.inventory_batch_id:
+        batch = db.get(MoldingSampleInventoryBatch, requisition.inventory_batch_id)
+        if batch:
+            before_weight = batch.available_weight_kg
+            after_weight = round_weight(before_weight + requisition.requested_weight_kg)
+            batch.available_weight_kg = after_weight
+            batch.updated_at = now_text()
+            append_inventory_movement(
+                db,
+                batch=batch,
+                movement_type="撤回出库",
+                quantity_kg=requisition.requested_weight_kg,
+                before_weight_kg=before_weight,
+                after_weight_kg=after_weight,
+                requisition=requisition,
+                reason="领料单状态退回待出库，恢复库存。",
+            )
+        requisition.inventory_batch_id = ""
+        requisition.inventory_batch_no = ""
+
     requisition.status = payload.status
     requisition.issued_at = payload.issued_at if payload.status == "已出库" else ""
     if payload.status == "已出库" and not requisition.issued_at:
@@ -491,6 +825,24 @@ def delete_requisition(db: Session, requisition_id: str) -> None:
     requisition = db.get(MoldingSampleRequisition, requisition_id)
     if not requisition:
         raise HTTPException(status_code=404, detail="领料单不存在")
+
+    if requisition.status == "已出库" and requisition.inventory_batch_id:
+        batch = db.get(MoldingSampleInventoryBatch, requisition.inventory_batch_id)
+        if batch:
+            before_weight = batch.available_weight_kg
+            after_weight = round_weight(before_weight + requisition.requested_weight_kg)
+            batch.available_weight_kg = after_weight
+            batch.updated_at = now_text()
+            append_inventory_movement(
+                db,
+                batch=batch,
+                movement_type="删除领料单恢复",
+                quantity_kg=requisition.requested_weight_kg,
+                before_weight_kg=before_weight,
+                after_weight_kg=after_weight,
+                requisition=requisition,
+                reason="删除已出库领料单，恢复库存。",
+            )
 
     db.delete(requisition)
     db.commit()
@@ -649,6 +1001,15 @@ def replace_material_prices(
     else:
         db.add(MoldingSampleSetting(key=RATE_KEY, value=str(rmb_to_hkd_rate)))
 
+    append_sensitive_audit(
+        db,
+        action="经理更新价格口径",
+        actor_name=manager_name,
+        actor_role="经理",
+        target_type="material_prices",
+        target_name="原料价格表",
+        detail=f"更新 {len(prices)} 条原料价格，汇率 {rmb_to_hkd_rate}。",
+    )
     db.commit()
     return {"prices": get_prices(db), "rmb_to_hkd_rate": get_exchange_rate(db)}
 
