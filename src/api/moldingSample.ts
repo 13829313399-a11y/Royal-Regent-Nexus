@@ -79,6 +79,13 @@ export interface PinChangeRequest {
   new_pin: string
 }
 
+export interface ResetSupervisorPinRequest {
+  manager_name: string
+  manager_pin: string
+  supervisor_name: string
+  new_pin?: string
+}
+
 export interface PinVerifyResponse {
   valid: boolean
   name: string
@@ -140,6 +147,39 @@ export interface InventoryBatchResponse {
   available_weight_kg: number
   created_at: string
   updated_at: string
+}
+
+export interface InventoryMovementFilters {
+  batch_id?: string
+  material?: string
+  requisition_id?: string
+}
+
+export interface InventoryMovementResponse {
+  id: number
+  batch_id: string
+  batch_no: string
+  requisition_id: string
+  req_number: string
+  material: string
+  movement_type: string
+  quantity_kg: number
+  before_weight_kg: number
+  after_weight_kg: number
+  actor_name: string
+  reason: string
+  created_at: string
+}
+
+export interface SensitiveAuditLogResponse {
+  id: number
+  action: string
+  actor_name: string
+  actor_role: string
+  target_type: string
+  target_name: string
+  detail: string
+  created_at: string
 }
 
 export interface InjectionTotalCostSummary {
@@ -219,6 +259,21 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const response = await client.get<InventoryBatchResponse[]>(url)
       return response.data
     },
+    async listInventoryMovements(filters: InventoryMovementFilters = {}) {
+      const params = new URLSearchParams()
+      if (filters.batch_id) {
+        params.set('batch_id', filters.batch_id)
+      }
+      if (filters.material) {
+        params.set('material', filters.material)
+      }
+      if (filters.requisition_id) {
+        params.set('requisition_id', filters.requisition_id)
+      }
+      const query = params.toString()
+      const response = await client.get<InventoryMovementResponse[]>(query ? `/inventory-movements?${query}` : '/inventory-movements')
+      return response.data
+    },
     async createInventoryBatch(payload: InventoryBatchCreateRequest) {
       const response = await client.post<InventoryBatchResponse>('/inventory-batches', payload)
       return response.data
@@ -241,6 +296,14 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
     },
     async changePin(payload: PinChangeRequest) {
       const response = await client.post<PinVerifyResponse>('/change-pin', payload)
+      return response.data
+    },
+    async resetSupervisorPin(payload: ResetSupervisorPinRequest) {
+      const response = await client.post<{ name: string, role: MoldingSampleRole, must_change: boolean }>('/reset-supervisor-pin', payload)
+      return response.data
+    },
+    async listSensitiveAuditLogs() {
+      const response = await client.get<SensitiveAuditLogResponse[]>('/sensitive-audit-logs')
       return response.data
     },
     async getTotalCosts() {

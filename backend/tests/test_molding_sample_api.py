@@ -364,6 +364,60 @@ def test_roles_pin_verification_change_pin_and_manager_price_gate(client):
     assert update_with_new_pin_response.json()["rmb_to_hkd_rate"] == 1.1
 
 
+def test_sensitive_operations_write_audit_logs_and_reset_supervisor_pin(client):
+    update_response = client.post(
+        "/api/manager-update-prices",
+        json={
+            "prices": [{"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"}],
+            "rmb_to_hkd_rate": 1.1,
+            "manager_name": "王经理",
+            "manager_pin": "1234",
+        },
+    )
+    assert update_response.status_code == 200
+
+    change_response = client.post(
+        "/api/change-pin",
+        json={
+            "name": "王经理",
+            "role": "经理",
+            "old_pin": "1234",
+            "new_pin": "6789",
+        },
+    )
+    assert change_response.status_code == 200
+
+    reset_response = client.post(
+        "/api/reset-supervisor-pin",
+        json={
+            "manager_name": "王经理",
+            "manager_pin": "6789",
+            "supervisor_name": "李主管",
+            "new_pin": "2468",
+        },
+    )
+    assert reset_response.status_code == 200
+    assert reset_response.json() == {"name": "李主管", "role": "主管", "must_change": True}
+
+    verify_reset_response = client.post(
+        "/api/verify-pin",
+        json={"name": "李主管", "role": "主管", "pin": "2468"},
+    )
+    assert verify_reset_response.status_code == 200
+    assert verify_reset_response.json()["must_change"] is True
+
+    logs_response = client.get("/api/sensitive-audit-logs")
+    assert logs_response.status_code == 200
+    logs = logs_response.json()
+    assert [row["action"] for row in logs[:3]] == ["重置主管PIN", "修改PIN", "经理更新价格口径"]
+    assert logs[0]["actor_name"] == "王经理"
+    assert logs[0]["actor_role"] == "经理"
+    assert logs[0]["target_type"] == "auth_pin"
+    assert logs[0]["target_name"] == "李主管"
+    assert "2468" not in logs[0]["detail"]
+    assert logs[2]["detail"] == "更新 1 条原料价格，汇率 1.1。"
+
+
 def test_engineering_can_edit_and_delete_unlocked_orders(client):
     client.post("/api/injection", json=sample_order_payload("BP-EDIT-001"))
 
@@ -607,3 +661,93 @@ def test_warehouse_inventory_batch_is_deducted_when_requisition_is_issued(client
     )
     assert blocked_response.status_code == 400
     assert blocked_response.json()["detail"] == "库存不足"
+
+
+def test_inventory_movements_track_batch_create_issue_revert_and_delete(client):
+    client.post("/api/injection", json=sample_order_payload("BP-MOVE-001"))
+
+    batch_response = client.post(
+        "/api/inventory-batches",
+        json={
+            "material": "HIPS 425",
+            "batch_no": "HIPS-MOVE-A",
+            "location": "A-01",
+            "initial_weight_kg": 5,
+        },
+    )
+    assert batch_response.status_code == 201
+    batch = batch_response.json()
+
+    created_movements_response = client.get("/api/inventory-movements", params={"batch_id": batch["id"]})
+    assert created_movements_response.status_code == 200
+    created_movements = created_movements_response.json()
+    assert created_movements[0]["movement_type"] == "新增批次"
+    assert created_movements[0]["quantity_kg"] == 5
+    assert created_movements[0]["before_weight_kg"] == 0
+    assert created_movements[0]["after_weight_kg"] == 5
+
+    requisition_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-01",
+            "order_id": "BP-MOVE-001",
+            "material": "HIPS 425",
+            "requested_weight_kg": 2,
+            "applicant": "肖科",
+            "notes": "M-001 · 左右枪身",
+        },
+    )
+    assert requisition_response.status_code == 201
+    requisition = requisition_response.json()
+
+    issue_response = client.patch(
+        f"/api/requisitions/{requisition['id']}/status",
+        json={
+            "status": "已出库",
+            "issued_at": "2026-07-01 15:30",
+            "inventory_batch_id": batch["id"],
+        },
+    )
+    assert issue_response.status_code == 200
+
+    issued_movements = client.get("/api/inventory-movements", params={"batch_id": batch["id"]}).json()
+    issue_movement = issued_movements[0]
+    assert issue_movement["movement_type"] == "出库扣减"
+    assert issue_movement["quantity_kg"] == -2
+    assert issue_movement["before_weight_kg"] == 5
+    assert issue_movement["after_weight_kg"] == 3
+    assert issue_movement["requisition_id"] == requisition["id"]
+    assert issue_movement["req_number"] == requisition["req_number"]
+
+    revert_response = client.patch(
+        f"/api/requisitions/{requisition['id']}/status",
+        json={"status": "待出库"},
+    )
+    assert revert_response.status_code == 200
+
+    reverted_movements = client.get("/api/inventory-movements", params={"batch_id": batch["id"]}).json()
+    revert_movement = reverted_movements[0]
+    assert revert_movement["movement_type"] == "撤回出库"
+    assert revert_movement["quantity_kg"] == 2
+    assert revert_movement["before_weight_kg"] == 3
+    assert revert_movement["after_weight_kg"] == 5
+
+    second_issue_response = client.patch(
+        f"/api/requisitions/{requisition['id']}/status",
+        json={
+            "status": "已出库",
+            "issued_at": "2026-07-01 16:00",
+            "inventory_batch_id": batch["id"],
+        },
+    )
+    assert second_issue_response.status_code == 200
+
+    delete_response = client.delete(f"/api/requisitions/{requisition['id']}")
+    assert delete_response.status_code == 204
+
+    deleted_movements = client.get("/api/inventory-movements", params={"batch_id": batch["id"]}).json()
+    delete_movement = deleted_movements[0]
+    assert delete_movement["movement_type"] == "删除领料单恢复"
+    assert delete_movement["quantity_kg"] == 2
+    assert delete_movement["before_weight_kg"] == 3
+    assert delete_movement["after_weight_kg"] == 5

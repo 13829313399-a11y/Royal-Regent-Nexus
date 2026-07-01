@@ -50,9 +50,11 @@ import { useAppStore } from '@/stores/app'
 import {
   moldingSampleApi,
   type InventoryBatchResponse,
+  type InventoryMovementResponse,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
   type RequisitionResponse,
+  type SensitiveAuditLogResponse,
 } from '@/api/moldingSample'
 import { getApiErrorMessage } from '@/lib/http'
 
@@ -104,12 +106,18 @@ const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiRecord = ref<MoldingSampleDetailResponse | null>(null)
 const apiRequisitions = ref<RequisitionResponse[]>([])
 const apiInventoryBatches = ref<InventoryBatchResponse[]>([])
+const apiInventoryMovements = ref<InventoryMovementResponse[]>([])
+const apiSensitiveAuditLogs = ref<SensitiveAuditLogResponse[]>([])
 const selectedInventoryBatchIds = ref<Record<string, string>>({})
 const inventoryBatchDraft = ref({
   material: '',
   batch_no: '',
   location: '试啤仓',
   initial_weight_kg: '5',
+})
+const supervisorPinResetDraft = ref({
+  supervisor_name: '李主管',
+  new_pin: '1234',
 })
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
 const apiMessage = ref('正在检查后端 API...')
@@ -199,6 +207,8 @@ const activeProblems = computed(() => [
 ])
 const activeRequisitions = computed(() => activeRecord.value.requisitions)
 const activeInventoryBatches = computed(() => apiInventoryBatches.value)
+const activeInventoryMovements = computed(() => apiInventoryMovements.value)
+const activeSensitiveAuditLogs = computed(() => apiSensitiveAuditLogs.value)
 const warehouseMaterials = computed(() => Array.from(new Set(activeItems.value.map((item) => item.material).filter(Boolean))))
 const isExternalOrder = computed(() => isExternalMoldingSampleOrder(activeOrder.value))
 const completionGate = computed(() => buildCompletionGate(activeOrder.value, activeItems.value))
@@ -251,6 +261,12 @@ function defaultInventoryBatchId(requisition: MoldingSampleRequisition) {
 function syncInventoryBatchDraftMaterial() {
   if (!inventoryBatchDraft.value.material) {
     inventoryBatchDraft.value.material = activeItems.value[0]?.material ?? ''
+  }
+}
+
+function syncSupervisorPinResetDraft() {
+  if (!supervisorPinResetDraft.value.supervisor_name) {
+    supervisorPinResetDraft.value.supervisor_name = activeOrder.value.supervisor || '李主管'
   }
 }
 
@@ -325,32 +341,33 @@ async function refreshActiveRequisitions() {
   apiRequisitions.value = await moldingSampleApi.listRequisitions(apiRecord.value.order.id)
 }
 
-async function refreshInventoryBatches() {
-  if (!apiRecord.value) {
-    apiInventoryBatches.value = []
-    selectedInventoryBatchIds.value = {}
-    return
-  }
-
-  apiInventoryBatches.value = await moldingSampleApi.listInventoryBatches()
-  syncInventoryBatchDraftMaterial()
-}
-
 async function refreshWarehouseData() {
   if (!apiRecord.value) {
     apiRequisitions.value = []
     apiInventoryBatches.value = []
+    apiInventoryMovements.value = []
     selectedInventoryBatchIds.value = {}
     return
   }
 
-  const [requisitions, inventoryBatches] = await Promise.all([
+  const [requisitions, inventoryBatches, inventoryMovements] = await Promise.all([
     moldingSampleApi.listRequisitions(apiRecord.value.order.id),
     moldingSampleApi.listInventoryBatches(),
+    moldingSampleApi.listInventoryMovements(),
   ])
   apiRequisitions.value = requisitions
   apiInventoryBatches.value = inventoryBatches
+  apiInventoryMovements.value = inventoryMovements
   syncInventoryBatchDraftMaterial()
+}
+
+async function refreshSensitiveAuditLogs() {
+  if (apiState.value === 'fallback') {
+    apiSensitiveAuditLogs.value = []
+    return
+  }
+
+  apiSensitiveAuditLogs.value = await moldingSampleApi.listSensitiveAuditLogs()
 }
 
 async function loadApiData() {
@@ -358,11 +375,13 @@ async function loadApiData() {
   apiMessage.value = '正在检查后端 API...'
 
   try {
-    const [records, pricing] = await Promise.all([
+    const [records, pricing, sensitiveAuditLogs] = await Promise.all([
       moldingSampleApi.listOrders(),
       moldingSampleApi.getMaterialPrices(),
+      moldingSampleApi.listSensitiveAuditLogs(),
     ])
     apiRecords.value = records
+    apiSensitiveAuditLogs.value = sensitiveAuditLogs
     appliedMaterialPrices.value = clonePrices(pricing.prices)
     appliedRmbToHkdRate.value = pricing.rmb_to_hkd_rate
     editableMaterialPrices.value = createEditablePrices(pricing.prices)
@@ -370,6 +389,7 @@ async function loadApiData() {
 
     const selectedRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value) ?? records[0] ?? null
     setApiRecord(selectedRecord)
+    syncSupervisorPinResetDraft()
     await refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
     apiMessage.value = selectedRecord
@@ -380,6 +400,8 @@ async function loadApiData() {
     apiRecords.value = []
     apiRequisitions.value = []
     apiInventoryBatches.value = []
+    apiInventoryMovements.value = []
+    apiSensitiveAuditLogs.value = []
     selectedInventoryBatchIds.value = {}
     setApiRecord(null)
     apiState.value = 'fallback'
@@ -428,6 +450,10 @@ function formatMoney(value: number | null | undefined) {
 
 function formatWeight(value: number | null | undefined) {
   return value === null || value === undefined ? '待填写' : `${value} KG`
+}
+
+function formatMovementWeight(value: number) {
+  return `${value > 0 ? '+' : ''}${value} KG`
 }
 
 function setOrderPatch(patch: Partial<MoldingSampleOrder>) {
@@ -806,7 +832,7 @@ async function createInventoryBatchFromDraft() {
     })
     inventoryBatchDraft.value.batch_no = ''
     inventoryBatchDraft.value.initial_weight_kg = '5'
-    await refreshInventoryBatches()
+    await refreshWarehouseData()
     actionMessage.value = '库存批次已新增。'
   }
   catch (error) {
@@ -950,6 +976,40 @@ async function applyPricingSettings() {
   commitCurrentCostPreview(false)
   appendAudit('经理保存价格表', '经理', '王经理', activeOrder.value.status, activeOrder.value.status, '经理维护原料单价和汇率。', 'blue')
   actionMessage.value = normalized.errors.length ? '价格口径已保存，但存在需要修正的提示。' : '价格口径已保存。'
+}
+
+async function resetSupervisorPin() {
+  if (apiState.value === 'fallback') {
+    actionMessage.value = '当前为前端 mock 数据，不能重置后端主管 PIN。'
+    return
+  }
+
+  if (!managerPin.value.trim()) {
+    actionMessage.value = '请输入经理 PIN 后重置主管 PIN。'
+    return
+  }
+
+  const supervisorName = supervisorPinResetDraft.value.supervisor_name.trim()
+  const newPin = supervisorPinResetDraft.value.new_pin.trim()
+  if (!supervisorName || newPin.length < 4) {
+    actionMessage.value = '请填写主管姓名，并输入至少 4 位的新 PIN。'
+    return
+  }
+
+  try {
+    const updated = await moldingSampleApi.resetSupervisorPin({
+      manager_name: '王经理',
+      manager_pin: managerPin.value.trim(),
+      supervisor_name: supervisorName,
+      new_pin: newPin,
+    })
+    supervisorPinResetDraft.value.new_pin = '1234'
+    await refreshSensitiveAuditLogs()
+    actionMessage.value = `${updated.name} 的主管 PIN 已重置，并要求首次修改。`
+  }
+  catch (error) {
+    actionMessage.value = `重置主管 PIN 失败：${getApiErrorMessage(error)}`
+  }
 }
 
 function resetPricingSettings() {
@@ -1416,6 +1476,72 @@ watchEffect(() => {
                 </table>
               </div>
             </div>
+
+            <div class="mt-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+              <div class="rounded-lg border border-slate-200 bg-white p-4">
+                <h3 class="font-semibold">主管 PIN 重置</h3>
+                <div class="mt-4 grid gap-3">
+                  <label class="text-xs font-semibold text-slate-500">
+                    主管姓名
+                    <input
+                      v-model="supervisorPinResetDraft.supervisor_name"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                    >
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    新 PIN
+                    <input
+                      v-model="supervisorPinResetDraft.new_pin"
+                      type="password"
+                      inputmode="numeric"
+                      autocomplete="new-password"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                    >
+                  </label>
+                  <button
+                    type="button"
+                    :disabled="apiState === 'fallback'"
+                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                    @click="resetSupervisorPin"
+                  >
+                    <ShieldCheck class="size-4" aria-hidden="true" />
+                    重置主管 PIN
+                  </button>
+                </div>
+              </div>
+
+              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table class="min-w-[860px] divide-y divide-slate-200 text-sm">
+                  <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                    <tr>
+                      <th class="px-4 py-3">时间</th>
+                      <th class="px-4 py-3">动作</th>
+                      <th class="px-4 py-3">操作人</th>
+                      <th class="px-4 py-3">对象</th>
+                      <th class="px-4 py-3">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody v-if="activeSensitiveAuditLogs.length" class="divide-y divide-slate-100">
+                    <tr v-for="log in activeSensitiveAuditLogs" :key="log.id">
+                      <td class="px-4 py-3">{{ log.created_at }}</td>
+                      <td class="px-4 py-3">
+                        <StatusPill :label="log.action" tone="blue" compact />
+                      </td>
+                      <td class="px-4 py-3">{{ log.actor_name }} · {{ log.actor_role }}</td>
+                      <td class="px-4 py-3">{{ log.target_name || log.target_type }}</td>
+                      <td class="px-4 py-3 text-slate-600">{{ log.detail }}</td>
+                    </tr>
+                  </tbody>
+                  <tbody v-else>
+                    <tr>
+                      <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">
+                        暂无敏感操作审计。
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </SectionPanel>
 
           <SectionPanel v-else-if="activeTab === 'warehouse'" title="仓库工作台" subtitle="领料单与出库重量维护">
@@ -1534,6 +1660,57 @@ watchEffect(() => {
                   </tbody>
                 </table>
               </div>
+            </div>
+
+            <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table class="min-w-[1120px] divide-y divide-slate-200 text-sm">
+                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                  <tr>
+                    <th class="px-4 py-3">时间</th>
+                    <th class="px-4 py-3">类型</th>
+                    <th class="px-4 py-3">原料</th>
+                    <th class="px-4 py-3">批次号</th>
+                    <th class="px-4 py-3">领料单</th>
+                    <th class="px-4 py-3 text-right">变动KG</th>
+                    <th class="px-4 py-3 text-right">变动前</th>
+                    <th class="px-4 py-3 text-right">变动后</th>
+                    <th class="px-4 py-3">操作人</th>
+                    <th class="px-4 py-3">说明</th>
+                  </tr>
+                </thead>
+                <tbody v-if="activeInventoryMovements.length" class="divide-y divide-slate-100">
+                  <tr v-for="movement in activeInventoryMovements" :key="movement.id">
+                    <td class="px-4 py-3">{{ movement.created_at }}</td>
+                    <td class="px-4 py-3">
+                      <StatusPill
+                        :label="movement.movement_type"
+                        :tone="movement.quantity_kg < 0 ? 'amber' : 'green'"
+                        compact
+                      />
+                    </td>
+                    <td class="px-4 py-3 font-medium">{{ movement.material }}</td>
+                    <td class="px-4 py-3">{{ movement.batch_no }}</td>
+                    <td class="px-4 py-3">{{ movement.req_number || '无' }}</td>
+                    <td
+                      class="px-4 py-3 text-right font-semibold"
+                      :class="movement.quantity_kg < 0 ? 'text-amber-700' : 'text-emerald-700'"
+                    >
+                      {{ formatMovementWeight(movement.quantity_kg) }}
+                    </td>
+                    <td class="px-4 py-3 text-right">{{ formatWeight(movement.before_weight_kg) }}</td>
+                    <td class="px-4 py-3 text-right">{{ formatWeight(movement.after_weight_kg) }}</td>
+                    <td class="px-4 py-3">{{ movement.actor_name || '仓库' }}</td>
+                    <td class="px-4 py-3 text-slate-600">{{ movement.reason || '库存变动' }}</td>
+                  </tr>
+                </tbody>
+                <tbody v-else>
+                  <tr>
+                    <td colspan="10" class="px-4 py-8 text-center text-sm text-slate-500">
+                      暂无库存流水。
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
 
             <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">

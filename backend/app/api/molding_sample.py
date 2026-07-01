@@ -5,6 +5,7 @@ from app.db import get_db
 from app.schemas.molding_sample import (
     InventoryBatchCreateRequest,
     InventoryBatchOut,
+    InventoryMovementOut,
     MaterialPricesResponse,
     MaterialPricesUpdateRequest,
     MoldingSampleCreateRequest,
@@ -18,7 +19,10 @@ from app.schemas.molding_sample import (
     RequisitionCreateRequest,
     RequisitionOut,
     RequisitionStatusRequest,
+    ResetSupervisorPinRequest,
+    RoleEntry,
     RolesResponse,
+    SensitiveAuditLogOut,
     TotalCostSummary,
 )
 from app.services.molding_sample import (
@@ -33,10 +37,13 @@ from app.services.molding_sample import (
     get_prices,
     list_auth_roles,
     list_inventory_batches,
+    list_inventory_movements,
     list_orders,
     list_requisitions,
+    list_sensitive_audit_logs,
     load_order,
     replace_material_prices,
+    reset_supervisor_pin,
     transition_status,
     update_order,
     update_order_items,
@@ -131,6 +138,16 @@ def post_change_pin(payload: PinChangeRequest, db: Session = Depends(get_db)):
     return change_pin(db, payload)
 
 
+@router.post("/api/reset-supervisor-pin", response_model=RoleEntry)
+def post_reset_supervisor_pin(payload: ResetSupervisorPinRequest, db: Session = Depends(get_db)):
+    return reset_supervisor_pin(db, payload)
+
+
+@router.get("/api/sensitive-audit-logs", response_model=list[SensitiveAuditLogOut])
+def get_sensitive_audit_logs(db: Session = Depends(get_db)):
+    return list_sensitive_audit_logs(db)
+
+
 @router.get("/api/requisitions", response_model=list[RequisitionOut])
 def get_requisitions(order_id: str | None = None, db: Session = Depends(get_db)):
     return list_requisitions(db, order_id=order_id)
@@ -139,6 +156,21 @@ def get_requisitions(order_id: str | None = None, db: Session = Depends(get_db))
 @router.get("/api/inventory-batches", response_model=list[InventoryBatchOut])
 def get_inventory_batches(material: str | None = None, db: Session = Depends(get_db)):
     return list_inventory_batches(db, material=material)
+
+
+@router.get("/api/inventory-movements", response_model=list[InventoryMovementOut])
+def get_inventory_movements(
+    batch_id: str | None = None,
+    material: str | None = None,
+    requisition_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return list_inventory_movements(
+        db,
+        batch_id=batch_id,
+        material=material,
+        requisition_id=requisition_id,
+    )
 
 
 @router.post("/api/inventory-batches", response_model=InventoryBatchOut, status_code=status.HTTP_201_CREATED)

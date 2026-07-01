@@ -158,6 +158,13 @@ class PinChangeRequest(BaseModel):
     new_pin: str
 
 
+class ResetSupervisorPinRequest(BaseModel):
+    manager_name: str
+    manager_pin: str
+    supervisor_name: str
+    new_pin: str = "1234"
+
+
 class PinVerifyResponse(BaseModel):
     valid: bool
     name: str
@@ -227,5 +234,36 @@ class InventoryBatchOut(BaseModel):
     available_weight_kg: float
     created_at: str
     updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryMovementOut(BaseModel):
+    id: int
+    batch_id: str
+    batch_no: str
+    requisition_id: str
+    req_number: str
+    material: str
+    movement_type: str
+    quantity_kg: float
+    before_weight_kg: float
+    after_weight_kg: float
+    actor_name: str
+    reason: str
+    created_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SensitiveAuditLogOut(BaseModel):
+    id: int
+    action: str
+    actor_name: str
+    actor_role: str
+    target_type: str
+    target_name: str
+    detail: str
+    created_at: str
 
     model_config = ConfigDict(from_attributes=True)

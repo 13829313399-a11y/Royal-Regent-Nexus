@@ -85,6 +85,15 @@ await api.changePin({
   new_pin: '6789',
 })
 
+await api.resetSupervisorPin({
+  manager_name: '王经理',
+  manager_pin: '6789',
+  supervisor_name: '李主管',
+  new_pin: '2468',
+})
+
+await api.listSensitiveAuditLogs()
+
 await api.updateItems('BP-1', {
   items: [
     {
@@ -105,6 +114,8 @@ await api.updateMaterialPrices({
 await api.listRequisitions('BP-1')
 
 await api.listInventoryBatches('HIPS 425')
+
+await api.listInventoryMovements({ batch_id: 'BATCH-1', material: 'HIPS 425' })
 
 await api.createInventoryBatch({
   material: 'HIPS 425',
@@ -140,10 +151,13 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'delete /injection/BP-1?actor_name=%E8%82%96%E7%A7%91&actor_role=%E5%B7%A5%E7%A8%8B%E9%83%A8',
   'post /verify-pin',
   'post /change-pin',
+  'post /reset-supervisor-pin',
+  'get /sensitive-audit-logs',
   'patch /injection/BP-1/items',
   'post /manager-update-prices',
   'get /requisitions?order_id=BP-1',
   'get /inventory-batches?material=HIPS+425',
+  'get /inventory-movements?batch_id=BATCH-1&material=HIPS+425',
   'post /inventory-batches',
   'post /requisitions',
   'patch /requisitions/REQ-1/status',

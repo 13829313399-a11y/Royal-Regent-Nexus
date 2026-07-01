@@ -118,6 +118,19 @@ class MoldingSampleAuthPin(Base):
     updated_at: Mapped[str] = mapped_column(String(32), default="")
 
 
+class MoldingSampleSensitiveAuditLog(Base):
+    __tablename__ = "molding_sample_sensitive_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    actor_name: Mapped[str] = mapped_column(String(128), default="")
+    actor_role: Mapped[str] = mapped_column(String(64), default="")
+    target_type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    target_name: Mapped[str] = mapped_column(String(128), default="", index=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+
+
 class MoldingSampleRequisition(Base):
     __tablename__ = "molding_sample_requisitions"
 
@@ -151,3 +164,21 @@ class MoldingSampleInventoryBatch(Base):
     available_weight_kg: Mapped[float] = mapped_column(Float)
     created_at: Mapped[str] = mapped_column(String(32), default="")
     updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class MoldingSampleInventoryMovement(Base):
+    __tablename__ = "molding_sample_inventory_movements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(String(96), index=True)
+    batch_no: Mapped[str] = mapped_column(String(128), index=True)
+    requisition_id: Mapped[str] = mapped_column(String(96), default="", index=True)
+    req_number: Mapped[str] = mapped_column(String(32), default="", index=True)
+    material: Mapped[str] = mapped_column(String(255), index=True)
+    movement_type: Mapped[str] = mapped_column(String(64), index=True)
+    quantity_kg: Mapped[float] = mapped_column(Float)
+    before_weight_kg: Mapped[float] = mapped_column(Float)
+    after_weight_kg: Mapped[float] = mapped_column(Float)
+    actor_name: Mapped[str] = mapped_column(String(128), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
