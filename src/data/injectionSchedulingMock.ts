@@ -197,6 +197,15 @@ export interface ShiftReportTemplateGroup {
   fields: ShiftReportTemplateField[]
 }
 
+export interface ShiftReportImportMappingRow {
+  sourceColumn: string
+  targetField: string
+  required: boolean
+  sample: string
+  rule: string
+  tone: Tone
+}
+
 export interface WarehouseInboundRow {
   deliveryCode: string
   orderNo: string
@@ -215,6 +224,16 @@ export interface WritebackRuleCard {
   status: string
   tone: Tone
   items: string[]
+}
+
+export interface WritebackKeyMatchRow {
+  stage: string
+  businessKey: string
+  sourceKey: string
+  targetRecord: string
+  status: string
+  blocker: string
+  tone: Tone
 }
 
 export interface ConfigRuleCard {
@@ -366,8 +385,10 @@ export interface InjectionModuleData {
   reportingMetrics: ReportingMetric[]
   shiftReportRows: ShiftReportRow[]
   shiftReportTemplateGroups: ShiftReportTemplateGroup[]
+  shiftReportImportMappingRows: ShiftReportImportMappingRow[]
   warehouseInboundRows: WarehouseInboundRow[]
   writebackRuleCards: WritebackRuleCard[]
+  writebackKeyMatchRows: WritebackKeyMatchRow[]
   configRuleCards: ConfigRuleCard[]
   pendingOrderFieldGroups: PendingOrderFieldGroup[]
   pendingOrderValidationRules: PendingOrderValidationRule[]

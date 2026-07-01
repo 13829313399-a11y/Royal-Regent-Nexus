@@ -105,6 +105,24 @@ export function createPlaceholderInjectionModuleData(factoryId: ProductionFactor
         ],
       },
     ],
+    shiftReportImportMappingRows: [
+      {
+        sourceColumn: '机台',
+        targetField: 'machineCode',
+        required: true,
+        sample: `${factoryName}-01#`,
+        rule: '必须映射到标准机台编码后才允许入池回写。',
+        tone: 'amber',
+      },
+      {
+        sourceColumn: '实际产量',
+        targetField: 'actualOutput',
+        required: true,
+        sample: '8,600',
+        rule: '必须是数字，且不能大于当前欠数上限。',
+        tone: 'blue',
+      },
+    ],
     warehouseInboundRows: [],
     writebackRuleCards: [
       {
@@ -124,6 +142,26 @@ export function createPlaceholderInjectionModuleData(factoryId: ProductionFactor
         status: '待接入',
         tone: 'red',
         items: ['入库数量校验', 'ERP 回写', '排产池状态刷新'],
+      },
+    ],
+    writebackKeyMatchRows: [
+      {
+        stage: '日报回写',
+        businessKey: '订单号 + 模号 + 机台',
+        sourceKey: '待接真实日报',
+        targetRecord: `${factoryName}待排订单池`,
+        status: '待接入',
+        blocker: '缺真实日报数据源',
+        tone: 'amber',
+      },
+      {
+        stage: '入库回写',
+        businessKey: '送货单号 + 订单号',
+        sourceKey: '待接真实入库单',
+        targetRecord: `${factoryName}ERP / 排产池`,
+        status: '待接入',
+        blocker: '缺真实入库回写接口',
+        tone: 'red',
       },
     ],
     configRuleCards: createSharedInjectionConfigRuleCards([

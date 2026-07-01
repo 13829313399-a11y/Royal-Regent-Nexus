@@ -48,12 +48,14 @@ const {
   injectionPendingOrderValidationRules,
   injectionReportingMetrics,
   injectionShiftHandoverRows,
+  injectionShiftReportImportMappingRows,
   injectionShiftReportChecklistItems,
   injectionShiftReportRows,
   injectionShiftReportTemplateGroups,
   injectionShiftSummaries,
   injectionWarehouseInboundRows,
   injectionWritebackRuleCards,
+  injectionWritebackKeyMatchRows,
   injectionWorkflowStages,
 } = useInjectionModuleData()
 
@@ -605,6 +607,40 @@ const workflowTone = {
           </table>
         </div>
       </SectionPanel>
+
+      <SectionPanel
+        title="导入字段映射"
+        subtitle="把车间 Excel 列和系统字段先对齐，后面接真实日报导入时就能直接套规则。"
+      >
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">来源列</th>
+                <th class="pb-3 pr-4 font-medium">系统字段</th>
+                <th class="pb-3 pr-4 font-medium">示例</th>
+                <th class="pb-3 pr-4 font-medium">规则</th>
+                <th class="pb-3 font-medium">要求</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in injectionShiftReportImportMappingRows"
+                :key="`${row.sourceColumn}-${row.targetField}`"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.sourceColumn }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.targetField }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.sample }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.rule }}</td>
+                <td class="py-4">
+                  <StatusPill :label="row.required ? '必填' : '选填'" :tone="row.tone" compact />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionPanel>
     </template>
 
     <template v-else-if="props.activeSection === 'inbound-orders'">
@@ -704,6 +740,42 @@ const workflowTone = {
               <span class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">排产池：{{ row.schedulerStatus }}</span>
             </div>
           </article>
+        </div>
+      </SectionPanel>
+
+      <SectionPanel
+        title="主键映射"
+        subtitle="把日报、送货单、排产池之间怎么命中同一条业务记录说清楚，后面接接口时最不容易返工。"
+      >
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">阶段</th>
+                <th class="pb-3 pr-4 font-medium">业务主键</th>
+                <th class="pb-3 pr-4 font-medium">来源主键</th>
+                <th class="pb-3 pr-4 font-medium">目标记录</th>
+                <th class="pb-3 pr-4 font-medium">阻塞</th>
+                <th class="pb-3 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in injectionWritebackKeyMatchRows"
+                :key="`${row.stage}-${row.sourceKey}`"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.stage }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.businessKey }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.sourceKey }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.targetRecord }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.blocker }}</td>
+                <td class="py-4">
+                  <StatusPill :label="row.status" :tone="row.tone" compact />
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </SectionPanel>
     </template>

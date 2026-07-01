@@ -540,16 +540,34 @@ const injectionMoldTargetRows = huaxingMoldTargetCardImportRows.map((row) => ({ 
 
 const injectionExecutionQueueRows = huaxingPrioritizedOrderAnalysis
   .slice(0, 10)
-  .map((row) => ({
-    machine: row.recommendedMachine,
-    orderNo: row.orderNo,
-    moldName: `${row.moldCode} ${row.productName}`,
-    color: row.color,
-    target24h: row.planTarget || '待补',
-    shortage: row.shortageQty,
-    priority: !row.normalizedMachine ? '待分机' : row.overdue ? '交期优先' : row.keyOrder ? '关键单' : '常规待排',
-    tone: row.tone,
-  }))
+  .map((row) => {
+    const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
+    const tone = writebackState?.tone ?? row.tone
+    const priority = writebackState
+      ? tone === 'green'
+        ? '已回写待结转'
+        : tone === 'amber'
+            ? '待刷新'
+            : '待核对'
+      : !row.normalizedMachine
+          ? '待分机'
+          : row.overdue
+              ? '交期优先'
+              : row.keyOrder
+                  ? '关键单'
+                  : '常规待排'
+
+    return {
+      machine: row.recommendedMachine,
+      orderNo: row.orderNo,
+      moldName: `${row.moldCode} ${row.productName}`,
+      color: row.color,
+      target24h: row.planTarget || '待补',
+      shortage: writebackState?.shortageAfter ?? row.shortageQty,
+      priority,
+      tone,
+    }
+  })
 
 const machineCountByTone = huaxingMachineMasterImportRows.reduce(
   (accumulator, row) => {
@@ -638,16 +656,37 @@ const injectionExecutionCandidateRows = huaxingPrioritizedOrderAnalysis
 
 const injectionExecutionScheduleRows = huaxingPrioritizedOrderAnalysis
   .slice(0, 9)
-  .map((row) => ({
-    orderNo: row.orderNo,
-    machine: row.recommendedMachine,
-    startWindow: row.planStart || '待智能排机生成',
-    endWindow: row.planFinish || '待智能排机生成',
-    shiftPlan: row.remark.includes('转') ? '转模 / 转色后执行' : row.normalizedMachine ? '沿用当前机台' : '待确认后下发',
-    expectedOutput: `欠数 ${row.shortageQty} / 计划 ${row.planTarget || '待补'}`,
-    dependency: row.blocker,
-    tone: row.tone,
-  }))
+  .map((row) => {
+    const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
+    const tone = writebackState?.tone ?? row.tone
+    const shiftPlan = writebackState
+      ? tone === 'green'
+        ? '已回写，待结转确认'
+        : tone === 'amber'
+            ? '待入库后刷新'
+            : '待核对后重排'
+      : row.remark.includes('转')
+          ? '转模 / 转色后执行'
+          : row.normalizedMachine
+              ? '沿用当前机台'
+              : '待确认后下发'
+    const dependency = writebackState
+      ? `${row.blocker} · ${writebackState.warehouseStatus} / ${writebackState.erpStatus} / ${writebackState.schedulerStatus}`
+      : row.blocker
+
+    return {
+      orderNo: row.orderNo,
+      machine: row.recommendedMachine,
+      startWindow: row.planStart || '待智能排机生成',
+      endWindow: row.planFinish || '待智能排机生成',
+      shiftPlan,
+      expectedOutput: writebackState
+        ? `本班回报 ${writebackState.inboundQty} / 回写后欠数 ${writebackState.shortageAfter}`
+        : `欠数 ${row.shortageQty} / 计划 ${row.planTarget || '待补'}`,
+      dependency,
+      tone,
+    }
+  })
 
 const shiftWorkerRoster = ['陈海', '李峰', '黄敏', '罗健', '吴秋连', '黎志文', '杨军', '欧伟强'] as const
 const pmcRoster = ['陈梦楚', '罗良庆', '杨凤', '李彩云'] as const
@@ -766,6 +805,23 @@ const injectionInboundWritebackRows = injectionWarehouseInboundRows.map((row, in
   }
 })
 
+const huaxingWritebackStateMap = new Map(
+  injectionInboundWritebackRows.map((row, index) => {
+    const source = huaxingShiftReportBaseRows[index]
+    const key = source ? `${row.orderNo}::${source.moldCode}` : `${row.orderNo}::`
+
+    return [key, {
+      shortageAfter: row.shortageAfter,
+      inboundQty: row.inboundQty,
+      schedulerStatus: row.schedulerStatus,
+      warehouseStatus: row.warehouseStatus,
+      erpStatus: row.erpStatus,
+      deliveryCode: row.deliveryCode,
+      tone: row.tone,
+    }] as const
+  }),
+)
+
 const pendingInboundCount = injectionWarehouseInboundRows.filter((row) => row.status !== '已入库').length
 const redDowntimeCount = huaxingShiftReportBaseRows.filter((row) => row.reportTone === 'red').length
 
@@ -829,6 +885,57 @@ const injectionShiftReportTemplateGroups = [
   },
 ] as const
 
+const injectionShiftReportImportMappingRows = [
+  {
+    sourceColumn: '机台',
+    targetField: 'machineCode',
+    required: true,
+    sample: huaxingShiftReportBaseRows[0]?.recommendedMachine ?? '新车间-04#',
+    rule: '先统一成标准机台编码，再允许联动排产池与交接记录。',
+    tone: 'green',
+  },
+  {
+    sourceColumn: '单号',
+    targetField: 'orderNo',
+    required: true,
+    sample: huaxingShiftReportBaseRows[0]?.orderNo ?? 'BJB251234',
+    rule: '和待排订单池主键一致，优先作为日报回写第一匹配键。',
+    tone: 'green',
+  },
+  {
+    sourceColumn: '班次',
+    targetField: 'shiftCode',
+    required: true,
+    sample: '白班',
+    rule: '统一限定白班 / 夜班 / 交接班，避免自由文本导致汇总失败。',
+    tone: 'blue',
+  },
+  {
+    sourceColumn: '实际产量',
+    targetField: 'actualOutput',
+    required: true,
+    sample: injectionShiftReportRows[0]?.actual ?? '8,600',
+    rule: '必须为数值，且提交后自动校验不能明显超出当前欠数。',
+    tone: 'blue',
+  },
+  {
+    sourceColumn: '停机原因',
+    targetField: 'downtimeReason',
+    required: false,
+    sample: injectionShiftReportRows.find((row) => row.downtime !== '无')?.downtime ?? '换色 35 分钟',
+    rule: '建议统一枚举为换模、换色、缺料、调机、设备异常。',
+    tone: 'amber',
+  },
+  {
+    sourceColumn: '结转数量',
+    targetField: 'carryOverQty',
+    required: true,
+    sample: formatInteger(Math.max(0, parseOrderNumber(huaxingShiftReportBaseRows[0]?.shortageQty ?? '0') - (huaxingShiftReportBaseRows[0]?.actualNumber ?? 0))) || '1,740',
+    rule: '回写后决定是否锁原机台延续下一班。',
+    tone: 'amber',
+  },
+] as const
+
 const injectionWritebackRuleCards = [
   {
     title: '日报提交 → 欠数刷新',
@@ -858,6 +965,31 @@ const injectionWritebackRuleCards = [
     items: ['入库数量与日报数量差异超过阈值则待核对', 'ERP 成功后更新排产池状态', '排产池更新后同步已入库 / 待刷新标签'],
   },
 ] as const
+
+const injectionWritebackKeyMatchRows = injectionInboundWritebackRows.map((row, index) => {
+  const source = huaxingShiftReportBaseRows[index]
+  const normalizedMachine = source?.recommendedMachine ?? '待确认机台'
+  const moldKey = source ? `${source.orderNo} + ${source.moldCode} + ${normalizedMachine}` : `${row.orderNo} + 待补模号`
+  const sourceKey = `${row.deliveryCode} + ${row.orderNo}`
+  const targetRecord = source
+    ? `${source.moldCode} · ${normalizedMachine} · 欠数 ${row.shortageAfter}`
+    : `${row.orderNo} · 待补目标记录`
+  const blocker = row.tone === 'green'
+    ? '主键已命中，可继续回写 ERP 与排产池。'
+    : row.tone === 'amber'
+        ? '已命中订单与机台，但待仓库 / ERP 完成回写。'
+        : '需核对送货单、订单号或机台映射，当前不能自动刷新。'
+
+  return {
+    stage: index % 2 === 0 ? '日报回写' : '入库回写',
+    businessKey: moldKey,
+    sourceKey,
+    targetRecord,
+    status: row.tone === 'green' ? '已命中' : row.tone === 'amber' ? '待回写' : '待核对',
+    blocker,
+    tone: row.tone,
+  }
+}) satisfies InjectionModuleData['writebackKeyMatchRows']
 
 const injectionConfigRuleCards = createSharedInjectionConfigRuleCards(
   huaxingMoldTargetCardImportRows.map((row) => `${row.moldCode} → 待补机台映射`),
@@ -921,7 +1053,27 @@ const injectionOrderImportTasks = [
   },
 ] as const
 
-const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) => ({ ...row }))
+const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) => {
+  const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
+
+  if (!writebackState) {
+    return { ...row }
+  }
+
+  const issue = writebackState.tone === 'green'
+    ? '已回写'
+    : writebackState.tone === 'amber'
+        ? '待刷新'
+        : '待核对'
+
+  return {
+    ...row,
+    quantity: writebackState.shortageAfter,
+    issue,
+    planner: `${row.planner} / ${writebackState.deliveryCode}`,
+    tone: writebackState.tone,
+  }
+})
 
 const injectionMachineMasterRows = huaxingMachineMasterImportRows
   .slice(0, 12)
@@ -1028,8 +1180,10 @@ export const huaxingInjectionModuleData: InjectionModuleData = {
     ...group,
     fields: group.fields.map((field) => ({ ...field })),
   })),
+  shiftReportImportMappingRows: injectionShiftReportImportMappingRows.map((row) => ({ ...row })),
   warehouseInboundRows: [...injectionWarehouseInboundRows],
   writebackRuleCards: injectionWritebackRuleCards.map((card) => ({ ...card, items: [...card.items] })),
+  writebackKeyMatchRows: injectionWritebackKeyMatchRows.map((row) => ({ ...row })),
   configRuleCards: injectionConfigRuleCards.map((row) => ({ ...row, items: [...row.items] })),
   pendingOrderFieldGroups: injectionPendingOrderFieldGroups.map((group) => ({
     ...group,
