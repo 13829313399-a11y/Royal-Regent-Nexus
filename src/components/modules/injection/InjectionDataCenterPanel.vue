@@ -118,7 +118,7 @@ const {
                 <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
                 <th class="pb-3 pr-4 font-medium">数量 / 啤重</th>
                 <th class="pb-3 pr-4 font-medium">交期 / 来源</th>
-                <th class="pb-3 pr-4 font-medium">建议机台</th>
+                <th class="pb-3 pr-4 font-medium">系统推荐</th>
                 <th class="pb-3 font-medium">异常</th>
               </tr>
             </thead>
