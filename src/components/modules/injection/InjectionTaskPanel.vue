@@ -23,12 +23,14 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import type { InjectionSectionId } from '@/data/injectionSchedulingMock'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
+import { useInjectionWorkflowBridge } from '@/factories/injection/useInjectionWorkflowBridge'
 
 const props = defineProps<{
   activeSection: InjectionSectionId
 }>()
 
 const {
+  activeProductionFactoryId,
   injectionColorTransitionRisks,
   injectionConfigRuleCards,
   injectionDataCenterDatasets,
@@ -70,6 +72,35 @@ const compactMachineRows = computed(() => injectionMachineMasterRows.value.slice
 const compactMachineProfiles = computed(() => injectionMachineProfileRows.value.slice(0, 8))
 const compactMoldRows = computed(() => injectionMoldTargetDetailRows.value.slice(0, 16))
 const compactMappingRows = computed(() => injectionMoldMachineMappingRows.value.slice(0, 10))
+
+const {
+  selectedPendingOrderMachines,
+  schedulingDraftGenerated,
+  schedulingDraftReleased,
+  shiftReportDraftSubmitted,
+  inboundWritebackDraftConfirmed,
+  getPendingOrderMachineKey,
+  getPendingOrderMachineOptions,
+  getSelectedPendingOrderMachine,
+  handlePendingOrderMachineChange,
+  getPendingOrderStatusLabel,
+  getPendingOrderStatusTone,
+  pendingOrderMachineDraftRows,
+  schedulingDraftMetrics,
+  releasedExecutionRows,
+  shiftReportDraftRows,
+  shiftReportDraftMetrics,
+  inboundWritebackDraftRows,
+  inboundWritebackDraftMetrics,
+  generateSchedulingDraft,
+  releaseSchedulingDraft,
+  submitShiftReportDraft,
+  confirmInboundWritebackDraft,
+} = useInjectionWorkflowBridge({
+  pendingOrders: compactPendingOrders,
+  moldMachineMappingRows: injectionMoldMachineMappingRows,
+  storageKey: computed(() => `injection-workflow:${activeProductionFactoryId.value}`),
+})
 
 const panelTone = {
   green: 'bg-emerald-50 border-emerald-100',
@@ -123,14 +154,6 @@ interface ImportedOrderPreviewRow {
   warnings: string[]
 }
 
-interface PendingOrderMachineRow {
-  orderNo: string
-  moldCode: string
-  machineAdvice: string
-  issue: string
-  tone: ImportTone
-}
-
 const expectedImportFields: ExpectedImportField[] = [
   { key: 'orderNo', label: '订单号', required: true, aliases: ['订单号', '订单编号', '单号', '工单号', '生产单号', '排单号', 'orderNo', 'order no'] },
   { key: 'customer', label: '客户', required: false, aliases: ['客户', '客户名称', '客人', 'customer'] },
@@ -155,7 +178,6 @@ const importedSheetName = ref('')
 const importHeaders = ref<string[]>([])
 const importedRows = ref<ImportedOrderPreviewRow[]>([])
 const importErrorMessage = ref('')
-const selectedPendingOrderMachines = ref<Record<string, string>>({})
 
 const importPreviewRows = computed(() => importedRows.value.slice(0, 8))
 const importProblemRows = computed(() =>
@@ -545,52 +567,6 @@ const clearImportedOrderPreview = () => {
 const openImportFilePicker = () => {
   importFileInput.value?.click()
 }
-
-const getPendingOrderMachineKey = (row: Pick<PendingOrderMachineRow, 'orderNo' | 'moldCode'>) =>
-  `${row.orderNo}::${row.moldCode}`
-
-const splitMachineOptions = (value = '') =>
-  value
-    .split('/')
-    .map((item) => item.trim())
-    .filter((item) =>
-      item
-      && !['待确认', '待系统推荐', '待补备选机台', '待补机台映射'].includes(item)
-      && !item.includes('待补'),
-    )
-
-const getPendingOrderMachineOptions = (row: PendingOrderMachineRow) => {
-  const mapping = injectionMoldMachineMappingRows.value.find((item) => item.moldCode === row.moldCode)
-  const options = [
-    selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)],
-    row.machineAdvice,
-    mapping?.recommendedMachine,
-    mapping?.backupMachine,
-  ].flatMap((item) => splitMachineOptions(item))
-
-  return [...new Set(options)]
-}
-
-const getSelectedPendingOrderMachine = (row: PendingOrderMachineRow) => {
-  const key = getPendingOrderMachineKey(row)
-  const options = getPendingOrderMachineOptions(row)
-
-  return selectedPendingOrderMachines.value[key] || options[0] || row.machineAdvice || '待确认'
-}
-
-const handlePendingOrderMachineChange = (row: PendingOrderMachineRow, event: Event) => {
-  const target = event.target as HTMLSelectElement
-  selectedPendingOrderMachines.value = {
-    ...selectedPendingOrderMachines.value,
-    [getPendingOrderMachineKey(row)]: target.value,
-  }
-}
-
-const getPendingOrderStatusLabel = (row: PendingOrderMachineRow) =>
-  selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)] ? '已选机' : row.issue
-
-const getPendingOrderStatusTone = (row: PendingOrderMachineRow): ImportTone =>
-  selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)] ? 'green' : row.tone
 </script>
 
 <template>
@@ -1109,6 +1085,157 @@ const getPendingOrderStatusTone = (row: PendingOrderMachineRow): ImportTone =>
 
     <template v-else-if="props.activeSection === 'scheduling-results'">
       <SectionPanel
+        title="选机结果确认"
+        subtitle="承接订单池里的系统推荐和人工改选，先生成一版待下发草稿，再进入开机窗口确认。"
+      >
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <article
+            v-for="metric in schedulingDraftMetrics"
+            :key="metric.label"
+            class="rounded-2xl border p-4"
+            :class="panelTone[metric.tone]"
+          >
+            <p class="text-sm text-slate-500">{{ metric.label }}</p>
+            <p class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
+            <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+          </article>
+        </div>
+
+        <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
+          <div>
+            <h3 class="font-semibold text-slate-950">排机草稿与下发</h3>
+            <p class="mt-1 text-sm leading-6 text-slate-600">
+              当前先做前端草稿：把订单池选中的机台汇总到结果页，确认后进入执行。后面再接正式保存、下发和回写。
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="rounded-2xl px-5 py-3 text-sm font-semibold transition"
+              :class="schedulingDraftGenerated ? 'bg-sky-100 text-sky-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
+              @click="generateSchedulingDraft"
+            >
+              {{ schedulingDraftGenerated ? '重新生成草稿' : '生成结果草稿' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+              :class="schedulingDraftReleased ? 'bg-emerald-100 text-emerald-700' : 'bg-teal-600 text-white hover:bg-teal-700'"
+              :disabled="!schedulingDraftGenerated"
+              @click="releaseSchedulingDraft"
+            >
+              {{ schedulingDraftReleased ? '已下发执行' : '确认下发执行' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-5 overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">顺位</th>
+                <th class="pb-3 pr-4 font-medium">单号 / 产品</th>
+                <th class="pb-3 pr-4 font-medium">模具</th>
+                <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
+                <th class="pb-3 pr-4 font-medium">数量 / 交期</th>
+                <th class="pb-3 pr-4 font-medium">下发机台</th>
+                <th class="pb-3 pr-4 font-medium">选机状态</th>
+                <th class="pb-3 font-medium">下发状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in pendingOrderMachineDraftRows"
+                :key="`draft-${row.orderNo}-${row.moldCode}-${row.selectedMachine}`"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.sequence }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div class="font-semibold text-slate-950">{{ row.orderNo }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.productName }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.moldCode }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.color }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.material }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.quantity }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.dueDate }}</div>
+                </td>
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.selectedMachine }}</td>
+                <td class="py-4 pr-4">
+                  <StatusPill :label="row.confirmState" :tone="row.confirmTone" compact />
+                </td>
+                <td class="py-4">
+                  <StatusPill :label="row.releaseState" :tone="row.releaseTone" compact />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionPanel>
+
+      <SectionPanel
+        title="下发执行任务单"
+        subtitle="这张表给现场班组看：下发后每台机要做什么、谁接、后面回报什么。"
+      >
+        <div class="mb-5 rounded-2xl border px-5 py-4"
+          :class="schedulingDraftReleased ? 'border-emerald-100 bg-emerald-50' : 'border-slate-200 bg-slate-50'"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 class="font-semibold text-slate-950">
+                {{ schedulingDraftReleased ? '已下发到车间执行' : '等待确认下发' }}
+              </h3>
+              <p class="mt-1 text-sm leading-6 text-slate-600">
+                {{ schedulingDraftReleased ? '班组可以按机台执行，后续回报会进入日报表和入库回写。' : '先生成草稿并确认下发，任务单才会进入执行状态。' }}
+              </p>
+            </div>
+            <StatusPill
+              :label="schedulingDraftReleased ? '执行中' : schedulingDraftGenerated ? '草稿待下发' : '未生成草稿'"
+              :tone="schedulingDraftReleased ? 'green' : schedulingDraftGenerated ? 'blue' : 'slate'"
+            />
+          </div>
+        </div>
+
+        <div class="grid gap-4 xl:grid-cols-3">
+          <article
+            v-for="row in releasedExecutionRows"
+            :key="`release-${row.sequence}-${row.orderNo}-${row.moldCode}`"
+            class="rounded-2xl border border-slate-200 bg-white p-5"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-xs uppercase tracking-[0.2em] text-slate-500">任务 {{ row.sequence }}</p>
+                <h3 class="mt-2 text-lg font-semibold text-slate-950">{{ row.selectedMachine }}</h3>
+                <p class="mt-1 text-xs text-slate-500">{{ row.workshop }}</p>
+              </div>
+              <StatusPill :label="row.stateLabel" :tone="row.stateTone" compact />
+            </div>
+
+            <div class="mt-4 space-y-3 text-sm text-slate-700">
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">订单 / 模具</p>
+                <p class="mt-2 font-semibold text-slate-950">{{ row.orderNo }} · {{ row.moldCode }}</p>
+                <p class="mt-1 text-xs text-slate-500">{{ row.productName }}</p>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">颜色 / 料型 / 数量</p>
+                <p class="mt-2 font-semibold text-slate-950">{{ row.color }} · {{ row.material }}</p>
+                <p class="mt-1 text-xs text-slate-500">待排 {{ row.quantity }}</p>
+              </div>
+              <div class="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">班组动作</p>
+                <p class="mt-2 font-semibold text-slate-950">{{ row.action }}</p>
+                <p class="mt-1 text-xs text-slate-500">回报状态：{{ row.feedbackState }}</p>
+              </div>
+            </div>
+          </article>
+        </div>
+      </SectionPanel>
+
+      <SectionPanel
         title="排机结果"
         subtitle="把排机结果和开机窗口放在一页，现场更容易直接往下执行。"
       >
@@ -1196,6 +1323,80 @@ const getPendingOrderStatusTone = (row: PendingOrderMachineRow): ImportTone =>
           <p class="mt-3 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
         </article>
       </section>
+
+      <SectionPanel
+        title="下发任务回报草稿"
+        subtitle="承接排机结果页已下发的任务，班组确认数量后预览欠数刷新。"
+      >
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <article
+            v-for="metric in shiftReportDraftMetrics"
+            :key="metric.label"
+            class="rounded-2xl border p-4"
+            :class="panelTone[metric.tone]"
+          >
+            <p class="text-sm text-slate-500">{{ metric.label }}</p>
+            <p class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
+            <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+          </article>
+        </div>
+
+        <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
+          <div>
+            <h3 class="font-semibold text-slate-950">提交班次回报</h3>
+            <p class="mt-1 text-sm leading-6 text-slate-600">
+              当前先做回报草稿和欠数刷新预览；后面接真实录入时，这里会改成班组实际产量输入。
+            </p>
+          </div>
+          <button
+            type="button"
+            class="rounded-2xl px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+            :class="shiftReportDraftSubmitted ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
+            :disabled="!schedulingDraftReleased"
+            @click="submitShiftReportDraft"
+          >
+            {{ shiftReportDraftSubmitted ? '回报已提交' : '提交回报草稿' }}
+          </button>
+        </div>
+
+        <div class="mt-5 overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">机台</th>
+                <th class="pb-3 pr-4 font-medium">单号 / 模具</th>
+                <th class="pb-3 pr-4 font-medium">产品</th>
+                <th class="pb-3 pr-4 font-medium">待排数量</th>
+                <th class="pb-3 pr-4 font-medium">本班回报</th>
+                <th class="pb-3 pr-4 font-medium">刷新后欠数</th>
+                <th class="pb-3 pr-4 font-medium">达成率</th>
+                <th class="pb-3 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in shiftReportDraftRows"
+                :key="`report-draft-${row.sequence}-${row.orderNo}-${row.moldCode}`"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.selectedMachine }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.orderNo }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.moldCode }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.productName }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.quantity }}</td>
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.reportedQuantity }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.shortageAfter }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.achievement }}</td>
+                <td class="py-4">
+                  <StatusPill :label="row.stateLabel" :tone="row.stateTone" compact />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionPanel>
 
       <div class="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <SectionPanel
@@ -1356,6 +1557,82 @@ const getPendingOrderStatusTone = (row: PendingOrderMachineRow): ImportTone =>
     </template>
 
     <template v-else-if="props.activeSection === 'inbound-orders'">
+      <SectionPanel
+        title="日报入库回写草稿"
+        subtitle="承接日报页已提交的班次回报，生成仓库入库、ERP 回写和排产池欠数刷新预览。"
+      >
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <article
+            v-for="metric in inboundWritebackDraftMetrics"
+            :key="metric.label"
+            class="rounded-2xl border p-4"
+            :class="panelTone[metric.tone]"
+          >
+            <p class="text-sm text-slate-500">{{ metric.label }}</p>
+            <p class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
+            <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+          </article>
+        </div>
+
+        <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
+          <div>
+            <h3 class="font-semibold text-slate-950">确认入库并回写</h3>
+            <p class="mt-1 text-sm leading-6 text-slate-600">
+              当前先模拟“日报提交后生成入库草稿”，确认后同步显示仓库、ERP 和排产池三段状态。
+            </p>
+          </div>
+          <button
+            type="button"
+            class="rounded-2xl px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+            :class="inboundWritebackDraftConfirmed ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
+            :disabled="!shiftReportDraftSubmitted"
+            @click="confirmInboundWritebackDraft"
+          >
+            {{ inboundWritebackDraftConfirmed ? '已完成回写' : '确认入库回写' }}
+          </button>
+        </div>
+
+        <div class="mt-5 overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">入库单</th>
+                <th class="pb-3 pr-4 font-medium">单号 / 模具</th>
+                <th class="pb-3 pr-4 font-medium">机台</th>
+                <th class="pb-3 pr-4 font-medium">入库数量</th>
+                <th class="pb-3 pr-4 font-medium">刷新后欠数</th>
+                <th class="pb-3 pr-4 font-medium">仓库</th>
+                <th class="pb-3 pr-4 font-medium">ERP</th>
+                <th class="pb-3 pr-4 font-medium">排产池</th>
+                <th class="pb-3 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in inboundWritebackDraftRows"
+                :key="`inbound-draft-${row.deliveryCode}-${row.orderNo}-${row.moldCode}`"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.deliveryCode }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.orderNo }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.moldCode }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.selectedMachine }}</td>
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.inboundQty }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.shortageAfter }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.warehouseStatus }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.erpStatus }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.schedulerStatus }}</td>
+                <td class="py-4">
+                  <StatusPill :label="row.stateLabel" :tone="row.stateTone" compact />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionPanel>
+
       <div class="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <SectionPanel
           title="入库单"
