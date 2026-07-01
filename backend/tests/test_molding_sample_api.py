@@ -74,6 +74,21 @@ def client(monkeypatch):
         yield test_client
 
 
+def change_default_pin(client, name, role, new_pin):
+    response = client.post(
+        "/api/change-pin",
+        json={
+            "name": name,
+            "role": role,
+            "old_pin": "1234",
+            "new_pin": new_pin,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["must_change"] is False
+    return new_pin
+
+
 def test_create_injection_order_defaults_to_pending_review(client):
     response = client.post("/api/injection", json=sample_order_payload())
 
@@ -90,6 +105,8 @@ def test_create_injection_order_defaults_to_pending_review(client):
 
 def test_internal_order_workflow_blocks_completion_until_actual_weight_is_filled(client):
     client.post("/api/injection", json=sample_order_payload("BP-API-002"))
+    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
+    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
 
     supervisor_response = client.patch(
         "/api/injection/BP-API-002/status",
@@ -97,7 +114,7 @@ def test_internal_order_workflow_blocks_completion_until_actual_weight_is_filled
             "action": "主管通过",
             "reviewer_name": "李主管",
             "reviewer_role": "主管",
-            "pin": "1234",
+            "pin": supervisor_pin,
         },
     )
     assert supervisor_response.status_code == 200
@@ -109,7 +126,7 @@ def test_internal_order_workflow_blocks_completion_until_actual_weight_is_filled
             "action": "经理通过",
             "reviewer_name": "王经理",
             "reviewer_role": "经理",
-            "pin": "1234",
+            "pin": manager_pin,
         },
     )
     assert manager_response.status_code == 200
@@ -181,13 +198,15 @@ def test_internal_order_workflow_blocks_completion_until_actual_weight_is_filled
 
 def test_external_order_auto_completes_after_manager_approval(client):
     client.post("/api/injection", json=sample_order_payload("BP-API-003", external=True))
+    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
+    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
     client.patch(
         "/api/injection/BP-API-003/status",
         json={
             "action": "主管通过",
             "reviewer_name": "李主管",
             "reviewer_role": "主管",
-            "pin": "1234",
+            "pin": supervisor_pin,
         },
     )
 
@@ -197,7 +216,7 @@ def test_external_order_auto_completes_after_manager_approval(client):
             "action": "经理通过",
             "reviewer_name": "王经理",
             "reviewer_role": "经理",
-            "pin": "1234",
+            "pin": manager_pin,
             "today": "2026-07-01",
         },
     )
@@ -215,6 +234,7 @@ def test_manager_can_update_material_prices_and_exchange_rate(client):
     prices_response = client.get("/api/material-prices")
     assert prices_response.status_code == 200
     assert any(row["material"] == "HIPS 425" for row in prices_response.json()["prices"])
+    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
 
     update_response = client.post(
         "/api/manager-update-prices",
@@ -225,7 +245,7 @@ def test_manager_can_update_material_prices_and_exchange_rate(client):
             ],
             "rmb_to_hkd_rate": 1.1,
             "manager_name": "王经理",
-            "manager_pin": "1234",
+            "manager_pin": manager_pin,
         },
     )
 
@@ -258,13 +278,14 @@ def test_supervisor_and_manager_review_actions_require_valid_pin(client):
     )
     assert wrong_pin_response.status_code == 401
 
+    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
     supervisor_response = client.patch(
         "/api/injection/BP-PIN-001/status",
         json={
             "action": "主管通过",
             "reviewer_name": "李主管",
             "reviewer_role": "主管",
-            "pin": "1234",
+            "pin": supervisor_pin,
         },
     )
     assert supervisor_response.status_code == 200
@@ -280,17 +301,105 @@ def test_supervisor_and_manager_review_actions_require_valid_pin(client):
     )
     assert manager_missing_pin_response.status_code == 401
 
+    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
     manager_response = client.patch(
         "/api/injection/BP-PIN-001/status",
         json={
             "action": "经理通过",
             "reviewer_name": "王经理",
             "reviewer_role": "经理",
-            "pin": "1234",
+            "pin": manager_pin,
         },
     )
     assert manager_response.status_code == 200
     assert manager_response.json()["order"]["status"] == "待生产"
+
+
+def test_pin_failures_lock_role_after_five_attempts_and_success_clears_failures(client):
+    first_failed_response = client.post(
+        "/api/verify-pin",
+        json={"name": "王经理", "role": "经理", "pin": "0000"},
+    )
+    assert first_failed_response.status_code == 401
+
+    success_response = client.post(
+        "/api/verify-pin",
+        json={"name": "王经理", "role": "经理", "pin": "1234"},
+    )
+    assert success_response.status_code == 200
+
+    for _ in range(4):
+        failed_response = client.post(
+            "/api/verify-pin",
+            json={"name": "王经理", "role": "经理", "pin": "0000"},
+        )
+        assert failed_response.status_code == 401
+
+    locked_response = client.post(
+        "/api/verify-pin",
+        json={"name": "王经理", "role": "经理", "pin": "0000"},
+    )
+    assert locked_response.status_code == 429
+    assert "PIN 已锁定" in locked_response.json()["detail"]
+    assert "15 分钟" in locked_response.json()["detail"]
+
+    correct_while_locked_response = client.post(
+        "/api/verify-pin",
+        json={"name": "王经理", "role": "经理", "pin": "1234"},
+    )
+    assert correct_while_locked_response.status_code == 429
+
+
+def test_default_pin_must_be_changed_before_sensitive_actions(client):
+    client.post("/api/injection", json=sample_order_payload("BP-PIN-CHANGE-001"))
+
+    blocked_response = client.patch(
+        "/api/injection/BP-PIN-CHANGE-001/status",
+        json={
+            "action": "主管通过",
+            "reviewer_name": "李主管",
+            "reviewer_role": "主管",
+            "pin": "1234",
+        },
+    )
+    assert blocked_response.status_code == 403
+    assert "请先修改默认 PIN" in blocked_response.json()["detail"]
+
+    same_pin_response = client.post(
+        "/api/change-pin",
+        json={
+            "name": "李主管",
+            "role": "主管",
+            "old_pin": "1234",
+            "new_pin": "1234",
+        },
+    )
+    assert same_pin_response.status_code == 400
+    assert "新 PIN 不能与旧 PIN 相同" in same_pin_response.json()["detail"]
+
+    change_response = client.post(
+        "/api/change-pin",
+        json={
+            "name": "李主管",
+            "role": "主管",
+            "old_pin": "1234",
+            "new_pin": "2468",
+        },
+    )
+    assert change_response.status_code == 200
+    assert change_response.json()["must_change"] is False
+
+    approved_response = client.patch(
+        "/api/injection/BP-PIN-CHANGE-001/status",
+        json={
+            "action": "主管通过",
+            "reviewer_name": "李主管",
+            "reviewer_role": "主管",
+            "pin": "2468",
+        },
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待经理审核"
 
 
 def test_roles_pin_verification_change_pin_and_manager_price_gate(client):
@@ -365,17 +474,6 @@ def test_roles_pin_verification_change_pin_and_manager_price_gate(client):
 
 
 def test_sensitive_operations_write_audit_logs_and_reset_supervisor_pin(client):
-    update_response = client.post(
-        "/api/manager-update-prices",
-        json={
-            "prices": [{"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"}],
-            "rmb_to_hkd_rate": 1.1,
-            "manager_name": "王经理",
-            "manager_pin": "1234",
-        },
-    )
-    assert update_response.status_code == 200
-
     change_response = client.post(
         "/api/change-pin",
         json={
@@ -386,6 +484,17 @@ def test_sensitive_operations_write_audit_logs_and_reset_supervisor_pin(client):
         },
     )
     assert change_response.status_code == 200
+
+    update_response = client.post(
+        "/api/manager-update-prices",
+        json={
+            "prices": [{"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"}],
+            "rmb_to_hkd_rate": 1.1,
+            "manager_name": "王经理",
+            "manager_pin": "6789",
+        },
+    )
+    assert update_response.status_code == 200
 
     reset_response = client.post(
         "/api/reset-supervisor-pin",
@@ -409,13 +518,40 @@ def test_sensitive_operations_write_audit_logs_and_reset_supervisor_pin(client):
     logs_response = client.get("/api/sensitive-audit-logs")
     assert logs_response.status_code == 200
     logs = logs_response.json()
-    assert [row["action"] for row in logs[:3]] == ["重置主管PIN", "修改PIN", "经理更新价格口径"]
+    assert [row["action"] for row in logs[:3]] == ["重置主管PIN", "经理更新价格口径", "修改PIN"]
     assert logs[0]["actor_name"] == "王经理"
     assert logs[0]["actor_role"] == "经理"
     assert logs[0]["target_type"] == "auth_pin"
     assert logs[0]["target_name"] == "李主管"
     assert "2468" not in logs[0]["detail"]
-    assert logs[2]["detail"] == "更新 1 条原料价格，汇率 1.1。"
+    assert logs[1]["detail"] == "更新 1 条原料价格，汇率 1.1。"
+
+
+def test_sensitive_audit_logs_return_latest_200_rows(client):
+    db_module = importlib.import_module("app.db")
+    model_module = importlib.import_module("app.models.molding_sample")
+
+    with db_module.SessionLocal() as db:
+        for index in range(205):
+            db.add(
+                model_module.MoldingSampleSensitiveAuditLog(
+                    action=f"审计{index}",
+                    actor_name="系统",
+                    actor_role="审计",
+                    target_type="test",
+                    target_name=f"target-{index}",
+                    detail=f"敏感操作审计 {index}",
+                    created_at=f"2026-07-01 12:{index % 60:02d}",
+                )
+            )
+        db.commit()
+
+    logs_response = client.get("/api/sensitive-audit-logs")
+    assert logs_response.status_code == 200
+    logs = logs_response.json()
+    assert len(logs) == 200
+    assert logs[0]["action"] == "审计204"
+    assert logs[-1]["action"] == "审计5"
 
 
 def test_engineering_can_edit_and_delete_unlocked_orders(client):
@@ -466,13 +602,15 @@ def test_engineering_can_edit_and_delete_unlocked_orders(client):
 
 def test_locked_orders_reject_engineering_edit_and_delete_but_allow_manager_with_pin(client):
     client.post("/api/injection", json=sample_order_payload("BP-LOCK-001"))
+    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
+    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
     client.patch(
         "/api/injection/BP-LOCK-001/status",
         json={
             "action": "主管通过",
             "reviewer_name": "李主管",
             "reviewer_role": "主管",
-            "pin": "1234",
+            "pin": supervisor_pin,
         },
     )
 
@@ -493,7 +631,7 @@ def test_locked_orders_reject_engineering_edit_and_delete_but_allow_manager_with
     manager_edit_payload = sample_order_payload("BP-LOCK-001")
     manager_edit_payload["actor_name"] = "王经理"
     manager_edit_payload["actor_role"] = "经理"
-    manager_edit_payload["pin"] = "1234"
+    manager_edit_payload["pin"] = manager_pin
     manager_edit_payload["order"]["product_name"] = "经理修正名称"
 
     manager_edit_response = client.put("/api/injection/BP-LOCK-001", json=manager_edit_payload)

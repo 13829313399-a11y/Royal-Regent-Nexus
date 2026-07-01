@@ -80,6 +80,12 @@ interface EditableMaterialPrice {
   notes: string
 }
 
+interface PinChangeDraft {
+  old_pin: string
+  new_pin: string
+  confirm_pin: string
+}
+
 const route = useRoute()
 const appStore = useAppStore()
 
@@ -118,6 +124,16 @@ const inventoryBatchDraft = ref({
 const supervisorPinResetDraft = ref({
   supervisor_name: '李主管',
   new_pin: '1234',
+})
+const supervisorPinChangeDraft = ref<PinChangeDraft>({
+  old_pin: '',
+  new_pin: '',
+  confirm_pin: '',
+})
+const managerPinChangeDraft = ref<PinChangeDraft>({
+  old_pin: '',
+  new_pin: '',
+  confirm_pin: '',
 })
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
 const apiMessage = ref('正在检查后端 API...')
@@ -1012,6 +1028,55 @@ async function resetSupervisorPin() {
   }
 }
 
+async function changeWorkbenchPin(role: '主管' | '经理') {
+  if (apiState.value === 'fallback') {
+    actionMessage.value = '当前为前端 mock 数据，不能修改后端 PIN。'
+    return
+  }
+
+  const draft = role === '主管' ? supervisorPinChangeDraft.value : managerPinChangeDraft.value
+  const oldPin = draft.old_pin.trim()
+  const newPin = draft.new_pin.trim()
+  const confirmPin = draft.confirm_pin.trim()
+  const name = role === '主管' ? (activeOrder.value.supervisor || '李主管') : '王经理'
+
+  if (!oldPin || newPin.length < 4) {
+    actionMessage.value = `${role}旧 PIN 和至少 4 位的新 PIN 都必须填写。`
+    return
+  }
+  if (newPin !== confirmPin) {
+    actionMessage.value = `${role}两次输入的新 PIN 不一致。`
+    return
+  }
+  if (newPin === oldPin) {
+    actionMessage.value = `${role}新 PIN 不能与旧 PIN 相同。`
+    return
+  }
+
+  try {
+    const updated = await moldingSampleApi.changePin({
+      name,
+      role,
+      old_pin: oldPin,
+      new_pin: newPin,
+    })
+    draft.old_pin = ''
+    draft.new_pin = ''
+    draft.confirm_pin = ''
+    if (role === '主管') {
+      supervisorPin.value = newPin
+    }
+    else {
+      managerPin.value = newPin
+    }
+    await refreshSensitiveAuditLogs()
+    actionMessage.value = `${updated.name} 的 PIN 已修改，可以继续执行${role}操作。`
+  }
+  catch (error) {
+    actionMessage.value = `${role} PIN 修改失败：${getApiErrorMessage(error)}`
+  }
+}
+
 function resetPricingSettings() {
   appliedMaterialPrices.value = clonePrices(moldingSampleMaterialPrices)
   appliedRmbToHkdRate.value = moldingSampleRmbToHkdRate
@@ -1309,7 +1374,7 @@ watchEffect(() => {
                   type="password"
                   inputmode="numeric"
                   autocomplete="current-password"
-                  placeholder="默认 1234"
+                  placeholder="首次需先修改"
                   class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
                 >
               </div>
@@ -1339,6 +1404,55 @@ watchEffect(() => {
               rows="3"
               class="mt-4 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6"
             />
+            <div class="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 class="font-semibold">修改主管 PIN</h3>
+                  <p class="mt-1 text-xs text-slate-500">首次使用默认 PIN 时，必须先改 PIN 才能审核。</p>
+                </div>
+                <button
+                  type="button"
+                  :disabled="apiState === 'fallback'"
+                  class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="changeWorkbenchPin('主管')"
+                >
+                  <ShieldCheck class="size-4" aria-hidden="true" />
+                  修改 PIN
+                </button>
+              </div>
+              <div class="mt-4 grid gap-3 md:grid-cols-3">
+                <label class="text-xs font-semibold text-slate-500">
+                  旧 PIN
+                  <input
+                    v-model="supervisorPinChangeDraft.old_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="current-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  新 PIN
+                  <input
+                    v-model="supervisorPinChangeDraft.new_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  确认新 PIN
+                  <input
+                    v-model="supervisorPinChangeDraft.confirm_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+              </div>
+            </div>
           </SectionPanel>
 
           <SectionPanel v-else-if="activeTab === 'manager'" title="经理工作台" subtitle="终审、外厂自动完成、价格表与汇率维护">
@@ -1356,7 +1470,7 @@ watchEffect(() => {
                   type="password"
                   inputmode="numeric"
                   autocomplete="current-password"
-                  placeholder="默认 1234"
+                  placeholder="首次需先修改"
                   class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
                 >
               </div>
@@ -1382,6 +1496,56 @@ watchEffect(() => {
               </button>
             </div>
 
+            <div class="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 class="font-semibold">修改经理 PIN</h3>
+                  <p class="mt-1 text-xs text-slate-500">默认 PIN 只能用于首次验证和修改，终审、价格维护和重置主管 PIN 前必须先修改。</p>
+                </div>
+                <button
+                  type="button"
+                  :disabled="apiState === 'fallback'"
+                  class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="changeWorkbenchPin('经理')"
+                >
+                  <ShieldCheck class="size-4" aria-hidden="true" />
+                  修改 PIN
+                </button>
+              </div>
+              <div class="mt-4 grid gap-3 md:grid-cols-3">
+                <label class="text-xs font-semibold text-slate-500">
+                  旧 PIN
+                  <input
+                    v-model="managerPinChangeDraft.old_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="current-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  新 PIN
+                  <input
+                    v-model="managerPinChangeDraft.new_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  确认新 PIN
+                  <input
+                    v-model="managerPinChangeDraft.confirm_pin"
+                    type="password"
+                    inputmode="numeric"
+                    autocomplete="new-password"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                  >
+                </label>
+              </div>
+            </div>
+
             <div class="mt-5 grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
               <div class="rounded-lg border border-slate-200 bg-white p-4">
                 <label class="text-xs font-semibold text-slate-500">RMB -> HKD</label>
@@ -1398,7 +1562,7 @@ watchEffect(() => {
                   type="password"
                   inputmode="numeric"
                   autocomplete="current-password"
-                  placeholder="默认 1234"
+                  placeholder="首次需先修改"
                   class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
                 >
                 <div class="mt-4 grid gap-2">

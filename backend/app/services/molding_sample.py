@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -17,6 +17,7 @@ from app.models.molding_sample import (
     MoldingSampleItem,
     MoldingSampleMaterialPrice,
     MoldingSampleOrder,
+    MoldingSamplePinAttempt,
     MoldingSampleRequisition,
     MoldingSampleSensitiveAuditLog,
     MoldingSampleSetting,
@@ -55,6 +56,11 @@ DEFAULT_AUTH_USERS = [
 ]
 DEFAULT_PIN = "1234"
 PIN_HASH_ITERATIONS = 120_000
+PIN_MAX_FAILED_ATTEMPTS = 5
+PIN_LOCK_MINUTES = 15
+PIN_LOCKED_DETAIL = f"PIN 已锁定，请 {PIN_LOCK_MINUTES} 分钟后再试"
+PIN_MUST_CHANGE_DETAIL = "请先修改默认 PIN 后再执行此操作"
+SENSITIVE_AUDIT_LIST_LIMIT = 200
 
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
 ALLOWED_ITEM_PATCH_FIELDS = {
@@ -68,6 +74,16 @@ ALLOWED_ITEM_PATCH_FIELDS = {
 
 def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def parse_time_text(value: str) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
 
 
 def round_money(value: float) -> float:
@@ -139,14 +155,88 @@ def get_auth_pin(db: Session, name: str, role: str) -> MoldingSampleAuthPin | No
     )
 
 
-def require_valid_pin(db: Session, name: str, role: str, pin: str) -> MoldingSampleAuthPin:
+def pin_attempt_key(name: str, role: str) -> str:
+    return f"{role}-{name}"
+
+
+def get_pin_attempt(db: Session, name: str, role: str) -> MoldingSamplePinAttempt | None:
+    return db.get(MoldingSamplePinAttempt, pin_attempt_key(name, role))
+
+
+def get_or_create_pin_attempt(db: Session, name: str, role: str) -> MoldingSamplePinAttempt:
+    attempt = get_pin_attempt(db, name, role)
+    if attempt is not None:
+        return attempt
+
+    attempt = MoldingSamplePinAttempt(
+        id=pin_attempt_key(name, role),
+        name=name,
+        role=role,
+        failed_count=0,
+        locked_until="",
+        updated_at=now_text(),
+    )
+    db.add(attempt)
+    return attempt
+
+
+def ensure_pin_not_locked(db: Session, name: str, role: str) -> None:
+    attempt = get_pin_attempt(db, name, role)
+    if attempt is None or not attempt.locked_until:
+        return
+
+    locked_until = parse_time_text(attempt.locked_until)
+    if locked_until and locked_until > datetime.now():
+        raise HTTPException(status_code=429, detail=PIN_LOCKED_DETAIL)
+
+    attempt.failed_count = 0
+    attempt.locked_until = ""
+    attempt.updated_at = now_text()
+    db.commit()
+
+
+def record_pin_failure(db: Session, name: str, role: str) -> None:
+    attempt = get_or_create_pin_attempt(db, name, role)
+    attempt.failed_count += 1
+    attempt.updated_at = now_text()
+
+    if attempt.failed_count >= PIN_MAX_FAILED_ATTEMPTS:
+        attempt.locked_until = (datetime.now() + timedelta(minutes=PIN_LOCK_MINUTES)).strftime("%Y-%m-%d %H:%M")
+        db.commit()
+        raise HTTPException(status_code=429, detail=PIN_LOCKED_DETAIL)
+
+    db.commit()
+    raise HTTPException(status_code=401, detail="PIN 无效")
+
+
+def reset_pin_failures(db: Session, name: str, role: str) -> None:
+    attempt = get_pin_attempt(db, name, role)
+    if attempt is None:
+        return
+
+    attempt.failed_count = 0
+    attempt.locked_until = ""
+    attempt.updated_at = now_text()
+    db.commit()
+
+
+def require_valid_pin(db: Session, name: str, role: str, pin: str, allow_must_change: bool = False) -> MoldingSampleAuthPin:
+    if name and role:
+        ensure_pin_not_locked(db, name, role)
+
     auth_pin = get_auth_pin(db, name, role)
     if not auth_pin or not pin:
+        if name and role:
+            record_pin_failure(db, name, role)
         raise HTTPException(status_code=401, detail="PIN 无效")
 
     expected = hash_pin(pin, auth_pin.pin_salt)
     if not hmac.compare_digest(expected, auth_pin.pin_hash):
-        raise HTTPException(status_code=401, detail="PIN 无效")
+        record_pin_failure(db, name, role)
+
+    reset_pin_failures(db, name, role)
+    if auth_pin.must_change and not allow_must_change:
+        raise HTTPException(status_code=403, detail=PIN_MUST_CHANGE_DETAIL)
 
     return auth_pin
 
@@ -167,7 +257,7 @@ def list_auth_roles(db: Session) -> dict[str, list[dict[str, Any]]]:
 
 
 def verify_pin(db: Session, payload: PinVerifyRequest) -> dict[str, Any]:
-    auth_pin = require_valid_pin(db, payload.name, payload.role, payload.pin)
+    auth_pin = require_valid_pin(db, payload.name, payload.role, payload.pin, allow_must_change=True)
     return {
         "valid": True,
         "name": auth_pin.name,
@@ -199,17 +289,27 @@ def append_sensitive_audit(
 
 
 def list_sensitive_audit_logs(db: Session) -> list[MoldingSampleSensitiveAuditLog]:
-    return list(db.scalars(select(MoldingSampleSensitiveAuditLog).order_by(MoldingSampleSensitiveAuditLog.id.desc())).all())
+    return list(
+        db.scalars(
+            select(MoldingSampleSensitiveAuditLog)
+            .order_by(MoldingSampleSensitiveAuditLog.id.desc())
+            .limit(SENSITIVE_AUDIT_LIST_LIMIT)
+        ).all()
+    )
 
 
 def change_pin(db: Session, payload: PinChangeRequest) -> dict[str, Any]:
-    if len(payload.new_pin.strip()) < 4:
+    old_pin = payload.old_pin.strip()
+    new_pin = payload.new_pin.strip()
+    if len(new_pin) < 4:
         raise HTTPException(status_code=400, detail="新 PIN 至少需要 4 位")
+    if new_pin == old_pin:
+        raise HTTPException(status_code=400, detail="新 PIN 不能与旧 PIN 相同")
 
-    auth_pin = require_valid_pin(db, payload.name, payload.role, payload.old_pin)
+    auth_pin = require_valid_pin(db, payload.name, payload.role, old_pin, allow_must_change=True)
     salt = secrets.token_hex(16)
     auth_pin.pin_salt = salt
-    auth_pin.pin_hash = hash_pin(payload.new_pin.strip(), salt)
+    auth_pin.pin_hash = hash_pin(new_pin, salt)
     auth_pin.must_change = 0
     auth_pin.updated_at = now_text()
     append_sensitive_audit(

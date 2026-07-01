@@ -118,6 +118,17 @@ class MoldingSampleAuthPin(Base):
     updated_at: Mapped[str] = mapped_column(String(32), default="")
 
 
+class MoldingSamplePinAttempt(Base):
+    __tablename__ = "molding_sample_pin_attempts"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    role: Mapped[str] = mapped_column(String(64), index=True)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
 class MoldingSampleSensitiveAuditLog(Base):
     __tablename__ = "molding_sample_sensitive_audit_logs"
 
