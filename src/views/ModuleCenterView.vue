@@ -5,10 +5,10 @@ import { RouterLink, useRoute } from 'vue-router'
 import {
   departmentMap,
   departmentModuleRegistry,
-  getMoldingSampleModuleStats,
   isModuleDepartmentId,
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
+import { getMoldingSampleModuleStats } from '@/data/moldingSampleWorkflowMock'
 import DepartmentTabs from '@/components/modules/DepartmentTabs.vue'
 import ModuleCard from '@/components/modules/ModuleCard.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'

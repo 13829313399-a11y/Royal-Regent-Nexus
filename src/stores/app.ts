@@ -22,7 +22,11 @@ export const useAppStore = defineStore('app', {
     activeProductionFactory(state) {
       const activeFactory = factoryContexts.find((factory) => factory.id === state.activeFactoryId)
 
-      return activeFactory ?? factoryContexts[0]
+      if (activeFactory && activeFactory.id !== 'group') {
+        return activeFactory
+      }
+
+      return factoryContexts.find((factory) => factory.id === 'huakang-a') ?? factoryContexts[1]
     },
     activeDepartment(state) {
       return departments.find((department) => department.id === state.activeDepartmentId) ?? departments[0]
