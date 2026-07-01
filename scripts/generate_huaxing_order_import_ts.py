@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 from openpyxl.utils.datetime import from_excel
 
 
-FIELD_MAP = {
+LEGACY_FIELD_MAP = {
     "machine": "B",
     "isAuto": "D",
     "noteFlag": "E",
@@ -49,6 +49,44 @@ FIELD_MAP = {
     "armType": "AU",
     "fixture": "AV",
 }
+
+STANDARD_FIELD_MAP = {
+    "machine": "A",
+    "isAuto": "B",
+    "machineModel": "C",
+    "moldCode": "D",
+    "productName": "E",
+    "orderNo": "F",
+    "productCode": "G",
+    "quantitySet": "H",
+    "orderQty": "I",
+    "producedQty": "J",
+    "shortageQty": "K",
+    "planTarget": "L",
+    "noteFlag": "M",
+    "color": "N",
+    "colorCode": "O",
+    "material": "P",
+    "netWeight": "Q",
+    "grossWeight": "R",
+    "materialWeightKg": "S",
+    "unitPrice": "T",
+    "sprayFlag": "U",
+    "fixture": "V",
+    "orderDate": "W",
+    "deliveryStart": "X",
+    "deliveryEnd": "Y",
+    "planStart": "AD",
+    "planFinish": "AE",
+    "planFinishMonth": "AF",
+    "dueGap": "AG",
+    "shippingDate": "AI",
+    "warehouse": "AK",
+    "remark": "AL",
+    "armType": "AM",
+}
+
+DATE_FIELDS = {"orderDate", "deliveryStart", "deliveryEnd", "inboundDate", "shippingDate", "planStart", "planFinish"}
 
 
 def stringify(value):
@@ -112,6 +150,56 @@ def build_issue(row):
     return ("正常待排", "blue")
 
 
+def detect_layout(sheet):
+    header_a1 = stringify(sheet["A1"].value)
+    header_f1 = stringify(sheet["F1"].value)
+    header_i1 = stringify(sheet["I1"].value)
+    row2_order_legacy = stringify(sheet["I2"].value)
+    row2_mold_legacy = stringify(sheet["G2"].value)
+    row2_product_legacy = stringify(sheet["H2"].value)
+
+    if row2_order_legacy and row2_mold_legacy and row2_product_legacy and sheet.max_column >= 40:
+        return {
+            "field_map": LEGACY_FIELD_MAP,
+            "row_start": 2,
+            "order_col": "I",
+            "mold_col": "G",
+            "product_col": "H",
+            "shortage_col": "N",
+            "order_qty_col": "L",
+            "produced_qty_col": "M",
+            "due_gap_col": "AK",
+            "source_label": "标准订单模板导入",
+        }
+
+    if "机位" in header_a1 or "单号" in header_f1 or "单号" in header_i1:
+        return {
+            "field_map": STANDARD_FIELD_MAP,
+            "row_start": 2,
+            "order_col": "F",
+            "mold_col": "D",
+            "product_col": "E",
+            "shortage_col": "K",
+            "order_qty_col": "I",
+            "produced_qty_col": "J",
+            "due_gap_col": "AG",
+            "source_label": "标准订单模板导入",
+        }
+
+    return {
+        "field_map": LEGACY_FIELD_MAP,
+        "row_start": 4,
+        "order_col": "I",
+        "mold_col": "G",
+        "product_col": "H",
+        "shortage_col": "N",
+        "order_qty_col": "L",
+        "produced_qty_col": "M",
+        "due_gap_col": "AK",
+        "source_label": "华兴日排版表 6-30",
+    }
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print("usage: generate_huaxing_order_import_ts.py <xlsx-path> <output-ts>", file=sys.stderr)
@@ -123,30 +211,41 @@ def main() -> int:
     workbook = load_workbook(workbook_path, data_only=True)
     sheet = workbook[workbook.sheetnames[0]]
 
+    layout = detect_layout(sheet)
     rows = []
     material_counts = Counter()
     color_counts = Counter()
 
-    for row_index in range(4, sheet.max_row + 1):
-        order_no = stringify(sheet[f"I{row_index}"].value)
-        mold_code = stringify(sheet[f"G{row_index}"].value)
-        product_name = stringify(sheet[f"H{row_index}"].value)
+    for row_index in range(layout["row_start"], sheet.max_row + 1):
+        order_no = stringify(sheet[f"{layout['order_col']}{row_index}"].value)
+        mold_code = stringify(sheet[f"{layout['mold_col']}{row_index}"].value)
+        product_name = stringify(sheet[f"{layout['product_col']}{row_index}"].value)
 
         if not order_no or not mold_code or not product_name:
             continue
 
         row = {"sheetRow": row_index}
-        for key, column in FIELD_MAP.items():
+        for key, column in layout["field_map"].items():
             raw_value = sheet[f"{column}{row_index}"].value
-            if key in {"orderDate", "deliveryStart", "deliveryEnd", "inboundDate"}:
+            if key in DATE_FIELDS:
                 row[key] = excelish_date(raw_value)
             else:
                 row[key] = stringify(raw_value)
 
-        shortage_qty_num = parse_float(sheet[f"N{row_index}"].value)
-        order_qty_num = parse_float(sheet[f"L{row_index}"].value)
-        produced_qty_num = parse_float(sheet[f"M{row_index}"].value)
-        due_gap_num = parse_float(sheet[f"AK{row_index}"].value)
+        shortage_qty_num = parse_float(sheet[f"{layout['shortage_col']}{row_index}"].value)
+        order_qty_num = parse_float(sheet[f"{layout['order_qty_col']}{row_index}"].value)
+        produced_qty_num = parse_float(sheet[f"{layout['produced_qty_col']}{row_index}"].value)
+        due_gap_num = parse_float(sheet[f"{layout['due_gap_col']}{row_index}"].value)
+
+        if shortage_qty_num is None:
+            if order_qty_num is not None or produced_qty_num is not None:
+                shortage_qty_num = max((order_qty_num or 0) - (produced_qty_num or 0), 0)
+            else:
+                quantity_set_num = parse_float(row.get("quantitySet", ""))
+                shortage_qty_num = max(quantity_set_num or 0, 0) if quantity_set_num is not None else None
+
+            if shortage_qty_num is not None:
+                row["shortageQty"] = str(int(shortage_qty_num)) if float(shortage_qty_num).is_integer() else str(shortage_qty_num)
 
         row["shortageQtyNum"] = shortage_qty_num
         row["orderQtyNum"] = order_qty_num
@@ -187,7 +286,7 @@ def main() -> int:
                 "dueDate": row["deliveryEnd"] or row["planFinish"] or "待补",
                 "cavity": f"套数 {row['quantitySet']}" if row["quantitySet"] else "待补",
                 "unitWeight": f"{row['netWeight']} g" if row["netWeight"] else "待补",
-                "source": "华兴日排版表 6-30",
+                "source": layout["source_label"],
                 "planner": "日排表导入",
                 "machineAdvice": row["machine"] or "待确认",
                 "issue": issue,

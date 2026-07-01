@@ -9,6 +9,8 @@ defineProps<{
   active?: boolean
 }>()
 
+const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
+
 const iconClasses: Record<Tone, string> = {
   teal: 'bg-teal-50 text-teal-700',
   blue: 'bg-blue-50 text-blue-700',
@@ -83,8 +85,16 @@ const iconClasses: Record<Tone, string> = {
         查看模块
         <ChevronRight class="size-4" aria-hidden="true" />
       </RouterLink>
+      <RouterLink
+        v-if="module.href && !isExternalLink(module.href)"
+        :to="module.href"
+        class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+      >
+        打开系统
+        <ArrowUpRight class="size-4" aria-hidden="true" />
+      </RouterLink>
       <a
-        v-if="module.href"
+        v-else-if="module.href"
         :href="module.href"
         target="_blank"
         rel="noreferrer"

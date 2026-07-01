@@ -538,37 +538,6 @@ const injectionMachineProfileRows = huaxingMachineProfileImportRows
 
 const injectionMoldTargetRows = huaxingMoldTargetCardImportRows.map((row) => ({ ...row }))
 
-const injectionExecutionQueueRows = huaxingPrioritizedOrderAnalysis
-  .slice(0, 10)
-  .map((row) => {
-    const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
-    const tone = writebackState?.tone ?? row.tone
-    const priority = writebackState
-      ? tone === 'green'
-        ? '已回写待结转'
-        : tone === 'amber'
-            ? '待刷新'
-            : '待核对'
-      : !row.normalizedMachine
-          ? '待分机'
-          : row.overdue
-              ? '交期优先'
-              : row.keyOrder
-                  ? '关键单'
-                  : '常规待排'
-
-    return {
-      machine: row.recommendedMachine,
-      orderNo: row.orderNo,
-      moldName: `${row.moldCode} ${row.productName}`,
-      color: row.color,
-      target24h: row.planTarget || '待补',
-      shortage: writebackState?.shortageAfter ?? row.shortageQty,
-      priority,
-      tone,
-    }
-  })
-
 const machineCountByTone = huaxingMachineMasterImportRows.reduce(
   (accumulator, row) => {
     accumulator[row.tone] = (accumulator[row.tone] ?? 0) + 1
@@ -653,40 +622,6 @@ const injectionExecutionCandidateRows = huaxingPrioritizedOrderAnalysis
     blocker: row.blocker,
     tone: row.tone,
   }))
-
-const injectionExecutionScheduleRows = huaxingPrioritizedOrderAnalysis
-  .slice(0, 9)
-  .map((row) => {
-    const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
-    const tone = writebackState?.tone ?? row.tone
-    const shiftPlan = writebackState
-      ? tone === 'green'
-        ? '已回写，待结转确认'
-        : tone === 'amber'
-            ? '待入库后刷新'
-            : '待核对后重排'
-      : row.remark.includes('转')
-          ? '转模 / 转色后执行'
-          : row.normalizedMachine
-              ? '沿用当前机台'
-              : '待确认后下发'
-    const dependency = writebackState
-      ? `${row.blocker} · ${writebackState.warehouseStatus} / ${writebackState.erpStatus} / ${writebackState.schedulerStatus}`
-      : row.blocker
-
-    return {
-      orderNo: row.orderNo,
-      machine: row.recommendedMachine,
-      startWindow: row.planStart || '待智能排机生成',
-      endWindow: row.planFinish || '待智能排机生成',
-      shiftPlan,
-      expectedOutput: writebackState
-        ? `本班回报 ${writebackState.inboundQty} / 回写后欠数 ${writebackState.shortageAfter}`
-        : `欠数 ${row.shortageQty} / 计划 ${row.planTarget || '待补'}`,
-      dependency,
-      tone,
-    }
-  })
 
 const shiftWorkerRoster = ['陈海', '李峰', '黄敏', '罗健', '吴秋连', '黎志文', '杨军', '欧伟强'] as const
 const pmcRoster = ['陈梦楚', '罗良庆', '杨凤', '李彩云'] as const
@@ -1053,28 +988,6 @@ const injectionOrderImportTasks = [
   },
 ] as const
 
-const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) => {
-  const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
-
-  if (!writebackState) {
-    return { ...row }
-  }
-
-  const issue = writebackState.tone === 'green'
-    ? '已回写'
-    : writebackState.tone === 'amber'
-        ? '待刷新'
-        : '待核对'
-
-  return {
-    ...row,
-    quantity: writebackState.shortageAfter,
-    issue,
-    planner: `${row.planner} / ${writebackState.deliveryCode}`,
-    tone: writebackState.tone,
-  }
-})
-
 const injectionMachineMasterRows = huaxingMachineMasterImportRows
   .slice(0, 12)
   .map((row) => ({ ...row }))
@@ -1154,6 +1067,93 @@ const injectionShiftHandoverRows = huaxingShiftReportBaseRows
       tone,
     }
   })
+
+const injectionExecutionQueueRows = huaxingPrioritizedOrderAnalysis
+  .slice(0, 10)
+  .map((row) => {
+    const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
+    const tone = writebackState?.tone ?? row.tone
+    const priority = writebackState
+      ? tone === 'green'
+        ? '已回写待结转'
+        : tone === 'amber'
+            ? '待刷新'
+            : '待核对'
+      : !row.normalizedMachine
+          ? '待分机'
+          : row.overdue
+              ? '交期优先'
+              : row.keyOrder
+                  ? '关键单'
+                  : '常规待排'
+
+    return {
+      machine: row.recommendedMachine,
+      orderNo: row.orderNo,
+      moldName: `${row.moldCode} ${row.productName}`,
+      color: row.color,
+      target24h: row.planTarget || '待补',
+      shortage: writebackState?.shortageAfter ?? row.shortageQty,
+      priority,
+      tone,
+    }
+  })
+
+const injectionExecutionScheduleRows = huaxingPrioritizedOrderAnalysis
+  .slice(0, 9)
+  .map((row) => {
+    const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
+    const tone = writebackState?.tone ?? row.tone
+    const shiftPlan = writebackState
+      ? tone === 'green'
+        ? '已回写，待结转确认'
+        : tone === 'amber'
+            ? '待入库后刷新'
+            : '待核对后重排'
+      : row.remark.includes('转')
+          ? '转模 / 转色后执行'
+          : row.normalizedMachine
+              ? '沿用当前机台'
+              : '待确认后下发'
+    const dependency = writebackState
+      ? `${row.blocker} · ${writebackState.warehouseStatus} / ${writebackState.erpStatus} / ${writebackState.schedulerStatus}`
+      : row.blocker
+
+    return {
+      orderNo: row.orderNo,
+      machine: row.recommendedMachine,
+      startWindow: row.planStart || '待智能排机生成',
+      endWindow: row.planFinish || '待智能排机生成',
+      shiftPlan,
+      expectedOutput: writebackState
+        ? `本班回报 ${writebackState.inboundQty} / 回写后欠数 ${writebackState.shortageAfter}`
+        : `欠数 ${row.shortageQty} / 计划 ${row.planTarget || '待补'}`,
+      dependency,
+      tone,
+    }
+  })
+
+const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) => {
+  const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
+
+  if (!writebackState) {
+    return { ...row }
+  }
+
+  const issue = writebackState.tone === 'green'
+    ? '已回写'
+    : writebackState.tone === 'amber'
+        ? '待刷新'
+        : '待核对'
+
+  return {
+    ...row,
+    quantity: writebackState.shortageAfter,
+    issue,
+    planner: `${row.planner} / ${writebackState.deliveryCode}`,
+    tone: writebackState.tone,
+  }
+})
 
 export const huaxingInjectionModuleData: InjectionModuleData = {
   sectionNav: injectionSectionNav,

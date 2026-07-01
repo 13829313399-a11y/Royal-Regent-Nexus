@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ArrowUpRight, Plus } from '@lucide/vue'
 import { computed, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import {
   departmentMap,
   departmentModuleRegistry,
@@ -50,6 +50,7 @@ const visibleModules = computed(() => {
 })
 
 const featuredModule = computed(() => visibleModules.value[0])
+const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)
@@ -148,8 +149,16 @@ watch(currentDepartmentId, (departmentId) => {
             </div>
 
             <div class="flex flex-wrap gap-3">
+              <RouterLink
+                v-if="featuredModule.href && !isExternalLink(featuredModule.href)"
+                :to="featuredModule.href"
+                class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+              >
+                打开系统
+                <ArrowUpRight class="size-4" aria-hidden="true" />
+              </RouterLink>
               <a
-                v-if="featuredModule.href"
+                v-else-if="featuredModule.href"
                 :href="featuredModule.href"
                 target="_blank"
                 rel="noreferrer"

@@ -34,6 +34,7 @@ const currentModule = computed(() => {
 })
 
 const isInjectionScheduling = computed(() => currentModule.value.id === 'injection-scheduling')
+const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)
@@ -70,8 +71,16 @@ watch(currentDepartmentId, (departmentId) => {
             >
               返回模块中心
             </RouterLink>
+            <RouterLink
+              v-if="currentModule.href && !isExternalLink(currentModule.href)"
+              :to="currentModule.href"
+              class="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+            >
+              打开系统
+              <ArrowUpRight class="size-4" aria-hidden="true" />
+            </RouterLink>
             <a
-              v-if="currentModule.href"
+              v-else-if="currentModule.href"
               :href="currentModule.href"
               target="_blank"
               rel="noreferrer"
