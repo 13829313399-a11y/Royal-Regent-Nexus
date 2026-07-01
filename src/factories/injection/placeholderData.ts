@@ -93,7 +93,39 @@ export function createPlaceholderInjectionModuleData(factoryId: ProductionFactor
       { label: '停机异常', value: '待接入', detail: '停机分类待统一', tone: 'red' },
     ],
     shiftReportRows: [],
+    shiftReportTemplateGroups: [
+      {
+        title: '班次日报录入',
+        owner: '车间组长 / 统计',
+        fields: [
+          { label: '机台', required: true, source: '机台台账', summary: '对应到具体车间机台编码。' },
+          { label: '班次', required: true, source: '班次配置', summary: '区分白班、夜班与交接。' },
+          { label: '实际产量', required: true, source: '车间回报', summary: '作为入库与欠数回写的起点。' },
+          { label: '停机原因', required: false, source: '班组回报', summary: '后续用于异常统计与交接。' },
+        ],
+      },
+    ],
     warehouseInboundRows: [],
+    writebackRuleCards: [
+      {
+        title: '日报回写排产池',
+        owner: 'PMC / 系统',
+        trigger: '班次日报提交后',
+        summary: `${factoryName}后续需要把实际产量回写到待排欠数与结转状态。`,
+        status: '待接入',
+        tone: 'amber',
+        items: ['刷新欠数', '识别结转', '生成交接记录'],
+      },
+      {
+        title: '入库回写 ERP / 排产',
+        owner: '仓库 / PMC',
+        trigger: '送货单入库后',
+        summary: `${factoryName}后续需要把入库状态同步到 ERP 和排产池。`,
+        status: '待接入',
+        tone: 'red',
+        items: ['入库数量校验', 'ERP 回写', '排产池状态刷新'],
+      },
+    ],
     configRuleCards: createSharedInjectionConfigRuleCards([
       `${factoryName}模具总表待导入`,
       `${factoryName}机台台账待导入`,

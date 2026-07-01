@@ -1,13 +1,8 @@
 <script setup lang="ts">
 import { computed, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import SectionPanel from '@/components/common/SectionPanel.vue'
-import InjectionConfigPanel from '@/components/modules/injection/InjectionConfigPanel.vue'
-import InjectionDashboardPanel from '@/components/modules/injection/InjectionDashboardPanel.vue'
-import InjectionDataCenterPanel from '@/components/modules/injection/InjectionDataCenterPanel.vue'
-import InjectionExecutionPanel from '@/components/modules/injection/InjectionExecutionPanel.vue'
-import InjectionReportingPanel from '@/components/modules/injection/InjectionReportingPanel.vue'
 import InjectionSectionNav from '@/components/modules/injection/InjectionSectionNav.vue'
+import InjectionTaskPanel from '@/components/modules/injection/InjectionTaskPanel.vue'
 import { isProductionFactoryContextId } from '@/data/enterpriseMock'
 import type { InjectionSectionId } from '@/data/injectionSchedulingMock'
 import { getInjectionFactoryConfig } from '@/factories/injection/registry'
@@ -19,7 +14,26 @@ const router = useRouter()
 const appStore = useAppStore()
 const { injectionSectionNav } = useInjectionModuleData()
 
-const validSectionIds: InjectionSectionId[] = ['dashboard', 'data-center', 'execution', 'reporting', 'config']
+const validSectionIds: InjectionSectionId[] = [
+  'monthly-plan',
+  'order-import',
+  'smart-scheduling',
+  'scheduling-results',
+  'daily-report',
+  'inbound-orders',
+  'master-data',
+]
+
+const legacySectionMap: Record<string, InjectionSectionId> = {
+  dashboard: 'monthly-plan',
+  'data-center': 'order-import',
+  execution: 'smart-scheduling',
+  reporting: 'daily-report',
+  config: 'master-data',
+  'history-db': 'master-data',
+  'machine-archive': 'master-data',
+  'mold-targets': 'master-data',
+}
 
 const normalizeSection = (value: unknown): InjectionSectionId | null => {
   const raw = Array.isArray(value) ? value[0] : value
@@ -28,12 +42,16 @@ const normalizeSection = (value: unknown): InjectionSectionId | null => {
     return null
   }
 
+  if (raw in legacySectionMap) {
+    return legacySectionMap[raw]
+  }
+
   return validSectionIds.includes(raw as InjectionSectionId)
     ? (raw as InjectionSectionId)
     : null
 }
 
-const activeSection = computed<InjectionSectionId>(() => normalizeSection(route.query.section) ?? 'dashboard')
+const activeSection = computed<InjectionSectionId>(() => normalizeSection(route.query.section) ?? 'monthly-plan')
 
 const activeSectionMeta = computed(() =>
   injectionSectionNav.value.find((section) => section.id === activeSection.value) ?? injectionSectionNav.value[0],
@@ -53,7 +71,7 @@ watchEffect(() => {
   router.replace({
     query: {
       ...route.query,
-      section: 'dashboard',
+      section: 'monthly-plan',
     },
   })
 })
@@ -74,79 +92,60 @@ const handleSectionChange = (section: InjectionSectionId) => {
 
 <template>
   <div class="space-y-6">
-    <SectionPanel>
-      <div class="rounded-[28px] border border-slate-200 bg-[radial-gradient(circle_at_top_left,rgba(13,148,136,0.14),transparent_38%),linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.98))] p-1">
-        <div class="rounded-[24px] bg-white/85 p-6">
-          <div class="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-            <div class="max-w-3xl">
-              <p class="text-xs uppercase tracking-[0.28em] text-teal-700">Production Planning Workspace</p>
-              <h2 class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
-                {{ activeFactoryConfig.moduleTitle }} · {{ activeSectionMeta.label }}
-              </h2>
-              <p class="mt-3 text-base leading-7 text-slate-600">
-                {{ activeFactoryConfig.workspaceSummary }}
-              </p>
-              <p class="mt-3 text-sm leading-7 text-slate-500">
-                当前分栏：{{ activeSectionMeta.summary }}
-              </p>
-            </div>
+    <section class="rounded-[30px] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.98))] p-6 shadow-[0_16px_40px_rgba(15,23,42,0.06)]">
+      <div class="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+        <div class="max-w-3xl">
+          <p class="text-xs uppercase tracking-[0.28em] text-sky-700">Factory Planning Workspace</p>
+          <h2 class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+            {{ activeFactoryConfig.moduleTitle }}
+          </h2>
+          <p class="mt-3 text-base leading-7 text-slate-600">{{ activeFactoryConfig.workspaceSummary }}</p>
+        </div>
 
-            <div class="grid gap-3 sm:grid-cols-3 xl:min-w-[360px]">
-              <div class="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">当前车间</p>
-                <p class="mt-3 text-2xl font-semibold text-slate-950">{{ activeFactory.shortName }}</p>
-              </div>
-              <div class="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">数据状态</p>
-                <p class="mt-3 text-lg font-semibold text-slate-950">{{ activeFactoryConfig.dataStatus }}</p>
-              </div>
-              <div class="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">流程状态</p>
-                <p class="mt-3 text-lg font-semibold text-slate-950">{{ activeFactoryConfig.processStatus }}</p>
-              </div>
-            </div>
+        <div class="grid gap-3 sm:grid-cols-3 lg:min-w-[360px]">
+          <div class="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">当前车间</p>
+            <p class="mt-3 text-xl font-semibold text-slate-950">{{ activeFactory.shortName }}</p>
           </div>
-
-          <div class="mt-6">
-            <InjectionSectionNav :active-section="activeSection" @change="handleSectionChange" />
+          <div class="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">数据状态</p>
+            <p class="mt-3 text-base font-semibold text-slate-950">{{ activeFactoryConfig.dataStatus }}</p>
           </div>
-
-          <div class="mt-6 grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-            <div class="grid gap-3 sm:grid-cols-3">
-              <article
-                v-for="item in activeFactoryConfig.highlights"
-                :key="`${activeFactory.id}-${item.label}`"
-                class="rounded-2xl border border-slate-200 bg-white px-4 py-4"
-              >
-                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">{{ item.label }}</p>
-                <p class="mt-3 text-xl font-semibold text-slate-950">{{ item.value }}</p>
-              </article>
-            </div>
-
-            <article class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">车间实现说明</p>
-              <p class="mt-3 text-sm leading-6 text-slate-600">
-                责任范围：{{ activeFactoryConfig.ownership }}
-              </p>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <span
-                  v-for="note in activeFactoryConfig.implementationNotes"
-                  :key="note"
-                  class="rounded-full bg-white px-3 py-1 text-xs text-slate-600"
-                >
-                  {{ note }}
-                </span>
-              </div>
-            </article>
+          <div class="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">当前页面</p>
+            <p class="mt-3 text-base font-semibold text-slate-950">{{ activeSectionMeta.label }}</p>
           </div>
         </div>
       </div>
-    </SectionPanel>
+    </section>
 
-    <InjectionDashboardPanel v-if="activeSection === 'dashboard'" />
-    <InjectionDataCenterPanel v-else-if="activeSection === 'data-center'" />
-    <InjectionExecutionPanel v-else-if="activeSection === 'execution'" />
-    <InjectionReportingPanel v-else-if="activeSection === 'reporting'" />
-    <InjectionConfigPanel v-else />
+    <div class="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+      <aside class="xl:sticky xl:top-6 xl:self-start">
+        <InjectionSectionNav :active-section="activeSection" @change="handleSectionChange" />
+      </aside>
+
+      <section class="space-y-5">
+        <article class="rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-[0_14px_35px_rgba(15,23,42,0.05)]">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">当前操作</p>
+          <div class="mt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 class="text-2xl font-semibold tracking-tight text-slate-950">{{ activeSectionMeta.label }}</h3>
+              <p class="mt-2 text-sm leading-6 text-slate-600">{{ activeSectionMeta.summary }}</p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <span
+                v-for="note in activeFactoryConfig.implementationNotes"
+                :key="note"
+                class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600"
+              >
+                {{ note }}
+              </span>
+            </div>
+          </div>
+        </article>
+
+        <InjectionTaskPanel :active-section="activeSection" />
+      </section>
+    </div>
   </div>
 </template>

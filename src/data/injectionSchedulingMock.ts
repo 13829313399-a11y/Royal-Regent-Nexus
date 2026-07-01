@@ -1,11 +1,13 @@
 import type { Tone } from '@/data/enterpriseMock'
 
 export type InjectionSectionId =
-  | 'dashboard'
-  | 'data-center'
-  | 'execution'
-  | 'reporting'
-  | 'config'
+  | 'monthly-plan'
+  | 'order-import'
+  | 'smart-scheduling'
+  | 'scheduling-results'
+  | 'daily-report'
+  | 'inbound-orders'
+  | 'master-data'
 
 export interface InjectionMetric {
   label: string
@@ -182,6 +184,19 @@ export interface ShiftReportRow {
   tone: Tone
 }
 
+export interface ShiftReportTemplateField {
+  label: string
+  required: boolean
+  source: string
+  summary: string
+}
+
+export interface ShiftReportTemplateGroup {
+  title: string
+  owner: string
+  fields: ShiftReportTemplateField[]
+}
+
 export interface WarehouseInboundRow {
   deliveryCode: string
   orderNo: string
@@ -190,6 +205,16 @@ export interface WarehouseInboundRow {
   pmc: string
   status: string
   tone: Tone
+}
+
+export interface WritebackRuleCard {
+  title: string
+  owner: string
+  trigger: string
+  summary: string
+  status: string
+  tone: Tone
+  items: string[]
 }
 
 export interface ConfigRuleCard {
@@ -340,7 +365,9 @@ export interface InjectionModuleData {
   manualActionRows: ManualActionRow[]
   reportingMetrics: ReportingMetric[]
   shiftReportRows: ShiftReportRow[]
+  shiftReportTemplateGroups: ShiftReportTemplateGroup[]
   warehouseInboundRows: WarehouseInboundRow[]
+  writebackRuleCards: WritebackRuleCard[]
   configRuleCards: ConfigRuleCard[]
   pendingOrderFieldGroups: PendingOrderFieldGroup[]
   pendingOrderValidationRules: PendingOrderValidationRule[]
@@ -356,29 +383,39 @@ export interface InjectionModuleData {
 
 export const injectionSectionNav: InjectionNavItem[] = [
   {
-    id: 'dashboard',
-    label: '驾驶舱',
-    summary: '先看待排、结转、机台负载和排产异常。',
+    id: 'monthly-plan',
+    label: '月计划',
+    summary: '先看本月待排、交期风险、班次节奏和重点异常。',
   },
   {
-    id: 'data-center',
-    label: '数据中心',
-    summary: '统一订单、机台、模具目标和历史主数据。',
+    id: 'order-import',
+    label: '订单导入',
+    summary: '把真实待排订单导入、校验并放进订单池。',
   },
   {
-    id: 'execution',
-    label: '排机执行',
-    summary: '承接智能排机、人工微调和结转延续。',
+    id: 'smart-scheduling',
+    label: '智能排机',
+    summary: '看规则、候选机台和智能排机建议。',
   },
   {
-    id: 'reporting',
-    label: '回报中心',
-    summary: '沉淀日报、入库、月结和回写闭环。',
+    id: 'scheduling-results',
+    label: '排机结果',
+    summary: '查看开机时段、机台负载和颜色切换风险。',
   },
   {
-    id: 'config',
-    label: '配置中心',
-    summary: '维护规则参数、映射关系、责任人与权限。',
+    id: 'daily-report',
+    label: '日报表',
+    summary: '承接班次日报、交接和停机闭环。',
+  },
+  {
+    id: 'inbound-orders',
+    label: '入库单',
+    summary: '跟踪送货单、入库状态和回写结果。',
+  },
+  {
+    id: 'master-data',
+    label: '基础资料',
+    summary: '统一机台档案、模具目标、映射关系和历史数据健康度。',
   },
 ]
 
