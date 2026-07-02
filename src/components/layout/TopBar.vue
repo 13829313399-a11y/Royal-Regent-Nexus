@@ -15,6 +15,22 @@ const searchPlaceholder = computed(() => {
 
   return '搜索订单、图纸、BOM、审批单、客户或模块'
 })
+
+const topBarFactoryContexts = computed(() => {
+  const pinnedFactoryIds = new Set(['group', 'huaxing'])
+  const pinnedFactories = ['group', 'huaxing']
+    .map((factoryId) => factoryContexts.find((factory) => factory.id === factoryId))
+    .filter((factory): factory is (typeof factoryContexts)[number] => Boolean(factory))
+
+  return [
+    ...pinnedFactories,
+    ...factoryContexts.filter((factory) => !pinnedFactoryIds.has(factory.id)),
+  ]
+})
+
+const getTopBarFactoryLabel = (factory: (typeof factoryContexts)[number]) => (
+  factory.id === 'group' ? '总务' : factory.shortName
+)
 </script>
 
 <template>
@@ -41,7 +57,7 @@ const searchPlaceholder = computed(() => {
 
       <div class="ml-auto hidden items-center gap-2 xl:flex">
         <button
-          v-for="factory in factoryContexts"
+          v-for="factory in topBarFactoryContexts"
           :key="factory.id"
           type="button"
           class="h-9 rounded-lg border px-5 text-sm font-semibold transition-colors"
@@ -50,7 +66,7 @@ const searchPlaceholder = computed(() => {
             : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'"
           @click="appStore.setActiveFactory(factory.id)"
         >
-          {{ factory.shortName }}
+          {{ getTopBarFactoryLabel(factory) }}
         </button>
       </div>
 
