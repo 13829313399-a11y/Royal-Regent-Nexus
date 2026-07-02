@@ -431,16 +431,14 @@ async function loadApiData() {
 }
 
 async function syncCurrentMockToApi() {
-  const source = fallbackRecord.value
-
   try {
     const created = await moldingSampleApi.createOrder({
-      order: source.order,
-      items: source.items,
+      order: activeOrder.value,
+      items: activeItems.value,
     })
     await loadApiData()
     setApiRecord(created)
-    actionMessage.value = '当前示例单据已同步到后端数据库。'
+    actionMessage.value = '当前页面已编辑内容已同步到后端数据库，未填写字段保持空值。'
   }
   catch (error) {
     actionMessage.value = `同步失败：${getApiErrorMessage(error)}`
@@ -794,11 +792,11 @@ async function updateItemText(itemId: string, field: keyof Pick<MoldingSampleIte
   }
 }
 
-async function fillWarehouseSample() {
-  const patches = activeItems.value.map((item, index) => ({
+async function saveWarehouseSample() {
+  const patches = activeItems.value.map((item) => ({
     id: item.id,
-    receipt_no: item.receipt_no || `LL-${today.replaceAll('-', '')}-${String(index + 1).padStart(3, '0')}`,
-    collected_weight_kg: item.collected_weight_kg ?? item.required_material_kg,
+    receipt_no: item.receipt_no,
+    collected_weight_kg: item.collected_weight_kg,
   }))
 
   patches.forEach((patch) => {
@@ -812,16 +810,16 @@ async function fillWarehouseSample() {
     try {
       const updated = await moldingSampleApi.updateItems(activeOrder.value.id, { items: patches })
       setApiRecord(updated)
-      actionMessage.value = '仓库领料已写入后端。'
+      actionMessage.value = '仓库已编辑领料信息已写入后端。'
       return
     }
     catch (error) {
-      actionMessage.value = `仓库领料保存失败：${getApiErrorMessage(error)}`
+      actionMessage.value = `仓库领料信息保存失败：${getApiErrorMessage(error)}`
       return
     }
   }
 
-  actionMessage.value = '仓库领料示例已回填。'
+  actionMessage.value = '仓库已编辑领料信息已暂存到当前页面。'
 }
 
 async function createRequisitionsFromItems() {
@@ -963,11 +961,11 @@ async function deleteRequisitionRow(requisitionId: string) {
   }
 }
 
-async function fillProductionSample() {
-  const patches = activeItems.value.map((item, index) => ({
+async function saveProductionSample() {
+  const patches = activeItems.value.map((item) => ({
     id: item.id,
-    actual_weight_kg: item.actual_weight_kg ?? roundTwo((item.collected_weight_kg ?? item.required_material_kg ?? 1) * 0.96),
-    injection_cost: item.injection_cost ?? 80 + index * 20,
+    actual_weight_kg: item.actual_weight_kg,
+    injection_cost: item.injection_cost,
   }))
 
   patches.forEach((patch) => {
@@ -981,20 +979,16 @@ async function fillProductionSample() {
     try {
       const updated = await moldingSampleApi.updateItems(activeOrder.value.id, { items: patches })
       setApiRecord(updated)
-      actionMessage.value = '啤机部回填已写入后端。'
+      actionMessage.value = '啤机部已编辑用料和啤办费已写入后端。'
       return
     }
     catch (error) {
-      actionMessage.value = `啤机部回填保存失败：${getApiErrorMessage(error)}`
+      actionMessage.value = `啤机部填写保存失败：${getApiErrorMessage(error)}`
       return
     }
   }
 
-  actionMessage.value = '啤机部实际用料和啤办费示例已回填。'
-}
-
-function roundTwo(value: number) {
-  return Math.round(value * 100) / 100
+  actionMessage.value = '啤机部已编辑用料和啤办费已暂存到当前页面。'
 }
 
 function updateMaterialPrice(index: number, field: keyof EditableMaterialPrice, value: string) {
@@ -1186,13 +1180,13 @@ watchEffect(() => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-100 px-4 py-6 text-slate-950 sm:px-6 xl:px-10">
+  <main class="min-h-screen bg-slate-100 px-4 pb-6 pt-16 text-slate-950 sm:px-6 xl:px-10">
     <div class="mx-auto max-w-[1680px] space-y-5">
       <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <RouterLink
             to="/modules"
-            class="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-950"
+            class="fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 text-sm font-semibold text-slate-600 shadow-sm backdrop-blur transition hover:border-slate-300 hover:text-slate-950 sm:left-6 xl:left-10"
           >
             <ArrowLeft class="size-4" aria-hidden="true" />
             工程部模块
@@ -1309,29 +1303,31 @@ watchEffect(() => {
       </div>
 
       <div class="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <SectionPanel title="单据队列" subtitle="按当前厂区入口切换单据">
-          <div class="space-y-3">
-            <RouterLink
-              v-for="entry in factoryQueue"
-              :key="entry.order.id"
-              :to="`/modules/molding-sample?factory=${entry.factory_id}`"
-              class="block rounded-lg border p-4 transition-colors hover:border-slate-300 hover:bg-slate-50"
-              :class="entry.factory_id === selectedFactoryId ? 'border-slate-950 bg-slate-50' : 'border-slate-200 bg-white'"
-            >
-              <div class="flex items-start justify-between gap-3">
-                <div>
-                  <p class="font-semibold text-slate-950">{{ entry.order.order_number }} · {{ entry.order.product_name }}</p>
-                  <p class="mt-1 text-xs text-slate-500">{{ entry.order.client_name }} · {{ entry.order.workshop || '未定车间' }}</p>
+        <div class="xl:sticky xl:top-24 xl:self-start">
+          <SectionPanel title="单据队列" subtitle="按当前厂区入口切换单据">
+            <div class="space-y-3">
+              <RouterLink
+                v-for="entry in factoryQueue"
+                :key="entry.order.id"
+                :to="`/modules/molding-sample?factory=${entry.factory_id}`"
+                class="block rounded-lg border p-4 transition-colors hover:border-slate-300 hover:bg-slate-50"
+                :class="entry.factory_id === selectedFactoryId ? 'border-slate-950 bg-slate-50' : 'border-slate-200 bg-white'"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="font-semibold text-slate-950">{{ entry.order.order_number }} · {{ entry.order.product_name }}</p>
+                    <p class="mt-1 text-xs text-slate-500">{{ entry.order.client_name }} · {{ entry.order.workshop || '未定车间' }}</p>
+                  </div>
+                  <StatusPill :label="entry.order.status" :tone="statusTones[entry.order.status]" compact />
                 </div>
-                <StatusPill :label="entry.order.status" :tone="statusTones[entry.order.status]" compact />
-              </div>
-              <div class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600">
-                <span>明细 {{ entry.item_count }}</span>
-                <span>{{ entry.blocked_count ? `卡点 ${entry.blocked_count}` : '无完成卡点' }}</span>
-              </div>
-            </RouterLink>
-          </div>
-        </SectionPanel>
+                <div class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600">
+                  <span>明细 {{ entry.item_count }}</span>
+                  <span>{{ entry.blocked_count ? `卡点 ${entry.blocked_count}` : '无完成卡点' }}</span>
+                </div>
+              </RouterLink>
+            </div>
+          </SectionPanel>
+        </div>
 
         <div class="space-y-5">
           <SectionPanel title="单头信息" subtitle="规格字段统一为 injection 啤办单口径">
@@ -1821,10 +1817,10 @@ watchEffect(() => {
                   :disabled="!isWarehouseEditable"
                   class="inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
                   :class="isWarehouseEditable ? 'border-blue-700 bg-blue-700 text-white' : ''"
-                  @click="fillWarehouseSample"
+                  @click="saveWarehouseSample"
                 >
                   <Archive class="size-4" aria-hidden="true" />
-                  批量出库
+                  保存领料填写
                 </button>
               </div>
             </div>
@@ -2123,10 +2119,10 @@ watchEffect(() => {
                 :disabled="!isProductionEditable"
                 class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
                 :class="isProductionEditable ? 'border-blue-700 bg-blue-700 text-white' : ''"
-                @click="fillProductionSample"
+                @click="saveProductionSample"
               >
                 <Send class="size-4" aria-hidden="true" />
-                批量回填
+                保存生产填写
               </button>
               <button
                 type="button"
