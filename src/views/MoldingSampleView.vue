@@ -46,6 +46,7 @@ import type {
   MoldingSampleRequisition,
   MoldingSampleRole,
   MoldingSampleStatus,
+  MoldingSampleWorkflowRecord,
 } from '@/types/moldingSample'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -99,6 +100,18 @@ interface ProcessStep {
   state: 'done' | 'current' | 'pending' | 'blocked'
 }
 
+interface QueueEntry {
+  factory_id: ProductionFactoryContextId
+  factory_name: string
+  order: MoldingSampleOrder
+  items: MoldingSampleItem[]
+  item_count: number
+  due_date: string
+  current_handler: string
+  overdue: boolean
+  anomalies: string[]
+}
+
 interface EditableMaterialPrice {
   material: string
   unit_price: string | number
@@ -124,6 +137,15 @@ const excelImportOrderId = ref('')
 const productionProblem = ref('现场反馈：请工程确认色粉比例。')
 const actionMessage = ref('')
 const activeReportTab = ref<'materials' | 'injection' | 'total'>('materials')
+const queueStatusFilter = ref<MoldingSampleStatus | ''>('')
+const queueFactoryFilter = ref<ProductionFactoryContextId | ''>('')
+const queueKeywordFilter = ref('')
+const queueEngineerFilter = ref('')
+const queueSupervisorFilter = ref('')
+const queueDateFromFilter = ref('')
+const queueDateToFilter = ref('')
+const queueAnomalyFilter = ref('')
+const selectedDetailItemId = ref('')
 
 const orderOverrides = ref<Record<string, Partial<MoldingSampleOrder>>>({})
 const itemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
@@ -186,6 +208,12 @@ const roleWorkspaceEntries: Record<RoleTabId, string[]> = {
   reports: ['费用汇总', '归档单据', '材料成本', '生产成本'],
 }
 
+const queueStatusOptions: MoldingSampleStatus[] = ['待审核', '待经理审核', '待生产', '生产中', '已完成', '已驳回']
+const queueAnomalyOptions = ['缺实际用料', '缺啤办费', '缺料价', '库存不足', '逾期']
+const stageOptions = ['T0', 'EP', 'FEP', 'PP']
+const workshopOptions = ['A车间', 'B车间', '华登车间', '模厂']
+const sendToOptions = ['内部', '发至湖南', '发至模厂']
+
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'amber',
   待经理审核: 'blue',
@@ -215,11 +243,28 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
     ? appStore.activeProductionFactory.id
     : 'huakang-a'
 })
+const selectedOrderId = computed(() => readQueryString(route.query.order_id))
 
 const activeFactory = computed(() =>
   factoryContexts.find((factory) => factory.id === selectedFactoryId.value) ?? factoryContexts[1],
 )
-const fallbackRecord = computed(() => getMoldingSampleRecord(selectedFactoryId.value))
+const allQueueRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
+  apiRecords.value.length
+    ? apiRecords.value.map((record) => ({
+      factory_id: record.order.factory_id,
+      order: record.order,
+      items: record.items,
+      audit_logs: record.audit_logs,
+      requisitions: [],
+      problems: [],
+    }))
+    : Object.values(moldingSampleFactoryRecords),
+)
+const fallbackRecord = computed(() =>
+  allQueueRecords.value.find((record) => record.order.id === selectedOrderId.value)
+  ?? allQueueRecords.value.find((record) => record.factory_id === selectedFactoryId.value)
+  ?? getMoldingSampleRecord(selectedFactoryId.value),
+)
 const activeRecord = computed(() => {
   if (apiRecord.value) {
     return {
@@ -273,31 +318,55 @@ const isWarehouseEditable = computed(() =>
   !isExternalOrder.value && ['待生产', '生产中'].includes(activeOrder.value.status),
 )
 
-const factoryQueue = computed(() =>
-  (apiRecords.value.length
-    ? apiRecords.value.map((record) => ({
-      factory_id: record.order.factory_id as ProductionFactoryContextId,
-      order: record.order,
-      items: record.items,
-      audit_logs: record.audit_logs,
-      requisitions: [],
-      problems: [],
-    }))
-    : Object.values(moldingSampleFactoryRecords)
-  ).map((record) => {
+const queueEntries = computed<QueueEntry[]>(() =>
+  allQueueRecords.value.map((record) => {
     const order = {
       ...record.order,
       ...(orderOverrides.value[record.order.id] ?? {}),
     }
+    const items = record.items.map((item) => ({
+      ...item,
+      ...(itemOverrides.value[order.id]?.[item.id] ?? {}),
+    }))
+    const dueDate = getRequiredCompletionDate(order, items)
+    const anomalies = getQueueAnomalies(order, items, record.problems.map((problem) => problem.description))
+    const overdue = isQueueOrderOverdue(order, dueDate)
 
     return {
-      factory_id: record.factory_id,
+      factory_id: record.factory_id as ProductionFactoryContextId,
+      factory_name: getFactoryShortName(record.factory_id),
       order,
-      item_count: record.items.length,
-      blocked_count: buildCompletionGate(order, record.items).missing_item_ids.length,
+      items,
+      item_count: items.length,
+      due_date: dueDate,
+      current_handler: getOrderCurrentHandler(order),
+      overdue,
+      anomalies: overdue ? Array.from(new Set([...anomalies, '逾期'])) : anomalies,
     }
   }),
 )
+const filteredQueueEntries = computed(() => queueEntries.value.filter((entry) => {
+  const keyword = queueKeywordFilter.value.trim().toLowerCase()
+  const matchesKeyword = !keyword
+    || entry.order.client_name.toLowerCase().includes(keyword)
+    || entry.order.order_number.toLowerCase().includes(keyword)
+    || entry.order.doc_number.toLowerCase().includes(keyword)
+    || entry.order.id.toLowerCase().includes(keyword)
+    || entry.order.product_name.toLowerCase().includes(keyword)
+  const matchesDateFrom = !queueDateFromFilter.value || entry.order.date >= queueDateFromFilter.value
+  const matchesDateTo = !queueDateToFilter.value || entry.order.date <= queueDateToFilter.value
+
+  return (!queueStatusFilter.value || entry.order.status === queueStatusFilter.value)
+    && (!queueFactoryFilter.value || entry.factory_id === queueFactoryFilter.value)
+    && matchesKeyword
+    && (!queueEngineerFilter.value.trim() || entry.order.eng_name.includes(queueEngineerFilter.value.trim()))
+    && (!queueSupervisorFilter.value.trim() || entry.order.supervisor.includes(queueSupervisorFilter.value.trim()))
+    && matchesDateFrom
+    && matchesDateTo
+    && (!queueAnomalyFilter.value || entry.anomalies.includes(queueAnomalyFilter.value))
+}))
+const engineerOptions = computed(() => Array.from(new Set(queueEntries.value.map((entry) => entry.order.eng_name).filter(Boolean))))
+const supervisorOptions = computed(() => Array.from(new Set(queueEntries.value.map((entry) => entry.order.supervisor).filter(Boolean))))
 
 function inventoryBatchesForMaterial(material: string) {
   return activeInventoryBatches.value.filter((batch) => batch.material === material)
@@ -327,28 +396,28 @@ function syncSupervisorPinResetDraft() {
 
 const summaryCards = computed<SummaryCard[]>(() => [
   {
-    label: '当前状态',
+    label: '单据状态',
     value: activeOrder.value.status,
-    detail: isExternalOrder.value ? '外厂 / 模厂自动完成路径' : '内部生产路径',
+    detail: isExternalOrder.value ? '生产路径：外厂 / 模厂' : '生产路径：内部生产',
     tone: statusTones[activeOrder.value.status],
   },
   {
-    label: '明细行',
+    label: '明细 / 模具数',
     value: String(activeItems.value.length),
-    detail: `${activeOrder.value.client_name} · ${activeOrder.value.product_name}`,
+    detail: `${new Set(activeItems.value.map((item) => item.mold_id)).size} 套模具 · ${activeOrder.value.product_name}`,
     tone: 'teal',
   },
   {
-    label: '完成卡点',
-    value: completionGate.value.can_complete ? '通过' : `${completionGate.value.missing_item_ids.length} 项`,
-    detail: completionGate.value.message,
-    tone: completionGate.value.can_complete ? 'green' : 'red',
+    label: '当前节点待办',
+    value: getCurrentWorkflowNode(activeOrder.value.status),
+    detail: `待办人：${currentHandler.value}`,
+    tone: activeOrder.value.status === '已驳回' ? 'red' : activeOrder.value.status === '已完成' ? 'green' : 'blue',
   },
   {
-    label: '总费用',
-    value: `${reportSummary.value.total_cost.toFixed(2)} HKD`,
-    detail: `料费 ${reportSummary.value.total_material_cost.toFixed(2)} · 啤办费 ${reportSummary.value.total_injection_cost.toFixed(2)}`,
-    tone: reportSummary.value.archive_ready ? 'green' : 'blue',
+    label: '费用状态',
+    value: getFeeStatusLabel(),
+    detail: getFeeStatusDetail(),
+    tone: getFeeStatusTone(),
   },
 ])
 
@@ -361,6 +430,135 @@ function readQueryString(value: unknown) {
   }
 
   return ''
+}
+
+function getFactoryShortName(factoryId: string) {
+  return factoryContexts.find((factory) => factory.id === factoryId)?.shortName ?? factoryId
+}
+
+function getCurrentWorkflowNode(status: MoldingSampleStatus) {
+  if (status === '待审核') {
+    return '主管审核'
+  }
+  if (status === '待经理审核') {
+    return '经理终审'
+  }
+  if (status === '待生产') {
+    return '仓库领料'
+  }
+  if (status === '生产中') {
+    return '啤机生产'
+  }
+  if (status === '已驳回') {
+    return '工程补资料'
+  }
+
+  return '完成归档'
+}
+
+function getOrderCurrentHandler(order: MoldingSampleOrder) {
+  if (order.status === '待审核') {
+    return order.supervisor || '主管'
+  }
+  if (order.status === '待经理审核') {
+    return '经理账号'
+  }
+  if (order.status === '待生产') {
+    return isExternalMoldingSampleOrder(order) ? '归档员' : '仓库'
+  }
+  if (order.status === '生产中') {
+    return '啤机部'
+  }
+  if (order.status === '已驳回') {
+    return order.eng_name || '工程部'
+  }
+
+  return '已归档'
+}
+
+function getRequiredCompletionDate(order: MoldingSampleOrder, items: MoldingSampleItem[]) {
+  const dates = [
+    order.completed_date,
+    ...items.map((item) => item.completion_time || item.mold_return_time),
+  ].filter(Boolean).sort()
+
+  return dates.at(-1) || order.date
+}
+
+function isQueueOrderOverdue(order: MoldingSampleOrder, dueDate: string) {
+  return ['待生产', '生产中'].includes(order.status) && Boolean(dueDate) && dueDate < today
+}
+
+function getQueueAnomalies(order: MoldingSampleOrder, items: MoldingSampleItem[], problems: string[]) {
+  const summary = buildMoldingSampleReportSummary(order, items)
+  const productionStarted = ['生产中', '已完成'].includes(order.status)
+  const anomalies: string[] = []
+
+  if (productionStarted && summary.has_missing_actual_weight) {
+    anomalies.push('缺实际用料')
+  }
+  if (productionStarted && !isExternalMoldingSampleOrder(order) && summary.has_missing_injection_cost) {
+    anomalies.push('缺啤办费')
+  }
+  if (summary.has_missing_price) {
+    anomalies.push('缺料价')
+  }
+  if (['待生产', '生产中'].includes(order.status) && items.some((item) => (item.required_material_kg ?? 0) > (item.collected_weight_kg ?? 0))) {
+    anomalies.push('库存不足')
+  }
+  if (problems.length) {
+    anomalies.push('异常反馈')
+  }
+
+  return Array.from(new Set(anomalies))
+}
+
+function getFeeStatusLabel() {
+  if (!['生产中', '已完成'].includes(activeOrder.value.status)) {
+    return '未到结算节点'
+  }
+  if (reportSummary.value.archive_ready) {
+    return '费用完整'
+  }
+  if (reportSummary.value.has_missing_actual_weight) {
+    return `缺 ${reportSummary.value.missing_actual_weight_item_ids.length} 条实际用料`
+  }
+  if (reportSummary.value.has_missing_injection_cost) {
+    return `缺 ${reportSummary.value.missing_injection_cost_item_ids.length} 条啤办费`
+  }
+  if (reportSummary.value.has_missing_price) {
+    return `缺 ${reportSummary.value.missing_price_item_ids.length} 条料价`
+  }
+
+  return '待复核'
+}
+
+function getFeeStatusDetail() {
+  if (!['生产中', '已完成'].includes(activeOrder.value.status)) {
+    return '未到结算节点，暂不提示生产用料卡点'
+  }
+  if (!completionGate.value.can_complete) {
+    return `完成卡点：缺 ${completionGate.value.missing_item_ids.length} 条实际用料`
+  }
+
+  return `料费 ${reportSummary.value.total_material_cost.toFixed(2)} · 啤办费 ${reportSummary.value.total_injection_cost.toFixed(2)} HKD`
+}
+
+function getFeeStatusTone(): Tone {
+  if (!['生产中', '已完成'].includes(activeOrder.value.status)) {
+    return 'slate'
+  }
+  if (reportSummary.value.archive_ready) {
+    return 'green'
+  }
+  if (reportSummary.value.has_missing_actual_weight) {
+    return 'red'
+  }
+  if (reportSummary.value.has_missing_injection_cost) {
+    return 'amber'
+  }
+
+  return 'blue'
 }
 
 function isRoleTabId(value: string): value is RoleTabId {
@@ -695,7 +893,10 @@ async function loadApiData() {
     editableMaterialPrices.value = createEditablePrices(pricing.prices)
     editableRmbToHkdRate.value = String(pricing.rmb_to_hkd_rate)
 
-    const selectedRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value) ?? records[0] ?? null
+    const selectedRecord = records.find((record) => record.order.id === selectedOrderId.value)
+      ?? records.find((record) => record.order.factory_id === selectedFactoryId.value)
+      ?? records[0]
+      ?? null
     setApiRecord(selectedRecord)
     syncSupervisorPinResetDraft()
     await refreshWarehouseData()
@@ -1032,8 +1233,11 @@ async function runTransition(
   actionMessage.value = `${action}完成：${fromStatus} -> ${transition.next_status}`
 }
 
-function updateOrderTextField(field: keyof Pick<MoldingSampleOrder, 'product_name' | 'client_name' | 'order_number' | 'doc_number' | 'supervisor' | 'reason'>, value: string) {
-  setOrderPatch({ [field]: value })
+function updateOrderTextField(
+  field: keyof Pick<MoldingSampleOrder, 'product_name' | 'client_name' | 'order_number' | 'doc_number' | 'supervisor' | 'reason' | 'date' | 'stage' | 'order_type' | 'workshop' | 'send_to' | 'eng_name'>,
+  value: string,
+) {
+  setOrderPatch({ [field]: field === 'send_to' && value === '内部' ? '' : value } as Partial<MoldingSampleOrder>)
 }
 
 async function saveEngineeringChanges() {
@@ -1121,6 +1325,64 @@ async function updateItemText(itemId: string, field: keyof Pick<MoldingSampleIte
   if (field === 'receipt_no') {
     await saveItemPatchToApi(itemId, patch)
   }
+}
+
+function runDetailTableAction(action: '新增行' | '删除行' | '复制行' | '上移' | '下移' | '批量导入') {
+  if (!engineeringEditable.value) {
+    actionMessage.value = `${action}仅在工程开单或驳回补资料阶段可用。`
+    return
+  }
+  if (['删除行', '复制行', '上移', '下移'].includes(action) && !selectedDetailItemId.value) {
+    actionMessage.value = `请先选择一条明细后再执行${action}。`
+    return
+  }
+  if (action === '批量导入') {
+    actionMessage.value = '批量导入已使用 Excel 导入入口，正式流程会先预览再写入明细。'
+    return
+  }
+
+  actionMessage.value = `${action}入口已就绪，后续接入明细行持久化接口后保存到正式数据。`
+}
+
+function getDetailRowIssues(item: MoldingSampleItem) {
+  const issues: string[] = []
+  const productionStarted = ['生产中', '已完成'].includes(activeOrder.value.status)
+
+  if (!item.material) {
+    issues.push('原料缺失')
+  }
+  if (!item.quantity || item.shoot_qty <= 0) {
+    issues.push('数量为 0')
+  }
+  if (!item.completion_time) {
+    issues.push('完成时间为空')
+  }
+  if (productionStarted && item.actual_weight_kg === null) {
+    issues.push('缺实际用料')
+  }
+  if (productionStarted && !isExternalOrder.value && item.injection_cost === null) {
+    issues.push('缺啤办费')
+  }
+  if (item.actual_weight_kg !== null && item.actual_amount_hkd === null) {
+    issues.push('缺料价')
+  }
+
+  return issues
+}
+
+function getDetailRowStatus(item: MoldingSampleItem) {
+  const issues = getDetailRowIssues(item)
+
+  return issues.length ? issues[0] : '资料完整'
+}
+
+function getDetailRowTone(item: MoldingSampleItem): Tone {
+  const issues = getDetailRowIssues(item)
+  if (issues.some((issue) => ['缺实际用料', '缺啤办费', '缺料价'].includes(issue))) {
+    return 'red'
+  }
+
+  return issues.length ? 'amber' : 'green'
 }
 
 async function saveWarehouseSample() {
@@ -1495,9 +1757,11 @@ onMounted(() => {
   void loadApiData()
 })
 
-watch(selectedFactoryId, () => {
+watch([selectedFactoryId, selectedOrderId], () => {
   if (apiRecords.value.length) {
-    const selectedRecord = apiRecords.value.find((record) => record.order.factory_id === selectedFactoryId.value) ?? null
+    const selectedRecord = apiRecords.value.find((record) => record.order.id === selectedOrderId.value)
+      ?? apiRecords.value.find((record) => record.order.factory_id === selectedFactoryId.value)
+      ?? null
     setApiRecord(selectedRecord)
     void refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
@@ -1719,104 +1983,302 @@ watchEffect(() => {
         </div>
       </section>
 
-      <div class="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
+      <div class="grid gap-5 xl:grid-cols-[minmax(480px,620px)_minmax(0,1fr)]">
         <div class="xl:sticky xl:top-24 xl:self-start">
-          <SectionPanel title="单据队列" subtitle="按当前厂区入口切换单据">
+          <SectionPanel title="单据队列" subtitle="正式列表：按单据编号精准打开">
             <div class="space-y-3">
-              <RouterLink
-                v-for="entry in factoryQueue"
-                :key="entry.order.id"
-                :to="`/modules/molding-sample?factory=${entry.factory_id}`"
-                class="block rounded-lg border p-4 transition-colors hover:border-slate-300 hover:bg-slate-50"
-                :class="entry.factory_id === selectedFactoryId ? 'border-slate-950 bg-slate-50' : 'border-slate-200 bg-white'"
-              >
-                <div class="flex items-start justify-between gap-3">
-                  <div>
-                    <p class="font-semibold text-slate-950">{{ entry.order.order_number }} · {{ entry.order.product_name }}</p>
-                    <p class="mt-1 text-xs text-slate-500">{{ entry.order.client_name }} · {{ entry.order.workshop || '未定车间' }}</p>
-                  </div>
-                  <StatusPill :label="entry.order.status" :tone="statusTones[entry.order.status]" compact />
-                </div>
-                <div class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600">
-                  <span>明细 {{ entry.item_count }}</span>
-                  <span>{{ entry.blocked_count ? `卡点 ${entry.blocked_count}` : '无完成卡点' }}</span>
-                </div>
-              </RouterLink>
+              <div class="grid gap-2 sm:grid-cols-2">
+                <label class="text-xs font-semibold text-slate-500">
+                  状态筛选
+                  <select
+                    v-model="queueStatusFilter"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                    <option value="">全部状态</option>
+                    <option v-for="status in queueStatusOptions" :key="status" :value="status">{{ status }}</option>
+                  </select>
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  厂区筛选
+                  <select
+                    v-model="queueFactoryFilter"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                    <option value="">全部厂区</option>
+                    <option
+                      v-for="factory in factoryContexts.filter((factory) => isProductionFactoryContextId(factory.id))"
+                      :key="factory.id"
+                      :value="factory.id"
+                    >
+                      {{ factory.shortName }}
+                    </option>
+                  </select>
+                </label>
+                <label class="text-xs font-semibold text-slate-500 sm:col-span-2">
+                  客户 / 产品编号 / 订单编号
+                  <input
+                    v-model="queueKeywordFilter"
+                    type="search"
+                    placeholder="支持模糊搜索"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  工程师
+                  <input
+                    v-model="queueEngineerFilter"
+                    placeholder="按开单人筛选"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  主管
+                  <input
+                    v-model="queueSupervisorFilter"
+                    placeholder="按指定主管筛选"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  日期范围
+                  <input
+                    v-model="queueDateFromFilter"
+                    type="date"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500">
+                  日期范围
+                  <input
+                    v-model="queueDateToFilter"
+                    type="date"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                </label>
+                <label class="text-xs font-semibold text-slate-500 sm:col-span-2">
+                  异常项
+                  <select
+                    v-model="queueAnomalyFilter"
+                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  >
+                    <option value="">全部异常</option>
+                    <option v-for="anomaly in queueAnomalyOptions" :key="anomaly" :value="anomaly">{{ anomaly }}</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table class="min-w-[1120px] divide-y divide-slate-200 text-xs">
+                  <thead class="bg-slate-50 text-left font-semibold text-slate-500">
+                    <tr>
+                      <th class="px-3 py-2">单据编号</th>
+                      <th class="px-3 py-2">产品编号</th>
+                      <th class="px-3 py-2">客户</th>
+                      <th class="px-3 py-2">产品名称</th>
+                      <th class="px-3 py-2">厂区</th>
+                      <th class="px-3 py-2">状态</th>
+                      <th class="px-3 py-2">当前处理人</th>
+                      <th class="px-3 py-2">要求完成</th>
+                      <th class="px-3 py-2">是否逾期</th>
+                      <th class="px-3 py-2">异常项</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100">
+                    <tr
+                      v-for="entry in filteredQueueEntries"
+                      :key="entry.order.id"
+                      class="transition-colors hover:bg-slate-50"
+                      :class="entry.order.id === activeOrder.id ? 'bg-slate-50' : 'bg-white'"
+                    >
+                      <td class="px-3 py-2 font-semibold text-slate-950">
+                        <RouterLink
+                          :to="`/modules/molding-sample?factory=${entry.factory_id}&order_id=${entry.order.id}`"
+                          class="underline-offset-2 hover:underline"
+                        >
+                          {{ entry.order.id }}
+                        </RouterLink>
+                      </td>
+                      <td class="px-3 py-2">{{ entry.order.order_number }}</td>
+                      <td class="px-3 py-2">{{ entry.order.client_name }}</td>
+                      <td class="px-3 py-2">{{ entry.order.product_name }}</td>
+                      <td class="px-3 py-2">{{ entry.factory_name }}</td>
+                      <td class="px-3 py-2">
+                        <StatusPill :label="entry.order.status" :tone="statusTones[entry.order.status]" compact />
+                      </td>
+                      <td class="px-3 py-2">{{ entry.current_handler }}</td>
+                      <td class="px-3 py-2">{{ entry.due_date }}</td>
+                      <td class="px-3 py-2">
+                        <StatusPill :label="entry.overdue ? '是' : '否'" :tone="entry.overdue ? 'red' : 'green'" compact />
+                      </td>
+                      <td class="px-3 py-2">
+                        <span v-if="entry.anomalies.length" class="text-amber-700">{{ entry.anomalies.join('、') }}</span>
+                        <span v-else class="text-slate-400">无</span>
+                      </td>
+                    </tr>
+                    <tr v-if="filteredQueueEntries.length === 0">
+                      <td colspan="10" class="px-3 py-8 text-center text-slate-500">没有匹配的啤办单</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                <span>共 {{ filteredQueueEntries.length }} / {{ queueEntries.length }} 张单</span>
+                <span>打开格式：/modules/molding-sample?factory={{ activeOrder.factory_id }}&order_id={{ activeOrder.id }}</span>
+              </div>
             </div>
           </SectionPanel>
         </div>
 
         <div class="space-y-5">
-          <SectionPanel title="单头信息" subtitle="基础资料、客户资料、生产路径">
-            <div class="grid gap-4 lg:grid-cols-4">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">产品编号</p>
-                <input
-                  :value="activeOrder.order_number"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('order_number', readInputValue($event))"
-                >
+          <SectionPanel title="单头信息" subtitle="正式表单式：基础资料、客户资料、生产路径">
+            <fieldset class="space-y-4">
+              <legend class="text-sm font-semibold text-slate-950">基础资料</legend>
+              <div class="grid gap-x-6 gap-y-3 lg:grid-cols-2">
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">产品编号</span>
+                  <input
+                    :value="activeOrder.order_number"
+                    :disabled="!engineeringEditable"
+                    class="h-9 rounded-md border border-slate-200 px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @input="updateOrderTextField('order_number', readInputValue($event))"
+                  >
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">订单编号</span>
+                  <input
+                    :value="activeOrder.doc_number"
+                    :disabled="!engineeringEditable"
+                    class="h-9 rounded-md border border-slate-200 px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @input="updateOrderTextField('doc_number', readInputValue($event))"
+                  >
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">产品名称 <em class="not-italic text-red-600">必填</em></span>
+                  <input
+                    :value="activeOrder.product_name"
+                    :disabled="!engineeringEditable"
+                    required
+                    class="h-9 rounded-md border border-slate-200 px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @input="updateOrderTextField('product_name', readInputValue($event))"
+                  >
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">开单日期 <em class="not-italic text-red-600">必填</em></span>
+                  <input
+                    :value="activeOrder.date"
+                    :disabled="!engineeringEditable"
+                    type="date"
+                    required
+                    class="h-9 rounded-md border border-slate-200 px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @input="updateOrderTextField('date', readInputValue($event))"
+                  >
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">阶段</span>
+                  <select
+                    :value="activeOrder.stage"
+                    :disabled="!engineeringEditable"
+                    class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @change="updateOrderTextField('stage', readInputValue($event))"
+                  >
+                    <option v-for="stage in stageOptions" :key="stage" :value="stage">{{ stage }}</option>
+                  </select>
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">用途</span>
+                  <select
+                    :value="activeOrder.order_type"
+                    :disabled="!engineeringEditable"
+                    class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @change="updateOrderTextField('order_type', readInputValue($event))"
+                  >
+                    <option value="啤办">啤办</option>
+                    <option value="试模">试模</option>
+                    <option value="试色">试色</option>
+                  </select>
+                </label>
               </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">订单编号</p>
-                <input
-                  :value="activeOrder.doc_number"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('doc_number', readInputValue($event))"
-                >
-              </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">客户</p>
-                <input
-                  :value="activeOrder.client_name"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('client_name', readInputValue($event))"
-                >
-              </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">主管</p>
-                <input
-                  :value="activeOrder.supervisor"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('supervisor', readInputValue($event))"
-                >
-              </div>
-            </div>
+            </fieldset>
 
-            <div class="mt-4 grid gap-4 lg:grid-cols-[1fr_260px_260px]">
-              <label class="block rounded-lg border border-slate-200 bg-white p-4">
-                <span class="text-xs font-semibold text-slate-500">产品名称</span>
-                <input
-                  :value="activeOrder.product_name"
+            <fieldset class="mt-5 space-y-4 border-t border-slate-200 pt-4">
+              <legend class="text-sm font-semibold text-slate-950">客户资料</legend>
+              <div class="grid gap-x-6 gap-y-3 lg:grid-cols-2">
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">客户名称 <em class="not-italic text-red-600">必填</em></span>
+                  <input
+                    :value="activeOrder.client_name"
+                    :disabled="!engineeringEditable"
+                    required
+                    class="h-9 rounded-md border border-slate-200 px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @input="updateOrderTextField('client_name', readInputValue($event))"
+                  >
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">跟进工程师</span>
+                  <select
+                    :value="activeOrder.eng_name"
+                    :disabled="!engineeringEditable"
+                    class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @change="updateOrderTextField('eng_name', readInputValue($event))"
+                  >
+                    <option v-for="engineer in engineerOptions" :key="engineer" :value="engineer">{{ engineer }}</option>
+                    <option v-if="!engineerOptions.includes(activeOrder.eng_name)" :value="activeOrder.eng_name">{{ activeOrder.eng_name }}</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="mt-5 space-y-4 border-t border-slate-200 pt-4">
+              <legend class="text-sm font-semibold text-slate-950">生产路径</legend>
+              <div class="grid gap-x-6 gap-y-3 lg:grid-cols-2">
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">车间 <em class="not-italic text-red-600">必填</em></span>
+                  <select
+                    :value="activeOrder.workshop"
+                    :disabled="!engineeringEditable"
+                    required
+                    class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @change="updateOrderTextField('workshop', readInputValue($event))"
+                  >
+                    <option v-for="workshop in workshopOptions" :key="workshop" :value="workshop">{{ workshop }}</option>
+                  </select>
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">发至</span>
+                  <select
+                    :value="activeOrder.send_to || '内部'"
+                    :disabled="!engineeringEditable"
+                    class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @change="updateOrderTextField('send_to', readInputValue($event))"
+                  >
+                    <option v-for="sendTo in sendToOptions" :key="sendTo" :value="sendTo">{{ sendTo }}</option>
+                  </select>
+                </label>
+                <label class="grid gap-1 text-sm md:grid-cols-[104px_minmax(0,1fr)] md:items-center">
+                  <span class="font-medium text-slate-600">主管 <em class="not-italic text-red-600">必填</em></span>
+                  <select
+                    :value="activeOrder.supervisor"
+                    :disabled="!engineeringEditable"
+                    required
+                    class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold disabled:bg-slate-50 disabled:text-slate-500"
+                    @change="updateOrderTextField('supervisor', readInputValue($event))"
+                  >
+                    <option v-for="supervisor in supervisorOptions" :key="supervisor" :value="supervisor">{{ supervisor }}</option>
+                    <option v-if="!supervisorOptions.includes(activeOrder.supervisor)" :value="activeOrder.supervisor">{{ activeOrder.supervisor }}</option>
+                  </select>
+                </label>
+              </div>
+              <label class="grid gap-2 text-sm">
+                <span class="font-medium text-slate-600">原因 / 备注</span>
+                <textarea
+                  :value="activeOrder.reason"
                   :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('product_name', readInputValue($event))"
-                >
+                  rows="3"
+                  class="w-full rounded-md border border-slate-200 px-3 py-2 leading-6 disabled:bg-slate-50 disabled:text-slate-500"
+                  @input="updateOrderTextField('reason', readInputValue($event))"
+                />
               </label>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">阶段 / 用途</p>
-                <p class="mt-2 text-sm font-semibold">{{ formatBlank(activeOrder.stage, '空') }} · {{ activeOrder.order_type }}</p>
-              </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">车间 / 发至</p>
-                <p class="mt-2 text-sm font-semibold">{{ activeOrder.workshop }} · {{ activeOrder.send_to || '内部' }}</p>
-              </div>
-            </div>
-
-            <label class="mt-4 block rounded-lg border border-slate-200 bg-white p-4">
-              <span class="text-xs font-semibold text-slate-500">原因 / 备注</span>
-              <textarea
-                :value="activeOrder.reason"
-                :disabled="!engineeringEditable"
-                rows="3"
-                class="mt-2 w-full rounded-md border border-slate-200 px-3 py-2 text-sm leading-6 disabled:bg-slate-50 disabled:text-slate-500"
-                @input="updateOrderTextField('reason', readInputValue($event))"
-              />
-            </label>
+            </fieldset>
 
             <div v-if="activeOrder.reject_reason" class="mt-4 rounded-lg border border-red-100 bg-red-50 p-4 text-sm text-red-800">
               驳回原因：{{ activeOrder.reject_reason }}
@@ -2734,45 +3196,116 @@ watchEffect(() => {
             </div>
           </SectionPanel>
 
-          <SectionPanel title="明细清单" subtitle="工模、用料、领料、实际用料和费用字段统一展示">
+          <SectionPanel title="明细清单" subtitle="正式开单明细表：工模、用料、领料、实际用料和费用字段统一展示">
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div class="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  :disabled="!engineeringEditable"
+                  class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="runDetailTableAction('新增行')"
+                >
+                  <Plus class="size-4" aria-hidden="true" />
+                  新增行
+                </button>
+                <button
+                  type="button"
+                  :disabled="!engineeringEditable || !selectedDetailItemId"
+                  class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="runDetailTableAction('复制行')"
+                >
+                  复制行
+                </button>
+                <button
+                  type="button"
+                  :disabled="!engineeringEditable || !selectedDetailItemId"
+                  class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="runDetailTableAction('删除行')"
+                >
+                  删除行
+                </button>
+                <button
+                  type="button"
+                  :disabled="!engineeringEditable || !selectedDetailItemId"
+                  class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="runDetailTableAction('上移')"
+                >
+                  上移
+                </button>
+                <button
+                  type="button"
+                  :disabled="!engineeringEditable || !selectedDetailItemId"
+                  class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="runDetailTableAction('下移')"
+                >
+                  下移
+                </button>
+                <button
+                  type="button"
+                  :disabled="!engineeringEditable"
+                  class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                  @click="runDetailTableAction('批量导入')"
+                >
+                  <Upload class="size-4" aria-hidden="true" />
+                  批量导入
+                </button>
+              </div>
+              <p class="text-xs text-slate-500">Excel 导入前先预览 · 行级校验直接标红</p>
+            </div>
             <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[1500px] divide-y divide-slate-200 text-sm">
+              <table class="min-w-[1900px] divide-y divide-slate-200 text-sm">
                 <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                   <tr>
                     <th class="px-4 py-3">排序</th>
-                    <th class="px-4 py-3">工模编号</th>
-                    <th class="px-4 py-3">工模名称</th>
+                    <th class="sticky left-0 z-10 bg-slate-50 px-4 py-3">工模编号</th>
+                    <th class="sticky left-[132px] z-10 bg-slate-50 px-4 py-3">工模名称</th>
                     <th class="px-4 py-3">机型</th>
                     <th class="px-4 py-3">原料</th>
                     <th class="px-4 py-3">颜色</th>
-                    <th class="px-4 py-3">色粉</th>
+                    <th class="px-4 py-3">色粉编号</th>
+                    <th class="px-4 py-3">件数 / 套数</th>
                     <th class="px-4 py-3 text-right">啤数</th>
-                    <th class="px-4 py-3 text-right">需求KG</th>
-                    <th class="px-4 py-3 text-right">领料KG</th>
-                    <th class="px-4 py-3 text-right">实际KG</th>
-                    <th class="px-4 py-3 text-right">料费HKD</th>
-                    <th class="px-4 py-3 text-right">啤办费RMB</th>
-                    <th class="px-4 py-3 text-right">啤办费HKD</th>
+                    <th class="px-4 py-3 text-right">毛重 g</th>
+                    <th class="px-4 py-3 text-right">预计需料 kg</th>
+                    <th class="px-4 py-3">领料单号</th>
+                    <th class="px-4 py-3 text-right">领料 kg</th>
+                    <th class="px-4 py-3 text-right">实际用料 kg</th>
+                    <th class="px-4 py-3 text-right">料费 HKD</th>
+                    <th class="px-4 py-3 text-right">啤办费 RMB</th>
+                    <th class="px-4 py-3 text-right">啤办费 HKD</th>
                     <th class="px-4 py-3">完成时间</th>
+                    <th class="px-4 py-3">行状态</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100">
-                  <tr v-for="item in activeItems" :key="item.id">
+                  <tr
+                    v-for="item in activeItems"
+                    :key="item.id"
+                    class="cursor-pointer transition-colors hover:bg-slate-50"
+                    :class="selectedDetailItemId === item.id ? 'bg-slate-50' : ''"
+                    @click="selectedDetailItemId = item.id"
+                  >
                     <td class="px-4 py-3">{{ item.sort_order }}</td>
-                    <td class="px-4 py-3 font-medium text-slate-950">{{ item.mold_id }}</td>
-                    <td class="px-4 py-3">{{ item.mold_name }}</td>
+                    <td class="sticky left-0 bg-inherit px-4 py-3 font-medium text-slate-950">{{ item.mold_id }}</td>
+                    <td class="sticky left-[132px] bg-inherit px-4 py-3">{{ item.mold_name }}</td>
                     <td class="px-4 py-3">{{ item.machine_type }}</td>
                     <td class="px-4 py-3">{{ item.material }}</td>
                     <td class="px-4 py-3">{{ item.color }}</td>
                     <td class="px-4 py-3">{{ item.pigment_no }}</td>
+                    <td class="px-4 py-3">{{ item.quantity }}</td>
                     <td class="px-4 py-3 text-right">{{ item.shoot_qty }}</td>
+                    <td class="px-4 py-3 text-right">{{ formatBlank(item.gross_weight_g) }}</td>
                     <td class="px-4 py-3 text-right">{{ formatWeight(item.required_material_kg) }}</td>
+                    <td class="px-4 py-3">{{ formatBlank(item.receipt_no) }}</td>
                     <td class="px-4 py-3 text-right">{{ formatWeight(item.collected_weight_kg) }}</td>
                     <td class="px-4 py-3 text-right">{{ formatWeight(item.actual_weight_kg) }}</td>
                     <td class="px-4 py-3 text-right">{{ formatMoney(item.actual_amount_hkd) }}</td>
                     <td class="px-4 py-3 text-right">{{ isExternalOrder ? '不适用' : formatBlank(item.injection_cost) }}</td>
                     <td class="px-4 py-3 text-right">{{ isExternalOrder ? '不适用' : formatMoney(item.injection_cost_hkd) }}</td>
                     <td class="px-4 py-3">{{ formatBlank(item.completion_time) }}</td>
+                    <td class="px-4 py-3">
+                      <StatusPill :label="getDetailRowStatus(item)" :tone="getDetailRowTone(item)" compact />
+                    </td>
                   </tr>
                 </tbody>
               </table>

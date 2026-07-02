@@ -48,6 +48,71 @@ for (const roleScopedEntry of [
   assert.match(source, new RegExp(roleScopedEntry))
 }
 
+for (const queueListCopy of [
+  '正式列表',
+  '状态筛选',
+  '厂区筛选',
+  '客户 / 产品编号 / 订单编号',
+  '工程师',
+  '日期范围',
+  '异常项',
+  '单据编号',
+  '要求完成',
+  '是否逾期',
+  '缺实际用料',
+  '缺啤办费',
+  '缺料价',
+  '库存不足',
+]) {
+  assert.match(source, new RegExp(queueListCopy))
+}
+
+for (const restrainedSummaryCopy of [
+  '单据状态',
+  '明细 / 模具数',
+  '当前节点待办',
+  '费用状态',
+  '未到结算节点',
+]) {
+  assert.match(source, new RegExp(restrainedSummaryCopy))
+}
+
+for (const formalFormCopy of [
+  '客户名称',
+  '开单日期',
+  '跟进工程师',
+  '必填',
+  'T0',
+  'EP',
+  'FEP',
+  'PP',
+  '内部',
+  '发至湖南',
+  '发至模厂',
+]) {
+  assert.match(source, new RegExp(formalFormCopy))
+}
+
+for (const detailTableActionCopy of [
+  '新增行',
+  '删除行',
+  '复制行',
+  '上移',
+  '下移',
+  '批量导入',
+  'Excel 导入前先预览',
+  '行级校验',
+  '件数 / 套数',
+  '毛重 g',
+  '预计需料 kg',
+  '行状态',
+]) {
+  assert.match(source, new RegExp(detailTableActionCopy))
+}
+
+assert.match(source, /order_id/)
+assert.doesNotMatch(source, /label: '明细行'/)
+assert.doesNotMatch(source, /label: '完成卡点'/)
 assert.match(source, /v-if="showAdminDebugActions"[\s\S]*v-for="tab in roleTabs"/)
 assert.doesNotMatch(
   source,
