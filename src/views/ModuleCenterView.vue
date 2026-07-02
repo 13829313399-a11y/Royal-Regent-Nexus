@@ -31,21 +31,27 @@ const currentDepartment = computed(() => departmentMap[currentDepartmentId.value
 const title = computed(() => `${appStore.activeProductionFactory.name} · ${currentDepartment.value.name}模块中心`)
 
 const visibleModules = computed(() => {
-  if (currentDepartmentId.value !== 'engineering') {
-    return departmentEntry.value.modules
-  }
-
   return departmentEntry.value.modules.map((module) => {
-    if (module.id !== 'molding-sample') {
-      return module
+    if (currentDepartmentId.value === 'engineering' && module.id === 'molding-sample') {
+      return {
+        ...module,
+        owner: `${appStore.activeProductionFactory.shortName} · 工程部公共模块`,
+        stats: getMoldingSampleModuleStats(appStore.activeProductionFactory.id),
+        route: `/modules/molding-sample?factory=${appStore.activeProductionFactory.id}`,
+      }
     }
 
-    return {
-      ...module,
-      owner: `${appStore.activeProductionFactory.shortName} · 工程部公共模块`,
-      stats: getMoldingSampleModuleStats(appStore.activeProductionFactory.id),
-      route: `/modules/molding-sample?factory=${appStore.activeProductionFactory.id}`,
+    if (currentDepartmentId.value === 'production' && module.id === 'injection-scheduling') {
+      const route = `/modules/production/injection-scheduling?factory=${appStore.activeProductionFactory.id}`
+
+      return {
+        ...module,
+        href: route,
+        route,
+      }
     }
+
+    return module
   })
 })
 

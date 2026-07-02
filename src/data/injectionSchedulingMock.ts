@@ -287,6 +287,10 @@ export interface PendingOrderDetailRow {
   source: string
   planner: string
   machineAdvice: string
+  machineModel?: string
+  armType?: string
+  remark?: string
+  moldSize?: string
   issue: string
   tone: Tone
 }
