@@ -7,6 +7,7 @@ import {
   Download,
   Play,
   Plus,
+  Printer,
   RotateCcw,
   Save,
   Send,
@@ -70,11 +71,32 @@ interface RoleTab {
   icon: Component
 }
 
+interface CurrentUserContext {
+  id: RoleTabId
+  name: string
+  role: MoldingSampleRole | '汇总'
+  department: string
+  isAdmin: boolean
+}
+
 interface SummaryCard {
   label: string
   value: string
   detail: string
   tone: Tone
+}
+
+interface DocumentField {
+  label: string
+  value: string
+}
+
+interface ProcessStep {
+  number: string
+  label: string
+  actor: string
+  detail: string
+  state: 'done' | 'current' | 'pending' | 'blocked'
 }
 
 interface EditableMaterialPrice {
@@ -141,7 +163,8 @@ const managerPinChangeDraft = ref<PinChangeDraft>({
   confirm_pin: '',
 })
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
-const apiMessage = ref('正在检查后端 API...')
+const apiMessage = ref('正在检查数据同步状态...')
+const lastSyncedAt = ref(formatLastSync())
 
 const roleTabs: RoleTab[] = [
   { id: 'engineering', label: '工程部', role: '工程部', icon: Send },
@@ -151,6 +174,17 @@ const roleTabs: RoleTab[] = [
   { id: 'production', label: '啤机部', role: '啤机部', icon: Play },
   { id: 'reports', label: '汇总', role: '汇总', icon: Save },
 ]
+
+const showAdminDebugActions = computed(() => import.meta.env.DEV || import.meta.env.VITE_ENABLE_MOLDING_SAMPLE_DEBUG === 'true')
+
+const roleWorkspaceEntries: Record<RoleTabId, string[]> = {
+  engineering: ['基础资料', '明细资料', '提交 / 保存 / 处理驳回', '审核轨迹'],
+  supervisor: ['待审核单', '通过', '驳回', '审核意见'],
+  manager: ['终审', '价格口径', '敏感操作审计', 'PIN 管理'],
+  warehouse: ['待领料', '批次选择', '出库登记', '库存流水'],
+  production: ['待生产单', '开始处理', '实际用料', '完成校验'],
+  reports: ['费用汇总', '归档单据', '材料成本', '生产成本'],
+}
 
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'amber',
@@ -318,6 +352,259 @@ const summaryCards = computed<SummaryCard[]>(() => [
   },
 ])
 
+function readQueryString(value: unknown) {
+  if (typeof value === 'string') {
+    return value.trim()
+  }
+  if (Array.isArray(value) && typeof value[0] === 'string') {
+    return value[0].trim()
+  }
+
+  return ''
+}
+
+function isRoleTabId(value: string): value is RoleTabId {
+  return roleTabs.some((tab) => tab.id === value)
+}
+
+const requestedRoleId = computed<RoleTabId | null>(() => {
+  const role = readQueryString(route.query.role)
+
+  return isRoleTabId(role) ? role : null
+})
+const currentLoginName = computed(() => readQueryString(route.query.user))
+const currentUserRoleId = computed<RoleTabId>(() => {
+  if (showAdminDebugActions.value && requestedRoleId.value) {
+    return requestedRoleId.value
+  }
+
+  return 'engineering'
+})
+const visibleRoleTabId = computed<RoleTabId>(() => showAdminDebugActions.value ? activeTab.value : currentUserRoleId.value)
+
+function defaultActorName(roleId: RoleTabId) {
+  if (roleId === 'engineering') {
+    return activeOrder.value.eng_name || '工程部账号'
+  }
+  if (roleId === 'supervisor') {
+    return activeOrder.value.supervisor || '主管账号'
+  }
+  if (roleId === 'manager') {
+    return '经理账号'
+  }
+  if (roleId === 'warehouse') {
+    return activeRequisitions.value[0]?.applicant || '仓库账号'
+  }
+  if (roleId === 'production') {
+    return '啤机部账号'
+  }
+
+  return '归档员'
+}
+
+function buildUserContext(roleId: RoleTabId): CurrentUserContext {
+  const tab = roleTabs.find((item) => item.id === roleId) ?? roleTabs[0]
+  const loginName = currentUserRoleId.value === roleId ? currentLoginName.value : ''
+
+  return {
+    id: roleId,
+    name: loginName || defaultActorName(roleId),
+    role: tab.role,
+    department: tab.label,
+    isAdmin: showAdminDebugActions.value,
+  }
+}
+
+const currentUser = computed<CurrentUserContext>(() => buildUserContext(currentUserRoleId.value))
+const visibleRoleContext = computed<CurrentUserContext>(() => buildUserContext(visibleRoleTabId.value))
+const activeRoleLabel = computed(() => visibleRoleContext.value.department)
+const managerActorName = computed(() => buildUserContext('manager').name)
+const supervisorActorName = computed(() => buildUserContext('supervisor').name)
+const visibleRoleEntries = computed(() => roleWorkspaceEntries[visibleRoleTabId.value])
+const myTodoCards = computed<SummaryCard[]>(() => {
+  const roleId = visibleRoleTabId.value
+  const pendingReview = roleId === 'supervisor' && activeOrder.value.status === '待审核'
+    ? 1
+    : roleId === 'manager' && activeOrder.value.status === '待经理审核'
+      ? 1
+      : 0
+  const pendingHandle = roleId === 'engineering'
+    ? activeOrder.value.status === '已驳回' || engineeringEditable.value ? 1 : 0
+    : roleId === 'warehouse'
+      ? isWarehouseEditable.value ? Math.max(activeRequisitions.value.length, 1) : 0
+      : roleId === 'production'
+        ? isProductionEditable.value ? activeItems.value.length : 0
+        : roleId === 'reports'
+          ? reportSummary.value.archive_ready ? 1 : 0
+          : 0
+  const missingCount = roleId === 'engineering'
+    ? activeProblems.value.length
+    : roleId === 'production'
+      ? completionGate.value.missing_item_ids.length
+      : pricingErrors.value.length
+
+  return [
+    {
+      label: '待我审核',
+      value: String(pendingReview),
+      detail: pendingReview ? `${activeOrder.value.id} 等待${visibleRoleContext.value.department}确认` : '当前无待审核单',
+      tone: pendingReview ? 'amber' : 'slate',
+    },
+    {
+      label: '待我处理',
+      value: String(pendingHandle),
+      detail: pendingHandle ? visibleRoleEntries.value.join('、') : '当前无待处理事项',
+      tone: pendingHandle ? 'blue' : 'slate',
+    },
+    {
+      label: '待补资料',
+      value: String(missingCount),
+      detail: missingCount ? '存在资料、价格或完成卡点需要补齐' : '资料完整',
+      tone: missingCount ? 'red' : 'green',
+    },
+  ]
+})
+const currentHandler = computed(() => {
+  if (activeOrder.value.status === '待审核') {
+    return activeOrder.value.supervisor || '主管'
+  }
+  if (activeOrder.value.status === '待经理审核') {
+    return managerActorName.value
+  }
+  if (activeOrder.value.status === '待生产') {
+    return isExternalOrder.value ? '归档员' : '仓库'
+  }
+  if (activeOrder.value.status === '生产中') {
+    return '啤机部'
+  }
+  if (activeOrder.value.status === '已驳回') {
+    return activeOrder.value.eng_name || '工程部'
+  }
+
+  return '已归档'
+})
+const syncStatusText = computed(() => {
+  if (apiState.value === 'connected') {
+    return '数据已同步'
+  }
+  if (apiState.value === 'empty') {
+    return '暂无业务数据'
+  }
+  if (apiState.value === 'fallback') {
+    return '离线演示模式'
+  }
+
+  return '数据同步中'
+})
+const syncStatusTone = computed<Tone>(() => {
+  if (apiState.value === 'connected') {
+    return 'green'
+  }
+  if (apiState.value === 'empty') {
+    return 'blue'
+  }
+  if (apiState.value === 'fallback') {
+    return 'amber'
+  }
+
+  return 'slate'
+})
+const syncMetaText = computed(() =>
+  `${syncStatusText.value} · 最后更新：${lastSyncedAt.value} · 当前角色：${activeRoleLabel.value} · 当前厂区：${activeFactory.value.shortName}`,
+)
+const systemNotice = computed(() => {
+  if (apiState.value === 'fallback') {
+    return '当前网络异常，数据暂未同步，请刷新后重试。'
+  }
+  if (apiState.value === 'empty') {
+    return '当前厂区暂无业务数据，可导入 Excel 或联系管理员初始化单据。'
+  }
+
+  return ''
+})
+const documentFields = computed<DocumentField[]>(() => [
+  { label: '单据编号', value: activeOrder.value.id },
+  { label: '产品编号', value: activeOrder.value.order_number },
+  { label: '订单编号', value: activeOrder.value.doc_number },
+  { label: '客户', value: activeOrder.value.client_name },
+  { label: '产品名称', value: activeOrder.value.product_name },
+  { label: '开单日期', value: activeOrder.value.date },
+  { label: '当前状态', value: activeOrder.value.status },
+  { label: '当前处理人', value: currentHandler.value },
+  { label: '生产路径', value: isExternalOrder.value ? '外厂 / 模厂' : '内部生产' },
+  { label: '版本', value: activeOrder.value.stage || 'V1' },
+])
+const processSteps = computed<ProcessStep[]>(() => {
+  const status = activeOrder.value.status
+  const currentIndex = status === '待审核'
+    ? 1
+    : status === '待经理审核'
+      ? 2
+      : status === '待生产'
+        ? 3
+        : status === '生产中'
+          ? 4
+          : status === '已完成'
+            ? 5
+            : 1
+  const rejected = status === '已驳回'
+
+  return [
+    {
+      number: '01',
+      label: '工程开单',
+      actor: activeOrder.value.eng_name || '工程部',
+      detail: activeOrder.value.created_at || activeOrder.value.date,
+    },
+    {
+      number: '02',
+      label: '主管审核',
+      actor: latestAuditByRole('主管')?.actor_name || activeOrder.value.supervisor || '主管',
+      detail: latestAuditByRole('主管')?.created_at || '剩余时间：按 SLA',
+    },
+    {
+      number: '03',
+      label: '经理终审',
+      actor: latestAuditByRole('经理')?.actor_name || managerActorName.value,
+      detail: latestAuditByRole('经理')?.created_at || '剩余时间：按 SLA',
+    },
+    {
+      number: '04',
+      label: '仓库领料',
+      actor: activeRequisitions.value[0]?.applicant || '仓库',
+      detail: activeRequisitions.value[0]?.issued_at || activeRequisitions.value[0]?.req_number || '未开始',
+    },
+    {
+      number: '05',
+      label: '啤机生产',
+      actor: '啤机部',
+      detail: activeItems.value.find((item) => item.completion_time)?.completion_time || '未开始',
+    },
+    {
+      number: '06',
+      label: '完成归档',
+      actor: '汇总',
+      detail: activeOrder.value.completed_date || '未开始',
+    },
+  ].map((step, index) => ({
+    ...step,
+    state: rejected && index === 1
+      ? 'blocked'
+      : status === '已完成' || index < currentIndex
+        ? 'done'
+        : index === currentIndex
+          ? 'current'
+          : 'pending',
+    detail: rejected && index === 1
+      ? activeOrder.value.reject_reason || '已驳回，等待工程重提'
+      : index === currentIndex && status !== '已完成'
+        ? step.detail === '未开始' ? '剩余时间：按 SLA' : step.detail
+        : index > currentIndex && status !== '已完成'
+          ? '未开始'
+          : step.detail,
+  }))
+})
+
 const engineeringEditable = computed(() => ['待审核', '已驳回'].includes(activeOrder.value.status))
 const managerCanReview = computed(() => activeOrder.value.status === '待经理审核')
 const supervisorCanReview = computed(() => activeOrder.value.status === '待审核')
@@ -393,7 +680,7 @@ async function refreshSensitiveAuditLogs() {
 
 async function loadApiData() {
   apiState.value = 'checking'
-  apiMessage.value = '正在检查后端 API...'
+  apiMessage.value = '正在检查数据同步状态...'
 
   try {
     const [records, pricing, sensitiveAuditLogs] = await Promise.all([
@@ -413,9 +700,10 @@ async function loadApiData() {
     syncSupervisorPinResetDraft()
     await refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
+    lastSyncedAt.value = formatLastSync()
     apiMessage.value = selectedRecord
-      ? '已连接后端 API，当前操作会写入数据库。'
-      : '后端 API 可用，但还没有啤办单数据。'
+      ? '数据已同步，当前操作会保存到业务数据。'
+      : '当前厂区暂无业务数据，可导入 Excel 或联系管理员初始化单据。'
   }
   catch (error) {
     apiRecords.value = []
@@ -426,7 +714,8 @@ async function loadApiData() {
     selectedInventoryBatchIds.value = {}
     setApiRecord(null)
     apiState.value = 'fallback'
-    apiMessage.value = `后端 API 暂不可用，当前使用前端 mock：${getApiErrorMessage(error)}`
+    lastSyncedAt.value = formatLastSync()
+    apiMessage.value = `当前网络异常，数据暂未同步，请刷新后重试。${getApiErrorMessage(error)}`
   }
 }
 
@@ -438,7 +727,7 @@ async function syncCurrentMockToApi() {
     })
     await loadApiData()
     setApiRecord(created)
-    actionMessage.value = '当前页面已编辑内容已同步到后端数据库，未填写字段保持空值。'
+    actionMessage.value = '当前页面已编辑内容已写入业务数据，未填写字段保持空值。'
   }
   catch (error) {
     actionMessage.value = `同步失败：${getApiErrorMessage(error)}`
@@ -447,7 +736,7 @@ async function syncCurrentMockToApi() {
 
 async function exportCurrentOrderExcel() {
   if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能导出后端 Excel。'
+    actionMessage.value = '当前处于离线演示模式，不能导出正式 Excel。'
     return
   }
 
@@ -469,7 +758,7 @@ async function exportCurrentOrderExcel() {
 
 function openExcelImportPicker() {
   if (apiState.value === 'fallback') {
-    actionMessage.value = '当前为前端 mock 数据，不能导入后端 Excel。'
+    actionMessage.value = '当前网络异常，暂不能导入 Excel。'
     return
   }
 
@@ -529,6 +818,48 @@ function formatWeight(value: number | null | undefined) {
 
 function formatMovementWeight(value: number) {
   return `${value > 0 ? '+' : ''}${value} KG`
+}
+
+function formatLastSync(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function latestAuditByRole(role: MoldingSampleRole) {
+  return activeAuditLogs.value.find((audit) => audit.actor_role === role)
+}
+
+function processStepCardClass(state: ProcessStep['state']) {
+  if (state === 'done') {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-900'
+  }
+  if (state === 'current') {
+    return 'border-slate-950 bg-slate-950 text-white shadow-sm'
+  }
+  if (state === 'blocked') {
+    return 'border-red-200 bg-red-50 text-red-900'
+  }
+
+  return 'border-slate-200 bg-white text-slate-500'
+}
+
+function processStepDotClass(state: ProcessStep['state']) {
+  if (state === 'done') {
+    return 'bg-emerald-600 text-white'
+  }
+  if (state === 'current') {
+    return 'bg-white text-slate-950'
+  }
+  if (state === 'blocked') {
+    return 'bg-red-600 text-white'
+  }
+
+  return 'bg-slate-100 text-slate-500'
+}
+
+function printCurrentOrder() {
+  window.print()
 }
 
 function setOrderPatch(patch: Partial<MoldingSampleOrder>) {
@@ -655,10 +986,10 @@ async function runTransition(
       const updated = await moldingSampleApi.updateStatus(activeOrder.value.id, payload)
       setApiRecord(updated)
       await loadApiData()
-      actionMessage.value = `${action}已写入后端。`
+      actionMessage.value = `${action}已保存。`
     }
     catch (error) {
-      actionMessage.value = `后端状态流转失败：${getApiErrorMessage(error)}`
+      actionMessage.value = `状态流转失败：${getApiErrorMessage(error)}`
     }
 
     return
@@ -712,7 +1043,7 @@ async function saveEngineeringChanges() {
   }
 
   if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，改动只保存在本页。'
+    actionMessage.value = '当前处于离线演示模式，改动只保存在本页。'
     return
   }
 
@@ -725,7 +1056,7 @@ async function saveEngineeringChanges() {
     })
     setApiRecord(updated)
     await loadApiData()
-    actionMessage.value = '工程部改动已写入后端。'
+    actionMessage.value = '工程部改动已保存。'
   }
   catch (error) {
     actionMessage.value = `工程部保存失败：${getApiErrorMessage(error)}`
@@ -739,7 +1070,7 @@ async function deleteCurrentOrder() {
   }
 
   if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能删除后端单据。'
+    actionMessage.value = '当前处于离线演示模式，不能删除正式单据。'
     return
   }
 
@@ -754,7 +1085,7 @@ async function deleteCurrentOrder() {
     })
     apiRecord.value = null
     await loadApiData()
-    actionMessage.value = '啤办单已从后端删除。'
+    actionMessage.value = '啤办单已删除。'
   }
   catch (error) {
     actionMessage.value = `啤办单删除失败：${getApiErrorMessage(error)}`
@@ -773,7 +1104,7 @@ async function saveItemPatchToApi(itemId: string, patch: Partial<MoldingSampleIt
     setApiRecord(updated)
   }
   catch (error) {
-    actionMessage.value = `后端明细保存失败：${getApiErrorMessage(error)}`
+    actionMessage.value = `明细保存失败：${getApiErrorMessage(error)}`
   }
 }
 
@@ -810,7 +1141,7 @@ async function saveWarehouseSample() {
     try {
       const updated = await moldingSampleApi.updateItems(activeOrder.value.id, { items: patches })
       setApiRecord(updated)
-      actionMessage.value = '仓库已编辑领料信息已写入后端。'
+      actionMessage.value = '仓库领料信息已保存。'
       return
     }
     catch (error) {
@@ -829,7 +1160,7 @@ async function createRequisitionsFromItems() {
   }
 
   if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能生成后端领料单。'
+    actionMessage.value = '当前处于离线演示模式，不能生成正式领料单。'
     return
   }
 
@@ -879,7 +1210,7 @@ async function createRequisitionsFromItems() {
     })
     setApiRecord(updated)
     await refreshWarehouseData()
-    actionMessage.value = `已生成 ${created.length} 张后端领料单。`
+    actionMessage.value = `已生成 ${created.length} 张领料单。`
   }
   catch (error) {
     actionMessage.value = `生成领料单失败：${getApiErrorMessage(error)}`
@@ -888,7 +1219,7 @@ async function createRequisitionsFromItems() {
 
 async function createInventoryBatchFromDraft() {
   if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能新增库存批次。'
+    actionMessage.value = '当前处于离线演示模式，不能新增库存批次。'
     return
   }
 
@@ -917,7 +1248,7 @@ async function createInventoryBatchFromDraft() {
 
 async function markRequisitionIssued(requisition: MoldingSampleRequisition) {
   if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能更新后端领料单。'
+    actionMessage.value = '当前处于离线演示模式，不能更新正式领料单。'
     return
   }
 
@@ -943,7 +1274,7 @@ async function markRequisitionIssued(requisition: MoldingSampleRequisition) {
 
 async function deleteRequisitionRow(requisitionId: string) {
   if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能删除后端领料单。'
+    actionMessage.value = '当前处于离线演示模式，不能删除正式领料单。'
     return
   }
 
@@ -979,7 +1310,7 @@ async function saveProductionSample() {
     try {
       const updated = await moldingSampleApi.updateItems(activeOrder.value.id, { items: patches })
       setApiRecord(updated)
-      actionMessage.value = '啤机部已编辑用料和啤办费已写入后端。'
+      actionMessage.value = '啤机部用料和啤办费已保存。'
       return
     }
     catch (error) {
@@ -1027,7 +1358,7 @@ async function applyPricingSettings() {
       const updated = await moldingSampleApi.updateMaterialPrices({
         prices: normalized.prices,
         rmb_to_hkd_rate: normalized.rmb_to_hkd_rate,
-        manager_name: '王经理',
+        manager_name: managerActorName.value,
         manager_pin: managerPin.value.trim(),
       })
       appliedMaterialPrices.value = clonePrices(updated.prices)
@@ -1035,23 +1366,23 @@ async function applyPricingSettings() {
       editableMaterialPrices.value = createEditablePrices(updated.prices)
       editableRmbToHkdRate.value = String(updated.rmb_to_hkd_rate)
       await loadApiData()
-      actionMessage.value = normalized.errors.length ? '价格口径已写入后端，但存在需要修正的提示。' : '价格口径已写入后端。'
+      actionMessage.value = normalized.errors.length ? '价格口径已保存，但存在需要修正的提示。' : '价格口径已保存。'
       return
     }
     catch (error) {
-      actionMessage.value = `价格口径后端保存失败：${getApiErrorMessage(error)}`
+      actionMessage.value = `价格口径保存失败：${getApiErrorMessage(error)}`
       return
     }
   }
 
   commitCurrentCostPreview(false)
-  appendAudit('经理保存价格表', '经理', '王经理', activeOrder.value.status, activeOrder.value.status, '经理维护原料单价和汇率。', 'blue')
+  appendAudit('经理保存价格表', '经理', managerActorName.value, activeOrder.value.status, activeOrder.value.status, '经理维护原料单价和汇率。', 'blue')
   actionMessage.value = normalized.errors.length ? '价格口径已保存，但存在需要修正的提示。' : '价格口径已保存。'
 }
 
 async function resetSupervisorPin() {
   if (apiState.value === 'fallback') {
-    actionMessage.value = '当前为前端 mock 数据，不能重置后端主管 PIN。'
+    actionMessage.value = '当前处于离线演示模式，不能重置主管 PIN。'
     return
   }
 
@@ -1069,7 +1400,7 @@ async function resetSupervisorPin() {
 
   try {
     const updated = await moldingSampleApi.resetSupervisorPin({
-      manager_name: '王经理',
+      manager_name: managerActorName.value,
       manager_pin: managerPin.value.trim(),
       supervisor_name: supervisorName,
       new_pin: newPin,
@@ -1085,7 +1416,7 @@ async function resetSupervisorPin() {
 
 async function changeWorkbenchPin(role: '主管' | '经理') {
   if (apiState.value === 'fallback') {
-    actionMessage.value = '当前为前端 mock 数据，不能修改后端 PIN。'
+    actionMessage.value = '当前处于离线演示模式，不能修改 PIN。'
     return
   }
 
@@ -1093,7 +1424,7 @@ async function changeWorkbenchPin(role: '主管' | '经理') {
   const oldPin = draft.old_pin.trim()
   const newPin = draft.new_pin.trim()
   const confirmPin = draft.confirm_pin.trim()
-  const name = role === '主管' ? (activeOrder.value.supervisor || '李主管') : '王经理'
+  const name = role === '主管' ? supervisorActorName.value : managerActorName.value
 
   if (!oldPin || newPin.length < 4) {
     actionMessage.value = `${role}旧 PIN 和至少 4 位的新 PIN 都必须填写。`
@@ -1170,7 +1501,8 @@ watch(selectedFactoryId, () => {
     setApiRecord(selectedRecord)
     void refreshWarehouseData()
     apiState.value = selectedRecord ? 'connected' : 'empty'
-    apiMessage.value = selectedRecord ? '已连接后端 API，当前操作会写入数据库。' : '当前厂区暂无后端单据，可同步示例单据。'
+    lastSyncedAt.value = formatLastSync()
+    apiMessage.value = selectedRecord ? '数据已同步，当前操作会保存到业务数据。' : '当前厂区暂无业务数据，可导入 Excel 或联系管理员初始化单据。'
   }
 })
 
@@ -1182,72 +1514,98 @@ watchEffect(() => {
 <template>
   <main class="min-h-screen bg-slate-100 px-4 pb-6 pt-16 text-slate-950 sm:px-6 xl:px-10">
     <div class="mx-auto max-w-[1680px] space-y-5">
-      <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <RouterLink
-            to="/modules"
-            class="fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 text-sm font-semibold text-slate-600 shadow-sm backdrop-blur transition hover:border-slate-300 hover:text-slate-950 sm:left-6 xl:left-10"
-          >
-            <ArrowLeft class="size-4" aria-hidden="true" />
-            工程部模块
-          </RouterLink>
-          <div class="mt-3 flex flex-wrap items-center gap-3">
-            <h1 class="text-3xl font-semibold tracking-tight">啤办单工作台</h1>
-            <StatusPill :label="activeOrder.status" :tone="statusTones[activeOrder.status]" />
-            <StatusPill :label="isExternalOrder ? '外厂路径' : '内部生产'" :tone="isExternalOrder ? 'slate' : 'teal'" />
-          </div>
-          <p class="mt-2 text-sm text-slate-600">
-            {{ activeFactory.name }} · {{ activeOrder.order_number }} {{ activeOrder.product_name }} · {{ activeOrder.client_name }}
-          </p>
-        </div>
-
-        <div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:w-[820px]">
-          <article
-            v-for="card in summaryCards"
-            :key="card.label"
-            class="min-h-[92px] rounded-lg border bg-white p-4"
-            :class="toneClasses[card.tone]"
-          >
-            <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
-            <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
-            <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
-          </article>
-        </div>
-      </div>
-
-      <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">
-        <div class="flex min-w-max gap-1">
-          <button
-            v-for="tab in roleTabs"
-            :key="tab.id"
-            type="button"
-            class="inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition-colors"
-            :class="activeTab === tab.id ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'"
-            @click="activeTab = tab.id"
-          >
-            <component :is="tab.icon" class="size-4" aria-hidden="true" />
-            {{ tab.label }}
-          </button>
-        </div>
-      </div>
-
-      <div
-        class="flex flex-col gap-3 rounded-lg border px-4 py-3 text-sm md:flex-row md:items-center md:justify-between"
-        :class="apiState === 'connected'
-          ? 'border-emerald-100 bg-emerald-50 text-emerald-800'
-          : apiState === 'empty'
-            ? 'border-blue-100 bg-blue-50 text-blue-800'
-            : apiState === 'checking'
-              ? 'border-slate-200 bg-white text-slate-600'
-              : 'border-amber-100 bg-amber-50 text-amber-800'"
+      <RouterLink
+        to="/modules"
+        class="fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 text-sm font-semibold text-slate-600 shadow-sm backdrop-blur transition hover:border-slate-300 hover:text-slate-950 sm:left-6 xl:left-10"
       >
-        <div class="flex flex-wrap items-center gap-2">
-          <StatusPill
-            :label="apiState === 'connected' ? '后端已连接' : apiState === 'empty' ? '后端空库' : apiState === 'checking' ? '检查中' : '前端 mock'"
-            :tone="apiState === 'connected' ? 'green' : apiState === 'empty' ? 'blue' : apiState === 'checking' ? 'slate' : 'amber'"
-            compact
-          />
-          <span>{{ apiMessage }}</span>
+        <ArrowLeft class="size-4" aria-hidden="true" />
+        工程部模块
+      </RouterLink>
+
+      <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div class="grid gap-6 border-b border-slate-200 p-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+          <div class="flex flex-col gap-4 lg:flex-row lg:items-start">
+            <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50">
+              <img src="/brand/huadeng_group_dynamic_logo.svg" alt="华登集团" class="h-10 w-10 object-contain">
+            </div>
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-slate-500">华登集团 / Royal Regent</p>
+              <div class="mt-2 flex flex-wrap items-center gap-3">
+                <h1 class="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
+                  工程啤办单 <span class="block text-base font-medium tracking-normal text-slate-500 sm:inline">MOLDING SAMPLE ORDER</span>
+                </h1>
+                <StatusPill :label="activeOrder.status" :tone="statusTones[activeOrder.status]" />
+                <StatusPill :label="isExternalOrder ? '外厂路径' : '内部生产'" :tone="isExternalOrder ? 'slate' : 'teal'" />
+              </div>
+              <p class="mt-3 text-sm font-medium text-slate-600">{{ syncMetaText }}</p>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap gap-2 xl:justify-end">
+            <button
+              type="button"
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+              @click="printCurrentOrder"
+            >
+              <Printer class="size-4" aria-hidden="true" />
+              打印
+            </button>
+            <button
+              type="button"
+              :disabled="!apiRecord"
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white/60 disabled:text-slate-400"
+              @click="exportCurrentOrderExcel"
+            >
+              <Download class="size-4" aria-hidden="true" />
+              导出
+            </button>
+          </div>
+        </div>
+
+        <div class="grid gap-3 border-b border-slate-200 bg-slate-50/70 p-5 sm:grid-cols-2 lg:grid-cols-5">
+          <div v-for="field in documentFields" :key="field.label" class="min-w-0 rounded-md border border-slate-200 bg-white px-3 py-2">
+            <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{{ field.label }}</p>
+            <p class="mt-1 truncate text-sm font-semibold text-slate-950">{{ field.value }}</p>
+          </div>
+        </div>
+
+        <div class="p-5">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-base font-semibold text-slate-950">流程状态</h2>
+              <p class="mt-1 text-sm text-slate-500">工程提交 → 主管审核 → 经理终审 → 仓库领料 → 啤机生产 → 完成归档</p>
+            </div>
+            <StatusPill :label="syncStatusText" :tone="syncStatusTone" compact />
+          </div>
+
+          <div class="grid gap-3 md:grid-cols-3 2xl:grid-cols-6">
+            <article
+              v-for="step in processSteps"
+              :key="step.number"
+              class="min-h-[132px] rounded-lg border p-4 transition-colors"
+              :class="processStepCardClass(step.state)"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold" :class="processStepDotClass(step.state)">
+                  {{ step.number }}
+                </span>
+                <span class="text-xs font-semibold opacity-70">
+                  {{ step.state === 'done' ? '已完成' : step.state === 'current' ? '当前节点' : step.state === 'blocked' ? '已驳回' : '未开始' }}
+                </span>
+              </div>
+              <h3 class="mt-4 text-sm font-semibold">{{ step.label }}</h3>
+              <p class="mt-2 text-xs opacity-80">{{ step.actor }}</p>
+              <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ step.detail }}</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <div class="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm md:flex-row md:items-center md:justify-between">
+        <div class="min-w-0">
+          <p class="font-medium" :class="systemNotice ? 'text-amber-800' : 'text-slate-600'">
+            {{ systemNotice || apiMessage }}
+          </p>
         </div>
         <div class="flex flex-wrap gap-2">
           <input
@@ -1263,32 +1621,13 @@ watchEffect(() => {
             @click="loadApiData"
           >
             <RotateCcw class="size-4" aria-hidden="true" />
-            刷新后端
-          </button>
-          <button
-            type="button"
-            :disabled="apiRecord !== null"
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white/60 disabled:text-slate-400"
-            :class="apiRecord === null ? 'border-slate-950 bg-slate-950 text-white' : ''"
-            @click="syncCurrentMockToApi"
-          >
-            <Save class="size-4" aria-hidden="true" />
-            同步当前示例
-          </button>
-          <button
-            type="button"
-            :disabled="!apiRecord"
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-white/60 disabled:text-slate-400"
-            @click="exportCurrentOrderExcel"
-          >
-            <Download class="size-4" aria-hidden="true" />
-            导出 Excel
+            刷新数据
           </button>
           <input
             v-model="excelImportOrderId"
             type="text"
-            placeholder="导入新单ID"
-            class="h-9 w-36 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
+            placeholder="指定单据编号，可选"
+            class="h-9 w-44 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
           >
           <button
             type="button"
@@ -1299,8 +1638,86 @@ watchEffect(() => {
             <Upload class="size-4" aria-hidden="true" />
             导入 Excel
           </button>
+          <details v-if="showAdminDebugActions" class="relative">
+            <summary class="inline-flex h-9 cursor-pointer list-none items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-600">
+              管理员调试
+            </summary>
+            <div class="absolute right-0 top-11 z-20 w-[28rem] max-w-[calc(100vw-2rem)] rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
+              <p class="text-xs font-semibold text-slate-500">演示角色入口</p>
+              <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                <button
+                  v-for="tab in roleTabs"
+                  :key="tab.id"
+                  type="button"
+                  class="inline-flex h-9 items-center justify-center gap-2 rounded-md border px-3 text-sm font-semibold transition-colors"
+                  :class="activeTab === tab.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-950'"
+                  @click="activeTab = tab.id"
+                >
+                  <component :is="tab.icon" class="size-4" aria-hidden="true" />
+                  {{ tab.label }}
+                </button>
+              </div>
+              <button
+                type="button"
+                :disabled="apiRecord !== null"
+                class="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white/60 disabled:text-slate-400"
+                :class="apiRecord === null ? 'border-slate-950 bg-slate-950 text-white' : ''"
+                @click="syncCurrentMockToApi"
+              >
+                <Save class="size-4" aria-hidden="true" />
+                写入示例单据
+              </button>
+            </div>
+          </details>
         </div>
       </div>
+
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <article
+          v-for="card in summaryCards"
+          :key="card.label"
+          class="min-h-[92px] rounded-lg border bg-white p-4"
+          :class="toneClasses[card.tone]"
+        >
+          <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
+          <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
+          <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
+        </article>
+      </div>
+
+      <section class="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">我的待办</p>
+            <h2 class="mt-1 text-lg font-semibold text-slate-950">{{ visibleRoleContext.department }}事项</h2>
+            <p class="mt-2 text-sm leading-6 text-slate-600">
+              当前登录身份：{{ visibleRoleContext.name }} · {{ visibleRoleContext.department }} · 可用入口：{{ visibleRoleEntries.join('、') }}
+            </p>
+          </div>
+          <StatusPill :label="currentUser.isAdmin ? '管理员预览' : '按登录权限显示'" :tone="currentUser.isAdmin ? 'blue' : 'green'" />
+        </div>
+        <div class="mt-4 grid gap-3 md:grid-cols-3">
+          <article
+            v-for="card in myTodoCards"
+            :key="card.label"
+            class="min-h-[92px] rounded-lg border p-4"
+            :class="toneClasses[card.tone]"
+          >
+            <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
+            <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
+            <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
+          </article>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <span
+            v-for="entry in visibleRoleEntries"
+            :key="entry"
+            class="inline-flex h-8 items-center rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-600"
+          >
+            {{ entry }}
+          </span>
+        </div>
+      </section>
 
       <div class="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
         <div class="xl:sticky xl:top-24 xl:self-start">
@@ -1330,7 +1747,7 @@ watchEffect(() => {
         </div>
 
         <div class="space-y-5">
-          <SectionPanel title="单头信息" subtitle="规格字段统一为 injection 啤办单口径">
+          <SectionPanel title="单头信息" subtitle="基础资料、客户资料、生产路径">
             <div class="grid gap-4 lg:grid-cols-4">
               <div class="rounded-lg border border-slate-200 bg-white p-4">
                 <p class="text-xs font-semibold text-slate-500">产品编号</p>
@@ -1406,7 +1823,7 @@ watchEffect(() => {
             </div>
           </SectionPanel>
 
-          <SectionPanel v-if="activeTab === 'engineering'" title="工程部工作台" subtitle="开单、返工、维护可编辑字段">
+          <SectionPanel v-if="visibleRoleTabId === 'engineering'" title="工程部工作台" subtitle="开单、返工、维护可编辑字段">
             <div class="grid gap-4 lg:grid-cols-[1fr_180px_180px_220px]">
               <div class="rounded-lg border border-slate-200 bg-white p-4">
                 <h3 class="font-semibold">编辑权限</h3>
@@ -1447,7 +1864,7 @@ watchEffect(() => {
             </div>
           </SectionPanel>
 
-          <SectionPanel v-else-if="activeTab === 'supervisor'" title="主管工作台" subtitle="只处理待审核单，审核动作需 PIN 校验">
+          <SectionPanel v-else-if="visibleRoleTabId === 'supervisor'" title="主管工作台" subtitle="只处理待审核单，审核动作需 PIN 校验">
             <div class="grid gap-4 lg:grid-cols-[1fr_180px_220px_220px]">
               <div class="rounded-lg border border-slate-200 bg-white p-4">
                 <h3 class="font-semibold">主管责任</h3>
@@ -1471,7 +1888,7 @@ watchEffect(() => {
                 :disabled="!supervisorCanReview"
                 class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
                 :class="supervisorCanReview ? 'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800' : ''"
-                @click="runTransition('主管通过', '主管', activeOrder.supervisor, '主管确认单头、用料和交期。')"
+                @click="runTransition('主管通过', '主管', supervisorActorName, '主管确认单头、用料和交期。')"
               >
                 <CheckCircle2 class="size-4" aria-hidden="true" />
                 主管通过
@@ -1481,7 +1898,7 @@ watchEffect(() => {
                 :disabled="!supervisorCanReview"
                 class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
                 :class="supervisorCanReview ? 'border-red-700 bg-red-700 text-white hover:bg-red-800' : ''"
-                @click="runTransition('主管驳回', '主管', activeOrder.supervisor, rejectReason)"
+                @click="runTransition('主管驳回', '主管', supervisorActorName, rejectReason)"
               >
                 <XCircle class="size-4" aria-hidden="true" />
                 主管驳回
@@ -1543,7 +1960,7 @@ watchEffect(() => {
             </div>
           </SectionPanel>
 
-          <SectionPanel v-else-if="activeTab === 'manager'" title="经理工作台" subtitle="终审、外厂自动完成、价格表与汇率维护">
+          <SectionPanel v-else-if="visibleRoleTabId === 'manager'" title="经理工作台" subtitle="终审、外厂自动完成、价格表与汇率维护">
             <div class="grid gap-4 xl:grid-cols-[1fr_180px_220px_220px]">
               <div class="rounded-lg border border-slate-200 bg-white p-4">
                 <h3 class="font-semibold">终审分支</h3>
@@ -1567,7 +1984,7 @@ watchEffect(() => {
                 :disabled="!managerCanReview"
                 class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
                 :class="managerCanReview ? 'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800' : ''"
-                @click="runTransition('经理通过', '经理', '王经理', isExternalOrder ? '外厂单经理通过，自动完成。' : '内部单经理通过，进入待生产。')"
+                @click="runTransition('经理通过', '经理', managerActorName, isExternalOrder ? '外厂单经理通过，自动完成。' : '内部单经理通过，进入待生产。')"
               >
                 <CheckCircle2 class="size-4" aria-hidden="true" />
                 经理通过
@@ -1577,7 +1994,7 @@ watchEffect(() => {
                 :disabled="!managerCanReview"
                 class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
                 :class="managerCanReview ? 'border-red-700 bg-red-700 text-white hover:bg-red-800' : ''"
-                @click="runTransition('经理驳回', '经理', '王经理', rejectReason)"
+                @click="runTransition('经理驳回', '经理', managerActorName, rejectReason)"
               >
                 <XCircle class="size-4" aria-hidden="true" />
                 经理驳回
@@ -1796,7 +2213,7 @@ watchEffect(() => {
             </div>
           </SectionPanel>
 
-          <SectionPanel v-else-if="activeTab === 'warehouse'" title="仓库工作台" subtitle="领料单与出库重量维护">
+          <SectionPanel v-else-if="visibleRoleTabId === 'warehouse'" title="仓库工作台" subtitle="领料单与出库重量维护">
             <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
               <p class="text-sm text-slate-600">
                 {{ isExternalOrder ? '外厂单不走内部仓库发料。' : `当前可维护：${isWarehouseEditable ? '是' : '否'}` }}
@@ -2102,7 +2519,7 @@ watchEffect(() => {
             </div>
           </SectionPanel>
 
-          <SectionPanel v-else-if="activeTab === 'production'" title="啤机部工作台" subtitle="开始处理、回填实际用料和啤办费、完成校验">
+          <SectionPanel v-else-if="visibleRoleTabId === 'production'" title="啤机部工作台" subtitle="开始处理、回填实际用料和啤办费、完成校验">
             <div class="mb-4 grid gap-3 md:grid-cols-3">
               <button
                 type="button"
