@@ -14,6 +14,12 @@ const router = useRouter()
 const appStore = useAppStore()
 const { injectionSectionNav } = useInjectionModuleData()
 
+const props = withDefaults(defineProps<{
+  showHero?: boolean
+}>(), {
+  showHero: true,
+})
+
 const validSectionIds: InjectionSectionId[] = [
   'monthly-plan',
   'order-import',
@@ -92,7 +98,10 @@ const handleSectionChange = (section: InjectionSectionId) => {
 
 <template>
   <div class="space-y-6">
-    <section class="rounded-[30px] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.98))] p-6 shadow-[0_16px_40px_rgba(15,23,42,0.06)]">
+    <section
+      v-if="props.showHero"
+      class="rounded-[30px] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.98))] p-6 shadow-[0_16px_40px_rgba(15,23,42,0.06)]"
+    >
       <div class="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
         <div class="max-w-3xl">
           <p class="text-xs uppercase tracking-[0.28em] text-sky-700">Factory Planning Workspace</p>
