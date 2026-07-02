@@ -993,7 +993,6 @@ const injectionOrderImportTasks = [
 ] as const
 
 const injectionMachineMasterRows = huaxingMachineMasterImportRows
-  .slice(0, 12)
   .map((row) => ({ ...row }))
 
 const injectionMoldTargetDetailRows = huaxingMoldTargetDetailImportRows.map((row) => ({ ...row }))
@@ -1154,6 +1153,10 @@ const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) 
     return {
       ...row,
       machineAdvice,
+      machineModel: analysis?.machineModel ?? '',
+      armType: analysis?.armType ?? '',
+      remark: analysis?.remark ?? '',
+      moldSize: '待补尺寸',
       issue,
       planner: analysis?.machineModel ? `${row.planner} / ${analysis.machineModel}` : row.planner,
       tone: analysis?.tone ?? row.tone,
@@ -1170,6 +1173,10 @@ const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) 
     ...row,
     quantity: writebackState.shortageAfter,
     machineAdvice,
+    machineModel: analysis?.machineModel ?? '',
+    armType: analysis?.armType ?? '',
+    remark: analysis?.remark ?? '',
+    moldSize: '待补尺寸',
     issue,
     planner: `${row.planner} / ${writebackState.deliveryCode}`,
     tone: writebackState.tone,

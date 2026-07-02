@@ -33,6 +33,15 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/injection-scheduling',
+    name: 'injection-scheduling',
+    component: () => import('@/views/InjectionSchedulingView.vue'),
+    meta: {
+      title: '注塑生产中枢',
+      fullPage: true,
+    },
+  },
+  {
     path: '/modules/:department/:module',
     name: 'module-detail',
     component: () => import('@/views/ModuleDetailView.vue'),
