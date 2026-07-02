@@ -21,6 +21,7 @@ import { computed, ref } from 'vue'
 import ProgressMeter from '@/components/common/ProgressMeter.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
+import type { Tone } from '@/data/enterpriseMock'
 import type { InjectionSectionId } from '@/data/injectionSchedulingMock'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
 import { useInjectionWorkflowBridge } from '@/factories/injection/useInjectionWorkflowBridge'
@@ -65,7 +66,32 @@ const {
   injectionWorkflowStages,
 } = useInjectionModuleData()
 
-const compactPendingOrders = computed(() => injectionPendingOrderDetailRows.value.slice(0, 18))
+interface ActivePendingOrderRow {
+  poolKey: string
+  orderNo: string
+  customer: string
+  productName: string
+  moldCode: string
+  color: string
+  material: string
+  quantity: string
+  dueDate: string
+  machineAdvice: string
+  machineModel: string
+  armType: string
+  remark: string
+  moldSize: string
+  issue: string
+  tone: Tone
+}
+
+const importedOrderPoolActive = ref(false)
+const importedPendingOrderRows = ref<ActivePendingOrderRow[]>([])
+
+const activePendingOrderRows = computed(() =>
+  importedOrderPoolActive.value ? importedPendingOrderRows.value : injectionPendingOrderDetailRows.value,
+)
+const compactPendingOrders = computed(() => activePendingOrderRows.value)
 const compactCandidateRows = computed(() => injectionExecutionCandidateRows.value.slice(0, 8))
 const compactScheduleRows = computed(() => injectionExecutionScheduleRows.value.slice(0, 8))
 const compactMachineRows = computed(() => injectionMachineMasterRows.value.slice(0, 18))
@@ -83,6 +109,7 @@ const {
   getPendingOrderMachineOptions,
   getSelectedPendingOrderMachine,
   handlePendingOrderMachineChange,
+  handleDraftMachineChange,
   getPendingOrderStatusLabel,
   getPendingOrderStatusTone,
   pendingOrderMachineDraftRows,
@@ -111,6 +138,148 @@ const panelTone = {
   slate: 'bg-slate-100 border-slate-200',
 } as const
 
+type PanelTone = keyof typeof panelTone
+
+const isMissingMasterDataValue = (value: string | undefined) =>
+  !value || value.includes('待补') || value.includes('未填写') || value.includes('待建')
+
+interface DraftReferenceRow {
+  selectedMachine: string
+  moldCode: string
+  machineModel?: string
+  armType?: string
+  remark?: string
+  moldSize?: string
+}
+
+const getDraftMachineProfile = (row: DraftReferenceRow) =>
+  injectionMachineMasterRows.value.find((machine) => machine.machine === row.selectedMachine)
+
+const getDraftRequiredMachineModel = (row: DraftReferenceRow) =>
+  row.machineModel?.trim() || '待补推荐机型'
+
+const getDraftSelectedMachineType = (row: DraftReferenceRow) => {
+  const machine = getDraftMachineProfile(row)
+
+  return machine ? `${machine.tonnage} · ${machine.processRange}` : '机台资料待补'
+}
+
+const getDraftSelectedMachineHardware = (row: DraftReferenceRow) => {
+  const machine = getDraftMachineProfile(row)
+
+  return machine ? `${machine.screw} · ${machine.robot}` : '缺机台台账'
+}
+
+const getDraftMoldDetail = (row: DraftReferenceRow) =>
+  injectionMoldTargetDetailRows.value.find((mold) => mold.moldCode === row.moldCode)
+
+const getDraftMoldSize = (row: DraftReferenceRow) =>
+  row.moldSize && !isMissingMasterDataValue(row.moldSize) ? row.moldSize : '待补尺寸'
+
+const getDraftMoldReference = (row: DraftReferenceRow) => {
+  const mold = getDraftMoldDetail(row)
+  const cavity = mold?.cavity && !isMissingMasterDataValue(mold.cavity) ? mold.cavity : '穴数待补'
+  const cycleTime = mold?.cycleTime && !isMissingMasterDataValue(mold.cycleTime) ? mold.cycleTime : '节拍待补'
+
+  return `${getDraftMoldSize(row)} · ${cavity} · ${cycleTime}`
+}
+
+const getDraftSprayLabel = (row: DraftReferenceRow) =>
+  row.remark?.includes('喷油') ? '需喷油' : '普通注塑'
+
+const getDraftSprayTone = (row: DraftReferenceRow): Tone =>
+  row.remark?.includes('喷油') ? 'amber' : 'slate'
+
+const getDraftProcessRemark = (row: DraftReferenceRow) =>
+  row.remark?.trim() || '无特殊工艺备注'
+
+const getDraftArmRequirement = (row: DraftReferenceRow) =>
+  row.armType?.trim() || '机械手未指定'
+
+const activeMoldTargetRows = computed(() =>
+  injectionMoldTargetDetailRows.value.filter((row) => row.catalogStatus !== '废模'),
+)
+
+const completeMoldTargetRows = computed(() =>
+  activeMoldTargetRows.value.filter((row) =>
+    !isMissingMasterDataValue(row.cavity)
+    && !isMissingMasterDataValue(row.cycleTime)
+    && !isMissingMasterDataValue(row.target24h)
+    && !isMissingMasterDataValue(row.target11h)
+    && !isMissingMasterDataValue(row.preferredMachine),
+  ),
+)
+
+const confirmedMoldMappingRows = computed(() =>
+  injectionMoldMachineMappingRows.value.filter((row) =>
+    row.tone === 'green'
+    && !isMissingMasterDataValue(row.recommendedMachine)
+    && !isMissingMasterDataValue(row.backupMachine),
+  ),
+)
+
+const masterDataSummaryCards = computed(() => {
+  const activeMolds = activeMoldTargetRows.value.length
+  const completedTargets = completeMoldTargetRows.value.length
+  const mappingRows = injectionMoldMachineMappingRows.value.length
+  const confirmedMappings = confirmedMoldMappingRows.value.length
+  const machineRows = injectionMachineMasterRows.value.length
+  const runningMachines = injectionMachineMasterRows.value.filter((row) => row.status === '运行').length
+  const targetCompletion = activeMolds > 0 ? Math.round((completedTargets / activeMolds) * 100) : 0
+  const mappingCompletion = mappingRows > 0 ? Math.round((confirmedMappings / mappingRows) * 100) : 0
+
+  return [
+    {
+      label: '在册模具',
+      value: `${activeMolds}`,
+      detail: activeMolds > 0 ? '来自模具总表的非废模记录' : '等待模具总表导入',
+      tone: activeMolds > 0 ? 'teal' : 'slate',
+    },
+    {
+      label: '目标完整',
+      value: `${completedTargets} / ${activeMolds}`,
+      detail: activeMolds > 0 ? `完成率 ${targetCompletion}% · 已具备穴数、节拍、24H/11H 和优选机台` : '等待目标产能字段',
+      tone: targetCompletion >= 80 ? 'green' : targetCompletion > 0 ? 'amber' : 'red',
+    },
+    {
+      label: '映射可用',
+      value: `${confirmedMappings} / ${mappingRows}`,
+      detail: mappingRows > 0 ? `完成率 ${mappingCompletion}% · 可直接进入智能排机候选池` : '等待订单与模具映射生成',
+      tone: mappingCompletion >= 80 ? 'green' : mappingCompletion > 0 ? 'amber' : 'red',
+    },
+    {
+      label: '运行机台',
+      value: `${runningMachines} / ${machineRows}`,
+      detail: machineRows > 0 ? '机台台账当前可用于排机过滤' : '等待机台台账导入',
+      tone: runningMachines > 0 ? 'blue' : 'slate',
+    },
+  ] satisfies { label: string; value: string; detail: string; tone: PanelTone }[]
+})
+
+const getMoldTargetGapText = (row: (typeof injectionMoldTargetDetailRows.value)[number]) => {
+  const gaps = [
+    isMissingMasterDataValue(row.cavity) && '缺穴数',
+    isMissingMasterDataValue(row.cycleTime) && '缺节拍',
+    isMissingMasterDataValue(row.target24h) && '缺24H目标',
+    isMissingMasterDataValue(row.target11h) && '缺11H目标',
+    isMissingMasterDataValue(row.preferredMachine) && '缺优选机台',
+  ].filter(Boolean)
+
+  return gaps.join(' / ') || '资料完整'
+}
+
+const masterDataTargetGapRows = computed(() =>
+  activeMoldTargetRows.value
+    .filter((row) => getMoldTargetGapText(row) !== '资料完整')
+    .slice(0, 6),
+)
+
+const masterDataMappingGapRows = computed(() =>
+  injectionMoldMachineMappingRows.value
+    .filter((row) => row.tone !== 'green' || row.status.includes('待'))
+    .slice(0, 6),
+)
+
 const workflowTone = {
   done: 'green',
   active: 'blue',
@@ -128,6 +297,7 @@ type ImportFieldKey =
   | 'quantity'
   | 'dueDate'
   | 'machineModel'
+  | 'remark'
 
 interface ExpectedImportField {
   key: ImportFieldKey
@@ -148,6 +318,7 @@ interface ImportedOrderPreviewRow {
   quantity: string
   dueDate: string
   machineModel: string
+  remark: string
   issue: string
   tone: ImportTone
   errors: string[]
@@ -170,6 +341,7 @@ const expectedImportFields: ExpectedImportField[] = [
     preferredAliases: ['交货期', '交货日期', '走货期', '出货日期'],
   },
   { key: 'machineModel', label: '推荐机型', required: false, aliases: ['机型', '推荐机型', '机种', '吨位', '机台类型', 'machineModel'] },
+  { key: 'remark', label: '备注', required: false, aliases: ['备注', '工艺备注', '排产备注', '生产备注', '喷油', 'remark', 'note'] },
 ]
 
 const importFileInput = ref<HTMLInputElement | null>(null)
@@ -179,9 +351,9 @@ const importHeaders = ref<string[]>([])
 const importedRows = ref<ImportedOrderPreviewRow[]>([])
 const importErrorMessage = ref('')
 
-const importPreviewRows = computed(() => importedRows.value.slice(0, 8))
+const importPreviewRows = computed(() => importedRows.value)
 const importProblemRows = computed(() =>
-  importedRows.value.filter((row) => row.errors.length > 0 || row.warnings.length > 0).slice(0, 10),
+  importedRows.value.filter((row) => row.errors.length > 0 || row.warnings.length > 0),
 )
 
 const importSummaryCards = computed(() => {
@@ -192,8 +364,8 @@ const importSummaryCards = computed(() => {
 
   return [
     { label: '预览行数', value: total, detail: importedSheetName.value || '等待上传', tone: total > 0 ? 'teal' : 'slate' },
-    { label: '可导入', value: passed, detail: '字段完整且无重复风险', tone: 'green' },
-    { label: '待确认', value: warnings, detail: '可进入订单池前需人工看一眼', tone: warnings > 0 ? 'amber' : 'slate' },
+    { label: '可入池', value: passed, detail: '字段完整且无重复风险，会进入当前订单池', tone: 'green' },
+    { label: '待确认', value: warnings, detail: '会进入订单池，但下发前需人工看一眼', tone: warnings > 0 ? 'amber' : 'slate' },
     { label: '错误行', value: errors, detail: '必须补齐后再导入', tone: errors > 0 ? 'red' : 'green' },
   ] satisfies { label: string; value: number; detail: string; tone: ImportTone }[]
 })
@@ -454,6 +626,25 @@ const readRecordValue = (
   return header ? String(record[header] ?? '').trim() : ''
 }
 
+const normalizeImportedRemark = (value: string, header = '') => {
+  const normalizedHeader = normalizeHeader(header)
+  const normalizedValue = value.trim()
+
+  if (!normalizedHeader.includes('喷油')) {
+    return normalizedValue
+  }
+
+  if (!normalizedValue || /^(否|无|不|no|n)$/i.test(normalizedValue)) {
+    return normalizedValue
+  }
+
+  if (/^(是|yes|y)$/i.test(normalizedValue)) {
+    return '喷油'
+  }
+
+  return normalizedValue.includes('喷油') ? normalizedValue : `喷油 / ${normalizedValue}`
+}
+
 const buildImportedRows = (
   records: Record<string, unknown>[],
   headerRowIndex: number,
@@ -463,7 +654,11 @@ const buildImportedRows = (
     .map((record, index) => {
       const row = expectedImportFields.reduce((accumulator, field) => {
         const value = readRecordValue(record, field, matchedHeaders)
-        accumulator[field.key] = field.key === 'dueDate' ? normalizeExcelDate(value) : value
+        accumulator[field.key] = field.key === 'dueDate'
+          ? normalizeExcelDate(value)
+          : field.key === 'remark'
+              ? normalizeImportedRemark(value, matchedHeaders[field.key])
+              : value
         return accumulator
       }, {} as Record<ImportFieldKey, string>)
 
@@ -514,6 +709,116 @@ const buildImportedRows = (
   })
 }
 
+const parseImportedMachineTonnage = (tonnage: string) => {
+  const matched = tonnage.match(/\d+/)
+  return matched ? Number.parseInt(matched[0], 10) : 0
+}
+
+const inferImportedMachineBand = (machineModel: string) => {
+  const compact = machineModel.replace(/\s+/g, '')
+  const bands = [
+    { pattern: /50A/, min: 380, max: 550 },
+    { pattern: /32A/, min: 300, max: 330 },
+    { pattern: /24A/, min: 240, max: 270 },
+    { pattern: /18A/, min: 180, max: 210 },
+    { pattern: /14A/, min: 140, max: 170 },
+    { pattern: /12A/, min: 110, max: 140 },
+    { pattern: /10A/, min: 90, max: 120 },
+    { pattern: /7A/, min: 80, max: 110 },
+    { pattern: /5A/, min: 45, max: 95 },
+    { pattern: /4A/, min: 40, max: 85 },
+  ] as const
+
+  return bands.find((band) => band.pattern.test(compact)) ?? null
+}
+
+const matchesImportedMaterialProcess = (material: string, processRange: string) => {
+  const upperMaterial = material.toUpperCase()
+
+  if (upperMaterial.includes('PVC')) {
+    return processRange.includes('PVC')
+  }
+
+  if (upperMaterial.includes('PC')) {
+    return processRange.includes('PC')
+  }
+
+  if (upperMaterial.includes('PMMA') || upperMaterial.includes('TPE')) {
+    return !processRange.includes('PVC')
+  }
+
+  return !processRange.includes('PVC') && !processRange.includes('PC')
+}
+
+const splitImportedMachineCandidates = (value = '') =>
+  value
+    .split('/')
+    .map((item) => item.trim())
+    .filter((item) => item && !item.includes('待补') && !item.includes('待确认'))
+
+const resolveImportedMachineAdvice = (row: ImportedOrderPreviewRow) => {
+  const directMachine = injectionMachineMasterRows.value.find((machine) =>
+    row.machineModel.includes(machine.machine),
+  )?.machine
+  const mapping = injectionMoldMachineMappingRows.value.find((item) => item.moldCode === row.moldCode)
+  const band = inferImportedMachineBand(row.machineModel)
+  const machineCandidates = injectionMachineMasterRows.value
+    .filter((machine) => {
+      if (band) {
+        const tonnage = parseImportedMachineTonnage(machine.tonnage)
+        return tonnage >= band.min
+          && tonnage <= band.max
+          && matchesImportedMaterialProcess(row.material, machine.processRange)
+      }
+
+      return Boolean(row.material) && matchesImportedMaterialProcess(row.material, machine.processRange)
+    })
+    .sort((left, right) => {
+      const toneRank: Record<Tone, number> = { green: 4, blue: 3, amber: 2, teal: 2, slate: 1, red: 0 }
+      const statusRank = (status: string) => status === '运行' ? 3 : status === '新购' ? 2 : status === '注意' ? 1 : 0
+
+      return statusRank(right.status) - statusRank(left.status)
+        || toneRank[right.tone] - toneRank[left.tone]
+        || parseImportedMachineTonnage(left.tonnage) - parseImportedMachineTonnage(right.tonnage)
+    })
+    .map((machine) => machine.machine)
+  const candidates = [
+    directMachine,
+    mapping?.recommendedMachine,
+    mapping?.backupMachine,
+    ...machineCandidates,
+  ].flatMap((item) => splitImportedMachineCandidates(item))
+
+  return [...new Set(candidates)].slice(0, 4).join(' / ') || '待系统推荐'
+}
+
+const buildImportedPendingOrderRows = (rows: ImportedOrderPreviewRow[]): ActivePendingOrderRow[] =>
+  rows
+    .filter((row) => row.errors.length === 0)
+    .map((row) => {
+      const machineAdvice = resolveImportedMachineAdvice(row)
+      const hasMachineAdvice = machineAdvice !== '待系统推荐'
+
+      return {
+        poolKey: `import-${row.rowNumber}-${row.orderNo}-${row.moldCode}`,
+        orderNo: row.orderNo,
+        customer: row.customer || row.orderNo.slice(0, 3) || '导入客户',
+        productName: row.productName,
+        moldCode: row.moldCode,
+        color: row.color,
+        material: row.material,
+        quantity: row.quantity,
+        dueDate: row.dueDate,
+        machineAdvice,
+        machineModel: row.machineModel,
+        armType: '',
+        remark: row.remark,
+        moldSize: '待补尺寸',
+        issue: hasMachineAdvice ? row.issue : '待补规则',
+        tone: hasMachineAdvice ? row.tone : 'amber',
+      }
+    })
+
 const handleOrderImportFile = async (event: Event) => {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -542,6 +847,8 @@ const handleOrderImportFile = async (event: Event) => {
     importHeaders.value = headers
     importedSheetName.value = `${fileName.endsWith('.xlsx') ? '首个工作表' : '文本表'} / 表头第 ${headerRowIndex + 1} 行`
     importedRows.value = buildImportedRows(records, headerRowIndex, matchedHeaders)
+    importedPendingOrderRows.value = buildImportedPendingOrderRows(importedRows.value)
+    importedOrderPoolActive.value = importedRows.value.length > 0
 
     if (importedRows.value.length === 0) {
       importErrorMessage.value = '已读取文件，但没有识别到可导入的订单行。'
@@ -549,6 +856,8 @@ const handleOrderImportFile = async (event: Event) => {
   } catch (error) {
     importHeaders.value = []
     importedRows.value = []
+    importedPendingOrderRows.value = []
+    importedOrderPoolActive.value = false
     importedSheetName.value = ''
     importErrorMessage.value = error instanceof Error ? error.message : '订单文件解析失败'
   } finally {
@@ -561,6 +870,8 @@ const clearImportedOrderPreview = () => {
   importedSheetName.value = ''
   importHeaders.value = []
   importedRows.value = []
+  importedPendingOrderRows.value = []
+  importedOrderPoolActive.value = false
   importErrorMessage.value = ''
 }
 
@@ -669,7 +980,7 @@ const openImportFilePicker = () => {
                     {{ importedFileName || '选择订单文件' }}
                   </h3>
                   <p class="mt-2 text-sm leading-6 text-slate-600">
-                    {{ importedSheetName || '支持 .xlsx、.csv、.tsv，上传后先进入预览，不会直接覆盖订单池。' }}
+                    {{ importedSheetName || '支持 .xlsx、.csv、.tsv，上传后会预览，并把可入池行带入当前前端订单池。' }}
                   </p>
                 </div>
               </div>
@@ -753,7 +1064,7 @@ const openImportFilePicker = () => {
               <h3 class="font-semibold text-slate-950">导入预览</h3>
               <StatusPill :label="`${importedRows.length} 行`" tone="teal" compact />
             </div>
-            <div class="mt-4 overflow-x-auto">
+            <div class="mt-4 max-h-[620px] overflow-auto pr-1">
               <table class="min-w-full text-left text-sm">
                 <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
                   <tr>
@@ -762,6 +1073,7 @@ const openImportFilePicker = () => {
                     <th class="pb-3 pr-4 font-medium">产品 / 模具</th>
                     <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
                     <th class="pb-3 pr-4 font-medium">F列推荐机型</th>
+                    <th class="pb-3 pr-4 font-medium">备注</th>
                     <th class="pb-3 pr-4 font-medium">数量 / 交期</th>
                     <th class="pb-3 font-medium">状态</th>
                   </tr>
@@ -783,6 +1095,7 @@ const openImportFilePicker = () => {
                       <div class="mt-1 text-xs text-slate-500">{{ row.material || '未填料型' }}</div>
                     </td>
                     <td class="py-3 pr-4 text-slate-600">{{ row.machineModel || '待系统推荐' }}</td>
+                    <td class="py-3 pr-4 text-slate-600">{{ row.remark || '无' }}</td>
                     <td class="py-3 pr-4 text-slate-600">
                       <div>{{ row.quantity || '未填数量' }}</div>
                       <div class="mt-1 text-xs text-slate-500">{{ row.dueDate || '未填交期' }}</div>
@@ -801,7 +1114,7 @@ const openImportFilePicker = () => {
               <h3 class="font-semibold text-slate-950">错误行</h3>
               <StatusPill :label="`${importProblemRows.length} 行`" :tone="importProblemRows.length > 0 ? 'amber' : 'green'" compact />
             </div>
-            <div class="mt-4 space-y-3">
+            <div class="mt-4 max-h-[620px] space-y-3 overflow-y-auto pr-1">
               <article
                 v-for="row in importProblemRows"
                 :key="`problem-${row.rowNumber}-${row.orderNo}-${row.moldCode}`"
@@ -889,8 +1202,14 @@ const openImportFilePicker = () => {
 
       <SectionPanel
         title="订单池"
-        subtitle="这里保留工厂最常看的几列，避免一屏表头太宽、太难用。"
+        :subtitle="importedOrderPoolActive ? `当前使用上传订单池：${compactPendingOrders.length} 行可进入排机，错误行仍留在导入页。` : '这里保留工厂最常看的几列，避免一屏表头太宽、太难用。'"
       >
+        <template #action>
+          <StatusPill
+            :label="importedOrderPoolActive ? `上传池 ${compactPendingOrders.length} 行` : `默认池 ${compactPendingOrders.length} 行`"
+            :tone="importedOrderPoolActive ? 'teal' : 'blue'"
+          />
+        </template>
         <div class="overflow-x-auto">
           <table class="min-w-full text-left text-sm">
             <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
@@ -908,7 +1227,7 @@ const openImportFilePicker = () => {
             <tbody>
               <tr
                 v-for="row in compactPendingOrders"
-                :key="`${row.orderNo}-${row.moldCode}-${row.machineAdvice}`"
+                :key="`pool-${getPendingOrderMachineKey(row)}`"
                 class="border-b border-slate-100 align-top last:border-b-0"
               >
                 <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.orderNo }}</td>
@@ -1105,7 +1424,7 @@ const openImportFilePicker = () => {
           <div>
             <h3 class="font-semibold text-slate-950">排机草稿与下发</h3>
             <p class="mt-1 text-sm leading-6 text-slate-600">
-              当前先做前端草稿：把订单池选中的机台汇总到结果页，确认后进入执行。后面再接正式保存、下发和回写。
+              当前先做前端草稿：把订单池选中的机台汇总到结果页，可在结果页直接改下发机台；改动后需重新确认下发。
             </p>
           </div>
           <div class="flex flex-wrap gap-3">
@@ -1138,6 +1457,7 @@ const openImportFilePicker = () => {
                 <th class="pb-3 pr-4 font-medium">模具</th>
                 <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
                 <th class="pb-3 pr-4 font-medium">数量 / 交期</th>
+                <th class="pb-3 pr-4 font-medium">排机参考</th>
                 <th class="pb-3 pr-4 font-medium">下发机台</th>
                 <th class="pb-3 pr-4 font-medium">选机状态</th>
                 <th class="pb-3 font-medium">下发状态</th>
@@ -1146,7 +1466,7 @@ const openImportFilePicker = () => {
             <tbody>
               <tr
                 v-for="row in pendingOrderMachineDraftRows"
-                :key="`draft-${row.orderNo}-${row.moldCode}-${row.selectedMachine}`"
+                :key="`draft-${getPendingOrderMachineKey(row)}-${row.selectedMachine}`"
                 class="border-b border-slate-100 align-top last:border-b-0"
               >
                 <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.sequence }}</td>
@@ -1163,7 +1483,49 @@ const openImportFilePicker = () => {
                   <div>{{ row.quantity }}</div>
                   <div class="mt-1 text-xs text-slate-500">{{ row.dueDate }}</div>
                 </td>
-                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.selectedMachine }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div class="min-w-[18rem] rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
+                    <div class="grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">推荐机型</p>
+                        <p class="mt-1 font-semibold text-slate-900">{{ getDraftRequiredMachineModel(row) }}</p>
+                      </div>
+                      <div>
+                        <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">模具尺寸</p>
+                        <p class="mt-1 font-semibold text-amber-700">{{ getDraftMoldSize(row) }}</p>
+                      </div>
+                    </div>
+                    <div class="mt-3 border-t border-slate-200 pt-3">
+                      <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">选中机台参数</p>
+                      <p class="mt-1 font-semibold text-slate-900">{{ getDraftSelectedMachineType(row) }}</p>
+                      <p class="mt-1 text-xs leading-5 text-slate-500">{{ getDraftSelectedMachineHardware(row) }}</p>
+                    </div>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                      <StatusPill :label="getDraftSprayLabel(row)" :tone="getDraftSprayTone(row)" compact />
+                      <StatusPill :label="getDraftArmRequirement(row)" :tone="row.armType ? 'blue' : 'slate'" compact />
+                    </div>
+                    <p class="mt-2 text-xs leading-5 text-slate-500">
+                      {{ getDraftMoldReference(row) }} · {{ getDraftProcessRemark(row) }}
+                    </p>
+                  </div>
+                </td>
+                <td class="py-4 pr-4">
+                  <select
+                    class="w-40 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                    :value="row.selectedMachine"
+                    aria-label="修改下发机台"
+                    @change="handleDraftMachineChange(row, $event)"
+                  >
+                    <option
+                      v-for="machine in row.machineOptions"
+                      :key="`draft-machine-${getPendingOrderMachineKey(row)}-${machine}`"
+                      :value="machine"
+                    >
+                      {{ machine }}
+                    </option>
+                  </select>
+                  <div class="mt-1 text-xs leading-5 text-slate-500">人工改动后重新确认下发</div>
+                </td>
                 <td class="py-4 pr-4">
                   <StatusPill :label="row.confirmState" :tone="row.confirmTone" compact />
                 </td>
@@ -1815,6 +2177,81 @@ const openImportFilePicker = () => {
               </div>
               <p class="mt-4 text-sm leading-6 text-slate-600">{{ source.summary }}</p>
             </article>
+          </div>
+        </SectionPanel>
+      </div>
+
+      <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <article
+          v-for="card in masterDataSummaryCards"
+          :key="card.label"
+          class="rounded-2xl border p-5"
+          :class="panelTone[card.tone]"
+        >
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{{ card.label }}</p>
+          <p class="mt-2 text-2xl font-semibold text-slate-950">{{ card.value }}</p>
+          <p class="mt-2 text-sm leading-6 text-slate-600">{{ card.detail }}</p>
+        </article>
+      </section>
+
+      <div class="grid gap-6 xl:grid-cols-[1fr_1fr]">
+        <SectionPanel
+          title="优先补目标"
+          subtitle="先把影响排机和日报目标的缺口列出来，工程和生产可以按这张清单补资料。"
+        >
+          <div class="space-y-3">
+            <article
+              v-for="mold in masterDataTargetGapRows"
+              :key="`${mold.moldCode}-${mold.productName}-gap`"
+              class="rounded-2xl border border-slate-200 bg-white p-4"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <h3 class="font-semibold text-slate-950">{{ mold.moldCode }}</h3>
+                  <p class="mt-1 text-xs text-slate-500">{{ mold.customer }} · {{ mold.productName }}</p>
+                </div>
+                <StatusPill :label="mold.health" :tone="mold.tone" compact />
+              </div>
+              <p class="mt-4 text-sm leading-6 text-slate-600">{{ getMoldTargetGapText(mold) }}</p>
+            </article>
+            <p
+              v-if="masterDataTargetGapRows.length === 0"
+              class="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
+            >
+              当前没有待补模具目标。
+            </p>
+          </div>
+        </SectionPanel>
+
+        <SectionPanel
+          title="优先补映射"
+          subtitle="把候选机台还没完全确认的模具集中出来，避免智能排机下发前遗漏。"
+        >
+          <div class="space-y-3">
+            <article
+              v-for="row in masterDataMappingGapRows"
+              :key="`${row.moldCode}-${row.recommendedMachine}-gap`"
+              class="rounded-2xl border border-slate-200 bg-white p-4"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <h3 class="font-semibold text-slate-950">{{ row.moldCode }}</h3>
+                  <p class="mt-1 text-xs text-slate-500">{{ row.customer }} · {{ row.productName }}</p>
+                </div>
+                <StatusPill :label="row.status" :tone="row.tone" compact />
+              </div>
+              <div class="mt-4 grid gap-2 text-sm text-slate-600">
+                <p>主机台：{{ row.recommendedMachine }}</p>
+                <p>备选：{{ row.backupMachine }}</p>
+                <p class="text-xs leading-5 text-slate-500">{{ row.detail }}</p>
+              </div>
+            </article>
+            <p
+              v-if="masterDataMappingGapRows.length === 0"
+              class="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
+            >
+              当前没有待补模具映射。
+            </p>
           </div>
         </SectionPanel>
       </div>

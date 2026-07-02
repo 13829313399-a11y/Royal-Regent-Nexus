@@ -2,6 +2,7 @@ import { computed, ref, watch, type ComputedRef } from 'vue'
 import type { Tone } from '@/data/enterpriseMock'
 
 interface PendingOrderMachineRow {
+  poolKey?: string
   orderNo: string
   productName?: string
   moldCode: string
@@ -10,6 +11,10 @@ interface PendingOrderMachineRow {
   quantity?: string
   dueDate?: string
   machineAdvice: string
+  machineModel?: string
+  armType?: string
+  remark?: string
+  moldSize?: string
   issue: string
   tone: Tone
 }
@@ -120,8 +125,8 @@ export function useInjectionWorkflowBridge({
     )
   }
 
-  const getPendingOrderMachineKey = (row: Pick<PendingOrderMachineRow, 'orderNo' | 'moldCode'>) =>
-    `${row.orderNo}::${row.moldCode}`
+  const getPendingOrderMachineKey = (row: Pick<PendingOrderMachineRow, 'orderNo' | 'moldCode' | 'poolKey'>) =>
+    row.poolKey ?? `${row.orderNo}::${row.moldCode}`
 
   const resetDownstreamDrafts = () => {
     schedulingDraftGenerated.value = false
@@ -129,6 +134,13 @@ export function useInjectionWorkflowBridge({
     shiftReportDraftSubmitted.value = false
     inboundWritebackDraftConfirmed.value = false
   }
+
+  watch(
+    () => pendingOrders.value
+      .map((row) => `${getPendingOrderMachineKey(row)}::${row.machineAdvice}::${row.quantity ?? ''}::${row.dueDate ?? ''}`)
+      .join('|'),
+    () => resetDownstreamDrafts(),
+  )
 
   const splitMachineOptions = (value = '') =>
     value
@@ -159,13 +171,30 @@ export function useInjectionWorkflowBridge({
     return selectedPendingOrderMachines.value[key] || options[0] || row.machineAdvice || '待确认'
   }
 
-  const handlePendingOrderMachineChange = (row: PendingOrderMachineRow, event: Event) => {
-    const target = event.target as HTMLSelectElement
+  const updateSelectedPendingOrderMachine = (row: PendingOrderMachineRow, selectedMachine: string) => {
     selectedPendingOrderMachines.value = {
       ...selectedPendingOrderMachines.value,
-      [getPendingOrderMachineKey(row)]: target.value,
+      [getPendingOrderMachineKey(row)]: selectedMachine,
     }
+  }
+
+  const markSchedulingDraftEdited = () => {
+    schedulingDraftGenerated.value = true
+    schedulingDraftReleased.value = false
+    shiftReportDraftSubmitted.value = false
+    inboundWritebackDraftConfirmed.value = false
+  }
+
+  const handlePendingOrderMachineChange = (row: PendingOrderMachineRow, event: Event) => {
+    const target = event.target as HTMLSelectElement
+    updateSelectedPendingOrderMachine(row, target.value)
     resetDownstreamDrafts()
+  }
+
+  const handleDraftMachineChange = (row: PendingOrderMachineRow, event: Event) => {
+    const target = event.target as HTMLSelectElement
+    updateSelectedPendingOrderMachine(row, target.value)
+    markSchedulingDraftEdited()
   }
 
   const getPendingOrderStatusLabel = (row: PendingOrderMachineRow) =>
@@ -206,13 +235,21 @@ export function useInjectionWorkflowBridge({
   )
 
   const schedulingDraftMetrics = computed(() => {
+    const poolTotal = pendingOrders.value.length
     const total = pendingOrderMachineDraftRows.value.length
     const confirmed = pendingOrderMachineDraftRows.value.filter((row) => row.confirmState === '人工已确认').length
     const recommended = total - confirmed
     const machines = new Set(pendingOrderMachineDraftRows.value.map((row) => row.selectedMachine)).size
 
     return [
-      { label: '待下发订单', value: `${total}`, detail: '来自当前订单池前 18 条', tone: total > 0 ? 'teal' : 'slate' },
+      {
+        label: '待下发订单',
+        value: `${total}`,
+        detail: poolTotal === total
+          ? '来自当前订单池全部可排订单'
+          : `当前订单池 ${poolTotal} 行，${total} 行已有候选机台`,
+        tone: total > 0 ? 'teal' : 'slate',
+      },
       { label: '人工已选机', value: `${confirmed}`, detail: '现场已确认的机台选择', tone: confirmed > 0 ? 'green' : 'slate' },
       { label: '系统推荐', value: `${recommended}`, detail: '未手动修改，按推荐机台进入草稿', tone: recommended > 0 ? 'amber' : 'green' },
       {
@@ -379,6 +416,7 @@ export function useInjectionWorkflowBridge({
     getPendingOrderMachineOptions,
     getSelectedPendingOrderMachine,
     handlePendingOrderMachineChange,
+    handleDraftMachineChange,
     getPendingOrderStatusLabel,
     getPendingOrderStatusTone,
     pendingOrderMachineDraftRows,
