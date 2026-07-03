@@ -1,49 +1,47 @@
 import assert from 'node:assert/strict'
-import { moldingSampleFactoryRecords } from '../moldingSampleWorkflowMock.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
-const huakangARecord = moldingSampleFactoryRecords['huakang-a']
+const source = readFileSync(join(process.cwd(), 'src/data/moldingSampleWorkflowMock.ts'), 'utf8')
+const huakangAStart = source.indexOf('const huakangAItems')
+const huakangAEnd = source.indexOf('const huakangBOrder')
 
-assert.deepEqual(
-  huakangARecord.items.map((item) => ({
-    id: item.id,
-    receipt_no: item.receipt_no,
-    collected_weight_kg: item.collected_weight_kg,
-    actual_weight_kg: item.actual_weight_kg,
-    actual_amount_hkd: item.actual_amount_hkd,
-    injection_cost: item.injection_cost,
-    injection_cost_hkd: item.injection_cost_hkd,
-    exchange_rate_at_save: item.exchange_rate_at_save,
-  })),
-  [
-    {
-      id: 'BP-62437-001',
-      receipt_no: '',
-      collected_weight_kg: null,
-      actual_weight_kg: null,
-      actual_amount_hkd: null,
-      injection_cost: null,
-      injection_cost_hkd: null,
-      exchange_rate_at_save: null,
-    },
-    {
-      id: 'BP-62437-002',
-      receipt_no: '',
-      collected_weight_kg: null,
-      actual_weight_kg: null,
-      actual_amount_hkd: null,
-      injection_cost: null,
-      injection_cost_hkd: null,
-      exchange_rate_at_save: null,
-    },
-    {
-      id: 'BP-62437-003',
-      receipt_no: '',
-      collected_weight_kg: null,
-      actual_weight_kg: null,
-      actual_amount_hkd: null,
-      injection_cost: null,
-      injection_cost_hkd: null,
-      exchange_rate_at_save: null,
-    },
-  ],
-)
+assert.notEqual(huakangAStart, -1)
+assert.notEqual(huakangAEnd, -1)
+
+const huakangAItemsSource = source.slice(huakangAStart, huakangAEnd)
+
+assert.equal((huakangAItemsSource.match(/createItem\(\{/g) ?? []).length, 14)
+
+for (const requiredOrderCopy of [
+  "id: 'BP-62437'",
+  "client_name: 'BuzzBee'",
+  "order_number: '62437'",
+  "doc_number: 'W-G026-00'",
+  "product_name: '链条枪'",
+  "date: '2026-04-09'",
+  '见客样办，枪身不可刮花，颜色要对办，工程订色粉。',
+]) {
+  assert.match(source, new RegExp(requiredOrderCopy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+}
+
+for (const requiredItemCopy of [
+  "mold_id: 'BBT62450-A-02-2'",
+  "mold_name: '手柄饰件'",
+  "mold_id: 'BBT62450-B-01'",
+  "mold_name: '左右枪身B款'",
+  "mold_id: 'BBT62659-04'",
+  "mold_name: '左右枪身长装饰件'",
+  "color: '深绿色 / PMS 2272C'",
+  "color: '暗蓝色 / PMS 2935C'",
+  "color: '深蓝色 / PMS 7694C'",
+  "pigment_no: '70039'",
+  "pigment_no: '70040'",
+  "completion_time: '2026-04-13'",
+]) {
+  assert.match(huakangAItemsSource, new RegExp(requiredItemCopy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+}
+
+assert.equal((huakangAItemsSource.match(/shoot_qty: 30/g) ?? []).length, 14)
+assert.equal((huakangAItemsSource.match(/quantity: '1\/1'/g) ?? []).length, 14)
+assert.equal((huakangAItemsSource.match(/machine_type: '待工程确认'/g) ?? []).length, 14)

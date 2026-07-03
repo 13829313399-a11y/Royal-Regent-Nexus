@@ -6,7 +6,7 @@ const source = readFileSync(join(process.cwd(), 'src/views/MoldingSampleView.vue
 
 assert.match(
   source,
-  /<div class="xl:sticky xl:top-24 xl:self-start">[\s\S]*<SectionPanel title="单据队列"/,
+  /<div id="sample-order-list" class="xl:sticky xl:top-24 xl:self-start">[\s\S]*<SectionPanel title="单据列表"/,
 )
 
 assert.match(
@@ -49,8 +49,9 @@ for (const roleScopedEntry of [
 }
 
 for (const queueListCopy of [
-  '卡片队列',
-  '队列总数',
+  '单据列表',
+  '打开左侧单据列表，按状态、厂区、客户或产品编号筛选',
+  '列表总数',
   '待处理',
   '异常数量',
   '状态快筛',
@@ -73,6 +74,15 @@ for (const queueListCopy of [
   '库存不足',
 ]) {
   assert.match(source, new RegExp(queueListCopy))
+}
+
+for (const activeOrderCopy of [
+  '当前单据',
+  '当前查看：',
+  '返回单据列表',
+  '多张单据从列表切换',
+]) {
+  assert.match(source, new RegExp(activeOrderCopy))
 }
 
 for (const restrainedSummaryCopy of [
@@ -98,6 +108,7 @@ for (const operationGuideCopy of [
 
 for (const quickNavCopy of [
   '本单快捷导航',
+  '单据列表',
   '单头信息',
   '角色工作台',
   '明细清单',
@@ -107,6 +118,7 @@ for (const quickNavCopy of [
 }
 
 for (const anchorId of [
+  'sample-order-list',
   'sample-order-head',
   'sample-role-workbench',
   'sample-detail-table',
@@ -141,12 +153,59 @@ for (const detailTableActionCopy of [
   '批量导入',
   'Excel 导入前先预览',
   '行级校验',
+  '颜色 / PMS',
   '件数 / 套数',
   '毛重 g',
   '预计需料 kg',
   '行状态',
 ]) {
   assert.match(source, new RegExp(detailTableActionCopy))
+}
+
+for (const manualCreateCopy of [
+  '新建啤办单',
+  '人工新建啤办单',
+  '根目录啤办单映射',
+  '文件编号',
+  '落单人',
+  '落单日期',
+  '注意事项',
+  '客模具编号',
+  '所需用料',
+  '所需颜色',
+  'PMS',
+  '啤/套',
+  '啤数',
+  '整啤毛重\\(g\\)',
+  '所需用量\\(kg\\)',
+  '需办日期',
+  '新增明细',
+  '创建啤办单',
+  '取消新建',
+]) {
+  assert.match(source, new RegExp(manualCreateCopy))
+}
+
+assert.match(source, /showManualCreatePanel/)
+assert.match(source, /createManualMoldingSampleOrder/)
+const manualCreatePanelStart = source.indexOf('v-if="showManualCreatePanel"')
+const manualCreatePanelEnd = source.indexOf('</section>', manualCreatePanelStart)
+assert.notEqual(manualCreatePanelStart, -1)
+assert.notEqual(manualCreatePanelEnd, -1)
+const manualCreatePanelSource = source.slice(manualCreatePanelStart, manualCreatePanelEnd)
+assert.doesNotMatch(manualCreatePanelSource, /min-w-\[1520px\]/)
+assert.doesNotMatch(manualCreatePanelSource, /<table/)
+assert.match(manualCreatePanelSource, /grid gap-3 md:grid-cols-2 xl:grid-cols-4/)
+assert.match(manualCreatePanelSource, /max-w-full overflow-hidden/)
+for (const manualTextFieldModel of [
+  'manualCreateDraft.workshop',
+  'manualCreateDraft.send_to',
+  'manualCreateDraft.supervisor',
+  'manualCreateDraft.eng_name',
+]) {
+  const escapedModel = manualTextFieldModel.replaceAll('.', '\\.')
+  assert.match(manualCreatePanelSource, new RegExp(`<input[\\s\\S]{0,220}v-model="${escapedModel}"`))
+  assert.doesNotMatch(manualCreatePanelSource, new RegExp(`<select[\\s\\S]{0,220}v-model="${escapedModel}"`))
 }
 
 assert.match(source, /order_id/)
@@ -158,7 +217,7 @@ assert.doesNotMatch(
   source,
   /<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">[\s\S]{0,900}v-for="tab in roleTabs"/,
 )
-const queuePanelStart = source.indexOf('SectionPanel title="单据队列"')
+const queuePanelStart = source.indexOf('SectionPanel title="单据列表"')
 const queuePanelEnd = source.indexOf('</SectionPanel>', queuePanelStart)
 assert.notEqual(queuePanelStart, -1)
 assert.notEqual(queuePanelEnd, -1)

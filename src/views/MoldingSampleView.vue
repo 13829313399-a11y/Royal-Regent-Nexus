@@ -15,7 +15,7 @@ import {
   Upload,
   XCircle,
 } from '@lucide/vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   factoryContexts,
   isProductionFactoryContextId,
@@ -35,6 +35,13 @@ import {
   normalizeMoldingSamplePricingSettings,
   type MoldingSampleMaterialPrice,
 } from '@/lib/moldingSampleBusiness'
+import {
+  buildManualMoldingSampleCreateRequest,
+  createManualMoldingSampleLineDraft,
+  createManualMoldingSampleOrderDraft,
+  deriveManualMoldingSampleOrderId,
+  type ManualMoldingSampleOrderDraft,
+} from '@/lib/moldingSampleManualCreate'
 import {
   moldingSampleMaterialPrices,
   moldingSampleRmbToHkdRate,
@@ -146,6 +153,7 @@ interface PinChangeDraft {
 }
 
 const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
 
 const today = '2026-07-01'
@@ -167,6 +175,14 @@ const queueDateFromFilter = ref('')
 const queueDateToFilter = ref('')
 const queueAnomalyFilter = ref('')
 const selectedDetailItemId = ref('')
+const showManualCreatePanel = ref(false)
+const manualCreateDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft({
+  factory_id: 'huakang-a',
+  order_date: today,
+  supervisor: '李主管',
+  eng_name: '肖科',
+}))
+const manualCreateErrors = ref<string[]>([])
 
 const orderOverrides = ref<Record<string, Partial<MoldingSampleOrder>>>({})
 const itemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
@@ -388,6 +404,19 @@ const filteredQueueEntries = computed(() => queueEntries.value.filter((entry) =>
 }))
 const engineerOptions = computed(() => Array.from(new Set(queueEntries.value.map((entry) => entry.order.eng_name).filter(Boolean))))
 const supervisorOptions = computed(() => Array.from(new Set(queueEntries.value.map((entry) => entry.order.supervisor).filter(Boolean))))
+const manualEngineerOptions = computed(() => Array.from(new Set([
+  ...engineerOptions.value,
+  manualCreateDraft.value.eng_name,
+  currentLoginName.value,
+  activeOrder.value.eng_name,
+  '肖科',
+].filter(Boolean))))
+const manualSupervisorOptions = computed(() => Array.from(new Set([
+  ...supervisorOptions.value,
+  manualCreateDraft.value.supervisor,
+  activeOrder.value.supervisor,
+  '李主管',
+].filter(Boolean))))
 const queueStatusSummaries = computed<QueueStatusSummary[]>(() => [
   {
     label: '全部',
@@ -407,7 +436,7 @@ const queueOverviewCards = computed<QueueSummaryCard[]>(() => {
 
   return [
     {
-      label: '队列总数',
+      label: '列表总数',
       value: String(queueEntries.value.length),
       detail: `当前筛选 ${filteredQueueEntries.value.length} 张`,
       tone: 'slate',
@@ -1181,6 +1210,93 @@ async function importMoldingSampleExcel(event: Event) {
   }
   finally {
     input.value = ''
+  }
+}
+
+function createManualDraftForCurrentContext() {
+  return createManualMoldingSampleOrderDraft({
+    factory_id: selectedFactoryId.value,
+    order_date: today,
+    supervisor: activeOrder.value.supervisor || manualSupervisorOptions.value[0] || '李主管',
+    eng_name: currentUser.value.role === '工程部'
+      ? currentUser.value.name
+      : activeOrder.value.eng_name || manualEngineerOptions.value[0] || '肖科',
+    workshop: activeOrder.value.workshop || 'A车间',
+    send_to: activeOrder.value.send_to || '内部',
+    stage: activeOrder.value.stage || 'T0',
+    order_type: '啤办',
+  })
+}
+
+function openManualCreatePanel() {
+  manualCreateDraft.value = createManualDraftForCurrentContext()
+  manualCreateErrors.value = []
+  showManualCreatePanel.value = true
+  actionMessage.value = apiState.value === 'fallback'
+    ? '当前网络异常，人工新建入口可填写，但暂不能保存到正式数据。'
+    : ''
+}
+
+function cancelManualCreate() {
+  showManualCreatePanel.value = false
+  manualCreateErrors.value = []
+}
+
+function updateManualProductNo(value: string) {
+  const previousAutoId = deriveManualMoldingSampleOrderId(manualCreateDraft.value.product_no)
+  manualCreateDraft.value.product_no = value
+
+  if (!manualCreateDraft.value.id || manualCreateDraft.value.id === previousAutoId) {
+    manualCreateDraft.value.id = deriveManualMoldingSampleOrderId(value)
+  }
+}
+
+function addManualCreateLine() {
+  manualCreateDraft.value.items.push(createManualMoldingSampleLineDraft())
+}
+
+function removeManualCreateLine(index: number) {
+  if (manualCreateDraft.value.items.length <= 1) {
+    manualCreateDraft.value.items = [createManualMoldingSampleLineDraft()]
+    return
+  }
+
+  manualCreateDraft.value.items.splice(index, 1)
+}
+
+async function createManualMoldingSampleOrder() {
+  if (apiState.value === 'fallback') {
+    actionMessage.value = '当前网络异常，不能新建正式啤办单，请刷新数据后重试。'
+    return
+  }
+
+  const result = buildManualMoldingSampleCreateRequest(manualCreateDraft.value, selectedFactoryId.value)
+  manualCreateErrors.value = result.errors
+
+  if (!result.payload) {
+    actionMessage.value = result.errors[0] ?? '请补齐人工新建啤办单资料。'
+    return
+  }
+
+  try {
+    const created = await moldingSampleApi.createOrder(result.payload)
+    await router.replace({
+      path: route.path,
+      query: {
+        ...route.query,
+        factory: created.order.factory_id,
+        order_id: created.order.id,
+      },
+    })
+    await loadApiData()
+    setApiRecord(created)
+    showManualCreatePanel.value = false
+    manualCreateDraft.value = createManualDraftForCurrentContext()
+    manualCreateErrors.value = []
+    actionMessage.value = `已新建啤办单 ${created.order.id}，当前单据已切换到正式数据。`
+  }
+  catch (error) {
+    actionMessage.value = `新建啤办单失败：${getApiErrorMessage(error)}`
   }
 }
 
@@ -1986,7 +2102,8 @@ watchEffect(() => {
               <img src="/brand/huadeng_group_dynamic_logo.svg" alt="华登集团" class="h-10 w-10 object-contain">
             </div>
             <div class="min-w-0">
-              <p class="text-sm font-semibold text-slate-500">华登集团 / Royal Regent</p>
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">当前单据</p>
+              <p class="mt-1 text-sm font-semibold text-slate-500">华登集团 / Royal Regent</p>
               <div class="mt-2 flex flex-wrap items-center gap-3">
                 <h1 class="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
                   工程啤办单 <span class="block text-base font-medium tracking-normal text-slate-500 sm:inline">MOLDING SAMPLE ORDER</span>
@@ -1994,11 +2111,19 @@ watchEffect(() => {
                 <StatusPill :label="activeOrder.status" :tone="statusTones[activeOrder.status]" />
                 <StatusPill :label="isExternalOrder ? '外厂路径' : '内部生产'" :tone="isExternalOrder ? 'slate' : 'teal'" />
               </div>
-              <p class="mt-3 text-sm font-medium text-slate-600">{{ syncMetaText }}</p>
+              <p class="mt-3 text-sm font-semibold text-slate-700">当前查看：{{ activeOrder.id }} · 多张单据从列表切换</p>
+              <p class="mt-1 text-sm font-medium text-slate-600">{{ syncMetaText }}</p>
             </div>
           </div>
 
           <div class="flex flex-wrap gap-2 xl:justify-end">
+            <a
+              href="#sample-order-list"
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+            >
+              <ArrowLeft class="size-4" aria-hidden="true" />
+              返回单据列表
+            </a>
             <button
               type="button"
               class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
@@ -2074,6 +2199,14 @@ watchEffect(() => {
           >
           <button
             type="button"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white"
+            @click="openManualCreatePanel"
+          >
+            <Plus class="size-4" aria-hidden="true" />
+            新建啤办单
+          </button>
+          <button
+            type="button"
             class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
             @click="loadApiData"
           >
@@ -2128,6 +2261,256 @@ watchEffect(() => {
           </details>
         </div>
       </div>
+
+      <section
+        v-if="showManualCreatePanel"
+        class="max-w-full overflow-hidden rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+      >
+        <form class="space-y-5" @submit.prevent="createManualMoldingSampleOrder">
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">人工新建啤办单</p>
+              <h2 class="mt-2 text-lg font-semibold text-slate-950">按根目录啤办单映射手填</h2>
+              <p class="mt-1 text-sm leading-6 text-slate-500">
+                根目录啤办单映射：客户、产品编号、文件编号、落单人、落单日期、注意事项，以及明细的客模具编号、用料、颜色、PMS、色粉、啤/套、啤数、需办日期。
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-600"
+                @click="cancelManualCreate"
+              >
+                取消新建
+              </button>
+              <button
+                type="submit"
+                :disabled="apiState === 'fallback' || apiState === 'checking'"
+                class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                <Save class="size-4" aria-hidden="true" />
+                创建啤办单
+              </button>
+            </div>
+          </div>
+
+          <div
+            v-if="apiState === 'fallback'"
+            class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900"
+          >
+            当前网络异常，人工新建入口可填写，但不能保存到正式业务数据。
+          </div>
+
+          <div
+            v-if="manualCreateErrors.length"
+            class="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-800"
+          >
+            <p class="font-semibold">请先补齐以下资料</p>
+            <ul class="mt-2 list-inside list-disc space-y-1">
+              <li v-for="error in manualCreateErrors" :key="error">{{ error }}</li>
+            </ul>
+          </div>
+
+          <fieldset class="space-y-4">
+            <legend class="text-sm font-semibold text-slate-950">单头资料</legend>
+            <div class="grid gap-x-6 gap-y-3 lg:grid-cols-3">
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">单据编号 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.id"
+                  placeholder="BP-62437"
+                  class="h-9 rounded-md border border-slate-200 px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">产品编号 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  :value="manualCreateDraft.product_no"
+                  placeholder="62437"
+                  class="h-9 rounded-md border border-slate-200 px-3 font-semibold"
+                  @input="updateManualProductNo(readInputValue($event))"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">文件编号 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.doc_number"
+                  placeholder="W-G026-00"
+                  class="h-9 rounded-md border border-slate-200 px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">客户名称 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.client_name"
+                  placeholder="BuzzBee"
+                  class="h-9 rounded-md border border-slate-200 px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">产品名称 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.product_name"
+                  placeholder="链条枪"
+                  class="h-9 rounded-md border border-slate-200 px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">落单日期 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.order_date"
+                  type="date"
+                  class="h-9 rounded-md border border-slate-200 px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">阶段</span>
+                <select
+                  v-model="manualCreateDraft.stage"
+                  class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold"
+                >
+                  <option v-for="stage in stageOptions" :key="stage" :value="stage">{{ stage }}</option>
+                </select>
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">用途</span>
+                <select
+                  v-model="manualCreateDraft.order_type"
+                  class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold"
+                >
+                  <option value="啤办">啤办</option>
+                  <option value="试模">试模</option>
+                  <option value="试色">试色</option>
+                </select>
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">车间 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.workshop"
+                  placeholder="A车间"
+                  class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">发至</span>
+                <input
+                  v-model="manualCreateDraft.send_to"
+                  placeholder="内部 / 发至湖南 / 发至模厂"
+                  class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">主管 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.supervisor"
+                  placeholder="黄主管"
+                  class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold"
+                >
+              </label>
+              <label class="grid gap-1 text-sm">
+                <span class="font-medium text-slate-600">落单人 <em class="not-italic text-red-600">必填</em></span>
+                <input
+                  v-model="manualCreateDraft.eng_name"
+                  placeholder="梁工"
+                  class="h-9 rounded-md border border-slate-200 bg-white px-3 font-semibold"
+                >
+              </label>
+            </div>
+            <label class="grid gap-2 text-sm">
+              <span class="font-medium text-slate-600">注意事项</span>
+              <textarea
+                v-model="manualCreateDraft.reason"
+                rows="3"
+                placeholder="见客样办，枪身不可刮花，颜色要对办，工程订色粉。"
+                class="w-full rounded-md border border-slate-200 px-3 py-2 leading-6"
+              />
+            </label>
+          </fieldset>
+
+          <fieldset class="min-w-0 space-y-4 border-t border-slate-200 pt-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <legend class="text-sm font-semibold text-slate-950">明细资料</legend>
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700"
+                @click="addManualCreateLine"
+              >
+                <Plus class="size-4" aria-hidden="true" />
+                新增明细
+              </button>
+            </div>
+
+            <div class="max-h-[520px] space-y-3 overflow-auto pr-1">
+              <article
+                v-for="(line, index) in manualCreateDraft.items"
+                :key="index"
+                class="max-w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50/70 p-3"
+              >
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <p class="text-sm font-semibold text-slate-950">序号 {{ index + 1 }}</p>
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600"
+                    @click="removeManualCreateLine(index)"
+                  >
+                    移除
+                  </button>
+                </div>
+                <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    客模具编号
+                    <input v-model="line.customer_mold_id" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-800" placeholder="BBT62450-A-01">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    模具名称
+                    <input v-model="line.mold_name" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800" placeholder="左右枪身A款">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    所需用料
+                    <input v-model="line.material" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800" placeholder="HIPS 425">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    所需颜色
+                    <input v-model="line.color" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800" placeholder="深绿色">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    PMS
+                    <input v-model="line.pms" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800" placeholder="2272C">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    色粉
+                    <input v-model="line.pigment_no" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800" placeholder="71139">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    啤/套
+                    <input v-model="line.quantity" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800" placeholder="1/1">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    啤数
+                    <input v-model="line.shoot_qty" type="number" min="1" inputmode="numeric" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right text-sm text-slate-800" placeholder="30">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    整啤毛重(g)
+                    <input v-model="line.gross_weight_g" type="number" min="0" step="0.01" inputmode="decimal" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right text-sm text-slate-800" placeholder="82.5">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    所需用量(kg)
+                    <input v-model="line.required_material_kg" type="number" min="0" step="0.01" inputmode="decimal" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right text-sm text-slate-800" placeholder="2.48">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500">
+                    需办日期
+                    <input v-model="line.required_date" type="date" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800">
+                  </label>
+                  <label class="grid gap-1 text-xs font-semibold text-slate-500 xl:col-span-2">
+                    备注
+                    <input v-model="line.notes" class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800" placeholder="可选">
+                  </label>
+                </div>
+              </article>
+            </div>
+          </fieldset>
+        </form>
+      </section>
 
       <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
         <article
@@ -2210,9 +2593,13 @@ watchEffect(() => {
       </section>
 
       <div class="grid gap-5 xl:grid-cols-[minmax(360px,440px)_minmax(0,1fr)]">
-        <div class="xl:sticky xl:top-24 xl:self-start">
-          <SectionPanel title="单据队列" subtitle="卡片队列：按状态、人员、日期和异常快速查单">
+        <div id="sample-order-list" class="xl:sticky xl:top-24 xl:self-start">
+          <SectionPanel title="单据列表" subtitle="多张单据从列表切换：按状态、人员、日期和异常快速查单">
             <div class="space-y-4">
+              <p class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium leading-5 text-slate-600">
+                打开左侧单据列表，按状态、厂区、客户或产品编号筛选；点击单据后右侧显示当前单据。
+              </p>
+
               <div class="grid grid-cols-2 gap-2">
                 <article
                   v-for="card in queueOverviewCards"
@@ -2420,6 +2807,7 @@ watchEffect(() => {
           <nav class="sticky top-4 z-20 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur xl:top-24">
             <div class="flex flex-wrap items-center gap-2">
               <span class="mr-1 text-xs font-semibold text-slate-500">本单快捷导航</span>
+              <a href="#sample-order-list" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">单据列表</a>
               <a href="#sample-order-head" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">单头信息</a>
               <a href="#sample-role-workbench" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">角色工作台</a>
               <a href="#sample-detail-table" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">明细清单</a>
@@ -3576,7 +3964,7 @@ watchEffect(() => {
                     <th class="sticky left-[132px] z-10 bg-slate-50 px-4 py-3">工模名称</th>
                     <th class="px-4 py-3">机型</th>
                     <th class="px-4 py-3">原料</th>
-                    <th class="px-4 py-3">颜色</th>
+                    <th class="px-4 py-3">颜色 / PMS</th>
                     <th class="px-4 py-3">色粉编号</th>
                     <th class="px-4 py-3">件数 / 套数</th>
                     <th class="px-4 py-3 text-right">啤数</th>
