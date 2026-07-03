@@ -49,7 +49,14 @@ for (const roleScopedEntry of [
 }
 
 for (const queueListCopy of [
-  '正式列表',
+  '卡片队列',
+  '队列总数',
+  '待处理',
+  '异常数量',
+  '状态快筛',
+  '高级筛选',
+  '筛选摘要',
+  '清空筛选',
   '状态筛选',
   '厂区筛选',
   '客户 / 产品编号 / 订单编号',
@@ -57,8 +64,9 @@ for (const queueListCopy of [
   '日期范围',
   '异常项',
   '单据编号',
-  '要求完成',
+  '要求完成日期',
   '是否逾期',
+  '明细行数',
   '缺实际用料',
   '缺啤办费',
   '缺料价',
@@ -75,6 +83,37 @@ for (const restrainedSummaryCopy of [
   '未到结算节点',
 ]) {
   assert.match(source, new RegExp(restrainedSummaryCopy))
+}
+
+for (const operationGuideCopy of [
+  '操作总览',
+  '当前节点指引',
+  '下一步动作',
+  '当前处理人',
+  '风控提示',
+  '可见角色',
+]) {
+  assert.match(source, new RegExp(operationGuideCopy))
+}
+
+for (const quickNavCopy of [
+  '本单快捷导航',
+  '单头信息',
+  '角色工作台',
+  '明细清单',
+  '审核轨迹',
+]) {
+  assert.match(source, new RegExp(quickNavCopy))
+}
+
+for (const anchorId of [
+  'sample-order-head',
+  'sample-role-workbench',
+  'sample-detail-table',
+  'sample-audit-trail',
+]) {
+  assert.match(source, new RegExp(`id="${anchorId}"`))
+  assert.match(source, new RegExp(`#${anchorId}`))
 }
 
 for (const formalFormCopy of [
@@ -112,12 +151,19 @@ for (const detailTableActionCopy of [
 
 assert.match(source, /order_id/)
 assert.doesNotMatch(source, /label: '明细行'/)
-assert.doesNotMatch(source, /label: '完成卡点'/)
+assert.match(source, /max-h-\[[^\]]+\]\s+overflow-auto/)
+assert.match(source, /sticky top-0/)
 assert.match(source, /v-if="showAdminDebugActions"[\s\S]*v-for="tab in roleTabs"/)
 assert.doesNotMatch(
   source,
   /<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">[\s\S]{0,900}v-for="tab in roleTabs"/,
 )
+const queuePanelStart = source.indexOf('SectionPanel title="单据队列"')
+const queuePanelEnd = source.indexOf('</SectionPanel>', queuePanelStart)
+assert.notEqual(queuePanelStart, -1)
+assert.notEqual(queuePanelEnd, -1)
+const queuePanelSource = source.slice(queuePanelStart, queuePanelEnd)
+assert.doesNotMatch(queuePanelSource, /<table/)
 
 for (const removedCopy of [
   '啤办单工作台',

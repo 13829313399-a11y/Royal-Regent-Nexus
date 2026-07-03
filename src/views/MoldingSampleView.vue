@@ -87,6 +87,27 @@ interface SummaryCard {
   tone: Tone
 }
 
+interface QueueSummaryCard {
+  label: string
+  value: string
+  detail: string
+  tone: Tone
+}
+
+interface QueueStatusSummary {
+  label: string
+  status: MoldingSampleStatus | ''
+  count: number
+}
+
+interface OperationGuide {
+  title: string
+  description: string
+  nextAction: string
+  riskTips: string[]
+  tone: Tone
+}
+
 interface DocumentField {
   label: string
   value: string
@@ -367,6 +388,87 @@ const filteredQueueEntries = computed(() => queueEntries.value.filter((entry) =>
 }))
 const engineerOptions = computed(() => Array.from(new Set(queueEntries.value.map((entry) => entry.order.eng_name).filter(Boolean))))
 const supervisorOptions = computed(() => Array.from(new Set(queueEntries.value.map((entry) => entry.order.supervisor).filter(Boolean))))
+const queueStatusSummaries = computed<QueueStatusSummary[]>(() => [
+  {
+    label: '全部',
+    status: '',
+    count: queueEntries.value.length,
+  },
+  ...queueStatusOptions.map((status) => ({
+    label: status,
+    status,
+    count: queueEntries.value.filter((entry) => entry.order.status === status).length,
+  })),
+])
+const queueOverviewCards = computed<QueueSummaryCard[]>(() => {
+  const pendingCount = queueEntries.value.filter((entry) => !['已完成', '已驳回'].includes(entry.order.status)).length
+  const overdueCount = queueEntries.value.filter((entry) => entry.overdue).length
+  const anomalyCount = queueEntries.value.filter((entry) => entry.anomalies.length > 0).length
+
+  return [
+    {
+      label: '队列总数',
+      value: String(queueEntries.value.length),
+      detail: `当前筛选 ${filteredQueueEntries.value.length} 张`,
+      tone: 'slate',
+    },
+    {
+      label: '待处理',
+      value: String(pendingCount),
+      detail: '不含已完成和已驳回',
+      tone: pendingCount ? 'blue' : 'green',
+    },
+    {
+      label: '逾期',
+      value: String(overdueCount),
+      detail: '按要求完成日期判断',
+      tone: overdueCount ? 'red' : 'green',
+    },
+    {
+      label: '异常数量',
+      value: String(anomalyCount),
+      detail: '缺料价、库存或生产回填',
+      tone: anomalyCount ? 'amber' : 'green',
+    },
+  ]
+})
+const hasActiveQueueFilters = computed(() =>
+  Boolean(
+    queueStatusFilter.value
+    || queueFactoryFilter.value
+    || queueKeywordFilter.value.trim()
+    || queueEngineerFilter.value.trim()
+    || queueSupervisorFilter.value.trim()
+    || queueDateFromFilter.value
+    || queueDateToFilter.value
+    || queueAnomalyFilter.value,
+  ),
+)
+const queueFilterSummary = computed(() => {
+  const filters = [
+    queueStatusFilter.value ? `状态：${queueStatusFilter.value}` : '',
+    queueFactoryFilter.value ? `厂区：${getFactoryShortName(queueFactoryFilter.value)}` : '',
+    queueKeywordFilter.value.trim() ? `关键字：${queueKeywordFilter.value.trim()}` : '',
+    queueEngineerFilter.value.trim() ? `工程师：${queueEngineerFilter.value.trim()}` : '',
+    queueSupervisorFilter.value.trim() ? `主管：${queueSupervisorFilter.value.trim()}` : '',
+    queueDateFromFilter.value ? `开单起：${queueDateFromFilter.value}` : '',
+    queueDateToFilter.value ? `开单止：${queueDateToFilter.value}` : '',
+    queueAnomalyFilter.value ? `异常项：${queueAnomalyFilter.value}` : '',
+  ].filter(Boolean)
+
+  return filters.length ? filters.join(' · ') : '全部单据'
+})
+
+function clearQueueFilters() {
+  queueStatusFilter.value = ''
+  queueFactoryFilter.value = ''
+  queueKeywordFilter.value = ''
+  queueEngineerFilter.value = ''
+  queueSupervisorFilter.value = ''
+  queueDateFromFilter.value = ''
+  queueDateToFilter.value = ''
+  queueAnomalyFilter.value = ''
+}
 
 function inventoryBatchesForMaterial(material: string) {
   return activeInventoryBatches.value.filter((batch) => batch.material === material)
@@ -680,6 +782,97 @@ const currentHandler = computed(() => {
   }
 
   return '已归档'
+})
+const operationGuide = computed<OperationGuide>(() => {
+  const riskTips: string[] = []
+  const roleEntryText = visibleRoleEntries.value.join('、')
+  const routeText = isExternalOrder.value ? '外厂 / 模厂路径' : '内部生产路径'
+  let title = `${getCurrentWorkflowNode(activeOrder.value.status)} · ${activeOrder.value.status}`
+  let nextAction = '查看单据资料并等待当前节点处理'
+  let tone: Tone = 'blue'
+
+  if (activeOrder.value.status === '待审核') {
+    nextAction = visibleRoleTabId.value === 'supervisor'
+      ? '核对单头、明细和交期后执行通过或驳回'
+      : `等待 ${activeOrder.value.supervisor || '主管'} 审核`
+    riskTips.push('主管审核需要当前登录身份和二次 PIN 确认')
+  }
+  else if (activeOrder.value.status === '待经理审核') {
+    nextAction = visibleRoleTabId.value === 'manager'
+      ? '复核价格口径、生产路径和敏感操作审计后终审'
+      : `等待 ${managerActorName.value} 终审`
+    riskTips.push('经理终审和价格维护需要 PIN，敏感操作会记录审计')
+  }
+  else if (activeOrder.value.status === '待生产') {
+    nextAction = isExternalOrder.value
+      ? '外厂 / 模厂路径按原逻辑归档'
+      : '仓库按明细生成领料单并登记出库批次'
+    riskTips.push(isExternalOrder.value ? '外厂路径不要求内部啤机回填' : '库存不足或批次未选时不能完成正式出库')
+  }
+  else if (activeOrder.value.status === '生产中') {
+    nextAction = '啤机部回填实际用料、啤办费并完成生产校验'
+    tone = completionGate.value.can_complete ? 'green' : 'amber'
+    if (!completionGate.value.can_complete) {
+      riskTips.push(completionGate.value.message)
+    }
+  }
+  else if (activeOrder.value.status === '已驳回') {
+    title = '工程补资料 · 已驳回'
+    nextAction = '工程部按驳回原因补齐资料后重新提交'
+    tone = 'red'
+    riskTips.push(activeOrder.value.reject_reason || '需查看审核轨迹中的驳回原因')
+  }
+  else {
+    title = '完成归档 · 已完成'
+    nextAction = reportSummary.value.archive_ready ? '资料齐全，可进入查账归档' : '检查费用缺项后再归档'
+    tone = reportSummary.value.archive_ready ? 'green' : 'amber'
+  }
+
+  if (reportSummary.value.has_missing_price) {
+    riskTips.push(`缺料价：${reportSummary.value.missing_price_item_ids.length} 条`)
+  }
+  if (['生产中', '已完成'].includes(activeOrder.value.status) && reportSummary.value.has_missing_injection_cost) {
+    riskTips.push(`缺啤办费：${reportSummary.value.missing_injection_cost_item_ids.length} 条`)
+  }
+  if (apiState.value === 'fallback') {
+    riskTips.push('当前网络异常，数据暂未同步，请刷新后重试')
+  }
+  if (!riskTips.length) {
+    riskTips.push('当前无阻塞风险，继续按原流程处理')
+  }
+
+  return {
+    title,
+    description: `当前登录身份：${visibleRoleContext.value.name} · 可见角色：${visibleRoleContext.value.department} · 可用入口：${roleEntryText} · ${routeText}`,
+    nextAction,
+    riskTips: Array.from(new Set(riskTips)),
+    tone,
+  }
+})
+const detailSummaryCards = computed<SummaryCard[]>(() => {
+  const completeRows = activeItems.value.filter((item) => getDetailRowIssues(item).length === 0).length
+  const blockingRows = activeItems.value.length - completeRows
+
+  return [
+    {
+      label: '明细行数',
+      value: String(activeItems.value.length),
+      detail: `${new Set(activeItems.value.map((item) => item.mold_id)).size} 套工模`,
+      tone: 'slate',
+    },
+    {
+      label: '资料完整行',
+      value: String(completeRows),
+      detail: blockingRows ? `${blockingRows} 行需补资料` : '所有行基础资料完整',
+      tone: blockingRows ? 'amber' : 'green',
+    },
+    {
+      label: '完成卡点',
+      value: completionGate.value.missing_item_ids.length ? String(completionGate.value.missing_item_ids.length) : '无',
+      detail: completionGate.value.message,
+      tone: completionGate.value.can_complete ? 'green' : 'red',
+    },
+  ]
 })
 const syncStatusText = computed(() => {
   if (apiState.value === 'connected') {
@@ -1950,187 +2143,292 @@ watchEffect(() => {
       </div>
 
       <section class="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">我的待办</p>
-            <h2 class="mt-1 text-lg font-semibold text-slate-950">{{ visibleRoleContext.department }}事项</h2>
-            <p class="mt-2 text-sm leading-6 text-slate-600">
-              当前登录身份：{{ visibleRoleContext.name }} · {{ visibleRoleContext.department }} · 可用入口：{{ visibleRoleEntries.join('、') }}
-            </p>
+        <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <div class="rounded-lg border border-blue-100 bg-blue-50 p-4" :class="toneClasses[operationGuide.tone]">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] opacity-75">操作总览 · 当前节点指引</p>
+                <h2 class="mt-2 text-lg font-semibold text-slate-950">{{ operationGuide.title }}</h2>
+                <p class="mt-2 text-sm leading-6 text-slate-700">{{ operationGuide.description }}</p>
+              </div>
+              <StatusPill :label="currentUser.isAdmin ? '管理员预览' : '按登录权限显示'" :tone="currentUser.isAdmin ? 'blue' : 'green'" />
+            </div>
+            <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <div class="rounded-md border border-white/70 bg-white/70 p-3">
+                <p class="text-xs font-semibold text-slate-500">下一步动作</p>
+                <p class="mt-2 text-sm font-semibold leading-6 text-slate-900">{{ operationGuide.nextAction }}</p>
+              </div>
+              <div class="rounded-md border border-white/70 bg-white/70 p-3">
+                <p class="text-xs font-semibold text-slate-500">当前处理人</p>
+                <p class="mt-2 text-sm font-semibold leading-6 text-slate-900">{{ currentHandler }}</p>
+              </div>
+            </div>
+            <div class="mt-3 rounded-md border border-white/70 bg-white/70 p-3">
+              <p class="text-xs font-semibold text-slate-500">风控提示</p>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <span
+                  v-for="tip in operationGuide.riskTips"
+                  :key="tip"
+                  class="inline-flex min-h-7 items-center rounded-full border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600"
+                >
+                  {{ tip }}
+                </span>
+              </div>
+            </div>
           </div>
-          <StatusPill :label="currentUser.isAdmin ? '管理员预览' : '按登录权限显示'" :tone="currentUser.isAdmin ? 'blue' : 'green'" />
-        </div>
-        <div class="mt-4 grid gap-3 md:grid-cols-3">
-          <article
-            v-for="card in myTodoCards"
-            :key="card.label"
-            class="min-h-[92px] rounded-lg border p-4"
-            :class="toneClasses[card.tone]"
-          >
-            <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
-            <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
-            <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
-          </article>
-        </div>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <span
-            v-for="entry in visibleRoleEntries"
-            :key="entry"
-            class="inline-flex h-8 items-center rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-600"
-          >
-            {{ entry }}
-          </span>
+
+          <div class="space-y-3">
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">我的待办</p>
+              <p class="mt-1 text-sm leading-6 text-slate-600">
+                当前登录身份：{{ visibleRoleContext.name }} · 可见角色：{{ visibleRoleContext.department }}
+              </p>
+            </div>
+            <div class="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+              <article
+                v-for="card in myTodoCards"
+                :key="card.label"
+                class="min-h-[82px] rounded-lg border p-3"
+                :class="toneClasses[card.tone]"
+              >
+                <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
+                <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
+                <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
+              </article>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <span
+                v-for="entry in visibleRoleEntries"
+                :key="entry"
+                class="inline-flex h-8 items-center rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-600"
+              >
+                {{ entry }}
+              </span>
+            </div>
+          </div>
         </div>
       </section>
 
-      <div class="grid gap-5 xl:grid-cols-[minmax(480px,620px)_minmax(0,1fr)]">
+      <div class="grid gap-5 xl:grid-cols-[minmax(360px,440px)_minmax(0,1fr)]">
         <div class="xl:sticky xl:top-24 xl:self-start">
-          <SectionPanel title="单据队列" subtitle="正式列表：按单据编号精准打开">
-            <div class="space-y-3">
-              <div class="grid gap-2 sm:grid-cols-2">
-                <label class="text-xs font-semibold text-slate-500">
-                  状态筛选
-                  <select
-                    v-model="queueStatusFilter"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                    <option value="">全部状态</option>
-                    <option v-for="status in queueStatusOptions" :key="status" :value="status">{{ status }}</option>
-                  </select>
-                </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  厂区筛选
-                  <select
-                    v-model="queueFactoryFilter"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                    <option value="">全部厂区</option>
-                    <option
-                      v-for="factory in factoryContexts.filter((factory) => isProductionFactoryContextId(factory.id))"
-                      :key="factory.id"
-                      :value="factory.id"
-                    >
-                      {{ factory.shortName }}
-                    </option>
-                  </select>
-                </label>
-                <label class="text-xs font-semibold text-slate-500 sm:col-span-2">
-                  客户 / 产品编号 / 订单编号
-                  <input
-                    v-model="queueKeywordFilter"
-                    type="search"
-                    placeholder="支持模糊搜索"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  工程师
-                  <input
-                    v-model="queueEngineerFilter"
-                    placeholder="按开单人筛选"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  主管
-                  <input
-                    v-model="queueSupervisorFilter"
-                    placeholder="按指定主管筛选"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  日期范围
-                  <input
-                    v-model="queueDateFromFilter"
-                    type="date"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  日期范围
-                  <input
-                    v-model="queueDateToFilter"
-                    type="date"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                </label>
-                <label class="text-xs font-semibold text-slate-500 sm:col-span-2">
-                  异常项
-                  <select
-                    v-model="queueAnomalyFilter"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-                  >
-                    <option value="">全部异常</option>
-                    <option v-for="anomaly in queueAnomalyOptions" :key="anomaly" :value="anomaly">{{ anomaly }}</option>
-                  </select>
-                </label>
+          <SectionPanel title="单据队列" subtitle="卡片队列：按状态、人员、日期和异常快速查单">
+            <div class="space-y-4">
+              <div class="grid grid-cols-2 gap-2">
+                <article
+                  v-for="card in queueOverviewCards"
+                  :key="card.label"
+                  class="rounded-lg border p-3"
+                  :class="toneClasses[card.tone]"
+                >
+                  <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
+                  <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
+                  <p class="mt-1 text-[11px] leading-4 opacity-75">{{ card.detail }}</p>
+                </article>
               </div>
 
-              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                <table class="min-w-[1120px] divide-y divide-slate-200 text-xs">
-                  <thead class="bg-slate-50 text-left font-semibold text-slate-500">
-                    <tr>
-                      <th class="px-3 py-2">单据编号</th>
-                      <th class="px-3 py-2">产品编号</th>
-                      <th class="px-3 py-2">客户</th>
-                      <th class="px-3 py-2">产品名称</th>
-                      <th class="px-3 py-2">厂区</th>
-                      <th class="px-3 py-2">状态</th>
-                      <th class="px-3 py-2">当前处理人</th>
-                      <th class="px-3 py-2">要求完成</th>
-                      <th class="px-3 py-2">是否逾期</th>
-                      <th class="px-3 py-2">异常项</th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-slate-100">
-                    <tr
-                      v-for="entry in filteredQueueEntries"
-                      :key="entry.order.id"
-                      class="transition-colors hover:bg-slate-50"
-                      :class="entry.order.id === activeOrder.id ? 'bg-slate-50' : 'bg-white'"
+              <div>
+                <p class="mb-2 text-xs font-semibold text-slate-500">状态快筛</p>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    v-for="summary in queueStatusSummaries"
+                    :key="summary.label"
+                    type="button"
+                    class="inline-flex h-8 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition-colors"
+                    :class="queueStatusFilter === summary.status ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-950'"
+                    @click="queueStatusFilter = summary.status"
+                  >
+                    <span>{{ summary.label }}</span>
+                    <span class="rounded-full bg-white/20 px-1.5">{{ summary.count }}</span>
+                  </button>
+                </div>
+              </div>
+
+              <label class="block text-xs font-semibold text-slate-500">
+                客户 / 产品编号 / 订单编号
+                <input
+                  v-model="queueKeywordFilter"
+                  type="search"
+                  placeholder="支持模糊搜索"
+                  class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                >
+              </label>
+
+              <details class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <summary class="cursor-pointer list-none text-xs font-semibold text-slate-600">
+                  高级筛选
+                </summary>
+                <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                  <label class="text-xs font-semibold text-slate-500">
+                    状态筛选
+                    <select
+                      v-model="queueStatusFilter"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
                     >
-                      <td class="px-3 py-2 font-semibold text-slate-950">
-                        <RouterLink
-                          :to="`/modules/molding-sample?factory=${entry.factory_id}&order_id=${entry.order.id}`"
-                          class="underline-offset-2 hover:underline"
-                        >
-                          {{ entry.order.id }}
-                        </RouterLink>
-                      </td>
-                      <td class="px-3 py-2">{{ entry.order.order_number }}</td>
-                      <td class="px-3 py-2">{{ entry.order.client_name }}</td>
-                      <td class="px-3 py-2">{{ entry.order.product_name }}</td>
-                      <td class="px-3 py-2">{{ entry.factory_name }}</td>
-                      <td class="px-3 py-2">
-                        <StatusPill :label="entry.order.status" :tone="statusTones[entry.order.status]" compact />
-                      </td>
-                      <td class="px-3 py-2">{{ entry.current_handler }}</td>
-                      <td class="px-3 py-2">{{ entry.due_date }}</td>
-                      <td class="px-3 py-2">
-                        <StatusPill :label="entry.overdue ? '是' : '否'" :tone="entry.overdue ? 'red' : 'green'" compact />
-                      </td>
-                      <td class="px-3 py-2">
-                        <span v-if="entry.anomalies.length" class="text-amber-700">{{ entry.anomalies.join('、') }}</span>
-                        <span v-else class="text-slate-400">无</span>
-                      </td>
-                    </tr>
-                    <tr v-if="filteredQueueEntries.length === 0">
-                      <td colspan="10" class="px-3 py-8 text-center text-slate-500">没有匹配的啤办单</td>
-                    </tr>
-                  </tbody>
-                </table>
+                      <option value="">全部状态</option>
+                      <option v-for="status in queueStatusOptions" :key="status" :value="status">{{ status }}</option>
+                    </select>
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    厂区筛选
+                    <select
+                      v-model="queueFactoryFilter"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                    >
+                      <option value="">全部厂区</option>
+                      <option
+                        v-for="factory in factoryContexts.filter((factory) => isProductionFactoryContextId(factory.id))"
+                        :key="factory.id"
+                        :value="factory.id"
+                      >
+                        {{ factory.shortName }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    工程师
+                    <input
+                      v-model="queueEngineerFilter"
+                      placeholder="按开单人筛选"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                    >
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    主管
+                    <input
+                      v-model="queueSupervisorFilter"
+                      placeholder="按指定主管筛选"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                    >
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    日期范围
+                    <input
+                      v-model="queueDateFromFilter"
+                      type="date"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                    >
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500">
+                    日期范围
+                    <input
+                      v-model="queueDateToFilter"
+                      type="date"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                    >
+                  </label>
+                  <label class="text-xs font-semibold text-slate-500 sm:col-span-2">
+                    异常项
+                    <select
+                      v-model="queueAnomalyFilter"
+                      class="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                    >
+                      <option value="">全部异常</option>
+                      <option v-for="anomaly in queueAnomalyOptions" :key="anomaly" :value="anomaly">{{ anomaly }}</option>
+                    </select>
+                  </label>
+                </div>
+              </details>
+
+              <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                <span>筛选摘要：{{ queueFilterSummary }}</span>
+                <button
+                  type="button"
+                  :disabled="!hasActiveQueueFilters"
+                  class="inline-flex h-8 items-center rounded-md border border-slate-200 px-3 font-semibold text-slate-600 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300"
+                  @click="clearQueueFilters"
+                >
+                  清空筛选
+                </button>
               </div>
-              <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                <span>共 {{ filteredQueueEntries.length }} / {{ queueEntries.length }} 张单</span>
-                <span>打开格式：/modules/molding-sample?factory={{ activeOrder.factory_id }}&order_id={{ activeOrder.id }}</span>
+
+              <div class="max-h-[720px] space-y-3 overflow-auto pr-1">
+                <RouterLink
+                  v-for="entry in filteredQueueEntries"
+                  :key="entry.order.id"
+                  :to="`/modules/molding-sample?factory=${entry.factory_id}&order_id=${entry.order.id}`"
+                  class="block rounded-lg border bg-white p-4 text-left shadow-sm transition hover:border-slate-300 hover:shadow"
+                  :class="entry.order.id === activeOrder.id ? 'border-slate-950 ring-2 ring-slate-200' : 'border-slate-200'"
+                >
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <p class="text-xs font-semibold text-slate-500">单据编号</p>
+                      <p class="mt-1 truncate text-base font-semibold text-slate-950">{{ entry.order.id }}</p>
+                    </div>
+                    <StatusPill :label="entry.order.status" :tone="statusTones[entry.order.status]" compact />
+                  </div>
+                  <div class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600">
+                    <div>
+                      <p class="text-slate-400">产品编号 / 产品名称</p>
+                      <p class="mt-1 font-semibold text-slate-800">{{ entry.order.order_number }} / {{ entry.order.product_name }}</p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400">订单编号</p>
+                      <p class="mt-1 font-semibold text-slate-800">{{ entry.order.doc_number }}</p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400">客户</p>
+                      <p class="mt-1 font-semibold text-slate-800">{{ entry.order.client_name }}</p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400">厂区</p>
+                      <p class="mt-1 font-semibold text-slate-800">{{ entry.factory_name }}</p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400">当前处理人</p>
+                      <p class="mt-1 font-semibold text-slate-800">{{ entry.current_handler }}</p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400">要求完成日期</p>
+                      <p class="mt-1 font-semibold text-slate-800">{{ entry.due_date }}</p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400">明细行数</p>
+                      <p class="mt-1 font-semibold text-slate-800">{{ entry.item_count }}</p>
+                    </div>
+                    <div>
+                      <p class="text-slate-400">是否逾期</p>
+                      <StatusPill class="mt-1" :label="entry.overdue ? '是' : '否'" :tone="entry.overdue ? 'red' : 'green'" compact />
+                    </div>
+                  </div>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <span
+                      v-for="anomaly in entry.anomalies"
+                      :key="anomaly"
+                      class="inline-flex h-7 items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 text-xs font-semibold text-amber-800"
+                    >
+                      {{ anomaly }}
+                    </span>
+                    <span v-if="!entry.anomalies.length" class="inline-flex h-7 items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 text-xs font-semibold text-emerald-700">
+                      无异常
+                    </span>
+                  </div>
+                </RouterLink>
+
+                <div v-if="filteredQueueEntries.length === 0" class="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500">
+                  没有匹配的啤办单
+                </div>
               </div>
+
+              <p class="text-xs text-slate-500">
+                打开格式：/modules/molding-sample?factory={{ activeOrder.factory_id }}&order_id={{ activeOrder.id }}
+              </p>
             </div>
           </SectionPanel>
         </div>
 
         <div class="space-y-5">
-          <SectionPanel title="单头信息" subtitle="正式表单式：基础资料、客户资料、生产路径">
+          <nav class="sticky top-4 z-20 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur xl:top-24">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="mr-1 text-xs font-semibold text-slate-500">本单快捷导航</span>
+              <a href="#sample-order-head" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">单头信息</a>
+              <a href="#sample-role-workbench" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">角色工作台</a>
+              <a href="#sample-detail-table" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">明细清单</a>
+              <a href="#sample-audit-trail" class="inline-flex h-8 items-center rounded-full border border-slate-200 px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950">审核轨迹</a>
+            </div>
+          </nav>
+
+          <section id="sample-order-head">
+            <SectionPanel title="单头信息" subtitle="正式表单式：基础资料、客户资料、生产路径">
             <fieldset class="space-y-4">
               <legend class="text-sm font-semibold text-slate-950">基础资料</legend>
               <div class="grid gap-x-6 gap-y-3 lg:grid-cols-2">
@@ -2283,8 +2581,10 @@ watchEffect(() => {
             <div v-if="activeOrder.reject_reason" class="mt-4 rounded-lg border border-red-100 bg-red-50 p-4 text-sm text-red-800">
               驳回原因：{{ activeOrder.reject_reason }}
             </div>
-          </SectionPanel>
+            </SectionPanel>
+          </section>
 
+          <section id="sample-role-workbench" class="space-y-5">
           <SectionPanel v-if="visibleRoleTabId === 'engineering'" title="工程部工作台" subtitle="开单、返工、维护可编辑字段">
             <div class="grid gap-4 lg:grid-cols-[1fr_180px_180px_220px]">
               <div class="rounded-lg border border-slate-200 bg-white p-4">
@@ -3019,9 +3319,9 @@ watchEffect(() => {
               {{ completionGate.message }}
             </div>
 
-            <div class="mt-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <div class="mt-4 max-h-[460px] overflow-auto rounded-lg border border-slate-200 bg-white">
               <table class="min-w-[1180px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                <thead class="sticky top-0 z-10 bg-slate-50 text-left text-xs font-semibold text-slate-500">
                   <tr>
                     <th class="px-4 py-3">模具</th>
                     <th class="px-4 py-3">原料</th>
@@ -3196,7 +3496,22 @@ watchEffect(() => {
             </div>
           </SectionPanel>
 
+          </section>
+
+          <section id="sample-detail-table">
           <SectionPanel title="明细清单" subtitle="正式开单明细表：工模、用料、领料、实际用料和费用字段统一展示">
+            <div class="mb-4 grid gap-3 md:grid-cols-3">
+              <article
+                v-for="card in detailSummaryCards"
+                :key="card.label"
+                class="rounded-lg border p-3"
+                :class="toneClasses[card.tone]"
+              >
+                <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
+                <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
+                <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
+              </article>
+            </div>
             <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div class="flex flex-wrap gap-2">
                 <button
@@ -3252,9 +3567,9 @@ watchEffect(() => {
               </div>
               <p class="text-xs text-slate-500">Excel 导入前先预览 · 行级校验直接标红</p>
             </div>
-            <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <div class="max-h-[560px] overflow-auto rounded-lg border border-slate-200 bg-white">
               <table class="min-w-[1900px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                <thead class="sticky top-0 z-20 bg-slate-50 text-left text-xs font-semibold text-slate-500">
                   <tr>
                     <th class="px-4 py-3">排序</th>
                     <th class="sticky left-0 z-10 bg-slate-50 px-4 py-3">工模编号</th>
@@ -3282,7 +3597,12 @@ watchEffect(() => {
                     v-for="item in activeItems"
                     :key="item.id"
                     class="cursor-pointer transition-colors hover:bg-slate-50"
-                    :class="selectedDetailItemId === item.id ? 'bg-slate-50' : ''"
+                    :class="[
+                      selectedDetailItemId === item.id ? 'bg-slate-100 ring-1 ring-inset ring-slate-300' : '',
+                      getDetailRowIssues(item).length
+                        ? getDetailRowTone(item) === 'red' ? 'bg-red-50' : 'bg-amber-50'
+                        : 'bg-white',
+                    ]"
                     @click="selectedDetailItemId = item.id"
                   >
                     <td class="px-4 py-3">{{ item.sort_order }}</td>
@@ -3304,14 +3624,25 @@ watchEffect(() => {
                     <td class="px-4 py-3 text-right">{{ isExternalOrder ? '不适用' : formatMoney(item.injection_cost_hkd) }}</td>
                     <td class="px-4 py-3">{{ formatBlank(item.completion_time) }}</td>
                     <td class="px-4 py-3">
-                      <StatusPill :label="getDetailRowStatus(item)" :tone="getDetailRowTone(item)" compact />
+                      <div class="flex flex-wrap gap-1.5">
+                        <StatusPill :label="getDetailRowStatus(item)" :tone="getDetailRowTone(item)" compact />
+                        <span
+                          v-for="issue in getDetailRowIssues(item).slice(1)"
+                          :key="issue"
+                          class="inline-flex h-6 items-center rounded-full border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600"
+                        >
+                          {{ issue }}
+                        </span>
+                      </div>
                     </td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </SectionPanel>
+          </section>
 
+          <section id="sample-audit-trail">
           <SectionPanel title="审核轨迹" subtitle="状态流转和敏感操作会追加到责任链">
             <div class="grid gap-3 lg:grid-cols-2">
               <article
@@ -3331,6 +3662,7 @@ watchEffect(() => {
               </article>
             </div>
           </SectionPanel>
+          </section>
 
           <div
             v-if="actionMessage"
