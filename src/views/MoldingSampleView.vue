@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watchEffect } from 'vue'
+import { computed, onMounted, ref, watchEffect } from 'vue'
 import {
   ArrowLeft,
   Beaker,
@@ -23,7 +23,6 @@ import {
   Plus,
   Search,
   Send,
-  ShieldCheck,
   Table2,
   Tag,
   TriangleAlert,
@@ -44,8 +43,22 @@ import {
   buildCompletionGate,
   isExternalMoldingSampleOrder,
 } from '@/lib/moldingSampleBusiness'
+import { getApiErrorMessage } from '@/lib/http'
+import {
+  moldingSampleApi,
+  type MoldingSampleDetailResponse,
+  type MoldingSampleStatusRequest,
+} from '@/api/moldingSample'
+import {
+  buildManualMoldingSampleCreateRequest,
+  createManualMoldingSampleLineDraft,
+  createManualMoldingSampleOrderDraft,
+  deriveManualMoldingSampleOrderId,
+  type ManualMoldingSampleOrderDraft,
+} from '@/lib/moldingSampleManualCreate'
 import type {
   MoldingSampleItem,
+  MoldingSampleRole,
   MoldingSampleStatus,
   MoldingSampleWorkflowRecord,
 } from '@/types/moldingSample'
@@ -76,11 +89,29 @@ interface WorkflowStep {
   detail: string
 }
 
+interface ApprovalActor {
+  passAction: string
+  rejectAction: string
+  reviewer_name: string
+  reviewer_role: MoldingSampleRole
+}
+
 const route = useRoute()
 const appStore = useAppStore()
 
+const today = '2026-07-03'
 const activeView = ref<ViewKey>('overview')
 const selectedOrderId = ref(readQueryString(route.query.order_id))
+const searchKeyword = ref('')
+const apiRecords = ref<MoldingSampleDetailResponse[]>([])
+const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
+const actionMessage = ref('正在读取正式啤办单列表...')
+const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
+const createErrors = ref<string[]>([])
+const createSubmitting = ref(false)
+const approvalNote = ref('')
+const approvalPin = ref('')
+const approvalSubmitting = ref(false)
 
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
@@ -143,17 +174,41 @@ const productionTaskRoute = computed(() => {
   return `/modules/production/molding-sample-tasks?${params.toString()}`
 })
 
+const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
+  if (apiState.value === 'connected' || apiState.value === 'empty') {
+    return apiRecords.value.map(toWorkflowRecord)
+  }
+
+  return Object.values(moldingSampleFactoryRecords)
+})
+
 const factoryRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
-  Object.values(moldingSampleFactoryRecords).filter((record) => record.factory_id === selectedFactoryId.value),
+  sourceRecords.value.filter((record) => record.factory_id === selectedFactoryId.value),
 )
 
-const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
-  factoryRecords.value.length ? factoryRecords.value : [getMoldingSampleRecord(selectedFactoryId.value)],
-)
+const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+
+  if (!keyword) {
+    return factoryRecords.value
+  }
+
+  return factoryRecords.value.filter((record) => [
+    record.order.id,
+    record.order.order_number,
+    record.order.doc_number,
+    record.order.product_name,
+    record.order.client_name,
+    record.order.supervisor,
+    record.order.eng_name,
+    ...record.items.flatMap((item) => [item.mold_id, item.mold_name, item.material, item.color]),
+  ].some((value) => String(value).toLowerCase().includes(keyword)))
+})
 
 const selectedRecord = computed<MoldingSampleWorkflowRecord>(() =>
   visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
-    ?? visibleRecords.value[0]
+    ?? factoryRecords.value.find((record) => record.order.id === selectedOrderId.value)
+    ?? factoryRecords.value[0]
     ?? getMoldingSampleRecord(selectedFactoryId.value),
 )
 
@@ -223,7 +278,79 @@ const boardColumns = computed<BoardColumn[]>(() =>
 )
 
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
-const createTemplateRows = computed(() => selectedItems.value.slice(0, 4))
+const canApproveSelectedOrder = computed(() =>
+  selectedOrder.value.status === '待审核' || selectedOrder.value.status === '待经理审核',
+)
+
+function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWorkflowRecord {
+  const factoryId = isProductionFactoryContextId(record.order.factory_id)
+    ? record.order.factory_id
+    : selectedFactoryId.value
+
+  return {
+    factory_id: factoryId,
+    order: {
+      ...record.order,
+      factory_id: factoryId,
+    },
+    items: record.items,
+    audit_logs: record.audit_logs,
+    requisitions: [],
+    problems: [],
+  }
+}
+
+function resetCreateDraft() {
+  const template = getMoldingSampleRecord(selectedFactoryId.value)
+
+  createDraft.value = createManualMoldingSampleOrderDraft({
+    factory_id: selectedFactoryId.value,
+    order_date: today,
+    stage: 'T0',
+    order_type: '啤办',
+    workshop: template.order.workshop,
+    send_to: template.order.send_to || '内部',
+    supervisor: template.order.supervisor,
+    eng_name: template.order.eng_name,
+    items: [
+      createManualMoldingSampleLineDraft(),
+    ],
+  })
+  createErrors.value = []
+}
+
+function replaceApiRecord(record: MoldingSampleDetailResponse) {
+  const exists = apiRecords.value.some((entry) => entry.order.id === record.order.id)
+
+  apiRecords.value = exists
+    ? apiRecords.value.map((entry) => entry.order.id === record.order.id ? record : entry)
+    : [record, ...apiRecords.value]
+  apiState.value = 'connected'
+}
+
+async function loadApiData() {
+  apiState.value = 'checking'
+  actionMessage.value = '正在读取正式啤办单列表...'
+
+  try {
+    const records = await moldingSampleApi.listOrders()
+    apiRecords.value = records
+    apiState.value = records.length ? 'connected' : 'empty'
+    actionMessage.value = records.length
+      ? `已读取正式啤办单 ${records.length} 张。`
+      : '后端暂无正式啤办单，可先新建啤办单。'
+
+    const factoryRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value)
+    if (!selectedOrderId.value && factoryRecord) {
+      selectedOrderId.value = factoryRecord.order.id
+    }
+  }
+  catch (error) {
+    apiRecords.value = []
+    apiState.value = 'fallback'
+    actionMessage.value = `正式列表读取失败，当前显示本地示例数据：${getApiErrorMessage(error)}`
+  }
+}
 
 function readQueryString(value: unknown) {
   if (typeof value === 'string') {
@@ -243,6 +370,127 @@ function setView(view: ViewKey) {
 function openRecord(record: MoldingSampleWorkflowRecord) {
   selectedOrderId.value = record.order.id
   activeView.value = 'detail'
+  approvalNote.value = ''
+}
+
+function readInputValue(event: Event) {
+  return (event.target as HTMLInputElement).value
+}
+
+function updateCreateProductNo(value: string) {
+  const previousDerivedId = deriveManualMoldingSampleOrderId(createDraft.value.product_no)
+
+  createDraft.value.product_no = value
+
+  if (!createDraft.value.id || createDraft.value.id === previousDerivedId) {
+    createDraft.value.id = deriveManualMoldingSampleOrderId(value)
+  }
+}
+
+function addCreateLine() {
+  createDraft.value.items.push(createManualMoldingSampleLineDraft())
+}
+
+function removeCreateLine(index: number) {
+  if (createDraft.value.items.length <= 1) {
+    createDraft.value.items = [createManualMoldingSampleLineDraft()]
+    return
+  }
+
+  createDraft.value.items.splice(index, 1)
+}
+
+async function submitManualCreate() {
+  createDraft.value.factory_id = selectedFactoryId.value
+  createErrors.value = []
+  const result = buildManualMoldingSampleCreateRequest(createDraft.value, selectedFactoryId.value)
+
+  if (!result.payload) {
+    createErrors.value = result.errors
+    actionMessage.value = `新建啤办单未提交：${result.errors[0] ?? '请检查表单'}`
+    return
+  }
+
+  createSubmitting.value = true
+  actionMessage.value = '正在提交新建啤办单...'
+
+  try {
+    const created = await moldingSampleApi.createOrder(result.payload)
+    replaceApiRecord(created)
+    selectedOrderId.value = created.order.id
+    activeView.value = 'detail'
+    actionMessage.value = `啤办单 ${created.order.id} 已提交主管审核，正式列表已刷新。`
+    resetCreateDraft()
+  }
+  catch (error) {
+    actionMessage.value = `新建啤办单提交失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    createSubmitting.value = false
+  }
+}
+
+function getApprovalActor(): ApprovalActor | null {
+  if (selectedOrder.value.status === '待审核') {
+    return {
+      passAction: '主管通过',
+      rejectAction: '主管驳回',
+      reviewer_name: selectedOrder.value.supervisor,
+      reviewer_role: '主管',
+    }
+  }
+
+  if (selectedOrder.value.status === '待经理审核') {
+    return {
+      passAction: '经理通过',
+      rejectAction: '经理驳回',
+      reviewer_name: '王经理',
+      reviewer_role: '经理',
+    }
+  }
+
+  return null
+}
+
+async function runApprovalTransition(decision: '通过' | '驳回') {
+  const actor = getApprovalActor()
+
+  if (!actor) {
+    actionMessage.value = '当前单据不在主管或经理审核节点，不能执行审核动作。'
+    return
+  }
+
+  const reason = approvalNote.value.trim()
+  if (decision === '驳回' && !reason) {
+    actionMessage.value = '驳回必须填写审核意见。'
+    return
+  }
+
+  approvalSubmitting.value = true
+  actionMessage.value = `正在提交${decision}结果...`
+
+  const payload: MoldingSampleStatusRequest = {
+    action: decision === '通过' ? actor.passAction : actor.rejectAction,
+    reviewer_name: actor.reviewer_name,
+    reviewer_role: actor.reviewer_role,
+    pin: approvalPin.value.trim() || undefined,
+    reason: reason || `${actor.reviewer_name}${decision}`,
+    today,
+  }
+
+  try {
+    const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, payload)
+    replaceApiRecord(updated)
+    selectedOrderId.value = updated.order.id
+    approvalNote.value = ''
+    actionMessage.value = `啤办单 ${updated.order.id} 已${decision}，当前状态：${updated.order.status}。`
+  }
+  catch (error) {
+    actionMessage.value = `审核${decision}失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    approvalSubmitting.value = false
+  }
 }
 
 function getStatusColumnDetail(status: MoldingSampleStatus) {
@@ -378,6 +626,13 @@ watchEffect(() => {
   }
 
   appStore.setActiveFactory(selectedFactoryId.value)
+  createDraft.value.factory_id = selectedFactoryId.value
+})
+
+resetCreateDraft()
+
+onMounted(() => {
+  void loadApiData()
 })
 </script>
 
@@ -407,6 +662,7 @@ watchEffect(() => {
         <div class="relative ml-1 hidden md:block">
           <Search class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
           <input
+            v-model="searchKeyword"
             placeholder="搜索单号 / 产品 / 客户 / 模具号..."
             class="h-8 w-72 rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 text-[12px] outline-none transition focus:border-slate-400 focus:bg-white"
           >
@@ -467,6 +723,20 @@ watchEffect(() => {
     </header>
 
     <div class="mx-auto max-w-[1720px] px-5 py-4">
+      <div
+        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[12px]"
+        :class="apiState === 'fallback' ? 'border-amber-200 bg-amber-50 text-amber-800' : apiState === 'connected' ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'"
+      >
+        <span>{{ actionMessage }}</span>
+        <button
+          type="button"
+          class="inline-flex h-7 items-center rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100"
+          @click="loadApiData"
+        >
+          刷新正式列表
+        </button>
+      </div>
+
       <section v-if="activeView === 'overview'" class="space-y-4">
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <article
@@ -580,29 +850,36 @@ watchEffect(() => {
               </div>
               <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
                 <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">单据编号</span>
+                  <input v-model="createDraft.id" placeholder="BP-产品编号" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品编号</span>
-                  <input :value="selectedOrder.order_number" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input
+                    :value="createDraft.product_no"
+                    class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400"
+                    @input="updateCreateProductNo(readInputValue($event))"
+                  >
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">文件编号</span>
-                  <input :value="selectedOrder.doc_number" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.doc_number" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
-                  <input :value="selectedOrder.client_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.client_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品名称</span>
-                  <input :value="selectedOrder.product_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.product_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">开单日期</span>
-                  <input :value="selectedOrder.date" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.order_date" type="date" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">阶段</span>
-                  <select class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                    <option>{{ selectedOrder.stage || '啤办' }}</option>
+                  <select v-model="createDraft.stage" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                     <option>T0</option>
                     <option>EP</option>
                     <option>FEP</option>
@@ -611,8 +888,7 @@ watchEffect(() => {
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">车间</span>
-                  <select class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                    <option>{{ selectedOrder.workshop }}</option>
+                  <select v-model="createDraft.workshop" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                     <option>A车间</option>
                     <option>B车间</option>
                     <option>模厂</option>
@@ -620,24 +896,27 @@ watchEffect(() => {
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">发至</span>
-                  <select class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                    <option>{{ selectedOrder.send_to || '内部生产' }}</option>
+                  <select v-model="createDraft.send_to" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                    <option>内部</option>
                     <option>发至湖南</option>
                     <option>发至模厂</option>
                   </select>
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">审核主管</span>
-                  <select class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                    <option>{{ selectedOrder.supervisor }}</option>
+                  <select v-model="createDraft.supervisor" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                     <option>李主管</option>
                     <option>陈主管</option>
                     <option>黄主管</option>
                   </select>
                 </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">落单人</span>
+                  <input v-model="createDraft.eng_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
                 <label class="col-span-2 block md:col-span-3">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">注意事项 / 开单事由</span>
-                  <textarea :value="selectedOrder.reason" rows="3" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-slate-400" />
+                  <textarea v-model="createDraft.reason" rows="3" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-slate-400" />
                 </label>
               </div>
             </section>
@@ -658,29 +937,61 @@ watchEffect(() => {
                       <th class="px-2 py-2 text-left font-medium">所需用料</th>
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-left font-medium">色粉</th>
+                      <th class="px-2 py-2 text-left font-medium">啤/套</th>
                       <th class="px-2 py-2 text-right font-medium">啤数</th>
                       <th class="px-2 py-2 text-left font-medium">需办日期</th>
+                      <th class="px-2 py-2 text-right font-medium">操作</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-50">
-                    <tr v-for="item in createTemplateRows" :key="item.id" class="hover:bg-slate-50/60">
-                      <td class="px-2 py-2 text-center text-slate-400">{{ item.sort_order }}</td>
-                      <td class="px-2 py-2 font-mono">{{ item.mold_id }}</td>
-                      <td class="px-2 py-2">{{ item.mold_name }}</td>
-                      <td class="px-2 py-2">{{ item.material }}</td>
-                      <td class="px-2 py-2">
-                        <span class="inline-flex items-center gap-1">
-                          <span class="h-2.5 w-2.5 rounded-full border border-slate-200" :class="getColorSwatchClass(item.color)" />
-                          {{ item.color }}
-                        </span>
+                    <tr v-for="(line, index) in createDraft.items" :key="index" class="hover:bg-slate-50/60">
+                      <td class="px-2 py-2 text-center text-slate-400">{{ index + 1 }}</td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.customer_mold_id" class="h-8 w-32 rounded-md border border-slate-200 px-2 font-mono outline-none focus:border-slate-400">
                       </td>
-                      <td class="px-2 py-2">{{ formatBlank(item.pigment_no) }}</td>
-                      <td class="px-2 py-2 text-right tabular-nums">{{ item.shoot_qty }}</td>
-                      <td class="px-2 py-2 tabular-nums">{{ formatBlank(item.completion_time) }}</td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.mold_name" class="h-8 w-32 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                      </td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.material" class="h-8 w-28 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                      </td>
+                      <td class="px-2 py-1">
+                        <div class="flex gap-1">
+                          <input v-model="line.color" placeholder="颜色" class="h-8 w-24 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                          <input v-model="line.pms" placeholder="PMS" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                        </div>
+                      </td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.pigment_no" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                      </td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.quantity" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                      </td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.shoot_qty" class="h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-slate-400">
+                      </td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.required_date" type="date" class="h-8 w-36 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                      </td>
+                      <td class="px-2 py-1 text-right">
+                        <button
+                          type="button"
+                          class="rounded-md px-2 py-1 text-[11px] font-semibold text-red-500 hover:bg-red-50"
+                          @click="removeCreateLine(index)"
+                        >
+                          删除
+                        </button>
+                      </td>
                     </tr>
                     <tr>
-                      <td colspan="8" class="px-2 py-2 text-center text-[11px] font-medium text-slate-400">
-                        + 继续添加明细行
+                      <td colspan="10" class="px-2 py-2 text-center">
+                        <button
+                          type="button"
+                          class="text-[11px] font-semibold text-slate-500 hover:text-slate-950"
+                          @click="addCreateLine"
+                        >
+                          + 继续添加明细行
+                        </button>
                       </td>
                     </tr>
                   </tbody>
@@ -697,18 +1008,30 @@ watchEffect(() => {
               </div>
               <div class="space-y-2 text-[11px] text-slate-500">
                 <div class="flex justify-between"><span>当前厂区</span><strong class="text-slate-800">{{ activeFactory.shortName }}</strong></div>
-                <div class="flex justify-between"><span>提交人</span><strong class="text-slate-800">{{ selectedOrder.eng_name }}</strong></div>
+                <div class="flex justify-between"><span>提交人</span><strong class="text-slate-800">{{ createDraft.eng_name || '待填写' }}</strong></div>
                 <div class="flex justify-between"><span>下一节点</span><strong class="text-slate-800">待审核</strong></div>
+              </div>
+              <div v-if="createErrors.length" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] text-red-700">
+                <div v-for="error in createErrors" :key="error">{{ error }}</div>
               </div>
               <div class="mt-3 rounded-lg bg-slate-50 p-2.5 text-[11px] text-slate-500">
                 开单后进入现有流程：待审核 → 待经理审核 → 待生产 → 生产中 → 已完成。
               </div>
-              <button class="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-slate-900 text-[13px] font-semibold text-white hover:bg-slate-700">
+              <button
+                type="button"
+                :disabled="createSubmitting"
+                class="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-slate-900 text-[13px] font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                @click="submitManualCreate"
+              >
                 <Send class="size-4" aria-hidden="true" />
-                提交主管审核
+                {{ createSubmitting ? '提交中...' : '提交主管审核' }}
               </button>
-              <button class="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 text-[12px] font-medium text-slate-600 hover:border-slate-300">
-                保存草稿
+              <button
+                type="button"
+                class="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 text-[12px] font-medium text-slate-600 hover:border-slate-300"
+                @click="resetCreateDraft"
+              >
+                重置草稿
               </button>
             </section>
 
@@ -732,7 +1055,7 @@ watchEffect(() => {
         </div>
       </section>
 
-      <section v-else class="space-y-4">
+      <section v-else-if="factoryRecords.length" class="space-y-4">
         <div class="flex items-center gap-2 text-[12px] text-slate-400">
           <button type="button" class="hover:text-slate-900" @click="setView('overview')">看板总览</button>
           <ChevronRight class="size-3.5" aria-hidden="true" />
@@ -881,30 +1204,54 @@ watchEffect(() => {
               class="rounded-lg border-2 p-4"
               :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'border-amber-200 bg-amber-50/50' : 'border-slate-200 bg-white'"
             >
-              <div class="flex items-center gap-2">
+              <form @submit.prevent="runApprovalTransition('通过')">
+                <input class="sr-only" autocomplete="username" :value="getApprovalActor()?.reviewer_name ?? ''" readonly>
+                <div class="flex items-center gap-2">
                 <Gavel class="size-4 text-amber-600" aria-hidden="true" />
                 <span class="text-[13px] font-bold" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-800' : 'text-slate-800'">
                   {{ selectedOrder.status === '待审核' ? `${selectedOrder.supervisor} · 待审核` : selectedOrder.status === '待经理审核' ? '王经理 · 待审核' : '当前无需工程审核' }}
                 </span>
-              </div>
-              <p class="mt-1 text-[11px]" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-700' : 'text-slate-500'">
+                </div>
+                <p class="mt-1 text-[11px]" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-700' : 'text-slate-500'">
                 {{ selectedOrder.status === '待审核' ? '核对单头、明细、交期后执行操作。通过后进入待经理审核。' : selectedOrder.status === '待经理审核' ? '经理终审通过后，内部单进入待生产；外厂 / 模厂路径直接完成。' : '该单据当前处于后续生产或归档节点。' }}
-              </p>
-              <textarea rows="2" placeholder="审核意见（驳回必填）..." class="mt-3 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-slate-400" />
-              <div class="mt-2 flex gap-2">
-                <button class="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 text-[13px] font-semibold text-white hover:bg-emerald-500">
-                  <Check class="size-4" aria-hidden="true" />
-                  通过
-                </button>
-                <button class="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-red-600 text-[13px] font-semibold text-white hover:bg-red-500">
-                  <X class="size-4" aria-hidden="true" />
-                  驳回
-                </button>
-              </div>
-              <div class="mt-2 flex items-center gap-1.5 text-[10px] text-slate-500">
-                <Lock class="size-3" aria-hidden="true" />
-                审核仍沿用现有 PIN 与审计规则。
-              </div>
+                </p>
+                <textarea
+                v-model="approvalNote"
+                rows="2"
+                placeholder="审核意见（驳回必填）..."
+                class="mt-3 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-slate-400"
+                />
+                <input
+                v-model="approvalPin"
+                type="password"
+                autocomplete="current-password"
+                placeholder="审核 PIN"
+                class="mt-2 h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400"
+                >
+                <div class="mt-2 flex gap-2">
+                  <button
+                  type="submit"
+                  :disabled="!canApproveSelectedOrder || approvalSubmitting"
+                  class="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 text-[13px] font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    <Check class="size-4" aria-hidden="true" />
+                    {{ approvalSubmitting ? '提交中...' : '通过' }}
+                  </button>
+                  <button
+                  type="button"
+                  :disabled="!canApproveSelectedOrder || approvalSubmitting"
+                  class="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-red-600 text-[13px] font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  @click="runApprovalTransition('驳回')"
+                  >
+                    <X class="size-4" aria-hidden="true" />
+                    驳回
+                  </button>
+                </div>
+                <div class="mt-2 flex items-center gap-1.5 text-[10px] text-slate-500">
+                  <Lock class="size-3" aria-hidden="true" />
+                  审核仍沿用现有 PIN 与审计规则。
+                </div>
+              </form>
             </section>
 
             <section class="rounded-lg border border-slate-200 bg-white p-4">
@@ -927,6 +1274,19 @@ watchEffect(() => {
             </section>
           </aside>
         </div>
+      </section>
+
+      <section v-else class="rounded-lg border border-slate-200 bg-white p-8 text-center">
+        <p class="text-base font-semibold text-slate-950">当前厂区暂无正式啤办单</p>
+        <p class="mt-2 text-sm text-slate-500">可以先在“工程部 · 新建开单”提交一张新啤办单，提交成功后会进入正式看板。</p>
+        <button
+          type="button"
+          class="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white"
+          @click="setView('create')"
+        >
+          <Plus class="size-4" aria-hidden="true" />
+          新建啤办单
+        </button>
       </section>
     </div>
   </main>
