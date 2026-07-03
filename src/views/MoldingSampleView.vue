@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Clock,
   ClipboardCheck,
+  Download,
   ExternalLink,
   Factory,
   FilePlus2,
@@ -28,6 +29,7 @@ import {
   Table2,
   Tag,
   TriangleAlert,
+  Upload,
   UserRound,
   X,
 } from '@lucide/vue'
@@ -47,6 +49,7 @@ import {
 } from '@/lib/moldingSampleBusiness'
 import { getApiErrorMessage } from '@/lib/http'
 import {
+  MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
@@ -115,6 +118,10 @@ const createSubmitting = ref(false)
 const editingRejectedOrderId = ref('')
 const approvalNote = ref('')
 const approvalSubmitting = ref(false)
+const excelFileInput = ref<HTMLInputElement | null>(null)
+const excelImporting = ref(false)
+const excelExporting = ref(false)
+const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
 const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_72px]'
 
 const workflowSteps: WorkflowStep[] = [
@@ -290,6 +297,10 @@ const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:cr
 const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft'))
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
+const canExportSelectedOrder = computed(() =>
+  apiState.value === 'connected'
+  && apiRecords.value.some((record) => record.order.id === selectedOrder.value.id),
+)
 const canEditSelectedRejectedOrder = computed(() =>
   selectedOrder.value.status === '已驳回' && canEditDraftOrder.value,
 )
@@ -465,6 +476,89 @@ async function loadApiData() {
     apiState.value = 'fallback'
     actionMessage.value = `正式列表读取失败，当前显示本地示例数据：${getApiErrorMessage(error)}`
   }
+}
+
+function triggerExcelImport() {
+  if (!canCreateOrder.value) {
+    actionMessage.value = '当前账号没有从Excel导入啤办单权限。'
+    return
+  }
+
+  excelFileInput.value?.click()
+}
+
+function readWorkbookAsArrayBuffer(file: File) {
+  return file.arrayBuffer()
+}
+
+async function handleExcelImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+
+  if (!file) {
+    return
+  }
+
+  if (!file.name.toLowerCase().endsWith('.xlsx')) {
+    actionMessage.value = '导入失败：请选择 .xlsx 格式的啤办单文件。'
+    input.value = ''
+    return
+  }
+
+  excelImporting.value = true
+  actionMessage.value = `正在导入Excel文件 ${file.name}...`
+
+  try {
+    const workbook = await readWorkbookAsArrayBuffer(file)
+    const imported = await moldingSampleApi.importOrderExcel(workbook)
+    replaceApiRecord(imported)
+    selectedOrderId.value = imported.order.id
+    activeView.value = 'detail'
+    actionMessage.value = `Excel已导入为啤办单 ${imported.order.id}，正式列表已更新。`
+  }
+  catch (error) {
+    actionMessage.value = `Excel导入失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    excelImporting.value = false
+    input.value = ''
+  }
+}
+
+async function downloadOrderExcel() {
+  if (!canExportSelectedOrder.value) {
+    actionMessage.value = '请先选择已从后端读取到的正式啤办单，再导出Excel。'
+    return
+  }
+
+  const orderId = selectedOrder.value.id
+  excelExporting.value = true
+  actionMessage.value = `正在导出啤办单 ${orderId} 的Excel文件...`
+
+  try {
+    const workbook = await moldingSampleApi.exportOrderExcel(orderId)
+    saveWorkbookAsExcel(workbook, `${orderId}-molding-sample.xlsx`)
+    actionMessage.value = `啤办单 ${orderId} 的Excel文件已开始下载。`
+  }
+  catch (error) {
+    actionMessage.value = `Excel导出失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    excelExporting.value = false
+  }
+}
+
+function saveWorkbookAsExcel(workbook: ArrayBuffer, filename: string) {
+  const blob = new Blob([workbook], { type: MOLDING_SAMPLE_XLSX_MIME })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 function readQueryString(value: unknown) {
@@ -867,13 +961,40 @@ onMounted(() => {
         :class="apiState === 'fallback' ? 'border-amber-200 bg-amber-50 text-amber-800' : apiState === 'connected' ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'"
       >
         <span>{{ actionMessage }}</span>
-        <button
-          type="button"
-          class="inline-flex h-7 items-center rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100"
-          @click="loadApiData"
-        >
-          刷新正式列表
-        </button>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <input
+            ref="excelFileInput"
+            type="file"
+            class="hidden"
+            :accept="excelAccept"
+            @change="handleExcelImportFile"
+          >
+          <button
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="excelImporting || !canCreateOrder"
+            @click="triggerExcelImport"
+          >
+            <Upload class="size-3.5" aria-hidden="true" />
+            {{ excelImporting ? '导入中...' : '导入Excel' }}
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="excelExporting || !canExportSelectedOrder"
+            @click="downloadOrderExcel"
+          >
+            <Download class="size-3.5" aria-hidden="true" />
+            {{ excelExporting ? '导出中...' : '导出Excel' }}
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-7 items-center rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100"
+            @click="loadApiData"
+          >
+            刷新正式列表
+          </button>
+        </div>
       </div>
 
       <section v-if="activeView === 'overview'" class="space-y-4">
