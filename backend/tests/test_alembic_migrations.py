@@ -9,19 +9,33 @@ from alembic.script import ScriptDirectory
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
-MIGRATION_REVISION = "20260701_0001"
+BASE_MIGRATION_REVISION = "20260701_0001"
+NOTIFICATION_MIGRATION_REVISION = "20260703_0002"
+MIGRATION_REVISION = "20260703_0003"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
     "molding_sample_audit_logs",
     "molding_sample_material_prices",
     "molding_sample_settings",
-    "molding_sample_auth_pins",
-    "molding_sample_pin_attempts",
     "molding_sample_sensitive_audit_logs",
     "molding_sample_requisitions",
     "molding_sample_inventory_batches",
     "molding_sample_inventory_movements",
+    "molding_sample_notifications",
+]
+AUTH_TABLES = [
+    "auth_users",
+    "auth_roles",
+    "auth_permissions",
+    "auth_role_permissions",
+    "auth_user_roles",
+    "auth_sessions",
+    "auth_audit_logs",
+]
+REMOVED_PIN_TABLES = [
+    "molding_sample_auth_pins",
+    "molding_sample_pin_attempts",
 ]
 
 
@@ -33,11 +47,22 @@ def test_alembic_has_single_molding_sample_head():
 
     assert script.get_heads() == [MIGRATION_REVISION]
     revision = script.get_revision(MIGRATION_REVISION)
-    assert revision.down_revision is None
+    assert revision.down_revision == NOTIFICATION_MIGRATION_REVISION
 
     migration_content = Path(revision.path).read_text(encoding="utf-8")
-    for table_name in MOLDING_SAMPLE_TABLES:
+    for table_name in AUTH_TABLES:
         assert table_name in migration_content
+    for table_name in REMOVED_PIN_TABLES:
+        assert table_name in migration_content
+
+    base_revision = script.get_revision(BASE_MIGRATION_REVISION)
+    base_migration_content = Path(base_revision.path).read_text(encoding="utf-8")
+    for table_name in [name for name in MOLDING_SAMPLE_TABLES if name != "molding_sample_notifications"]:
+        assert table_name in base_migration_content
+
+    notification_revision = script.get_revision(NOTIFICATION_MIGRATION_REVISION)
+    notification_migration_content = Path(notification_revision.path).read_text(encoding="utf-8")
+    assert "molding_sample_notifications" in notification_migration_content
 
 
 def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
@@ -67,6 +92,10 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
 
     for table_name in MOLDING_SAMPLE_TABLES:
         assert f"create table {table_name}" in sql
+    for table_name in AUTH_TABLES:
+        assert f"create table {table_name}" in sql
+    for table_name in REMOVED_PIN_TABLES:
+        assert f"drop table {table_name}" in sql
 
     assert "foreign key(order_id) references molding_sample_orders" in sql
     assert "on delete cascade" in sql

@@ -49,10 +49,12 @@ for (const requiredImplementation of [
   'buildManualMoldingSampleCreateRequest',
   'submitManualCreate',
   'moldingSampleApi.createOrder',
-  'approvalPin',
   'approvalNote',
   'runApprovalTransition',
   'moldingSampleApi.updateStatus',
+  'useAuthStore',
+  'authStore.currentUser',
+  'authStore.hasPermission',
   'getMoldingSampleRecord',
   'buildCompletionGate',
   'isExternalMoldingSampleOrder',
@@ -74,3 +76,6 @@ for (const removedClearedLayoutCopy of [
 
 assert.doesNotMatch(source, /activeView = ref<ViewKey>\('production'\)/)
 assert.doesNotMatch(source, /id="view-production"/)
+assert.doesNotMatch(source, /approvalPin/)
+assert.doesNotMatch(source, /PIN/)
+assert.doesNotMatch(source, /管理员调试/)

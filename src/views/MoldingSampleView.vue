@@ -18,7 +18,6 @@ import {
   History,
   Layers,
   LayoutDashboard,
-  Lock,
   MessageSquareText,
   Plus,
   Search,
@@ -58,11 +57,11 @@ import {
 } from '@/lib/moldingSampleManualCreate'
 import type {
   MoldingSampleItem,
-  MoldingSampleRole,
   MoldingSampleStatus,
   MoldingSampleWorkflowRecord,
 } from '@/types/moldingSample'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 type ViewKey = 'overview' | 'create' | 'detail'
 type StatusState = 'done' | 'current' | 'pending' | 'rejected'
@@ -92,12 +91,13 @@ interface WorkflowStep {
 interface ApprovalActor {
   passAction: string
   rejectAction: string
-  reviewer_name: string
-  reviewer_role: MoldingSampleRole
+  actorName: string
+  permission: string
 }
 
 const route = useRoute()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const today = '2026-07-03'
 const activeView = ref<ViewKey>('overview')
@@ -110,7 +110,6 @@ const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSample
 const createErrors = ref<string[]>([])
 const createSubmitting = ref(false)
 const approvalNote = ref('')
-const approvalPin = ref('')
 const approvalSubmitting = ref(false)
 
 const workflowSteps: WorkflowStep[] = [
@@ -278,9 +277,11 @@ const boardColumns = computed<BoardColumn[]>(() =>
 )
 
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
-const canApproveSelectedOrder = computed(() =>
-  selectedOrder.value.status === '待审核' || selectedOrder.value.status === '待经理审核',
-)
+const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
+const canApproveSelectedOrder = computed(() => {
+  const actor = getApprovalActor()
+  return Boolean(actor && authStore.hasPermission(actor.permission))
+})
 
 function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWorkflowRecord {
   const factoryId = isProductionFactoryContextId(record.order.factory_id)
@@ -401,6 +402,11 @@ function removeCreateLine(index: number) {
 }
 
 async function submitManualCreate() {
+  if (!canCreateOrder.value) {
+    actionMessage.value = '当前账号没有新建啤办单权限。'
+    return
+  }
+
   createDraft.value.factory_id = selectedFactoryId.value
   createErrors.value = []
   const result = buildManualMoldingSampleCreateRequest(createDraft.value, selectedFactoryId.value)
@@ -435,8 +441,8 @@ function getApprovalActor(): ApprovalActor | null {
     return {
       passAction: '主管通过',
       rejectAction: '主管驳回',
-      reviewer_name: selectedOrder.value.supervisor,
-      reviewer_role: '主管',
+      actorName: selectedOrder.value.supervisor,
+      permission: 'molding_sample:supervisor_review',
     }
   }
 
@@ -444,8 +450,8 @@ function getApprovalActor(): ApprovalActor | null {
     return {
       passAction: '经理通过',
       rejectAction: '经理驳回',
-      reviewer_name: '王经理',
-      reviewer_role: '经理',
+      actorName: '经理审核',
+      permission: 'molding_sample:manager_review',
     }
   }
 
@@ -471,10 +477,7 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
 
   const payload: MoldingSampleStatusRequest = {
     action: decision === '通过' ? actor.passAction : actor.rejectAction,
-    reviewer_name: actor.reviewer_name,
-    reviewer_role: actor.reviewer_role,
-    pin: approvalPin.value.trim() || undefined,
-    reason: reason || `${actor.reviewer_name}${decision}`,
+    reason: reason || `${authStore.currentUser?.display_name ?? actor.actorName}${decision}`,
     today,
   }
 
@@ -1008,7 +1011,7 @@ onMounted(() => {
               </div>
               <div class="space-y-2 text-[11px] text-slate-500">
                 <div class="flex justify-between"><span>当前厂区</span><strong class="text-slate-800">{{ activeFactory.shortName }}</strong></div>
-                <div class="flex justify-between"><span>提交人</span><strong class="text-slate-800">{{ createDraft.eng_name || '待填写' }}</strong></div>
+                <div class="flex justify-between"><span>提交人</span><strong class="text-slate-800">{{ authStore.currentUser?.display_name ?? createDraft.eng_name ?? '待填写' }}</strong></div>
                 <div class="flex justify-between"><span>下一节点</span><strong class="text-slate-800">待审核</strong></div>
               </div>
               <div v-if="createErrors.length" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] text-red-700">
@@ -1019,12 +1022,12 @@ onMounted(() => {
               </div>
               <button
                 type="button"
-                :disabled="createSubmitting"
+                :disabled="createSubmitting || !canCreateOrder"
                 class="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-slate-900 text-[13px] font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                 @click="submitManualCreate"
               >
                 <Send class="size-4" aria-hidden="true" />
-                {{ createSubmitting ? '提交中...' : '提交主管审核' }}
+                {{ createSubmitting ? '提交中...' : canCreateOrder ? '提交主管审核' : '无新建权限' }}
               </button>
               <button
                 type="button"
@@ -1205,11 +1208,10 @@ onMounted(() => {
               :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'border-amber-200 bg-amber-50/50' : 'border-slate-200 bg-white'"
             >
               <form @submit.prevent="runApprovalTransition('通过')">
-                <input class="sr-only" autocomplete="username" :value="getApprovalActor()?.reviewer_name ?? ''" readonly>
                 <div class="flex items-center gap-2">
                 <Gavel class="size-4 text-amber-600" aria-hidden="true" />
                 <span class="text-[13px] font-bold" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-800' : 'text-slate-800'">
-                  {{ selectedOrder.status === '待审核' ? `${selectedOrder.supervisor} · 待审核` : selectedOrder.status === '待经理审核' ? '王经理 · 待审核' : '当前无需工程审核' }}
+                  {{ selectedOrder.status === '待审核' ? `${selectedOrder.supervisor} · 待审核` : selectedOrder.status === '待经理审核' ? '经理终审 · 待审核' : '当前无需工程审核' }}
                 </span>
                 </div>
                 <p class="mt-1 text-[11px]" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-700' : 'text-slate-500'">
@@ -1221,13 +1223,6 @@ onMounted(() => {
                 placeholder="审核意见（驳回必填）..."
                 class="mt-3 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-slate-400"
                 />
-                <input
-                v-model="approvalPin"
-                type="password"
-                autocomplete="current-password"
-                placeholder="审核 PIN"
-                class="mt-2 h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400"
-                >
                 <div class="mt-2 flex gap-2">
                   <button
                   type="submit"
@@ -1246,10 +1241,6 @@ onMounted(() => {
                     <X class="size-4" aria-hidden="true" />
                     驳回
                   </button>
-                </div>
-                <div class="mt-2 flex items-center gap-1.5 text-[10px] text-slate-500">
-                  <Lock class="size-3" aria-hidden="true" />
-                  审核仍沿用现有 PIN 与审计规则。
                 </div>
               </form>
             </section>

@@ -3,7 +3,6 @@ import type {
   MoldingSampleAuditLog,
   MoldingSampleItem,
   MoldingSampleOrder,
-  MoldingSampleRole,
 } from '../types/moldingSample.js'
 import type { MoldingSampleMaterialPrice } from '../lib/moldingSampleBusiness.js'
 
@@ -27,17 +26,7 @@ export interface MoldingSampleCreateRequest {
   items: MoldingSampleItemDraft[]
 }
 
-export interface MoldingSampleEditRequest extends MoldingSampleCreateRequest {
-  actor_name: string
-  actor_role: MoldingSampleRole
-  pin?: string
-}
-
-export interface MoldingSampleDeleteRequest {
-  actor_name: string
-  actor_role: MoldingSampleRole
-  pin?: string
-}
+export interface MoldingSampleEditRequest extends MoldingSampleCreateRequest {}
 
 export interface MoldingSampleExcelImportOptions {
   order_id?: string
@@ -47,13 +36,11 @@ export interface MoldingSampleDetailResponse {
   order: MoldingSampleOrder
   items: MoldingSampleItem[]
   audit_logs: MoldingSampleAuditLog[]
+  notifications: MoldingSampleNotificationResponse[]
 }
 
 export interface MoldingSampleStatusRequest {
   action: string
-  reviewer_name: string
-  reviewer_role: MoldingSampleRole
-  pin?: string
   reason?: string
   today?: string
 }
@@ -67,42 +54,7 @@ export interface MaterialPricesResponse {
   rmb_to_hkd_rate: number
 }
 
-export interface MaterialPricesUpdateRequest extends MaterialPricesResponse {
-  manager_name?: string
-  manager_pin?: string
-}
-
-export interface PinVerifyRequest {
-  name: string
-  role: MoldingSampleRole
-  pin: string
-}
-
-export interface PinChangeRequest {
-  name: string
-  role: MoldingSampleRole
-  old_pin: string
-  new_pin: string
-}
-
-export interface ResetSupervisorPinRequest {
-  manager_name: string
-  manager_pin: string
-  supervisor_name: string
-  new_pin?: string
-}
-
-export interface PinVerifyResponse {
-  valid: boolean
-  name: string
-  role: MoldingSampleRole
-  must_change: boolean
-}
-
-export interface RolesResponse {
-  supervisors: Array<{ name: string, role: MoldingSampleRole, must_change: boolean }>
-  managers: Array<{ name: string, role: MoldingSampleRole, must_change: boolean }>
-}
+export interface MaterialPricesUpdateRequest extends MaterialPricesResponse {}
 
 export interface RequisitionCreateRequest {
   date: string
@@ -180,12 +132,45 @@ export interface InventoryMovementResponse {
 export interface SensitiveAuditLogResponse {
   id: number
   action: string
+  actor_user_id: string
   actor_name: string
   actor_role: string
+  actor_roles: string
+  factory_scope: string
   target_type: string
   target_name: string
   detail: string
   created_at: string
+}
+
+export interface MoldingSampleNotificationResponse {
+  id: string
+  order_id: string
+  factory_id: string
+  target_module: string
+  target_role: string
+  event_type: string
+  title: string
+  message: string
+  from_status: string
+  to_status: string
+  status: '未读' | '已读' | '已处理'
+  actor_name: string
+  read_at: string
+  handled_at: string
+  created_at: string
+}
+
+export interface MoldingSampleNotificationFilters {
+  target_module?: string
+  target_role?: string
+  factory_id?: string
+  order_id?: string
+  status?: string
+}
+
+export interface MoldingSampleNotificationUpdateRequest {
+  status: '未读' | '已读' | '已处理'
 }
 
 export interface InjectionTotalCostSummary {
@@ -216,10 +201,6 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const response = await client.get<MoldingSampleDetailResponse>(`/injection/${orderId}`)
       return response.data
     },
-    async getRoles() {
-      const response = await client.get<RolesResponse>('/roles')
-      return response.data
-    },
     async createOrder(payload: MoldingSampleCreateRequest) {
       const response = await client.post<MoldingSampleDetailResponse>('/injection', payload)
       return response.data
@@ -228,15 +209,8 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const response = await client.put<MoldingSampleDetailResponse>(`/injection/${orderId}`, payload)
       return response.data
     },
-    async deleteOrder(orderId: string, payload: MoldingSampleDeleteRequest) {
-      const params = new URLSearchParams({
-        actor_name: payload.actor_name,
-        actor_role: payload.actor_role,
-      })
-      if (payload.pin) {
-        params.set('pin', payload.pin)
-      }
-      const response = await client.delete(`/injection/${orderId}?${params.toString()}`)
+    async deleteOrder(orderId: string) {
+      const response = await client.delete(`/injection/${orderId}`)
       return response.data
     },
     async exportOrderExcel(orderId: string) {
@@ -319,20 +293,38 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const response = await client.delete(`/requisitions/${requisitionId}`)
       return response.data
     },
-    async verifyPin(payload: PinVerifyRequest) {
-      const response = await client.post<PinVerifyResponse>('/verify-pin', payload)
-      return response.data
-    },
-    async changePin(payload: PinChangeRequest) {
-      const response = await client.post<PinVerifyResponse>('/change-pin', payload)
-      return response.data
-    },
-    async resetSupervisorPin(payload: ResetSupervisorPinRequest) {
-      const response = await client.post<{ name: string, role: MoldingSampleRole, must_change: boolean }>('/reset-supervisor-pin', payload)
-      return response.data
-    },
     async listSensitiveAuditLogs() {
       const response = await client.get<SensitiveAuditLogResponse[]>('/sensitive-audit-logs')
+      return response.data
+    },
+    async listNotifications(filters: MoldingSampleNotificationFilters = {}) {
+      const params = new URLSearchParams()
+      if (filters.target_module) {
+        params.set('target_module', filters.target_module)
+      }
+      if (filters.target_role) {
+        params.set('target_role', filters.target_role)
+      }
+      if (filters.factory_id) {
+        params.set('factory_id', filters.factory_id)
+      }
+      if (filters.order_id) {
+        params.set('order_id', filters.order_id)
+      }
+      if (filters.status) {
+        params.set('status', filters.status)
+      }
+      const query = params.toString()
+      const response = await client.get<MoldingSampleNotificationResponse[]>(
+        query ? `/molding-sample-notifications?${query}` : '/molding-sample-notifications',
+      )
+      return response.data
+    },
+    async updateNotification(notificationId: string, payload: MoldingSampleNotificationUpdateRequest) {
+      const response = await client.patch<MoldingSampleNotificationResponse>(
+        `/molding-sample-notifications/${notificationId}`,
+        payload,
+      )
       return response.data
     },
     async getTotalCosts() {

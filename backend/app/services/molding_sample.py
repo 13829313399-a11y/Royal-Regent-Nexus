@@ -1,7 +1,4 @@
-import hashlib
-import hmac
-import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -11,13 +8,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.molding_sample import (
     MoldingSampleAuditLog,
-    MoldingSampleAuthPin,
     MoldingSampleInventoryBatch,
     MoldingSampleInventoryMovement,
     MoldingSampleItem,
     MoldingSampleMaterialPrice,
+    MoldingSampleNotification,
     MoldingSampleOrder,
-    MoldingSamplePinAttempt,
     MoldingSampleRequisition,
     MoldingSampleSensitiveAuditLog,
     MoldingSampleSetting,
@@ -28,13 +24,12 @@ from app.schemas.molding_sample import (
     MoldingSampleCreateRequest,
     MoldingSampleEditRequest,
     MoldingSampleItemIn,
+    MoldingSampleNotificationUpdateRequest,
     MoldingSampleStatusRequest,
-    PinChangeRequest,
-    PinVerifyRequest,
     RequisitionCreateRequest,
     RequisitionStatusRequest,
-    ResetSupervisorPinRequest,
 )
+from app.services.auth import AuthContext, ensure_factory_scope, ensure_permission, has_factory_scope
 
 KG_TO_LB = 2.20462
 DEFAULT_RATE = 1.08
@@ -50,17 +45,12 @@ DEFAULT_PRICES = [
     ("ABS 747", 8.1, "经理默认价"),
     ("ABS 750W", 8.6, "混合料匹配示例"),
 ]
-DEFAULT_AUTH_USERS = [
-    ("李主管", "主管"),
-    ("王经理", "经理"),
-]
-DEFAULT_PIN = "1234"
-PIN_HASH_ITERATIONS = 120_000
-PIN_MAX_FAILED_ATTEMPTS = 5
-PIN_LOCK_MINUTES = 15
-PIN_LOCKED_DETAIL = f"PIN 已锁定，请 {PIN_LOCK_MINUTES} 分钟后再试"
-PIN_MUST_CHANGE_DETAIL = "请先修改默认 PIN 后再执行此操作"
 SENSITIVE_AUDIT_LIST_LIMIT = 200
+PRODUCTION_TASK_MODULE = "production_molding_sample_task"
+ENGINEERING_MOLDING_SAMPLE_MODULE = "engineering_molding_sample"
+PRODUCTION_TARGET_ROLE = "啤机部"
+ENGINEERING_TARGET_ROLE = "工程部"
+NOTIFICATION_STATUSES = {"未读", "已读", "已处理"}
 
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
 ALLOWED_ITEM_PATCH_FIELDS = {
@@ -76,14 +66,8 @@ def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def parse_time_text(value: str) -> datetime | None:
-    if not value:
-        return None
-
-    try:
-        return datetime.strptime(value, "%Y-%m-%d %H:%M")
-    except ValueError:
-        return None
+def now_precise_text() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
 def round_money(value: float) -> float:
@@ -92,28 +76,6 @@ def round_money(value: float) -> float:
 
 def round_weight(value: float) -> float:
     return round(value + 1e-9, 3)
-
-
-def hash_pin(pin: str, salt: str) -> str:
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        pin.encode("utf-8"),
-        salt.encode("utf-8"),
-        PIN_HASH_ITERATIONS,
-    ).hex()
-
-
-def make_auth_pin(name: str, role: str, pin: str = DEFAULT_PIN) -> MoldingSampleAuthPin:
-    salt = secrets.token_hex(16)
-    return MoldingSampleAuthPin(
-        id=f"{role}-{name}",
-        name=name,
-        role=role,
-        pin_salt=salt,
-        pin_hash=hash_pin(pin, salt),
-        must_change=1,
-        updated_at=now_text(),
-    )
 
 
 def normalize_material_name(value: str) -> str:
@@ -135,142 +97,13 @@ def seed_molding_sample_defaults(db: Session) -> None:
         for material, unit_price, notes in DEFAULT_PRICES:
             db.add(MoldingSampleMaterialPrice(material=material, unit_price=unit_price, notes=notes))
 
-    for name, role in DEFAULT_AUTH_USERS:
-        existing_pin = db.scalar(
-            select(MoldingSampleAuthPin)
-            .where(MoldingSampleAuthPin.name == name)
-            .where(MoldingSampleAuthPin.role == role)
-        )
-        if existing_pin is None:
-            db.add(make_auth_pin(name, role))
-
     db.commit()
-
-
-def get_auth_pin(db: Session, name: str, role: str) -> MoldingSampleAuthPin | None:
-    return db.scalar(
-        select(MoldingSampleAuthPin)
-        .where(MoldingSampleAuthPin.name == name)
-        .where(MoldingSampleAuthPin.role == role)
-    )
-
-
-def pin_attempt_key(name: str, role: str) -> str:
-    return f"{role}-{name}"
-
-
-def get_pin_attempt(db: Session, name: str, role: str) -> MoldingSamplePinAttempt | None:
-    return db.get(MoldingSamplePinAttempt, pin_attempt_key(name, role))
-
-
-def get_or_create_pin_attempt(db: Session, name: str, role: str) -> MoldingSamplePinAttempt:
-    attempt = get_pin_attempt(db, name, role)
-    if attempt is not None:
-        return attempt
-
-    attempt = MoldingSamplePinAttempt(
-        id=pin_attempt_key(name, role),
-        name=name,
-        role=role,
-        failed_count=0,
-        locked_until="",
-        updated_at=now_text(),
-    )
-    db.add(attempt)
-    return attempt
-
-
-def ensure_pin_not_locked(db: Session, name: str, role: str) -> None:
-    attempt = get_pin_attempt(db, name, role)
-    if attempt is None or not attempt.locked_until:
-        return
-
-    locked_until = parse_time_text(attempt.locked_until)
-    if locked_until and locked_until > datetime.now():
-        raise HTTPException(status_code=429, detail=PIN_LOCKED_DETAIL)
-
-    attempt.failed_count = 0
-    attempt.locked_until = ""
-    attempt.updated_at = now_text()
-    db.commit()
-
-
-def record_pin_failure(db: Session, name: str, role: str) -> None:
-    attempt = get_or_create_pin_attempt(db, name, role)
-    attempt.failed_count += 1
-    attempt.updated_at = now_text()
-
-    if attempt.failed_count >= PIN_MAX_FAILED_ATTEMPTS:
-        attempt.locked_until = (datetime.now() + timedelta(minutes=PIN_LOCK_MINUTES)).strftime("%Y-%m-%d %H:%M")
-        db.commit()
-        raise HTTPException(status_code=429, detail=PIN_LOCKED_DETAIL)
-
-    db.commit()
-    raise HTTPException(status_code=401, detail="PIN 无效")
-
-
-def reset_pin_failures(db: Session, name: str, role: str) -> None:
-    attempt = get_pin_attempt(db, name, role)
-    if attempt is None:
-        return
-
-    attempt.failed_count = 0
-    attempt.locked_until = ""
-    attempt.updated_at = now_text()
-    db.commit()
-
-
-def require_valid_pin(db: Session, name: str, role: str, pin: str, allow_must_change: bool = False) -> MoldingSampleAuthPin:
-    if name and role:
-        ensure_pin_not_locked(db, name, role)
-
-    auth_pin = get_auth_pin(db, name, role)
-    if not auth_pin or not pin:
-        if name and role:
-            record_pin_failure(db, name, role)
-        raise HTTPException(status_code=401, detail="PIN 无效")
-
-    expected = hash_pin(pin, auth_pin.pin_salt)
-    if not hmac.compare_digest(expected, auth_pin.pin_hash):
-        record_pin_failure(db, name, role)
-
-    reset_pin_failures(db, name, role)
-    if auth_pin.must_change and not allow_must_change:
-        raise HTTPException(status_code=403, detail=PIN_MUST_CHANGE_DETAIL)
-
-    return auth_pin
-
-
-def list_auth_roles(db: Session) -> dict[str, list[dict[str, Any]]]:
-    rows = list(db.scalars(select(MoldingSampleAuthPin).order_by(MoldingSampleAuthPin.role, MoldingSampleAuthPin.name)).all())
-    supervisors = [
-        {"name": row.name, "role": row.role, "must_change": bool(row.must_change)}
-        for row in rows
-        if row.role == "主管"
-    ]
-    managers = [
-        {"name": row.name, "role": row.role, "must_change": bool(row.must_change)}
-        for row in rows
-        if row.role == "经理"
-    ]
-    return {"supervisors": supervisors, "managers": managers}
-
-
-def verify_pin(db: Session, payload: PinVerifyRequest) -> dict[str, Any]:
-    auth_pin = require_valid_pin(db, payload.name, payload.role, payload.pin, allow_must_change=True)
-    return {
-        "valid": True,
-        "name": auth_pin.name,
-        "role": auth_pin.role,
-        "must_change": bool(auth_pin.must_change),
-    }
 
 
 def append_sensitive_audit(
     db: Session,
     action: str,
-    actor_name: str,
-    actor_role: str,
+    current_user: AuthContext,
     target_type: str,
     target_name: str,
     detail: str,
@@ -278,12 +111,15 @@ def append_sensitive_audit(
     db.add(
         MoldingSampleSensitiveAuditLog(
             action=action,
-            actor_name=actor_name,
-            actor_role=actor_role,
+            actor_user_id=current_user.id,
+            actor_name=current_user.display_name,
+            actor_role=current_user.primary_role,
+            actor_roles=", ".join(current_user.roles),
+            factory_scope=", ".join(current_user.factory_scopes),
             target_type=target_type,
             target_name=target_name,
             detail=detail,
-            created_at=now_text(),
+            created_at=now_precise_text(),
         )
     )
 
@@ -296,78 +132,6 @@ def list_sensitive_audit_logs(db: Session) -> list[MoldingSampleSensitiveAuditLo
             .limit(SENSITIVE_AUDIT_LIST_LIMIT)
         ).all()
     )
-
-
-def change_pin(db: Session, payload: PinChangeRequest) -> dict[str, Any]:
-    old_pin = payload.old_pin.strip()
-    new_pin = payload.new_pin.strip()
-    if len(new_pin) < 4:
-        raise HTTPException(status_code=400, detail="新 PIN 至少需要 4 位")
-    if new_pin == old_pin:
-        raise HTTPException(status_code=400, detail="新 PIN 不能与旧 PIN 相同")
-
-    auth_pin = require_valid_pin(db, payload.name, payload.role, old_pin, allow_must_change=True)
-    salt = secrets.token_hex(16)
-    auth_pin.pin_salt = salt
-    auth_pin.pin_hash = hash_pin(new_pin, salt)
-    auth_pin.must_change = 0
-    auth_pin.updated_at = now_text()
-    append_sensitive_audit(
-        db,
-        action="修改PIN",
-        actor_name=payload.name,
-        actor_role=payload.role,
-        target_type="auth_pin",
-        target_name=payload.name,
-        detail=f"{payload.role} {payload.name} 修改了自己的 PIN。",
-    )
-    db.commit()
-
-    return {
-        "valid": True,
-        "name": auth_pin.name,
-        "role": auth_pin.role,
-        "must_change": False,
-    }
-
-
-def reset_supervisor_pin(db: Session, payload: ResetSupervisorPinRequest) -> dict[str, Any]:
-    new_pin = payload.new_pin.strip()
-    if len(new_pin) < 4:
-        raise HTTPException(status_code=400, detail="新 PIN 至少需要 4 位")
-
-    require_valid_pin(db, payload.manager_name, "经理", payload.manager_pin)
-    supervisor_name = payload.supervisor_name.strip()
-    if not supervisor_name:
-        raise HTTPException(status_code=400, detail="主管姓名不能为空")
-
-    auth_pin = get_auth_pin(db, supervisor_name, "主管")
-    if not auth_pin:
-        auth_pin = make_auth_pin(supervisor_name, "主管", new_pin)
-        db.add(auth_pin)
-    else:
-        salt = secrets.token_hex(16)
-        auth_pin.pin_salt = salt
-        auth_pin.pin_hash = hash_pin(new_pin, salt)
-        auth_pin.must_change = 1
-        auth_pin.updated_at = now_text()
-
-    append_sensitive_audit(
-        db,
-        action="重置主管PIN",
-        actor_name=payload.manager_name,
-        actor_role="经理",
-        target_type="auth_pin",
-        target_name=supervisor_name,
-        detail=f"经理 {payload.manager_name} 重置主管 {supervisor_name} 的 PIN，已要求首次修改。",
-    )
-    db.commit()
-
-    return {
-        "name": supervisor_name,
-        "role": "主管",
-        "must_change": True,
-    }
 
 
 def get_exchange_rate(db: Session) -> float:
@@ -421,26 +185,40 @@ def is_external_order(order: MoldingSampleOrder) -> bool:
     return order.send_to in {"发至湖南", "发至模厂"} or order.workshop == "模厂"
 
 
-def load_order(db: Session, order_id: str) -> MoldingSampleOrder:
+def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
     order = db.scalar(
         select(MoldingSampleOrder)
         .where(MoldingSampleOrder.id == order_id)
         .options(
             selectinload(MoldingSampleOrder.items),
             selectinload(MoldingSampleOrder.audit_logs),
+            selectinload(MoldingSampleOrder.notifications),
         )
     )
     if not order:
         raise HTTPException(status_code=404, detail="啤办单不存在")
+    if current_user is not None:
+        ensure_factory_scope(db, current_user, order.factory_id)
 
     return order
 
 
-def list_orders(db: Session) -> list[MoldingSampleOrder]:
+def scoped_order_statement(current_user: AuthContext):
+    statement = select(MoldingSampleOrder).options(
+        selectinload(MoldingSampleOrder.items),
+        selectinload(MoldingSampleOrder.audit_logs),
+        selectinload(MoldingSampleOrder.notifications),
+    )
+    if "*" not in current_user.factory_scopes:
+        statement = statement.where(MoldingSampleOrder.factory_id.in_(current_user.factory_scopes))
+    return statement
+
+
+def list_orders(db: Session, current_user: AuthContext) -> list[MoldingSampleOrder]:
+    ensure_permission(db, current_user, "molding_sample:read")
     return list(
         db.scalars(
-            select(MoldingSampleOrder)
-            .options(selectinload(MoldingSampleOrder.items), selectinload(MoldingSampleOrder.audit_logs))
+            scoped_order_statement(current_user)
             .order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
         ).all()
     )
@@ -450,8 +228,7 @@ def append_audit(
     db: Session,
     order: MoldingSampleOrder,
     action: str,
-    actor_name: str,
-    actor_role: str,
+    current_user: AuthContext,
     from_status: str,
     to_status: str,
     reason: str = "",
@@ -461,17 +238,134 @@ def append_audit(
             id=f"{order.id}-audit-{uuid4().hex[:12]}",
             order_id=order.id,
             action=action,
-            actor_name=actor_name,
-            actor_role=actor_role,
+            actor_user_id=current_user.id,
+            actor_name=current_user.display_name,
+            actor_role=current_user.primary_role,
+            actor_roles=", ".join(current_user.roles),
+            factory_scope=", ".join(current_user.factory_scopes),
             from_status=from_status,
             to_status=to_status,
             reason=reason,
-            created_at=now_text(),
+            created_at=now_precise_text(),
         )
     )
 
 
-def create_order(db: Session, payload: MoldingSampleCreateRequest) -> MoldingSampleOrder:
+def append_notification(
+    db: Session,
+    order: MoldingSampleOrder,
+    target_module: str,
+    target_role: str,
+    event_type: str,
+    title: str,
+    message: str,
+    from_status: str = "",
+    to_status: str = "",
+    status: str = "未读",
+    actor_name: str = "",
+) -> MoldingSampleNotification:
+    notification = MoldingSampleNotification(
+        id=f"{order.id}-notice-{uuid4().hex[:12]}",
+        order_id=order.id,
+        factory_id=order.factory_id,
+        target_module=target_module,
+        target_role=target_role,
+        event_type=event_type,
+        title=title,
+        message=message,
+        from_status=from_status,
+        to_status=to_status,
+        status=status,
+        actor_name=actor_name,
+        created_at=now_precise_text(),
+    )
+    db.add(notification)
+    return notification
+
+
+def mark_order_notifications_handled(
+    db: Session,
+    order_id: str,
+    target_module: str,
+    actor_name: str = "",
+) -> None:
+    handled_at = now_text()
+    notifications = db.scalars(
+        select(MoldingSampleNotification)
+        .where(MoldingSampleNotification.order_id == order_id)
+        .where(MoldingSampleNotification.target_module == target_module)
+        .where(MoldingSampleNotification.status != "已处理")
+    ).all()
+
+    for notification in notifications:
+        notification.status = "已处理"
+        notification.actor_name = actor_name or notification.actor_name
+        notification.read_at = notification.read_at or handled_at
+        notification.handled_at = notification.handled_at or handled_at
+
+
+def list_notifications(
+    db: Session,
+    current_user: AuthContext,
+    target_module: str | None = None,
+    target_role: str | None = None,
+    factory_id: str | None = None,
+    order_id: str | None = None,
+    status: str | None = None,
+) -> list[MoldingSampleNotification]:
+    ensure_permission(db, current_user, "molding_sample:notification_read")
+    statement = select(MoldingSampleNotification)
+    if "*" not in current_user.factory_scopes:
+        statement = statement.where(MoldingSampleNotification.factory_id.in_(current_user.factory_scopes))
+    if target_module:
+        statement = statement.where(MoldingSampleNotification.target_module == target_module)
+    elif "molding_sample:production_read" not in current_user.permissions and "*" not in current_user.factory_scopes:
+        statement = statement.where(MoldingSampleNotification.target_module != PRODUCTION_TASK_MODULE)
+    if factory_id:
+        ensure_factory_scope(db, current_user, factory_id)
+        statement = statement.where(MoldingSampleNotification.factory_id == factory_id)
+    if order_id:
+        statement = statement.where(MoldingSampleNotification.order_id == order_id)
+    if status:
+        statement = statement.where(MoldingSampleNotification.status == status)
+
+    return list(
+        db.scalars(
+            statement.order_by(MoldingSampleNotification.created_at.desc(), MoldingSampleNotification.id.desc())
+        ).all()
+    )
+
+
+def update_notification(
+    db: Session,
+    notification_id: str,
+    payload: MoldingSampleNotificationUpdateRequest,
+    current_user: AuthContext,
+) -> MoldingSampleNotification:
+    ensure_permission(db, current_user, "molding_sample:notification_read")
+    notification = db.get(MoldingSampleNotification, notification_id)
+    if notification is None:
+        raise HTTPException(status_code=404, detail="啤办通知不存在")
+    ensure_factory_scope(db, current_user, notification.factory_id)
+    if payload.status not in NOTIFICATION_STATUSES:
+        raise HTTPException(status_code=400, detail="通知状态无效")
+
+    timestamp = now_text()
+    notification.status = payload.status
+    notification.actor_name = current_user.display_name
+    if payload.status in {"已读", "已处理"}:
+        notification.read_at = notification.read_at or timestamp
+    if payload.status == "已处理":
+        notification.handled_at = notification.handled_at or timestamp
+
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+
+def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user: AuthContext) -> MoldingSampleOrder:
+    ensure_permission(db, current_user, "molding_sample:create")
+    ensure_factory_scope(db, current_user, payload.order.factory_id)
     if db.get(MoldingSampleOrder, payload.order.id):
         raise HTTPException(status_code=409, detail="啤办单编号已存在")
 
@@ -494,41 +388,48 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest) -> MoldingSam
             )
         )
 
-    append_audit(db, order, "工程提交主管审核", order.eng_name, "工程部", status, status, "工程开单完成。")
+    append_audit(db, order, "工程提交主管审核", current_user, status, status, "工程开单完成。")
+    if not is_external_order(order):
+        append_notification(
+            db,
+            order,
+            target_module=PRODUCTION_TASK_MODULE,
+            target_role=PRODUCTION_TARGET_ROLE,
+            event_type="工程开单",
+            title="工程新建啤办单",
+            message=f"工程部已新建啤办单 {order.id}，请啤机部关注审核流转。",
+            from_status="",
+            to_status=status,
+            actor_name=current_user.display_name,
+        )
     db.commit()
     db.refresh(order)
-    return load_order(db, order.id)
+    return load_order(db, order.id, current_user)
 
 
 def ensure_order_write_allowed(
     db: Session,
     order: MoldingSampleOrder,
-    actor_name: str,
-    actor_role: str,
-    pin: str = "",
+    current_user: AuthContext,
+    permission: str,
 ) -> None:
-    if order.status not in LOCKED_STATUSES and actor_role == "工程部":
+    ensure_factory_scope(db, current_user, order.factory_id)
+    if order.status not in LOCKED_STATUSES:
+        ensure_permission(db, current_user, permission)
         return
 
-    if actor_role == "经理":
-        require_valid_pin(db, actor_name, "经理", pin)
+    if "molding_sample:manager_review" in current_user.permissions:
         return
 
-    if actor_role == "主管":
-        if actor_name != order.supervisor:
-            raise HTTPException(status_code=403, detail="只有指定主管可以改动该啤办单")
-        require_valid_pin(db, actor_name, "主管", pin)
-        return
-
-    raise HTTPException(status_code=403, detail="当前状态不允许普通工程部改删")
+    raise HTTPException(status_code=403, detail="当前状态不允许改删")
 
 
-def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest) -> MoldingSampleOrder:
-    order = load_order(db, order_id)
+def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, current_user: AuthContext) -> MoldingSampleOrder:
+    order = load_order(db, order_id, current_user)
     if payload.order.id != order_id:
         raise HTTPException(status_code=400, detail="啤办单 ID 不一致")
 
-    ensure_order_write_allowed(db, order, payload.actor_name, payload.actor_role, payload.pin)
+    ensure_order_write_allowed(db, order, current_user, "molding_sample:edit_draft")
     current_status = order.status
     current_created_at = order.created_at
 
@@ -558,26 +459,23 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest) 
         db,
         order,
         "修改啤办单",
-        payload.actor_name,
-        payload.actor_role,
+        current_user,
         current_status,
         current_status,
         "单头或明细已更新。",
     )
     db.commit()
     db.expire_all()
-    return load_order(db, order_id)
+    return load_order(db, order_id, current_user)
 
 
 def delete_order(
     db: Session,
     order_id: str,
-    actor_name: str,
-    actor_role: str,
-    pin: str = "",
+    current_user: AuthContext,
 ) -> None:
-    order = load_order(db, order_id)
-    ensure_order_write_allowed(db, order, actor_name, actor_role, pin)
+    order = load_order(db, order_id, current_user)
+    ensure_order_write_allowed(db, order, current_user, "molding_sample:delete_draft")
     db.delete(order)
     db.commit()
 
@@ -593,7 +491,12 @@ def list_inventory_batches(db: Session, material: str | None = None) -> list[Mol
     return list(db.scalars(statement).all())
 
 
-def create_inventory_batch(db: Session, payload: InventoryBatchCreateRequest) -> MoldingSampleInventoryBatch:
+def create_inventory_batch(
+    db: Session,
+    payload: InventoryBatchCreateRequest,
+    current_user: AuthContext,
+) -> MoldingSampleInventoryBatch:
+    ensure_permission(db, current_user, "molding_sample:inventory_issue")
     if payload.initial_weight_kg <= 0:
         raise HTTPException(status_code=400, detail="批次初始重量必须大于 0")
 
@@ -627,7 +530,7 @@ def create_inventory_batch(db: Session, payload: InventoryBatchCreateRequest) ->
         quantity_kg=batch.initial_weight_kg,
         before_weight_kg=0,
         after_weight_kg=batch.available_weight_kg,
-        actor_name="仓库",
+        actor_name=current_user.display_name,
         reason="新增库存批次。",
     )
     db.commit()
@@ -659,7 +562,7 @@ def append_inventory_movement(
             after_weight_kg=round_weight(after_weight_kg),
             actor_name=actor_name,
             reason=reason,
-            created_at=now_text(),
+            created_at=now_precise_text(),
         )
     )
 
@@ -709,11 +612,16 @@ def list_requisitions(db: Session, order_id: str | None = None) -> list[MoldingS
     return list(db.scalars(statement).all())
 
 
-def create_requisition(db: Session, payload: RequisitionCreateRequest) -> MoldingSampleRequisition:
+def create_requisition(
+    db: Session,
+    payload: RequisitionCreateRequest,
+    current_user: AuthContext,
+) -> MoldingSampleRequisition:
+    ensure_permission(db, current_user, "molding_sample:warehouse_requisition")
     if payload.requested_weight_kg <= 0:
         raise HTTPException(status_code=400, detail="申请重量必须大于 0")
 
-    order = load_order(db, payload.order_id)
+    order = load_order(db, payload.order_id, current_user)
     material = payload.material.strip()
     notes = payload.notes.strip()
     if notes:
@@ -754,7 +662,9 @@ def update_requisition_status(
     db: Session,
     requisition_id: str,
     payload: RequisitionStatusRequest,
+    current_user: AuthContext,
 ) -> MoldingSampleRequisition:
+    ensure_permission(db, current_user, "molding_sample:inventory_issue")
     requisition = db.get(MoldingSampleRequisition, requisition_id)
     if not requisition:
         raise HTTPException(status_code=404, detail="领料单不存在")
@@ -788,6 +698,7 @@ def update_requisition_status(
             before_weight_kg=before_weight,
             after_weight_kg=after_weight,
             requisition=requisition,
+            actor_name=current_user.display_name,
             reason="领料单出库扣减库存。",
         )
 
@@ -806,6 +717,7 @@ def update_requisition_status(
                 before_weight_kg=before_weight,
                 after_weight_kg=after_weight,
                 requisition=requisition,
+                actor_name=current_user.display_name,
                 reason="领料单状态退回待出库，恢复库存。",
             )
         requisition.inventory_batch_id = ""
@@ -821,7 +733,8 @@ def update_requisition_status(
     return requisition
 
 
-def delete_requisition(db: Session, requisition_id: str) -> None:
+def delete_requisition(db: Session, requisition_id: str, current_user: AuthContext) -> None:
+    ensure_permission(db, current_user, "molding_sample:warehouse_requisition")
     requisition = db.get(MoldingSampleRequisition, requisition_id)
     if not requisition:
         raise HTTPException(status_code=404, detail="领料单不存在")
@@ -841,6 +754,7 @@ def delete_requisition(db: Session, requisition_id: str) -> None:
                 before_weight_kg=before_weight,
                 after_weight_kg=after_weight,
                 requisition=requisition,
+                actor_name=current_user.display_name,
                 reason="删除已出库领料单，恢复库存。",
             )
 
@@ -890,8 +804,14 @@ def recalculate_order_costs(db: Session, order: MoldingSampleOrder, force_materi
         calculate_item_costs(db, order, item, force_material_amount=force_material_amount)
 
 
-def update_order_items(db: Session, order_id: str, items: list[MoldingSampleItemIn]) -> MoldingSampleOrder:
-    order = load_order(db, order_id)
+def update_order_items(
+    db: Session,
+    order_id: str,
+    items: list[MoldingSampleItemIn],
+    current_user: AuthContext,
+) -> MoldingSampleOrder:
+    ensure_permission(db, current_user, "molding_sample:production_fillback")
+    order = load_order(db, order_id, current_user)
     items_by_id = {item.id: item for item in order.items}
 
     for patch in items:
@@ -912,30 +832,35 @@ def update_order_items(db: Session, order_id: str, items: list[MoldingSampleItem
 
     order.updated_at = now_text()
     db.commit()
-    return load_order(db, order_id)
+    return load_order(db, order_id, current_user)
 
 
-def transition_status(db: Session, order_id: str, request: MoldingSampleStatusRequest) -> MoldingSampleOrder:
-    order = load_order(db, order_id)
+def transition_status(
+    db: Session,
+    order_id: str,
+    request: MoldingSampleStatusRequest,
+    current_user: AuthContext,
+) -> MoldingSampleOrder:
+    order = load_order(db, order_id, current_user)
     from_status = order.status
     action = request.action
     next_status: str | None = None
 
     if action == "主管通过":
-        if order.status != "待审核" or request.reviewer_role != "主管" or request.reviewer_name != order.supervisor:
+        ensure_permission(db, current_user, "molding_sample:supervisor_review")
+        if order.status != "待审核":
             raise HTTPException(status_code=403, detail="只有指定主管可以审核待审核单")
-        require_valid_pin(db, request.reviewer_name, request.reviewer_role, request.pin)
         next_status = "待经理审核"
     elif action == "主管驳回":
-        if order.status != "待审核" or request.reviewer_role != "主管" or request.reviewer_name != order.supervisor:
+        ensure_permission(db, current_user, "molding_sample:supervisor_review")
+        if order.status != "待审核":
             raise HTTPException(status_code=403, detail="只有指定主管可以驳回待审核单")
-        require_valid_pin(db, request.reviewer_name, request.reviewer_role, request.pin)
         next_status = "已驳回"
         order.reject_reason = request.reason
     elif action == "经理通过":
-        if order.status != "待经理审核" or request.reviewer_role != "经理":
+        ensure_permission(db, current_user, "molding_sample:manager_review")
+        if order.status != "待经理审核":
             raise HTTPException(status_code=403, detail="只有经理可以终审待经理审核单")
-        require_valid_pin(db, request.reviewer_name, request.reviewer_role, request.pin)
         if is_external_order(order):
             next_status = "已完成"
             order.completed_date = request.today or order.date
@@ -943,22 +868,25 @@ def transition_status(db: Session, order_id: str, request: MoldingSampleStatusRe
         else:
             next_status = "待生产"
     elif action == "经理驳回":
-        if order.status != "待经理审核" or request.reviewer_role != "经理":
+        ensure_permission(db, current_user, "molding_sample:manager_review")
+        if order.status != "待经理审核":
             raise HTTPException(status_code=403, detail="只有经理可以驳回待经理审核单")
-        require_valid_pin(db, request.reviewer_name, request.reviewer_role, request.pin)
         next_status = "已驳回"
         order.reject_reason = request.reason
     elif action == "工程重提":
-        if order.status != "已驳回" or request.reviewer_role != "工程部":
+        ensure_permission(db, current_user, "molding_sample:edit_draft")
+        if order.status != "已驳回":
             raise HTTPException(status_code=403, detail="只有工程部可以重提已驳回单")
         next_status = "待审核"
         order.reject_reason = ""
     elif action == "开始处理":
-        if order.status != "待生产" or request.reviewer_role != "啤机部":
+        ensure_permission(db, current_user, "molding_sample:production_start")
+        if order.status != "待生产":
             raise HTTPException(status_code=403, detail="只有啤机部可以开始处理待生产单")
         next_status = "生产中"
     elif action == "标记完成":
-        if order.status != "生产中" or request.reviewer_role != "啤机部":
+        ensure_permission(db, current_user, "molding_sample:production_complete")
+        if order.status != "生产中":
             raise HTTPException(status_code=403, detail="只有啤机部可以完成生产中单")
 
         missing_ids = completion_missing_item_ids(order)
@@ -973,21 +901,73 @@ def transition_status(db: Session, order_id: str, request: MoldingSampleStatusRe
 
     order.status = next_status
     order.updated_at = now_text()
-    append_audit(db, order, action, request.reviewer_name, request.reviewer_role, from_status, next_status, request.reason)
+    append_audit(db, order, action, current_user, from_status, next_status, request.reason)
+    if action == "经理通过" and next_status == "待生产":
+        append_notification(
+            db,
+            order,
+            target_module=PRODUCTION_TASK_MODULE,
+            target_role=PRODUCTION_TARGET_ROLE,
+            event_type="待生产",
+            title="啤办单已到待生产",
+            message=f"啤办单 {order.id} 已审核通过，啤机部可以开始生产执行。",
+            from_status=from_status,
+            to_status=next_status,
+            actor_name=current_user.display_name,
+        )
+    elif action == "开始处理":
+        mark_order_notifications_handled(
+            db,
+            order_id=order.id,
+            target_module=PRODUCTION_TASK_MODULE,
+            actor_name=current_user.display_name,
+        )
+        append_notification(
+            db,
+            order,
+            target_module=PRODUCTION_TASK_MODULE,
+            target_role=PRODUCTION_TARGET_ROLE,
+            event_type="生产开始",
+            title="啤机部已开始生产",
+            message=f"啤办单 {order.id} 已由啤机部开始处理。",
+            from_status=from_status,
+            to_status=next_status,
+            status="已处理",
+            actor_name=current_user.display_name,
+        )
+    elif action == "标记完成":
+        mark_order_notifications_handled(
+            db,
+            order_id=order.id,
+            target_module=PRODUCTION_TASK_MODULE,
+            actor_name=current_user.display_name,
+        )
+        append_notification(
+            db,
+            order,
+            target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+            target_role=ENGINEERING_TARGET_ROLE,
+            event_type="生产完成回传",
+            title="啤办生产完成",
+            message=f"啤机部已完成啤办单 {order.id}，实际用料和啤办费已回传。",
+            from_status=from_status,
+            to_status=next_status,
+            actor_name=current_user.display_name,
+        )
     db.commit()
-    return load_order(db, order_id)
+    db.expire_all()
+    return load_order(db, order_id, current_user)
 
 
 def replace_material_prices(
     db: Session,
     prices: list[MaterialPriceIn],
     rmb_to_hkd_rate: float,
-    manager_name: str = "",
-    manager_pin: str = "",
+    current_user: AuthContext,
 ) -> dict[str, Any]:
     if rmb_to_hkd_rate <= 0:
         raise HTTPException(status_code=400, detail="汇率必须大于 0")
-    require_valid_pin(db, manager_name, "经理", manager_pin)
+    ensure_permission(db, current_user, "molding_sample:price_update")
 
     db.query(MoldingSampleMaterialPrice).delete()
     for price in prices:
@@ -1004,8 +984,7 @@ def replace_material_prices(
     append_sensitive_audit(
         db,
         action="经理更新价格口径",
-        actor_name=manager_name,
-        actor_role="经理",
+        current_user=current_user,
         target_type="material_prices",
         target_name="原料价格表",
         detail=f"更新 {len(prices)} 条原料价格，汇率 {rmb_to_hkd_rate}。",

@@ -17,6 +17,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import {
   moldingSampleApi,
   type MoldingSampleDetailResponse,
+  type MoldingSampleNotificationResponse,
   type MoldingSampleStatusRequest,
 } from '@/api/moldingSample'
 import type {
@@ -46,7 +47,9 @@ const router = useRouter()
 const appStore = useAppStore()
 
 const today = '2026-07-03'
+const PRODUCTION_NOTIFICATION_MODULE = 'production_molding_sample_task'
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
+const apiNotifications = ref<MoldingSampleNotificationResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
 const actionMessage = ref('正在读取啤办生产任务...')
 const selectedOrderId = ref('')
@@ -89,6 +92,10 @@ const activeFactory = computed(() =>
   factoryContexts.find((factory) => factory.id === selectedFactoryId.value) ?? factoryContexts[1],
 )
 
+const notificationOrderIds = computed(() =>
+  new Set(apiNotifications.value.map((notification) => notification.order_id)),
+)
+
 const engineeringOrderRoute = computed(() => {
   const params = new URLSearchParams({ factory: selectedFactoryId.value })
   if (selectedTask.value?.order.id) {
@@ -100,7 +107,7 @@ const engineeringOrderRoute = computed(() => {
 
 const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
   if (apiRecords.value.length) {
-    return apiRecords.value.map((record) => ({
+    const records = apiRecords.value.map((record) => ({
       factory_id: record.order.factory_id,
       order: record.order,
       items: record.items,
@@ -108,6 +115,12 @@ const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
       requisitions: [],
       problems: [],
     }))
+
+    if (apiNotifications.value.length) {
+      return records.filter((record) => notificationOrderIds.value.has(record.order.id))
+    }
+
+    return []
   }
 
   return Object.values(moldingSampleFactoryRecords)
@@ -349,6 +362,31 @@ function replaceApiRecord(record: MoldingSampleDetailResponse) {
   apiRecords.value = exists
     ? apiRecords.value.map((entry) => entry.order.id === record.order.id ? record : entry)
     : [record, ...apiRecords.value]
+
+  replaceApiNotificationsForOrder(record)
+}
+
+function replaceApiNotificationsForOrder(record: MoldingSampleDetailResponse) {
+  const productionNotifications = (record.notifications ?? [])
+    .filter((notification) => notification.target_module === PRODUCTION_NOTIFICATION_MODULE)
+  const otherNotifications = apiNotifications.value
+    .filter((notification) => notification.order_id !== record.order.id)
+
+  apiNotifications.value = [...productionNotifications, ...otherNotifications]
+    .sort((left, right) => right.created_at.localeCompare(left.created_at))
+}
+
+function getLatestNotification(orderId: string) {
+  return apiNotifications.value.find((notification) => notification.order_id === orderId) ?? null
+}
+
+function getNotificationMeta(orderId: string) {
+  const notification = getLatestNotification(orderId)
+  if (!notification) {
+    return '本地示例通知'
+  }
+
+  return `${notification.event_type} · ${notification.status}`
 }
 
 async function loadApiData() {
@@ -356,14 +394,28 @@ async function loadApiData() {
   actionMessage.value = '正在读取啤办生产任务...'
 
   try {
-    apiRecords.value = await moldingSampleApi.listOrders()
-    apiState.value = apiRecords.value.length ? 'connected' : 'empty'
-    actionMessage.value = apiRecords.value.length
-      ? '生产任务单已同步，啤机动作会写回同一张啤办单。'
-      : '当前没有正式啤办单，暂未生成生产任务。'
+    const [orders, notifications] = await Promise.all([
+      moldingSampleApi.listOrders(),
+      moldingSampleApi.listNotifications({
+        target_module: PRODUCTION_NOTIFICATION_MODULE,
+        factory_id: selectedFactoryId.value,
+      }),
+    ])
+    apiRecords.value = orders
+    apiNotifications.value = notifications
+    const formalTaskCount = orders.filter((record) =>
+      record.order.factory_id === selectedFactoryId.value
+      && notificationOrderIds.value.has(record.order.id)
+      && !isExternalMoldingSampleOrder(record.order),
+    ).length
+    apiState.value = formalTaskCount ? 'connected' : 'empty'
+    actionMessage.value = formalTaskCount
+      ? `已从独立通知表同步 ${notifications.length} 条生产通知。`
+      : '当前独立通知表没有待生产任务通知。'
   }
   catch (error) {
     apiRecords.value = []
+    apiNotifications.value = []
     apiState.value = 'fallback'
     actionMessage.value = `当前网络异常，暂以本地示例单据展示生产任务。${getApiErrorMessage(error)}`
   }
@@ -449,8 +501,6 @@ async function runProductionTransition(action: '开始处理' | '标记完成') 
 
     const payload: MoldingSampleStatusRequest = {
       action,
-      reviewer_name: '啤机部',
-      reviewer_role: '啤机部',
       reason: action === '开始处理'
         ? '啤办生产任务单接收后开始执行。'
         : '啤机部完成生产并回传工程啤办单。',
@@ -556,7 +606,7 @@ watchEffect(() => {
 
       <div class="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
         <aside class="xl:sticky xl:top-24 xl:self-start">
-          <SectionPanel title="任务通知队列" subtitle="工程新建后先进入通知区，待审核完成后转入可执行任务">
+          <SectionPanel title="任务通知队列" subtitle="独立通知表接收工程新建通知，待审核完成后转入可执行任务">
             <div v-if="taskEntries.length" class="space-y-3">
               <button
                 v-for="entry in taskEntries"
@@ -570,6 +620,7 @@ watchEffect(() => {
                   <div class="min-w-0">
                     <p class="truncate text-sm font-semibold text-slate-950">{{ entry.order.id }} · {{ entry.order.product_name }}</p>
                     <p class="mt-1 truncate text-xs text-slate-500">{{ entry.order.client_name }} · {{ entry.order.eng_name }}</p>
+                    <p class="mt-1 truncate text-xs font-semibold text-blue-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
                   </div>
                   <StatusPill :label="getTaskStageLabel(entry.order.status)" :tone="statusTones[entry.order.status]" compact />
                 </div>
