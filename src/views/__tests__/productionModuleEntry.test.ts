@@ -13,9 +13,12 @@ assert.match(enterpriseSource, /route: '\/modules\/production\/molding-sample-ta
 assert.doesNotMatch(enterpriseSource, /啤机外发协同/)
 assert.doesNotMatch(enterpriseSource, /\/pi-outsource\//)
 
-assert.match(moduleCenterSource, /getMoldingSampleProductionTaskStats/)
 assert.match(moduleCenterSource, /module\.id === 'molding-sample-production-task'/)
 assert.match(moduleCenterSource, /\/modules\/production\/molding-sample-tasks\?factory=/)
+assert.match(moduleCenterSource, /进入任务页读取正式通知/)
+assert.match(moduleCenterSource, /进入模块后读取正式列表/)
+assert.doesNotMatch(moduleCenterSource, /moldingSampleWorkflowMock/)
+assert.doesNotMatch(moduleCenterSource, /getMoldingSampleProductionTaskStats/)
 
 assert.match(routerSource, /path: '\/modules\/production\/molding-sample-tasks'/)
 assert.match(routerSource, /name: 'molding-sample-production-tasks'/)

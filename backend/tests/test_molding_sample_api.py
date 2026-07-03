@@ -1,4 +1,5 @@
 import importlib
+import sqlite3
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -25,6 +26,113 @@ def make_client(monkeypatch):
 
     main = importlib.import_module("app.main")
     return TestClient(main.app)
+
+
+def make_client_with_database(monkeypatch, database_path: Path):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            del sys.modules[module_name]
+
+    main = importlib.import_module("app.main")
+    return TestClient(main.app, raise_server_exceptions=False)
+
+
+def create_legacy_molding_sample_sqlite_database(database_path: Path):
+    database_path.parent.mkdir(exist_ok=True)
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE molding_sample_orders (
+              id VARCHAR(64) PRIMARY KEY,
+              factory_id VARCHAR(64),
+              order_number VARCHAR(128),
+              doc_number VARCHAR(128),
+              product_name VARCHAR(255),
+              client_name VARCHAR(255),
+              date VARCHAR(20),
+              stage VARCHAR(20),
+              order_type VARCHAR(20),
+              workshop VARCHAR(64),
+              send_to VARCHAR(64),
+              supervisor VARCHAR(128),
+              eng_name VARCHAR(128),
+              reason TEXT,
+              status VARCHAR(32),
+              reject_reason TEXT,
+              completed_date VARCHAR(20),
+              created_at VARCHAR(32),
+              updated_at VARCHAR(32)
+            );
+            CREATE TABLE molding_sample_items (
+              id VARCHAR(64) PRIMARY KEY,
+              order_id VARCHAR(64),
+              sort_order INTEGER,
+              mold_id VARCHAR(128),
+              mold_name VARCHAR(255),
+              machine_type VARCHAR(64),
+              material VARCHAR(255),
+              color VARCHAR(255),
+              pigment_no VARCHAR(128),
+              quantity VARCHAR(64),
+              shoot_qty INTEGER,
+              gross_weight_g FLOAT,
+              required_material_kg FLOAT,
+              mold_return_time VARCHAR(32),
+              completion_time VARCHAR(32),
+              notes TEXT,
+              receipt_no VARCHAR(128),
+              collected_weight_kg FLOAT,
+              actual_weight_kg FLOAT,
+              actual_amount_hkd FLOAT,
+              injection_cost FLOAT,
+              injection_cost_hkd FLOAT,
+              exchange_rate_at_save FLOAT
+            );
+            CREATE TABLE molding_sample_audit_logs (
+              id VARCHAR(96) PRIMARY KEY,
+              order_id VARCHAR(64),
+              action VARCHAR(128),
+              actor_name VARCHAR(128),
+              actor_role VARCHAR(64),
+              from_status VARCHAR(32),
+              to_status VARCHAR(32),
+              reason TEXT,
+              created_at VARCHAR(32)
+            );
+            CREATE TABLE molding_sample_sensitive_audit_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              action VARCHAR(128),
+              actor_name VARCHAR(128),
+              actor_role VARCHAR(64),
+              target_type VARCHAR(64),
+              target_name VARCHAR(128),
+              detail TEXT,
+              created_at VARCHAR(32)
+            );
+            INSERT INTO molding_sample_orders (
+              id, factory_id, order_number, doc_number, product_name, client_name, date, stage,
+              order_type, workshop, send_to, supervisor, eng_name, reason, status,
+              reject_reason, completed_date, created_at, updated_at
+            ) VALUES (
+              'BP-LEGACY-001', 'huaxing', 'LEGACY-001', 'W-G026-00', '旧库啤办单',
+              'Legacy Client', '2026-07-01', 'T0', '啤办', 'A车间', '',
+              '华兴工程主管', '华兴工程师', '旧库兼容测试', '待审核',
+              '', '', '2026-07-01 08:00', '2026-07-01 08:00'
+            );
+            INSERT INTO molding_sample_audit_logs (
+              id, order_id, action, actor_name, actor_role, from_status, to_status, reason, created_at
+            ) VALUES (
+              'BP-LEGACY-001-audit-001', 'BP-LEGACY-001', '工程提交',
+              '华兴工程师', '工程师', '待审核', '待审核', '旧库审核记录', '2026-07-01 08:00'
+            );
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def login_as(client, username: str):
@@ -83,6 +191,36 @@ def test_unauthenticated_access_to_molding_sample_api_is_rejected(client):
     response = client.get("/api/injection")
 
     assert response.status_code == 401
+
+
+def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeypatch):
+    TEST_TMP_DIR.mkdir(exist_ok=True)
+    database_path = TEST_TMP_DIR / f"legacy_molding_sample_{uuid4().hex}.db"
+    create_legacy_molding_sample_sqlite_database(database_path)
+
+    with make_client_with_database(monkeypatch, database_path) as legacy_client:
+        login_as(legacy_client, "engineer")
+        response = legacy_client.get("/api/injection")
+
+    assert response.status_code == 200
+    orders = response.json()
+    assert orders[0]["order"]["id"] == "BP-LEGACY-001"
+    assert orders[0]["audit_logs"][0]["actor_user_id"] == ""
+    assert orders[0]["audit_logs"][0]["actor_roles"] == ""
+    assert orders[0]["audit_logs"][0]["factory_scope"] == ""
+
+    connection = sqlite3.connect(database_path)
+    try:
+        audit_columns = {row[1] for row in connection.execute("PRAGMA table_info(molding_sample_audit_logs)")}
+        sensitive_audit_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(molding_sample_sensitive_audit_logs)")
+        }
+    finally:
+        connection.close()
+
+    assert {"actor_user_id", "actor_roles", "factory_scope"} <= audit_columns
+    assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
 
 
 def test_engineer_can_create_order_and_production_user_reads_notification_after_manager_approval(client):

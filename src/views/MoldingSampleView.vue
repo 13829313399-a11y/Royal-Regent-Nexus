@@ -34,15 +34,12 @@ import {
   X,
 } from '@lucide/vue'
 import { RouterLink, useRoute } from 'vue-router'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import {
   factoryContexts,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
-import {
-  getMoldingSampleRecord,
-  moldingSampleFactoryRecords,
-} from '@/data/moldingSampleWorkflowMock'
 import {
   buildCompletionGate,
   isExternalMoldingSampleOrder,
@@ -63,6 +60,7 @@ import {
 } from '@/lib/moldingSampleManualCreate'
 import type {
   MoldingSampleItem,
+  MoldingSampleOrder,
   MoldingSampleStatus,
   MoldingSampleWorkflowRecord,
 } from '@/types/moldingSample'
@@ -110,7 +108,7 @@ const activeView = ref<ViewKey>('overview')
 const selectedOrderId = ref(readQueryString(route.query.order_id))
 const searchKeyword = ref('')
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
-const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
+const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取正式啤办单列表...')
 const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
 const createErrors = ref<string[]>([])
@@ -188,11 +186,7 @@ const productionTaskRoute = computed(() => {
 })
 
 const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
-  if (apiState.value === 'connected' || apiState.value === 'empty') {
-    return apiRecords.value.map(toWorkflowRecord)
-  }
-
-  return Object.values(moldingSampleFactoryRecords)
+  return apiRecords.value.map(toWorkflowRecord)
 })
 
 const factoryRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
@@ -219,18 +213,22 @@ const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
   ].some((value) => String(value).toLowerCase().includes(keyword)))
 })
 
-const selectedRecord = computed<MoldingSampleWorkflowRecord>(() =>
+const selectedRecord = computed<MoldingSampleWorkflowRecord | null>(() =>
   visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
     ?? factoryRecords.value.find((record) => record.order.id === selectedOrderId.value)
     ?? factoryRecords.value[0]
-    ?? getMoldingSampleRecord(selectedFactoryId.value),
+    ?? null,
 )
 
-const selectedOrder = computed(() => selectedRecord.value.order)
-const selectedItems = computed(() => selectedRecord.value.items)
-const selectedProblems = computed(() => selectedRecord.value.problems)
-const selectedCompletionGate = computed(() => buildCompletionGate(selectedOrder.value, selectedItems.value))
-const isSelectedExternal = computed(() => isExternalMoldingSampleOrder(selectedOrder.value))
+const selectedOrder = computed<MoldingSampleOrder>(() => selectedRecord.value?.order ?? createEmptySelectedOrder())
+const selectedItems = computed(() => selectedRecord.value?.items ?? [])
+const selectedProblems = computed(() => selectedRecord.value?.problems ?? [])
+const selectedAuditLogs = computed(() => selectedRecord.value?.audit_logs ?? [])
+const selectedCompletionGate = computed(() => selectedRecord.value
+  ? buildCompletionGate(selectedOrder.value, selectedItems.value)
+  : { can_complete: false, missing_item_ids: [], message: '暂无正式单据' },
+)
+const isSelectedExternal = computed(() => selectedRecord.value ? isExternalMoldingSampleOrder(selectedOrder.value) : false)
 
 const kpiCards = computed<KpiCard[]>(() => {
   const records = visibleRecords.value
@@ -298,11 +296,14 @@ const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
 const canExportSelectedOrder = computed(() =>
-  apiState.value === 'connected'
+  Boolean(selectedRecord.value)
+  && apiState.value === 'connected'
   && apiRecords.value.some((record) => record.order.id === selectedOrder.value.id),
 )
 const canEditSelectedRejectedOrder = computed(() =>
-  selectedOrder.value.status === '已驳回' && canEditDraftOrder.value,
+  Boolean(selectedRecord.value)
+  && selectedOrder.value.status === '已驳回'
+  && canEditDraftOrder.value,
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
@@ -324,6 +325,30 @@ function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWor
     audit_logs: record.audit_logs,
     requisitions: [],
     problems: record.problems ?? [],
+  }
+}
+
+function createEmptySelectedOrder(): MoldingSampleOrder {
+  return {
+    id: '',
+    factory_id: selectedFactoryId.value,
+    order_number: '',
+    doc_number: '',
+    product_name: '',
+    client_name: '',
+    date: '',
+    stage: '',
+    order_type: '啤办',
+    workshop: '华登车间',
+    send_to: '',
+    supervisor: '',
+    eng_name: '',
+    reason: '',
+    status: '待审核',
+    reject_reason: '',
+    completed_date: '',
+    created_at: '',
+    updated_at: '',
   }
 }
 
@@ -424,6 +449,11 @@ function startCreateOrder() {
 }
 
 function startRejectedEdit() {
+  if (!selectedRecord.value) {
+    actionMessage.value = '请先选择一张正式啤办单。'
+    return
+  }
+
   if (!canEditSelectedRejectedOrder.value) {
     actionMessage.value = '当前账号没有编辑驳回单权限。'
     return
@@ -473,8 +503,8 @@ async function loadApiData() {
   }
   catch (error) {
     apiRecords.value = []
-    apiState.value = 'fallback'
-    actionMessage.value = `正式列表读取失败，当前显示本地示例数据：${getApiErrorMessage(error)}`
+    apiState.value = 'error'
+    actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
   }
 }
 
@@ -667,6 +697,10 @@ async function resubmitRejectedOrder(payload: NonNullable<ReturnType<typeof buil
 }
 
 function getApprovalActor(): ApprovalActor | null {
+  if (!selectedRecord.value) {
+    return null
+  }
+
   if (selectedOrder.value.status === '待审核') {
     return {
       passAction: '主管通过',
@@ -906,13 +940,7 @@ onMounted(() => {
             <Building2 class="size-4" aria-hidden="true" />
             {{ activeFactory.shortName }}
           </span>
-          <span class="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1">
-            <span class="flex h-6 w-6 items-center justify-center rounded-full bg-teal-100 text-[11px] font-bold text-teal-700">工</span>
-            <span class="leading-tight">
-              <span class="block text-[12px] font-semibold">工程部</span>
-              <span class="block text-[10px] text-slate-400">开单 / 审核跟进</span>
-            </span>
-          </span>
+          <AccountMenu />
         </div>
       </div>
 
@@ -958,7 +986,7 @@ onMounted(() => {
     <div class="mx-auto max-w-[1720px] px-5 py-4">
       <div
         class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[12px]"
-        :class="apiState === 'fallback' ? 'border-amber-200 bg-amber-50 text-amber-800' : apiState === 'connected' ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'"
+        :class="apiState === 'error' ? 'border-red-200 bg-red-50 text-red-700' : apiState === 'connected' ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'"
       >
         <span>{{ actionMessage }}</span>
         <div class="flex flex-wrap items-center gap-1.5">
@@ -1347,7 +1375,7 @@ onMounted(() => {
         </div>
       </section>
 
-      <section v-else-if="factoryRecords.length" class="space-y-4">
+      <section v-else-if="selectedRecord" class="space-y-4">
         <div class="flex items-center gap-2 text-[12px] text-slate-400">
           <button type="button" class="hover:text-slate-900" @click="setView('overview')">看板总览</button>
           <ChevronRight class="size-3.5" aria-hidden="true" />
@@ -1578,13 +1606,13 @@ onMounted(() => {
                 <span class="text-[13px] font-bold">审核轨迹</span>
               </div>
               <ol class="relative space-y-4 border-l border-slate-200 pl-4">
-                <li v-for="log in selectedRecord.audit_logs" :key="log.id" class="relative">
+                <li v-for="log in selectedAuditLogs" :key="log.id" class="relative">
                   <span class="absolute -left-[21px] top-0.5 flex h-3.5 w-3.5 rounded-full bg-teal-400 ring-4 ring-white" />
                   <div class="text-[12px] font-semibold">{{ log.action }}</div>
                   <div class="text-[11px] text-slate-400">{{ log.actor_name }} · {{ log.actor_role }} · {{ log.created_at }}</div>
                   <div class="mt-1 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">{{ log.reason }}</div>
                 </li>
-                <li v-if="!selectedRecord.audit_logs.length" class="relative">
+                <li v-if="!selectedAuditLogs.length" class="relative">
                   <span class="absolute -left-[21px] top-0.5 flex h-3.5 w-3.5 rounded-full bg-slate-200 ring-4 ring-white" />
                   <div class="text-[12px] font-semibold text-slate-400">暂无轨迹</div>
                 </li>
@@ -1595,8 +1623,12 @@ onMounted(() => {
       </section>
 
       <section v-else class="rounded-lg border border-slate-200 bg-white p-8 text-center">
-        <p class="text-base font-semibold text-slate-950">当前厂区暂无正式啤办单</p>
-        <p class="mt-2 text-sm text-slate-500">可以先在“工程部 · 新建开单”提交一张新啤办单，提交成功后会进入正式看板。</p>
+        <p class="text-base font-semibold text-slate-950">
+          {{ apiState === 'error' ? '正式数据读取失败' : '当前厂区暂无正式啤办单' }}
+        </p>
+        <p class="mt-2 text-sm text-slate-500">
+          {{ apiState === 'error' ? '不会显示本地示例单据，请修复登录权限、接口或网络后刷新正式列表。' : '可以先在“工程部 · 新建开单”提交一张新啤办单，提交成功后会进入正式看板。' }}
+        </p>
         <button
           type="button"
           class="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white"

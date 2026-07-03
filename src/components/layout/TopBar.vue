@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Bell, Search } from '@lucide/vue'
 import { useRoute } from 'vue-router'
 import { factoryContexts } from '@/data/enterpriseMock'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import RouteLoadingBar from '@/components/layout/RouteLoadingBar.vue'
 import { useAppStore } from '@/stores/app'
 
@@ -78,9 +79,7 @@ const getTopBarFactoryLabel = (factory: (typeof factoryContexts)[number]) => (
         <Bell class="size-4" aria-hidden="true" />
       </button>
 
-      <div class="flex size-9 items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-sm font-semibold text-slate-700">
-        吴
-      </div>
+      <AccountMenu />
     </div>
     <RouteLoadingBar />
   </header>

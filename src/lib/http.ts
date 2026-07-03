@@ -2,6 +2,7 @@ import axios, { type AxiosError, type AxiosInstance } from 'axios'
 
 export interface ApiErrorPayload {
   message?: string
+  detail?: unknown
   code?: string
   details?: unknown
 }
@@ -22,7 +23,7 @@ http.interceptors.response.use(
 
 export function getApiErrorMessage(error: unknown) {
   if (axios.isAxiosError<ApiErrorPayload>(error)) {
-    return error.response?.data?.message ?? error.message
+    return extractApiErrorPayloadMessage(error.response?.data) ?? error.message
   }
 
   if (error instanceof Error) {
@@ -30,4 +31,52 @@ export function getApiErrorMessage(error: unknown) {
   }
 
   return 'Unexpected request error'
+}
+
+function extractApiErrorPayloadMessage(payload: ApiErrorPayload | undefined) {
+  if (!payload) {
+    return undefined
+  }
+
+  if (payload.message) {
+    return payload.message
+  }
+
+  return formatApiDetail(payload.detail)
+}
+
+function formatApiDetail(detail: unknown): string | undefined {
+  if (typeof detail === 'string') {
+    return detail
+  }
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          return entry
+        }
+        if (entry && typeof entry === 'object' && 'msg' in entry) {
+          const message = (entry as { msg?: unknown }).msg
+          return typeof message === 'string' ? message : ''
+        }
+
+        return ''
+      })
+      .filter(Boolean)
+
+    return messages.length ? messages.join('; ') : undefined
+  }
+
+  if (detail && typeof detail === 'object') {
+    const record = detail as { message?: unknown; msg?: unknown }
+    if (typeof record.message === 'string') {
+      return record.message
+    }
+    if (typeof record.msg === 'string') {
+      return record.msg
+    }
+  }
+
+  return undefined
 }

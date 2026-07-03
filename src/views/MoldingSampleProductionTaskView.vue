@@ -24,7 +24,6 @@ import {
   type ProductionFactoryContextId,
   type Tone,
 } from '@/data/enterpriseMock'
-import { moldingSampleFactoryRecords } from '@/data/moldingSampleWorkflowMock'
 import {
   applyCostPreviewToItems,
   buildCompletionGate,
@@ -52,6 +51,7 @@ import type {
   MoldingSampleWorkflowRecord,
 } from '@/types/moldingSample'
 import StatusPill from '@/components/common/StatusPill.vue'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
 
 interface ItemFillbackDraft {
@@ -60,6 +60,7 @@ interface ItemFillbackDraft {
 }
 
 type ProductionQueueFilter = '全部' | '待接单' | '生产中'
+type NotificationStatus = MoldingSampleNotificationResponse['status']
 
 const route = useRoute()
 const router = useRouter()
@@ -69,16 +70,15 @@ const today = '2026-07-03'
 const PRODUCTION_NOTIFICATION_MODULE = 'production_molding_sample_task'
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiNotifications = ref<MoldingSampleNotificationResponse[]>([])
-const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
+const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取啤办生产任务...')
 const selectedOrderId = ref('')
 const queueFilter = ref<ProductionQueueFilter>('全部')
 const productionProblem = ref('')
 const problemSubmitting = ref(false)
+const notificationUpdating = ref(false)
 const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
-const localOrderOverrides = ref<Record<string, Partial<MoldingSampleOrder>>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
-const localProblemOverrides = ref<Record<string, MoldingSampleProblem[]>>({})
 
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'blue',
@@ -121,8 +121,12 @@ const engineeringOrderRoute = computed(() => {
 })
 
 const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
-  if (apiRecords.value.length) {
-    const records = apiRecords.value.map((record) => ({
+  if (!apiRecords.value.length || !apiNotifications.value.length) {
+    return []
+  }
+
+  return apiRecords.value
+    .map((record) => ({
       factory_id: record.order.factory_id,
       order: record.order,
       items: record.items,
@@ -130,32 +134,16 @@ const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
       requisitions: [],
       problems: record.problems ?? [],
     }))
-
-    if (apiNotifications.value.length) {
-      return records.filter((record) => notificationOrderIds.value.has(record.order.id))
-    }
-
-    return []
-  }
-
-  return Object.values(moldingSampleFactoryRecords)
+    .filter((record) => notificationOrderIds.value.has(record.order.id))
 })
 
 const taskRecords = computed(() =>
   sourceRecords.value.map((record) => ({
     ...record,
-    order: {
-      ...record.order,
-      ...(localOrderOverrides.value[record.order.id] ?? {}),
-    },
     items: record.items.map((item) => ({
       ...item,
       ...(localItemOverrides.value[record.order.id]?.[item.id] ?? {}),
     })),
-    problems: [
-      ...record.problems,
-      ...(localProblemOverrides.value[record.order.id] ?? []),
-    ],
   })),
 )
 
@@ -175,6 +163,10 @@ const selectedTask = computed(() => {
     ?? taskEntries.value[0]
     ?? null
 })
+
+const selectedNotification = computed(() =>
+  selectedTask.value ? getLatestNotification(selectedTask.value.order.id) : null,
+)
 
 const activeItems = computed<MoldingSampleItem[]>(() => {
   if (!selectedTask.value) {
@@ -268,6 +260,12 @@ const selectedMissingItems = computed(() => {
 const canStartSelectedTask = computed(() => selectedTask.value?.order.status === '待生产')
 const canFillbackSelectedTask = computed(() => selectedTask.value?.order.status === '生产中')
 const canCompleteSelectedTask = computed(() => canFillbackSelectedTask.value && completionGate.value.can_complete)
+const canMarkSelectedNotificationRead = computed(() =>
+  selectedNotification.value?.status === '未读',
+)
+const canMarkSelectedNotificationHandled = computed(() =>
+  Boolean(selectedNotification.value && selectedNotification.value.status !== '已处理'),
+)
 
 function readQueryString(value: unknown) {
   if (typeof value === 'string') {
@@ -450,26 +448,15 @@ function replaceApiRecord(record: MoldingSampleDetailResponse) {
 }
 
 function appendProblemForOrder(orderId: string, problem: MoldingSampleProblem) {
-  if (apiState.value === 'connected' || apiState.value === 'empty') {
-    apiRecords.value = apiRecords.value.map((entry) => entry.order.id === orderId
-      ? {
-          ...entry,
-          problems: [
-            problem,
-            ...(entry.problems ?? []).filter((existing) => existing.id !== problem.id),
-          ],
-        }
-      : entry)
-    return
-  }
-
-  localProblemOverrides.value = {
-    ...localProblemOverrides.value,
-    [orderId]: [
-      problem,
-      ...(localProblemOverrides.value[orderId] ?? []).filter((existing) => existing.id !== problem.id),
-    ],
-  }
+  apiRecords.value = apiRecords.value.map((entry) => entry.order.id === orderId
+    ? {
+        ...entry,
+        problems: [
+          problem,
+          ...(entry.problems ?? []).filter((existing) => existing.id !== problem.id),
+        ],
+      }
+    : entry)
 }
 
 function replaceApiNotificationsForOrder(record: MoldingSampleDetailResponse) {
@@ -482,6 +469,13 @@ function replaceApiNotificationsForOrder(record: MoldingSampleDetailResponse) {
     .sort((left, right) => right.created_at.localeCompare(left.created_at))
 }
 
+function replaceApiNotification(notification: MoldingSampleNotificationResponse) {
+  apiNotifications.value = [
+    notification,
+    ...apiNotifications.value.filter((entry) => entry.id !== notification.id),
+  ].sort((left, right) => right.created_at.localeCompare(left.created_at))
+}
+
 function getLatestNotification(orderId: string) {
   return apiNotifications.value.find((notification) => notification.order_id === orderId) ?? null
 }
@@ -489,10 +483,21 @@ function getLatestNotification(orderId: string) {
 function getNotificationMeta(orderId: string) {
   const notification = getLatestNotification(orderId)
   if (!notification) {
-    return '本地示例通知'
+    return '未找到正式通知'
   }
 
   return `${notification.event_type} · ${notification.status}`
+}
+
+function getNotificationStatusClass(status: NotificationStatus) {
+  if (status === '未读') {
+    return 'bg-amber-100 text-amber-700'
+  }
+  if (status === '已读') {
+    return 'bg-blue-100 text-blue-700'
+  }
+
+  return 'bg-emerald-100 text-emerald-700'
 }
 
 async function loadApiData() {
@@ -522,8 +527,8 @@ async function loadApiData() {
   catch (error) {
     apiRecords.value = []
     apiNotifications.value = []
-    apiState.value = 'fallback'
-    actionMessage.value = `当前网络异常，暂以本地示例单据展示生产任务。${getApiErrorMessage(error)}`
+    apiState.value = 'error'
+    actionMessage.value = `真实任务读取失败：${getApiErrorMessage(error)}。不会显示本地示例任务。`
   }
 }
 
@@ -539,6 +544,39 @@ async function selectTask(orderId: string, factoryId: string) {
   })
 }
 
+async function updateSelectedNotificationStatus(status: NotificationStatus) {
+  const notification = selectedNotification.value
+
+  if (!notification) {
+    actionMessage.value = '当前任务没有可更新的正式通知。'
+    return
+  }
+  if (notification.status === '已处理') {
+    actionMessage.value = '当前通知已处理，无需重复更新。'
+    return
+  }
+  if (status === '已读' && notification.status !== '未读') {
+    actionMessage.value = '当前通知已读，无需重复标记。'
+    return
+  }
+
+  notificationUpdating.value = true
+
+  try {
+    const updated = await moldingSampleApi.updateNotification(notification.id, { status })
+    replaceApiNotification(updated)
+    actionMessage.value = status === '已读'
+      ? `通知已读：${updated.order_id}。`
+      : `通知已处理：${updated.order_id}。`
+  }
+  catch (error) {
+    actionMessage.value = `通知状态更新失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    notificationUpdating.value = false
+  }
+}
+
 async function saveProductionFillback() {
   if (!selectedTask.value) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
@@ -548,8 +586,8 @@ async function saveProductionFillback() {
   const orderId = selectedTask.value.order.id
   applyLocalItemPatches(orderId)
 
-  if (apiState.value === 'fallback') {
-    actionMessage.value = '当前为离线示例，啤机回填已暂存在本页。'
+  if (apiState.value !== 'connected') {
+    actionMessage.value = '真实任务读取失败或暂无正式任务，不能保存回填。'
     return
   }
 
@@ -578,25 +616,13 @@ async function runProductionTransition(action: '开始处理' | '标记完成') 
   }
 
   const orderId = selectedTask.value.order.id
-  const nextStatus: MoldingSampleStatus = action === '开始处理' ? '生产中' : '已完成'
 
   if (action === '标记完成') {
     applyLocalItemPatches(orderId)
   }
 
-  if (apiState.value === 'fallback') {
-    localOrderOverrides.value = {
-      ...localOrderOverrides.value,
-      [orderId]: {
-        ...(localOrderOverrides.value[orderId] ?? {}),
-        status: nextStatus,
-        completed_date: action === '标记完成' ? today : selectedTask.value.order.completed_date,
-        updated_at: `${today} 16:30`,
-      },
-    }
-    actionMessage.value = action === '开始处理'
-      ? '离线示例已切换到生产中。'
-      : '离线示例已完成并回传到工程啤办单状态。'
+  if (apiState.value !== 'connected') {
+    actionMessage.value = '真实任务读取失败或暂无正式任务，不能更新生产状态。'
     return
   }
 
@@ -630,26 +656,13 @@ async function reportProductionProblem() {
   }
 
   const orderId = selectedTask.value.order.id
-  problemSubmitting.value = true
 
-  if (apiState.value === 'fallback') {
-    appendProblemForOrder(orderId, {
-      id: `${orderId}-local-problem-${Date.now()}`,
-      factory_id: selectedTask.value.factory_id,
-      order_type: 'injection',
-      order_id: orderId,
-      order_number: selectedTask.value.order.order_number,
-      description: problem,
-      reported_by: '啤机部',
-      status: '待处理',
-      created_at: `${today} 16:30`,
-      resolved_at: '',
-    })
-    actionMessage.value = `离线示例已暂存问题反馈：${problem}`
-    productionProblem.value = ''
-    problemSubmitting.value = false
+  if (apiState.value !== 'connected') {
+    actionMessage.value = '真实任务读取失败或暂无正式任务，不能上报问题。'
     return
   }
+
+  problemSubmitting.value = true
 
   try {
     const created = await moldingSampleApi.createProblem({
@@ -704,9 +717,12 @@ watchEffect(() => {
         <span class="font-semibold text-slate-700">
           生产任务单 · {{ selectedTask?.order.id || '未选择' }}
         </span>
-        <span class="ml-auto hidden font-medium text-slate-500 lg:inline">
-          当前厂区：{{ activeFactory.shortName }} · {{ actionMessage }}
-        </span>
+        <div class="ml-auto flex items-center gap-2">
+          <span class="hidden font-medium text-slate-500 lg:inline">
+            当前厂区：{{ activeFactory.shortName }} · {{ actionMessage }}
+          </span>
+          <AccountMenu />
+        </div>
       </div>
 
       <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -814,6 +830,47 @@ watchEffect(() => {
                   <span>{{ selectedTask.order.workshop }}</span>
                   <span>工程 {{ selectedTask.order.eng_name }}</span>
                   <span>{{ getTaskStageDetail(selectedTask.order) }}</span>
+                </div>
+                <div
+                  v-if="selectedNotification"
+                  class="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                >
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="text-[11px] font-semibold text-slate-500">通知状态</span>
+                      <span
+                        class="rounded-full px-2 py-0.5 text-[10px] font-bold"
+                        :class="getNotificationStatusClass(selectedNotification.status)"
+                      >
+                        {{ selectedNotification.status }}
+                      </span>
+                    </div>
+                    <p class="mt-0.5 truncate text-[11px] text-slate-500">
+                      {{ selectedNotification.title }} · {{ selectedNotification.created_at }}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    :disabled="notificationUpdating || !canMarkSelectedNotificationRead"
+                    class="h-7 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    @click="updateSelectedNotificationStatus('已读')"
+                  >
+                    标记已读
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="notificationUpdating || !canMarkSelectedNotificationHandled"
+                    class="h-7 rounded-md bg-slate-900 px-2 text-[11px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    @click="updateSelectedNotificationStatus('已处理')"
+                  >
+                    标记已处理
+                  </button>
+                </div>
+                <div
+                  v-else
+                  class="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500"
+                >
+                  当前任务未找到正式通知，刷新任务后可同步通知状态。
                 </div>
               </div>
               <div class="rounded-lg bg-slate-900 px-3 py-2 text-right text-white">
@@ -1052,7 +1109,12 @@ watchEffect(() => {
         </section>
 
         <section v-else class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-          暂无啤办生产任务单。工程新建内部啤办单后，这里会先显示通知。
+          <p class="font-semibold text-slate-950">
+            {{ apiState === 'error' ? '真实任务读取失败' : '暂无啤办生产任务单。' }}
+          </p>
+          <p class="mt-2">
+            {{ apiState === 'error' ? '不会显示本地示例任务，请修复登录权限、接口或网络后刷新任务。' : '工程新建内部啤办单后，这里会先显示通知。' }}
+          </p>
         </section>
       </div>
     </div>

@@ -8,10 +8,6 @@ import {
   isModuleDepartmentId,
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
-import {
-  getMoldingSampleModuleStats,
-  getMoldingSampleProductionTaskStats,
-} from '@/data/moldingSampleWorkflowMock'
 import DepartmentTabs from '@/components/modules/DepartmentTabs.vue'
 import ModuleCard from '@/components/modules/ModuleCard.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'
@@ -39,8 +35,13 @@ const visibleModules = computed(() => {
       return {
         ...module,
         owner: `${appStore.activeProductionFactory.shortName} · 工程部公共模块`,
-        stats: getMoldingSampleModuleStats(appStore.activeProductionFactory.id),
+        stats: '进入模块后读取正式列表',
         route: `/modules/molding-sample?factory=${appStore.activeProductionFactory.id}`,
+        statusMetrics: [
+          { label: '单据', value: '正式接口', tone: 'teal' as const },
+          { label: '失败', value: '显错', tone: 'red' as const },
+          { label: '示例', value: '不兜底', tone: 'slate' as const },
+        ],
       }
     }
 
@@ -60,8 +61,13 @@ const visibleModules = computed(() => {
       return {
         ...module,
         owner: `${appStore.activeProductionFactory.shortName} · 啤机部任务单`,
-        stats: getMoldingSampleProductionTaskStats(appStore.activeProductionFactory.id),
+        stats: '进入任务页读取正式通知',
         route,
+        statusMetrics: [
+          { label: '通知', value: '正式接口', tone: 'teal' as const },
+          { label: '失败', value: '显错', tone: 'red' as const },
+          { label: '回填', value: '不离线', tone: 'slate' as const },
+        ],
       }
     }
 

@@ -27,6 +27,8 @@ for (const requiredCopy of [
   '暂无啤机部反馈问题',
   '啤机部通知',
   '经理审核通过后',
+  '正式数据读取失败',
+  '不会显示本地示例单据',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -48,9 +50,9 @@ for (const requiredImplementation of [
   'boardColumns',
   'selectedFactoryId',
   'productionTaskRoute',
-  'moldingSampleFactoryRecords',
   'apiRecords',
   'apiState',
+  "'error'",
   'loadApiData',
   'sourceRecords',
   'selectedProblems',
@@ -81,7 +83,6 @@ for (const requiredImplementation of [
   'useAuthStore',
   'authStore.currentUser',
   'authStore.hasPermission',
-  'getMoldingSampleRecord',
   'buildCompletionGate',
   'isExternalMoldingSampleOrder',
   '/modules/production/molding-sample-tasks',
@@ -130,3 +131,9 @@ assert.doesNotMatch(source, /id="view-production"/)
 assert.doesNotMatch(source, /approvalPin/)
 assert.doesNotMatch(source, /PIN/)
 assert.doesNotMatch(source, /管理员调试/)
+assert.doesNotMatch(source, /moldingSampleWorkflowMock/)
+assert.doesNotMatch(source, /moldingSampleFactoryRecords/)
+assert.doesNotMatch(source, /getMoldingSampleRecord/)
+assert.doesNotMatch(source, /apiState\.value === 'fallback'/)
+assert.doesNotMatch(source, /apiState === 'fallback'/)
+assert.doesNotMatch(source, /本地示例数据/)
