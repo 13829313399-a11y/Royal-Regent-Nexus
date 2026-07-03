@@ -1,173 +1,151 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, watchEffect, type Component } from 'vue'
+import { computed, onMounted, ref, watchEffect } from 'vue'
 import {
-  Archive,
   ArrowLeft,
-  CheckCircle2,
-  Download,
-  Play,
+  Beaker,
+  Building2,
+  Check,
+  CheckCheck,
+  ChevronRight,
+  Clock,
+  ClipboardCheck,
+  ExternalLink,
+  Factory,
+  FilePlus2,
+  FileText,
+  Filter,
+  Gavel,
+  History,
+  Layers,
+  LayoutDashboard,
+  Lock,
+  MessageSquareText,
   Plus,
-  RotateCcw,
-  Save,
+  Search,
   Send,
-  ShieldCheck,
-  Upload,
-  XCircle,
+  Table2,
+  Tag,
+  TriangleAlert,
+  UserRound,
+  X,
 } from '@lucide/vue'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import {
   factoryContexts,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
-  type Tone,
 } from '@/data/enterpriseMock'
 import {
   getMoldingSampleRecord,
   moldingSampleFactoryRecords,
 } from '@/data/moldingSampleWorkflowMock'
 import {
-  applyCostPreviewToItems,
   buildCompletionGate,
-  buildMoldingSampleReportSummary,
-  getMoldingSampleStatusTransition,
   isExternalMoldingSampleOrder,
-  normalizeMoldingSamplePricingSettings,
-  type MoldingSampleMaterialPrice,
 } from '@/lib/moldingSampleBusiness'
+import { getApiErrorMessage } from '@/lib/http'
 import {
-  moldingSampleMaterialPrices,
-  moldingSampleRmbToHkdRate,
-} from '@/data/moldingSampleCostMock'
-import type {
-  MoldingSampleAuditLog,
-  MoldingSampleItem,
-  MoldingSampleOrder,
-  MoldingSampleRequisition,
-  MoldingSampleRole,
-  MoldingSampleStatus,
-} from '@/types/moldingSample'
-import SectionPanel from '@/components/common/SectionPanel.vue'
-import StatusPill from '@/components/common/StatusPill.vue'
-import { useAppStore } from '@/stores/app'
-import {
-  MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
-  type InventoryBatchResponse,
-  type InventoryMovementResponse,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
-  type RequisitionResponse,
-  type SensitiveAuditLogResponse,
 } from '@/api/moldingSample'
-import { getApiErrorMessage } from '@/lib/http'
+import {
+  buildManualMoldingSampleCreateRequest,
+  createManualMoldingSampleLineDraft,
+  createManualMoldingSampleOrderDraft,
+  deriveManualMoldingSampleOrderId,
+  type ManualMoldingSampleOrderDraft,
+} from '@/lib/moldingSampleManualCreate'
+import type {
+  MoldingSampleItem,
+  MoldingSampleRole,
+  MoldingSampleStatus,
+  MoldingSampleWorkflowRecord,
+} from '@/types/moldingSample'
+import { useAppStore } from '@/stores/app'
 
-type RoleTabId = 'engineering' | 'supervisor' | 'manager' | 'warehouse' | 'production' | 'reports'
+type ViewKey = 'overview' | 'create' | 'detail'
+type StatusState = 'done' | 'current' | 'pending' | 'rejected'
 
-interface RoleTab {
-  id: RoleTabId
-  label: string
-  role: MoldingSampleRole | '汇总'
-  icon: Component
-}
-
-interface SummaryCard {
+interface KpiCard {
   label: string
   value: string
   detail: string
-  tone: Tone
+  icon: unknown
+  className: string
 }
 
-interface EditableMaterialPrice {
-  material: string
-  unit_price: string | number
-  notes: string
+interface BoardColumn {
+  status: MoldingSampleStatus
+  label: string
+  detail: string
+  records: MoldingSampleWorkflowRecord[]
+  dotClass: string
 }
 
-interface PinChangeDraft {
-  old_pin: string
-  new_pin: string
-  confirm_pin: string
+interface WorkflowStep {
+  status: MoldingSampleStatus
+  title: string
+  detail: string
+}
+
+interface ApprovalActor {
+  passAction: string
+  rejectAction: string
+  reviewer_name: string
+  reviewer_role: MoldingSampleRole
 }
 
 const route = useRoute()
 const appStore = useAppStore()
 
-const today = '2026-07-01'
-const activeTab = ref<RoleTabId>('engineering')
-const rejectReason = ref('资料不齐，请补充用料或交期说明。')
-const supervisorPin = ref('')
-const managerPin = ref('')
-const excelFileInput = ref<HTMLInputElement | null>(null)
-const excelImportOrderId = ref('')
-const productionProblem = ref('现场反馈：请工程确认色粉比例。')
-const actionMessage = ref('')
-const activeReportTab = ref<'materials' | 'injection' | 'total'>('materials')
-
-const orderOverrides = ref<Record<string, Partial<MoldingSampleOrder>>>({})
-const itemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
-const auditOverrides = ref<Record<string, MoldingSampleAuditLog[]>>({})
-const problemOverrides = ref<Record<string, string[]>>({})
-
-const appliedMaterialPrices = ref<MoldingSampleMaterialPrice[]>(clonePrices(moldingSampleMaterialPrices))
-const appliedRmbToHkdRate = ref(moldingSampleRmbToHkdRate)
-const editableMaterialPrices = ref<EditableMaterialPrice[]>(createEditablePrices(moldingSampleMaterialPrices))
-const editableRmbToHkdRate = ref(String(moldingSampleRmbToHkdRate))
-const pricingErrors = ref<string[]>([])
+const today = '2026-07-03'
+const activeView = ref<ViewKey>('overview')
+const selectedOrderId = ref(readQueryString(route.query.order_id))
+const searchKeyword = ref('')
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
-const apiRecord = ref<MoldingSampleDetailResponse | null>(null)
-const apiRequisitions = ref<RequisitionResponse[]>([])
-const apiInventoryBatches = ref<InventoryBatchResponse[]>([])
-const apiInventoryMovements = ref<InventoryMovementResponse[]>([])
-const apiSensitiveAuditLogs = ref<SensitiveAuditLogResponse[]>([])
-const selectedInventoryBatchIds = ref<Record<string, string>>({})
-const inventoryBatchDraft = ref({
-  material: '',
-  batch_no: '',
-  location: '试啤仓',
-  initial_weight_kg: '5',
-})
-const supervisorPinResetDraft = ref({
-  supervisor_name: '李主管',
-  new_pin: '1234',
-})
-const supervisorPinChangeDraft = ref<PinChangeDraft>({
-  old_pin: '',
-  new_pin: '',
-  confirm_pin: '',
-})
-const managerPinChangeDraft = ref<PinChangeDraft>({
-  old_pin: '',
-  new_pin: '',
-  confirm_pin: '',
-})
 const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking')
-const apiMessage = ref('正在检查后端 API...')
+const actionMessage = ref('正在读取正式啤办单列表...')
+const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
+const createErrors = ref<string[]>([])
+const createSubmitting = ref(false)
+const approvalNote = ref('')
+const approvalPin = ref('')
+const approvalSubmitting = ref(false)
 
-const roleTabs: RoleTab[] = [
-  { id: 'engineering', label: '工程部', role: '工程部', icon: Send },
-  { id: 'supervisor', label: '主管', role: '主管', icon: ShieldCheck },
-  { id: 'manager', label: '经理', role: '经理', icon: CheckCircle2 },
-  { id: 'warehouse', label: '仓库', role: '仓库', icon: Archive },
-  { id: 'production', label: '啤机部', role: '啤机部', icon: Play },
-  { id: 'reports', label: '汇总', role: '汇总', icon: Save },
+const workflowSteps: WorkflowStep[] = [
+  { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
+  { status: '待经理审核', title: '经理审核', detail: '主管通过后等待经理终审' },
+  { status: '待生产', title: '待生产', detail: '内部单流转到啤机部' },
+  { status: '生产中', title: '啤机生产', detail: '回填实际用料和啤办费' },
+  { status: '已完成', title: '完成归档', detail: '生产完成后回传工程单' },
 ]
 
-const statusTones: Record<MoldingSampleStatus, Tone> = {
-  待审核: 'amber',
-  待经理审核: 'blue',
-  待生产: 'teal',
-  生产中: 'amber',
-  已完成: 'green',
-  已驳回: 'red',
+const boardStatuses: MoldingSampleStatus[] = [
+  '待审核',
+  '待经理审核',
+  '待生产',
+  '生产中',
+  '已完成',
+  '已驳回',
+]
+
+const statusToneClasses: Record<MoldingSampleStatus, string> = {
+  待审核: 'border-amber-200 bg-amber-50 text-amber-700',
+  待经理审核: 'border-blue-200 bg-blue-50 text-blue-700',
+  待生产: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+  生产中: 'border-teal-200 bg-teal-50 text-teal-700',
+  已完成: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  已驳回: 'border-red-200 bg-red-50 text-red-700',
 }
 
-const toneClasses: Record<Tone, string> = {
-  teal: 'border-teal-100 bg-teal-50 text-teal-800',
-  blue: 'border-blue-100 bg-blue-50 text-blue-800',
-  amber: 'border-amber-100 bg-amber-50 text-amber-800',
-  red: 'border-red-100 bg-red-50 text-red-800',
-  slate: 'border-slate-200 bg-slate-50 text-slate-700',
-  green: 'border-emerald-100 bg-emerald-50 text-emerald-800',
+const statusDotClasses: Record<MoldingSampleStatus, string> = {
+  待审核: 'bg-amber-400',
+  待经理审核: 'bg-blue-400',
+  待生产: 'bg-indigo-400',
+  生产中: 'bg-teal-400',
+  已完成: 'bg-emerald-400',
+  已驳回: 'bg-red-400',
 }
 
 const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
@@ -185,2211 +163,1131 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
 const activeFactory = computed(() =>
   factoryContexts.find((factory) => factory.id === selectedFactoryId.value) ?? factoryContexts[1],
 )
-const fallbackRecord = computed(() => getMoldingSampleRecord(selectedFactoryId.value))
-const activeRecord = computed(() => {
-  if (apiRecord.value) {
-    return {
-      factory_id: apiRecord.value.order.factory_id,
-      order: apiRecord.value.order,
-      items: apiRecord.value.items,
-      audit_logs: apiRecord.value.audit_logs,
-      requisitions: apiRequisitions.value,
-      problems: [],
-    }
+
+const productionTaskRoute = computed(() => {
+  const params = new URLSearchParams({ factory: selectedFactoryId.value })
+
+  if (selectedRecord.value?.order.id) {
+    params.set('order_id', selectedRecord.value.order.id)
   }
 
-  return fallbackRecord.value
+  return `/modules/production/molding-sample-tasks?${params.toString()}`
 })
-const activeOrder = computed<MoldingSampleOrder>(() => ({
-  ...activeRecord.value.order,
-  ...(orderOverrides.value[activeRecord.value.order.id] ?? {}),
-}))
-const activeItems = computed<MoldingSampleItem[]>(() => {
-  const overrides = itemOverrides.value[activeOrder.value.id] ?? {}
-  const mergedItems = activeRecord.value.items.map((item) => ({
-    ...item,
-    ...(overrides[item.id] ?? {}),
-  }))
 
-  return applyCostPreviewToItems(
-    mergedItems,
-    appliedMaterialPrices.value,
-    appliedRmbToHkdRate.value,
-    isExternalOrder.value,
-  )
+const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
+  if (apiState.value === 'connected' || apiState.value === 'empty') {
+    return apiRecords.value.map(toWorkflowRecord)
+  }
+
+  return Object.values(moldingSampleFactoryRecords)
 })
-const activeAuditLogs = computed<MoldingSampleAuditLog[]>(() => [
-  ...(auditOverrides.value[activeOrder.value.id] ?? []),
-  ...activeRecord.value.audit_logs,
-])
-const activeProblems = computed(() => [
-  ...activeRecord.value.problems.map((problem) => problem.description),
-  ...(problemOverrides.value[activeOrder.value.id] ?? []),
-])
-const activeRequisitions = computed(() => activeRecord.value.requisitions)
-const activeInventoryBatches = computed(() => apiInventoryBatches.value)
-const activeInventoryMovements = computed(() => apiInventoryMovements.value)
-const activeSensitiveAuditLogs = computed(() => apiSensitiveAuditLogs.value)
-const warehouseMaterials = computed(() => Array.from(new Set(activeItems.value.map((item) => item.material).filter(Boolean))))
-const isExternalOrder = computed(() => isExternalMoldingSampleOrder(activeOrder.value))
-const completionGate = computed(() => buildCompletionGate(activeOrder.value, activeItems.value))
-const reportSummary = computed(() => buildMoldingSampleReportSummary(activeOrder.value, activeItems.value))
-const isProductionEditable = computed(() => !isExternalOrder.value && activeOrder.value.status === '生产中')
-const isWarehouseEditable = computed(() =>
-  !isExternalOrder.value && ['待生产', '生产中'].includes(activeOrder.value.status),
+
+const factoryRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
+  sourceRecords.value.filter((record) => record.factory_id === selectedFactoryId.value),
 )
 
-const factoryQueue = computed(() =>
-  (apiRecords.value.length
-    ? apiRecords.value.map((record) => ({
-      factory_id: record.order.factory_id as ProductionFactoryContextId,
-      order: record.order,
-      items: record.items,
-      audit_logs: record.audit_logs,
-      requisitions: [],
-      problems: [],
-    }))
-    : Object.values(moldingSampleFactoryRecords)
-  ).map((record) => {
-    const order = {
+const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+
+  if (!keyword) {
+    return factoryRecords.value
+  }
+
+  return factoryRecords.value.filter((record) => [
+    record.order.id,
+    record.order.order_number,
+    record.order.doc_number,
+    record.order.product_name,
+    record.order.client_name,
+    record.order.supervisor,
+    record.order.eng_name,
+    ...record.items.flatMap((item) => [item.mold_id, item.mold_name, item.material, item.color]),
+  ].some((value) => String(value).toLowerCase().includes(keyword)))
+})
+
+const selectedRecord = computed<MoldingSampleWorkflowRecord>(() =>
+  visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
+    ?? factoryRecords.value.find((record) => record.order.id === selectedOrderId.value)
+    ?? factoryRecords.value[0]
+    ?? getMoldingSampleRecord(selectedFactoryId.value),
+)
+
+const selectedOrder = computed(() => selectedRecord.value.order)
+const selectedItems = computed(() => selectedRecord.value.items)
+const selectedCompletionGate = computed(() => buildCompletionGate(selectedOrder.value, selectedItems.value))
+const isSelectedExternal = computed(() => isExternalMoldingSampleOrder(selectedOrder.value))
+
+const kpiCards = computed<KpiCard[]>(() => {
+  const records = visibleRecords.value
+  const reviewCount = records.filter((record) => ['待审核', '待经理审核'].includes(record.order.status)).length
+  const productionCount = records.filter((record) => ['待生产', '生产中'].includes(record.order.status)).length
+  const completedCount = records.filter((record) => record.order.status === '已完成').length
+  const blockedCount = records.filter((record) =>
+    record.order.status === '已驳回'
+    || record.problems.length > 0
+    || buildCompletionGate(record.order, record.items).missing_item_ids.length > 0,
+  ).length
+
+  return [
+    {
+      label: '当前厂区单据',
+      value: String(records.length),
+      detail: `${activeFactory.value.shortName} · 按状态分列`,
+      icon: Layers,
+      className: 'border-slate-200 bg-white text-slate-700',
+    },
+    {
+      label: '审核中',
+      value: String(reviewCount),
+      detail: '主管 / 经理节点',
+      icon: Clock,
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+    },
+    {
+      label: '待啤机处理',
+      value: String(productionCount),
+      detail: '待生产 / 生产中',
+      icon: Factory,
+      className: 'border-teal-200 bg-teal-50 text-teal-700',
+    },
+    {
+      label: '已完成',
+      value: String(completedCount),
+      detail: '完成归档回传',
+      icon: CheckCheck,
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    },
+    {
+      label: '卡点 / 驳回',
+      value: String(blockedCount),
+      detail: '需要工程跟进',
+      icon: TriangleAlert,
+      className: 'border-red-200 bg-red-50 text-red-700',
+    },
+  ]
+})
+
+const boardColumns = computed<BoardColumn[]>(() =>
+  boardStatuses.map((status) => ({
+    status,
+    label: status,
+    detail: getStatusColumnDetail(status),
+    records: visibleRecords.value.filter((record) => record.order.status === status),
+    dotClass: statusDotClasses[status],
+  })),
+)
+
+const detailRows = computed(() => selectedItems.value.slice(0, 8))
+const canApproveSelectedOrder = computed(() =>
+  selectedOrder.value.status === '待审核' || selectedOrder.value.status === '待经理审核',
+)
+
+function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWorkflowRecord {
+  const factoryId = isProductionFactoryContextId(record.order.factory_id)
+    ? record.order.factory_id
+    : selectedFactoryId.value
+
+  return {
+    factory_id: factoryId,
+    order: {
       ...record.order,
-      ...(orderOverrides.value[record.order.id] ?? {}),
-    }
-
-    return {
-      factory_id: record.factory_id,
-      order,
-      item_count: record.items.length,
-      blocked_count: buildCompletionGate(order, record.items).missing_item_ids.length,
-    }
-  }),
-)
-
-function inventoryBatchesForMaterial(material: string) {
-  return activeInventoryBatches.value.filter((batch) => batch.material === material)
-}
-
-function defaultInventoryBatchId(requisition: MoldingSampleRequisition) {
-  const selectedBatchId = selectedInventoryBatchIds.value[requisition.id]
-  if (selectedBatchId) {
-    return selectedBatchId
-  }
-
-  return inventoryBatchesForMaterial(requisition.material)
-    .find((batch) => batch.available_weight_kg >= (requisition.requested_weight_kg ?? 0))?.id ?? ''
-}
-
-function syncInventoryBatchDraftMaterial() {
-  if (!inventoryBatchDraft.value.material) {
-    inventoryBatchDraft.value.material = activeItems.value[0]?.material ?? ''
+      factory_id: factoryId,
+    },
+    items: record.items,
+    audit_logs: record.audit_logs,
+    requisitions: [],
+    problems: [],
   }
 }
 
-function syncSupervisorPinResetDraft() {
-  if (!supervisorPinResetDraft.value.supervisor_name) {
-    supervisorPinResetDraft.value.supervisor_name = activeOrder.value.supervisor || '李主管'
-  }
+function resetCreateDraft() {
+  const template = getMoldingSampleRecord(selectedFactoryId.value)
+
+  createDraft.value = createManualMoldingSampleOrderDraft({
+    factory_id: selectedFactoryId.value,
+    order_date: today,
+    stage: 'T0',
+    order_type: '啤办',
+    workshop: template.order.workshop,
+    send_to: template.order.send_to || '内部',
+    supervisor: template.order.supervisor,
+    eng_name: template.order.eng_name,
+    items: [
+      createManualMoldingSampleLineDraft(),
+    ],
+  })
+  createErrors.value = []
 }
 
-const summaryCards = computed<SummaryCard[]>(() => [
-  {
-    label: '当前状态',
-    value: activeOrder.value.status,
-    detail: isExternalOrder.value ? '外厂 / 模厂自动完成路径' : '内部生产路径',
-    tone: statusTones[activeOrder.value.status],
-  },
-  {
-    label: '明细行',
-    value: String(activeItems.value.length),
-    detail: `${activeOrder.value.client_name} · ${activeOrder.value.product_name}`,
-    tone: 'teal',
-  },
-  {
-    label: '完成卡点',
-    value: completionGate.value.can_complete ? '通过' : `${completionGate.value.missing_item_ids.length} 项`,
-    detail: completionGate.value.message,
-    tone: completionGate.value.can_complete ? 'green' : 'red',
-  },
-  {
-    label: '总费用',
-    value: `${reportSummary.value.total_cost.toFixed(2)} HKD`,
-    detail: `料费 ${reportSummary.value.total_material_cost.toFixed(2)} · 啤办费 ${reportSummary.value.total_injection_cost.toFixed(2)}`,
-    tone: reportSummary.value.archive_ready ? 'green' : 'blue',
-  },
-])
+function replaceApiRecord(record: MoldingSampleDetailResponse) {
+  const exists = apiRecords.value.some((entry) => entry.order.id === record.order.id)
 
-const engineeringEditable = computed(() => ['待审核', '已驳回'].includes(activeOrder.value.status))
-const managerCanReview = computed(() => activeOrder.value.status === '待经理审核')
-const supervisorCanReview = computed(() => activeOrder.value.status === '待审核')
-
-function clonePrices(prices: MoldingSampleMaterialPrice[]) {
-  return prices.map((price) => ({ ...price }))
-}
-
-function createEditablePrices(prices: MoldingSampleMaterialPrice[]): EditableMaterialPrice[] {
-  return prices.map((price) => ({
-    material: price.material,
-    unit_price: price.unit_price,
-    notes: price.notes ?? '',
-  }))
-}
-
-function setApiRecord(record: MoldingSampleDetailResponse | null) {
-  apiRecord.value = record
-
-  if (record) {
-    orderOverrides.value = {
-      ...orderOverrides.value,
-      [record.order.id]: {},
-    }
-    itemOverrides.value = {
-      ...itemOverrides.value,
-      [record.order.id]: {},
-    }
-    auditOverrides.value = {
-      ...auditOverrides.value,
-      [record.order.id]: [],
-    }
-  }
-}
-
-async function refreshActiveRequisitions() {
-  if (!apiRecord.value) {
-    apiRequisitions.value = []
-    return
-  }
-
-  apiRequisitions.value = await moldingSampleApi.listRequisitions(apiRecord.value.order.id)
-}
-
-async function refreshWarehouseData() {
-  if (!apiRecord.value) {
-    apiRequisitions.value = []
-    apiInventoryBatches.value = []
-    apiInventoryMovements.value = []
-    selectedInventoryBatchIds.value = {}
-    return
-  }
-
-  const [requisitions, inventoryBatches, inventoryMovements] = await Promise.all([
-    moldingSampleApi.listRequisitions(apiRecord.value.order.id),
-    moldingSampleApi.listInventoryBatches(),
-    moldingSampleApi.listInventoryMovements(),
-  ])
-  apiRequisitions.value = requisitions
-  apiInventoryBatches.value = inventoryBatches
-  apiInventoryMovements.value = inventoryMovements
-  syncInventoryBatchDraftMaterial()
-}
-
-async function refreshSensitiveAuditLogs() {
-  if (apiState.value === 'fallback') {
-    apiSensitiveAuditLogs.value = []
-    return
-  }
-
-  apiSensitiveAuditLogs.value = await moldingSampleApi.listSensitiveAuditLogs()
+  apiRecords.value = exists
+    ? apiRecords.value.map((entry) => entry.order.id === record.order.id ? record : entry)
+    : [record, ...apiRecords.value]
+  apiState.value = 'connected'
 }
 
 async function loadApiData() {
   apiState.value = 'checking'
-  apiMessage.value = '正在检查后端 API...'
+  actionMessage.value = '正在读取正式啤办单列表...'
 
   try {
-    const [records, pricing, sensitiveAuditLogs] = await Promise.all([
-      moldingSampleApi.listOrders(),
-      moldingSampleApi.getMaterialPrices(),
-      moldingSampleApi.listSensitiveAuditLogs(),
-    ])
+    const records = await moldingSampleApi.listOrders()
     apiRecords.value = records
-    apiSensitiveAuditLogs.value = sensitiveAuditLogs
-    appliedMaterialPrices.value = clonePrices(pricing.prices)
-    appliedRmbToHkdRate.value = pricing.rmb_to_hkd_rate
-    editableMaterialPrices.value = createEditablePrices(pricing.prices)
-    editableRmbToHkdRate.value = String(pricing.rmb_to_hkd_rate)
+    apiState.value = records.length ? 'connected' : 'empty'
+    actionMessage.value = records.length
+      ? `已读取正式啤办单 ${records.length} 张。`
+      : '后端暂无正式啤办单，可先新建啤办单。'
 
-    const selectedRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value) ?? records[0] ?? null
-    setApiRecord(selectedRecord)
-    syncSupervisorPinResetDraft()
-    await refreshWarehouseData()
-    apiState.value = selectedRecord ? 'connected' : 'empty'
-    apiMessage.value = selectedRecord
-      ? '已连接后端 API，当前操作会写入数据库。'
-      : '后端 API 可用，但还没有啤办单数据。'
+    const factoryRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value)
+    if (!selectedOrderId.value && factoryRecord) {
+      selectedOrderId.value = factoryRecord.order.id
+    }
   }
   catch (error) {
     apiRecords.value = []
-    apiRequisitions.value = []
-    apiInventoryBatches.value = []
-    apiInventoryMovements.value = []
-    apiSensitiveAuditLogs.value = []
-    selectedInventoryBatchIds.value = {}
-    setApiRecord(null)
     apiState.value = 'fallback'
-    apiMessage.value = `后端 API 暂不可用，当前使用前端 mock：${getApiErrorMessage(error)}`
+    actionMessage.value = `正式列表读取失败，当前显示本地示例数据：${getApiErrorMessage(error)}`
   }
 }
 
-async function syncCurrentMockToApi() {
-  try {
-    const created = await moldingSampleApi.createOrder({
-      order: activeOrder.value,
-      items: activeItems.value,
-    })
-    await loadApiData()
-    setApiRecord(created)
-    actionMessage.value = '当前页面已编辑内容已同步到后端数据库，未填写字段保持空值。'
+function readQueryString(value: unknown) {
+  if (typeof value === 'string') {
+    return value.trim()
   }
-  catch (error) {
-    actionMessage.value = `同步失败：${getApiErrorMessage(error)}`
+  if (Array.isArray(value) && typeof value[0] === 'string') {
+    return value[0].trim()
   }
+
+  return ''
 }
 
-async function exportCurrentOrderExcel() {
-  if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能导出后端 Excel。'
-    return
-  }
-
-  try {
-    const workbook = await moldingSampleApi.exportOrderExcel(activeOrder.value.id)
-    const blob = new Blob([workbook], { type: MOLDING_SAMPLE_XLSX_MIME })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${activeOrder.value.id}-啤办单.xlsx`
-    link.click()
-    URL.revokeObjectURL(url)
-    actionMessage.value = '当前啤办单 Excel 已导出。'
-  }
-  catch (error) {
-    actionMessage.value = `导出 Excel 失败：${getApiErrorMessage(error)}`
-  }
+function setView(view: ViewKey) {
+  activeView.value = view
 }
 
-function openExcelImportPicker() {
-  if (apiState.value === 'fallback') {
-    actionMessage.value = '当前为前端 mock 数据，不能导入后端 Excel。'
-    return
-  }
-
-  excelFileInput.value?.click()
-}
-
-async function importMoldingSampleExcel(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) {
-    return
-  }
-
-  try {
-    const workbook = await file.arrayBuffer()
-    const imported = await moldingSampleApi.importOrderExcel(workbook, {
-      order_id: excelImportOrderId.value.trim() || undefined,
-    })
-    await loadApiData()
-    setApiRecord(imported)
-    excelImportOrderId.value = ''
-    actionMessage.value = `已从 Excel 导入啤办单 ${imported.order.id}。`
-  }
-  catch (error) {
-    actionMessage.value = `导入 Excel 失败：${getApiErrorMessage(error)}`
-  }
-  finally {
-    input.value = ''
-  }
+function openRecord(record: MoldingSampleWorkflowRecord) {
+  selectedOrderId.value = record.order.id
+  activeView.value = 'detail'
+  approvalNote.value = ''
 }
 
 function readInputValue(event: Event) {
   return (event.target as HTMLInputElement).value
 }
 
-function parseOptionalNumber(value: string) {
-  if (value.trim() === '') {
-    return null
+function updateCreateProductNo(value: string) {
+  const previousDerivedId = deriveManualMoldingSampleOrderId(createDraft.value.product_no)
+
+  createDraft.value.product_no = value
+
+  if (!createDraft.value.id || createDraft.value.id === previousDerivedId) {
+    createDraft.value.id = deriveManualMoldingSampleOrderId(value)
+  }
+}
+
+function addCreateLine() {
+  createDraft.value.items.push(createManualMoldingSampleLineDraft())
+}
+
+function removeCreateLine(index: number) {
+  if (createDraft.value.items.length <= 1) {
+    createDraft.value.items = [createManualMoldingSampleLineDraft()]
+    return
   }
 
-  const parsed = Number(value)
+  createDraft.value.items.splice(index, 1)
+}
 
-  return Number.isFinite(parsed) ? parsed : null
+async function submitManualCreate() {
+  createDraft.value.factory_id = selectedFactoryId.value
+  createErrors.value = []
+  const result = buildManualMoldingSampleCreateRequest(createDraft.value, selectedFactoryId.value)
+
+  if (!result.payload) {
+    createErrors.value = result.errors
+    actionMessage.value = `新建啤办单未提交：${result.errors[0] ?? '请检查表单'}`
+    return
+  }
+
+  createSubmitting.value = true
+  actionMessage.value = '正在提交新建啤办单...'
+
+  try {
+    const created = await moldingSampleApi.createOrder(result.payload)
+    replaceApiRecord(created)
+    selectedOrderId.value = created.order.id
+    activeView.value = 'detail'
+    actionMessage.value = `啤办单 ${created.order.id} 已提交主管审核，正式列表已刷新。`
+    resetCreateDraft()
+  }
+  catch (error) {
+    actionMessage.value = `新建啤办单提交失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    createSubmitting.value = false
+  }
+}
+
+function getApprovalActor(): ApprovalActor | null {
+  if (selectedOrder.value.status === '待审核') {
+    return {
+      passAction: '主管通过',
+      rejectAction: '主管驳回',
+      reviewer_name: selectedOrder.value.supervisor,
+      reviewer_role: '主管',
+    }
+  }
+
+  if (selectedOrder.value.status === '待经理审核') {
+    return {
+      passAction: '经理通过',
+      rejectAction: '经理驳回',
+      reviewer_name: '王经理',
+      reviewer_role: '经理',
+    }
+  }
+
+  return null
+}
+
+async function runApprovalTransition(decision: '通过' | '驳回') {
+  const actor = getApprovalActor()
+
+  if (!actor) {
+    actionMessage.value = '当前单据不在主管或经理审核节点，不能执行审核动作。'
+    return
+  }
+
+  const reason = approvalNote.value.trim()
+  if (decision === '驳回' && !reason) {
+    actionMessage.value = '驳回必须填写审核意见。'
+    return
+  }
+
+  approvalSubmitting.value = true
+  actionMessage.value = `正在提交${decision}结果...`
+
+  const payload: MoldingSampleStatusRequest = {
+    action: decision === '通过' ? actor.passAction : actor.rejectAction,
+    reviewer_name: actor.reviewer_name,
+    reviewer_role: actor.reviewer_role,
+    pin: approvalPin.value.trim() || undefined,
+    reason: reason || `${actor.reviewer_name}${decision}`,
+    today,
+  }
+
+  try {
+    const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, payload)
+    replaceApiRecord(updated)
+    selectedOrderId.value = updated.order.id
+    approvalNote.value = ''
+    actionMessage.value = `啤办单 ${updated.order.id} 已${decision}，当前状态：${updated.order.status}。`
+  }
+  catch (error) {
+    actionMessage.value = `审核${decision}失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    approvalSubmitting.value = false
+  }
+}
+
+function getStatusColumnDetail(status: MoldingSampleStatus) {
+  const details: Record<MoldingSampleStatus, string> = {
+    待审核: '等待主管处理',
+    待经理审核: '等待经理终审',
+    待生产: '已通知啤机部',
+    生产中: '啤机部执行中',
+    已完成: '完成后归档',
+    已驳回: '退回工程处理',
+  }
+
+  return details[status]
+}
+
+function getWorkflowStepState(status: MoldingSampleStatus): StatusState {
+  if (selectedOrder.value.status === '已驳回') {
+    return status === '待审核' ? 'rejected' : 'pending'
+  }
+
+  const currentIndex = workflowSteps.findIndex((step) => step.status === selectedOrder.value.status)
+  const stepIndex = workflowSteps.findIndex((step) => step.status === status)
+
+  if (stepIndex < currentIndex) {
+    return 'done'
+  }
+  if (stepIndex === currentIndex) {
+    return 'current'
+  }
+
+  return 'pending'
+}
+
+function getWorkflowCardClass(state: StatusState) {
+  const classes: Record<StatusState, string> = {
+    done: 'border-teal-200 bg-teal-50 text-teal-800',
+    current: 'border-slate-950 bg-slate-950 text-white',
+    pending: 'border-slate-200 bg-white text-slate-500',
+    rejected: 'border-red-200 bg-red-50 text-red-700',
+  }
+
+  return classes[state]
+}
+
+function getWorkflowIndexClass(state: StatusState) {
+  const classes: Record<StatusState, string> = {
+    done: 'bg-teal-600 text-white',
+    current: 'bg-white text-slate-950',
+    pending: 'bg-slate-200 text-slate-500',
+    rejected: 'bg-red-600 text-white',
+  }
+
+  return classes[state]
+}
+
+function getFlowSummary(record: MoldingSampleWorkflowRecord) {
+  if (record.order.status === '待审核') {
+    return `${record.order.eng_name} → ${record.order.supervisor}`
+  }
+  if (record.order.status === '待经理审核') {
+    return `${record.order.supervisor} 已通过 → 王经理`
+  }
+  if (record.order.status === '待生产') {
+    return '等待啤机部开始处理'
+  }
+  if (record.order.status === '生产中') {
+    const missingCount = buildCompletionGate(record.order, record.items).missing_item_ids.length
+    return missingCount ? `待回填 ${missingCount} 项实际用料` : '生产数据已补齐'
+  }
+  if (record.order.status === '已完成') {
+    return record.order.completed_date ? `${record.order.completed_date} 完成` : '已完成'
+  }
+
+  return record.order.reject_reason || '退回工程处理'
 }
 
 function formatBlank(value: string | number | null | undefined, fallback = '待填写') {
   return value === null || value === undefined || value === '' ? fallback : String(value)
 }
 
-function formatMoney(value: number | null | undefined) {
-  return value === null || value === undefined ? '待计算' : `${value.toFixed(2)} HKD`
-}
-
 function formatWeight(value: number | null | undefined) {
-  return value === null || value === undefined ? '待填写' : `${value} KG`
+  return value === null || value === undefined ? '待填写' : `${value.toFixed(2)} kg`
 }
 
-function formatMovementWeight(value: number) {
-  return `${value > 0 ? '+' : ''}${value} KG`
+function formatMoney(value: number | null | undefined, currency = 'HKD') {
+  return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
 
-function setOrderPatch(patch: Partial<MoldingSampleOrder>) {
-  orderOverrides.value = {
-    ...orderOverrides.value,
-    [activeOrder.value.id]: {
-      ...(orderOverrides.value[activeOrder.value.id] ?? {}),
-      ...patch,
-      updated_at: `${today} 09:00`,
-    },
+function getColorSwatchClass(color: string) {
+  const normalized = color.toLowerCase()
+
+  if (normalized.includes('绿')) {
+    return 'bg-green-700'
   }
+  if (normalized.includes('蓝')) {
+    return 'bg-blue-800'
+  }
+  if (normalized.includes('黑')) {
+    return 'bg-slate-900'
+  }
+  if (normalized.includes('白') || normalized.includes('透明')) {
+    return 'bg-white'
+  }
+  if (normalized.includes('紫')) {
+    return 'bg-violet-500'
+  }
+  if (normalized.includes('橙')) {
+    return 'bg-orange-500'
+  }
+
+  return 'bg-slate-300'
 }
 
-function patchItem(itemId: string, patch: Partial<MoldingSampleItem>) {
-  const currentOrderOverrides = itemOverrides.value[activeOrder.value.id] ?? {}
-
-  itemOverrides.value = {
-    ...itemOverrides.value,
-    [activeOrder.value.id]: {
-      ...currentOrderOverrides,
-      [itemId]: {
-        ...(currentOrderOverrides[itemId] ?? {}),
-        ...patch,
-      },
-    },
-  }
+function getStatusBadgeClass(status: MoldingSampleStatus) {
+  return statusToneClasses[status]
 }
 
-function appendAudit(
-  action: string,
-  role: MoldingSampleRole,
-  actorName: string,
-  fromStatus: MoldingSampleStatus,
-  toStatus: MoldingSampleStatus,
-  reason: string,
-  tone: Tone,
-) {
-  const nextAudit: MoldingSampleAuditLog = {
-    id: `${activeOrder.value.id}-audit-${Date.now()}`,
-    order_id: activeOrder.value.id,
-    action,
-    actor_name: actorName,
-    actor_role: role,
-    decision: action.includes('驳回') ? '驳回' : action.includes('重提') ? '重提' : action.includes('开始') ? '开始处理' : action.includes('完成') ? '完成' : '通过',
-    from_status: fromStatus,
-    to_status: toStatus,
-    reason,
-    created_at: `${today} 10:30`,
-    tone,
-  }
-
-  auditOverrides.value = {
-    ...auditOverrides.value,
-    [activeOrder.value.id]: [
-      nextAudit,
-      ...(auditOverrides.value[activeOrder.value.id] ?? []),
-    ],
-  }
+function getItemState(item: MoldingSampleItem) {
+  return Number(item.actual_weight_kg) > 0 ? '已回填' : '待回填'
 }
 
-function commitCurrentCostPreview(forceMaterialAmount = false) {
-  const costedItems = applyCostPreviewToItems(
-    activeItems.value,
-    appliedMaterialPrices.value,
-    appliedRmbToHkdRate.value,
-    isExternalOrder.value,
-    forceMaterialAmount,
-  )
-  const nextOverrides = costedItems.reduce<Record<string, Partial<MoldingSampleItem>>>((acc, item) => {
-    acc[item.id] = {
-      actual_weight_kg: item.actual_weight_kg,
-      actual_amount_hkd: item.actual_amount_hkd,
-      injection_cost_hkd: item.injection_cost_hkd,
-      exchange_rate_at_save: item.exchange_rate_at_save,
-    }
-
-    return acc
-  }, {})
-
-  itemOverrides.value = {
-    ...itemOverrides.value,
-    [activeOrder.value.id]: {
-      ...(itemOverrides.value[activeOrder.value.id] ?? {}),
-      ...nextOverrides,
-    },
-  }
+function getItemStateClass(item: MoldingSampleItem) {
+  return Number(item.actual_weight_kg) > 0
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    : 'border-amber-200 bg-amber-50 text-amber-700'
 }
 
-async function runTransition(
-  action: Parameters<typeof getMoldingSampleStatusTransition>[0]['action'],
-  role: MoldingSampleRole,
-  actorName: string,
-  reason = '',
-) {
-  if (action === '标记完成' && !completionGate.value.can_complete) {
-    actionMessage.value = completionGate.value.message
-    return
+watchEffect(() => {
+  const queryOrderId = readQueryString(route.query.order_id)
+
+  if (queryOrderId && queryOrderId !== selectedOrderId.value) {
+    selectedOrderId.value = queryOrderId
   }
 
-  const pin = role === '主管'
-    ? supervisorPin.value.trim()
-    : role === '经理'
-      ? managerPin.value.trim()
-      : ''
-
-  if ((role === '主管' || role === '经理') && !pin) {
-    actionMessage.value = `请输入${role} PIN 后再执行${action}。`
-    return
-  }
-
-  if (apiRecord.value) {
-    try {
-      const payload: MoldingSampleStatusRequest = {
-        action,
-        reviewer_name: actorName,
-        reviewer_role: role,
-        reason,
-        today,
-      }
-      if (pin) {
-        payload.pin = pin
-      }
-
-      const updated = await moldingSampleApi.updateStatus(activeOrder.value.id, payload)
-      setApiRecord(updated)
-      await loadApiData()
-      actionMessage.value = `${action}已写入后端。`
-    }
-    catch (error) {
-      actionMessage.value = `后端状态流转失败：${getApiErrorMessage(error)}`
-    }
-
-    return
-  }
-
-  const fromStatus = activeOrder.value.status
-  const transition = getMoldingSampleStatusTransition({
-    order: activeOrder.value,
-    action,
-    actor_role: role,
-    actor_name: actorName,
-    reason,
-    today,
-  })
-
-  if (!transition.allowed) {
-    actionMessage.value = transition.message ?? '当前状态不允许执行此动作。'
-    return
-  }
-
-  setOrderPatch({
-    status: transition.next_status,
-    completed_date: transition.completed_date,
-    reject_reason: transition.reject_reason ?? (transition.next_status === '待审核' ? '' : activeOrder.value.reject_reason),
-  })
-
-  if (transition.next_status === '已完成') {
-    commitCurrentCostPreview(true)
-  }
-
-  appendAudit(
-    action,
-    role,
-    actorName,
-    fromStatus,
-    transition.next_status,
-    reason || transition.message || `${actorName} 执行 ${action}`,
-    transition.next_status === '已驳回' ? 'red' : transition.next_status === '已完成' ? 'green' : 'blue',
-  )
-  actionMessage.value = `${action}完成：${fromStatus} -> ${transition.next_status}`
-}
-
-function updateOrderTextField(field: keyof Pick<MoldingSampleOrder, 'product_name' | 'client_name' | 'order_number' | 'doc_number' | 'supervisor' | 'reason'>, value: string) {
-  setOrderPatch({ [field]: value })
-}
-
-async function saveEngineeringChanges() {
-  if (!engineeringEditable.value) {
-    actionMessage.value = '当前状态已锁定，工程部不能保存改动。'
-    return
-  }
-
-  if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，改动只保存在本页。'
-    return
-  }
-
-  try {
-    const updated = await moldingSampleApi.editOrder(activeOrder.value.id, {
-      actor_name: activeOrder.value.eng_name || '工程部',
-      actor_role: '工程部',
-      order: activeOrder.value,
-      items: activeItems.value,
-    })
-    setApiRecord(updated)
-    await loadApiData()
-    actionMessage.value = '工程部改动已写入后端。'
-  }
-  catch (error) {
-    actionMessage.value = `工程部保存失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function deleteCurrentOrder() {
-  if (!engineeringEditable.value) {
-    actionMessage.value = '当前状态已锁定，工程部不能删除。'
-    return
-  }
-
-  if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能删除后端单据。'
-    return
-  }
-
-  if (!globalThis.confirm?.(`确认删除啤办单 ${activeOrder.value.order_number || activeOrder.value.id}？`)) {
-    return
-  }
-
-  try {
-    await moldingSampleApi.deleteOrder(activeOrder.value.id, {
-      actor_name: activeOrder.value.eng_name || '工程部',
-      actor_role: '工程部',
-    })
-    apiRecord.value = null
-    await loadApiData()
-    actionMessage.value = '啤办单已从后端删除。'
-  }
-  catch (error) {
-    actionMessage.value = `啤办单删除失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function saveItemPatchToApi(itemId: string, patch: Partial<MoldingSampleItem>) {
-  if (!apiRecord.value) {
-    return
-  }
-
-  try {
-    const updated = await moldingSampleApi.updateItems(activeOrder.value.id, {
-      items: [{ id: itemId, ...patch }],
-    })
-    setApiRecord(updated)
-  }
-  catch (error) {
-    actionMessage.value = `后端明细保存失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function updateItemNumber(itemId: string, field: keyof Pick<MoldingSampleItem, 'collected_weight_kg' | 'actual_weight_kg' | 'injection_cost'>, value: string) {
-  const patch = { [field]: parseOptionalNumber(value) }
-  patchItem(itemId, patch)
-  await saveItemPatchToApi(itemId, patch)
-}
-
-async function updateItemText(itemId: string, field: keyof Pick<MoldingSampleItem, 'receipt_no' | 'notes'>, value: string) {
-  const patch = { [field]: value }
-  patchItem(itemId, patch)
-
-  if (field === 'receipt_no') {
-    await saveItemPatchToApi(itemId, patch)
-  }
-}
-
-async function saveWarehouseSample() {
-  const patches = activeItems.value.map((item) => ({
-    id: item.id,
-    receipt_no: item.receipt_no,
-    collected_weight_kg: item.collected_weight_kg,
-  }))
-
-  patches.forEach((patch) => {
-    patchItem(patch.id, {
-      receipt_no: patch.receipt_no,
-      collected_weight_kg: patch.collected_weight_kg,
-    })
-  })
-
-  if (apiRecord.value) {
-    try {
-      const updated = await moldingSampleApi.updateItems(activeOrder.value.id, { items: patches })
-      setApiRecord(updated)
-      actionMessage.value = '仓库已编辑领料信息已写入后端。'
-      return
-    }
-    catch (error) {
-      actionMessage.value = `仓库领料信息保存失败：${getApiErrorMessage(error)}`
-      return
-    }
-  }
-
-  actionMessage.value = '仓库已编辑领料信息已暂存到当前页面。'
-}
-
-async function createRequisitionsFromItems() {
-  if (!isWarehouseEditable.value) {
-    actionMessage.value = '当前状态不能生成领料单。'
-    return
-  }
-
-  if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能生成后端领料单。'
-    return
-  }
-
-  const requisitionItems = activeItems.value
-    .map((item) => ({
-      item,
-      requestedWeight: item.collected_weight_kg ?? item.required_material_kg ?? 0,
-      notes: `${item.mold_id} · ${item.mold_name}`,
-    }))
-    .filter((entry) => {
-      if (entry.requestedWeight <= 0) {
-        return false
-      }
-
-      return !activeRequisitions.value.some((requisition) =>
-        requisition.material === entry.item.material && requisition.notes === entry.notes
-      )
-    })
-
-  if (!requisitionItems.length) {
-    actionMessage.value = activeRequisitions.value.length
-      ? '当前明细已生成领料单，无需重复生成。'
-      : '没有可生成领料单的用料重量。'
-    return
-  }
-
-  try {
-    const created = []
-    for (const entry of requisitionItems) {
-      const requisition = await moldingSampleApi.createRequisition({
-        date: today,
-        order_id: activeOrder.value.id,
-        material: entry.item.material,
-        requested_weight_kg: entry.requestedWeight,
-        applicant: activeOrder.value.eng_name || '工程部',
-        notes: entry.notes,
-      })
-      created.push({ requisition, item: entry.item, requestedWeight: entry.requestedWeight })
-    }
-
-    const updated = await moldingSampleApi.updateItems(activeOrder.value.id, {
-      items: created.map((entry) => ({
-        id: entry.item.id,
-        receipt_no: entry.requisition.req_number,
-        collected_weight_kg: entry.requestedWeight,
-      })),
-    })
-    setApiRecord(updated)
-    await refreshWarehouseData()
-    actionMessage.value = `已生成 ${created.length} 张后端领料单。`
-  }
-  catch (error) {
-    actionMessage.value = `生成领料单失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function createInventoryBatchFromDraft() {
-  if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能新增库存批次。'
-    return
-  }
-
-  const initialWeight = Number(inventoryBatchDraft.value.initial_weight_kg)
-  if (!inventoryBatchDraft.value.material || !inventoryBatchDraft.value.batch_no || !Number.isFinite(initialWeight) || initialWeight <= 0) {
-    actionMessage.value = '请补齐原料、批次号和有效库存重量。'
-    return
-  }
-
-  try {
-    await moldingSampleApi.createInventoryBatch({
-      material: inventoryBatchDraft.value.material,
-      batch_no: inventoryBatchDraft.value.batch_no,
-      location: inventoryBatchDraft.value.location,
-      initial_weight_kg: initialWeight,
-    })
-    inventoryBatchDraft.value.batch_no = ''
-    inventoryBatchDraft.value.initial_weight_kg = '5'
-    await refreshWarehouseData()
-    actionMessage.value = '库存批次已新增。'
-  }
-  catch (error) {
-    actionMessage.value = `新增库存批次失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function markRequisitionIssued(requisition: MoldingSampleRequisition) {
-  if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能更新后端领料单。'
-    return
-  }
-
-  const inventoryBatchId = defaultInventoryBatchId(requisition)
-  if (!inventoryBatchId) {
-    actionMessage.value = '请选择可用库存批次后再出库。'
-    return
-  }
-
-  try {
-    await moldingSampleApi.updateRequisitionStatus(requisition.id, {
-      status: '已出库',
-      issued_at: `${today} 15:30`,
-      inventory_batch_id: inventoryBatchId,
-    })
-    await refreshWarehouseData()
-    actionMessage.value = '领料单已标记出库。'
-  }
-  catch (error) {
-    actionMessage.value = `领料单出库失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function deleteRequisitionRow(requisitionId: string) {
-  if (!apiRecord.value) {
-    actionMessage.value = '当前为前端 mock 数据，不能删除后端领料单。'
-    return
-  }
-
-  if (!globalThis.confirm?.('确认删除这张领料单？')) {
-    return
-  }
-
-  try {
-    await moldingSampleApi.deleteRequisition(requisitionId)
-    await refreshWarehouseData()
-    actionMessage.value = '领料单已删除。'
-  }
-  catch (error) {
-    actionMessage.value = `领料单删除失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function saveProductionSample() {
-  const patches = activeItems.value.map((item) => ({
-    id: item.id,
-    actual_weight_kg: item.actual_weight_kg,
-    injection_cost: item.injection_cost,
-  }))
-
-  patches.forEach((patch) => {
-    patchItem(patch.id, {
-      actual_weight_kg: patch.actual_weight_kg,
-      injection_cost: patch.injection_cost,
-    })
-  })
-
-  if (apiRecord.value) {
-    try {
-      const updated = await moldingSampleApi.updateItems(activeOrder.value.id, { items: patches })
-      setApiRecord(updated)
-      actionMessage.value = '啤机部已编辑用料和啤办费已写入后端。'
-      return
-    }
-    catch (error) {
-      actionMessage.value = `啤机部填写保存失败：${getApiErrorMessage(error)}`
-      return
-    }
-  }
-
-  actionMessage.value = '啤机部已编辑用料和啤办费已暂存到当前页面。'
-}
-
-function updateMaterialPrice(index: number, field: keyof EditableMaterialPrice, value: string) {
-  editableMaterialPrices.value = editableMaterialPrices.value.map((price, priceIndex) =>
-    priceIndex === index ? { ...price, [field]: value } : price,
-  )
-}
-
-function addMaterialPriceRow() {
-  editableMaterialPrices.value = [
-    ...editableMaterialPrices.value,
-    { material: '', unit_price: '', notes: '' },
-  ]
-}
-
-async function applyPricingSettings() {
-  if ((apiState.value === 'connected' || apiState.value === 'empty') && !managerPin.value.trim()) {
-    actionMessage.value = '请输入经理 PIN 后保存价格口径。'
-    return
-  }
-
-  const normalized = normalizeMoldingSamplePricingSettings(
-    editableMaterialPrices.value,
-    editableRmbToHkdRate.value,
-    appliedRmbToHkdRate.value,
-  )
-
-  appliedMaterialPrices.value = clonePrices(normalized.prices)
-  appliedRmbToHkdRate.value = normalized.rmb_to_hkd_rate
-  editableMaterialPrices.value = createEditablePrices(normalized.prices)
-  editableRmbToHkdRate.value = String(normalized.rmb_to_hkd_rate)
-  pricingErrors.value = normalized.errors
-
-  if (apiState.value === 'connected' || apiState.value === 'empty') {
-    try {
-      const updated = await moldingSampleApi.updateMaterialPrices({
-        prices: normalized.prices,
-        rmb_to_hkd_rate: normalized.rmb_to_hkd_rate,
-        manager_name: '王经理',
-        manager_pin: managerPin.value.trim(),
-      })
-      appliedMaterialPrices.value = clonePrices(updated.prices)
-      appliedRmbToHkdRate.value = updated.rmb_to_hkd_rate
-      editableMaterialPrices.value = createEditablePrices(updated.prices)
-      editableRmbToHkdRate.value = String(updated.rmb_to_hkd_rate)
-      await loadApiData()
-      actionMessage.value = normalized.errors.length ? '价格口径已写入后端，但存在需要修正的提示。' : '价格口径已写入后端。'
-      return
-    }
-    catch (error) {
-      actionMessage.value = `价格口径后端保存失败：${getApiErrorMessage(error)}`
-      return
-    }
-  }
-
-  commitCurrentCostPreview(false)
-  appendAudit('经理保存价格表', '经理', '王经理', activeOrder.value.status, activeOrder.value.status, '经理维护原料单价和汇率。', 'blue')
-  actionMessage.value = normalized.errors.length ? '价格口径已保存，但存在需要修正的提示。' : '价格口径已保存。'
-}
-
-async function resetSupervisorPin() {
-  if (apiState.value === 'fallback') {
-    actionMessage.value = '当前为前端 mock 数据，不能重置后端主管 PIN。'
-    return
-  }
-
-  if (!managerPin.value.trim()) {
-    actionMessage.value = '请输入经理 PIN 后重置主管 PIN。'
-    return
-  }
-
-  const supervisorName = supervisorPinResetDraft.value.supervisor_name.trim()
-  const newPin = supervisorPinResetDraft.value.new_pin.trim()
-  if (!supervisorName || newPin.length < 4) {
-    actionMessage.value = '请填写主管姓名，并输入至少 4 位的新 PIN。'
-    return
-  }
-
-  try {
-    const updated = await moldingSampleApi.resetSupervisorPin({
-      manager_name: '王经理',
-      manager_pin: managerPin.value.trim(),
-      supervisor_name: supervisorName,
-      new_pin: newPin,
-    })
-    supervisorPinResetDraft.value.new_pin = '1234'
-    await refreshSensitiveAuditLogs()
-    actionMessage.value = `${updated.name} 的主管 PIN 已重置，并要求首次修改。`
-  }
-  catch (error) {
-    actionMessage.value = `重置主管 PIN 失败：${getApiErrorMessage(error)}`
-  }
-}
-
-async function changeWorkbenchPin(role: '主管' | '经理') {
-  if (apiState.value === 'fallback') {
-    actionMessage.value = '当前为前端 mock 数据，不能修改后端 PIN。'
-    return
-  }
-
-  const draft = role === '主管' ? supervisorPinChangeDraft.value : managerPinChangeDraft.value
-  const oldPin = draft.old_pin.trim()
-  const newPin = draft.new_pin.trim()
-  const confirmPin = draft.confirm_pin.trim()
-  const name = role === '主管' ? (activeOrder.value.supervisor || '李主管') : '王经理'
-
-  if (!oldPin || newPin.length < 4) {
-    actionMessage.value = `${role}旧 PIN 和至少 4 位的新 PIN 都必须填写。`
-    return
-  }
-  if (newPin !== confirmPin) {
-    actionMessage.value = `${role}两次输入的新 PIN 不一致。`
-    return
-  }
-  if (newPin === oldPin) {
-    actionMessage.value = `${role}新 PIN 不能与旧 PIN 相同。`
-    return
-  }
-
-  try {
-    const updated = await moldingSampleApi.changePin({
-      name,
-      role,
-      old_pin: oldPin,
-      new_pin: newPin,
-    })
-    draft.old_pin = ''
-    draft.new_pin = ''
-    draft.confirm_pin = ''
-    if (role === '主管') {
-      supervisorPin.value = newPin
-    }
-    else {
-      managerPin.value = newPin
-    }
-    await refreshSensitiveAuditLogs()
-    actionMessage.value = `${updated.name} 的 PIN 已修改，可以继续执行${role}操作。`
-  }
-  catch (error) {
-    actionMessage.value = `${role} PIN 修改失败：${getApiErrorMessage(error)}`
-  }
-}
-
-function resetPricingSettings() {
-  appliedMaterialPrices.value = clonePrices(moldingSampleMaterialPrices)
-  appliedRmbToHkdRate.value = moldingSampleRmbToHkdRate
-  editableMaterialPrices.value = createEditablePrices(moldingSampleMaterialPrices)
-  editableRmbToHkdRate.value = String(moldingSampleRmbToHkdRate)
-  pricingErrors.value = []
-  commitCurrentCostPreview(false)
-  actionMessage.value = '价格口径已恢复默认。'
-}
-
-function addProblem() {
-  const description = productionProblem.value.trim()
-
-  if (!description) {
-    return
-  }
-
-  problemOverrides.value = {
-    ...problemOverrides.value,
-    [activeOrder.value.id]: [
-      ...(problemOverrides.value[activeOrder.value.id] ?? []),
-      description,
-    ],
-  }
-  productionProblem.value = ''
-  actionMessage.value = '问题反馈已记录。'
-}
+  appStore.setActiveFactory(selectedFactoryId.value)
+  createDraft.value.factory_id = selectedFactoryId.value
+})
+
+resetCreateDraft()
 
 onMounted(() => {
   void loadApiData()
 })
-
-watch(selectedFactoryId, () => {
-  if (apiRecords.value.length) {
-    const selectedRecord = apiRecords.value.find((record) => record.order.factory_id === selectedFactoryId.value) ?? null
-    setApiRecord(selectedRecord)
-    void refreshWarehouseData()
-    apiState.value = selectedRecord ? 'connected' : 'empty'
-    apiMessage.value = selectedRecord ? '已连接后端 API，当前操作会写入数据库。' : '当前厂区暂无后端单据，可同步示例单据。'
-  }
-})
-
-watchEffect(() => {
-  appStore.setActiveFactory(selectedFactoryId.value)
-})
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-100 px-4 pb-6 pt-16 text-slate-950 sm:px-6 xl:px-10">
-    <div class="mx-auto max-w-[1680px] space-y-5">
-      <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <RouterLink
-            to="/modules"
-            class="fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 text-sm font-semibold text-slate-600 shadow-sm backdrop-blur transition hover:border-slate-300 hover:text-slate-950 sm:left-6 xl:left-10"
-          >
-            <ArrowLeft class="size-4" aria-hidden="true" />
-            工程部模块
-          </RouterLink>
-          <div class="mt-3 flex flex-wrap items-center gap-3">
-            <h1 class="text-3xl font-semibold tracking-tight">啤办单工作台</h1>
-            <StatusPill :label="activeOrder.status" :tone="statusTones[activeOrder.status]" />
-            <StatusPill :label="isExternalOrder ? '外厂路径' : '内部生产'" :tone="isExternalOrder ? 'slate' : 'teal'" />
+  <main class="min-h-screen bg-slate-100 text-[13px] leading-relaxed text-slate-900">
+    <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div class="mx-auto flex max-w-[1720px] items-center gap-4 px-5 py-2.5">
+        <RouterLink
+          to="/modules/engineering"
+          class="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+        >
+          <ArrowLeft class="size-4" aria-hidden="true" />
+          <span class="hidden sm:inline">工程部模块</span>
+          <span class="sm:hidden">工程部</span>
+        </RouterLink>
+
+        <div class="flex min-w-0 items-center gap-2.5">
+          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white">
+            <Beaker class="size-5" aria-hidden="true" />
+          </span>
+          <div class="min-w-0">
+            <div class="truncate text-[15px] font-bold leading-tight">啤办单管理</div>
+            <div class="truncate text-[11px] text-slate-400">Molding Sample · 试模 / 试色 / 啤办</div>
           </div>
-          <p class="mt-2 text-sm text-slate-600">
-            {{ activeFactory.name }} · {{ activeOrder.order_number }} {{ activeOrder.product_name }} · {{ activeOrder.client_name }}
-          </p>
         </div>
 
-        <div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:w-[820px]">
-          <article
-            v-for="card in summaryCards"
-            :key="card.label"
-            class="min-h-[92px] rounded-lg border bg-white p-4"
-            :class="toneClasses[card.tone]"
+        <div class="relative ml-1 hidden md:block">
+          <Search class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <input
+            v-model="searchKeyword"
+            placeholder="搜索单号 / 产品 / 客户 / 模具号..."
+            class="h-8 w-72 rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 text-[12px] outline-none transition focus:border-slate-400 focus:bg-white"
           >
-            <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
-            <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
-            <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
+        </div>
+
+        <div class="ml-auto flex items-center gap-3">
+          <span class="hidden h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[12px] font-medium text-slate-600 sm:inline-flex">
+            <Building2 class="size-4" aria-hidden="true" />
+            {{ activeFactory.shortName }}
+          </span>
+          <span class="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1">
+            <span class="flex h-6 w-6 items-center justify-center rounded-full bg-teal-100 text-[11px] font-bold text-teal-700">工</span>
+            <span class="leading-tight">
+              <span class="block text-[12px] font-semibold">工程部</span>
+              <span class="block text-[10px] text-slate-400">开单 / 审核跟进</span>
+            </span>
+          </span>
+        </div>
+      </div>
+
+      <nav class="mx-auto flex max-w-[1720px] items-center gap-1 overflow-x-auto px-5">
+        <button
+          type="button"
+          class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
+          :class="activeView === 'overview' ? 'bg-slate-900 text-white' : 'text-slate-500'"
+          @click="setView('overview')"
+        >
+          <LayoutDashboard class="size-4" aria-hidden="true" />
+          看板总览
+        </button>
+        <button
+          type="button"
+          class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
+          :class="activeView === 'create' ? 'bg-slate-900 text-white' : 'text-slate-500'"
+          @click="setView('create')"
+        >
+          <FilePlus2 class="size-4" aria-hidden="true" />
+          工程部 · 新建开单
+        </button>
+        <button
+          type="button"
+          class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
+          :class="activeView === 'detail' ? 'bg-slate-900 text-white' : 'text-slate-500'"
+          @click="setView('detail')"
+        >
+          <ClipboardCheck class="size-4" aria-hidden="true" />
+          单据详情 · 审核
+        </button>
+        <RouterLink
+          :to="productionTaskRoute"
+          class="ml-auto inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg px-3 py-2 text-[12.5px] font-semibold text-slate-500 transition hover:text-slate-900"
+        >
+          <Factory class="size-4" aria-hidden="true" />
+          啤办生产任务单
+          <ExternalLink class="size-3.5" aria-hidden="true" />
+        </RouterLink>
+      </nav>
+    </header>
+
+    <div class="mx-auto max-w-[1720px] px-5 py-4">
+      <div
+        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[12px]"
+        :class="apiState === 'fallback' ? 'border-amber-200 bg-amber-50 text-amber-800' : apiState === 'connected' ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'"
+      >
+        <span>{{ actionMessage }}</span>
+        <button
+          type="button"
+          class="inline-flex h-7 items-center rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100"
+          @click="loadApiData"
+        >
+          刷新正式列表
+        </button>
+      </div>
+
+      <section v-if="activeView === 'overview'" class="space-y-4">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+          <article
+            v-for="card in kpiCards"
+            :key="card.label"
+            class="min-h-[94px] rounded-lg border p-3"
+            :class="card.className"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-medium opacity-75">{{ card.label }}</span>
+              <component :is="card.icon" class="size-4 opacity-60" aria-hidden="true" />
+            </div>
+            <div class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ card.value }}</div>
+            <div class="text-[11px] opacity-75">{{ card.detail }}</div>
           </article>
         </div>
-      </div>
 
-      <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">
-        <div class="flex min-w-max gap-1">
-          <button
-            v-for="tab in roleTabs"
-            :key="tab.id"
-            type="button"
-            class="inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition-colors"
-            :class="activeTab === tab.id ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'"
-            @click="activeTab = tab.id"
-          >
-            <component :is="tab.icon" class="size-4" aria-hidden="true" />
-            {{ tab.label }}
-          </button>
-        </div>
-      </div>
-
-      <div
-        class="flex flex-col gap-3 rounded-lg border px-4 py-3 text-sm md:flex-row md:items-center md:justify-between"
-        :class="apiState === 'connected'
-          ? 'border-emerald-100 bg-emerald-50 text-emerald-800'
-          : apiState === 'empty'
-            ? 'border-blue-100 bg-blue-50 text-blue-800'
-            : apiState === 'checking'
-              ? 'border-slate-200 bg-white text-slate-600'
-              : 'border-amber-100 bg-amber-50 text-amber-800'"
-      >
         <div class="flex flex-wrap items-center gap-2">
-          <StatusPill
-            :label="apiState === 'connected' ? '后端已连接' : apiState === 'empty' ? '后端空库' : apiState === 'checking' ? '检查中' : '前端 mock'"
-            :tone="apiState === 'connected' ? 'green' : apiState === 'empty' ? 'blue' : apiState === 'checking' ? 'slate' : 'amber'"
-            compact
-          />
-          <span>{{ apiMessage }}</span>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <input
-            ref="excelFileInput"
-            type="file"
-            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            class="hidden"
-            @change="importMoldingSampleExcel"
-          >
-          <button
-            type="button"
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
-            @click="loadApiData"
-          >
-            <RotateCcw class="size-4" aria-hidden="true" />
-            刷新后端
+          <div class="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
+            <button class="rounded-md bg-slate-900 px-2.5 py-1 text-[12px] font-semibold text-white">看板</button>
+            <button class="rounded-md px-2.5 py-1 text-[12px] font-medium text-slate-500 hover:text-slate-900">列表</button>
+          </div>
+          <span class="mx-1 h-5 w-px bg-slate-200" aria-hidden="true" />
+          <button class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:border-slate-300">
+            <Filter class="size-3.5" aria-hidden="true" />
+            车间：{{ selectedOrder.workshop || '全部' }}
+          </button>
+          <button class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:border-slate-300">
+            <UserRound class="size-3.5" aria-hidden="true" />
+            主管：{{ selectedOrder.supervisor || '全部' }}
+          </button>
+          <button class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:border-slate-300">
+            <Tag class="size-3.5" aria-hidden="true" />
+            类型：啤办
           </button>
           <button
             type="button"
-            :disabled="apiRecord !== null"
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white/60 disabled:text-slate-400"
-            :class="apiRecord === null ? 'border-slate-950 bg-slate-950 text-white' : ''"
-            @click="syncCurrentMockToApi"
+            class="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-slate-700"
+            @click="setView('create')"
           >
-            <Save class="size-4" aria-hidden="true" />
-            同步当前示例
-          </button>
-          <button
-            type="button"
-            :disabled="!apiRecord"
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-white/60 disabled:text-slate-400"
-            @click="exportCurrentOrderExcel"
-          >
-            <Download class="size-4" aria-hidden="true" />
-            导出 Excel
-          </button>
-          <input
-            v-model="excelImportOrderId"
-            type="text"
-            placeholder="导入新单ID"
-            class="h-9 w-36 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
-          >
-          <button
-            type="button"
-            :disabled="apiState === 'fallback'"
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white/60 disabled:text-slate-400"
-            @click="openExcelImportPicker"
-          >
-            <Upload class="size-4" aria-hidden="true" />
-            导入 Excel
+            <Plus class="size-4" aria-hidden="true" />
+            新建啤办单
           </button>
         </div>
-      </div>
 
-      <div class="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <div class="xl:sticky xl:top-24 xl:self-start">
-          <SectionPanel title="单据队列" subtitle="按当前厂区入口切换单据">
-            <div class="space-y-3">
-              <RouterLink
-                v-for="entry in factoryQueue"
-                :key="entry.order.id"
-                :to="`/modules/molding-sample?factory=${entry.factory_id}`"
-                class="block rounded-lg border p-4 transition-colors hover:border-slate-300 hover:bg-slate-50"
-                :class="entry.factory_id === selectedFactoryId ? 'border-slate-950 bg-slate-50' : 'border-slate-200 bg-white'"
-              >
-                <div class="flex items-start justify-between gap-3">
-                  <div>
-                    <p class="font-semibold text-slate-950">{{ entry.order.order_number }} · {{ entry.order.product_name }}</p>
-                    <p class="mt-1 text-xs text-slate-500">{{ entry.order.client_name }} · {{ entry.order.workshop || '未定车间' }}</p>
-                  </div>
-                  <StatusPill :label="entry.order.status" :tone="statusTones[entry.order.status]" compact />
+        <div class="grid grid-cols-1 gap-3 overflow-x-auto pb-2 md:grid-cols-2 xl:grid-cols-6">
+          <section
+            v-for="column in boardColumns"
+            :key="column.status"
+            class="min-h-[230px] rounded-lg bg-slate-50/90 ring-1 ring-inset ring-slate-200"
+          >
+            <div class="flex items-center justify-between px-3 py-2.5">
+              <div class="flex min-w-0 items-center gap-2">
+                <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="column.dotClass" />
+                <div class="min-w-0">
+                  <div class="truncate text-[12.5px] font-bold">{{ column.label }}</div>
+                  <div class="truncate text-[10px] text-slate-400">{{ column.detail }}</div>
                 </div>
-                <div class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600">
-                  <span>明细 {{ entry.item_count }}</span>
-                  <span>{{ entry.blocked_count ? `卡点 ${entry.blocked_count}` : '无完成卡点' }}</span>
-                </div>
-              </RouterLink>
+              </div>
+              <span class="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-500 ring-1 ring-slate-200">
+                {{ column.records.length }}
+              </span>
             </div>
-          </SectionPanel>
+
+            <div class="space-y-2 px-2 pb-2">
+              <button
+                v-for="record in column.records"
+                :key="record.order.id"
+                type="button"
+                class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:shadow"
+                :class="selectedOrder.id === record.order.id ? 'border-slate-950 ring-1 ring-slate-950' : 'border-slate-200 hover:border-slate-300'"
+                @click="openRecord(record)"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-[12px] font-bold text-slate-800">{{ record.order.id }}</span>
+                  <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{{ record.order.stage || '啤办' }}</span>
+                </div>
+                <div class="mt-1 truncate text-[13px] font-semibold">{{ record.order.product_name }}</div>
+                <div class="truncate text-[11px] text-slate-400">{{ record.order.client_name }} · {{ record.items.length }} 项明细</div>
+                <div class="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px]">
+                  <span class="truncate text-slate-500">{{ getFlowSummary(record) }}</span>
+                  <span class="shrink-0 text-slate-400">{{ record.order.date }}</span>
+                </div>
+              </button>
+
+              <div
+                v-if="!column.records.length"
+                class="rounded-lg border border-dashed border-slate-200 bg-white/70 p-4 text-center text-[11px] font-medium text-slate-400"
+              >
+                暂无{{ column.label }}单据
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section v-else-if="activeView === 'create'" class="space-y-4">
+        <div class="flex items-center gap-2 text-[12px] text-slate-400">
+          <button type="button" class="hover:text-slate-900" @click="setView('overview')">看板总览</button>
+          <ChevronRight class="size-3.5" aria-hidden="true" />
+          <span class="font-semibold text-slate-700">新建啤办单</span>
         </div>
 
-        <div class="space-y-5">
-          <SectionPanel title="单头信息" subtitle="规格字段统一为 injection 啤办单口径">
-            <div class="grid gap-4 lg:grid-cols-4">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">产品编号</p>
-                <input
-                  :value="activeOrder.order_number"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('order_number', readInputValue($event))"
-                >
+        <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div class="space-y-4">
+            <section class="rounded-lg border border-slate-200 bg-white">
+              <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
+                <FileText class="size-4 text-slate-400" aria-hidden="true" />
+                <span class="text-[13px] font-bold">基础资料</span>
+                <span class="ml-auto text-[11px] text-slate-400">单号自动生成 · BP-新</span>
               </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">订单编号</p>
-                <input
-                  :value="activeOrder.doc_number"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('doc_number', readInputValue($event))"
-                >
-              </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">客户</p>
-                <input
-                  :value="activeOrder.client_name"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('client_name', readInputValue($event))"
-                >
-              </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">主管</p>
-                <input
-                  :value="activeOrder.supervisor"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('supervisor', readInputValue($event))"
-                >
-              </div>
-            </div>
-
-            <div class="mt-4 grid gap-4 lg:grid-cols-[1fr_260px_260px]">
-              <label class="block rounded-lg border border-slate-200 bg-white p-4">
-                <span class="text-xs font-semibold text-slate-500">产品名称</span>
-                <input
-                  :value="activeOrder.product_name"
-                  :disabled="!engineeringEditable"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold disabled:bg-slate-50 disabled:text-slate-500"
-                  @input="updateOrderTextField('product_name', readInputValue($event))"
-                >
-              </label>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">阶段 / 用途</p>
-                <p class="mt-2 text-sm font-semibold">{{ formatBlank(activeOrder.stage, '空') }} · {{ activeOrder.order_type }}</p>
-              </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <p class="text-xs font-semibold text-slate-500">车间 / 发至</p>
-                <p class="mt-2 text-sm font-semibold">{{ activeOrder.workshop }} · {{ activeOrder.send_to || '内部' }}</p>
-              </div>
-            </div>
-
-            <label class="mt-4 block rounded-lg border border-slate-200 bg-white p-4">
-              <span class="text-xs font-semibold text-slate-500">原因 / 备注</span>
-              <textarea
-                :value="activeOrder.reason"
-                :disabled="!engineeringEditable"
-                rows="3"
-                class="mt-2 w-full rounded-md border border-slate-200 px-3 py-2 text-sm leading-6 disabled:bg-slate-50 disabled:text-slate-500"
-                @input="updateOrderTextField('reason', readInputValue($event))"
-              />
-            </label>
-
-            <div v-if="activeOrder.reject_reason" class="mt-4 rounded-lg border border-red-100 bg-red-50 p-4 text-sm text-red-800">
-              驳回原因：{{ activeOrder.reject_reason }}
-            </div>
-          </SectionPanel>
-
-          <SectionPanel v-if="activeTab === 'engineering'" title="工程部工作台" subtitle="开单、返工、维护可编辑字段">
-            <div class="grid gap-4 lg:grid-cols-[1fr_180px_180px_220px]">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <h3 class="font-semibold">编辑权限</h3>
-                <p class="mt-2 text-sm leading-6 text-slate-600">
-                  当前状态 {{ activeOrder.status }}，工程部{{ engineeringEditable ? '可以编辑和重提' : '只读，需按审核或生产节点继续流转' }}。
-                </p>
-              </div>
-              <button
-                type="button"
-                :disabled="!engineeringEditable"
-                class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="engineeringEditable ? 'border-slate-950 bg-slate-950 text-white hover:bg-slate-800' : ''"
-                @click="saveEngineeringChanges"
-              >
-                <Save class="size-4" aria-hidden="true" />
-                保存改动
-              </button>
-              <button
-                type="button"
-                :disabled="!engineeringEditable"
-                class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="engineeringEditable ? 'border-red-700 bg-red-700 text-white hover:bg-red-800' : ''"
-                @click="deleteCurrentOrder"
-              >
-                <XCircle class="size-4" aria-hidden="true" />
-                删除单据
-              </button>
-              <button
-                type="button"
-                :disabled="activeOrder.status !== '已驳回'"
-                class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="activeOrder.status === '已驳回' ? 'border-slate-950 bg-slate-950 text-white hover:bg-slate-800' : ''"
-                @click="runTransition('工程重提', '工程部', activeOrder.eng_name, '工程按驳回原因修正后重新提交。')"
-              >
-                <Send class="size-4" aria-hidden="true" />
-                修改后重提
-              </button>
-            </div>
-          </SectionPanel>
-
-          <SectionPanel v-else-if="activeTab === 'supervisor'" title="主管工作台" subtitle="只处理待审核单，审核动作需 PIN 校验">
-            <div class="grid gap-4 lg:grid-cols-[1fr_180px_220px_220px]">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <h3 class="font-semibold">主管责任</h3>
-                <p class="mt-2 text-sm leading-6 text-slate-600">
-                  指定主管：{{ activeOrder.supervisor }}。通过后进入待经理审核，驳回后工程部返工。
-                </p>
-              </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <label class="text-xs font-semibold text-slate-500">主管 PIN</label>
-                <input
-                  v-model="supervisorPin"
-                  type="password"
-                  inputmode="numeric"
-                  autocomplete="current-password"
-                  placeholder="首次需先修改"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
-                >
-              </div>
-              <button
-                type="button"
-                :disabled="!supervisorCanReview"
-                class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="supervisorCanReview ? 'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800' : ''"
-                @click="runTransition('主管通过', '主管', activeOrder.supervisor, '主管确认单头、用料和交期。')"
-              >
-                <CheckCircle2 class="size-4" aria-hidden="true" />
-                主管通过
-              </button>
-              <button
-                type="button"
-                :disabled="!supervisorCanReview"
-                class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="supervisorCanReview ? 'border-red-700 bg-red-700 text-white hover:bg-red-800' : ''"
-                @click="runTransition('主管驳回', '主管', activeOrder.supervisor, rejectReason)"
-              >
-                <XCircle class="size-4" aria-hidden="true" />
-                主管驳回
-              </button>
-            </div>
-            <textarea
-              v-model="rejectReason"
-              rows="3"
-              class="mt-4 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6"
-            />
-            <div class="mt-4 rounded-lg border border-slate-200 bg-white p-4">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 class="font-semibold">修改主管 PIN</h3>
-                  <p class="mt-1 text-xs text-slate-500">首次使用默认 PIN 时，必须先改 PIN 才能审核。</p>
-                </div>
-                <button
-                  type="button"
-                  :disabled="apiState === 'fallback'"
-                  class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                  @click="changeWorkbenchPin('主管')"
-                >
-                  <ShieldCheck class="size-4" aria-hidden="true" />
-                  修改 PIN
-                </button>
-              </div>
-              <div class="mt-4 grid gap-3 md:grid-cols-3">
-                <label class="text-xs font-semibold text-slate-500">
-                  旧 PIN
+              <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">单据编号</span>
+                  <input v-model="createDraft.id" placeholder="BP-产品编号" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">产品编号</span>
                   <input
-                    v-model="supervisorPinChangeDraft.old_pin"
-                    type="password"
-                    inputmode="numeric"
-                    autocomplete="current-password"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
+                    :value="createDraft.product_no"
+                    class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400"
+                    @input="updateCreateProductNo(readInputValue($event))"
                   >
                 </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  新 PIN
-                  <input
-                    v-model="supervisorPinChangeDraft.new_pin"
-                    type="password"
-                    inputmode="numeric"
-                    autocomplete="new-password"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                  >
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">文件编号</span>
+                  <input v-model="createDraft.doc_number" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  确认新 PIN
-                  <input
-                    v-model="supervisorPinChangeDraft.confirm_pin"
-                    type="password"
-                    inputmode="numeric"
-                    autocomplete="new-password"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                  >
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
+                  <input v-model="createDraft.client_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">产品名称</span>
+                  <input v-model="createDraft.product_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">开单日期</span>
+                  <input v-model="createDraft.order_date" type="date" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">阶段</span>
+                  <select v-model="createDraft.stage" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                    <option>T0</option>
+                    <option>EP</option>
+                    <option>FEP</option>
+                    <option>PP</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">车间</span>
+                  <select v-model="createDraft.workshop" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                    <option>A车间</option>
+                    <option>B车间</option>
+                    <option>模厂</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">发至</span>
+                  <select v-model="createDraft.send_to" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                    <option>内部</option>
+                    <option>发至湖南</option>
+                    <option>发至模厂</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">审核主管</span>
+                  <select v-model="createDraft.supervisor" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                    <option>李主管</option>
+                    <option>陈主管</option>
+                    <option>黄主管</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">落单人</span>
+                  <input v-model="createDraft.eng_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="col-span-2 block md:col-span-3">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">注意事项 / 开单事由</span>
+                  <textarea v-model="createDraft.reason" rows="3" class="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[12px] outline-none focus:border-slate-400" />
                 </label>
               </div>
-            </div>
-          </SectionPanel>
+            </section>
 
-          <SectionPanel v-else-if="activeTab === 'manager'" title="经理工作台" subtitle="终审、外厂自动完成、价格表与汇率维护">
-            <div class="grid gap-4 xl:grid-cols-[1fr_180px_220px_220px]">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <h3 class="font-semibold">终审分支</h3>
-                <p class="mt-2 text-sm leading-6 text-slate-600">
-                  {{ isExternalOrder ? '经理通过后直接已完成并计算料费，不进入内部啤机部。' : '经理通过后进入待生产，后续由仓库和啤机部补录。' }}
-                </p>
+            <section class="rounded-lg border border-slate-200 bg-white">
+              <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
+                <Table2 class="size-4 text-slate-400" aria-hidden="true" />
+                <span class="text-[13px] font-bold">模具明细</span>
+                <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">按行维护</span>
               </div>
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <label class="text-xs font-semibold text-slate-500">经理 PIN</label>
-                <input
-                  v-model="managerPin"
-                  type="password"
-                  inputmode="numeric"
-                  autocomplete="current-password"
-                  placeholder="首次需先修改"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
-                >
-              </div>
-              <button
-                type="button"
-                :disabled="!managerCanReview"
-                class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="managerCanReview ? 'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800' : ''"
-                @click="runTransition('经理通过', '经理', '王经理', isExternalOrder ? '外厂单经理通过，自动完成。' : '内部单经理通过，进入待生产。')"
-              >
-                <CheckCircle2 class="size-4" aria-hidden="true" />
-                经理通过
-              </button>
-              <button
-                type="button"
-                :disabled="!managerCanReview"
-                class="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="managerCanReview ? 'border-red-700 bg-red-700 text-white hover:bg-red-800' : ''"
-                @click="runTransition('经理驳回', '经理', '王经理', rejectReason)"
-              >
-                <XCircle class="size-4" aria-hidden="true" />
-                经理驳回
-              </button>
-            </div>
-
-            <div class="mt-4 rounded-lg border border-slate-200 bg-white p-4">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 class="font-semibold">修改经理 PIN</h3>
-                  <p class="mt-1 text-xs text-slate-500">默认 PIN 只能用于首次验证和修改，终审、价格维护和重置主管 PIN 前必须先修改。</p>
-                </div>
-                <button
-                  type="button"
-                  :disabled="apiState === 'fallback'"
-                  class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                  @click="changeWorkbenchPin('经理')"
-                >
-                  <ShieldCheck class="size-4" aria-hidden="true" />
-                  修改 PIN
-                </button>
-              </div>
-              <div class="mt-4 grid gap-3 md:grid-cols-3">
-                <label class="text-xs font-semibold text-slate-500">
-                  旧 PIN
-                  <input
-                    v-model="managerPinChangeDraft.old_pin"
-                    type="password"
-                    inputmode="numeric"
-                    autocomplete="current-password"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                  >
-                </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  新 PIN
-                  <input
-                    v-model="managerPinChangeDraft.new_pin"
-                    type="password"
-                    inputmode="numeric"
-                    autocomplete="new-password"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                  >
-                </label>
-                <label class="text-xs font-semibold text-slate-500">
-                  确认新 PIN
-                  <input
-                    v-model="managerPinChangeDraft.confirm_pin"
-                    type="password"
-                    inputmode="numeric"
-                    autocomplete="new-password"
-                    class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                  >
-                </label>
-              </div>
-            </div>
-
-            <div class="mt-5 grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <label class="text-xs font-semibold text-slate-500">RMB -> HKD</label>
-                <input
-                  v-model="editableRmbToHkdRate"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-right text-sm font-semibold"
-                >
-                <label class="mt-4 block text-xs font-semibold text-slate-500">经理 PIN</label>
-                <input
-                  v-model="managerPin"
-                  type="password"
-                  inputmode="numeric"
-                  autocomplete="current-password"
-                  placeholder="首次需先修改"
-                  class="mt-2 h-10 w-full rounded-md border border-slate-200 px-3 text-sm font-semibold"
-                >
-                <div class="mt-4 grid gap-2">
-                  <button
-                    type="button"
-                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white"
-                    @click="applyPricingSettings"
-                  >
-                    <Save class="size-4" aria-hidden="true" />
-                    保存口径
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700"
-                    @click="addMaterialPriceRow"
-                  >
-                    <Plus class="size-4" aria-hidden="true" />
-                    新增原料
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700"
-                    @click="resetPricingSettings"
-                  >
-                    <RotateCcw class="size-4" aria-hidden="true" />
-                    恢复默认
-                  </button>
-                </div>
-                <ul v-if="pricingErrors.length" class="mt-4 space-y-1 text-xs text-amber-700">
-                  <li v-for="error in pricingErrors" :key="error">{{ error }}</li>
-                </ul>
-              </div>
-
-              <div class="overflow-hidden rounded-lg border border-slate-200 bg-white">
-                <table class="min-w-[760px] divide-y divide-slate-200 text-sm">
-                  <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                    <tr>
-                      <th class="px-4 py-3">原料</th>
-                      <th class="px-4 py-3 text-right">HKD/磅</th>
-                      <th class="px-4 py-3">备注</th>
-                      <th class="px-4 py-3">状态</th>
+              <div class="overflow-x-auto">
+                <table class="w-full min-w-[900px] text-[12px]">
+                  <thead>
+                    <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
+                      <th class="w-10 px-2 py-2 font-medium">#</th>
+                      <th class="px-2 py-2 text-left font-medium">客模具编号</th>
+                      <th class="px-2 py-2 text-left font-medium">模具名称</th>
+                      <th class="px-2 py-2 text-left font-medium">所需用料</th>
+                      <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
+                      <th class="px-2 py-2 text-left font-medium">色粉</th>
+                      <th class="px-2 py-2 text-left font-medium">啤/套</th>
+                      <th class="px-2 py-2 text-right font-medium">啤数</th>
+                      <th class="px-2 py-2 text-left font-medium">需办日期</th>
+                      <th class="px-2 py-2 text-right font-medium">操作</th>
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-slate-100">
-                    <tr v-for="(price, index) in editableMaterialPrices" :key="`${price.material}-${index}`">
-                      <td class="px-4 py-3">
-                        <input
-                          :value="price.material"
-                          class="h-9 w-full rounded-md border border-slate-200 px-2"
-                          @input="updateMaterialPrice(index, 'material', readInputValue($event))"
-                        >
+                  <tbody class="divide-y divide-slate-50">
+                    <tr v-for="(line, index) in createDraft.items" :key="index" class="hover:bg-slate-50/60">
+                      <td class="px-2 py-2 text-center text-slate-400">{{ index + 1 }}</td>
+                      <td class="px-2 py-1">
+                        <input v-model="line.customer_mold_id" class="h-8 w-32 rounded-md border border-slate-200 px-2 font-mono outline-none focus:border-slate-400">
                       </td>
-                      <td class="px-4 py-3 text-right">
-                        <input
-                          :value="price.unit_price"
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          class="h-9 w-28 rounded-md border border-slate-200 px-2 text-right"
-                          @input="updateMaterialPrice(index, 'unit_price', readInputValue($event))"
-                        >
+                      <td class="px-2 py-1">
+                        <input v-model="line.mold_name" class="h-8 w-32 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
                       </td>
-                      <td class="px-4 py-3">
-                        <input
-                          :value="price.notes"
-                          class="h-9 w-full rounded-md border border-slate-200 px-2"
-                          @input="updateMaterialPrice(index, 'notes', readInputValue($event))"
-                        >
+                      <td class="px-2 py-1">
+                        <input v-model="line.material" class="h-8 w-28 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
                       </td>
-                      <td class="px-4 py-3">
-                        <StatusPill :label="Number(price.unit_price) > 0 ? '可用' : '待补价'" :tone="Number(price.unit_price) > 0 ? 'green' : 'amber'" compact />
+                      <td class="px-2 py-1">
+                        <div class="flex gap-1">
+                          <input v-model="line.color" placeholder="颜色" class="h-8 w-24 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                          <input v-model="line.pms" placeholder="PMS" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                        </div>
                       </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div class="mt-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <h3 class="font-semibold">主管 PIN 重置</h3>
-                <div class="mt-4 grid gap-3">
-                  <label class="text-xs font-semibold text-slate-500">
-                    主管姓名
-                    <input
-                      v-model="supervisorPinResetDraft.supervisor_name"
-                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                    >
-                  </label>
-                  <label class="text-xs font-semibold text-slate-500">
-                    新 PIN
-                    <input
-                      v-model="supervisorPinResetDraft.new_pin"
-                      type="password"
-                      inputmode="numeric"
-                      autocomplete="new-password"
-                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm"
-                    >
-                  </label>
-                  <button
-                    type="button"
-                    :disabled="apiState === 'fallback'"
-                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                    @click="resetSupervisorPin"
-                  >
-                    <ShieldCheck class="size-4" aria-hidden="true" />
-                    重置主管 PIN
-                  </button>
-                </div>
-              </div>
-
-              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                <table class="min-w-[860px] divide-y divide-slate-200 text-sm">
-                  <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                    <tr>
-                      <th class="px-4 py-3">时间</th>
-                      <th class="px-4 py-3">动作</th>
-                      <th class="px-4 py-3">操作人</th>
-                      <th class="px-4 py-3">对象</th>
-                      <th class="px-4 py-3">说明</th>
-                    </tr>
-                  </thead>
-                  <tbody v-if="activeSensitiveAuditLogs.length" class="divide-y divide-slate-100">
-                    <tr v-for="log in activeSensitiveAuditLogs" :key="log.id">
-                      <td class="px-4 py-3">{{ log.created_at }}</td>
-                      <td class="px-4 py-3">
-                        <StatusPill :label="log.action" tone="blue" compact />
+                      <td class="px-2 py-1">
+                        <input v-model="line.pigment_no" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
                       </td>
-                      <td class="px-4 py-3">{{ log.actor_name }} · {{ log.actor_role }}</td>
-                      <td class="px-4 py-3">{{ log.target_name || log.target_type }}</td>
-                      <td class="px-4 py-3 text-slate-600">{{ log.detail }}</td>
-                    </tr>
-                  </tbody>
-                  <tbody v-else>
-                    <tr>
-                      <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">
-                        暂无敏感操作审计。
+                      <td class="px-2 py-1">
+                        <input v-model="line.quantity" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
                       </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </SectionPanel>
-
-          <SectionPanel v-else-if="activeTab === 'warehouse'" title="仓库工作台" subtitle="领料单与出库重量维护">
-            <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <p class="text-sm text-slate-600">
-                {{ isExternalOrder ? '外厂单不走内部仓库发料。' : `当前可维护：${isWarehouseEditable ? '是' : '否'}` }}
-              </p>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  :disabled="!isWarehouseEditable || !apiRecord"
-                  class="inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                  :class="isWarehouseEditable && apiRecord ? 'border-slate-950 bg-slate-950 text-white' : ''"
-                  @click="createRequisitionsFromItems"
-                >
-                  <Plus class="size-4" aria-hidden="true" />
-                  生成领料单
-                </button>
-                <button
-                  type="button"
-                  :disabled="!isWarehouseEditable"
-                  class="inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                  :class="isWarehouseEditable ? 'border-blue-700 bg-blue-700 text-white' : ''"
-                  @click="saveWarehouseSample"
-                >
-                  <Archive class="size-4" aria-hidden="true" />
-                  保存领料填写
-                </button>
-              </div>
-            </div>
-
-            <div class="mb-4 grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-              <div class="rounded-lg border border-slate-200 bg-white p-4">
-                <div class="grid gap-3">
-                  <label class="text-xs font-semibold text-slate-500">
-                    原料
-                    <select
-                      v-model="inventoryBatchDraft.material"
-                      :disabled="!apiRecord"
-                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
-                    >
-                      <option value="">选择原料</option>
-                      <option v-for="material in warehouseMaterials" :key="material" :value="material">
-                        {{ material }}
-                      </option>
-                    </select>
-                  </label>
-                  <label class="text-xs font-semibold text-slate-500">
-                    批次号
-                    <input
-                      v-model="inventoryBatchDraft.batch_no"
-                      :disabled="!apiRecord"
-                      class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
-                      placeholder="HIPS-20260701-A"
-                    >
-                  </label>
-                  <div class="grid grid-cols-2 gap-3">
-                    <label class="text-xs font-semibold text-slate-500">
-                      仓位
-                      <input
-                        v-model="inventoryBatchDraft.location"
-                        :disabled="!apiRecord"
-                        class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
-                      >
-                    </label>
-                    <label class="text-xs font-semibold text-slate-500">
-                      初始KG
-                      <input
-                        v-model="inventoryBatchDraft.initial_weight_kg"
-                        :disabled="!apiRecord"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="mt-1 h-9 w-full rounded-md border border-slate-200 px-2 text-right text-sm disabled:bg-slate-50 disabled:text-slate-400"
-                      >
-                    </label>
-                  </div>
-                  <button
-                    type="button"
-                    :disabled="!apiRecord"
-                    class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                    @click="createInventoryBatchFromDraft"
-                  >
-                    <Plus class="size-4" aria-hidden="true" />
-                    新增批次
-                  </button>
-                </div>
-              </div>
-
-              <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                <table class="min-w-[720px] divide-y divide-slate-200 text-sm">
-                  <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                    <tr>
-                      <th class="px-4 py-3">原料</th>
-                      <th class="px-4 py-3">批次号</th>
-                      <th class="px-4 py-3">仓位</th>
-                      <th class="px-4 py-3 text-right">初始KG</th>
-                      <th class="px-4 py-3 text-right">可用KG</th>
-                    </tr>
-                  </thead>
-                  <tbody v-if="activeInventoryBatches.length" class="divide-y divide-slate-100">
-                    <tr v-for="batch in activeInventoryBatches" :key="batch.id">
-                      <td class="px-4 py-3 font-medium">{{ batch.material }}</td>
-                      <td class="px-4 py-3">{{ batch.batch_no }}</td>
-                      <td class="px-4 py-3">{{ batch.location || '未填' }}</td>
-                      <td class="px-4 py-3 text-right">{{ formatWeight(batch.initial_weight_kg) }}</td>
-                      <td class="px-4 py-3 text-right">{{ formatWeight(batch.available_weight_kg) }}</td>
-                    </tr>
-                  </tbody>
-                  <tbody v-else>
-                    <tr>
-                      <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">
-                        暂无库存批次。
+                      <td class="px-2 py-1">
+                        <input v-model="line.shoot_qty" class="h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-slate-400">
                       </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[1120px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">时间</th>
-                    <th class="px-4 py-3">类型</th>
-                    <th class="px-4 py-3">原料</th>
-                    <th class="px-4 py-3">批次号</th>
-                    <th class="px-4 py-3">领料单</th>
-                    <th class="px-4 py-3 text-right">变动KG</th>
-                    <th class="px-4 py-3 text-right">变动前</th>
-                    <th class="px-4 py-3 text-right">变动后</th>
-                    <th class="px-4 py-3">操作人</th>
-                    <th class="px-4 py-3">说明</th>
-                  </tr>
-                </thead>
-                <tbody v-if="activeInventoryMovements.length" class="divide-y divide-slate-100">
-                  <tr v-for="movement in activeInventoryMovements" :key="movement.id">
-                    <td class="px-4 py-3">{{ movement.created_at }}</td>
-                    <td class="px-4 py-3">
-                      <StatusPill
-                        :label="movement.movement_type"
-                        :tone="movement.quantity_kg < 0 ? 'amber' : 'green'"
-                        compact
-                      />
-                    </td>
-                    <td class="px-4 py-3 font-medium">{{ movement.material }}</td>
-                    <td class="px-4 py-3">{{ movement.batch_no }}</td>
-                    <td class="px-4 py-3">{{ movement.req_number || '无' }}</td>
-                    <td
-                      class="px-4 py-3 text-right font-semibold"
-                      :class="movement.quantity_kg < 0 ? 'text-amber-700' : 'text-emerald-700'"
-                    >
-                      {{ formatMovementWeight(movement.quantity_kg) }}
-                    </td>
-                    <td class="px-4 py-3 text-right">{{ formatWeight(movement.before_weight_kg) }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatWeight(movement.after_weight_kg) }}</td>
-                    <td class="px-4 py-3">{{ movement.actor_name || '仓库' }}</td>
-                    <td class="px-4 py-3 text-slate-600">{{ movement.reason || '库存变动' }}</td>
-                  </tr>
-                </tbody>
-                <tbody v-else>
-                  <tr>
-                    <td colspan="10" class="px-4 py-8 text-center text-sm text-slate-500">
-                      暂无库存流水。
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[1120px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">领料单号</th>
-                    <th class="px-4 py-3">日期</th>
-                    <th class="px-4 py-3">啤办单号</th>
-                    <th class="px-4 py-3">原料</th>
-                    <th class="px-4 py-3 text-right">申请KG</th>
-                    <th class="px-4 py-3">申请人</th>
-                    <th class="px-4 py-3">库存批次</th>
-                    <th class="px-4 py-3">状态</th>
-                    <th class="px-4 py-3">出库时间</th>
-                    <th class="px-4 py-3 text-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody v-if="activeRequisitions.length" class="divide-y divide-slate-100">
-                  <tr v-for="requisition in activeRequisitions" :key="requisition.id">
-                    <td class="px-4 py-3 font-medium">{{ requisition.req_number }}</td>
-                    <td class="px-4 py-3">{{ requisition.date }}</td>
-                    <td class="px-4 py-3">{{ requisition.order_number }}</td>
-                    <td class="px-4 py-3">{{ requisition.material }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatWeight(requisition.requested_weight_kg) }}</td>
-                    <td class="px-4 py-3">{{ requisition.applicant }}</td>
-                    <td class="px-4 py-3">
-                      <span v-if="requisition.status === '已出库'" class="text-slate-700">
-                        {{ requisition.inventory_batch_no || '未记录' }}
-                      </span>
-                      <select
-                        v-else
-                        :value="defaultInventoryBatchId(requisition)"
-                        :disabled="!apiRecord"
-                        class="h-9 w-48 rounded-md border border-slate-200 px-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
-                        @change="selectedInventoryBatchIds = { ...selectedInventoryBatchIds, [requisition.id]: readInputValue($event) }"
-                      >
-                        <option value="">选择批次</option>
-                        <option
-                          v-for="batch in inventoryBatchesForMaterial(requisition.material)"
-                          :key="batch.id"
-                          :value="batch.id"
-                          :disabled="batch.available_weight_kg < (requisition.requested_weight_kg ?? 0)"
-                        >
-                          {{ batch.batch_no }} / {{ formatWeight(batch.available_weight_kg) }}KG
-                        </option>
-                      </select>
-                    </td>
-                    <td class="px-4 py-3">
-                      <StatusPill
-                        :label="requisition.status"
-                        :tone="requisition.status === '已出库' ? 'green' : 'amber'"
-                        compact
-                      />
-                    </td>
-                    <td class="px-4 py-3">{{ requisition.issued_at || '未出库' }}</td>
-                    <td class="px-4 py-3">
-                      <div class="flex justify-end gap-2">
+                      <td class="px-2 py-1">
+                        <input v-model="line.required_date" type="date" class="h-8 w-36 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+                      </td>
+                      <td class="px-2 py-1 text-right">
                         <button
                           type="button"
-                          :disabled="requisition.status === '已出库' || !apiRecord"
-                          class="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-200 px-2 text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                          @click="markRequisitionIssued(requisition)"
+                          class="rounded-md px-2 py-1 text-[11px] font-semibold text-red-500 hover:bg-red-50"
+                          @click="removeCreateLine(index)"
                         >
-                          <CheckCircle2 class="size-3.5" aria-hidden="true" />
-                          出库
-                        </button>
-                        <button
-                          type="button"
-                          :disabled="!apiRecord"
-                          class="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 px-2 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                          @click="deleteRequisitionRow(requisition.id)"
-                        >
-                          <XCircle class="size-3.5" aria-hidden="true" />
                           删除
                         </button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-                <tbody v-else>
-                  <tr>
-                    <td colspan="10" class="px-4 py-8 text-center text-sm text-slate-500">
-                      暂无领料单，确认用料重量后可生成。
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td colspan="10" class="px-2 py-2 text-center">
+                        <button
+                          type="button"
+                          class="text-[11px] font-semibold text-slate-500 hover:text-slate-950"
+                          @click="addCreateLine"
+                        >
+                          + 继续添加明细行
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
 
-            <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[1020px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">明细</th>
-                    <th class="px-4 py-3">原料</th>
-                    <th class="px-4 py-3 text-right">需求KG</th>
-                    <th class="px-4 py-3">领料单号</th>
-                    <th class="px-4 py-3 text-right">领料KG</th>
-                    <th class="px-4 py-3">备注</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  <tr v-for="item in activeItems" :key="item.id">
-                    <td class="px-4 py-3 font-medium">{{ item.mold_id }} · {{ item.mold_name }}</td>
-                    <td class="px-4 py-3">{{ item.material }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatWeight(item.required_material_kg) }}</td>
-                    <td class="px-4 py-3">
-                      <input
-                        :value="item.receipt_no"
-                        :disabled="!isWarehouseEditable"
-                        class="h-9 w-44 rounded-md border border-slate-200 px-2 disabled:bg-slate-50 disabled:text-slate-400"
-                        @input="updateItemText(item.id, 'receipt_no', readInputValue($event))"
-                      >
-                    </td>
-                    <td class="px-4 py-3 text-right">
-                      <input
-                        :value="item.collected_weight_kg ?? ''"
-                        :disabled="!isWarehouseEditable"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="h-9 w-28 rounded-md border border-slate-200 px-2 text-right disabled:bg-slate-50 disabled:text-slate-400"
-                        @input="updateItemNumber(item.id, 'collected_weight_kg', readInputValue($event))"
-                      >
-                    </td>
-                    <td class="px-4 py-3">
-                      <input
-                        :value="item.notes"
-                        class="h-9 w-full rounded-md border border-slate-200 px-2"
-                        @input="updateItemText(item.id, 'notes', readInputValue($event))"
-                      >
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </SectionPanel>
-
-          <SectionPanel v-else-if="activeTab === 'production'" title="啤机部工作台" subtitle="开始处理、回填实际用料和啤办费、完成校验">
-            <div class="mb-4 grid gap-3 md:grid-cols-3">
+          <aside class="space-y-4">
+            <section class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="mb-3 flex items-center gap-2">
+                <Send class="size-4 text-slate-400" aria-hidden="true" />
+                <span class="text-[13px] font-bold">提交动作</span>
+              </div>
+              <div class="space-y-2 text-[11px] text-slate-500">
+                <div class="flex justify-between"><span>当前厂区</span><strong class="text-slate-800">{{ activeFactory.shortName }}</strong></div>
+                <div class="flex justify-between"><span>提交人</span><strong class="text-slate-800">{{ createDraft.eng_name || '待填写' }}</strong></div>
+                <div class="flex justify-between"><span>下一节点</span><strong class="text-slate-800">待审核</strong></div>
+              </div>
+              <div v-if="createErrors.length" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] text-red-700">
+                <div v-for="error in createErrors" :key="error">{{ error }}</div>
+              </div>
+              <div class="mt-3 rounded-lg bg-slate-50 p-2.5 text-[11px] text-slate-500">
+                开单后进入现有流程：待审核 → 待经理审核 → 待生产 → 生产中 → 已完成。
+              </div>
               <button
                 type="button"
-                :disabled="isExternalOrder || activeOrder.status !== '待生产'"
-                class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="!isExternalOrder && activeOrder.status === '待生产' ? 'border-slate-950 bg-slate-950 text-white' : ''"
-                @click="runTransition('开始处理', '啤机部', '啤机部', '啤机部接收任务并开始处理。')"
-              >
-                <Play class="size-4" aria-hidden="true" />
-                开始处理
-              </button>
-              <button
-                type="button"
-                :disabled="!isProductionEditable"
-                class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="isProductionEditable ? 'border-blue-700 bg-blue-700 text-white' : ''"
-                @click="saveProductionSample"
+                :disabled="createSubmitting"
+                class="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-slate-900 text-[13px] font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                @click="submitManualCreate"
               >
                 <Send class="size-4" aria-hidden="true" />
-                保存生产填写
+                {{ createSubmitting ? '提交中...' : '提交主管审核' }}
               </button>
               <button
                 type="button"
-                :disabled="!isProductionEditable || !completionGate.can_complete"
-                class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                :class="isProductionEditable && completionGate.can_complete ? 'border-emerald-700 bg-emerald-700 text-white' : ''"
-                @click="runTransition('标记完成', '啤机部', '啤机部', '啤机部已完成实际用料回填。')"
+                class="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 text-[12px] font-medium text-slate-600 hover:border-slate-300"
+                @click="resetCreateDraft"
               >
-                <CheckCircle2 class="size-4" aria-hidden="true" />
-                标记完成
+                重置草稿
               </button>
-            </div>
+            </section>
 
-            <div class="rounded-lg border p-4 text-sm" :class="toneClasses[completionGate.can_complete ? 'green' : 'red']">
-              {{ completionGate.message }}
-            </div>
-
-            <div class="mt-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[1180px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">模具</th>
-                    <th class="px-4 py-3">原料</th>
-                    <th class="px-4 py-3 text-right">实际KG</th>
-                    <th class="px-4 py-3 text-right">料费HKD</th>
-                    <th class="px-4 py-3 text-right">啤办费RMB</th>
-                    <th class="px-4 py-3 text-right">啤办费HKD</th>
-                    <th class="px-4 py-3 text-right">汇率快照</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  <tr v-for="item in activeItems" :key="item.id">
-                    <td class="px-4 py-3 font-medium">{{ item.mold_id }} · {{ item.mold_name }}</td>
-                    <td class="px-4 py-3">{{ item.material }}</td>
-                    <td class="px-4 py-3 text-right">
-                      <input
-                        :value="item.actual_weight_kg ?? ''"
-                        :disabled="!isProductionEditable"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="h-9 w-28 rounded-md border border-slate-200 px-2 text-right disabled:bg-slate-50 disabled:text-slate-400"
-                        @input="updateItemNumber(item.id, 'actual_weight_kg', readInputValue($event))"
-                      >
-                    </td>
-                    <td class="px-4 py-3 text-right font-medium">{{ formatMoney(item.actual_amount_hkd) }}</td>
-                    <td class="px-4 py-3 text-right">
-                      <input
-                        :value="item.injection_cost ?? ''"
-                        :disabled="!isProductionEditable"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="h-9 w-28 rounded-md border border-slate-200 px-2 text-right disabled:bg-slate-50 disabled:text-slate-400"
-                        @input="updateItemNumber(item.id, 'injection_cost', readInputValue($event))"
-                      >
-                    </td>
-                    <td class="px-4 py-3 text-right font-medium">{{ isExternalOrder ? '不适用' : formatMoney(item.injection_cost_hkd) }}</td>
-                    <td class="px-4 py-3 text-right">{{ item.exchange_rate_at_save ?? '待保存' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="mt-4 grid gap-3 lg:grid-cols-[1fr_180px]">
-              <input
-                v-model="productionProblem"
-                class="h-10 rounded-lg border border-slate-200 px-3 text-sm"
-                placeholder="问题反馈"
+            <section class="rounded-lg border border-teal-200 bg-teal-50 p-4">
+              <div class="flex items-center gap-2 text-teal-800">
+                <Factory class="size-4" aria-hidden="true" />
+                <span class="text-[13px] font-bold">啤机部通知</span>
+              </div>
+              <p class="mt-2 text-[11px] leading-5 text-teal-700">
+                内部生产单提交后会在“啤办生产任务单”收到通知；审核走完后，啤机部才能开始执行并回传完成。
+              </p>
+              <RouterLink
+                :to="productionTaskRoute"
+                class="mt-3 inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 text-[12px] font-semibold text-teal-700"
               >
-              <button
-                type="button"
-                class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold"
-                @click="addProblem"
-              >
-                <Plus class="size-4" aria-hidden="true" />
-                提交问题
-              </button>
-            </div>
-          </SectionPanel>
-
-          <SectionPanel v-else title="汇总查账" subtitle="完成单进入原料汇总、啤办费用和总费用口径">
-            <div class="grid gap-4 md:grid-cols-4">
-              <article class="rounded-lg border p-4" :class="toneClasses[reportSummary.has_missing_price ? 'amber' : 'green']">
-                <p class="text-xs font-semibold opacity-75">缺料价</p>
-                <p class="mt-1 text-xl font-semibold">{{ reportSummary.missing_price_item_ids.length }}</p>
-              </article>
-              <article class="rounded-lg border p-4" :class="toneClasses[reportSummary.has_missing_actual_weight ? 'red' : 'green']">
-                <p class="text-xs font-semibold opacity-75">缺实际用料</p>
-                <p class="mt-1 text-xl font-semibold">{{ reportSummary.missing_actual_weight_item_ids.length }}</p>
-              </article>
-              <article class="rounded-lg border p-4" :class="toneClasses[reportSummary.has_missing_injection_cost ? 'blue' : 'green']">
-                <p class="text-xs font-semibold opacity-75">缺啤办费</p>
-                <p class="mt-1 text-xl font-semibold">{{ reportSummary.missing_injection_cost_item_ids.length }}</p>
-              </article>
-              <article class="rounded-lg border p-4" :class="toneClasses[reportSummary.archive_ready ? 'green' : 'amber']">
-                <p class="text-xs font-semibold opacity-75">归档</p>
-                <p class="mt-1 text-xl font-semibold">{{ reportSummary.archive_ready ? '可归档' : '暂缓' }}</p>
-              </article>
-            </div>
-
-            <div class="mt-5 flex flex-wrap gap-2">
-              <button
-                v-for="tab in [
-                  { id: 'materials', label: '原料汇总' },
-                  { id: 'injection', label: '啤办费用' },
-                  { id: 'total', label: '总费用' },
-                ]"
-                :key="tab.id"
-                type="button"
-                class="h-10 rounded-lg border px-4 text-sm font-semibold"
-                :class="activeReportTab === tab.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-700'"
-                @click="activeReportTab = tab.id as 'materials' | 'injection' | 'total'"
-              >
-                {{ tab.label }}
-              </button>
-            </div>
-
-            <div class="mt-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table v-if="activeReportTab === 'materials'" class="min-w-[820px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">原料</th>
-                    <th class="px-4 py-3 text-right">明细数</th>
-                    <th class="px-4 py-3 text-right">用量KG</th>
-                    <th class="px-4 py-3 text-right">料费HKD</th>
-                    <th class="px-4 py-3">缺价明细</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  <tr v-for="row in reportSummary.material_rows" :key="row.material">
-                    <td class="px-4 py-3 font-medium">{{ row.material }}</td>
-                    <td class="px-4 py-3 text-right">{{ row.line_count }}</td>
-                    <td class="px-4 py-3 text-right">{{ row.total_weight_kg.toFixed(2) }}</td>
-                    <td class="px-4 py-3 text-right">{{ row.total_material_cost_hkd.toFixed(2) }}</td>
-                    <td class="px-4 py-3">{{ row.missing_price_item_ids.join('、') || '无' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <table v-else-if="activeReportTab === 'injection'" class="min-w-[760px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">明细</th>
-                    <th class="px-4 py-3 text-right">RMB</th>
-                    <th class="px-4 py-3 text-right">HKD</th>
-                    <th class="px-4 py-3">状态</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  <tr v-for="row in reportSummary.injection_fee_rows" :key="row.item_id">
-                    <td class="px-4 py-3 font-medium">{{ row.item_id }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatBlank(row.injection_cost) }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatMoney(row.injection_cost_hkd) }}</td>
-                    <td class="px-4 py-3">
-                      <StatusPill :label="row.is_missing ? '缺啤办费' : '已计费'" :tone="row.is_missing ? 'blue' : 'green'" compact />
-                    </td>
-                  </tr>
-                  <tr v-if="reportSummary.injection_fee_rows.length === 0">
-                    <td colspan="4" class="px-4 py-6 text-center text-slate-500">外厂或模厂路径不产生内部啤办费</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <table v-else class="min-w-[980px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">明细</th>
-                    <th class="px-4 py-3">模具</th>
-                    <th class="px-4 py-3 text-right">料费HKD</th>
-                    <th class="px-4 py-3 text-right">啤办费HKD</th>
-                    <th class="px-4 py-3 text-right">总费用HKD</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  <tr v-for="row in reportSummary.item_rows" :key="row.item_id">
-                    <td class="px-4 py-3 font-medium">{{ row.item_id }}</td>
-                    <td class="px-4 py-3">{{ row.mold_id }} · {{ row.mold_name }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatMoney(row.actual_amount_hkd) }}</td>
-                    <td class="px-4 py-3 text-right">{{ isExternalOrder ? '不适用' : formatMoney(row.injection_cost_hkd) }}</td>
-                    <td class="px-4 py-3 text-right font-semibold">{{ row.total_cost.toFixed(2) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div v-if="activeProblems.length" class="mt-4 rounded-lg border border-amber-100 bg-amber-50 p-4 text-sm text-amber-900">
-              <p class="font-semibold">问题反馈</p>
-              <ul class="mt-2 space-y-1">
-                <li v-for="problem in activeProblems" :key="problem">{{ problem }}</li>
-              </ul>
-            </div>
-          </SectionPanel>
-
-          <SectionPanel title="明细清单" subtitle="工模、用料、领料、实际用料和费用字段统一展示">
-            <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table class="min-w-[1500px] divide-y divide-slate-200 text-sm">
-                <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th class="px-4 py-3">排序</th>
-                    <th class="px-4 py-3">工模编号</th>
-                    <th class="px-4 py-3">工模名称</th>
-                    <th class="px-4 py-3">机型</th>
-                    <th class="px-4 py-3">原料</th>
-                    <th class="px-4 py-3">颜色</th>
-                    <th class="px-4 py-3">色粉</th>
-                    <th class="px-4 py-3 text-right">啤数</th>
-                    <th class="px-4 py-3 text-right">需求KG</th>
-                    <th class="px-4 py-3 text-right">领料KG</th>
-                    <th class="px-4 py-3 text-right">实际KG</th>
-                    <th class="px-4 py-3 text-right">料费HKD</th>
-                    <th class="px-4 py-3 text-right">啤办费RMB</th>
-                    <th class="px-4 py-3 text-right">啤办费HKD</th>
-                    <th class="px-4 py-3">完成时间</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  <tr v-for="item in activeItems" :key="item.id">
-                    <td class="px-4 py-3">{{ item.sort_order }}</td>
-                    <td class="px-4 py-3 font-medium text-slate-950">{{ item.mold_id }}</td>
-                    <td class="px-4 py-3">{{ item.mold_name }}</td>
-                    <td class="px-4 py-3">{{ item.machine_type }}</td>
-                    <td class="px-4 py-3">{{ item.material }}</td>
-                    <td class="px-4 py-3">{{ item.color }}</td>
-                    <td class="px-4 py-3">{{ item.pigment_no }}</td>
-                    <td class="px-4 py-3 text-right">{{ item.shoot_qty }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatWeight(item.required_material_kg) }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatWeight(item.collected_weight_kg) }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatWeight(item.actual_weight_kg) }}</td>
-                    <td class="px-4 py-3 text-right">{{ formatMoney(item.actual_amount_hkd) }}</td>
-                    <td class="px-4 py-3 text-right">{{ isExternalOrder ? '不适用' : formatBlank(item.injection_cost) }}</td>
-                    <td class="px-4 py-3 text-right">{{ isExternalOrder ? '不适用' : formatMoney(item.injection_cost_hkd) }}</td>
-                    <td class="px-4 py-3">{{ formatBlank(item.completion_time) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </SectionPanel>
-
-          <SectionPanel title="审核轨迹" subtitle="状态流转和敏感操作会追加到责任链">
-            <div class="grid gap-3 lg:grid-cols-2">
-              <article
-                v-for="audit in activeAuditLogs"
-                :key="audit.id"
-                class="rounded-lg border bg-white p-4"
-                :class="toneClasses[audit.tone]"
-              >
-                <div class="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 class="font-semibold text-slate-950">{{ audit.action }}</h3>
-                    <p class="mt-1 text-xs opacity-75">{{ audit.actor_name }} · {{ audit.actor_role }} · {{ audit.created_at }}</p>
-                  </div>
-                  <StatusPill :label="`${audit.from_status} -> ${audit.to_status}`" :tone="audit.tone" compact />
-                </div>
-                <p class="mt-3 text-sm leading-6 text-slate-700">{{ audit.reason }}</p>
-              </article>
-            </div>
-          </SectionPanel>
-
-          <div
-            v-if="actionMessage"
-            class="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-800"
-          >
-            {{ actionMessage }}
-          </div>
+                打开生产任务单
+                <ExternalLink class="size-3.5" aria-hidden="true" />
+              </RouterLink>
+            </section>
+          </aside>
         </div>
-      </div>
+      </section>
+
+      <section v-else-if="factoryRecords.length" class="space-y-4">
+        <div class="flex items-center gap-2 text-[12px] text-slate-400">
+          <button type="button" class="hover:text-slate-900" @click="setView('overview')">看板总览</button>
+          <ChevronRight class="size-3.5" aria-hidden="true" />
+          <span class="font-semibold text-slate-700">单据详情 · {{ selectedOrder.id }}</span>
+        </div>
+
+        <section class="rounded-lg border border-slate-200 bg-white p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-lg font-bold">{{ selectedOrder.id }}</span>
+                <span class="rounded-full border px-2 py-0.5 text-[11px] font-bold" :class="getStatusBadgeClass(selectedOrder.status)">
+                  {{ selectedOrder.status }}
+                </span>
+                <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{{ selectedOrder.stage || '啤办' }}</span>
+                <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                  {{ isSelectedExternal ? '外厂 / 模厂路径' : '内部生产' }}
+                </span>
+              </div>
+              <div class="mt-1 text-[15px] font-bold">{{ selectedOrder.product_name }} · {{ selectedOrder.client_name }}</div>
+              <div class="mt-1 flex flex-wrap gap-x-4 text-[11px] text-slate-400">
+                <span>文件 {{ selectedOrder.doc_number }}</span>
+                <span>{{ selectedOrder.workshop }}</span>
+                <span>工程 {{ selectedOrder.eng_name }}</span>
+                <span>主管 {{ selectedOrder.supervisor }}</span>
+                <span>开单 {{ selectedOrder.date }}</span>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 hover:border-slate-300"
+                @click="setView('overview')"
+              >
+                返回看板
+              </button>
+              <RouterLink
+                :to="productionTaskRoute"
+                class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-slate-900 px-3 text-[12px] font-semibold text-white hover:bg-slate-700"
+              >
+                <Factory class="size-4" aria-hidden="true" />
+                啤办生产任务单
+              </RouterLink>
+            </div>
+          </div>
+        </section>
+
+        <section class="rounded-lg border border-slate-200 bg-white p-4">
+          <div class="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 class="text-[13px] font-bold">流程状态</h2>
+              <p class="text-[11px] text-slate-400">保持现有状态机：待审核 → 待经理审核 → 待生产 → 生产中 → 已完成</p>
+            </div>
+            <span class="rounded-full border px-2 py-0.5 text-[11px] font-bold" :class="getStatusBadgeClass(selectedOrder.status)">
+              {{ selectedCompletionGate.message }}
+            </span>
+          </div>
+
+          <div class="grid gap-2 md:grid-cols-5">
+            <article
+              v-for="(step, index) in workflowSteps"
+              :key="step.status"
+              class="rounded-lg border p-2.5"
+              :class="getWorkflowCardClass(getWorkflowStepState(step.status))"
+            >
+              <div class="flex items-center gap-1.5">
+                <span
+                  class="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold"
+                  :class="getWorkflowIndexClass(getWorkflowStepState(step.status))"
+                >
+                  {{ index + 1 }}
+                </span>
+                <span class="text-[12px] font-bold">{{ step.title }}</span>
+              </div>
+              <div class="mt-1 pl-6 text-[10px] opacity-75">{{ step.detail }}</div>
+            </article>
+          </div>
+        </section>
+
+        <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <div class="space-y-4">
+            <section class="rounded-lg border border-slate-200 bg-white">
+              <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
+                <Table2 class="size-4 text-slate-400" aria-hidden="true" />
+                <span class="text-[13px] font-bold">模具明细</span>
+                <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ selectedItems.length }} 项</span>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full min-w-[920px] text-[12px]">
+                  <thead>
+                    <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
+                      <th class="w-8 px-2 py-2 font-medium">#</th>
+                      <th class="px-2 py-2 text-left font-medium">模具号</th>
+                      <th class="px-2 py-2 text-left font-medium">名称</th>
+                      <th class="px-2 py-2 text-left font-medium">原料</th>
+                      <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
+                      <th class="px-2 py-2 text-right font-medium">预计用料</th>
+                      <th class="px-2 py-2 text-right font-medium">实际用料</th>
+                      <th class="px-2 py-2 text-right font-medium">费用</th>
+                      <th class="px-2 py-2 text-left font-medium">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-50">
+                    <tr v-for="item in detailRows" :key="item.id" class="hover:bg-slate-50/60">
+                      <td class="px-2 py-1.5 text-center text-slate-400">{{ item.sort_order }}</td>
+                      <td class="px-2 py-1.5 font-mono">{{ item.mold_id }}</td>
+                      <td class="px-2 py-1.5">{{ item.mold_name }}</td>
+                      <td class="px-2 py-1.5">{{ item.material }}</td>
+                      <td class="px-2 py-1.5">
+                        <span class="inline-flex items-center gap-1">
+                          <span class="h-2.5 w-2.5 rounded-full border border-slate-200" :class="getColorSwatchClass(item.color)" />
+                          {{ item.color }}
+                        </span>
+                      </td>
+                      <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td>
+                      <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</td>
+                      <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(item.actual_amount_hkd) }}</td>
+                      <td class="px-2 py-1.5">
+                        <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
+                          {{ getItemState(item) }}
+                        </span>
+                      </td>
+                    </tr>
+                    <tr v-if="selectedItems.length > detailRows.length">
+                      <td colspan="9" class="px-2 py-2 text-center text-[11px] font-medium text-slate-400">
+                        还有 {{ selectedItems.length - detailRows.length }} 项明细，滚动后续详情视图继续查看
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="mb-1.5 flex items-center gap-2">
+                <MessageSquareText class="size-4 text-slate-400" aria-hidden="true" />
+                <span class="text-[13px] font-bold">开单事由</span>
+              </div>
+              <p class="text-[12.5px] text-slate-600">{{ selectedOrder.reason }}</p>
+            </section>
+          </div>
+
+          <aside class="space-y-4">
+            <section
+              class="rounded-lg border-2 p-4"
+              :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'border-amber-200 bg-amber-50/50' : 'border-slate-200 bg-white'"
+            >
+              <form @submit.prevent="runApprovalTransition('通过')">
+                <input class="sr-only" autocomplete="username" :value="getApprovalActor()?.reviewer_name ?? ''" readonly>
+                <div class="flex items-center gap-2">
+                <Gavel class="size-4 text-amber-600" aria-hidden="true" />
+                <span class="text-[13px] font-bold" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-800' : 'text-slate-800'">
+                  {{ selectedOrder.status === '待审核' ? `${selectedOrder.supervisor} · 待审核` : selectedOrder.status === '待经理审核' ? '王经理 · 待审核' : '当前无需工程审核' }}
+                </span>
+                </div>
+                <p class="mt-1 text-[11px]" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-700' : 'text-slate-500'">
+                {{ selectedOrder.status === '待审核' ? '核对单头、明细、交期后执行操作。通过后进入待经理审核。' : selectedOrder.status === '待经理审核' ? '经理终审通过后，内部单进入待生产；外厂 / 模厂路径直接完成。' : '该单据当前处于后续生产或归档节点。' }}
+                </p>
+                <textarea
+                v-model="approvalNote"
+                rows="2"
+                placeholder="审核意见（驳回必填）..."
+                class="mt-3 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-slate-400"
+                />
+                <input
+                v-model="approvalPin"
+                type="password"
+                autocomplete="current-password"
+                placeholder="审核 PIN"
+                class="mt-2 h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400"
+                >
+                <div class="mt-2 flex gap-2">
+                  <button
+                  type="submit"
+                  :disabled="!canApproveSelectedOrder || approvalSubmitting"
+                  class="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 text-[13px] font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    <Check class="size-4" aria-hidden="true" />
+                    {{ approvalSubmitting ? '提交中...' : '通过' }}
+                  </button>
+                  <button
+                  type="button"
+                  :disabled="!canApproveSelectedOrder || approvalSubmitting"
+                  class="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-red-600 text-[13px] font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  @click="runApprovalTransition('驳回')"
+                  >
+                    <X class="size-4" aria-hidden="true" />
+                    驳回
+                  </button>
+                </div>
+                <div class="mt-2 flex items-center gap-1.5 text-[10px] text-slate-500">
+                  <Lock class="size-3" aria-hidden="true" />
+                  审核仍沿用现有 PIN 与审计规则。
+                </div>
+              </form>
+            </section>
+
+            <section class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="mb-3 flex items-center gap-2">
+                <History class="size-4 text-slate-400" aria-hidden="true" />
+                <span class="text-[13px] font-bold">审核轨迹</span>
+              </div>
+              <ol class="relative space-y-4 border-l border-slate-200 pl-4">
+                <li v-for="log in selectedRecord.audit_logs" :key="log.id" class="relative">
+                  <span class="absolute -left-[21px] top-0.5 flex h-3.5 w-3.5 rounded-full bg-teal-400 ring-4 ring-white" />
+                  <div class="text-[12px] font-semibold">{{ log.action }}</div>
+                  <div class="text-[11px] text-slate-400">{{ log.actor_name }} · {{ log.actor_role }} · {{ log.created_at }}</div>
+                  <div class="mt-1 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">{{ log.reason }}</div>
+                </li>
+                <li v-if="!selectedRecord.audit_logs.length" class="relative">
+                  <span class="absolute -left-[21px] top-0.5 flex h-3.5 w-3.5 rounded-full bg-slate-200 ring-4 ring-white" />
+                  <div class="text-[12px] font-semibold text-slate-400">暂无轨迹</div>
+                </li>
+              </ol>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section v-else class="rounded-lg border border-slate-200 bg-white p-8 text-center">
+        <p class="text-base font-semibold text-slate-950">当前厂区暂无正式啤办单</p>
+        <p class="mt-2 text-sm text-slate-500">可以先在“工程部 · 新建开单”提交一张新啤办单，提交成功后会进入正式看板。</p>
+        <button
+          type="button"
+          class="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white"
+          @click="setView('create')"
+        >
+          <Plus class="size-4" aria-hidden="true" />
+          新建啤办单
+        </button>
+      </section>
     </div>
   </main>
 </template>
