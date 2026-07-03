@@ -23,6 +23,7 @@ import {
 import type {
   MoldingSampleItem,
   MoldingSampleOrder,
+  MoldingSampleProblem,
   MoldingSampleStatus,
   MoldingSampleWorkflowRecord,
 } from '@/types/moldingSample'
@@ -54,9 +55,11 @@ const apiState = ref<'checking' | 'connected' | 'empty' | 'fallback'>('checking'
 const actionMessage = ref('正在读取啤办生产任务...')
 const selectedOrderId = ref('')
 const productionProblem = ref('')
+const problemSubmitting = ref(false)
 const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
 const localOrderOverrides = ref<Record<string, Partial<MoldingSampleOrder>>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
+const localProblemOverrides = ref<Record<string, MoldingSampleProblem[]>>({})
 
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'blue',
@@ -115,7 +118,7 @@ const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
       items: record.items,
       audit_logs: record.audit_logs,
       requisitions: [],
-      problems: [],
+      problems: record.problems ?? [],
     }))
 
     if (apiNotifications.value.length) {
@@ -139,6 +142,10 @@ const taskRecords = computed(() =>
       ...item,
       ...(localItemOverrides.value[record.order.id]?.[item.id] ?? {}),
     })),
+    problems: [
+      ...record.problems,
+      ...(localProblemOverrides.value[record.order.id] ?? []),
+    ],
   })),
 )
 
@@ -190,6 +197,8 @@ const completionGate = computed(() => {
 
   return buildCompletionGate(selectedTask.value.order, activeItems.value)
 })
+
+const selectedProblems = computed(() => selectedTask.value?.problems ?? [])
 
 const taskSummaryCards = computed<TaskSummaryCard[]>(() => {
   const notifiedCount = taskEntries.value.filter((entry) => ['待审核', '待经理审核'].includes(entry.order.status)).length
@@ -368,6 +377,29 @@ function replaceApiRecord(record: MoldingSampleDetailResponse) {
   replaceApiNotificationsForOrder(record)
 }
 
+function appendProblemForOrder(orderId: string, problem: MoldingSampleProblem) {
+  if (apiState.value === 'connected' || apiState.value === 'empty') {
+    apiRecords.value = apiRecords.value.map((entry) => entry.order.id === orderId
+      ? {
+          ...entry,
+          problems: [
+            problem,
+            ...(entry.problems ?? []).filter((existing) => existing.id !== problem.id),
+          ],
+        }
+      : entry)
+    return
+  }
+
+  localProblemOverrides.value = {
+    ...localProblemOverrides.value,
+    [orderId]: [
+      problem,
+      ...(localProblemOverrides.value[orderId] ?? []).filter((existing) => existing.id !== problem.id),
+    ],
+  }
+}
+
 function replaceApiNotificationsForOrder(record: MoldingSampleDetailResponse) {
   const productionNotifications = (record.notifications ?? [])
     .filter((notification) => notification.target_module === PRODUCTION_NOTIFICATION_MODULE)
@@ -519,14 +551,49 @@ async function runProductionTransition(action: '开始处理' | '标记完成') 
   }
 }
 
-function reportProductionProblem() {
+async function reportProductionProblem() {
   const problem = productionProblem.value.trim()
   if (!problem || !selectedTask.value) {
     return
   }
 
-  actionMessage.value = `已记录问题反馈：${problem}`
-  productionProblem.value = ''
+  const orderId = selectedTask.value.order.id
+  problemSubmitting.value = true
+
+  if (apiState.value === 'fallback') {
+    appendProblemForOrder(orderId, {
+      id: `${orderId}-local-problem-${Date.now()}`,
+      factory_id: selectedTask.value.factory_id,
+      order_type: 'injection',
+      order_id: orderId,
+      order_number: selectedTask.value.order.order_number,
+      description: problem,
+      reported_by: '啤机部',
+      status: '待处理',
+      created_at: `${today} 16:30`,
+      resolved_at: '',
+    })
+    actionMessage.value = `离线示例已暂存问题反馈：${problem}`
+    productionProblem.value = ''
+    problemSubmitting.value = false
+    return
+  }
+
+  try {
+    const created = await moldingSampleApi.createProblem({
+      order_id: orderId,
+      description: problem,
+    })
+    appendProblemForOrder(orderId, created)
+    actionMessage.value = `问题反馈已保存并同步给工程部：${problem}`
+    productionProblem.value = ''
+  }
+  catch (error) {
+    actionMessage.value = `问题反馈保存失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    problemSubmitting.value = false
+  }
 }
 
 function readInputValue(event: Event) {
@@ -792,17 +859,32 @@ watchEffect(() => {
             <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px]">
               <input
                 v-model="productionProblem"
+                :disabled="problemSubmitting"
                 class="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"
                 placeholder="生产问题反馈，可回到工程啤办单跟进"
               >
               <button
                 type="button"
+                :disabled="problemSubmitting || !productionProblem.trim()"
                 class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700"
                 @click="reportProductionProblem"
               >
                 <AlertTriangle class="size-4" aria-hidden="true" />
-                反馈问题
+                {{ problemSubmitting ? '保存中...' : '反馈问题' }}
               </button>
+            </div>
+            <div v-if="selectedProblems.length" class="mt-3 space-y-2">
+              <article
+                v-for="problem in selectedProblems"
+                :key="problem.id"
+                class="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800"
+              >
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="font-semibold">{{ problem.status }} · {{ problem.reported_by }}</span>
+                  <span class="text-red-500">{{ problem.created_at }}</span>
+                </div>
+                <p class="mt-1 leading-5">{{ problem.description }}</p>
+              </article>
             </div>
           </SectionPanel>
 

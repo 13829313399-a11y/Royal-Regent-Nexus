@@ -583,6 +583,7 @@ export const moldingSampleFactoryRecords: Record<ProductionFactoryContextId, Mol
     [
       {
         id: 'BP-56206-problem-001',
+        factory_id: 'huaxing',
         order_type: 'injection',
         order_id: huaxingOrder.id,
         order_number: huaxingOrder.order_number,

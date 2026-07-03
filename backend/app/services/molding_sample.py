@@ -14,6 +14,7 @@ from app.models.molding_sample import (
     MoldingSampleMaterialPrice,
     MoldingSampleNotification,
     MoldingSampleOrder,
+    MoldingSampleProblem,
     MoldingSampleRequisition,
     MoldingSampleSensitiveAuditLog,
     MoldingSampleSetting,
@@ -25,6 +26,8 @@ from app.schemas.molding_sample import (
     MoldingSampleEditRequest,
     MoldingSampleItemIn,
     MoldingSampleNotificationUpdateRequest,
+    MoldingSampleProblemCreateRequest,
+    MoldingSampleProblemStatusRequest,
     MoldingSampleStatusRequest,
     RequisitionCreateRequest,
     RequisitionStatusRequest,
@@ -51,6 +54,7 @@ ENGINEERING_MOLDING_SAMPLE_MODULE = "engineering_molding_sample"
 PRODUCTION_TARGET_ROLE = "啤机部"
 ENGINEERING_TARGET_ROLE = "工程部"
 NOTIFICATION_STATUSES = {"未读", "已读", "已处理"}
+PROBLEM_STATUSES = {"待处理", "已解决"}
 
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
 ALLOWED_ITEM_PATCH_FIELDS = {
@@ -193,6 +197,7 @@ def load_order(db: Session, order_id: str, current_user: AuthContext | None = No
             selectinload(MoldingSampleOrder.items),
             selectinload(MoldingSampleOrder.audit_logs),
             selectinload(MoldingSampleOrder.notifications),
+            selectinload(MoldingSampleOrder.problems),
         )
     )
     if not order:
@@ -208,6 +213,7 @@ def scoped_order_statement(current_user: AuthContext):
         selectinload(MoldingSampleOrder.items),
         selectinload(MoldingSampleOrder.audit_logs),
         selectinload(MoldingSampleOrder.notifications),
+        selectinload(MoldingSampleOrder.problems),
     )
     if "*" not in current_user.factory_scopes:
         statement = statement.where(MoldingSampleOrder.factory_id.in_(current_user.factory_scopes))
@@ -361,6 +367,116 @@ def update_notification(
     db.commit()
     db.refresh(notification)
     return notification
+
+
+def list_problems(
+    db: Session,
+    current_user: AuthContext,
+    order_id: str | None = None,
+    status: str | None = None,
+) -> list[MoldingSampleProblem]:
+    ensure_permission(db, current_user, "molding_sample:read")
+    statement = select(MoldingSampleProblem)
+
+    if "*" not in current_user.factory_scopes:
+        statement = statement.where(MoldingSampleProblem.factory_id.in_(current_user.factory_scopes))
+    if order_id:
+        order = load_order(db, order_id, current_user)
+        statement = statement.where(MoldingSampleProblem.order_id == order.id)
+    if status:
+        statement = statement.where(MoldingSampleProblem.status == status)
+
+    return list(
+        db.scalars(
+            statement.order_by(MoldingSampleProblem.created_at.desc(), MoldingSampleProblem.id.desc())
+        ).all()
+    )
+
+
+def create_problem(
+    db: Session,
+    payload: MoldingSampleProblemCreateRequest,
+    current_user: AuthContext,
+) -> MoldingSampleProblem:
+    ensure_permission(db, current_user, "molding_sample:production_fillback")
+    order = load_order(db, payload.order_id, current_user)
+    if order.status not in {"待生产", "生产中"}:
+        raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以反馈生产问题")
+
+    description = payload.description.strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="问题反馈不能为空")
+
+    reported_by = payload.reported_by.strip() or current_user.display_name
+    problem = MoldingSampleProblem(
+        id=f"{order.id}-problem-{uuid4().hex[:12]}",
+        factory_id=order.factory_id,
+        order_type="injection",
+        order_id=order.id,
+        order_number=order.order_number,
+        description=description,
+        reported_by=reported_by,
+        status="待处理",
+        created_at=now_precise_text(),
+    )
+    db.add(problem)
+    append_audit(
+        db,
+        order,
+        "生产问题反馈",
+        current_user,
+        order.status,
+        order.status,
+        description,
+    )
+    append_notification(
+        db,
+        order,
+        target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+        target_role=ENGINEERING_TARGET_ROLE,
+        event_type="生产问题反馈",
+        title="啤机部反馈生产问题",
+        message=f"啤办单 {order.id} 反馈问题：{description}",
+        from_status=order.status,
+        to_status=order.status,
+        actor_name=reported_by,
+    )
+    db.commit()
+    db.refresh(problem)
+    return problem
+
+
+def update_problem_status(
+    db: Session,
+    problem_id: str,
+    payload: MoldingSampleProblemStatusRequest,
+    current_user: AuthContext,
+) -> MoldingSampleProblem:
+    ensure_permission(db, current_user, "molding_sample:edit_draft")
+    if payload.status not in PROBLEM_STATUSES:
+        raise HTTPException(status_code=400, detail="问题状态无效")
+
+    problem = db.get(MoldingSampleProblem, problem_id)
+    if problem is None:
+        raise HTTPException(status_code=404, detail="问题反馈不存在")
+
+    ensure_factory_scope(db, current_user, problem.factory_id)
+    problem.status = payload.status
+    problem.resolved_at = now_text() if payload.status == "已解决" else ""
+
+    order = load_order(db, problem.order_id, current_user)
+    append_audit(
+        db,
+        order,
+        "生产问题处理",
+        current_user,
+        order.status,
+        order.status,
+        f"{problem.description} -> {payload.status}",
+    )
+    db.commit()
+    db.refresh(problem)
+    return problem
 
 
 def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user: AuthContext) -> MoldingSampleOrder:

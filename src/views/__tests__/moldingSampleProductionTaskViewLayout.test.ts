@@ -17,6 +17,8 @@ for (const requiredCopy of [
   '啤机回填明细',
   '完成通知回传',
   '生产完成通知已回传到工程啤办单',
+  '问题反馈已保存并同步给工程部',
+  '保存中...',
   '工程啤办单',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
@@ -27,7 +29,11 @@ for (const requiredImplementation of [
   'moldingSampleApi.listNotifications',
   'moldingSampleApi.updateItems',
   'moldingSampleApi.updateStatus',
+  'moldingSampleApi.createProblem',
   'apiNotifications',
+  'selectedProblems',
+  'problemSubmitting',
+  'appendProblemForOrder',
   'notificationOrderIds',
   'production_molding_sample_task',
   "'huaxing'",

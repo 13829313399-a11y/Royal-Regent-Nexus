@@ -186,6 +186,43 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert completed_response.json()["order"]["completed_date"] == "2026-07-01"
 
 
+def test_rejected_order_can_be_edited_and_resubmitted_by_engineering(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-REJECT-001"))
+
+    login_as(client, "supervisor")
+    rejected_response = client.patch(
+        "/api/injection/BP-REJECT-001/status",
+        json={"action": "主管驳回", "reason": "原料和颜色需要修正"},
+    )
+    assert rejected_response.status_code == 200
+    assert rejected_response.json()["order"]["status"] == "已驳回"
+    assert rejected_response.json()["order"]["reject_reason"] == "原料和颜色需要修正"
+
+    login_as(client, "engineer")
+    edited_payload = sample_order_payload("BP-REJECT-001")
+    edited_payload["order"]["product_name"] = "链条枪修正版"
+    edited_payload["items"][0]["material"] = "ABS 740"
+    edited_payload["items"][0]["color"] = "深蓝色"
+
+    edit_response = client.put("/api/injection/BP-REJECT-001", json=edited_payload)
+    assert edit_response.status_code == 200
+    assert edit_response.json()["order"]["status"] == "已驳回"
+    assert edit_response.json()["order"]["product_name"] == "链条枪修正版"
+    assert edit_response.json()["items"][0]["material"] == "ABS 740"
+
+    resubmit_response = client.patch(
+        "/api/injection/BP-REJECT-001/status",
+        json={"action": "工程重提", "reason": "工程已修正原料和颜色"},
+    )
+    assert resubmit_response.status_code == 200
+    payload = resubmit_response.json()
+    assert payload["order"]["status"] == "待审核"
+    assert payload["order"]["reject_reason"] == ""
+    assert payload["order"]["product_name"] == "链条枪修正版"
+    assert payload["audit_logs"][0]["action"] == "工程重提"
+
+
 def test_external_order_auto_completes_after_manager_approval(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-EXT-001", external=True))
@@ -205,6 +242,55 @@ def test_external_order_auto_completes_after_manager_approval(client):
     assert payload["order"]["completed_date"] == "2026-07-01"
     assert payload["items"][0]["actual_weight_kg"] == 2.46
     assert payload["items"][0]["actual_amount_hkd"] == 29.83
+
+
+def test_production_problem_feedback_is_saved_and_visible_to_engineering(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-PROBLEM-001"))
+
+    blocked_response = client.post(
+        "/api/problems",
+        json={"order_id": "BP-PROBLEM-001", "description": "未到生产节点不应反馈"},
+    )
+    assert blocked_response.status_code == 403
+
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "主管通过"})
+
+    login_as(client, "manager")
+    client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "经理通过"})
+
+    login_as(client, "molding_clerk")
+    client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "开始处理"})
+    problem_response = client.post(
+        "/api/problems",
+        json={
+            "order_id": "BP-PROBLEM-001",
+            "description": "左枪身缩水，需工程确认胶口。",
+        },
+    )
+    assert problem_response.status_code == 201
+    problem = problem_response.json()
+    assert problem["order_id"] == "BP-PROBLEM-001"
+    assert problem["reported_by"] == "华兴啤机部文员"
+    assert problem["status"] == "待处理"
+
+    login_as(client, "engineer")
+    detail_response = client.get("/api/injection/BP-PROBLEM-001")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["problems"][0]["description"] == "左枪身缩水，需工程确认胶口。"
+    assert detail["audit_logs"][0]["action"] == "生产问题反馈"
+    assert detail["notifications"][0]["event_type"] == "生产问题反馈"
+
+    list_response = client.get("/api/problems", params={"order_id": "BP-PROBLEM-001"})
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["id"] == problem["id"]
+
+    resolved_response = client.patch(f"/api/problems/{problem['id']}", json={"status": "已解决"})
+    assert resolved_response.status_code == 200
+    assert resolved_response.json()["status"] == "已解决"
+    assert resolved_response.json()["resolved_at"] != ""
 
 
 def test_manager_price_update_uses_logged_in_user_and_sensitive_audit(client):

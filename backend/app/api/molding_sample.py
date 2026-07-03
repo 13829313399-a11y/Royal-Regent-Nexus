@@ -14,6 +14,9 @@ from app.schemas.molding_sample import (
     MoldingSampleItemsPatchRequest,
     MoldingSampleNotificationOut,
     MoldingSampleNotificationUpdateRequest,
+    MoldingSampleProblemCreateRequest,
+    MoldingSampleProblemOut,
+    MoldingSampleProblemStatusRequest,
     MoldingSampleStatusRequest,
     RequisitionCreateRequest,
     RequisitionOut,
@@ -26,6 +29,7 @@ from app.services.molding_sample import (
     build_total_cost_summary,
     create_inventory_batch,
     create_order,
+    create_problem,
     create_requisition,
     delete_order,
     delete_requisition,
@@ -35,6 +39,7 @@ from app.services.molding_sample import (
     list_inventory_movements,
     list_notifications,
     list_orders,
+    list_problems,
     list_requisitions,
     list_sensitive_audit_logs,
     load_order,
@@ -43,6 +48,7 @@ from app.services.molding_sample import (
     update_notification,
     update_order,
     update_order_items,
+    update_problem_status,
     update_requisition_status,
 )
 from app.services.molding_sample_excel import XLSX_MIME, export_order_to_excel, parse_order_excel
@@ -56,6 +62,7 @@ def serialize_order(order) -> MoldingSampleDetailResponse:
         items=list(order.items),
         audit_logs=list(order.audit_logs),
         notifications=list(order.notifications),
+        problems=list(order.problems),
     )
 
 
@@ -187,6 +194,35 @@ def patch_molding_sample_notification(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return update_notification(db, notification_id, payload, current_user)
+
+
+@router.get("/api/problems", response_model=list[MoldingSampleProblemOut])
+def get_molding_sample_problems(
+    order_id: str | None = None,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return list_problems(db, current_user=current_user, order_id=order_id, status=status)
+
+
+@router.post("/api/problems", response_model=MoldingSampleProblemOut, status_code=status.HTTP_201_CREATED)
+def post_molding_sample_problem(
+    payload: MoldingSampleProblemCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return create_problem(db, payload, current_user)
+
+
+@router.patch("/api/problems/{problem_id}", response_model=MoldingSampleProblemOut)
+def patch_molding_sample_problem(
+    problem_id: str,
+    payload: MoldingSampleProblemStatusRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return update_problem_status(db, problem_id, payload, current_user)
 
 
 @router.get("/api/material-prices", response_model=MaterialPricesResponse)

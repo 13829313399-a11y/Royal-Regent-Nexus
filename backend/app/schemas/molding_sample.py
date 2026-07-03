@@ -102,6 +102,31 @@ class MoldingSampleNotificationUpdateRequest(BaseModel):
     status: str
 
 
+class MoldingSampleProblemOut(BaseModel):
+    id: str
+    factory_id: str
+    order_type: str
+    order_id: str
+    order_number: str
+    description: str
+    reported_by: str
+    status: str
+    created_at: str
+    resolved_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MoldingSampleProblemCreateRequest(BaseModel):
+    order_id: str
+    description: str
+    reported_by: str = ""
+
+
+class MoldingSampleProblemStatusRequest(BaseModel):
+    status: str
+
+
 class MoldingSampleCreateRequest(BaseModel):
     order: MoldingSampleOrderIn
     items: list[MoldingSampleItemIn] = Field(default_factory=list)
@@ -116,6 +141,7 @@ class MoldingSampleDetailResponse(BaseModel):
     items: list[MoldingSampleItemOut]
     audit_logs: list[MoldingSampleAuditLogOut] = Field(default_factory=list)
     notifications: list[MoldingSampleNotificationOut] = Field(default_factory=list)
+    problems: list[MoldingSampleProblemOut] = Field(default_factory=list)
 
 
 class MoldingSampleStatusRequest(BaseModel):

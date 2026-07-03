@@ -72,6 +72,15 @@ assert.equal(result.payload?.order.reason, '见客样办，枪身不可刮花，
 assert.equal(result.payload?.order.status, '待审核')
 assert.equal(result.payload?.order.created_at, '2026-04-09 09:00')
 
+const noFileNumberDraft = createManualMoldingSampleOrderDraft({
+  ...draft,
+  doc_number: '',
+})
+const noFileNumberResult = buildManualMoldingSampleCreateRequest(noFileNumberDraft, 'huakang-a')
+
+assert.deepEqual(noFileNumberResult.errors, [])
+assert.equal(noFileNumberResult.payload?.order.doc_number, '')
+
 assert.deepEqual(result.payload?.items.map((item) => ({
   id: item.id,
   order_id: item.order_id,
@@ -143,3 +152,4 @@ assert.match(invalidResult.errors.join('；'), /产品编号/)
 assert.match(invalidResult.errors.join('；'), /客户名称/)
 assert.match(invalidResult.errors.join('；'), /主管/)
 assert.match(invalidResult.errors.join('；'), /至少填写一条明细/)
+assert.doesNotMatch(invalidResult.errors.join('；'), /文件编号/)

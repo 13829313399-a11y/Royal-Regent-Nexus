@@ -120,6 +120,7 @@ export type MoldingSampleProblemStatus = '待处理' | '已解决'
 
 export interface MoldingSampleProblem {
   id: string
+  factory_id: string
   order_type: 'injection'
   order_id: string
   order_number: string

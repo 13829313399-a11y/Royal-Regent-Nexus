@@ -17,6 +17,12 @@ for (const requiredCopy of [
   '流程状态',
   '审核轨迹',
   '提交主管审核',
+  '修改驳回单并重提',
+  '修改后重提',
+  '保存并重提',
+  '重置修改',
+  '生产问题反馈',
+  '暂无啤机部反馈问题',
   '啤机部通知',
   '经理审核通过后',
 ]) {
@@ -45,15 +51,23 @@ for (const requiredImplementation of [
   'apiState',
   'loadApiData',
   'sourceRecords',
+  'selectedProblems',
   'moldingSampleApi.listOrders',
   "'huaxing'",
   'createDraft',
+  'createLineGridClass',
+  'editingRejectedOrderId',
   'buildManualMoldingSampleCreateRequest',
   'submitManualCreate',
+  'startRejectedEdit',
+  'resubmitRejectedOrder',
   'moldingSampleApi.createOrder',
+  'moldingSampleApi.editOrder',
   'approvalNote',
   'runApprovalTransition',
   'moldingSampleApi.updateStatus',
+  "'工程重提'",
+  'canEditSelectedRejectedOrder',
   'useAuthStore',
   'authStore.currentUser',
   'authStore.hasPermission',
@@ -82,9 +96,15 @@ assert.doesNotMatch(source, /eng_name:\s*template\.order\.eng_name/)
 assert.doesNotMatch(source, /<table class="w-full min-w-\[900px\] text-\[12px\]">/)
 assert.match(source, /aria-label="模具明细录入表"/)
 assert.match(source, /role="table"/)
-assert.match(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px\]/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_72px\]'/)
+assert.match(source, /:class="createLineGridClass"/)
+assert.match(source, /min-w-\[1240px\]/)
+assert.doesNotMatch(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px\]/)
+assert.doesNotMatch(source, /role="columnheader">颜色 \/ PMS<\/div>/)
+assert.match(source, /role="columnheader">颜色<\/div>[\s\S]*role="columnheader">PMS<\/div>/)
+assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
-assert.match(source, /v-model="line\.mold_name" class="h-9 w-full/)
+assert.match(source, /v-model="line\.mold_name" class="h-9 w-full min-w-0/)
 
 for (const removedClearedLayoutCopy of [
   'MOLDING SAMPLE REDESIGN',
