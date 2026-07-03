@@ -33,12 +33,14 @@ const validSectionIds: InjectionSectionId[] = [
 const legacySectionMap: Record<string, InjectionSectionId> = {
   dashboard: 'monthly-plan',
   'data-center': 'order-import',
-  execution: 'smart-scheduling',
+  execution: 'order-import',
   reporting: 'daily-report',
   config: 'master-data',
   'history-db': 'master-data',
   'machine-archive': 'master-data',
   'mold-targets': 'master-data',
+  'smart-scheduling': 'order-import',
+  'scheduling-results': 'order-import',
 }
 
 const normalizeSection = (value: unknown): InjectionSectionId | null => {

@@ -34,6 +34,7 @@ interface InjectionWorkflowBridgeOptions {
 interface PersistedWorkflowDraft {
   selectedPendingOrderMachines?: Record<string, string>
   schedulingDraftGenerated?: boolean
+  schedulingReviewRequested?: boolean
   schedulingDraftReleased?: boolean
   shiftReportDraftSubmitted?: boolean
   inboundWritebackDraftConfirmed?: boolean
@@ -46,6 +47,7 @@ export function useInjectionWorkflowBridge({
 }: InjectionWorkflowBridgeOptions) {
   const selectedPendingOrderMachines = ref<Record<string, string>>({})
   const schedulingDraftGenerated = ref(false)
+  const schedulingReviewRequested = ref(false)
   const schedulingDraftReleased = ref(false)
   const shiftReportDraftSubmitted = ref(false)
   const inboundWritebackDraftConfirmed = ref(false)
@@ -62,6 +64,7 @@ export function useInjectionWorkflowBridge({
   const applyPersistedDraft = (draft: PersistedWorkflowDraft) => {
     selectedPendingOrderMachines.value = draft.selectedPendingOrderMachines ?? {}
     schedulingDraftGenerated.value = Boolean(draft.schedulingDraftGenerated)
+    schedulingReviewRequested.value = Boolean(draft.schedulingReviewRequested)
     schedulingDraftReleased.value = Boolean(draft.schedulingDraftReleased)
     shiftReportDraftSubmitted.value = Boolean(draft.shiftReportDraftSubmitted)
     inboundWritebackDraftConfirmed.value = Boolean(draft.inboundWritebackDraftConfirmed)
@@ -97,6 +100,7 @@ export function useInjectionWorkflowBridge({
     const draft: PersistedWorkflowDraft = {
       selectedPendingOrderMachines: selectedPendingOrderMachines.value,
       schedulingDraftGenerated: schedulingDraftGenerated.value,
+      schedulingReviewRequested: schedulingReviewRequested.value,
       schedulingDraftReleased: schedulingDraftReleased.value,
       shiftReportDraftSubmitted: shiftReportDraftSubmitted.value,
       inboundWritebackDraftConfirmed: inboundWritebackDraftConfirmed.value,
@@ -116,6 +120,7 @@ export function useInjectionWorkflowBridge({
       [
         selectedPendingOrderMachines,
         schedulingDraftGenerated,
+        schedulingReviewRequested,
         schedulingDraftReleased,
         shiftReportDraftSubmitted,
         inboundWritebackDraftConfirmed,
@@ -130,6 +135,7 @@ export function useInjectionWorkflowBridge({
 
   const resetDownstreamDrafts = () => {
     schedulingDraftGenerated.value = false
+    schedulingReviewRequested.value = false
     schedulingDraftReleased.value = false
     shiftReportDraftSubmitted.value = false
     inboundWritebackDraftConfirmed.value = false
@@ -180,6 +186,7 @@ export function useInjectionWorkflowBridge({
 
   const markSchedulingDraftEdited = () => {
     schedulingDraftGenerated.value = true
+    schedulingReviewRequested.value = false
     schedulingDraftReleased.value = false
     shiftReportDraftSubmitted.value = false
     inboundWritebackDraftConfirmed.value = false
@@ -203,31 +210,72 @@ export function useInjectionWorkflowBridge({
   const getPendingOrderStatusTone = (row: PendingOrderMachineRow): Tone =>
     selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)] ? 'green' : row.tone
 
+  const parseDisplayInteger = (value = '') => {
+    const parsed = Number(String(value).replace(/,/g, '').trim())
+
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+
+  const formatDisplayInteger = (value: number) => Math.max(0, Math.round(value)).toLocaleString('en-US')
+
+  const formatDate = (date: Date) => {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+
+    return `${year}-${month}-${day}`
+  }
+
+  const estimateProductionWindow = (quantity = '', index = 0) => {
+    const today = new Date()
+    today.setHours(8, 0, 0, 0)
+
+    const plannedQuantity = parseDisplayInteger(quantity)
+    const queueOffsetDays = Math.floor(index / 4)
+    const productionDays = Math.max(1, Math.ceil(plannedQuantity / 1800))
+    const start = new Date(today)
+    const completion = new Date(today)
+
+    start.setDate(today.getDate() + queueOffsetDays)
+    completion.setDate(today.getDate() + queueOffsetDays + productionDays)
+
+    return {
+      estimatedStartWindow: `${formatDate(start)} 08:00`,
+      estimatedCompletionDate: formatDate(completion),
+    }
+  }
+
   const pendingOrderMachineDraftRows = computed(() =>
     pendingOrders.value
       .map((row, index) => {
         const options = getPendingOrderMachineOptions(row)
         const selectedMachine = getSelectedPendingOrderMachine(row)
         const confirmed = Boolean(selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)])
+        const productionWindow = estimateProductionWindow(row.quantity, index)
 
         return {
           ...row,
           selectedMachine,
           machineOptions: options,
           sequence: index + 1,
+          ...productionWindow,
           confirmState: confirmed ? '人工已确认' : '系统推荐',
           confirmTone: confirmed ? 'green' : row.tone,
           releaseState: schedulingDraftReleased.value
-            ? '已下发执行'
-            : schedulingDraftGenerated.value
-                ? '草稿已生成'
-                : '待生成草稿',
+            ? '主管已通过'
+            : schedulingReviewRequested.value
+                ? '待主管审核'
+                : schedulingDraftGenerated.value
+                    ? '草稿已生成'
+                    : '待智能排机',
           releaseTone: (
             schedulingDraftReleased.value
               ? 'green'
-              : schedulingDraftGenerated.value
-                  ? 'blue'
-                  : 'amber'
+              : schedulingReviewRequested.value
+                  ? 'amber'
+                  : schedulingDraftGenerated.value
+                      ? 'blue'
+                      : 'slate'
           ) as Tone,
         }
       })
@@ -243,7 +291,7 @@ export function useInjectionWorkflowBridge({
 
     return [
       {
-        label: '待下发订单',
+        label: '可排订单',
         value: `${total}`,
         detail: poolTotal === total
           ? '来自当前订单池全部可排订单'
@@ -253,14 +301,16 @@ export function useInjectionWorkflowBridge({
       { label: '人工已选机', value: `${confirmed}`, detail: '现场已确认的机台选择', tone: confirmed > 0 ? 'green' : 'slate' },
       { label: '系统推荐', value: `${recommended}`, detail: '未手动修改，按推荐机台进入草稿', tone: recommended > 0 ? 'amber' : 'green' },
       {
-        label: '占用机台',
+        label: '主管审核',
         value: `${machines}`,
         detail: schedulingDraftReleased.value
-          ? '已确认下发执行'
-          : schedulingDraftGenerated.value
-              ? '已生成排机草稿'
-              : '待生成结果草稿',
-        tone: schedulingDraftReleased.value ? 'green' : schedulingDraftGenerated.value ? 'blue' : 'amber',
+          ? '主管已审核并下发执行'
+          : schedulingReviewRequested.value
+              ? '草稿已提交主管审核'
+              : schedulingDraftGenerated.value
+                  ? '文员草稿待提交'
+                  : '待点击智能排机',
+        tone: schedulingDraftReleased.value ? 'green' : schedulingReviewRequested.value ? 'amber' : schedulingDraftGenerated.value ? 'blue' : 'slate',
       },
     ] satisfies { label: string; value: string; detail: string; tone: Tone }[]
   })
@@ -287,22 +337,16 @@ export function useInjectionWorkflowBridge({
         material: row.material,
         quantity: row.quantity,
         selectedMachine: row.selectedMachine,
+        estimatedStartWindow: row.estimatedStartWindow,
+        estimatedCompletionDate: row.estimatedCompletionDate,
         workshop,
         action,
-        feedbackState: schedulingDraftReleased.value ? '待班次回报' : '待下发',
-        stateLabel: schedulingDraftReleased.value ? '已进入执行' : '未下发',
-        stateTone: (schedulingDraftReleased.value ? 'blue' : 'slate') as Tone,
+        feedbackState: schedulingDraftReleased.value ? '待班次回报' : schedulingReviewRequested.value ? '待主管审核' : '待提交审核',
+        stateLabel: schedulingDraftReleased.value ? '已进入执行' : schedulingReviewRequested.value ? '待主管审核' : '未下发',
+        stateTone: (schedulingDraftReleased.value ? 'blue' : schedulingReviewRequested.value ? 'amber' : 'slate') as Tone,
       }
     }),
   )
-
-  const parseDisplayInteger = (value = '') => {
-    const parsed = Number(String(value).replace(/,/g, '').trim())
-
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-
-  const formatDisplayInteger = (value: number) => Math.max(0, Math.round(value)).toLocaleString('en-US')
 
   const shiftReportDraftRows = computed(() =>
     releasedExecutionRows.value.slice(0, 10).map((row, index) => {
@@ -342,11 +386,23 @@ export function useInjectionWorkflowBridge({
 
   const generateSchedulingDraft = () => {
     schedulingDraftGenerated.value = true
+    schedulingReviewRequested.value = false
     schedulingDraftReleased.value = false
   }
 
-  const releaseSchedulingDraft = () => {
+  const submitSchedulingReview = () => {
     if (!schedulingDraftGenerated.value) {
+      return
+    }
+
+    schedulingReviewRequested.value = true
+    schedulingDraftReleased.value = false
+    shiftReportDraftSubmitted.value = false
+    inboundWritebackDraftConfirmed.value = false
+  }
+
+  const approveSchedulingDraft = () => {
+    if (!schedulingDraftGenerated.value || !schedulingReviewRequested.value) {
       return
     }
 
@@ -354,6 +410,8 @@ export function useInjectionWorkflowBridge({
     shiftReportDraftSubmitted.value = false
     inboundWritebackDraftConfirmed.value = false
   }
+
+  const releaseSchedulingDraft = approveSchedulingDraft
 
   const submitShiftReportDraft = () => {
     if (!schedulingDraftReleased.value) {
@@ -409,6 +467,7 @@ export function useInjectionWorkflowBridge({
   return {
     selectedPendingOrderMachines,
     schedulingDraftGenerated,
+    schedulingReviewRequested,
     schedulingDraftReleased,
     shiftReportDraftSubmitted,
     inboundWritebackDraftConfirmed,
@@ -427,6 +486,8 @@ export function useInjectionWorkflowBridge({
     inboundWritebackDraftRows,
     inboundWritebackDraftMetrics,
     generateSchedulingDraft,
+    submitSchedulingReview,
+    approveSchedulingDraft,
     releaseSchedulingDraft,
     submitShiftReportDraft,
     confirmInboundWritebackDraft,

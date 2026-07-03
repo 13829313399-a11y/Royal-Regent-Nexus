@@ -414,18 +414,8 @@ export const injectionSectionNav: InjectionNavItem[] = [
   },
   {
     id: 'order-import',
-    label: '订单导入',
-    summary: '把真实待排订单导入、校验并放进订单池。',
-  },
-  {
-    id: 'smart-scheduling',
-    label: '智能排机',
-    summary: '看规则、候选机台和智能排机建议。',
-  },
-  {
-    id: 'scheduling-results',
-    label: '排机结果',
-    summary: '查看开机时段、机台负载和颜色切换风险。',
+    label: '排机工作台',
+    summary: '导入订单、智能排机、人工微调并提交主管审核。',
   },
   {
     id: 'daily-report',
@@ -440,7 +430,7 @@ export const injectionSectionNav: InjectionNavItem[] = [
   {
     id: 'master-data',
     label: '基础资料',
-    summary: '统一机台档案、模具目标、映射关系和历史数据健康度。',
+    summary: '查看机台档案、工艺范围、保养和当前状态。',
   },
 ]
 
