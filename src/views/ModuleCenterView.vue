@@ -8,7 +8,10 @@ import {
   isModuleDepartmentId,
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
-import { getMoldingSampleModuleStats } from '@/data/moldingSampleWorkflowMock'
+import {
+  getMoldingSampleModuleStats,
+  getMoldingSampleProductionTaskStats,
+} from '@/data/moldingSampleWorkflowMock'
 import DepartmentTabs from '@/components/modules/DepartmentTabs.vue'
 import ModuleCard from '@/components/modules/ModuleCard.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'
@@ -47,6 +50,17 @@ const visibleModules = computed(() => {
       return {
         ...module,
         href: route,
+        route,
+      }
+    }
+
+    if (currentDepartmentId.value === 'production' && module.id === 'molding-sample-production-task') {
+      const route = `/modules/production/molding-sample-tasks?factory=${appStore.activeProductionFactory.id}`
+
+      return {
+        ...module,
+        owner: `${appStore.activeProductionFactory.shortName} · 啤机部任务单`,
+        stats: getMoldingSampleProductionTaskStats(appStore.activeProductionFactory.id),
         route,
       }
     }

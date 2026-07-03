@@ -612,3 +612,20 @@ export function getMoldingSampleModuleStats(factoryId: FactoryContextId | string
 
   return `${record.order.status} · ${externalLabel} · 明细 ${record.items.length}${blockedCount ? ` · 卡点 ${blockedCount}` : ''}`
 }
+
+export function getMoldingSampleProductionTaskStats(factoryId: FactoryContextId | string | undefined) {
+  const record = getMoldingSampleRecord(factoryId)
+
+  if (isExternalMoldingSampleOrder(record.order)) {
+    return `${record.order.status} · 外厂路径 · 不进啤机`
+  }
+
+  const completionGate = buildCompletionGate(record.order, record.items)
+  const notificationLabel = ['待审核', '待经理审核'].includes(record.order.status)
+    ? '已通知'
+    : record.order.status === '待生产'
+      ? '待执行'
+      : record.order.status
+
+  return `${notificationLabel} · 明细 ${record.items.length}${completionGate.missing_item_ids.length ? ` · 待回填 ${completionGate.missing_item_ids.length}` : ''}`
+}

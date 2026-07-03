@@ -42,6 +42,15 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/molding-sample-tasks',
+    name: 'molding-sample-production-tasks',
+    component: () => import('@/views/MoldingSampleProductionTaskView.vue'),
+    meta: {
+      title: '啤办生产任务单',
+      fullPage: true,
+    },
+  },
+  {
     path: '/modules/:department/:module',
     name: 'module-detail',
     component: () => import('@/views/ModuleDetailView.vue'),
