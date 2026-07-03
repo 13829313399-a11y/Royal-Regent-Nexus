@@ -9,6 +9,7 @@ for (const requiredCopy of [
   '接收工程啤办单通知',
   '工程新建后先进入通知区',
   '任务通知队列',
+  '独立通知表',
   '啤机部只处理生产执行字段',
   '开始生产',
   '保存回填',
@@ -23,8 +24,12 @@ for (const requiredCopy of [
 
 for (const requiredImplementation of [
   'moldingSampleApi.listOrders',
+  'moldingSampleApi.listNotifications',
   'moldingSampleApi.updateItems',
   'moldingSampleApi.updateStatus',
+  'apiNotifications',
+  'notificationOrderIds',
+  'production_molding_sample_task',
   'buildCompletionGate',
   'isExternalMoldingSampleOrder',
   'selectedFactoryId',

@@ -14,7 +14,18 @@ export type MoldingSampleWorkshop = 'A车间' | 'B车间' | '华登车间' | '�
 
 export type MoldingSampleSendTo = '' | '发至湖南' | '发至模厂'
 
-export type MoldingSampleRole = '工程部' | '主管' | '经理' | '仓库' | '啤机部'
+export type MoldingSampleRole =
+  | '工程部'
+  | '主管'
+  | '经理'
+  | '仓库'
+  | '啤机部'
+  | '工程师'
+  | '工程主管'
+  | '仓管员'
+  | '啤机操作员'
+  | '啤机主管'
+  | '系统管理员'
 
 export type MoldingSampleAuditDecision = '提交' | '通过' | '驳回' | '重提' | '开始处理' | '完成' | '改价' | '重算'
 
@@ -72,8 +83,11 @@ export interface MoldingSampleAuditLog {
   id: string
   order_id: string
   action: string
+  actor_user_id?: string
   actor_name: string
   actor_role: MoldingSampleRole
+  actor_roles?: string
+  factory_scope?: string
   decision: MoldingSampleAuditDecision
   from_status: MoldingSampleStatus
   to_status: MoldingSampleStatus

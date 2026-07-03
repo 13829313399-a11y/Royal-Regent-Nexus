@@ -9,6 +9,7 @@ export interface ApiErrorPayload {
 export const http: AxiosInstance = axios.create({
   baseURL: import.meta.env?.VITE_API_BASE_URL ?? '/api',
   timeout: 15000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },

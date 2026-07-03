@@ -41,10 +41,13 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
+    from app.models import auth  # noqa: F401
     from app.models import molding_sample  # noqa: F401
+    from app.services.auth import seed_auth_defaults
     from app.services.molding_sample import seed_molding_sample_defaults
 
     Base.metadata.create_all(bind=engine)
 
     with SessionLocal() as db:
+        seed_auth_defaults(db)
         seed_molding_sample_defaults(db)

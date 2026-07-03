@@ -65,8 +65,11 @@ class MoldingSampleAuditLogOut(BaseModel):
     id: str
     order_id: str
     action: str
+    actor_user_id: str = ""
     actor_name: str
     actor_role: str
+    actor_roles: str = ""
+    factory_scope: str = ""
     from_status: str
     to_status: str
     reason: str
@@ -75,28 +78,48 @@ class MoldingSampleAuditLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MoldingSampleNotificationOut(BaseModel):
+    id: str
+    order_id: str
+    factory_id: str
+    target_module: str
+    target_role: str
+    event_type: str
+    title: str
+    message: str
+    from_status: str
+    to_status: str
+    status: str
+    actor_name: str
+    read_at: str
+    handled_at: str
+    created_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MoldingSampleNotificationUpdateRequest(BaseModel):
+    status: str
+
+
 class MoldingSampleCreateRequest(BaseModel):
     order: MoldingSampleOrderIn
     items: list[MoldingSampleItemIn] = Field(default_factory=list)
 
 
 class MoldingSampleEditRequest(MoldingSampleCreateRequest):
-    actor_name: str
-    actor_role: str
-    pin: str = ""
+    pass
 
 
 class MoldingSampleDetailResponse(BaseModel):
     order: MoldingSampleOrderOut
     items: list[MoldingSampleItemOut]
     audit_logs: list[MoldingSampleAuditLogOut] = Field(default_factory=list)
+    notifications: list[MoldingSampleNotificationOut] = Field(default_factory=list)
 
 
 class MoldingSampleStatusRequest(BaseModel):
     action: str
-    reviewer_name: str
-    reviewer_role: str
-    pin: str = ""
     reason: str = ""
     today: str | None = None
 
@@ -123,8 +146,6 @@ class MaterialPricesResponse(BaseModel):
 class MaterialPricesUpdateRequest(BaseModel):
     prices: list[MaterialPriceIn]
     rmb_to_hkd_rate: float
-    manager_name: str = ""
-    manager_pin: str = ""
 
 
 class TotalCostSummary(BaseModel):
@@ -143,44 +164,6 @@ class TotalCostSummary(BaseModel):
     has_missing_price: bool
     has_missing_injection_cost: bool
     item_rows: list[dict]
-
-
-class PinVerifyRequest(BaseModel):
-    name: str
-    role: str
-    pin: str
-
-
-class PinChangeRequest(BaseModel):
-    name: str
-    role: str
-    old_pin: str
-    new_pin: str
-
-
-class ResetSupervisorPinRequest(BaseModel):
-    manager_name: str
-    manager_pin: str
-    supervisor_name: str
-    new_pin: str = "1234"
-
-
-class PinVerifyResponse(BaseModel):
-    valid: bool
-    name: str
-    role: str
-    must_change: bool
-
-
-class RoleEntry(BaseModel):
-    name: str
-    role: str
-    must_change: bool
-
-
-class RolesResponse(BaseModel):
-    supervisors: list[RoleEntry]
-    managers: list[RoleEntry]
 
 
 class RequisitionCreateRequest(BaseModel):
@@ -259,8 +242,11 @@ class InventoryMovementOut(BaseModel):
 class SensitiveAuditLogOut(BaseModel):
     id: int
     action: str
+    actor_user_id: str = ""
     actor_name: str
     actor_role: str
+    actor_roles: str = ""
+    factory_scope: str = ""
     target_type: str
     target_name: str
     detail: str

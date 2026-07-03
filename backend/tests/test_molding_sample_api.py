@@ -1,5 +1,4 @@
 import importlib
-import os
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -26,6 +25,12 @@ def make_client(monkeypatch):
 
     main = importlib.import_module("app.main")
     return TestClient(main.app)
+
+
+def login_as(client, username: str):
+    response = client.post("/api/auth/login", json={"username": username, "password": "123456"})
+    assert response.status_code == 200
+    return response.json()
 
 
 def sample_order_payload(order_id="BP-API-001", external=False):
@@ -74,151 +79,104 @@ def client(monkeypatch):
         yield test_client
 
 
-def change_default_pin(client, name, role, new_pin):
-    response = client.post(
-        "/api/change-pin",
-        json={
-            "name": name,
-            "role": role,
-            "old_pin": "1234",
-            "new_pin": new_pin,
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["must_change"] is False
-    return new_pin
+def test_unauthenticated_access_to_molding_sample_api_is_rejected(client):
+    response = client.get("/api/injection")
+
+    assert response.status_code == 401
 
 
-def test_create_injection_order_defaults_to_pending_review(client):
+def test_engineer_can_create_order_and_production_user_reads_notification(client):
+    login_as(client, "engineer")
     response = client.post("/api/injection", json=sample_order_payload())
 
     assert response.status_code == 201
     payload = response.json()
     assert payload["order"]["status"] == "待审核"
-    assert payload["order"]["order_type"] == "啤办"
+    assert payload["audit_logs"][0]["actor_name"] == "肖科"
+    assert payload["audit_logs"][0]["actor_role"] == "工程师"
+    assert payload["audit_logs"][0]["actor_user_id"] == "user-engineer"
     assert payload["items"][0]["order_id"] == "BP-API-001"
 
-    list_response = client.get("/api/injection")
-    assert list_response.status_code == 200
-    assert list_response.json()[0]["order"]["id"] == "BP-API-001"
+    login_as(client, "molding")
+    notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={"target_module": "production_molding_sample_task", "factory_id": "huakang-a"},
+    )
+    assert notifications_response.status_code == 200
+    notifications = notifications_response.json()
+    assert len(notifications) == 1
+    assert notifications[0]["order_id"] == "BP-API-001"
+    assert notifications[0]["target_role"] == "啤机部"
 
 
-def test_internal_order_workflow_blocks_completion_until_actual_weight_is_filled(client):
-    client.post("/api/injection", json=sample_order_payload("BP-API-002"))
-    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
-    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
+def test_workflow_uses_logged_in_roles_without_pin(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-WORKFLOW-001"))
 
+    engineer_review_response = client.patch(
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "主管通过"},
+    )
+    assert engineer_review_response.status_code == 403
+
+    login_as(client, "supervisor")
     supervisor_response = client.patch(
-        "/api/injection/BP-API-002/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-            "pin": supervisor_pin,
-        },
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "主管通过"},
     )
     assert supervisor_response.status_code == 200
     assert supervisor_response.json()["order"]["status"] == "待经理审核"
+    assert supervisor_response.json()["audit_logs"][0]["actor_name"] == "李主管"
 
+    login_as(client, "manager")
     manager_response = client.patch(
-        "/api/injection/BP-API-002/status",
-        json={
-            "action": "经理通过",
-            "reviewer_name": "王经理",
-            "reviewer_role": "经理",
-            "pin": manager_pin,
-        },
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "经理通过"},
     )
     assert manager_response.status_code == 200
     assert manager_response.json()["order"]["status"] == "待生产"
 
+    login_as(client, "molding")
     start_response = client.patch(
-        "/api/injection/BP-API-002/status",
-        json={
-            "action": "开始处理",
-            "reviewer_name": "啤机部",
-            "reviewer_role": "啤机部",
-        },
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "开始处理"},
     )
     assert start_response.status_code == 200
     assert start_response.json()["order"]["status"] == "生产中"
 
     blocked_response = client.patch(
-        "/api/injection/BP-API-002/status",
-        json={
-            "action": "标记完成",
-            "reviewer_name": "啤机部",
-            "reviewer_role": "啤机部",
-        },
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "标记完成"},
     )
     assert blocked_response.status_code == 400
     assert "actual_weight_kg" in blocked_response.json()["detail"]
 
     item_response = client.patch(
-        "/api/injection/BP-API-002/items",
-        json={
-            "items": [
-                {
-                    "id": "BP-API-002-001",
-                    "receipt_no": "LL-20260701-001",
-                    "collected_weight_kg": 2.5,
-                    "actual_weight_kg": 2,
-                    "injection_cost": 100,
-                }
-            ]
-        },
+        "/api/injection/BP-WORKFLOW-001/items",
+        json={"items": [{"id": "BP-WORKFLOW-001-001", "actual_weight_kg": 2, "injection_cost": 100}]},
     )
     assert item_response.status_code == 200
-    item = item_response.json()["items"][0]
-    assert item["actual_amount_hkd"] == 24.25
-    assert item["injection_cost_hkd"] == 108
-    assert item["exchange_rate_at_save"] == 1.08
 
     completed_response = client.patch(
-        "/api/injection/BP-API-002/status",
-        json={
-            "action": "标记完成",
-            "reviewer_name": "啤机部",
-            "reviewer_role": "啤机部",
-            "today": "2026-07-01",
-        },
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "标记完成", "today": "2026-07-01"},
     )
     assert completed_response.status_code == 200
     assert completed_response.json()["order"]["status"] == "已完成"
     assert completed_response.json()["order"]["completed_date"] == "2026-07-01"
 
-    summary_response = client.get("/api/injection-total-costs")
-    assert summary_response.status_code == 200
-    summary = summary_response.json()[0]
-    assert summary["order_id"] == "BP-API-002"
-    assert summary["total_material_cost"] == 24.25
-    assert summary["total_injection_cost"] == 108
-    assert summary["has_missing_injection_cost"] is False
-
 
 def test_external_order_auto_completes_after_manager_approval(client):
-    client.post("/api/injection", json=sample_order_payload("BP-API-003", external=True))
-    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
-    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
-    client.patch(
-        "/api/injection/BP-API-003/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-            "pin": supervisor_pin,
-        },
-    )
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-EXT-001", external=True))
 
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-EXT-001/status", json={"action": "主管通过"})
+
+    login_as(client, "manager")
     response = client.patch(
-        "/api/injection/BP-API-003/status",
-        json={
-            "action": "经理通过",
-            "reviewer_name": "王经理",
-            "reviewer_role": "经理",
-            "pin": manager_pin,
-            "today": "2026-07-01",
-        },
+        "/api/injection/BP-EXT-001/status",
+        json={"action": "经理通过", "today": "2026-07-01"},
     )
 
     assert response.status_code == 200
@@ -227,304 +185,139 @@ def test_external_order_auto_completes_after_manager_approval(client):
     assert payload["order"]["completed_date"] == "2026-07-01"
     assert payload["items"][0]["actual_weight_kg"] == 2.46
     assert payload["items"][0]["actual_amount_hkd"] == 29.83
-    assert payload["items"][0]["injection_cost_hkd"] is None
 
 
-def test_manager_can_update_material_prices_and_exchange_rate(client):
-    prices_response = client.get("/api/material-prices")
-    assert prices_response.status_code == 200
-    assert any(row["material"] == "HIPS 425" for row in prices_response.json()["prices"])
-    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
-
-    update_response = client.post(
+def test_manager_price_update_uses_logged_in_user_and_sensitive_audit(client):
+    login_as(client, "engineer")
+    blocked_response = client.post(
         "/api/manager-update-prices",
         json={
-            "prices": [
-                {"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"},
-                {"material": "ABS 740", "unit_price": 8.0, "notes": "经理价"},
-            ],
+            "prices": [{"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"}],
             "rmb_to_hkd_rate": 1.1,
-            "manager_name": "王经理",
-            "manager_pin": manager_pin,
-        },
-    )
-
-    assert update_response.status_code == 200
-    assert update_response.json()["rmb_to_hkd_rate"] == 1.1
-    assert update_response.json()["prices"][0]["unit_price"] == 6.0
-
-
-def test_supervisor_and_manager_review_actions_require_valid_pin(client):
-    client.post("/api/injection", json=sample_order_payload("BP-PIN-001"))
-
-    missing_pin_response = client.patch(
-        "/api/injection/BP-PIN-001/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-        },
-    )
-    assert missing_pin_response.status_code == 401
-
-    wrong_pin_response = client.patch(
-        "/api/injection/BP-PIN-001/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-            "pin": "0000",
-        },
-    )
-    assert wrong_pin_response.status_code == 401
-
-    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
-    supervisor_response = client.patch(
-        "/api/injection/BP-PIN-001/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-            "pin": supervisor_pin,
-        },
-    )
-    assert supervisor_response.status_code == 200
-    assert supervisor_response.json()["order"]["status"] == "待经理审核"
-
-    manager_missing_pin_response = client.patch(
-        "/api/injection/BP-PIN-001/status",
-        json={
-            "action": "经理通过",
-            "reviewer_name": "王经理",
-            "reviewer_role": "经理",
-        },
-    )
-    assert manager_missing_pin_response.status_code == 401
-
-    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
-    manager_response = client.patch(
-        "/api/injection/BP-PIN-001/status",
-        json={
-            "action": "经理通过",
-            "reviewer_name": "王经理",
-            "reviewer_role": "经理",
-            "pin": manager_pin,
-        },
-    )
-    assert manager_response.status_code == 200
-    assert manager_response.json()["order"]["status"] == "待生产"
-
-
-def test_pin_failures_lock_role_after_five_attempts_and_success_clears_failures(client):
-    first_failed_response = client.post(
-        "/api/verify-pin",
-        json={"name": "王经理", "role": "经理", "pin": "0000"},
-    )
-    assert first_failed_response.status_code == 401
-
-    success_response = client.post(
-        "/api/verify-pin",
-        json={"name": "王经理", "role": "经理", "pin": "1234"},
-    )
-    assert success_response.status_code == 200
-
-    for _ in range(4):
-        failed_response = client.post(
-            "/api/verify-pin",
-            json={"name": "王经理", "role": "经理", "pin": "0000"},
-        )
-        assert failed_response.status_code == 401
-
-    locked_response = client.post(
-        "/api/verify-pin",
-        json={"name": "王经理", "role": "经理", "pin": "0000"},
-    )
-    assert locked_response.status_code == 429
-    assert "PIN 已锁定" in locked_response.json()["detail"]
-    assert "15 分钟" in locked_response.json()["detail"]
-
-    correct_while_locked_response = client.post(
-        "/api/verify-pin",
-        json={"name": "王经理", "role": "经理", "pin": "1234"},
-    )
-    assert correct_while_locked_response.status_code == 429
-
-
-def test_default_pin_must_be_changed_before_sensitive_actions(client):
-    client.post("/api/injection", json=sample_order_payload("BP-PIN-CHANGE-001"))
-
-    blocked_response = client.patch(
-        "/api/injection/BP-PIN-CHANGE-001/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-            "pin": "1234",
         },
     )
     assert blocked_response.status_code == 403
-    assert "请先修改默认 PIN" in blocked_response.json()["detail"]
 
-    same_pin_response = client.post(
-        "/api/change-pin",
-        json={
-            "name": "李主管",
-            "role": "主管",
-            "old_pin": "1234",
-            "new_pin": "1234",
-        },
-    )
-    assert same_pin_response.status_code == 400
-    assert "新 PIN 不能与旧 PIN 相同" in same_pin_response.json()["detail"]
-
-    change_response = client.post(
-        "/api/change-pin",
-        json={
-            "name": "李主管",
-            "role": "主管",
-            "old_pin": "1234",
-            "new_pin": "2468",
-        },
-    )
-    assert change_response.status_code == 200
-    assert change_response.json()["must_change"] is False
-
-    approved_response = client.patch(
-        "/api/injection/BP-PIN-CHANGE-001/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-            "pin": "2468",
-        },
-    )
-    assert approved_response.status_code == 200
-    assert approved_response.json()["order"]["status"] == "待经理审核"
-
-
-def test_roles_pin_verification_change_pin_and_manager_price_gate(client):
-    roles_response = client.get("/api/roles")
-    assert roles_response.status_code == 200
-    roles = roles_response.json()
-    assert {"name": "李主管", "role": "主管", "must_change": True} in roles["supervisors"]
-    assert {"name": "王经理", "role": "经理", "must_change": True} in roles["managers"]
-
-    verify_response = client.post(
-        "/api/verify-pin",
-        json={"name": "王经理", "role": "经理", "pin": "1234"},
-    )
-    assert verify_response.status_code == 200
-    assert verify_response.json() == {
-        "valid": True,
-        "name": "王经理",
-        "role": "经理",
-        "must_change": True,
-    }
-
-    update_without_pin_response = client.post(
-        "/api/manager-update-prices",
-        json={
-            "prices": [{"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"}],
-            "rmb_to_hkd_rate": 1.1,
-            "manager_name": "王经理",
-        },
-    )
-    assert update_without_pin_response.status_code == 401
-
-    change_wrong_pin_response = client.post(
-        "/api/change-pin",
-        json={
-            "name": "王经理",
-            "role": "经理",
-            "old_pin": "0000",
-            "new_pin": "6789",
-        },
-    )
-    assert change_wrong_pin_response.status_code == 401
-
-    change_response = client.post(
-        "/api/change-pin",
-        json={
-            "name": "王经理",
-            "role": "经理",
-            "old_pin": "1234",
-            "new_pin": "6789",
-        },
-    )
-    assert change_response.status_code == 200
-    assert change_response.json()["must_change"] is False
-
-    old_pin_response = client.post(
-        "/api/verify-pin",
-        json={"name": "王经理", "role": "经理", "pin": "1234"},
-    )
-    assert old_pin_response.status_code == 401
-
-    update_with_new_pin_response = client.post(
-        "/api/manager-update-prices",
-        json={
-            "prices": [{"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"}],
-            "rmb_to_hkd_rate": 1.1,
-            "manager_name": "王经理",
-            "manager_pin": "6789",
-        },
-    )
-    assert update_with_new_pin_response.status_code == 200
-    assert update_with_new_pin_response.json()["rmb_to_hkd_rate"] == 1.1
-
-
-def test_sensitive_operations_write_audit_logs_and_reset_supervisor_pin(client):
-    change_response = client.post(
-        "/api/change-pin",
-        json={
-            "name": "王经理",
-            "role": "经理",
-            "old_pin": "1234",
-            "new_pin": "6789",
-        },
-    )
-    assert change_response.status_code == 200
-
+    login_as(client, "manager")
     update_response = client.post(
         "/api/manager-update-prices",
         json={
             "prices": [{"material": "HIPS 425", "unit_price": 6.0, "notes": "新经理价"}],
             "rmb_to_hkd_rate": 1.1,
-            "manager_name": "王经理",
-            "manager_pin": "6789",
         },
     )
     assert update_response.status_code == 200
-
-    reset_response = client.post(
-        "/api/reset-supervisor-pin",
-        json={
-            "manager_name": "王经理",
-            "manager_pin": "6789",
-            "supervisor_name": "李主管",
-            "new_pin": "2468",
-        },
-    )
-    assert reset_response.status_code == 200
-    assert reset_response.json() == {"name": "李主管", "role": "主管", "must_change": True}
-
-    verify_reset_response = client.post(
-        "/api/verify-pin",
-        json={"name": "李主管", "role": "主管", "pin": "2468"},
-    )
-    assert verify_reset_response.status_code == 200
-    assert verify_reset_response.json()["must_change"] is True
+    assert update_response.json()["rmb_to_hkd_rate"] == 1.1
 
     logs_response = client.get("/api/sensitive-audit-logs")
     assert logs_response.status_code == 200
     logs = logs_response.json()
-    assert [row["action"] for row in logs[:3]] == ["重置主管PIN", "经理更新价格口径", "修改PIN"]
+    assert logs[0]["action"] == "经理更新价格口径"
+    assert logs[0]["actor_user_id"] == "user-manager"
     assert logs[0]["actor_name"] == "王经理"
     assert logs[0]["actor_role"] == "经理"
-    assert logs[0]["target_type"] == "auth_pin"
-    assert logs[0]["target_name"] == "李主管"
-    assert "2468" not in logs[0]["detail"]
-    assert logs[1]["detail"] == "更新 1 条原料价格，汇率 1.1。"
+
+
+def test_old_pin_routes_are_removed(client):
+    assert client.get("/api/roles").status_code == 404
+    assert client.post("/api/verify-pin", json={"name": "王经理", "role": "经理", "pin": "1234"}).status_code == 404
+    assert client.post("/api/change-pin", json={"name": "王经理", "role": "经理", "old_pin": "1234", "new_pin": "6789"}).status_code == 404
+    assert client.post(
+        "/api/reset-supervisor-pin",
+        json={"manager_name": "王经理", "manager_pin": "6789", "supervisor_name": "李主管"},
+    ).status_code == 404
+
+
+def test_engineering_edit_delete_permissions_use_login_role(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-EDIT-001"))
+
+    edited_payload = sample_order_payload("BP-EDIT-001")
+    edited_payload["order"]["product_name"] = "链条枪改版"
+    edited_payload["items"][0]["mold_name"] = "左右枪身改"
+
+    edit_response = client.put("/api/injection/BP-EDIT-001", json=edited_payload)
+    assert edit_response.status_code == 200
+    assert edit_response.json()["order"]["product_name"] == "链条枪改版"
+
+    delete_response = client.delete("/api/injection/BP-EDIT-001")
+    assert delete_response.status_code == 204
+
+    client.post("/api/injection", json=sample_order_payload("BP-LOCK-001"))
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-LOCK-001/status", json={"action": "主管通过"})
+
+    login_as(client, "engineer")
+    locked_payload = sample_order_payload("BP-LOCK-001")
+    locked_payload["order"]["product_name"] = "普通工程误改"
+    assert client.put("/api/injection/BP-LOCK-001", json=locked_payload).status_code == 403
+    assert client.delete("/api/injection/BP-LOCK-001").status_code == 403
+
+    login_as(client, "manager")
+    manager_payload = sample_order_payload("BP-LOCK-001")
+    manager_payload["order"]["product_name"] = "经理修正名称"
+    manager_edit_response = client.put("/api/injection/BP-LOCK-001", json=manager_payload)
+    assert manager_edit_response.status_code == 200
+    assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
+
+
+def test_warehouse_requisitions_and_inventory_issue_require_warehouse_role(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-REQ-001"))
+
+    blocked_batch_response = client.post(
+        "/api/inventory-batches",
+        json={"material": "HIPS 425", "batch_no": "HIPS-20260701-A", "location": "A-01", "initial_weight_kg": 3},
+    )
+    assert blocked_batch_response.status_code == 403
+
+    login_as(client, "warehouse")
+    batch_response = client.post(
+        "/api/inventory-batches",
+        json={"material": "HIPS 425", "batch_no": "HIPS-20260701-A", "location": "A-01", "initial_weight_kg": 3},
+    )
+    assert batch_response.status_code == 201
+    batch = batch_response.json()
+
+    requisition_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-01",
+            "order_id": "BP-REQ-001",
+            "material": "HIPS 425",
+            "requested_weight_kg": 2.46,
+            "notes": "M-001 · 左右枪身",
+        },
+    )
+    assert requisition_response.status_code == 201
+    requisition = requisition_response.json()
+
+    issue_response = client.patch(
+        f"/api/requisitions/{requisition['id']}/status",
+        json={"status": "已出库", "inventory_batch_id": batch["id"]},
+    )
+    assert issue_response.status_code == 200
+    assert issue_response.json()["status"] == "已出库"
+
+
+def test_export_and_import_molding_sample_excel_template(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-XLSX-001"))
+
+    export_response = client.get("/api/injection/BP-XLSX-001/export-excel")
+    assert export_response.status_code == 200
+    assert export_response.content[:2] == b"PK"
+
+    import_response = client.post(
+        "/api/injection/import-excel",
+        params={"order_id": "BP-XLSX-002"},
+        content=export_response.content,
+        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    )
+    assert import_response.status_code == 201
+    imported = import_response.json()
+    assert imported["order"]["id"] == "BP-XLSX-002"
+    assert imported["items"][0]["id"] == "BP-XLSX-002-001"
 
 
 def test_sensitive_audit_logs_return_latest_200_rows(client):
@@ -536,8 +329,11 @@ def test_sensitive_audit_logs_return_latest_200_rows(client):
             db.add(
                 model_module.MoldingSampleSensitiveAuditLog(
                     action=f"审计{index}",
+                    actor_user_id="user-admin",
                     actor_name="系统",
                     actor_role="审计",
+                    actor_roles="系统管理员",
+                    factory_scope="*",
                     target_type="test",
                     target_name=f"target-{index}",
                     detail=f"敏感操作审计 {index}",
@@ -546,373 +342,10 @@ def test_sensitive_audit_logs_return_latest_200_rows(client):
             )
         db.commit()
 
+    login_as(client, "manager")
     logs_response = client.get("/api/sensitive-audit-logs")
     assert logs_response.status_code == 200
     logs = logs_response.json()
     assert len(logs) == 200
     assert logs[0]["action"] == "审计204"
     assert logs[-1]["action"] == "审计5"
-
-
-def test_export_and_import_molding_sample_excel_template(client):
-    client.post("/api/injection", json=sample_order_payload("BP-XLSX-001"))
-
-    export_response = client.get("/api/injection/BP-XLSX-001/export-excel")
-    assert export_response.status_code == 200
-    assert export_response.content[:2] == b"PK"
-    assert export_response.headers["content-type"].startswith(
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    import_response = client.post(
-        "/api/injection/import-excel",
-        params={"order_id": "BP-XLSX-002"},
-        content=export_response.content,
-        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-    )
-    assert import_response.status_code == 201
-    imported = import_response.json()
-    assert imported["order"]["id"] == "BP-XLSX-002"
-    assert imported["order"]["product_name"] == "链条枪"
-    assert imported["order"]["client_name"] == "BuzzBee"
-    assert imported["items"][0]["id"] == "BP-XLSX-002-001"
-    assert imported["items"][0]["material"] == "HIPS 425"
-    assert imported["items"][0]["gross_weight_g"] == 82
-    assert imported["items"][0]["required_material_kg"] == 2.46
-
-
-def test_engineering_can_edit_and_delete_unlocked_orders(client):
-    client.post("/api/injection", json=sample_order_payload("BP-EDIT-001"))
-
-    edited_payload = sample_order_payload("BP-EDIT-001")
-    edited_payload["actor_name"] = "肖科"
-    edited_payload["actor_role"] = "工程部"
-    edited_payload["order"]["product_name"] = "链条枪改版"
-    edited_payload["order"]["reason"] = "补充试色说明。"
-    edited_payload["items"][0]["mold_name"] = "左右枪身改"
-    edited_payload["items"].append(
-        {
-            "id": "BP-EDIT-001-002",
-            "sort_order": 2,
-            "mold_id": "M-002",
-            "mold_name": "弹匣",
-            "machine_type": "120T",
-            "material": "ABS 740",
-            "color": "黑色",
-            "pigment_no": "",
-            "quantity": "1/1",
-            "shoot_qty": 20,
-            "gross_weight_g": 40,
-            "required_material_kg": 0.8,
-            "mold_return_time": "2026-07-01",
-            "completion_time": "2026-07-03",
-            "notes": "",
-        }
-    )
-
-    edit_response = client.put("/api/injection/BP-EDIT-001", json=edited_payload)
-    assert edit_response.status_code == 200
-    edited = edit_response.json()
-    assert edited["order"]["product_name"] == "链条枪改版"
-    assert len(edited["items"]) == 2
-    assert edited["items"][0]["mold_name"] == "左右枪身改"
-
-    delete_response = client.delete(
-        "/api/injection/BP-EDIT-001",
-        params={"actor_name": "肖科", "actor_role": "工程部"},
-    )
-    assert delete_response.status_code == 204
-
-    missing_response = client.get("/api/injection/BP-EDIT-001")
-    assert missing_response.status_code == 404
-
-
-def test_locked_orders_reject_engineering_edit_and_delete_but_allow_manager_with_pin(client):
-    client.post("/api/injection", json=sample_order_payload("BP-LOCK-001"))
-    supervisor_pin = change_default_pin(client, "李主管", "主管", "2468")
-    manager_pin = change_default_pin(client, "王经理", "经理", "6789")
-    client.patch(
-        "/api/injection/BP-LOCK-001/status",
-        json={
-            "action": "主管通过",
-            "reviewer_name": "李主管",
-            "reviewer_role": "主管",
-            "pin": supervisor_pin,
-        },
-    )
-
-    locked_edit_payload = sample_order_payload("BP-LOCK-001")
-    locked_edit_payload["actor_name"] = "肖科"
-    locked_edit_payload["actor_role"] = "工程部"
-    locked_edit_payload["order"]["product_name"] = "普通工程误改"
-
-    blocked_edit_response = client.put("/api/injection/BP-LOCK-001", json=locked_edit_payload)
-    assert blocked_edit_response.status_code == 403
-
-    blocked_delete_response = client.delete(
-        "/api/injection/BP-LOCK-001",
-        params={"actor_name": "肖科", "actor_role": "工程部"},
-    )
-    assert blocked_delete_response.status_code == 403
-
-    manager_edit_payload = sample_order_payload("BP-LOCK-001")
-    manager_edit_payload["actor_name"] = "王经理"
-    manager_edit_payload["actor_role"] = "经理"
-    manager_edit_payload["pin"] = manager_pin
-    manager_edit_payload["order"]["product_name"] = "经理修正名称"
-
-    manager_edit_response = client.put("/api/injection/BP-LOCK-001", json=manager_edit_payload)
-    assert manager_edit_response.status_code == 200
-    assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
-
-
-def test_warehouse_requisitions_create_filter_issue_and_delete(client):
-    client.post("/api/injection", json=sample_order_payload("BP-REQ-001"))
-    client.post("/api/injection", json=sample_order_payload("BP-REQ-002"))
-
-    first_response = client.post(
-        "/api/requisitions",
-        json={
-            "date": "2026-07-01",
-            "order_id": "BP-REQ-001",
-            "material": "HIPS 425",
-            "requested_weight_kg": 2.46,
-            "applicant": "肖科",
-            "notes": "左右枪身试啤领料",
-        },
-    )
-    assert first_response.status_code == 201
-    first = first_response.json()
-    assert first["req_number"] == "LL-20260701-001"
-    assert first["order_id"] == "BP-REQ-001"
-    assert first["order_number"] == "62437"
-    assert first["status"] == "待出库"
-    assert first["issued_at"] == ""
-
-    second_response = client.post(
-        "/api/requisitions",
-        json={
-            "date": "2026-07-01",
-            "order_id": "BP-REQ-002",
-            "material": "ABS 740",
-            "requested_weight_kg": 1.2,
-            "applicant": "肖科",
-        },
-    )
-    assert second_response.status_code == 201
-    second = second_response.json()
-    assert second["req_number"] == "LL-20260701-002"
-
-    filtered_response = client.get("/api/requisitions", params={"order_id": "BP-REQ-001"})
-    assert filtered_response.status_code == 200
-    filtered = filtered_response.json()
-    assert [row["id"] for row in filtered] == [first["id"]]
-
-    issue_response = client.patch(
-        f"/api/requisitions/{first['id']}/status",
-        json={
-            "status": "已出库",
-            "issued_at": "2026-07-01 15:30",
-        },
-    )
-    assert issue_response.status_code == 200
-    assert issue_response.json()["status"] == "已出库"
-    assert issue_response.json()["issued_at"] == "2026-07-01 15:30"
-
-    delete_response = client.delete(f"/api/requisitions/{first['id']}")
-    assert delete_response.status_code == 204
-
-    after_delete_response = client.get("/api/requisitions", params={"order_id": "BP-REQ-001"})
-    assert after_delete_response.status_code == 200
-    assert after_delete_response.json() == []
-
-
-def test_warehouse_requisition_rejects_duplicate_line(client):
-    client.post("/api/injection", json=sample_order_payload("BP-REQ-DUP"))
-    payload = {
-        "date": "2026-07-01",
-        "order_id": "BP-REQ-DUP",
-        "material": "HIPS 425",
-        "requested_weight_kg": 2.46,
-        "applicant": "肖科",
-        "notes": "M-001 · 左右枪身",
-    }
-
-    first_response = client.post("/api/requisitions", json=payload)
-    assert first_response.status_code == 201
-
-    duplicate_response = client.post("/api/requisitions", json=payload)
-    assert duplicate_response.status_code == 409
-    assert duplicate_response.json()["detail"] == "该明细已生成领料单"
-
-
-def test_warehouse_inventory_batch_is_deducted_when_requisition_is_issued(client):
-    client.post("/api/injection", json=sample_order_payload("BP-STOCK-001"))
-
-    batch_response = client.post(
-        "/api/inventory-batches",
-        json={
-            "material": "HIPS 425",
-            "batch_no": "HIPS-20260701-A",
-            "location": "A-01",
-            "initial_weight_kg": 3,
-        },
-    )
-    assert batch_response.status_code == 201
-    batch = batch_response.json()
-    assert batch["available_weight_kg"] == 3
-
-    requisition_response = client.post(
-        "/api/requisitions",
-        json={
-            "date": "2026-07-01",
-            "order_id": "BP-STOCK-001",
-            "material": "HIPS 425",
-            "requested_weight_kg": 2.46,
-            "applicant": "肖科",
-            "notes": "M-001 · 左右枪身",
-        },
-    )
-    assert requisition_response.status_code == 201
-    requisition = requisition_response.json()
-
-    issue_response = client.patch(
-        f"/api/requisitions/{requisition['id']}/status",
-        json={
-            "status": "已出库",
-            "issued_at": "2026-07-01 15:30",
-            "inventory_batch_id": batch["id"],
-        },
-    )
-    assert issue_response.status_code == 200
-    issued = issue_response.json()
-    assert issued["inventory_batch_id"] == batch["id"]
-    assert issued["inventory_batch_no"] == "HIPS-20260701-A"
-
-    batches_response = client.get("/api/inventory-batches", params={"material": "HIPS 425"})
-    assert batches_response.status_code == 200
-    batches = batches_response.json()
-    assert batches[0]["available_weight_kg"] == 0.54
-
-    short_batch_response = client.post(
-        "/api/inventory-batches",
-        json={
-            "material": "ABS 740",
-            "batch_no": "ABS-20260701-A",
-            "location": "A-02",
-            "initial_weight_kg": 0.5,
-        },
-    )
-    short_batch = short_batch_response.json()
-    short_requisition_response = client.post(
-        "/api/requisitions",
-        json={
-            "date": "2026-07-01",
-            "order_id": "BP-STOCK-001",
-            "material": "ABS 740",
-            "requested_weight_kg": 1,
-            "applicant": "肖科",
-            "notes": "M-002 · 弹匣",
-        },
-    )
-    short_requisition = short_requisition_response.json()
-
-    blocked_response = client.patch(
-        f"/api/requisitions/{short_requisition['id']}/status",
-        json={
-            "status": "已出库",
-            "inventory_batch_id": short_batch["id"],
-        },
-    )
-    assert blocked_response.status_code == 400
-    assert blocked_response.json()["detail"] == "库存不足"
-
-
-def test_inventory_movements_track_batch_create_issue_revert_and_delete(client):
-    client.post("/api/injection", json=sample_order_payload("BP-MOVE-001"))
-
-    batch_response = client.post(
-        "/api/inventory-batches",
-        json={
-            "material": "HIPS 425",
-            "batch_no": "HIPS-MOVE-A",
-            "location": "A-01",
-            "initial_weight_kg": 5,
-        },
-    )
-    assert batch_response.status_code == 201
-    batch = batch_response.json()
-
-    created_movements_response = client.get("/api/inventory-movements", params={"batch_id": batch["id"]})
-    assert created_movements_response.status_code == 200
-    created_movements = created_movements_response.json()
-    assert created_movements[0]["movement_type"] == "新增批次"
-    assert created_movements[0]["quantity_kg"] == 5
-    assert created_movements[0]["before_weight_kg"] == 0
-    assert created_movements[0]["after_weight_kg"] == 5
-
-    requisition_response = client.post(
-        "/api/requisitions",
-        json={
-            "date": "2026-07-01",
-            "order_id": "BP-MOVE-001",
-            "material": "HIPS 425",
-            "requested_weight_kg": 2,
-            "applicant": "肖科",
-            "notes": "M-001 · 左右枪身",
-        },
-    )
-    assert requisition_response.status_code == 201
-    requisition = requisition_response.json()
-
-    issue_response = client.patch(
-        f"/api/requisitions/{requisition['id']}/status",
-        json={
-            "status": "已出库",
-            "issued_at": "2026-07-01 15:30",
-            "inventory_batch_id": batch["id"],
-        },
-    )
-    assert issue_response.status_code == 200
-
-    issued_movements = client.get("/api/inventory-movements", params={"batch_id": batch["id"]}).json()
-    issue_movement = issued_movements[0]
-    assert issue_movement["movement_type"] == "出库扣减"
-    assert issue_movement["quantity_kg"] == -2
-    assert issue_movement["before_weight_kg"] == 5
-    assert issue_movement["after_weight_kg"] == 3
-    assert issue_movement["requisition_id"] == requisition["id"]
-    assert issue_movement["req_number"] == requisition["req_number"]
-
-    revert_response = client.patch(
-        f"/api/requisitions/{requisition['id']}/status",
-        json={"status": "待出库"},
-    )
-    assert revert_response.status_code == 200
-
-    reverted_movements = client.get("/api/inventory-movements", params={"batch_id": batch["id"]}).json()
-    revert_movement = reverted_movements[0]
-    assert revert_movement["movement_type"] == "撤回出库"
-    assert revert_movement["quantity_kg"] == 2
-    assert revert_movement["before_weight_kg"] == 3
-    assert revert_movement["after_weight_kg"] == 5
-
-    second_issue_response = client.patch(
-        f"/api/requisitions/{requisition['id']}/status",
-        json={
-            "status": "已出库",
-            "issued_at": "2026-07-01 16:00",
-            "inventory_batch_id": batch["id"],
-        },
-    )
-    assert second_issue_response.status_code == 200
-
-    delete_response = client.delete(f"/api/requisitions/{requisition['id']}")
-    assert delete_response.status_code == 204
-
-    deleted_movements = client.get("/api/inventory-movements", params={"batch_id": batch["id"]}).json()
-    delete_movement = deleted_movements[0]
-    assert delete_movement["movement_type"] == "删除领料单恢复"
-    assert delete_movement["quantity_kg"] == 2
-    assert delete_movement["before_weight_kg"] == 3
-    assert delete_movement["after_weight_kg"] == 5

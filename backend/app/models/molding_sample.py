@@ -35,7 +35,12 @@ class MoldingSampleOrder(Base):
     audit_logs: Mapped[list["MoldingSampleAuditLog"]] = relationship(
         back_populates="order",
         cascade="all, delete-orphan",
-        order_by="desc(MoldingSampleAuditLog.id)",
+        order_by="desc(MoldingSampleAuditLog.created_at)",
+    )
+    notifications: Mapped[list["MoldingSampleNotification"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="desc(MoldingSampleNotification.created_at)",
     )
     requisitions: Mapped[list["MoldingSampleRequisition"]] = relationship(
         back_populates="order",
@@ -80,14 +85,39 @@ class MoldingSampleAuditLog(Base):
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_orders.id", ondelete="CASCADE"), index=True)
     action: Mapped[str] = mapped_column(String(128))
+    actor_user_id: Mapped[str] = mapped_column(String(64), default="")
     actor_name: Mapped[str] = mapped_column(String(128), default="")
     actor_role: Mapped[str] = mapped_column(String(64), default="")
+    actor_roles: Mapped[str] = mapped_column(Text, default="")
+    factory_scope: Mapped[str] = mapped_column(String(255), default="")
     from_status: Mapped[str] = mapped_column(String(32), default="")
     to_status: Mapped[str] = mapped_column(String(32), default="")
     reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(32), default="")
 
     order: Mapped[MoldingSampleOrder] = relationship(back_populates="audit_logs")
+
+
+class MoldingSampleNotification(Base):
+    __tablename__ = "molding_sample_notifications"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_orders.id", ondelete="CASCADE"), index=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_module: Mapped[str] = mapped_column(String(96), index=True)
+    target_role: Mapped[str] = mapped_column(String(64), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(128), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    from_status: Mapped[str] = mapped_column(String(32), default="")
+    to_status: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(32), default="未读", index=True)
+    actor_name: Mapped[str] = mapped_column(String(128), default="")
+    read_at: Mapped[str] = mapped_column(String(32), default="")
+    handled_at: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+
+    order: Mapped[MoldingSampleOrder] = relationship(back_populates="notifications")
 
 
 class MoldingSampleMaterialPrice(Base):
@@ -106,36 +136,16 @@ class MoldingSampleSetting(Base):
     value: Mapped[str] = mapped_column(String(255), default="")
 
 
-class MoldingSampleAuthPin(Base):
-    __tablename__ = "molding_sample_auth_pins"
-
-    id: Mapped[str] = mapped_column(String(96), primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), index=True)
-    role: Mapped[str] = mapped_column(String(64), index=True)
-    pin_salt: Mapped[str] = mapped_column(String(64))
-    pin_hash: Mapped[str] = mapped_column(String(128))
-    must_change: Mapped[int] = mapped_column(Integer, default=1)
-    updated_at: Mapped[str] = mapped_column(String(32), default="")
-
-
-class MoldingSamplePinAttempt(Base):
-    __tablename__ = "molding_sample_pin_attempts"
-
-    id: Mapped[str] = mapped_column(String(96), primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), index=True)
-    role: Mapped[str] = mapped_column(String(64), index=True)
-    failed_count: Mapped[int] = mapped_column(Integer, default=0)
-    locked_until: Mapped[str] = mapped_column(String(32), default="")
-    updated_at: Mapped[str] = mapped_column(String(32), default="")
-
-
 class MoldingSampleSensitiveAuditLog(Base):
     __tablename__ = "molding_sample_sensitive_audit_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     action: Mapped[str] = mapped_column(String(128), index=True)
+    actor_user_id: Mapped[str] = mapped_column(String(64), default="")
     actor_name: Mapped[str] = mapped_column(String(128), default="")
     actor_role: Mapped[str] = mapped_column(String(64), default="")
+    actor_roles: Mapped[str] = mapped_column(Text, default="")
+    factory_scope: Mapped[str] = mapped_column(String(255), default="")
     target_type: Mapped[str] = mapped_column(String(64), default="", index=True)
     target_name: Mapped[str] = mapped_column(String(128), default="", index=True)
     detail: Mapped[str] = mapped_column(Text, default="")
