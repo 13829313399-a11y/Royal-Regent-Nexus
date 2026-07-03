@@ -18,6 +18,7 @@ for (const requiredCopy of [
   '审核轨迹',
   '提交主管审核',
   '啤机部通知',
+  '经理审核通过后',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -45,6 +46,7 @@ for (const requiredImplementation of [
   'loadApiData',
   'sourceRecords',
   'moldingSampleApi.listOrders',
+  "'huaxing'",
   'createDraft',
   'buildManualMoldingSampleCreateRequest',
   'submitManualCreate',
@@ -64,6 +66,25 @@ for (const requiredImplementation of [
 ]) {
   assert.match(source, new RegExp(requiredImplementation))
 }
+
+assert.equal(source.includes('文件编号'), false, 'new-order form should not show the unused file-number field')
+assert.equal(source.includes('v-model="createDraft.doc_number"'), false, 'new-order form should not bind an unused file-number input')
+assert.match(source, /填写部/)
+assert.match(source, /<select v-model="createDraft\.workshop"[\s\S]*<option>工程部<\/option>/)
+assert.doesNotMatch(source, /<select v-model="createDraft\.send_to"/)
+assert.match(source, /<input v-model="createDraft\.send_to"/)
+assert.doesNotMatch(source, /<select v-model="createDraft\.supervisor"/)
+assert.match(source, /<input v-model="createDraft\.supervisor"/)
+assert.match(source, /supervisor:\s*''/)
+assert.match(source, /eng_name:\s*''/)
+assert.doesNotMatch(source, /supervisor:\s*template\.order\.supervisor/)
+assert.doesNotMatch(source, /eng_name:\s*template\.order\.eng_name/)
+assert.doesNotMatch(source, /<table class="w-full min-w-\[900px\] text-\[12px\]">/)
+assert.match(source, /aria-label="模具明细录入表"/)
+assert.match(source, /role="table"/)
+assert.match(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px\]/)
+assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
+assert.match(source, /v-model="line\.mold_name" class="h-9 w-full/)
 
 for (const removedClearedLayoutCopy of [
   'MOLDING SAMPLE REDESIGN',

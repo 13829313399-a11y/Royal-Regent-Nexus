@@ -37,7 +37,7 @@ def sample_order_payload(order_id="BP-API-001", external=False):
     return {
         "order": {
             "id": order_id,
-            "factory_id": "huakang-a",
+            "factory_id": "huaxing",
             "order_number": "62437",
             "doc_number": "W-G026-00",
             "product_name": "链条枪",
@@ -47,8 +47,8 @@ def sample_order_payload(order_id="BP-API-001", external=False):
             "order_type": "啤办",
             "workshop": "模厂" if external else "A车间",
             "send_to": "发至模厂" if external else "",
-            "supervisor": "李主管",
-            "eng_name": "肖科",
+            "supervisor": "华兴工程主管",
+            "eng_name": "华兴工程师",
             "reason": "对办颜色和试啤。",
         },
         "items": [
@@ -85,22 +85,36 @@ def test_unauthenticated_access_to_molding_sample_api_is_rejected(client):
     assert response.status_code == 401
 
 
-def test_engineer_can_create_order_and_production_user_reads_notification(client):
+def test_engineer_can_create_order_and_production_user_reads_notification_after_manager_approval(client):
     login_as(client, "engineer")
     response = client.post("/api/injection", json=sample_order_payload())
 
     assert response.status_code == 201
     payload = response.json()
     assert payload["order"]["status"] == "待审核"
-    assert payload["audit_logs"][0]["actor_name"] == "肖科"
+    assert payload["audit_logs"][0]["actor_name"] == "华兴工程师"
     assert payload["audit_logs"][0]["actor_role"] == "工程师"
     assert payload["audit_logs"][0]["actor_user_id"] == "user-engineer"
     assert payload["items"][0]["order_id"] == "BP-API-001"
 
-    login_as(client, "molding")
+    login_as(client, "molding_clerk")
+    early_notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={"target_module": "production_molding_sample_task", "factory_id": "huaxing"},
+    )
+    assert early_notifications_response.status_code == 200
+    assert early_notifications_response.json() == []
+
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-API-001/status", json={"action": "主管通过"})
+
+    login_as(client, "manager")
+    client.patch("/api/injection/BP-API-001/status", json={"action": "经理通过"})
+
+    login_as(client, "molding_clerk")
     notifications_response = client.get(
         "/api/molding-sample-notifications",
-        params={"target_module": "production_molding_sample_task", "factory_id": "huakang-a"},
+        params={"target_module": "production_molding_sample_task", "factory_id": "huaxing"},
     )
     assert notifications_response.status_code == 200
     notifications = notifications_response.json()
@@ -126,7 +140,13 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     )
     assert supervisor_response.status_code == 200
     assert supervisor_response.json()["order"]["status"] == "待经理审核"
-    assert supervisor_response.json()["audit_logs"][0]["actor_name"] == "李主管"
+    assert supervisor_response.json()["audit_logs"][0]["actor_name"] == "华兴工程主管"
+
+    supervisor_manager_step_response = client.patch(
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "经理通过"},
+    )
+    assert supervisor_manager_step_response.status_code == 403
 
     login_as(client, "manager")
     manager_response = client.patch(
@@ -136,7 +156,7 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert manager_response.status_code == 200
     assert manager_response.json()["order"]["status"] == "待生产"
 
-    login_as(client, "molding")
+    login_as(client, "molding_clerk")
     start_response = client.patch(
         "/api/injection/BP-WORKFLOW-001/status",
         json={"action": "开始处理"},
@@ -214,7 +234,7 @@ def test_manager_price_update_uses_logged_in_user_and_sensitive_audit(client):
     logs = logs_response.json()
     assert logs[0]["action"] == "经理更新价格口径"
     assert logs[0]["actor_user_id"] == "user-manager"
-    assert logs[0]["actor_name"] == "王经理"
+    assert logs[0]["actor_name"] == "华兴经理"
     assert logs[0]["actor_role"] == "经理"
 
 
@@ -261,7 +281,7 @@ def test_engineering_edit_delete_permissions_use_login_role(client):
     assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
 
 
-def test_warehouse_requisitions_and_inventory_issue_require_warehouse_role(client):
+def test_trial_accounts_do_not_expose_unused_warehouse_permissions(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-REQ-001"))
 
@@ -271,33 +291,15 @@ def test_warehouse_requisitions_and_inventory_issue_require_warehouse_role(clien
     )
     assert blocked_batch_response.status_code == 403
 
-    login_as(client, "warehouse")
-    batch_response = client.post(
+    retired_login_response = client.post("/api/auth/login", json={"username": "warehouse", "password": "123456"})
+    assert retired_login_response.status_code == 401
+
+    login_as(client, "molding_clerk")
+    clerk_batch_response = client.post(
         "/api/inventory-batches",
         json={"material": "HIPS 425", "batch_no": "HIPS-20260701-A", "location": "A-01", "initial_weight_kg": 3},
     )
-    assert batch_response.status_code == 201
-    batch = batch_response.json()
-
-    requisition_response = client.post(
-        "/api/requisitions",
-        json={
-            "date": "2026-07-01",
-            "order_id": "BP-REQ-001",
-            "material": "HIPS 425",
-            "requested_weight_kg": 2.46,
-            "notes": "M-001 · 左右枪身",
-        },
-    )
-    assert requisition_response.status_code == 201
-    requisition = requisition_response.json()
-
-    issue_response = client.patch(
-        f"/api/requisitions/{requisition['id']}/status",
-        json={"status": "已出库", "inventory_batch_id": batch["id"]},
-    )
-    assert issue_response.status_code == 200
-    assert issue_response.json()["status"] == "已出库"
+    assert clerk_batch_response.status_code == 403
 
 
 def test_export_and_import_molding_sample_excel_template(client):

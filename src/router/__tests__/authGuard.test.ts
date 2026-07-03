@@ -9,10 +9,11 @@ for (const requiredImplementation of [
   'useAuthStore',
   'ensureSession',
   'requiresAuth',
-  'authStore.hasPermission',
-  'forbidden',
 ]) {
   assert.match(source, new RegExp(requiredImplementation))
 }
 
 assert.match(source, /path:\s*'\/login'[\s\S]{0,220}fullPage:\s*true/)
+assert.doesNotMatch(source, /meta:\s*\{[\s\S]{0,220}permission:/)
+assert.doesNotMatch(source, /authStore\.hasPermission/)
+assert.doesNotMatch(source, /name:\s*'forbidden'/)

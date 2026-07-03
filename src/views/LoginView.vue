@@ -59,6 +59,14 @@ const brandFeatures = [
   },
 ]
 
+const trialAccounts = [
+  { role: '工程师', username: 'engineer' },
+  { role: '工程主管', username: 'supervisor' },
+  { role: '经理', username: 'manager' },
+  { role: '啤机部文员', username: 'molding_clerk' },
+  { role: '管理员', username: 'admin' },
+]
+
 async function submitLogin() {
   errorMessage.value = ''
 
@@ -227,6 +235,25 @@ async function submitLogin() {
               <ArrowRight v-if="!isSubmitting" class="size-4" aria-hidden="true" />
             </button>
           </form>
+
+          <section class="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div class="mb-2 flex items-center justify-between gap-2">
+              <span class="text-[12px] font-semibold text-slate-700">华兴试点账号</span>
+              <span class="text-[11px] font-medium text-slate-400">默认密码 123456</span>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                v-for="account in trialAccounts"
+                :key="account.username"
+                type="button"
+                class="min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-left transition hover:border-teal-200 hover:bg-teal-50"
+                @click="username = account.username"
+              >
+                <span class="block truncate text-[11px] font-semibold text-slate-800">{{ account.role }}</span>
+                <span class="block truncate font-mono text-[11px] text-slate-500">{{ account.username }}</span>
+              </button>
+            </div>
+          </section>
 
           <div class="my-6 flex items-center gap-3 text-[11px] text-slate-400">
             <span class="h-px flex-1 bg-slate-200"></span>

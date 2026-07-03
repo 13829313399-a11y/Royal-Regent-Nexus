@@ -10,7 +10,7 @@ import {
 
 export const useAppStore = defineStore('app', {
   state: () => ({
-    activeFactoryId: 'group' as FactoryContextId,
+    activeFactoryId: 'huaxing' as FactoryContextId,
     activeDepartmentId: 'engineering' as ModuleDepartmentId,
     selectedApprovalId: approvalRows[0]?.id ?? '',
     isRouteLoading: false,
@@ -26,7 +26,7 @@ export const useAppStore = defineStore('app', {
         return activeFactory
       }
 
-      return factoryContexts.find((factory) => factory.id === 'huakang-a') ?? factoryContexts[1]
+      return factoryContexts.find((factory) => factory.id === 'huaxing') ?? factoryContexts[1]
     },
     activeDepartment(state) {
       return departments.find((department) => department.id === state.activeDepartmentId) ?? departments[0]

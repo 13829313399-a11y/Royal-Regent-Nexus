@@ -85,11 +85,13 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
 
   return isProductionFactoryContextId(appStore.activeProductionFactory.id)
     ? appStore.activeProductionFactory.id
-    : 'huakang-a'
+    : 'huaxing'
 })
 
 const activeFactory = computed(() =>
-  factoryContexts.find((factory) => factory.id === selectedFactoryId.value) ?? factoryContexts[1],
+  factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
+    ?? factoryContexts.find((factory) => factory.id === 'huaxing')
+    ?? factoryContexts[1],
 )
 
 const notificationOrderIds = computed(() =>
@@ -199,7 +201,7 @@ const taskSummaryCards = computed<TaskSummaryCard[]>(() => {
     {
       label: '工程通知',
       value: String(notifiedCount),
-      detail: '工程新建后先进入通知区',
+      detail: '经理审核完成后进入通知区',
       tone: notifiedCount ? 'blue' : 'slate',
     },
     {

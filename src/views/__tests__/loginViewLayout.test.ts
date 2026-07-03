@@ -16,6 +16,9 @@ for (const requiredCopy of [
   '企业身份登录',
   '企业微信',
   '扫码登录',
+  '华兴试点账号',
+  'molding_clerk',
+  'admin',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }

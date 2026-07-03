@@ -389,19 +389,6 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
         )
 
     append_audit(db, order, "工程提交主管审核", current_user, status, status, "工程开单完成。")
-    if not is_external_order(order):
-        append_notification(
-            db,
-            order,
-            target_module=PRODUCTION_TASK_MODULE,
-            target_role=PRODUCTION_TARGET_ROLE,
-            event_type="工程开单",
-            title="工程新建啤办单",
-            message=f"工程部已新建啤办单 {order.id}，请啤机部关注审核流转。",
-            from_status="",
-            to_status=status,
-            actor_name=current_user.display_name,
-        )
     db.commit()
     db.refresh(order)
     return load_order(db, order.id, current_user)

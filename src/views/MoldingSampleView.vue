@@ -156,11 +156,13 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
 
   return isProductionFactoryContextId(appStore.activeProductionFactory.id)
     ? appStore.activeProductionFactory.id
-    : 'huakang-a'
+    : 'huaxing'
 })
 
 const activeFactory = computed(() =>
-  factoryContexts.find((factory) => factory.id === selectedFactoryId.value) ?? factoryContexts[1],
+  factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
+    ?? factoryContexts.find((factory) => factory.id === 'huaxing')
+    ?? factoryContexts[1],
 )
 
 const productionTaskRoute = computed(() => {
@@ -302,17 +304,15 @@ function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWor
 }
 
 function resetCreateDraft() {
-  const template = getMoldingSampleRecord(selectedFactoryId.value)
-
   createDraft.value = createManualMoldingSampleOrderDraft({
     factory_id: selectedFactoryId.value,
     order_date: today,
     stage: 'T0',
     order_type: '啤办',
-    workshop: template.order.workshop,
-    send_to: template.order.send_to || '内部',
-    supervisor: template.order.supervisor,
-    eng_name: template.order.eng_name,
+    workshop: '工程部',
+    send_to: '内部',
+    supervisor: '',
+    eng_name: '',
     items: [
       createManualMoldingSampleLineDraft(),
     ],
@@ -865,10 +865,6 @@ onMounted(() => {
                   >
                 </label>
                 <label class="block">
-                  <span class="mb-1 block text-[11px] font-medium text-slate-500">文件编号</span>
-                  <input v-model="createDraft.doc_number" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                </label>
-                <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
                   <input v-model="createDraft.client_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
@@ -890,28 +886,22 @@ onMounted(() => {
                   </select>
                 </label>
                 <label class="block">
-                  <span class="mb-1 block text-[11px] font-medium text-slate-500">车间</span>
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">填写部</span>
                   <select v-model="createDraft.workshop" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                    <option>A车间</option>
-                    <option>B车间</option>
-                    <option>模厂</option>
+                    <option>工程部</option>
+                    <option>PMC部</option>
+                    <option>生产部</option>
+                    <option>QA部</option>
+                    <option>业务部</option>
                   </select>
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">发至</span>
-                  <select v-model="createDraft.send_to" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                    <option>内部</option>
-                    <option>发至湖南</option>
-                    <option>发至模厂</option>
-                  </select>
+                  <input v-model="createDraft.send_to" placeholder="填写发至位置" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">审核主管</span>
-                  <select v-model="createDraft.supervisor" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                    <option>李主管</option>
-                    <option>陈主管</option>
-                    <option>黄主管</option>
-                  </select>
+                  <input v-model="createDraft.supervisor" placeholder="填写主管姓名" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">落单人</span>
@@ -924,81 +914,82 @@ onMounted(() => {
               </div>
             </section>
 
-            <section class="rounded-lg border border-slate-200 bg-white">
+            <section class="rounded-lg border border-slate-200 bg-white shadow-sm">
               <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
                 <Table2 class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold">模具明细</span>
                 <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">按行维护</span>
               </div>
-              <div class="overflow-x-auto">
-                <table class="w-full min-w-[900px] text-[12px]">
-                  <thead>
-                    <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
-                      <th class="w-10 px-2 py-2 font-medium">#</th>
-                      <th class="px-2 py-2 text-left font-medium">客模具编号</th>
-                      <th class="px-2 py-2 text-left font-medium">模具名称</th>
-                      <th class="px-2 py-2 text-left font-medium">所需用料</th>
-                      <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
-                      <th class="px-2 py-2 text-left font-medium">色粉</th>
-                      <th class="px-2 py-2 text-left font-medium">啤/套</th>
-                      <th class="px-2 py-2 text-right font-medium">啤数</th>
-                      <th class="px-2 py-2 text-left font-medium">需办日期</th>
-                      <th class="px-2 py-2 text-right font-medium">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-slate-50">
-                    <tr v-for="(line, index) in createDraft.items" :key="index" class="hover:bg-slate-50/60">
-                      <td class="px-2 py-2 text-center text-slate-400">{{ index + 1 }}</td>
-                      <td class="px-2 py-1">
-                        <input v-model="line.customer_mold_id" class="h-8 w-32 rounded-md border border-slate-200 px-2 font-mono outline-none focus:border-slate-400">
-                      </td>
-                      <td class="px-2 py-1">
-                        <input v-model="line.mold_name" class="h-8 w-32 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
-                      </td>
-                      <td class="px-2 py-1">
-                        <input v-model="line.material" class="h-8 w-28 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
-                      </td>
-                      <td class="px-2 py-1">
-                        <div class="flex gap-1">
-                          <input v-model="line.color" placeholder="颜色" class="h-8 w-24 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
-                          <input v-model="line.pms" placeholder="PMS" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
+              <div class="space-y-2 p-3">
+                <div class="overflow-x-auto rounded-lg border border-slate-200 bg-slate-50/80">
+                  <div class="min-w-[1164px]" role="table" aria-label="模具明细录入表">
+                    <div class="grid grid-cols-[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px] items-center border-b border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-500" role="row">
+                      <div class="text-center" role="columnheader">#</div>
+                      <div class="px-1" role="columnheader">客模具编号</div>
+                      <div class="px-1" role="columnheader">模具名称</div>
+                      <div class="px-1" role="columnheader">所需用料</div>
+                      <div class="px-1" role="columnheader">颜色 / PMS</div>
+                      <div class="px-1" role="columnheader">色粉</div>
+                      <div class="px-1" role="columnheader">啤/套</div>
+                      <div class="px-1 text-right" role="columnheader">啤数</div>
+                      <div class="px-1" role="columnheader">需办日期</div>
+                      <div class="px-1 text-right" role="columnheader">操作</div>
+                    </div>
+                    <div class="divide-y divide-slate-100 bg-white">
+                      <div
+                        v-for="(line, index) in createDraft.items"
+                        :key="`create-line-${index}`"
+                        class="grid grid-cols-[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px] items-start px-3 py-2.5 text-[12px] hover:bg-slate-50/70"
+                        role="row"
+                      >
+                        <div class="px-1 pt-1.5 text-center" role="cell">
+                          <span class="inline-flex size-6 items-center justify-center rounded-md bg-slate-100 font-semibold text-slate-500">{{ index + 1 }}</span>
                         </div>
-                      </td>
-                      <td class="px-2 py-1">
-                        <input v-model="line.pigment_no" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
-                      </td>
-                      <td class="px-2 py-1">
-                        <input v-model="line.quantity" class="h-8 w-20 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
-                      </td>
-                      <td class="px-2 py-1">
-                        <input v-model="line.shoot_qty" class="h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-slate-400">
-                      </td>
-                      <td class="px-2 py-1">
-                        <input v-model="line.required_date" type="date" class="h-8 w-36 rounded-md border border-slate-200 px-2 outline-none focus:border-slate-400">
-                      </td>
-                      <td class="px-2 py-1 text-right">
-                        <button
-                          type="button"
-                          class="rounded-md px-2 py-1 text-[11px] font-semibold text-red-500 hover:bg-red-50"
-                          @click="removeCreateLine(index)"
-                        >
-                          删除
-                        </button>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td colspan="10" class="px-2 py-2 text-center">
-                        <button
-                          type="button"
-                          class="text-[11px] font-semibold text-slate-500 hover:text-slate-950"
-                          @click="addCreateLine"
-                        >
-                          + 继续添加明细行
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                        <div class="px-1" role="cell">
+                          <input v-model="line.customer_mold_id" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 font-mono outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="px-1" role="cell">
+                          <input v-model="line.mold_name" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="px-1" role="cell">
+                          <input v-model="line.material" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="grid grid-cols-[minmax(0,1fr)_72px] gap-1 px-1" role="cell">
+                          <input v-model="line.color" placeholder="颜色" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.pms" placeholder="PMS" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="px-1" role="cell">
+                          <input v-model="line.pigment_no" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="px-1" role="cell">
+                          <input v-model="line.quantity" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="px-1" role="cell">
+                          <input v-model="line.shoot_qty" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="px-1" role="cell">
+                          <input v-model="line.required_date" type="date" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="px-1" role="cell">
+                          <button
+                            type="button"
+                            class="flex h-9 w-full items-center justify-center rounded-md border border-red-100 bg-white text-[11px] font-semibold text-red-500 transition hover:bg-red-50"
+                            @click="removeCreateLine(index)"
+                          >
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="flex h-9 w-full items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 text-[12px] font-semibold text-slate-600 transition hover:border-slate-400 hover:bg-white hover:text-slate-950"
+                  @click="addCreateLine"
+                >
+                  + 继续添加明细行
+                </button>
               </div>
             </section>
           </div>
@@ -1044,7 +1035,7 @@ onMounted(() => {
                 <span class="text-[13px] font-bold">啤机部通知</span>
               </div>
               <p class="mt-2 text-[11px] leading-5 text-teal-700">
-                内部生产单提交后会在“啤办生产任务单”收到通知；审核走完后，啤机部才能开始执行并回传完成。
+                经理审核通过后会在“啤办生产任务单”收到通知；啤机部文员接单后开始执行并回传完成。
               </p>
               <RouterLink
                 :to="productionTaskRoute"
