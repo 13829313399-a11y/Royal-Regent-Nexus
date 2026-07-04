@@ -1337,7 +1337,7 @@ onUnmounted(() => {
         </div>
 
         <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <div class="space-y-4">
+          <div class="space-y-4 xl:contents">
             <section class="rounded-lg border border-slate-200 bg-white">
               <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
                 <FileText class="size-4 text-slate-400" aria-hidden="true" />
@@ -1410,7 +1410,7 @@ onUnmounted(() => {
               </div>
             </section>
 
-            <section class="rounded-lg border border-slate-200 bg-white shadow-sm">
+            <section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">
               <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
                 <Table2 class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold">模具明细</span>
@@ -1510,7 +1510,7 @@ onUnmounted(() => {
             </section>
           </div>
 
-          <aside class="space-y-4">
+          <aside class="space-y-4 xl:col-start-2 xl:row-start-1">
             <section class="rounded-lg border border-slate-200 bg-white p-4">
               <div class="mb-3 flex items-center gap-2">
                 <Send class="size-4 text-slate-400" aria-hidden="true" />
@@ -1571,23 +1571,6 @@ onUnmounted(() => {
               >
                 返回单据详情
               </button>
-            </section>
-
-            <section class="rounded-lg border border-teal-200 bg-teal-50 p-4">
-              <div class="flex items-center gap-2 text-teal-800">
-                <Factory class="size-4" aria-hidden="true" />
-                <span class="text-[13px] font-bold">啤机部通知</span>
-              </div>
-              <p class="mt-2 text-[11px] leading-5 text-teal-700">
-                主管审核通过后会在“啤办生产任务单”收到通知；啤机部文员接单后开始执行并回传完成。
-              </p>
-              <RouterLink
-                :to="productionTaskRoute"
-                class="mt-3 inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 text-[12px] font-semibold text-teal-700"
-              >
-                打开生产任务单
-                <ExternalLink class="size-3.5" aria-hidden="true" />
-              </RouterLink>
             </section>
           </aside>
         </div>
