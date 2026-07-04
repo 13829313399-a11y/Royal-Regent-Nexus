@@ -95,7 +95,7 @@ assert.deepEqual(
     actor_role: '主管',
     actor_name: '李主管',
   }),
-  { allowed: true, next_status: '待经理审核', completed_date: '' },
+  { allowed: true, next_status: '待生产', completed_date: '' },
 )
 
 assert.deepEqual(
@@ -109,10 +109,10 @@ assert.deepEqual(
 )
 
 const externalTransition = getMoldingSampleStatusTransition({
-  order: { ...baseOrder, status: '待经理审核', send_to: '发至模厂' },
-  action: '经理通过',
-  actor_role: '经理',
-  actor_name: '经理',
+  order: { ...baseOrder, send_to: '发至模厂' },
+  action: '主管通过',
+  actor_role: '主管',
+  actor_name: '李主管',
   today: '2026-07-01',
 })
 assert.deepEqual(externalTransition, {

@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
@@ -103,16 +103,28 @@ async function mountRuntimeView(component: Component) {
   return wrapper
 }
 
+function getButtonByText(wrapper: VueWrapper, text: string) {
+  const button = wrapper.findAll('button').find((candidate) => candidate.text().includes(text))
+
+  expect(button, `button containing "${text}"`).toBeTruthy()
+
+  return button!
+}
+
 describe('molding sample runtime error handling', () => {
   beforeEach(() => {
     routeState.path = '/modules/molding-sample'
     routeState.query = { factory: 'huaxing' }
     routerReplace.mockReset()
     vi.clearAllMocks()
+    window.localStorage.clear()
+    mockedMoldingSampleApi.listOrders.mockResolvedValue([])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValue([])
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    window.localStorage.clear()
   })
 
   it('shows formal data failure on the engineering page without rendering sample orders', async () => {
@@ -144,5 +156,53 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.createProblem).not.toHaveBeenCalled()
+  })
+
+  it('restores a partially filled new-order draft after leaving the page and clears it after submit', async () => {
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    await wrapper.get('[data-testid="create-product-no"]').setValue('260705-01')
+    await wrapper.get('[data-testid="create-client-name"]').setValue('Bright Kids')
+    await wrapper.get('[data-testid="create-product-name"]').setValue('透明灯罩')
+    await wrapper.get('[data-testid="create-supervisor"]').setValue('华兴主管')
+    await wrapper.get('[data-testid="create-engineer"]').setValue('华兴工程师')
+    await wrapper.get('[data-testid="create-line-mold-id"]').setValue('BK-01')
+    await wrapper.get('[data-testid="create-line-mold-name"]').setValue('主灯罩')
+    await wrapper.get('[data-testid="create-line-material"]').setValue('PC 110')
+    await wrapper.get('[data-testid="create-line-color"]').setValue('透明蓝')
+    await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
+    await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')
+    await wrapper.get('[data-testid="create-line-required-date"]').setValue('2026-07-10')
+    await flushPromises()
+
+    expect(window.localStorage.getItem('rr:molding-sample:create-draft:huaxing')).toContain('透明灯罩')
+
+    await getButtonByText(wrapper, '看板总览').trigger('click')
+    wrapper.unmount()
+
+    const restoredWrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(restoredWrapper, '工程部 · 新建开单').trigger('click')
+    await nextTick()
+
+    expect((restoredWrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('透明灯罩')
+    expect((restoredWrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('BK-01')
+
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => ({
+      order: payload.order,
+      items: payload.items,
+      audit_logs: [],
+      problems: [],
+    }))
+
+    await getButtonByText(restoredWrapper, '提交主管审核').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    expect(window.localStorage.getItem('rr:molding-sample:create-draft:huaxing')).toBeNull()
+    expect(restoredWrapper.text()).toContain('新建成功')
+
+    restoredWrapper.unmount()
   })
 })

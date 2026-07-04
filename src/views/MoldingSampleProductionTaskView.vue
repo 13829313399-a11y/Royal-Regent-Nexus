@@ -313,7 +313,7 @@ function getTaskStageDetail(order: MoldingSampleOrder) {
     return `等待 ${order.supervisor || '主管'} 审核后继续流转`
   }
   if (order.status === '待经理审核') {
-    return '等待经理终审，终审通过后进入啤机可执行队列'
+    return '历史审核节点，处理后进入啤机可执行队列'
   }
   if (order.status === '待生产') {
     return '啤机部可以开始生产执行'
@@ -734,7 +734,7 @@ watchEffect(() => {
               啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料和啤办费，完成后把状态回传到同一张工程啤办单。
             </p>
             <p class="mt-1 text-xs text-slate-500">
-              任务通知队列来自独立通知表，经理审核完成后进入通知区；啤机部只处理生产执行字段，工程资料回到工程啤办单维护。
+              任务通知队列来自独立通知表，主管审核通过后进入通知区；啤机部只处理生产执行字段，工程资料回到工程啤办单维护。
             </p>
           </div>
 

@@ -1,8 +1,10 @@
 import importlib
 import sqlite3
 import sys
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -181,6 +183,93 @@ def sample_order_payload(order_id="BP-API-001", external=False):
     }
 
 
+def huaxing_engineering_template_workbook() -> bytes:
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    rows = [
+        ["华兴玩具制品(河源)有限公司"],
+        ["啤办通知单"],
+        [
+            "客户：ShuShuPaPa",
+            "",
+            "",
+            "产品编号：P50002008",
+            "",
+            "",
+            "",
+            "",
+            "产品名称:30寸黑武士",
+            "",
+            "",
+            "",
+            "",
+            "文件编号:W-G026-00 版本:00 修订:1",
+        ],
+        [
+            "序号",
+            "模具编号",
+            "模具名称",
+            "用料",
+            "所需颜色",
+            "PMS",
+            "色粉",
+            "套/啤",
+            "啤办数（啤）",
+            "用料重量（KG)",
+            "报价周期",
+            "需办日期",
+            "要求",
+            "备注",
+        ],
+        [
+            "M01",
+            "P50002008-01-01",
+            "30寸黑武士-头盔",
+            "PP（AV161）",
+            "黑色",
+            "Black C",
+            "黑种",
+            "2",
+            30,
+            15,
+            "3天",
+            "2026.2.10",
+            "加急",
+            "第一次试模",
+        ],
+        [
+            "M02",
+            "P50002008-01-02",
+            "30寸黑武士-面罩",
+            "ABS",
+            "透明",
+            "",
+            "",
+            "1",
+            20,
+            3.5,
+            "",
+            "2026/02/11",
+            "",
+            "",
+        ],
+        [],
+        ["", "落单人：杨敬作", "", "", "", "", "", "", "落单日期：2026.2.3"],
+    ]
+
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as workbook:
+        workbook.writestr("[Content_Types].xml", excel_service._content_types_xml())
+        workbook.writestr("_rels/.rels", excel_service._root_rels_xml())
+        workbook.writestr("docProps/app.xml", excel_service._app_xml())
+        workbook.writestr("docProps/core.xml", excel_service._core_xml())
+        workbook.writestr("xl/workbook.xml", excel_service._workbook_xml())
+        workbook.writestr("xl/_rels/workbook.xml.rels", excel_service._workbook_rels_xml())
+        workbook.writestr("xl/styles.xml", excel_service._styles_xml())
+        workbook.writestr("xl/worksheets/sheet1.xml", excel_service._sheet_xml(rows))
+
+    return buffer.getvalue()
+
+
 @pytest.fixture()
 def client(monkeypatch):
     with make_client(monkeypatch) as test_client:
@@ -223,7 +312,7 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
 
 
-def test_engineer_can_create_order_and_production_user_reads_notification_after_manager_approval(client):
+def test_engineer_can_create_order_and_production_user_reads_notification_after_supervisor_approval(client):
     login_as(client, "engineer")
     response = client.post("/api/injection", json=sample_order_payload())
 
@@ -244,10 +333,9 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert early_notifications_response.json() == []
 
     login_as(client, "supervisor")
-    client.patch("/api/injection/BP-API-001/status", json={"action": "主管通过"})
-
-    login_as(client, "manager")
-    client.patch("/api/injection/BP-API-001/status", json={"action": "经理通过"})
+    supervisor_response = client.patch("/api/injection/BP-API-001/status", json={"action": "主管通过"})
+    assert supervisor_response.status_code == 200
+    assert supervisor_response.json()["order"]["status"] == "待生产"
 
     login_as(client, "molding_clerk")
     notifications_response = client.get(
@@ -277,7 +365,7 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
         json={"action": "主管通过"},
     )
     assert supervisor_response.status_code == 200
-    assert supervisor_response.json()["order"]["status"] == "待经理审核"
+    assert supervisor_response.json()["order"]["status"] == "待生产"
     assert supervisor_response.json()["audit_logs"][0]["actor_name"] == "华兴工程主管"
 
     supervisor_manager_step_response = client.patch(
@@ -285,14 +373,6 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
         json={"action": "经理通过"},
     )
     assert supervisor_manager_step_response.status_code == 403
-
-    login_as(client, "manager")
-    manager_response = client.patch(
-        "/api/injection/BP-WORKFLOW-001/status",
-        json={"action": "经理通过"},
-    )
-    assert manager_response.status_code == 200
-    assert manager_response.json()["order"]["status"] == "待生产"
 
     login_as(client, "molding_clerk")
     start_response = client.patch(
@@ -361,17 +441,14 @@ def test_rejected_order_can_be_edited_and_resubmitted_by_engineering(client):
     assert payload["audit_logs"][0]["action"] == "工程重提"
 
 
-def test_external_order_auto_completes_after_manager_approval(client):
+def test_external_order_auto_completes_after_supervisor_approval(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-EXT-001", external=True))
 
     login_as(client, "supervisor")
-    client.patch("/api/injection/BP-EXT-001/status", json={"action": "主管通过"})
-
-    login_as(client, "manager")
     response = client.patch(
         "/api/injection/BP-EXT-001/status",
-        json={"action": "经理通过", "today": "2026-07-01"},
+        json={"action": "主管通过", "today": "2026-07-01"},
     )
 
     assert response.status_code == 200
@@ -394,9 +471,6 @@ def test_production_problem_feedback_is_saved_and_visible_to_engineering(client)
 
     login_as(client, "supervisor")
     client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "主管通过"})
-
-    login_as(client, "manager")
-    client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "经理通过"})
 
     login_as(client, "molding_clerk")
     client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "开始处理"})
@@ -544,6 +618,50 @@ def test_export_and_import_molding_sample_excel_template(client):
     imported = import_response.json()
     assert imported["order"]["id"] == "BP-XLSX-002"
     assert imported["items"][0]["id"] == "BP-XLSX-002-001"
+
+
+def test_import_huaxing_engineering_molding_sample_template(client):
+    login_as(client, "engineer")
+    import_response = client.post(
+        "/api/injection/import-excel",
+        params={"order_id": "BP-HX-XLSX-001"},
+        content=huaxing_engineering_template_workbook(),
+        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    )
+
+    assert import_response.status_code == 201
+    imported = import_response.json()
+    assert imported["order"] == {
+        **imported["order"],
+        "id": "BP-HX-XLSX-001",
+        "factory_id": "huaxing",
+        "order_number": "P50002008",
+        "doc_number": "W-G026-00",
+        "product_name": "30寸黑武士",
+        "client_name": "ShuShuPaPa",
+        "date": "2026-02-03",
+        "stage": "T0",
+        "order_type": "啤办",
+        "workshop": "工程部",
+        "supervisor": "华兴工程主管",
+        "eng_name": "杨敬作",
+    }
+    assert len(imported["items"]) == 2
+
+    first_item = imported["items"][0]
+    assert first_item["id"] == "BP-HX-XLSX-001-001"
+    assert first_item["sort_order"] == 1
+    assert first_item["mold_id"] == "P50002008-01-01"
+    assert first_item["mold_name"] == "30寸黑武士-头盔"
+    assert first_item["material"] == "PP（AV161）"
+    assert first_item["color"] == "黑色 / PMS Black C"
+    assert first_item["pigment_no"] == "黑种"
+    assert first_item["quantity"] == "2"
+    assert first_item["shoot_qty"] == 30
+    assert first_item["required_material_kg"] == 15
+    assert first_item["mold_return_time"] == "2026-02-10"
+    assert first_item["completion_time"] == "2026-02-10"
+    assert first_item["notes"] == "报价周期：3天；要求：加急；备注：第一次试模"
 
 
 def test_sensitive_audit_logs_return_latest_200_rows(client):

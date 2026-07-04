@@ -953,7 +953,12 @@ def transition_status(
         ensure_permission(db, current_user, "molding_sample:supervisor_review")
         if order.status != "待审核":
             raise HTTPException(status_code=403, detail="只有指定主管可以审核待审核单")
-        next_status = "待经理审核"
+        if is_external_order(order):
+            next_status = "已完成"
+            order.completed_date = request.today or order.date
+            recalculate_order_costs(db, order, force_material_amount=True)
+        else:
+            next_status = "待生产"
     elif action == "主管驳回":
         ensure_permission(db, current_user, "molding_sample:supervisor_review")
         if order.status != "待审核":
@@ -1005,7 +1010,7 @@ def transition_status(
     order.status = next_status
     order.updated_at = now_text()
     append_audit(db, order, action, current_user, from_status, next_status, request.reason)
-    if action == "经理通过" and next_status == "待生产":
+    if action in {"主管通过", "经理通过"} and next_status == "待生产":
         append_notification(
             db,
             order,
