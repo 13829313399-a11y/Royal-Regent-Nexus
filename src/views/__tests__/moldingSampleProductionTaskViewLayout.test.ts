@@ -7,7 +7,7 @@ const source = readFileSync(join(process.cwd(), 'src/views/MoldingSampleProducti
 for (const requiredCopy of [
   '啤办生产任务单',
   '接收工程啤办单通知',
-  '经理审核完成后进入通知区',
+  '主管审核通过后进入通知区',
   '任务通知队列',
   '独立通知表',
   '啤机部只处理生产执行字段',

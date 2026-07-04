@@ -191,7 +191,15 @@ export function getMoldingSampleStatusTransition(
       return rejectedResult(order, '只有指定主管可以审核待审核单。')
     }
 
-    return { allowed: true, next_status: '待经理审核', completed_date: order.completed_date }
+    if (isExternalMoldingSampleOrder(order)) {
+      return {
+        allowed: true,
+        next_status: '已完成',
+        completed_date: today || order.completed_date || order.date,
+      }
+    }
+
+    return { allowed: true, next_status: '待生产', completed_date: order.completed_date }
   }
 
   if (action === '主管驳回') {
@@ -275,7 +283,7 @@ export function buildCompletionGate(
     return {
       can_complete: true,
       missing_item_ids: [],
-      message: '外厂或模厂路径经理通过后直接完成，不要求啤机部逐行回填实际用料。',
+      message: '外厂或模厂路径主管通过后直接完成，不要求啤机部逐行回填实际用料。',
     }
   }
 

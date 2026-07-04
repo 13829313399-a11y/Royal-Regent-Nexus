@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from datetime import timedelta
 from io import BytesIO
 from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -69,16 +71,23 @@ ORDER_ALIASES = {
     "客户名称": "client_name",
     "日期": "date",
     "开单日期": "date",
+    "落单日期": "date",
     "阶段": "stage",
     "单据类型": "order_type",
     "车间": "workshop",
+    "填写部": "workshop",
     "发往": "send_to",
     "发至": "send_to",
     "主管": "supervisor",
+    "审核主管": "supervisor",
     "工程师": "eng_name",
     "工程": "eng_name",
+    "落单人": "eng_name",
+    "开单人": "eng_name",
     "原因": "reason",
     "备注": "reason",
+    "注意事项": "reason",
+    "开单事由": "reason",
 }
 
 ITEM_ALIASES = {
@@ -92,11 +101,24 @@ ITEM_ALIASES.update(
         "机型/吨位": "machine_type",
         "材料": "material",
         "用料": "material",
+        "所需颜色": "color",
+        "PMS": "pms",
         "色粉": "pigment_no",
+        "色粉编号": "pigment_no",
+        "套/啤": "quantity",
+        "啤/套": "quantity",
         "啤数/模数": "shoot_qty",
+        "啤办数（啤）": "shoot_qty",
+        "啤办数(啤)": "shoot_qty",
         "毛重": "gross_weight_g",
         "需料": "required_material_kg",
         "需料KG": "required_material_kg",
+        "用料重量（KG)": "required_material_kg",
+        "用料重量(KG)": "required_material_kg",
+        "用料重量kg": "required_material_kg",
+        "报价周期": "quote_cycle",
+        "需办日期": "required_date",
+        "要求": "requirement",
         "领料KG": "collected_weight_kg",
         "实际用料KG": "actual_weight_kg",
         "啤办费": "injection_cost",
@@ -152,7 +174,10 @@ def parse_order_excel(workbook_bytes: bytes, order_id_override: str | None = Non
     if detail_header_index is None:
         raise ValueError("Excel 未识别到啤办明细表头")
 
-    order_data = _parse_order_metadata(rows[:detail_header_index])
+    metadata_rows = rows[:detail_header_index] + [
+        row for row in rows[detail_header_index + 1 :] if _row_contains_order_metadata(row)
+    ]
+    order_data = _parse_order_metadata(metadata_rows)
     if order_id_override:
         order_data["id"] = order_id_override
 
@@ -168,19 +193,36 @@ def parse_order_excel(workbook_bytes: bytes, order_id_override: str | None = Non
 
     headers = [str(value or "").strip() for value in rows[detail_header_index]]
     field_by_index = {
-        index: ITEM_ALIASES[header]
+        index: field
         for index, header in enumerate(headers)
-        if header in ITEM_ALIASES
+        if (field := _item_field_for_header(header))
     }
     items: list[MoldingSampleItemIn] = []
     for row in rows[detail_header_index + 1 :]:
         if not any(str(value or "").strip() for value in row):
             continue
+        if _row_contains_order_metadata(row):
+            continue
 
         item_data: dict[str, object] = {}
+        pms = ""
+        required_date = ""
+        note_parts: list[str] = []
         for index, field in field_by_index.items():
             value = row[index] if index < len(row) else ""
-            if field in NUMERIC_ITEM_FIELDS:
+            if field == "pms":
+                pms = str(value or "").strip()
+            elif field == "required_date":
+                required_date = _normalize_date_text(value)
+            elif field == "quote_cycle":
+                quote_cycle = str(value or "").strip()
+                if quote_cycle:
+                    note_parts.append(f"报价周期：{quote_cycle}")
+            elif field == "requirement":
+                requirement = str(value or "").strip()
+                if requirement:
+                    note_parts.append(f"要求：{requirement}")
+            elif field in NUMERIC_ITEM_FIELDS:
                 item_data[field] = _parse_optional_float(value)
             elif field in {"sort_order", "shoot_qty"}:
                 item_data[field] = _parse_int(value)
@@ -188,9 +230,23 @@ def parse_order_excel(workbook_bytes: bytes, order_id_override: str | None = Non
                 item_data[field] = str(value or "").strip()
 
         item_number = len(items) + 1
+        if pms:
+            item_data["color"] = _format_color_pms(str(item_data.get("color") or ""), pms)
+        if required_date:
+            item_data["mold_return_time"] = required_date
+            item_data["completion_time"] = str(item_data.get("completion_time") or "") or required_date
+        existing_notes = str(item_data.get("notes") or "").strip()
+        if existing_notes and note_parts:
+            note_parts.append(f"备注：{existing_notes}")
+        elif existing_notes:
+            item_data["notes"] = existing_notes
+        if note_parts:
+            item_data["notes"] = "；".join(note_parts)
+
         if order_id_override or not str(item_data.get("id") or "").strip():
             item_data["id"] = f"{order_id}-{item_number:03d}"
-        item_data.setdefault("sort_order", item_number)
+        if _parse_int(item_data.get("sort_order", "")) <= 0:
+            item_data["sort_order"] = item_number
         items.append(MoldingSampleItemIn(**item_data))
 
     if not items:
@@ -255,7 +311,7 @@ def _read_cell_value(cell: ElementTree.Element, shared_strings: list[str]) -> st
 def _find_detail_header_row(rows: list[list[str]]) -> int | None:
     for index, row in enumerate(rows):
         normalized = {str(value or "").strip() for value in row}
-        if "明细ID" in normalized or ("模具编号" in normalized and "原料" in normalized):
+        if "明细ID" in normalized or ("模具编号" in normalized and ("原料" in normalized or "用料" in normalized)):
             return index
     return None
 
@@ -266,14 +322,125 @@ def _parse_order_metadata(rows: list[list[str]]) -> dict[str, str]:
         "order_type": "啤办",
         "workshop": "A车间",
     }
+
+    if _looks_like_huaxing_engineering_template(rows):
+        parsed.update(
+            {
+                "factory_id": "huaxing",
+                "stage": "T0",
+                "workshop": "工程部",
+                "supervisor": "华兴工程主管",
+                "reason": "华兴工程部啤办通知单导入",
+            }
+        )
+
     for row in rows:
-        for index in range(0, len(row), 2):
-            label = str(row[index] or "").strip()
-            value = str(row[index + 1] or "").strip() if index + 1 < len(row) else ""
+        for index, cell_value in enumerate(row):
+            label, inline_value = _split_label_value(cell_value)
+            value = inline_value or (str(row[index + 1] or "").strip() if index + 1 < len(row) else "")
             field = ORDER_ALIASES.get(label)
             if field and value:
-                parsed[field] = value
+                parsed[field] = _normalize_order_value(field, value)
     return parsed
+
+
+def _looks_like_huaxing_engineering_template(rows: list[list[str]]) -> bool:
+    flat_values = [str(value or "").strip() for row in rows for value in row if str(value or "").strip()]
+
+    return any("华兴玩具" in value for value in flat_values) and any("啤办通知单" in value for value in flat_values)
+
+
+def _split_label_value(value: object) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+
+    match = re.match(r"^([^:：]+)\s*[:：]\s*(.*)$", text)
+    if match:
+        return _normalize_label(match.group(1)), match.group(2).strip()
+
+    return _normalize_label(text), ""
+
+
+def _normalize_label(value: str) -> str:
+    return value.strip().rstrip(":：").strip()
+
+
+def _normalize_order_value(field: str, value: object) -> str:
+    text = str(value or "").strip()
+    if field == "date":
+        return _normalize_date_text(text)
+    if field == "doc_number":
+        return _extract_document_number(text)
+    return text
+
+
+def _extract_document_number(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+
+    return re.split(r"\s*版本\s*[:：]|\s*修订\s*[:：]", text, maxsplit=1)[0].strip()
+
+
+def _item_field_for_header(header: str) -> str | None:
+    if header in ITEM_ALIASES:
+        return ITEM_ALIASES[header]
+
+    normalized_header = _normalize_header(header)
+    for label, field in ITEM_ALIASES.items():
+        if _normalize_header(label) == normalized_header:
+            return field
+    return None
+
+
+def _normalize_header(value: str) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .replace("（", "(")
+        .replace("）", ")")
+        .replace(" ", "")
+        .upper()
+    )
+
+
+def _row_contains_order_metadata(row: list[str]) -> bool:
+    metadata_labels = {"客户", "产品编号", "产品名称", "文件编号", "落单人", "落单日期"}
+    for value in row:
+        label, inline_value = _split_label_value(value)
+        if inline_value and label in metadata_labels:
+            return True
+    return False
+
+
+def _format_color_pms(color: str, pms: str) -> str:
+    normalized_color = color.strip()
+    normalized_pms = pms.strip()
+    if normalized_pms and not normalized_pms.upper().startswith("PMS "):
+        normalized_pms = f"PMS {normalized_pms}"
+    return " / ".join(part for part in [normalized_color, normalized_pms] if part)
+
+
+def _normalize_date_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    date_match = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", text)
+    if date_match:
+        year, month, day = (int(part) for part in date_match.groups())
+        return f"{year:04d}-{month:02d}-{day:02d}"
+
+    try:
+        serial = float(text)
+    except ValueError:
+        return text
+
+    if 20000 <= serial <= 60000:
+        return (datetime(1899, 12, 30) + timedelta(days=int(serial))).strftime("%Y-%m-%d")
+
+    return text
 
 
 def _parse_optional_float(value: object) -> float | None:

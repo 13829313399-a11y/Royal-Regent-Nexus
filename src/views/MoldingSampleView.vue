@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watchEffect } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import {
   ArrowLeft,
   Beaker,
@@ -56,6 +56,7 @@ import {
   createManualMoldingSampleLineDraft,
   createManualMoldingSampleOrderDraft,
   deriveManualMoldingSampleOrderId,
+  type ManualMoldingSampleLineDraft,
   type ManualMoldingSampleOrderDraft,
 } from '@/lib/moldingSampleManualCreate'
 import type {
@@ -99,6 +100,11 @@ interface ApprovalActor {
   permission: string
 }
 
+interface CreateSuccessToast {
+  orderId: string
+  detail: string
+}
+
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
@@ -113,6 +119,7 @@ const actionMessage = ref('正在读取正式啤办单列表...')
 const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
 const createErrors = ref<string[]>([])
 const createSubmitting = ref(false)
+const createSuccessToast = ref<CreateSuccessToast | null>(null)
 const editingRejectedOrderId = ref('')
 const approvalNote = ref('')
 const approvalSubmitting = ref(false)
@@ -121,18 +128,18 @@ const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
 const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_160px_72px]'
+const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
+let createSuccessToastTimer: ReturnType<typeof setTimeout> | null = null
 
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
-  { status: '待经理审核', title: '经理审核', detail: '主管通过后等待经理终审' },
-  { status: '待生产', title: '待生产', detail: '内部单流转到啤机部' },
+  { status: '待生产', title: '待生产', detail: '主管通过后流转到啤机部' },
   { status: '生产中', title: '啤机生产', detail: '回填实际用料和啤办费' },
   { status: '已完成', title: '完成归档', detail: '生产完成后回传工程单' },
 ]
 
 const boardStatuses: MoldingSampleStatus[] = [
   '待审核',
-  '待经理审核',
   '待生产',
   '生产中',
   '已完成',
@@ -252,7 +259,7 @@ const kpiCards = computed<KpiCard[]>(() => {
     {
       label: '审核中',
       value: String(reviewCount),
-      detail: '主管 / 经理节点',
+      detail: '主管节点',
       icon: Clock,
       className: 'border-amber-200 bg-amber-50 text-amber-700',
     },
@@ -285,7 +292,7 @@ const boardColumns = computed<BoardColumn[]>(() =>
     status,
     label: status,
     detail: getStatusColumnDetail(status),
-    records: visibleRecords.value.filter((record) => record.order.status === status),
+    records: visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status),
     dotClass: statusDotClasses[status],
   })),
 )
@@ -309,6 +316,10 @@ const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
   return Boolean(actor && authStore.hasPermission(actor.permission))
 })
+
+function normalizeBoardStatus(status: MoldingSampleStatus): MoldingSampleStatus {
+  return status === '待经理审核' ? '待审核' : status
+}
 
 function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWorkflowRecord {
   const factoryId = isProductionFactoryContextId(record.order.factory_id)
@@ -352,9 +363,8 @@ function createEmptySelectedOrder(): MoldingSampleOrder {
   }
 }
 
-function resetCreateDraft() {
-  editingRejectedOrderId.value = ''
-  createDraft.value = createManualMoldingSampleOrderDraft({
+function createEmptyCreateDraft() {
+  return createManualMoldingSampleOrderDraft({
     factory_id: selectedFactoryId.value,
     order_date: today,
     stage: 'T0',
@@ -367,12 +377,121 @@ function resetCreateDraft() {
       createManualMoldingSampleLineDraft(),
     ],
   })
+}
+
+function canUseLocalStorage() {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+}
+
+function createDraftStorageKey(factoryId = selectedFactoryId.value) {
+  return `${createDraftStoragePrefix}:${factoryId}`
+}
+
+function clearSavedCreateDraft(factoryId = selectedFactoryId.value) {
+  if (!canUseLocalStorage()) {
+    return
+  }
+
+  window.localStorage.removeItem(createDraftStorageKey(factoryId))
+}
+
+function hasDraftText(value: unknown) {
+  return String(value ?? '').trim() !== ''
+}
+
+function isBlankCreateLine(line: ManualMoldingSampleLineDraft) {
+  return Object.values(line).every((value) => !hasDraftText(value))
+}
+
+function isBlankCreateDraft(draft: ManualMoldingSampleOrderDraft) {
+  const hasHeaderValue = [
+    draft.id,
+    draft.product_no,
+    draft.doc_number,
+    draft.client_name,
+    draft.product_name,
+    draft.supervisor,
+    draft.eng_name,
+    draft.reason,
+  ].some(hasDraftText)
+  const hasChangedDefault = draft.order_date !== today
+    || draft.stage !== 'T0'
+    || draft.order_type !== '啤办'
+    || draft.workshop !== '工程部'
+    || draft.send_to !== '内部'
+  const hasLineValue = draft.items.some((line) => !isBlankCreateLine(line))
+
+  return !hasHeaderValue && !hasChangedDefault && !hasLineValue
+}
+
+function normalizeSavedCreateDraft(saved: Partial<ManualMoldingSampleOrderDraft>) {
+  const savedItems = Array.isArray(saved.items) && saved.items.length > 0
+    ? saved.items.map((item) => createManualMoldingSampleLineDraft(item as Partial<ManualMoldingSampleLineDraft>))
+    : [createManualMoldingSampleLineDraft()]
+
+  return createManualMoldingSampleOrderDraft({
+    ...saved,
+    factory_id: selectedFactoryId.value,
+    items: savedItems,
+  })
+}
+
+function persistCreateDraft() {
+  if (isEditingRejectedOrder.value || !canUseLocalStorage()) {
+    return
+  }
+
+  if (isBlankCreateDraft(createDraft.value)) {
+    clearSavedCreateDraft()
+    return
+  }
+
+  window.localStorage.setItem(
+    createDraftStorageKey(),
+    JSON.stringify({
+      ...createDraft.value,
+      factory_id: selectedFactoryId.value,
+    }),
+  )
+}
+
+function restoreSavedCreateDraft() {
+  if (!canUseLocalStorage()) {
+    createDraft.value = createEmptyCreateDraft()
+    createErrors.value = []
+    return
+  }
+
+  const savedDraft = window.localStorage.getItem(createDraftStorageKey())
+
+  if (!savedDraft) {
+    createDraft.value = createEmptyCreateDraft()
+    createErrors.value = []
+    return
+  }
+
+  try {
+    createDraft.value = normalizeSavedCreateDraft(JSON.parse(savedDraft) as Partial<ManualMoldingSampleOrderDraft>)
+  }
+  catch {
+    clearSavedCreateDraft()
+    createDraft.value = createEmptyCreateDraft()
+  }
+
+  createErrors.value = []
+}
+
+function resetCreateDraft() {
+  editingRejectedOrderId.value = ''
+  createDraft.value = createEmptyCreateDraft()
   createErrors.value = []
 }
 
 function resetCurrentCreateDraft() {
   if (!isEditingRejectedOrder.value) {
+    clearSavedCreateDraft()
     resetCreateDraft()
+    actionMessage.value = '已重置新建啤办单草稿。'
     return
   }
 
@@ -444,7 +563,8 @@ function splitColorPms(value: string) {
 }
 
 function startCreateOrder() {
-  resetCreateDraft()
+  editingRejectedOrderId.value = ''
+  restoreSavedCreateDraft()
   activeView.value = 'create'
 }
 
@@ -639,6 +759,27 @@ function removeCreateLine(index: number) {
   createDraft.value.items.splice(index, 1)
 }
 
+function hideCreateSuccessToast() {
+  if (createSuccessToastTimer) {
+    clearTimeout(createSuccessToastTimer)
+    createSuccessToastTimer = null
+  }
+
+  createSuccessToast.value = null
+}
+
+function showCreateSuccessToast(orderId: string) {
+  hideCreateSuccessToast()
+  createSuccessToast.value = {
+    orderId,
+    detail: '已提交主管审核，正式列表已刷新。',
+  }
+  createSuccessToastTimer = setTimeout(() => {
+    createSuccessToast.value = null
+    createSuccessToastTimer = null
+  }, 3200)
+}
+
 async function submitManualCreate() {
   if (!canSubmitCreateForm.value) {
     actionMessage.value = isEditingRejectedOrder.value
@@ -658,19 +799,24 @@ async function submitManualCreate() {
   }
 
   createSubmitting.value = true
-  actionMessage.value = isEditingRejectedOrder.value ? '正在保存修改并重提啤办单...' : '正在提交新建啤办单...'
+  const isRejectedResubmit = isEditingRejectedOrder.value
+  actionMessage.value = isRejectedResubmit ? '正在保存修改并重提啤办单...' : '正在提交新建啤办单...'
 
   try {
-    const created = isEditingRejectedOrder.value
+    const created = isRejectedResubmit
       ? await resubmitRejectedOrder(result.payload)
       : await moldingSampleApi.createOrder(result.payload)
 
     replaceApiRecord(created)
     selectedOrderId.value = created.order.id
     activeView.value = 'detail'
-    actionMessage.value = isEditingRejectedOrder.value
+    actionMessage.value = isRejectedResubmit
       ? `啤办单 ${created.order.id} 已保存修改并重提主管审核。`
       : `啤办单 ${created.order.id} 已提交主管审核，正式列表已刷新。`
+    if (!isRejectedResubmit) {
+      clearSavedCreateDraft()
+      showCreateSuccessToast(created.order.id)
+    }
     resetCreateDraft()
   }
   catch (error) {
@@ -726,7 +872,7 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
   const actor = getApprovalActor()
 
   if (!actor) {
-    actionMessage.value = '当前单据不在主管或经理审核节点，不能执行审核动作。'
+    actionMessage.value = '当前单据不在审核节点，不能执行审核动作。'
     return
   }
 
@@ -763,7 +909,7 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
 function getStatusColumnDetail(status: MoldingSampleStatus) {
   const details: Record<MoldingSampleStatus, string> = {
     待审核: '等待主管处理',
-    待经理审核: '等待经理终审',
+    待经理审核: '历史经理节点',
     待生产: '已通知啤机部',
     生产中: '啤机部执行中',
     已完成: '完成后归档',
@@ -778,7 +924,7 @@ function getWorkflowStepState(status: MoldingSampleStatus): StatusState {
     return status === '待审核' ? 'rejected' : 'pending'
   }
 
-  const currentIndex = workflowSteps.findIndex((step) => step.status === selectedOrder.value.status)
+  const currentIndex = workflowSteps.findIndex((step) => step.status === normalizeBoardStatus(selectedOrder.value.status))
   const stepIndex = workflowSteps.findIndex((step) => step.status === status)
 
   if (stepIndex < currentIndex) {
@@ -818,7 +964,7 @@ function getFlowSummary(record: MoldingSampleWorkflowRecord) {
     return `${record.order.eng_name} → ${record.order.supervisor}`
   }
   if (record.order.status === '待经理审核') {
-    return `${record.order.supervisor} 已通过 → 王经理`
+    return `${record.order.supervisor} 已通过 · 历史经理节点`
   }
   if (record.order.status === '待生产') {
     return '等待啤机部开始处理'
@@ -893,13 +1039,28 @@ watchEffect(() => {
   }
 
   appStore.setActiveFactory(selectedFactoryId.value)
-  createDraft.value.factory_id = selectedFactoryId.value
 })
 
-resetCreateDraft()
+restoreSavedCreateDraft()
+
+watch(createDraft, () => {
+  if (activeView.value === 'create') {
+    persistCreateDraft()
+  }
+}, { deep: true })
+
+watch(selectedFactoryId, () => {
+  if (!isEditingRejectedOrder.value) {
+    restoreSavedCreateDraft()
+  }
+})
 
 onMounted(() => {
   void loadApiData()
+})
+
+onUnmounted(() => {
+  hideCreateSuccessToast()
 })
 </script>
 
@@ -982,6 +1143,44 @@ onMounted(() => {
         </RouterLink>
       </nav>
     </header>
+
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="-translate-y-1.5 opacity-0"
+      enter-to-class="translate-y-0 opacity-100"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="translate-y-0 opacity-100"
+      leave-to-class="-translate-y-1.5 opacity-0"
+    >
+      <aside
+        v-if="createSuccessToast"
+        class="fixed right-5 top-20 z-50 w-[min(360px,calc(100vw-2.5rem))]"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="rounded-lg border border-teal-200 bg-white/95 p-3 shadow-lg shadow-slate-200/70 backdrop-blur">
+          <div class="flex items-start gap-2.5">
+            <span class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+              <Check class="size-4" aria-hidden="true" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="text-[13px] font-bold text-slate-950">新建成功</div>
+              <p class="mt-0.5 text-[12px] leading-5 text-slate-500">
+                啤办单 {{ createSuccessToast.orderId }} {{ createSuccessToast.detail }}
+              </p>
+            </div>
+            <button
+              type="button"
+              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              aria-label="关闭新建成功提示"
+              @click="hideCreateSuccessToast"
+            >
+              <X class="size-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </aside>
+    </Transition>
 
     <div class="mx-auto max-w-[1720px] px-5 py-4">
       <div
@@ -1150,23 +1349,24 @@ onMounted(() => {
               <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">单据编号</span>
-                  <input v-model="createDraft.id" placeholder="BP-产品编号" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.id" data-testid="create-order-id" placeholder="BP-产品编号" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品编号</span>
                   <input
                     :value="createDraft.product_no"
+                    data-testid="create-product-no"
                     class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400"
                     @input="updateCreateProductNo(readInputValue($event))"
                   >
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
-                  <input v-model="createDraft.client_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.client_name" data-testid="create-client-name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品名称</span>
-                  <input v-model="createDraft.product_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.product_name" data-testid="create-product-name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">开单日期</span>
@@ -1197,11 +1397,11 @@ onMounted(() => {
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">审核主管</span>
-                  <input v-model="createDraft.supervisor" placeholder="填写主管姓名" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.supervisor" data-testid="create-supervisor" placeholder="填写主管姓名" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">落单人</span>
-                  <input v-model="createDraft.eng_name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input v-model="createDraft.eng_name" data-testid="create-engineer" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="col-span-2 block md:col-span-3">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">注意事项 / 开单事由</span>
@@ -1249,16 +1449,16 @@ onMounted(() => {
                           <span class="inline-flex size-6 items-center justify-center rounded-md bg-slate-100 font-semibold text-slate-500">{{ index + 1 }}</span>
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.customer_mold_id" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 font-mono outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.customer_mold_id" data-testid="create-line-mold-id" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 font-mono outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.mold_name" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.mold_name" data-testid="create-line-mold-name" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.material" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.material" data-testid="create-line-material" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.color" placeholder="颜色" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.color" data-testid="create-line-color" placeholder="颜色" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.pms" placeholder="PMS" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
@@ -1267,13 +1467,13 @@ onMounted(() => {
                           <input v-model="line.pigment_no" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.quantity" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-center outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.quantity" data-testid="create-line-quantity" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-center outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.shoot_qty" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.shoot_qty" data-testid="create-line-shoot-qty" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.required_date" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                          <input v-model="line.required_date" data-testid="create-line-required-date" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.notes" placeholder="备注提示" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
@@ -1323,7 +1523,13 @@ onMounted(() => {
                 <div v-for="error in createErrors" :key="error">{{ error }}</div>
               </div>
               <div class="mt-3 rounded-lg bg-slate-50 p-2.5 text-[11px] text-slate-500">
-                {{ isEditingRejectedOrder ? '重提后回到主管审核节点，主管通过后继续原流程。' : '开单后进入现有流程：待审核 → 待经理审核 → 待生产 → 生产中 → 已完成。' }}
+                {{ isEditingRejectedOrder ? '重提后回到主管审核节点，主管通过后进入下一流程。' : '开单后进入现有流程：待审核 → 待生产 → 生产中 → 已完成。' }}
+              </div>
+              <div
+                v-if="!isEditingRejectedOrder"
+                class="mt-2 rounded-lg border border-slate-200 bg-white p-2.5 text-[11px] leading-5 text-slate-500"
+              >
+                已填写草稿会自动保留，提交或重置后清除。
               </div>
               <button
                 type="button"
@@ -1365,7 +1571,7 @@ onMounted(() => {
                 <span class="text-[13px] font-bold">啤机部通知</span>
               </div>
               <p class="mt-2 text-[11px] leading-5 text-teal-700">
-                经理审核通过后会在“啤办生产任务单”收到通知；啤机部文员接单后开始执行并回传完成。
+                主管审核通过后会在“啤办生产任务单”收到通知；啤机部文员接单后开始执行并回传完成。
               </p>
               <RouterLink
                 :to="productionTaskRoute"
@@ -1442,14 +1648,14 @@ onMounted(() => {
           <div class="mb-3 flex items-center justify-between gap-3">
             <div>
               <h2 class="text-[13px] font-bold">流程状态</h2>
-              <p class="text-[11px] text-slate-400">保持现有状态机：待审核 → 待经理审核 → 待生产 → 生产中 → 已完成</p>
+              <p class="text-[11px] text-slate-400">保持现有状态机：待审核 → 待生产 → 生产中 → 已完成</p>
             </div>
             <span class="rounded-full border px-2 py-0.5 text-[11px] font-bold" :class="getStatusBadgeClass(selectedOrder.status)">
               {{ selectedCompletionGate.message }}
             </span>
           </div>
 
-          <div class="grid gap-2 md:grid-cols-5">
+          <div class="grid gap-2 md:grid-cols-4">
             <article
               v-for="(step, index) in workflowSteps"
               :key="step.status"
@@ -1570,11 +1776,11 @@ onMounted(() => {
                 <div class="flex items-center gap-2">
                 <Gavel class="size-4 text-amber-600" aria-hidden="true" />
                 <span class="text-[13px] font-bold" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-800' : 'text-slate-800'">
-                  {{ selectedOrder.status === '待审核' ? `${selectedOrder.supervisor} · 待审核` : selectedOrder.status === '待经理审核' ? '经理终审 · 待审核' : '当前无需工程审核' }}
+                  {{ selectedOrder.status === '待审核' ? `${selectedOrder.supervisor} · 待审核` : selectedOrder.status === '待经理审核' ? '历史经理节点 · 待处理' : '当前无需工程审核' }}
                 </span>
                 </div>
                 <p class="mt-1 text-[11px]" :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'text-amber-700' : 'text-slate-500'">
-                {{ selectedOrder.status === '待审核' ? '核对单头、明细、交期后执行操作。通过后进入待经理审核。' : selectedOrder.status === '待经理审核' ? '经理终审通过后，内部单进入待生产；外厂 / 模厂路径直接完成。' : '该单据当前处于后续生产或归档节点。' }}
+                  {{ selectedOrder.status === '待审核' ? '核对单头、明细、交期后执行操作。内部单进入待生产，外厂 / 模厂路径直接完成。' : selectedOrder.status === '待经理审核' ? '历史单据仍保留经理终审兼容，处理后继续流转到后续节点。' : '该单据当前处于后续生产或归档节点。' }}
                 </p>
                 <textarea
                 v-model="approvalNote"

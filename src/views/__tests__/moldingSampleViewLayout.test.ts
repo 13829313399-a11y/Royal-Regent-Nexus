@@ -26,17 +26,18 @@ for (const requiredCopy of [
   '生产问题反馈',
   '暂无啤机部反馈问题',
   '啤机部通知',
-  '经理审核通过后',
+  '主管审核通过后',
   '正式数据读取失败',
   '不会显示本地示例单据',
   '备注提示',
+  '新建成功',
+  '已填写草稿会自动保留',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
 
 for (const preservedStatus of [
   '待审核',
-  '待经理审核',
   '待生产',
   '生产中',
   '已完成',
@@ -48,6 +49,7 @@ for (const preservedStatus of [
 for (const requiredImplementation of [
   "type ViewKey = 'overview' \\| 'create' \\| 'detail'",
   'workflowSteps',
+  'normalizeBoardStatus',
   'boardColumns',
   'selectedFactoryId',
   'productionTaskRoute',
@@ -61,6 +63,12 @@ for (const requiredImplementation of [
   "'huaxing'",
   'createDraft',
   'createLineGridClass',
+  'createSuccessToast',
+  'showCreateSuccessToast',
+  'createDraftStorageKey',
+  'persistCreateDraft',
+  'restoreSavedCreateDraft',
+  'clearSavedCreateDraft',
   'editingRejectedOrderId',
   'buildManualMoldingSampleCreateRequest',
   'submitManualCreate',
@@ -117,7 +125,7 @@ assert.doesNotMatch(source, /role="columnheader">颜色 \/ PMS<\/div>/)
 assert.match(source, /role="columnheader">颜色<\/div>[\s\S]*role="columnheader">PMS<\/div>/)
 assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
-assert.match(source, /v-model="line\.mold_name" class="h-9 w-full min-w-0/)
+assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
 
 for (const removedClearedLayoutCopy of [
   'MOLDING SAMPLE REDESIGN',
@@ -132,6 +140,10 @@ assert.doesNotMatch(source, /activeView = ref<ViewKey>\('production'\)/)
 assert.doesNotMatch(source, /id="view-production"/)
 assert.doesNotMatch(source, /approvalPin/)
 assert.doesNotMatch(source, /PIN/)
+assert.doesNotMatch(source, /window\.confirm/)
+assert.doesNotMatch(source, /confirmLeaveCreateDraft/)
+assert.doesNotMatch(source, /beforeunload/)
+assert.doesNotMatch(source, /onBeforeRouteLeave/)
 assert.doesNotMatch(source, /管理员调试/)
 assert.doesNotMatch(source, /moldingSampleWorkflowMock/)
 assert.doesNotMatch(source, /moldingSampleFactoryRecords/)
