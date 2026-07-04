@@ -29,6 +29,7 @@ for (const requiredCopy of [
   '经理审核通过后',
   '正式数据读取失败',
   '不会显示本地示例单据',
+  '备注提示',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -107,9 +108,10 @@ assert.doesNotMatch(source, /eng_name:\s*template\.order\.eng_name/)
 assert.doesNotMatch(source, /<table class="w-full min-w-\[900px\] text-\[12px\]">/)
 assert.match(source, /aria-label="模具明细录入表"/)
 assert.match(source, /role="table"/)
-assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_72px\]'/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_160px_72px\]'/)
 assert.match(source, /:class="createLineGridClass"/)
-assert.match(source, /min-w-\[1240px\]/)
+assert.match(source, /v-model="line\.notes"/)
+assert.match(source, /min-w-\[1410px\]/)
 assert.doesNotMatch(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px\]/)
 assert.doesNotMatch(source, /role="columnheader">颜色 \/ PMS<\/div>/)
 assert.match(source, /role="columnheader">颜色<\/div>[\s\S]*role="columnheader">PMS<\/div>/)
