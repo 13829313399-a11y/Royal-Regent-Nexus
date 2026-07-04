@@ -127,7 +127,7 @@ const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 let createSuccessToastTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -1418,7 +1418,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[1410px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[1660px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -1433,6 +1433,8 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">色粉</div>
                       <div class="min-w-0 truncate px-2 text-center" role="columnheader">啤/套</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">啤数</div>
+                      <div class="min-w-0 truncate px-2 text-right" role="columnheader">整啤毛重(g)</div>
+                      <div class="min-w-0 truncate px-2 text-right" role="columnheader">所需用料(kg)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">备注</div>
                       <div class="min-w-0 truncate text-center" role="columnheader">操作</div>
@@ -1471,6 +1473,12 @@ onUnmounted(() => {
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.shoot_qty" data-testid="create-line-shoot-qty" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <input v-model="line.gross_weight_g" data-testid="create-line-gross-weight" inputmode="decimal" placeholder="g" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <input v-model="line.required_material_kg" data-testid="create-line-required-material" inputmode="decimal" placeholder="kg" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.required_date" data-testid="create-line-required-date" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
