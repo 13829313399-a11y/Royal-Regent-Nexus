@@ -120,7 +120,7 @@ const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_160px_72px]'
 
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
@@ -1218,7 +1218,7 @@ onMounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[1240px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[1410px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -1234,6 +1234,7 @@ onMounted(() => {
                       <div class="min-w-0 truncate px-2 text-center" role="columnheader">啤/套</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">啤数</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">备注</div>
                       <div class="min-w-0 truncate text-center" role="columnheader">操作</div>
                     </div>
                     <div class="divide-y divide-slate-100 bg-white">
@@ -1273,6 +1274,9 @@ onMounted(() => {
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.required_date" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <input v-model="line.notes" placeholder="备注提示" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
                           <button
