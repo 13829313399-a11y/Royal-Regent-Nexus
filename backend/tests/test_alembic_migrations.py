@@ -11,7 +11,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 BASE_MIGRATION_REVISION = "20260701_0001"
 NOTIFICATION_MIGRATION_REVISION = "20260703_0002"
-MIGRATION_REVISION = "20260703_0003"
+AUTH_MIGRATION_REVISION = "20260703_0003"
+MIGRATION_REVISION = "20260703_0004"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -23,6 +24,7 @@ MOLDING_SAMPLE_TABLES = [
     "molding_sample_inventory_batches",
     "molding_sample_inventory_movements",
     "molding_sample_notifications",
+    "molding_sample_problems",
 ]
 AUTH_TABLES = [
     "auth_users",
@@ -47,17 +49,25 @@ def test_alembic_has_single_molding_sample_head():
 
     assert script.get_heads() == [MIGRATION_REVISION]
     revision = script.get_revision(MIGRATION_REVISION)
-    assert revision.down_revision == NOTIFICATION_MIGRATION_REVISION
+    assert revision.down_revision == AUTH_MIGRATION_REVISION
 
     migration_content = Path(revision.path).read_text(encoding="utf-8")
+    assert "molding_sample_problems" in migration_content
+
+    auth_revision = script.get_revision(AUTH_MIGRATION_REVISION)
+    auth_migration_content = Path(auth_revision.path).read_text(encoding="utf-8")
     for table_name in AUTH_TABLES:
-        assert table_name in migration_content
+        assert table_name in auth_migration_content
     for table_name in REMOVED_PIN_TABLES:
-        assert table_name in migration_content
+        assert table_name in auth_migration_content
 
     base_revision = script.get_revision(BASE_MIGRATION_REVISION)
     base_migration_content = Path(base_revision.path).read_text(encoding="utf-8")
-    for table_name in [name for name in MOLDING_SAMPLE_TABLES if name != "molding_sample_notifications"]:
+    for table_name in [
+        name
+        for name in MOLDING_SAMPLE_TABLES
+        if name not in {"molding_sample_notifications", "molding_sample_problems"}
+    ]:
         assert table_name in base_migration_content
 
     notification_revision = script.get_revision(NOTIFICATION_MIGRATION_REVISION)

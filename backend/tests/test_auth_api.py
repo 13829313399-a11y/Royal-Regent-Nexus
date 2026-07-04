@@ -41,10 +41,43 @@ def test_login_sets_http_only_session_cookie_and_me_returns_rbac_scope(monkeypat
         assert me_response.status_code == 200
         me = me_response.json()
         assert me["username"] == "engineer"
-        assert me["display_name"] == "肖科"
+        assert me["display_name"] == "华兴工程师"
         assert "工程师" in me["roles"]
         assert "molding_sample:create" in me["permissions"]
-        assert "huakang-a" in me["factory_scopes"]
+        assert "molding_sample:supervisor_review" not in me["permissions"]
+        assert "molding_sample:manager_review" not in me["permissions"]
+        assert "huaxing" in me["factory_scopes"]
+
+
+def test_huaxing_trial_accounts_are_seeded_without_legacy_default_users(monkeypatch):
+    with make_client(monkeypatch) as client:
+        expected_accounts = {
+            "engineer": ("华兴工程师", "工程师", "molding_sample:create", ["huaxing"]),
+            "supervisor": ("华兴工程主管", "工程主管", "molding_sample:supervisor_review", ["huaxing"]),
+            "manager": ("华兴经理", "经理", "molding_sample:manager_review", ["huaxing"]),
+            "molding_clerk": ("华兴啤机部文员", "啤机部文员", "molding_sample:production_start", ["huaxing"]),
+            "admin": ("系统管理员", "系统管理员", "system:user_manage", ["*"]),
+        }
+
+        for username, (display_name, role_name, permission, factory_scopes) in expected_accounts.items():
+            login_response = client.post(
+                "/api/auth/login",
+                json={"username": username, "password": "123456"},
+            )
+            assert login_response.status_code == 200
+            profile = login_response.json()
+            assert profile["display_name"] == display_name
+            assert role_name in profile["roles"]
+            assert permission in profile["permissions"]
+            assert profile["factory_scopes"] == factory_scopes
+            client.post("/api/auth/logout")
+
+        for retired_username in ["molding", "warehouse"]:
+            retired_response = client.post(
+                "/api/auth/login",
+                json={"username": retired_username, "password": "123456"},
+            )
+            assert retired_response.status_code == 401
 
 
 def test_wrong_password_and_missing_session_are_rejected(monkeypatch):

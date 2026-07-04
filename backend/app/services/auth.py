@@ -49,9 +49,7 @@ DEFAULT_ROLES = [
     ("engineer", "工程师", "工程部开单与草稿维护"),
     ("engineering_supervisor", "工程主管", "工程主管审核"),
     ("manager", "经理", "经理终审、改价和敏感审计"),
-    ("warehouse_keeper", "仓管员", "仓库领料和库存出库"),
-    ("molding_operator", "啤机操作员", "啤办生产任务执行"),
-    ("molding_supervisor", "啤机主管", "啤办生产任务管理"),
+    ("molding_clerk", "啤机部文员", "啤机部啤办任务接收、回填和完成"),
     ("admin", "系统管理员", "系统配置和权限管理"),
 ]
 
@@ -83,6 +81,14 @@ ROLE_PERMISSIONS = {
         "molding_sample:inventory_issue",
         "molding_sample:notification_read",
     },
+    "molding_clerk": {
+        "molding_sample:read",
+        "molding_sample:production_read",
+        "molding_sample:production_start",
+        "molding_sample:production_fillback",
+        "molding_sample:production_complete",
+        "molding_sample:notification_read",
+    },
     "molding_operator": {
         "molding_sample:read",
         "molding_sample:production_read",
@@ -104,13 +110,15 @@ ROLE_PERMISSIONS = {
 }
 
 DEFAULT_USERS = [
-    ("user-engineer", "engineer", "肖科", "engineer", "huakang-a", "engineering"),
-    ("user-supervisor", "supervisor", "李主管", "engineering_supervisor", "huakang-a", "engineering"),
-    ("user-manager", "manager", "王经理", "manager", "huakang-a", "management"),
-    ("user-molding", "molding", "啤机部", "molding_operator", "huakang-a", "molding"),
-    ("user-warehouse", "warehouse", "仓库", "warehouse_keeper", "huakang-a", "warehouse"),
+    ("user-engineer", "engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
+    ("user-supervisor", "supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),
+    ("user-manager", "manager", "华兴经理", "manager", "huaxing", "management"),
+    ("user-molding-clerk", "molding_clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
     ("user-admin", "admin", "系统管理员", "admin", "*", "system"),
 ]
+
+RETIRED_DEFAULT_USERNAMES = {"molding", "warehouse"}
+RETIRED_DEFAULT_USER_IDS = {"user-molding", "user-warehouse"}
 
 
 @dataclass(frozen=True)
@@ -189,6 +197,8 @@ def add_auth_audit(
 
 def seed_auth_defaults(db: Session) -> None:
     now = now_text()
+    active_default_user_ids = {user_id for user_id, *_ in DEFAULT_USERS}
+    active_role_ids = {role_id for role_id, *_ in DEFAULT_ROLES}
 
     for code in MOLDING_SAMPLE_PERMISSIONS:
         permission_id = f"perm-{code.replace(':', '-')}"
@@ -210,6 +220,20 @@ def seed_auth_defaults(db: Session) -> None:
         for permission in db.scalars(select(AuthPermission)).all()
     }
     for role_id, permission_codes in ROLE_PERMISSIONS.items():
+        if role_id not in active_role_ids:
+            continue
+
+        desired_permission_ids = {
+            permissions_by_code[permission_code].id
+            for permission_code in permission_codes
+        }
+        existing_role_permissions = list(
+            db.scalars(select(AuthRolePermission).where(AuthRolePermission.role_id == role_id)).all()
+        )
+        for role_permission in existing_role_permissions:
+            if role_permission.permission_id not in desired_permission_ids:
+                db.delete(role_permission)
+
         for permission_code in permission_codes:
             permission = permissions_by_code[permission_code]
             role_permission_id = f"{role_id}:{permission.id}"
@@ -221,6 +245,16 @@ def seed_auth_defaults(db: Session) -> None:
                         permission_id=permission.id,
                     )
                 )
+
+    retired_users = db.scalars(
+        select(AuthUser).where(
+            (AuthUser.username.in_(RETIRED_DEFAULT_USERNAMES))
+            | (AuthUser.id.in_(RETIRED_DEFAULT_USER_IDS - active_default_user_ids))
+        )
+    ).all()
+    for user in retired_users:
+        user.status = "retired"
+        user.updated_at = now
 
     for user_id, username, display_name, role_id, factory_id, department in DEFAULT_USERS:
         user = db.get(AuthUser, user_id)
@@ -242,9 +276,17 @@ def seed_auth_defaults(db: Session) -> None:
         else:
             user.username = username
             user.display_name = display_name
+            user.status = "active"
             user.updated_at = now
 
         user_role_id = f"{user_id}:{role_id}:{factory_id}:{department}"
+        existing_user_roles = list(
+            db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user_id)).all()
+        )
+        for user_role in existing_user_roles:
+            if user_role.id != user_role_id:
+                db.delete(user_role)
+
         if db.get(AuthUserRole, user_role_id) is None:
             db.add(
                 AuthUserRole(

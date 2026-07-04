@@ -47,6 +47,11 @@ class MoldingSampleOrder(Base):
         cascade="all, delete-orphan",
         order_by="MoldingSampleRequisition.req_number",
     )
+    problems: Mapped[list["MoldingSampleProblem"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="desc(MoldingSampleProblem.created_at)",
+    )
 
 
 class MoldingSampleItem(Base):
@@ -118,6 +123,23 @@ class MoldingSampleNotification(Base):
     created_at: Mapped[str] = mapped_column(String(32), default="")
 
     order: Mapped[MoldingSampleOrder] = relationship(back_populates="notifications")
+
+
+class MoldingSampleProblem(Base):
+    __tablename__ = "molding_sample_problems"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    order_type: Mapped[str] = mapped_column(String(32), default="injection", index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_orders.id", ondelete="CASCADE"), index=True)
+    order_number: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    reported_by: Mapped[str] = mapped_column(String(128), default="")
+    status: Mapped[str] = mapped_column(String(32), default="待处理", index=True)
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    resolved_at: Mapped[str] = mapped_column(String(32), default="")
+
+    order: Mapped[MoldingSampleOrder] = relationship(back_populates="problems")
 
 
 class MoldingSampleMaterialPrice(Base):

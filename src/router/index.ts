@@ -17,15 +17,6 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/403',
-    name: 'forbidden',
-    component: () => import('@/views/ForbiddenView.vue'),
-    meta: {
-      title: '无权限',
-      requiresAuth: true,
-    },
-  },
-  {
     path: '/',
     name: 'dashboard',
     component: DashboardView,
@@ -73,7 +64,6 @@ const routes: RouteRecordRaw[] = [
       title: '啤办生产任务单',
       fullPage: true,
       requiresAuth: true,
-      permission: 'molding_sample:production_read',
     },
   },
   {
@@ -107,7 +97,6 @@ const routes: RouteRecordRaw[] = [
       title: '啤办进度追踪',
       fullPage: true,
       requiresAuth: true,
-      permission: 'molding_sample:read',
     },
   },
   {
@@ -157,6 +146,10 @@ router.beforeEach(async (to) => {
 
   const authStore = useAuthStore()
   if (to.name === 'login') {
+    if (to.query.logged_out === '1') {
+      return true
+    }
+
     if (authStore.isAuthenticated || await authStore.ensureSession()) {
       const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : '/'
       return { path: redirect, replace: true }
@@ -172,11 +165,6 @@ router.beforeEach(async (to) => {
       query: { redirect: to.fullPath },
       replace: true,
     }
-  }
-
-  const requiredPermission = typeof to.meta.permission === 'string' ? to.meta.permission : ''
-  if (requiredPermission && !authStore.hasPermission(requiredPermission)) {
-    return { name: 'forbidden', replace: true }
   }
 
   return true

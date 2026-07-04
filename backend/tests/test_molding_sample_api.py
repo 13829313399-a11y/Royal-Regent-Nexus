@@ -1,4 +1,5 @@
 import importlib
+import sqlite3
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -27,6 +28,113 @@ def make_client(monkeypatch):
     return TestClient(main.app)
 
 
+def make_client_with_database(monkeypatch, database_path: Path):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            del sys.modules[module_name]
+
+    main = importlib.import_module("app.main")
+    return TestClient(main.app, raise_server_exceptions=False)
+
+
+def create_legacy_molding_sample_sqlite_database(database_path: Path):
+    database_path.parent.mkdir(exist_ok=True)
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE molding_sample_orders (
+              id VARCHAR(64) PRIMARY KEY,
+              factory_id VARCHAR(64),
+              order_number VARCHAR(128),
+              doc_number VARCHAR(128),
+              product_name VARCHAR(255),
+              client_name VARCHAR(255),
+              date VARCHAR(20),
+              stage VARCHAR(20),
+              order_type VARCHAR(20),
+              workshop VARCHAR(64),
+              send_to VARCHAR(64),
+              supervisor VARCHAR(128),
+              eng_name VARCHAR(128),
+              reason TEXT,
+              status VARCHAR(32),
+              reject_reason TEXT,
+              completed_date VARCHAR(20),
+              created_at VARCHAR(32),
+              updated_at VARCHAR(32)
+            );
+            CREATE TABLE molding_sample_items (
+              id VARCHAR(64) PRIMARY KEY,
+              order_id VARCHAR(64),
+              sort_order INTEGER,
+              mold_id VARCHAR(128),
+              mold_name VARCHAR(255),
+              machine_type VARCHAR(64),
+              material VARCHAR(255),
+              color VARCHAR(255),
+              pigment_no VARCHAR(128),
+              quantity VARCHAR(64),
+              shoot_qty INTEGER,
+              gross_weight_g FLOAT,
+              required_material_kg FLOAT,
+              mold_return_time VARCHAR(32),
+              completion_time VARCHAR(32),
+              notes TEXT,
+              receipt_no VARCHAR(128),
+              collected_weight_kg FLOAT,
+              actual_weight_kg FLOAT,
+              actual_amount_hkd FLOAT,
+              injection_cost FLOAT,
+              injection_cost_hkd FLOAT,
+              exchange_rate_at_save FLOAT
+            );
+            CREATE TABLE molding_sample_audit_logs (
+              id VARCHAR(96) PRIMARY KEY,
+              order_id VARCHAR(64),
+              action VARCHAR(128),
+              actor_name VARCHAR(128),
+              actor_role VARCHAR(64),
+              from_status VARCHAR(32),
+              to_status VARCHAR(32),
+              reason TEXT,
+              created_at VARCHAR(32)
+            );
+            CREATE TABLE molding_sample_sensitive_audit_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              action VARCHAR(128),
+              actor_name VARCHAR(128),
+              actor_role VARCHAR(64),
+              target_type VARCHAR(64),
+              target_name VARCHAR(128),
+              detail TEXT,
+              created_at VARCHAR(32)
+            );
+            INSERT INTO molding_sample_orders (
+              id, factory_id, order_number, doc_number, product_name, client_name, date, stage,
+              order_type, workshop, send_to, supervisor, eng_name, reason, status,
+              reject_reason, completed_date, created_at, updated_at
+            ) VALUES (
+              'BP-LEGACY-001', 'huaxing', 'LEGACY-001', 'W-G026-00', '旧库啤办单',
+              'Legacy Client', '2026-07-01', 'T0', '啤办', 'A车间', '',
+              '华兴工程主管', '华兴工程师', '旧库兼容测试', '待审核',
+              '', '', '2026-07-01 08:00', '2026-07-01 08:00'
+            );
+            INSERT INTO molding_sample_audit_logs (
+              id, order_id, action, actor_name, actor_role, from_status, to_status, reason, created_at
+            ) VALUES (
+              'BP-LEGACY-001-audit-001', 'BP-LEGACY-001', '工程提交',
+              '华兴工程师', '工程师', '待审核', '待审核', '旧库审核记录', '2026-07-01 08:00'
+            );
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def login_as(client, username: str):
     response = client.post("/api/auth/login", json={"username": username, "password": "123456"})
     assert response.status_code == 200
@@ -37,7 +145,7 @@ def sample_order_payload(order_id="BP-API-001", external=False):
     return {
         "order": {
             "id": order_id,
-            "factory_id": "huakang-a",
+            "factory_id": "huaxing",
             "order_number": "62437",
             "doc_number": "W-G026-00",
             "product_name": "链条枪",
@@ -47,8 +155,8 @@ def sample_order_payload(order_id="BP-API-001", external=False):
             "order_type": "啤办",
             "workshop": "模厂" if external else "A车间",
             "send_to": "发至模厂" if external else "",
-            "supervisor": "李主管",
-            "eng_name": "肖科",
+            "supervisor": "华兴工程主管",
+            "eng_name": "华兴工程师",
             "reason": "对办颜色和试啤。",
         },
         "items": [
@@ -85,22 +193,66 @@ def test_unauthenticated_access_to_molding_sample_api_is_rejected(client):
     assert response.status_code == 401
 
 
-def test_engineer_can_create_order_and_production_user_reads_notification(client):
+def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeypatch):
+    TEST_TMP_DIR.mkdir(exist_ok=True)
+    database_path = TEST_TMP_DIR / f"legacy_molding_sample_{uuid4().hex}.db"
+    create_legacy_molding_sample_sqlite_database(database_path)
+
+    with make_client_with_database(monkeypatch, database_path) as legacy_client:
+        login_as(legacy_client, "engineer")
+        response = legacy_client.get("/api/injection")
+
+    assert response.status_code == 200
+    orders = response.json()
+    assert orders[0]["order"]["id"] == "BP-LEGACY-001"
+    assert orders[0]["audit_logs"][0]["actor_user_id"] == ""
+    assert orders[0]["audit_logs"][0]["actor_roles"] == ""
+    assert orders[0]["audit_logs"][0]["factory_scope"] == ""
+
+    connection = sqlite3.connect(database_path)
+    try:
+        audit_columns = {row[1] for row in connection.execute("PRAGMA table_info(molding_sample_audit_logs)")}
+        sensitive_audit_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(molding_sample_sensitive_audit_logs)")
+        }
+    finally:
+        connection.close()
+
+    assert {"actor_user_id", "actor_roles", "factory_scope"} <= audit_columns
+    assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
+
+
+def test_engineer_can_create_order_and_production_user_reads_notification_after_manager_approval(client):
     login_as(client, "engineer")
     response = client.post("/api/injection", json=sample_order_payload())
 
     assert response.status_code == 201
     payload = response.json()
     assert payload["order"]["status"] == "待审核"
-    assert payload["audit_logs"][0]["actor_name"] == "肖科"
+    assert payload["audit_logs"][0]["actor_name"] == "华兴工程师"
     assert payload["audit_logs"][0]["actor_role"] == "工程师"
     assert payload["audit_logs"][0]["actor_user_id"] == "user-engineer"
     assert payload["items"][0]["order_id"] == "BP-API-001"
 
-    login_as(client, "molding")
+    login_as(client, "molding_clerk")
+    early_notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={"target_module": "production_molding_sample_task", "factory_id": "huaxing"},
+    )
+    assert early_notifications_response.status_code == 200
+    assert early_notifications_response.json() == []
+
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-API-001/status", json={"action": "主管通过"})
+
+    login_as(client, "manager")
+    client.patch("/api/injection/BP-API-001/status", json={"action": "经理通过"})
+
+    login_as(client, "molding_clerk")
     notifications_response = client.get(
         "/api/molding-sample-notifications",
-        params={"target_module": "production_molding_sample_task", "factory_id": "huakang-a"},
+        params={"target_module": "production_molding_sample_task", "factory_id": "huaxing"},
     )
     assert notifications_response.status_code == 200
     notifications = notifications_response.json()
@@ -126,7 +278,13 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     )
     assert supervisor_response.status_code == 200
     assert supervisor_response.json()["order"]["status"] == "待经理审核"
-    assert supervisor_response.json()["audit_logs"][0]["actor_name"] == "李主管"
+    assert supervisor_response.json()["audit_logs"][0]["actor_name"] == "华兴工程主管"
+
+    supervisor_manager_step_response = client.patch(
+        "/api/injection/BP-WORKFLOW-001/status",
+        json={"action": "经理通过"},
+    )
+    assert supervisor_manager_step_response.status_code == 403
 
     login_as(client, "manager")
     manager_response = client.patch(
@@ -136,7 +294,7 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert manager_response.status_code == 200
     assert manager_response.json()["order"]["status"] == "待生产"
 
-    login_as(client, "molding")
+    login_as(client, "molding_clerk")
     start_response = client.patch(
         "/api/injection/BP-WORKFLOW-001/status",
         json={"action": "开始处理"},
@@ -166,6 +324,43 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert completed_response.json()["order"]["completed_date"] == "2026-07-01"
 
 
+def test_rejected_order_can_be_edited_and_resubmitted_by_engineering(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-REJECT-001"))
+
+    login_as(client, "supervisor")
+    rejected_response = client.patch(
+        "/api/injection/BP-REJECT-001/status",
+        json={"action": "主管驳回", "reason": "原料和颜色需要修正"},
+    )
+    assert rejected_response.status_code == 200
+    assert rejected_response.json()["order"]["status"] == "已驳回"
+    assert rejected_response.json()["order"]["reject_reason"] == "原料和颜色需要修正"
+
+    login_as(client, "engineer")
+    edited_payload = sample_order_payload("BP-REJECT-001")
+    edited_payload["order"]["product_name"] = "链条枪修正版"
+    edited_payload["items"][0]["material"] = "ABS 740"
+    edited_payload["items"][0]["color"] = "深蓝色"
+
+    edit_response = client.put("/api/injection/BP-REJECT-001", json=edited_payload)
+    assert edit_response.status_code == 200
+    assert edit_response.json()["order"]["status"] == "已驳回"
+    assert edit_response.json()["order"]["product_name"] == "链条枪修正版"
+    assert edit_response.json()["items"][0]["material"] == "ABS 740"
+
+    resubmit_response = client.patch(
+        "/api/injection/BP-REJECT-001/status",
+        json={"action": "工程重提", "reason": "工程已修正原料和颜色"},
+    )
+    assert resubmit_response.status_code == 200
+    payload = resubmit_response.json()
+    assert payload["order"]["status"] == "待审核"
+    assert payload["order"]["reject_reason"] == ""
+    assert payload["order"]["product_name"] == "链条枪修正版"
+    assert payload["audit_logs"][0]["action"] == "工程重提"
+
+
 def test_external_order_auto_completes_after_manager_approval(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-EXT-001", external=True))
@@ -185,6 +380,55 @@ def test_external_order_auto_completes_after_manager_approval(client):
     assert payload["order"]["completed_date"] == "2026-07-01"
     assert payload["items"][0]["actual_weight_kg"] == 2.46
     assert payload["items"][0]["actual_amount_hkd"] == 29.83
+
+
+def test_production_problem_feedback_is_saved_and_visible_to_engineering(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-PROBLEM-001"))
+
+    blocked_response = client.post(
+        "/api/problems",
+        json={"order_id": "BP-PROBLEM-001", "description": "未到生产节点不应反馈"},
+    )
+    assert blocked_response.status_code == 403
+
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "主管通过"})
+
+    login_as(client, "manager")
+    client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "经理通过"})
+
+    login_as(client, "molding_clerk")
+    client.patch("/api/injection/BP-PROBLEM-001/status", json={"action": "开始处理"})
+    problem_response = client.post(
+        "/api/problems",
+        json={
+            "order_id": "BP-PROBLEM-001",
+            "description": "左枪身缩水，需工程确认胶口。",
+        },
+    )
+    assert problem_response.status_code == 201
+    problem = problem_response.json()
+    assert problem["order_id"] == "BP-PROBLEM-001"
+    assert problem["reported_by"] == "华兴啤机部文员"
+    assert problem["status"] == "待处理"
+
+    login_as(client, "engineer")
+    detail_response = client.get("/api/injection/BP-PROBLEM-001")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["problems"][0]["description"] == "左枪身缩水，需工程确认胶口。"
+    assert detail["audit_logs"][0]["action"] == "生产问题反馈"
+    assert detail["notifications"][0]["event_type"] == "生产问题反馈"
+
+    list_response = client.get("/api/problems", params={"order_id": "BP-PROBLEM-001"})
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["id"] == problem["id"]
+
+    resolved_response = client.patch(f"/api/problems/{problem['id']}", json={"status": "已解决"})
+    assert resolved_response.status_code == 200
+    assert resolved_response.json()["status"] == "已解决"
+    assert resolved_response.json()["resolved_at"] != ""
 
 
 def test_manager_price_update_uses_logged_in_user_and_sensitive_audit(client):
@@ -214,7 +458,7 @@ def test_manager_price_update_uses_logged_in_user_and_sensitive_audit(client):
     logs = logs_response.json()
     assert logs[0]["action"] == "经理更新价格口径"
     assert logs[0]["actor_user_id"] == "user-manager"
-    assert logs[0]["actor_name"] == "王经理"
+    assert logs[0]["actor_name"] == "华兴经理"
     assert logs[0]["actor_role"] == "经理"
 
 
@@ -261,7 +505,7 @@ def test_engineering_edit_delete_permissions_use_login_role(client):
     assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
 
 
-def test_warehouse_requisitions_and_inventory_issue_require_warehouse_role(client):
+def test_trial_accounts_do_not_expose_unused_warehouse_permissions(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-REQ-001"))
 
@@ -271,33 +515,15 @@ def test_warehouse_requisitions_and_inventory_issue_require_warehouse_role(clien
     )
     assert blocked_batch_response.status_code == 403
 
-    login_as(client, "warehouse")
-    batch_response = client.post(
+    retired_login_response = client.post("/api/auth/login", json={"username": "warehouse", "password": "123456"})
+    assert retired_login_response.status_code == 401
+
+    login_as(client, "molding_clerk")
+    clerk_batch_response = client.post(
         "/api/inventory-batches",
         json={"material": "HIPS 425", "batch_no": "HIPS-20260701-A", "location": "A-01", "initial_weight_kg": 3},
     )
-    assert batch_response.status_code == 201
-    batch = batch_response.json()
-
-    requisition_response = client.post(
-        "/api/requisitions",
-        json={
-            "date": "2026-07-01",
-            "order_id": "BP-REQ-001",
-            "material": "HIPS 425",
-            "requested_weight_kg": 2.46,
-            "notes": "M-001 · 左右枪身",
-        },
-    )
-    assert requisition_response.status_code == 201
-    requisition = requisition_response.json()
-
-    issue_response = client.patch(
-        f"/api/requisitions/{requisition['id']}/status",
-        json={"status": "已出库", "inventory_batch_id": batch["id"]},
-    )
-    assert issue_response.status_code == 200
-    assert issue_response.json()["status"] == "已出库"
+    assert clerk_batch_response.status_code == 403
 
 
 def test_export_and_import_molding_sample_excel_template(client):

@@ -14,6 +14,7 @@ import {
 } from '@/data/enterpriseMock'
 import { getInjectionFactoryConfig } from '@/factories/injection/registry'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
@@ -119,17 +120,22 @@ function setFactory(factoryId: ProductionFactoryContextId) {
           </p>
         </div>
 
-        <div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:w-[860px]">
-          <article
-            v-for="card in overviewCards"
-            :key="card.label"
-            class="min-h-[92px] rounded-lg border bg-white p-4"
-            :class="toneClasses[card.tone]"
-          >
-            <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
-            <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
-            <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
-          </article>
+        <div class="space-y-3 xl:w-[860px]">
+          <div class="flex justify-end">
+            <AccountMenu />
+          </div>
+          <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <article
+              v-for="card in overviewCards"
+              :key="card.label"
+              class="min-h-[92px] rounded-lg border bg-white p-4"
+              :class="toneClasses[card.tone]"
+            >
+              <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
+              <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
+              <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
+            </article>
+          </div>
         </div>
       </div>
 

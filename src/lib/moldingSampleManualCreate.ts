@@ -178,7 +178,6 @@ export function buildManualMoldingSampleCreateRequest(
   const errors: string[] = []
   const orderId = trimText(draft.id)
   const productNo = trimText(draft.product_no)
-  const docNumber = trimText(draft.doc_number)
   const clientName = trimText(draft.client_name)
   const productName = trimText(draft.product_name)
   const orderDate = trimText(draft.order_date)
@@ -187,7 +186,6 @@ export function buildManualMoldingSampleCreateRequest(
 
   requireField(orderId, '单据编号', errors)
   requireField(productNo, '产品编号', errors)
-  requireField(docNumber, '文件编号', errors)
   requireField(clientName, '客户名称', errors)
   requireField(productName, '产品名称', errors)
   requireField(orderDate, '落单日期', errors)
@@ -231,7 +229,7 @@ export function buildManualMoldingSampleCreateRequest(
     id: orderId,
     factory_id: factoryId,
     order_number: productNo,
-    doc_number: docNumber,
+    doc_number: trimText(draft.doc_number),
     product_name: productName,
     client_name: clientName,
     date: orderDate,

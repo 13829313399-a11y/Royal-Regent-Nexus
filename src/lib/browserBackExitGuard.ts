@@ -4,29 +4,62 @@ const GUARD_STATE_KEY = '__rr_browser_back_exit_guard__'
 
 let isInstalled = false
 let currentLockedFullPath = ''
-let lastWrittenFullPath = ''
+let isBoundaryActive = false
+let hasProcessedInitialLock = false
+let guardStateSequence = 0
 
 function canUseBrowserHistory() {
-  return typeof window !== 'undefined' && typeof window.history?.pushState === 'function'
+  return typeof window !== 'undefined'
+    && typeof window.history?.pushState === 'function'
+    && typeof window.history?.replaceState === 'function'
 }
 
-function buildGuardState() {
+function shouldInstallExitBoundary() {
+  return typeof window.history.length !== 'number' || window.history.length > 1
+}
+
+function buildGuardState(entryType: 'anchor' | 'trap') {
   const currentState = window.history.state
   const state = currentState && typeof currentState === 'object' ? currentState : {}
 
   return {
     ...state,
-    [GUARD_STATE_KEY]: true,
+    [GUARD_STATE_KEY]: {
+      entryType,
+      sequence: ++guardStateSequence,
+    },
   }
 }
 
-function writeGuardHistoryEntry(method: 'replaceState' | 'pushState', fullPath: string) {
+function writeGuardHistoryEntry(method: 'replaceState' | 'pushState', fullPath: string, entryType: 'anchor' | 'trap') {
   if (method === 'replaceState') {
-    window.history.replaceState(buildGuardState(), '', fullPath)
+    window.history.replaceState(buildGuardState(entryType), '', fullPath)
     return
   }
 
-  window.history.pushState(buildGuardState(), '', fullPath)
+  window.history.pushState(buildGuardState(entryType), '', fullPath)
+}
+
+function readGuardEntryType() {
+  const currentState = window.history.state
+  if (!currentState || typeof currentState !== 'object') {
+    return ''
+  }
+
+  const guardState = (currentState as Record<string, unknown>)[GUARD_STATE_KEY]
+  if (!guardState || typeof guardState !== 'object') {
+    return ''
+  }
+
+  const entryType = (guardState as { entryType?: unknown }).entryType
+  return entryType === 'anchor' || entryType === 'trap' ? entryType : ''
+}
+
+function getBrowserFullPath(fallback: string) {
+  const location = window.location
+  const fullPath = `${location.pathname}${location.search}${location.hash}`
+
+  return fullPath || fallback
 }
 
 export function installBrowserBackExitGuard(router: Router) {
@@ -45,14 +78,16 @@ export function installBrowserBackExitGuard(router: Router) {
     isInstalled = true
 
     window.addEventListener('popstate', () => {
-      if (!currentLockedFullPath) {
+      if (!currentLockedFullPath || readGuardEntryType() !== 'anchor') {
         return
       }
 
-      writeGuardHistoryEntry('pushState', currentLockedFullPath)
+      const boundaryFullPath = getBrowserFullPath(currentLockedFullPath)
 
-      if (router.currentRoute.value.fullPath !== currentLockedFullPath) {
-        void router.replace(currentLockedFullPath)
+      writeGuardHistoryEntry('pushState', boundaryFullPath, 'trap')
+
+      if (router.currentRoute.value.fullPath !== boundaryFullPath) {
+        void router.replace(boundaryFullPath)
       }
     })
   }
@@ -60,17 +95,23 @@ export function installBrowserBackExitGuard(router: Router) {
   return {
     lock(fullPath: string) {
       currentLockedFullPath = fullPath
-      if (lastWrittenFullPath === fullPath && window.history.state?.[GUARD_STATE_KEY]) {
+      if (isBoundaryActive || hasProcessedInitialLock) {
         return
       }
 
-      writeGuardHistoryEntry('replaceState', fullPath)
-      writeGuardHistoryEntry('pushState', fullPath)
-      lastWrittenFullPath = fullPath
+      hasProcessedInitialLock = true
+      if (!shouldInstallExitBoundary()) {
+        return
+      }
+
+      writeGuardHistoryEntry('replaceState', fullPath, 'anchor')
+      writeGuardHistoryEntry('pushState', fullPath, 'trap')
+      isBoundaryActive = true
     },
     unlock() {
       currentLockedFullPath = ''
-      lastWrittenFullPath = ''
+      isBoundaryActive = false
+      hasProcessedInitialLock = false
     },
   }
 }

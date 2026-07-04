@@ -3,6 +3,7 @@ import type {
   MoldingSampleAuditLog,
   MoldingSampleItem,
   MoldingSampleOrder,
+  MoldingSampleProblem,
 } from '../types/moldingSample.js'
 import type { MoldingSampleMaterialPrice } from '../lib/moldingSampleBusiness.js'
 
@@ -37,6 +38,7 @@ export interface MoldingSampleDetailResponse {
   items: MoldingSampleItem[]
   audit_logs: MoldingSampleAuditLog[]
   notifications: MoldingSampleNotificationResponse[]
+  problems: MoldingSampleProblem[]
 }
 
 export interface MoldingSampleStatusRequest {
@@ -171,6 +173,21 @@ export interface MoldingSampleNotificationFilters {
 
 export interface MoldingSampleNotificationUpdateRequest {
   status: '未读' | '已读' | '已处理'
+}
+
+export interface MoldingSampleProblemCreateRequest {
+  order_id: string
+  description: string
+  reported_by?: string
+}
+
+export interface MoldingSampleProblemStatusRequest {
+  status: '待处理' | '已解决'
+}
+
+export interface MoldingSampleProblemFilters {
+  order_id?: string
+  status?: string
 }
 
 export interface InjectionTotalCostSummary {
@@ -325,6 +342,26 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
         `/molding-sample-notifications/${notificationId}`,
         payload,
       )
+      return response.data
+    },
+    async listProblems(filters: MoldingSampleProblemFilters = {}) {
+      const params = new URLSearchParams()
+      if (filters.order_id) {
+        params.set('order_id', filters.order_id)
+      }
+      if (filters.status) {
+        params.set('status', filters.status)
+      }
+      const query = params.toString()
+      const response = await client.get<MoldingSampleProblem[]>(query ? `/problems?${query}` : '/problems')
+      return response.data
+    },
+    async createProblem(payload: MoldingSampleProblemCreateRequest) {
+      const response = await client.post<MoldingSampleProblem>('/problems', payload)
+      return response.data
+    },
+    async updateProblemStatus(problemId: string, payload: MoldingSampleProblemStatusRequest) {
+      const response = await client.patch<MoldingSampleProblem>(`/problems/${problemId}`, payload)
       return response.data
     },
     async getTotalCosts() {

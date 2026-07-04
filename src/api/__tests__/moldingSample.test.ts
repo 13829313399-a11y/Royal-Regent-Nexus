@@ -79,6 +79,20 @@ await api.updateNotification('N-BP-1', {
   status: '已读',
 })
 
+await api.listProblems({
+  order_id: 'BP-1',
+  status: '待处理',
+})
+
+await api.createProblem({
+  order_id: 'BP-1',
+  description: '左枪身缩水，需工程确认胶口。',
+})
+
+await api.updateProblemStatus('P-BP-1', {
+  status: '已解决',
+})
+
 await api.updateItems('BP-1', {
   items: [
     {
@@ -133,6 +147,9 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'get /sensitive-audit-logs',
   'get /molding-sample-notifications?target_module=production_molding_sample_task&factory_id=huakang-a&status=%E6%9C%AA%E8%AF%BB',
   'patch /molding-sample-notifications/N-BP-1',
+  'get /problems?order_id=BP-1&status=%E5%BE%85%E5%A4%84%E7%90%86',
+  'post /problems',
+  'patch /problems/P-BP-1',
   'patch /injection/BP-1/items',
   'post /manager-update-prices',
   'get /requisitions?order_id=BP-1',
@@ -173,4 +190,11 @@ assert.deepEqual(calls.find((call) => call.url === '/manager-update-prices')?.da
 })
 assert.deepEqual(calls.find((call) => call.url === '/molding-sample-notifications/N-BP-1')?.data, {
   status: '已读',
+})
+assert.deepEqual(calls.find((call) => call.url === '/problems')?.data, {
+  order_id: 'BP-1',
+  description: '左枪身缩水，需工程确认胶口。',
+})
+assert.deepEqual(calls.find((call) => call.url === '/problems/P-BP-1')?.data, {
+  status: '已解决',
 })
