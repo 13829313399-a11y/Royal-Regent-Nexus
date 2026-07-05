@@ -409,23 +409,33 @@ export interface InjectionModuleData {
 export const injectionSectionNav: InjectionNavItem[] = [
   {
     id: 'monthly-plan',
-    label: '月计划',
-    summary: '先看本月待排、交期风险、班次节奏和重点异常。',
+    label: '驾驶舱',
+    summary: '总览待排、结转、机台负载、交期风险和重点异常。',
   },
   {
     id: 'order-import',
+    label: '订单池',
+    summary: '导入订单、校验字段、确认待排数量和候选机台。',
+  },
+  {
+    id: 'smart-scheduling',
     label: '排机工作台',
-    summary: '导入订单、智能排机、人工微调并提交主管审核。',
+    summary: '生成排机草稿，查看推荐原因并提交主管审核。',
+  },
+  {
+    id: 'scheduling-results',
+    label: '车间执行',
+    summary: '承接已审核排机单，按机台下发任务并查看执行状态。',
   },
   {
     id: 'daily-report',
-    label: '日报表',
-    summary: '承接班次日报、交接和停机闭环。',
+    label: '日报回报',
+    summary: '承接班次产量、停机、欠数和结转交接。',
   },
   {
     id: 'inbound-orders',
-    label: '入库单',
-    summary: '跟踪送货单、入库状态和回写结果。',
+    label: '入库回写',
+    summary: '确认入库数量，刷新欠数、ERP 状态和订单池。',
   },
   {
     id: 'master-data',
