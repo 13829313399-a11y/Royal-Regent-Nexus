@@ -173,6 +173,8 @@ describe('molding sample runtime error handling', () => {
     await wrapper.get('[data-testid="create-line-color"]').setValue('透明蓝')
     await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
     await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')
+    await wrapper.get('[data-testid="create-line-gross-weight"]').setValue('125.5')
+    await wrapper.get('[data-testid="create-line-required-material"]').setValue('2.25')
     await wrapper.get('[data-testid="create-line-required-date"]').setValue('2026-07-10')
     await flushPromises()
 
@@ -187,6 +189,8 @@ describe('molding sample runtime error handling', () => {
 
     expect((restoredWrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('透明灯罩')
     expect((restoredWrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('BK-01')
+    expect((restoredWrapper.get('[data-testid="create-line-gross-weight"]').element as HTMLInputElement).value).toBe('125.5')
+    expect((restoredWrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('2.25')
 
     mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => ({
       order: payload.order,
@@ -200,6 +204,10 @@ describe('molding sample runtime error handling', () => {
     await nextTick()
 
     expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].items[0]).toMatchObject({
+      gross_weight_g: 125.5,
+      required_material_kg: 2.25,
+    })
     expect(window.localStorage.getItem('rr:molding-sample:create-draft:huaxing')).toBeNull()
     expect(restoredWrapper.text()).toContain('新建成功')
 

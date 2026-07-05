@@ -25,8 +25,6 @@ for (const requiredCopy of [
   '重置修改',
   '生产问题反馈',
   '暂无啤机部反馈问题',
-  '啤机部通知',
-  '主管审核通过后',
   '正式数据读取失败',
   '不会显示本地示例单据',
   '备注提示',
@@ -116,14 +114,24 @@ assert.doesNotMatch(source, /eng_name:\s*template\.order\.eng_name/)
 assert.doesNotMatch(source, /<table class="w-full min-w-\[900px\] text-\[12px\]">/)
 assert.match(source, /aria-label="模具明细录入表"/)
 assert.match(source, /role="table"/)
-assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_132px_124px_74px_96px_82px_92px_138px_160px_72px\]'/)
+assert.match(source, /<div class="space-y-4 xl:contents">/)
+assert.match(source, /<aside class="space-y-4 xl:col-start-2 xl:row-start-1">/)
+assert.match(source, /<section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_132px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
 assert.match(source, /:class="createLineGridClass"/)
+assert.match(source, /role="columnheader">整啤毛重\(g\)<\/div>/)
+assert.match(source, /role="columnheader">所需用料\(kg\)<\/div>/)
+assert.match(source, /v-model="line\.gross_weight_g"/)
+assert.match(source, /v-model="line\.required_material_kg"/)
+assert.match(source, /data-testid="create-line-gross-weight"/)
+assert.match(source, /data-testid="create-line-required-material"/)
 assert.match(source, /v-model="line\.notes"/)
-assert.match(source, /min-w-\[1410px\]/)
+assert.match(source, /min-w-\[1660px\]/)
 assert.doesNotMatch(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px\]/)
 assert.doesNotMatch(source, /role="columnheader">颜色 \/ PMS<\/div>/)
 assert.match(source, /role="columnheader">颜色<\/div>[\s\S]*role="columnheader">PMS<\/div>/)
 assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
+assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.gross_weight_g"[\s\S]*v-model="line\.required_material_kg"[\s\S]*v-model="line\.required_date"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
 assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
 
@@ -144,6 +152,9 @@ assert.doesNotMatch(source, /window\.confirm/)
 assert.doesNotMatch(source, /confirmLeaveCreateDraft/)
 assert.doesNotMatch(source, /beforeunload/)
 assert.doesNotMatch(source, /onBeforeRouteLeave/)
+assert.doesNotMatch(source, /啤机部通知/)
+assert.doesNotMatch(source, /打开生产任务单/)
+assert.doesNotMatch(source, /主管审核通过后会在/)
 assert.doesNotMatch(source, /管理员调试/)
 assert.doesNotMatch(source, /moldingSampleWorkflowMock/)
 assert.doesNotMatch(source, /moldingSampleFactoryRecords/)
