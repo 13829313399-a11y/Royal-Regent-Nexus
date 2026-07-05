@@ -35,12 +35,12 @@ const visibleModules = computed(() => {
       return {
         ...module,
         owner: `${appStore.activeProductionFactory.shortName} · 工程部公共模块`,
-        stats: '进入模块后读取正式列表',
+        stats: '工程开单后流转到生产任务',
         route: `/modules/molding-sample?factory=${appStore.activeProductionFactory.id}`,
         statusMetrics: [
-          { label: '单据', value: '正式接口', tone: 'teal' as const },
-          { label: '失败', value: '显错', tone: 'red' as const },
-          { label: '示例', value: '不兜底', tone: 'slate' as const },
+          { label: '开单', value: '工程登记', tone: 'teal' as const },
+          { label: '流转', value: '主管审核', tone: 'blue' as const },
+          { label: '闭环', value: '生产回传', tone: 'green' as const },
         ],
       }
     }
@@ -61,12 +61,12 @@ const visibleModules = computed(() => {
       return {
         ...module,
         owner: `${appStore.activeProductionFactory.shortName} · 啤机部任务单`,
-        stats: '进入任务页读取正式通知',
+        stats: '主管审核后进入任务队列',
         route,
         statusMetrics: [
-          { label: '通知', value: '正式接口', tone: 'teal' as const },
-          { label: '失败', value: '显错', tone: 'red' as const },
-          { label: '回填', value: '不离线', tone: 'slate' as const },
+          { label: '接收', value: '审核通知', tone: 'teal' as const },
+          { label: '执行', value: '用料回填', tone: 'amber' as const },
+          { label: '回传', value: '工程同步', tone: 'green' as const },
         ],
       }
     }
