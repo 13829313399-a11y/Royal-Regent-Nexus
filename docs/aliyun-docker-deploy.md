@@ -168,6 +168,8 @@ git push origin 你的部署分支
 
 ## 10. 服务器拉取 GitHub 并更新容器
 
+只有仓库管理员给服务器配置了 GitHub 读取权限后，才能使用这一节。私有仓库下，服务器本身也需要读取权限；只给你的个人账号 `Write` 权限，并不会自动让服务器能 `git pull`。
+
 ```bash
 cd /opt/royal-regent/royal-regent-nexus
 sh deploy/update-from-github.sh
