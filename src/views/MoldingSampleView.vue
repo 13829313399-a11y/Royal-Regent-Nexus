@@ -43,6 +43,7 @@ import {
 import {
   buildCompletionGate,
   isExternalMoldingSampleOrder,
+  roundMoney,
 } from '@/lib/moldingSampleBusiness'
 import { getApiErrorMessage } from '@/lib/http'
 import {
@@ -68,7 +69,9 @@ import type {
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
-type ViewKey = 'overview' | 'create' | 'detail'
+type ViewKey = 'overview' | 'create' | 'detail' | 'material-balance'
+type OverviewDisplayMode = 'board' | 'list'
+type MaterialBalancePeriodMode = 'day' | 'week' | 'month'
 type StatusState = 'done' | 'current' | 'pending' | 'rejected'
 
 interface KpiCard {
@@ -85,6 +88,60 @@ interface BoardColumn {
   detail: string
   records: MoldingSampleWorkflowRecord[]
   dotClass: string
+}
+
+interface MaterialBalanceItemRow {
+  item: MoldingSampleItem
+  expectedWeightKg: number
+  actualWeightKg: number
+  balanceWeightKg: number
+  balanceAmountHkd: number | null
+  hasActualWeight: boolean
+}
+
+interface MaterialBalanceOrderRow {
+  record: MoldingSampleWorkflowRecord
+  itemRows: MaterialBalanceItemRow[]
+  expectedWeightKg: number
+  actualWeightKg: number
+  balanceWeightKg: number
+  balanceAmountHkd: number | null
+  missingActualCount: number
+  unknownAmountCount: number
+}
+
+interface MaterialBalanceSummary {
+  orderCount: number
+  totalExpectedWeightKg: number
+  totalActualWeightKg: number
+  totalBalanceWeightKg: number
+  knownBalanceAmountHkd: number
+  unknownAmountCount: number
+}
+
+interface MaterialBalancePeriodOption {
+  key: MaterialBalancePeriodMode
+  label: string
+  detail: string
+}
+
+interface MaterialBalancePeriodKey {
+  key: string
+  label: string
+  detail: string
+  startDate: string
+  endDate: string
+}
+
+interface MaterialBalancePeriodRow extends MaterialBalancePeriodKey {
+  orderRows: MaterialBalanceOrderRow[]
+  orderCount: number
+  expectedWeightKg: number
+  actualWeightKg: number
+  balanceWeightKg: number
+  balanceAmountHkd: number | null
+  missingActualCount: number
+  unknownAmountCount: number
 }
 
 interface WorkflowStep {
@@ -111,6 +168,8 @@ const authStore = useAuthStore()
 
 const today = '2026-07-03'
 const activeView = ref<ViewKey>('overview')
+const overviewDisplayMode = ref<OverviewDisplayMode>('board')
+const materialBalancePeriodMode = ref<MaterialBalancePeriodMode>('day')
 const selectedOrderId = ref(readQueryString(route.query.order_id))
 const searchKeyword = ref('')
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
@@ -144,6 +203,12 @@ const boardStatuses: MoldingSampleStatus[] = [
   '生产中',
   '已完成',
   '已驳回',
+]
+
+const materialBalancePeriodOptions: MaterialBalancePeriodOption[] = [
+  { key: 'day', label: '日结余', detail: '每日汇总' },
+  { key: 'week', label: '周结余', detail: '周一至周日' },
+  { key: 'month', label: '月结余', detail: '自然月汇总' },
 ]
 
 const statusToneClasses: Record<MoldingSampleStatus, string> = {
@@ -295,6 +360,27 @@ const boardColumns = computed<BoardColumn[]>(() =>
     records: visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status),
     dotClass: statusDotClasses[status],
   })),
+)
+
+const materialBalanceRows = computed<MaterialBalanceOrderRow[]>(() =>
+  visibleRecords.value.map(buildMaterialBalanceOrderRow),
+)
+
+const materialBalanceSummary = computed<MaterialBalanceSummary>(() => {
+  const rows = materialBalanceRows.value
+
+  return {
+    orderCount: rows.length,
+    totalExpectedWeightKg: roundMaterialWeight(rows.reduce((sum, row) => sum + row.expectedWeightKg, 0)),
+    totalActualWeightKg: roundMaterialWeight(rows.reduce((sum, row) => sum + row.actualWeightKg, 0)),
+    totalBalanceWeightKg: roundMaterialWeight(rows.reduce((sum, row) => sum + row.balanceWeightKg, 0)),
+    knownBalanceAmountHkd: roundMoney(rows.reduce((sum, row) => sum + (row.balanceAmountHkd ?? 0), 0)),
+    unknownAmountCount: rows.reduce((sum, row) => sum + (row.balanceAmountHkd === null ? 1 : 0), 0),
+  }
+})
+
+const materialBalancePeriodRows = computed<MaterialBalancePeriodRow[]>(() =>
+  buildMaterialBalancePeriodRows(materialBalanceRows.value, materialBalancePeriodMode.value),
 )
 
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
@@ -992,6 +1078,223 @@ function formatMoney(value: number | null | undefined, currency = 'HKD') {
   return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
 
+function readMaterialWeight(value: number | null | undefined) {
+  const parsed = Number(value)
+
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function roundMaterialWeight(value: number) {
+  return Math.round(value * 100) / 100
+}
+
+function buildMaterialBalanceItemRow(item: MoldingSampleItem): MaterialBalanceItemRow {
+  const expectedWeightKg = readMaterialWeight(item.required_material_kg)
+  const actualWeightKg = readMaterialWeight(item.actual_weight_kg)
+  const balanceWeightKg = roundMaterialWeight(expectedWeightKg - actualWeightKg)
+  const actualAmountHkd = item.actual_amount_hkd === null || item.actual_amount_hkd === undefined
+    ? null
+    : Number(item.actual_amount_hkd)
+  const hasActualWeight = actualWeightKg > 0
+  const hasKnownAmount = actualAmountHkd !== null && Number.isFinite(actualAmountHkd)
+  const unitAmountHkd = hasActualWeight && hasKnownAmount ? actualAmountHkd / actualWeightKg : null
+  const balanceAmountHkd = unitAmountHkd === null
+    ? (balanceWeightKg === 0 ? 0 : null)
+    : roundMoney(balanceWeightKg * unitAmountHkd)
+
+  return {
+    item,
+    expectedWeightKg,
+    actualWeightKg,
+    balanceWeightKg,
+    balanceAmountHkd,
+    hasActualWeight,
+  }
+}
+
+function buildMaterialBalanceOrderRow(record: MoldingSampleWorkflowRecord): MaterialBalanceOrderRow {
+  const itemRows = record.items.map(buildMaterialBalanceItemRow)
+  const unknownAmountCount = itemRows.filter((row) => row.balanceAmountHkd === null).length
+
+  return {
+    record,
+    itemRows,
+    expectedWeightKg: roundMaterialWeight(itemRows.reduce((sum, row) => sum + row.expectedWeightKg, 0)),
+    actualWeightKg: roundMaterialWeight(itemRows.reduce((sum, row) => sum + row.actualWeightKg, 0)),
+    balanceWeightKg: roundMaterialWeight(itemRows.reduce((sum, row) => sum + row.balanceWeightKg, 0)),
+    balanceAmountHkd: unknownAmountCount > 0
+      ? null
+      : roundMoney(itemRows.reduce((sum, row) => sum + (row.balanceAmountHkd ?? 0), 0)),
+    missingActualCount: itemRows.filter((row) => !row.hasActualWeight).length,
+    unknownAmountCount,
+  }
+}
+
+function buildMaterialBalancePeriodRows(
+  rows: MaterialBalanceOrderRow[],
+  periodMode: MaterialBalancePeriodMode,
+): MaterialBalancePeriodRow[] {
+  const groups = new Map<string, MaterialBalancePeriodRow>()
+
+  for (const orderRow of rows) {
+    const periodKey = getMaterialBalancePeriodKey(orderRow.record, periodMode)
+    const existing = groups.get(periodKey.key)
+    const group = existing ?? {
+      ...periodKey,
+      orderRows: [],
+      orderCount: 0,
+      expectedWeightKg: 0,
+      actualWeightKg: 0,
+      balanceWeightKg: 0,
+      balanceAmountHkd: 0,
+      missingActualCount: 0,
+      unknownAmountCount: 0,
+    }
+
+    group.orderRows.push(orderRow)
+    group.orderCount += 1
+    group.expectedWeightKg = roundMaterialWeight(group.expectedWeightKg + orderRow.expectedWeightKg)
+    group.actualWeightKg = roundMaterialWeight(group.actualWeightKg + orderRow.actualWeightKg)
+    group.balanceWeightKg = roundMaterialWeight(group.balanceWeightKg + orderRow.balanceWeightKg)
+    group.missingActualCount += orderRow.missingActualCount
+    group.unknownAmountCount += orderRow.unknownAmountCount
+    group.balanceAmountHkd = group.balanceAmountHkd === null || orderRow.balanceAmountHkd === null
+      ? null
+      : roundMoney(group.balanceAmountHkd + orderRow.balanceAmountHkd)
+
+    groups.set(periodKey.key, group)
+  }
+
+  return Array.from(groups.values()).sort((a, b) => b.startDate.localeCompare(a.startDate))
+}
+
+function getMaterialBalancePeriodKey(
+  record: MoldingSampleWorkflowRecord,
+  materialBalancePeriodMode: MaterialBalancePeriodMode,
+): MaterialBalancePeriodKey {
+  const date = parseMaterialBalanceDate(readMaterialBalanceDate(record)) ?? parseMaterialBalanceDate(today)
+  const safeDate = date ?? new Date(Date.UTC(2026, 6, 3))
+
+  if (materialBalancePeriodMode === 'day') {
+    const dayKey = formatMaterialBalanceDate(safeDate)
+
+    return {
+      key: `day:${dayKey}`,
+      label: dayKey,
+      detail: '日结余',
+      startDate: dayKey,
+      endDate: dayKey,
+    }
+  }
+
+  if (materialBalancePeriodMode === 'week') {
+    const weekStart = getWeekStartDate(safeDate)
+    const weekEnd = addUtcDays(weekStart, 6)
+    const startDate = formatMaterialBalanceDate(weekStart)
+    const endDate = formatMaterialBalanceDate(weekEnd)
+
+    return {
+      key: `week:${startDate}`,
+      label: `${startDate} ~ ${endDate}`,
+      detail: '周结余',
+      startDate,
+      endDate,
+    }
+  }
+
+  if (materialBalancePeriodMode === 'month') {
+    const year = safeDate.getUTCFullYear()
+    const month = safeDate.getUTCMonth()
+    const start = new Date(Date.UTC(year, month, 1))
+    const end = new Date(Date.UTC(year, month + 1, 0))
+    const startDate = formatMaterialBalanceDate(start)
+    const endDate = formatMaterialBalanceDate(end)
+    const label = `${year}-${String(month + 1).padStart(2, '0')}`
+
+    return {
+      key: `month:${label}`,
+      label,
+      detail: '月结余',
+      startDate,
+      endDate,
+    }
+  }
+
+  return getMaterialBalancePeriodKey(record, 'day')
+}
+
+function readMaterialBalanceDate(record: MoldingSampleWorkflowRecord) {
+  return record.order.completed_date
+    || record.order.date
+    || record.order.updated_at
+    || record.order.created_at
+    || today
+}
+
+function parseMaterialBalanceDate(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
+
+  if (!match) {
+    return null
+  }
+
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+}
+
+function formatMaterialBalanceDate(date: Date) {
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+function getWeekStartDate(date: Date) {
+  const weekday = date.getUTCDay() === 0 ? 7 : date.getUTCDay()
+
+  return addUtcDays(date, 1 - weekday)
+}
+
+function addUtcDays(date: Date, days: number) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days))
+}
+
+function formatSignedWeight(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return '待填写'
+  }
+
+  const normalized = Number(value)
+  const prefix = normalized > 0 ? '+' : normalized < 0 ? '-' : ''
+
+  return `${prefix}${Math.abs(normalized).toFixed(2)} kg`
+}
+
+function formatSignedMoney(value: number | null | undefined, currency = 'HKD') {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return '待计算'
+  }
+
+  const normalized = Number(value)
+  const prefix = normalized > 0 ? '+' : normalized < 0 ? '-' : ''
+
+  return `${prefix}${currency} ${Math.abs(normalized).toFixed(2)}`
+}
+
+function getBalanceValueClass(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return 'text-slate-400'
+  }
+  if (Number(value) > 0) {
+    return 'text-emerald-700'
+  }
+  if (Number(value) < 0) {
+    return 'text-red-600'
+  }
+
+  return 'text-slate-500'
+}
+
 function getColorSwatchClass(color: string) {
   const normalized = color.toLowerCase()
 
@@ -1243,8 +1546,24 @@ onUnmounted(() => {
 
         <div class="flex flex-wrap items-center gap-2">
           <div class="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
-            <button class="rounded-md bg-slate-900 px-2.5 py-1 text-[12px] font-semibold text-white">看板</button>
-            <button class="rounded-md px-2.5 py-1 text-[12px] font-medium text-slate-500 hover:text-slate-900">列表</button>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] transition"
+              :class="overviewDisplayMode === 'board' ? 'bg-slate-900 font-semibold text-white' : 'font-medium text-slate-500 hover:text-slate-900'"
+              @click="overviewDisplayMode = 'board'"
+            >
+              <LayoutDashboard class="size-3.5" aria-hidden="true" />
+              看板
+            </button>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] transition"
+              :class="overviewDisplayMode === 'list' ? 'bg-slate-900 font-semibold text-white' : 'font-medium text-slate-500 hover:text-slate-900'"
+              @click="overviewDisplayMode = 'list'"
+            >
+              <Table2 class="size-3.5" aria-hidden="true" />
+              列表
+            </button>
           </div>
           <span class="mx-1 h-5 w-px bg-slate-200" aria-hidden="true" />
           <button class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:border-slate-300">
@@ -1261,7 +1580,16 @@ onUnmounted(() => {
           </button>
           <button
             type="button"
-            class="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-slate-700"
+            class="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-100"
+            data-testid="material-balance-button"
+            @click="setView('material-balance')"
+          >
+            <Beaker class="size-4" aria-hidden="true" />
+            物料结余
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-slate-700"
             @click="startCreateOrder"
           >
             <Plus class="size-4" aria-hidden="true" />
@@ -1269,7 +1597,7 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div class="grid grid-cols-1 gap-3 overflow-x-auto pb-2 md:grid-cols-2 xl:grid-cols-6">
+        <div v-if="overviewDisplayMode === 'board'" class="grid grid-cols-1 gap-3 overflow-x-auto pb-2 md:grid-cols-2 xl:grid-cols-6">
           <section
             v-for="column in boardColumns"
             :key="column.status"
@@ -1318,6 +1646,294 @@ onUnmounted(() => {
             </div>
           </section>
         </div>
+        <section v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+            <div class="flex items-center gap-2">
+              <Table2 class="size-4 text-slate-400" aria-hidden="true" />
+              <span class="text-[13px] font-bold text-slate-950">啤办单列表</span>
+              <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ visibleRecords.length }} 单</span>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table aria-label="啤办单列表" class="w-full min-w-[1040px] text-[12px]">
+              <thead>
+                <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
+                  <th class="px-3 py-2 text-left font-medium">单号</th>
+                  <th class="px-3 py-2 text-left font-medium">产品 / 客户</th>
+                  <th class="px-3 py-2 text-left font-medium">状态</th>
+                  <th class="px-3 py-2 text-left font-medium">阶段</th>
+                  <th class="px-3 py-2 text-left font-medium">明细</th>
+                  <th class="px-3 py-2 text-left font-medium">工程 / 主管</th>
+                  <th class="px-3 py-2 text-left font-medium">进度</th>
+                  <th class="px-3 py-2 text-right font-medium">日期</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-50">
+                <tr
+                  v-for="record in visibleRecords"
+                  :key="record.order.id"
+                  class="cursor-pointer transition hover:bg-slate-50"
+                  :class="selectedOrder.id === record.order.id ? 'bg-slate-50 ring-1 ring-inset ring-slate-200' : ''"
+                  @click="openRecord(record)"
+                >
+                  <td class="px-3 py-2.5 align-top">
+                    <button type="button" class="font-mono text-[12px] font-bold text-slate-900">
+                      {{ record.order.id }}
+                    </button>
+                    <div class="mt-0.5 text-[10px] text-slate-400">{{ record.order.doc_number || record.order.order_number || '未填文件号' }}</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="max-w-[220px] truncate font-semibold text-slate-950">{{ record.order.product_name }}</div>
+                    <div class="mt-0.5 max-w-[220px] truncate text-[11px] text-slate-400">{{ record.order.client_name || '未填客户' }}</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <span class="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getStatusBadgeClass(record.order.status)">
+                      {{ record.order.status }}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="text-[12px] font-semibold text-slate-800">{{ record.order.stage || '未填' }}</div>
+                    <div class="mt-0.5 text-[11px] text-slate-400">{{ record.order.order_type }}</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="font-semibold text-slate-800">{{ record.items.length }} 项明细</div>
+                    <div class="mt-0.5 max-w-[180px] truncate text-[11px] text-slate-400">
+                      {{ record.items[0]?.mold_id || record.items[0]?.mold_name || '暂无明细' }}
+                    </div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="text-slate-700">{{ record.order.eng_name || '未填工程' }}</div>
+                    <div class="mt-0.5 text-[11px] text-slate-400">{{ record.order.supervisor || '未填主管' }}</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="max-w-[220px] truncate text-slate-600">{{ getFlowSummary(record) }}</div>
+                    <div v-if="record.problems.length" class="mt-0.5 text-[11px] font-semibold text-red-500">{{ record.problems.length }} 个问题</div>
+                  </td>
+                  <td class="px-3 py-2.5 text-right align-top tabular-nums text-slate-500">
+                    {{ record.order.completed_date || record.order.date || record.order.updated_at }}
+                  </td>
+                </tr>
+                <tr v-if="!visibleRecords.length">
+                  <td colspan="8" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
+                    暂无符合条件的啤办单
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section v-else-if="activeView === 'material-balance'" class="space-y-4">
+        <div class="flex items-center gap-2 text-[12px] text-slate-400">
+          <button type="button" class="hover:text-slate-900" @click="setView('overview')">看板总览</button>
+          <ChevronRight class="size-3.5" aria-hidden="true" />
+          <span class="font-semibold text-slate-700">物料结余</span>
+        </div>
+
+        <section class="rounded-lg border border-slate-200 bg-white p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="flex items-center gap-2">
+                <Beaker class="size-5 text-teal-600" aria-hidden="true" />
+                <h2 class="text-lg font-bold text-slate-950">物料结余</h2>
+              </div>
+              <div class="mt-1 text-[12px] font-medium text-slate-400">预计用料 - 实际用料</div>
+            </div>
+            <button
+              type="button"
+              class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 hover:border-slate-300"
+              @click="setView('overview')"
+            >
+              <LayoutDashboard class="size-4" aria-hidden="true" />
+              返回看板
+            </button>
+          </div>
+        </section>
+
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+          <article class="min-h-[86px] rounded-lg border border-slate-200 bg-white p-3">
+            <div class="text-[11px] font-medium text-slate-500">单据数</div>
+            <div class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ materialBalanceSummary.orderCount }}</div>
+            <div class="text-[11px] text-slate-400">{{ activeFactory.shortName }}</div>
+          </article>
+          <article class="min-h-[86px] rounded-lg border border-indigo-100 bg-indigo-50 p-3">
+            <div class="text-[11px] font-medium text-indigo-700">预计用料</div>
+            <div class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ formatWeight(materialBalanceSummary.totalExpectedWeightKg) }}</div>
+            <div class="text-[11px] text-indigo-500">开单明细汇总</div>
+          </article>
+          <article class="min-h-[86px] rounded-lg border border-sky-100 bg-sky-50 p-3">
+            <div class="text-[11px] font-medium text-sky-700">实际用料</div>
+            <div class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ formatWeight(materialBalanceSummary.totalActualWeightKg) }}</div>
+            <div class="text-[11px] text-sky-500">啤机回填汇总</div>
+          </article>
+          <article class="min-h-[86px] rounded-lg border border-teal-100 bg-teal-50 p-3">
+            <div class="text-[11px] font-medium text-teal-700">物料结余</div>
+            <div class="mt-1 text-2xl font-bold tabular-nums" :class="getBalanceValueClass(materialBalanceSummary.totalBalanceWeightKg)">
+              {{ formatSignedWeight(materialBalanceSummary.totalBalanceWeightKg) }}
+            </div>
+            <div class="text-[11px] text-teal-500">预计减实际</div>
+          </article>
+          <article class="min-h-[86px] rounded-lg border border-emerald-100 bg-emerald-50 p-3">
+            <div class="text-[11px] font-medium text-emerald-700">结余金额</div>
+            <div class="mt-1 text-2xl font-bold tabular-nums" :class="getBalanceValueClass(materialBalanceSummary.knownBalanceAmountHkd)">
+              {{ formatSignedMoney(materialBalanceSummary.knownBalanceAmountHkd) }}
+            </div>
+            <div class="text-[11px] text-emerald-500">
+              {{ materialBalanceSummary.unknownAmountCount ? `${materialBalanceSummary.unknownAmountCount} 单待计算` : '已全部折算' }}
+            </div>
+          </article>
+        </div>
+
+        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+            <div class="flex items-center gap-2">
+              <History class="size-4 text-teal-500" aria-hidden="true" />
+              <span class="text-[13px] font-bold text-slate-950">周期结余</span>
+              <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ materialBalancePeriodRows.length }} 组</span>
+            </div>
+            <div class="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+              <button
+                v-for="option in materialBalancePeriodOptions"
+                :key="option.key"
+                type="button"
+                class="inline-flex min-w-[72px] items-center justify-center rounded-md px-2.5 py-1 text-[12px] transition"
+                :class="materialBalancePeriodMode === option.key ? 'bg-slate-900 font-semibold text-white' : 'font-medium text-slate-500 hover:text-slate-900'"
+                @click="materialBalancePeriodMode = option.key"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table aria-label="物料周期结余" class="w-full min-w-[980px] text-[12px]">
+              <thead>
+                <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
+                  <th class="px-3 py-2 text-left font-medium">周期</th>
+                  <th class="px-3 py-2 text-left font-medium">单据</th>
+                  <th class="px-3 py-2 text-right font-medium">预计用料</th>
+                  <th class="px-3 py-2 text-right font-medium">实际用料</th>
+                  <th class="px-3 py-2 text-right font-medium">结余</th>
+                  <th class="px-3 py-2 text-right font-medium">结余金额</th>
+                  <th class="px-3 py-2 text-left font-medium">折算状态</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-50">
+                <tr v-for="row in materialBalancePeriodRows" :key="row.key" class="hover:bg-slate-50">
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="font-semibold text-slate-950">{{ row.label }}</div>
+                    <div class="mt-0.5 text-[10px] text-slate-400">{{ row.detail }} · {{ row.startDate }} 至 {{ row.endDate }}</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="font-semibold text-slate-800">{{ row.orderCount }} 张单</div>
+                    <div class="mt-0.5 max-w-[240px] truncate text-[11px] text-slate-400">
+                      {{ row.orderRows.map((orderRow) => orderRow.record.order.id).join('、') }}
+                    </div>
+                  </td>
+                  <td class="px-3 py-2.5 text-right align-top tabular-nums text-slate-700">{{ formatWeight(row.expectedWeightKg) }}</td>
+                  <td class="px-3 py-2.5 text-right align-top tabular-nums text-slate-700">{{ formatWeight(row.actualWeightKg) }}</td>
+                  <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceWeightKg)">
+                    {{ formatSignedWeight(row.balanceWeightKg) }}
+                  </td>
+                  <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceAmountHkd)">
+                    {{ formatSignedMoney(row.balanceAmountHkd) }}
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <span
+                      class="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold"
+                      :class="row.missingActualCount ? 'border-amber-200 bg-amber-50 text-amber-700' : row.unknownAmountCount ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
+                    >
+                      {{ row.missingActualCount ? `${row.missingActualCount} 项待回填` : row.unknownAmountCount ? `${row.unknownAmountCount} 项待计价` : '已折算' }}
+                    </span>
+                  </td>
+                </tr>
+                <tr v-if="!materialBalancePeriodRows.length">
+                  <td colspan="7" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
+                    暂无周期结余
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+            <div class="flex items-center gap-2">
+              <Beaker class="size-4 text-teal-500" aria-hidden="true" />
+              <span class="text-[13px] font-bold text-slate-950">物料结余明细</span>
+              <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ materialBalanceRows.length }} 单</span>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table aria-label="物料结余明细" class="w-full min-w-[1120px] text-[12px]">
+              <thead>
+                <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
+                  <th class="px-3 py-2 text-left font-medium">单号</th>
+                  <th class="px-3 py-2 text-left font-medium">产品 / 客户</th>
+                  <th class="px-3 py-2 text-left font-medium">状态</th>
+                  <th class="px-3 py-2 text-left font-medium">明细</th>
+                  <th class="px-3 py-2 text-right font-medium">预计用料</th>
+                  <th class="px-3 py-2 text-right font-medium">实际用料</th>
+                  <th class="px-3 py-2 text-right font-medium">结余</th>
+                  <th class="px-3 py-2 text-right font-medium">结余金额</th>
+                  <th class="px-3 py-2 text-left font-medium">折算状态</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-50">
+                <tr
+                  v-for="row in materialBalanceRows"
+                  :key="row.record.order.id"
+                  class="cursor-pointer transition hover:bg-slate-50"
+                  @click="openRecord(row.record)"
+                >
+                  <td class="px-3 py-2.5 align-top">
+                    <button type="button" class="font-mono text-[12px] font-bold text-slate-900">
+                      {{ row.record.order.id }}
+                    </button>
+                    <div class="mt-0.5 text-[10px] text-slate-400">{{ row.record.order.doc_number || row.record.order.order_number || '未填文件号' }}</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="max-w-[220px] truncate font-semibold text-slate-950">{{ row.record.order.product_name }}</div>
+                    <div class="mt-0.5 max-w-[220px] truncate text-[11px] text-slate-400">{{ row.record.order.client_name || '未填客户' }}</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <span class="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getStatusBadgeClass(row.record.order.status)">
+                      {{ row.record.order.status }}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <div class="font-semibold text-slate-800">{{ row.itemRows.length }} 项明细</div>
+                    <div class="mt-0.5 max-w-[180px] truncate text-[11px] text-slate-400">
+                      {{ row.itemRows[0]?.item.material || row.itemRows[0]?.item.mold_name || '暂无明细' }}
+                    </div>
+                  </td>
+                  <td class="px-3 py-2.5 text-right align-top tabular-nums text-slate-700">{{ formatWeight(row.expectedWeightKg) }}</td>
+                  <td class="px-3 py-2.5 text-right align-top tabular-nums text-slate-700">{{ formatWeight(row.actualWeightKg) }}</td>
+                  <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceWeightKg)">
+                    {{ formatSignedWeight(row.balanceWeightKg) }}
+                  </td>
+                  <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceAmountHkd)">
+                    {{ formatSignedMoney(row.balanceAmountHkd) }}
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
+                    <span
+                      class="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold"
+                      :class="row.missingActualCount ? 'border-amber-200 bg-amber-50 text-amber-700' : row.unknownAmountCount ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
+                    >
+                      {{ row.missingActualCount ? `${row.missingActualCount} 项待回填` : row.unknownAmountCount ? `${row.unknownAmountCount} 项待计价` : '已折算' }}
+                    </span>
+                  </td>
+                </tr>
+                <tr v-if="!materialBalanceRows.length">
+                  <td colspan="9" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
+                    暂无符合条件的啤办单
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
       <section v-else-if="activeView === 'create'" class="space-y-4">
