@@ -7,7 +7,9 @@ import {
   FileText,
   Layers3,
   Package,
+  Plus,
   RefreshCcw,
+  Search,
   SquareTerminal,
   UploadCloud,
   Waypoints,
@@ -24,6 +26,9 @@ import { useInjectionWorkflowBridge } from '@/factories/injection/useInjectionWo
 
 const props = defineProps<{
   activeSection: InjectionSectionId
+}>()
+const emit = defineEmits<{
+  (e: 'change-section', section: InjectionSectionId): void
 }>()
 
 const {
@@ -49,7 +54,7 @@ const {
 } = useInjectionModuleData()
 
 interface ActivePendingOrderRow {
-  poolKey: string
+  poolKey?: string
   orderNo: string
   customer: string
   productName: string
@@ -59,19 +64,38 @@ interface ActivePendingOrderRow {
   quantity: string
   dueDate: string
   machineAdvice: string
-  machineModel: string
-  armType: string
-  remark: string
-  moldSize: string
+  machineModel?: string
+  armType?: string
+  remark?: string
+  moldSize?: string
   issue: string
   tone: Tone
 }
 
 const importedOrderPoolActive = ref(false)
 const importedPendingOrderRows = ref<ActivePendingOrderRow[]>([])
+const manualPendingOrderRows = ref<ActivePendingOrderRow[]>([])
+const pendingOrderSearchText = ref('')
+const pendingOrderStatusFilter = ref<'all' | 'ready' | 'confirmed' | 'attention'>('all')
+const manualOrderFormVisible = ref(false)
+const manualOrderForm = ref({
+  orderNo: '',
+  customer: '',
+  productName: '',
+  moldCode: '',
+  color: '',
+  material: '',
+  quantity: '',
+  dueDate: '',
+  machineModel: '',
+  remark: '',
+})
 
 const activePendingOrderRows = computed(() =>
-  importedOrderPoolActive.value ? importedPendingOrderRows.value : injectionPendingOrderDetailRows.value,
+  [
+    ...(importedOrderPoolActive.value ? importedPendingOrderRows.value : injectionPendingOrderDetailRows.value),
+    ...manualPendingOrderRows.value,
+  ],
 )
 const compactPendingOrders = computed(() => activePendingOrderRows.value)
 const compactCandidateRows = computed(() => injectionExecutionCandidateRows.value.slice(0, 8))
@@ -102,7 +126,6 @@ const {
   generateSchedulingDraft,
   submitSchedulingReview,
   approveSchedulingDraft,
-  releaseSchedulingDraft,
   submitShiftReportDraft,
   confirmInboundWritebackDraft,
 } = useInjectionWorkflowBridge({
@@ -112,7 +135,7 @@ const {
 })
 
 const isSchedulingWorkbench = computed(() =>
-  ['order-import', 'smart-scheduling', 'scheduling-results'].includes(props.activeSection),
+  props.activeSection === 'order-import',
 )
 
 const manualMachineEditCount = computed(() =>
@@ -160,6 +183,111 @@ const panelTone = {
 } as const
 
 type PanelTone = keyof typeof panelTone
+
+const pendingOrderFilters = [
+  { key: 'all', label: '全部' },
+  { key: 'ready', label: '可排' },
+  { key: 'confirmed', label: '人工已选' },
+  { key: 'attention', label: '待补规则' },
+] as const
+
+const getPendingOrderPoolState = (row: ActivePendingOrderRow) => {
+  const key = getPendingOrderMachineKey(row)
+  const hasManualSelection = Boolean(selectedPendingOrderMachines.value[key])
+  const hasOptions = getPendingOrderMachineOptions(row).length > 0
+
+  if (hasManualSelection) {
+    return 'confirmed'
+  }
+
+  return hasOptions ? 'ready' : 'attention'
+}
+
+const pendingOrderPoolSummaryCards = computed(() => {
+  const total = compactPendingOrders.value.length
+  const confirmed = compactPendingOrders.value.filter((row) => getPendingOrderPoolState(row) === 'confirmed').length
+  const ready = compactPendingOrders.value.filter((row) => getPendingOrderPoolState(row) === 'ready').length
+  const attention = compactPendingOrders.value.filter((row) => getPendingOrderPoolState(row) === 'attention').length
+
+  return [
+    { label: '订单池', value: total, detail: importedOrderPoolActive.value ? '上传订单 + 手工补单' : '默认订单 + 手工补单', tone: total > 0 ? 'teal' : 'slate' },
+    { label: '可直接排机', value: ready, detail: '已有候选机台，可进入排机草稿', tone: ready > 0 ? 'blue' : 'slate' },
+    { label: '人工已选', value: confirmed, detail: '计划员已确认下发机台', tone: confirmed > 0 ? 'green' : 'slate' },
+    { label: '待补规则', value: attention, detail: '缺机台候选或模具映射', tone: attention > 0 ? 'amber' : 'green' },
+  ] satisfies { label: string; value: number; detail: string; tone: PanelTone }[]
+})
+
+const filteredPendingOrders = computed(() => {
+  const keyword = pendingOrderSearchText.value.trim().toLowerCase()
+
+  return compactPendingOrders.value.filter((row) => {
+    const state = getPendingOrderPoolState(row)
+    const matchesFilter = pendingOrderStatusFilter.value === 'all' || state === pendingOrderStatusFilter.value
+    const haystack = [
+      row.orderNo,
+      row.customer,
+      row.productName,
+      row.moldCode,
+      row.color,
+      row.material,
+      row.machineAdvice,
+      row.issue,
+    ].join(' ').toLowerCase()
+
+    return matchesFilter && (!keyword || haystack.includes(keyword))
+  })
+})
+
+const resetManualOrderForm = () => {
+  manualOrderForm.value = {
+    orderNo: '',
+    customer: '',
+    productName: '',
+    moldCode: '',
+    color: '',
+    material: '',
+    quantity: '',
+    dueDate: '',
+    machineModel: '',
+    remark: '',
+  }
+}
+
+const createManualPendingOrder = () => {
+  const form = manualOrderForm.value
+  if (!form.orderNo.trim() || !form.productName.trim() || !form.moldCode.trim() || !form.quantity.trim()) {
+    return
+  }
+
+  const mapping = injectionMoldMachineMappingRows.value.find((row) => row.moldCode === form.moldCode.trim())
+  const machineAdvice = mapping
+    ? [mapping.recommendedMachine, mapping.backupMachine].filter(Boolean).join(' / ')
+    : '待系统推荐'
+
+  manualPendingOrderRows.value = [
+    {
+      poolKey: `manual-${Date.now()}-${form.orderNo.trim()}-${form.moldCode.trim()}`,
+      orderNo: form.orderNo.trim(),
+      customer: form.customer.trim() || form.orderNo.trim().slice(0, 3) || '手工客户',
+      productName: form.productName.trim(),
+      moldCode: form.moldCode.trim(),
+      color: form.color.trim() || '待补颜色',
+      material: form.material.trim() || '待补料型',
+      quantity: form.quantity.trim(),
+      dueDate: form.dueDate.trim() || '待补交期',
+      machineAdvice,
+      machineModel: form.machineModel.trim(),
+      armType: '',
+      remark: form.remark.trim(),
+      moldSize: '待补尺寸',
+      issue: machineAdvice === '待系统推荐' ? '待补规则' : '手工补单',
+      tone: machineAdvice === '待系统推荐' ? 'amber' : 'blue',
+    },
+    ...manualPendingOrderRows.value,
+  ]
+  resetManualOrderForm()
+  manualOrderFormVisible.value = false
+}
 
 const isMissingMasterDataValue = (value: string | undefined) =>
   !value || value.includes('待补') || value.includes('未填写') || value.includes('待建')
@@ -887,21 +1015,43 @@ const openImportFilePicker = () => {
 
     <template v-else-if="isSchedulingWorkbench">
       <SectionPanel
-        title="排机工作台"
-        subtitle="文员在同一页完成订单导入、智能排机和人工微调，主管只审核最终排机草稿。"
+        title="订单导入与待排池"
+        subtitle="先把待排订单整理干净，再进入排机工作台生成草稿。"
       >
+        <template #action>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              @click="manualOrderFormVisible = !manualOrderFormVisible"
+            >
+              <Plus class="size-4" aria-hidden="true" />
+              手工补单
+            </button>
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+              :disabled="compactPendingOrders.length === 0"
+              @click="emit('change-section', 'smart-scheduling')"
+            >
+              进入排机工作台
+              <SquareTerminal class="size-4" aria-hidden="true" />
+            </button>
+          </div>
+        </template>
+
         <section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <article
-            v-for="step in schedulingWorkbenchSteps"
-            :key="step.label"
+            v-for="metric in pendingOrderPoolSummaryCards"
+            :key="metric.label"
             class="rounded-2xl border p-4"
-            :class="panelTone[step.tone]"
+            :class="panelTone[metric.tone]"
           >
             <div class="flex items-center justify-between gap-3">
-              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{{ step.label }}</p>
-              <StatusPill :label="String(step.value)" :tone="step.tone" compact />
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{{ metric.label }}</p>
+              <StatusPill :label="String(metric.value)" :tone="metric.tone" compact />
             </div>
-            <p class="mt-3 text-sm leading-6 text-slate-600">{{ step.detail }}</p>
+            <p class="mt-3 text-sm leading-6 text-slate-600">{{ metric.detail }}</p>
           </article>
         </section>
 
@@ -969,6 +1119,50 @@ const openImportFilePicker = () => {
                 <p class="mt-2 text-xl font-semibold text-slate-950">{{ metric.value }}</p>
                 <p class="mt-1 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
               </article>
+            </div>
+          </article>
+
+          <article
+            v-if="manualOrderFormVisible"
+            class="rounded-2xl border border-blue-100 bg-blue-50 p-5"
+          >
+            <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h3 class="font-semibold text-slate-950">手工补单</h3>
+                <p class="mt-1 text-sm leading-6 text-slate-600">临时插单或漏导订单先补进当前待排池，后续再由后端保存。</p>
+              </div>
+              <StatusPill label="前端草稿" tone="blue" compact />
+            </div>
+
+            <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <input v-model="manualOrderForm.orderNo" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="订单号 *">
+              <input v-model="manualOrderForm.productName" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="产品名称 *">
+              <input v-model="manualOrderForm.moldCode" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="模具编号 *">
+              <input v-model="manualOrderForm.quantity" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="待排数量 *">
+              <input v-model="manualOrderForm.dueDate" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="交期">
+              <input v-model="manualOrderForm.customer" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="客户">
+              <input v-model="manualOrderForm.color" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="颜色">
+              <input v-model="manualOrderForm.material" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="料型">
+              <input v-model="manualOrderForm.machineModel" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="推荐机型">
+              <input v-model="manualOrderForm.remark" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="备注">
+            </div>
+
+            <div class="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                @click="resetManualOrderForm"
+              >
+                清空
+              </button>
+              <button
+                type="button"
+                class="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                :disabled="!manualOrderForm.orderNo || !manualOrderForm.productName || !manualOrderForm.moldCode || !manualOrderForm.quantity"
+                @click="createManualPendingOrder"
+              >
+                加入待排池
+              </button>
             </div>
           </article>
 
@@ -1065,10 +1259,37 @@ const openImportFilePicker = () => {
       >
         <template #action>
           <StatusPill
-            :label="importedOrderPoolActive ? `上传池 ${compactPendingOrders.length} 行` : `默认池 ${compactPendingOrders.length} 行`"
+            :label="importedOrderPoolActive ? `上传池 ${filteredPendingOrders.length}/${compactPendingOrders.length} 行` : `默认池 ${filteredPendingOrders.length}/${compactPendingOrders.length} 行`"
             :tone="importedOrderPoolActive ? 'teal' : 'blue'"
           />
         </template>
+
+        <div class="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div class="relative max-w-xl flex-1">
+            <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+            <input
+              v-model="pendingOrderSearchText"
+              type="search"
+              class="w-full rounded-lg border border-slate-200 bg-white py-2 pl-10 pr-3 text-sm outline-none transition focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
+              placeholder="搜索单号、产品、模具、颜色、料型"
+            >
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="filter in pendingOrderFilters"
+              :key="filter.key"
+              type="button"
+              class="rounded-lg border px-3 py-2 text-sm font-semibold transition"
+              :class="pendingOrderStatusFilter === filter.key
+                ? 'border-slate-950 bg-slate-950 text-white'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'"
+              @click="pendingOrderStatusFilter = filter.key"
+            >
+              {{ filter.label }}
+            </button>
+          </div>
+        </div>
+
         <div class="overflow-x-auto">
           <table class="min-w-full text-left text-sm">
             <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
@@ -1085,7 +1306,7 @@ const openImportFilePicker = () => {
             </thead>
             <tbody>
               <tr
-                v-for="row in compactPendingOrders"
+                v-for="row in filteredPendingOrders"
                 :key="`pool-${getPendingOrderMachineKey(row)}`"
                 class="border-b border-slate-100 align-top last:border-b-0"
               >
@@ -1132,12 +1353,22 @@ const openImportFilePicker = () => {
               </tr>
             </tbody>
           </table>
+
+          <p
+            v-if="filteredPendingOrders.length === 0"
+            class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
+          >
+            当前筛选下没有订单，调整搜索或状态筛选后再看。
+          </p>
         </div>
       </SectionPanel>
 
+    </template>
+
+    <template v-else-if="props.activeSection === 'smart-scheduling'">
       <SectionPanel
-        title="智能排机与人工微调"
-        subtitle="订单池确认后直接生成排机草稿，文员可在同一张表里改机台，改完再提交主管审核。"
+        title="排机草稿与审核"
+        subtitle="订单池确认后生成排机草稿，计划员可微调机台，主管审核通过后进入车间执行。"
       >
         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <article
@@ -1154,9 +1385,9 @@ const openImportFilePicker = () => {
 
         <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
           <div>
-            <h3 class="font-semibold text-slate-950">排机草稿</h3>
+            <h3 class="font-semibold text-slate-950">草稿状态</h3>
             <p class="mt-1 text-sm leading-6 text-slate-600">
-              {{ schedulingDraftReleased ? '主管已审核通过，任务单可以进入日报和入库闭环。' : schedulingReviewRequested ? '排机草稿已提交主管审核，文员改动后会自动退回草稿状态。' : schedulingDraftGenerated ? '草稿已生成，可继续人工改机台后提交主管审核。' : '点击智能排机后，系统会按当前订单池生成可微调草稿。' }}
+              {{ schedulingDraftReleased ? '主管已通过，执行页可以承接车间任务。' : schedulingReviewRequested ? '草稿已提交主管审核，机台改动后会退回待提交。' : schedulingDraftGenerated ? '草稿已生成，可继续改机台后提交审核。' : '当前订单池可直接生成排机草稿。' }}
             </p>
           </div>
           <div class="flex flex-wrap gap-3">
@@ -1166,7 +1397,7 @@ const openImportFilePicker = () => {
               :class="schedulingDraftGenerated ? 'bg-sky-100 text-sky-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
               @click="generateSchedulingDraft"
             >
-              {{ schedulingDraftGenerated ? '重新智能排机' : '智能排机' }}
+              {{ schedulingDraftGenerated ? '重新排机' : '生成排机草稿' }}
             </button>
             <button
               type="button"
@@ -1175,7 +1406,7 @@ const openImportFilePicker = () => {
               :disabled="!schedulingDraftGenerated || schedulingDraftReleased"
               @click="submitSchedulingReview"
             >
-              {{ schedulingReviewRequested ? '已提交主管审核' : '提交主管审核' }}
+              {{ schedulingReviewRequested ? '已提交审核' : '提交主管审核' }}
             </button>
             <button
               type="button"
@@ -1197,17 +1428,15 @@ const openImportFilePicker = () => {
                 <th class="pb-3 pr-4 font-medium">单号 / 产品</th>
                 <th class="pb-3 pr-4 font-medium">模具</th>
                 <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
-                <th class="pb-3 pr-4 font-medium">数量 / 交期</th>
-                <th class="pb-3 pr-4 font-medium">排机参考</th>
                 <th class="pb-3 pr-4 font-medium">下发机台</th>
                 <th class="pb-3 pr-4 font-medium">预计完成</th>
-                <th class="pb-3 font-medium">审核状态</th>
+                <th class="pb-3 font-medium">状态</th>
               </tr>
             </thead>
             <tbody>
               <tr
                 v-for="row in pendingOrderMachineDraftRows"
-                :key="`workbench-draft-${getPendingOrderMachineKey(row)}-${row.selectedMachine}`"
+                :key="`schedule-draft-${getPendingOrderMachineKey(row)}-${row.selectedMachine}`"
                 class="border-b border-slate-100 align-top last:border-b-0"
               >
                 <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.sequence }}</td>
@@ -1220,36 +1449,6 @@ const openImportFilePicker = () => {
                   <div>{{ row.color }}</div>
                   <div class="mt-1 text-xs text-slate-500">{{ row.material }}</div>
                 </td>
-                <td class="py-4 pr-4 text-slate-600">
-                  <div>{{ row.quantity }}</div>
-                  <div class="mt-1 text-xs text-slate-500">{{ row.dueDate }}</div>
-                </td>
-                <td class="py-4 pr-4 text-slate-600">
-                  <div class="min-w-[18rem] rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
-                    <div class="grid gap-2 sm:grid-cols-2">
-                      <div>
-                        <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">推荐机型</p>
-                        <p class="mt-1 font-semibold text-slate-900">{{ getDraftRequiredMachineModel(row) }}</p>
-                      </div>
-                      <div>
-                        <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">模具尺寸</p>
-                        <p class="mt-1 font-semibold text-amber-700">{{ getDraftMoldSize(row) }}</p>
-                      </div>
-                    </div>
-                    <div class="mt-3 border-t border-slate-200 pt-3">
-                      <p class="text-[11px] uppercase tracking-[0.16em] text-slate-400">选中机台参数</p>
-                      <p class="mt-1 font-semibold text-slate-900">{{ getDraftSelectedMachineType(row) }}</p>
-                      <p class="mt-1 text-xs leading-5 text-slate-500">{{ getDraftSelectedMachineHardware(row) }}</p>
-                    </div>
-                    <div class="mt-3 flex flex-wrap gap-2">
-                      <StatusPill :label="getDraftSprayLabel(row)" :tone="getDraftSprayTone(row)" compact />
-                      <StatusPill :label="getDraftArmRequirement(row)" :tone="row.armType ? 'blue' : 'slate'" compact />
-                    </div>
-                    <p class="mt-2 text-xs leading-5 text-slate-500">
-                      {{ getDraftMoldReference(row) }} · {{ getDraftProcessRemark(row) }}
-                    </p>
-                  </div>
-                </td>
                 <td class="py-4 pr-4">
                   <select
                     class="w-40 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
@@ -1259,23 +1458,20 @@ const openImportFilePicker = () => {
                   >
                     <option
                       v-for="machine in row.machineOptions"
-                      :key="`workbench-draft-machine-${getPendingOrderMachineKey(row)}-${machine}`"
+                      :key="`schedule-draft-machine-${getPendingOrderMachineKey(row)}-${machine}`"
                       :value="machine"
                     >
                       {{ machine }}
                     </option>
                   </select>
-                  <div class="mt-1 text-xs leading-5 text-slate-500">改动后重新提交审核</div>
+                  <div class="mt-1 text-xs leading-5 text-slate-500">{{ row.confirmState }}</div>
                 </td>
                 <td class="py-4 pr-4 text-slate-600">
                   <div class="font-semibold text-slate-950">{{ row.estimatedCompletionDate }}</div>
-                  <div class="mt-1 text-xs text-slate-500">预计开机 {{ row.estimatedStartWindow }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.estimatedStartWindow }}</div>
                 </td>
                 <td class="py-4">
                   <StatusPill :label="row.releaseState" :tone="row.releaseTone" compact />
-                  <div class="mt-2">
-                    <StatusPill :label="row.confirmState" :tone="row.confirmTone" compact />
-                  </div>
                 </td>
               </tr>
             </tbody>
@@ -1292,72 +1488,10 @@ const openImportFilePicker = () => {
           v-else
           class="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
         >
-          点击智能排机后，这里会生成可人工微调的排机草稿。
+          生成草稿后，这里会显示可人工微调的排机明细。
         </p>
       </SectionPanel>
 
-      <SectionPanel
-        title="主管审核后的执行单"
-        subtitle="主管通过后才进入车间执行，日报和入库页也只承接已审核下发的任务。"
-      >
-        <div class="mb-5 rounded-2xl border px-5 py-4"
-          :class="schedulingDraftReleased ? 'border-emerald-100 bg-emerald-50' : schedulingReviewRequested ? 'border-amber-100 bg-amber-50' : 'border-slate-200 bg-slate-50'"
-        >
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 class="font-semibold text-slate-950">
-                {{ schedulingDraftReleased ? '主管已通过，等待车间执行' : schedulingReviewRequested ? '等待主管审核' : '草稿未提交审核' }}
-              </h3>
-              <p class="mt-1 text-sm leading-6 text-slate-600">
-                {{ schedulingDraftReleased ? '班组可以按机台执行，后续回报会进入日报表和入库回写。' : schedulingReviewRequested ? '主管确认后，执行单才会下发到车间。' : '文员完成排机和微调后，先提交主管审核。' }}
-              </p>
-            </div>
-            <StatusPill
-              :label="schedulingDraftReleased ? '执行中' : schedulingReviewRequested ? '待审核' : schedulingDraftGenerated ? '草稿待提交' : '未排机'"
-              :tone="schedulingDraftReleased ? 'green' : schedulingReviewRequested ? 'amber' : schedulingDraftGenerated ? 'blue' : 'slate'"
-            />
-          </div>
-        </div>
-
-        <div class="grid gap-4 xl:grid-cols-3">
-          <article
-            v-for="row in releasedExecutionRows"
-            :key="`workbench-release-${row.sequence}-${row.orderNo}-${row.moldCode}`"
-            class="rounded-2xl border border-slate-200 bg-white p-5"
-          >
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <p class="text-xs uppercase tracking-[0.2em] text-slate-500">任务 {{ row.sequence }}</p>
-                <h3 class="mt-2 text-lg font-semibold text-slate-950">{{ row.selectedMachine }}</h3>
-                <p class="mt-1 text-xs text-slate-500">{{ row.workshop }}</p>
-              </div>
-              <StatusPill :label="row.stateLabel" :tone="row.stateTone" compact />
-            </div>
-
-            <div class="mt-4 space-y-3 text-sm text-slate-700">
-              <div class="rounded-xl bg-slate-50 px-4 py-3">
-                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">订单 / 模具</p>
-                <p class="mt-2 font-semibold text-slate-950">{{ row.orderNo }} · {{ row.moldCode }}</p>
-                <p class="mt-1 text-xs text-slate-500">{{ row.productName }}</p>
-              </div>
-              <div class="rounded-xl bg-slate-50 px-4 py-3">
-                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">数量 / 预计完成</p>
-                <p class="mt-2 font-semibold text-slate-950">待排 {{ row.quantity }} · {{ row.estimatedCompletionDate }}</p>
-                <p class="mt-1 text-xs text-slate-500">预计开机 {{ row.estimatedStartWindow }}</p>
-              </div>
-              <div class="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
-                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">班组动作</p>
-                <p class="mt-2 font-semibold text-slate-950">{{ row.action }}</p>
-                <p class="mt-1 text-xs text-slate-500">回报状态：{{ row.feedbackState }}</p>
-              </div>
-            </div>
-          </article>
-        </div>
-      </SectionPanel>
-
-    </template>
-
-    <template v-else-if="props.activeSection === 'smart-scheduling'">
       <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <article
           v-for="metric in injectionExecutionRuleMetrics"
@@ -1455,8 +1589,8 @@ const openImportFilePicker = () => {
 
     <template v-else-if="props.activeSection === 'scheduling-results'">
       <SectionPanel
-        title="选机结果确认"
-        subtitle="承接订单池里的系统推荐和人工改选，先生成一版待下发草稿，再进入开机窗口确认。"
+        title="执行下发确认"
+        subtitle="承接主管审核后的排机草稿，按机台确认现场任务和开机窗口。"
       >
         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <article
@@ -1473,28 +1607,20 @@ const openImportFilePicker = () => {
 
         <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
           <div>
-            <h3 class="font-semibold text-slate-950">排机草稿与下发</h3>
+            <h3 class="font-semibold text-slate-950">下发状态</h3>
             <p class="mt-1 text-sm leading-6 text-slate-600">
-              当前先做前端草稿：把订单池选中的机台汇总到结果页，可在结果页直接改下发机台；改动后需重新确认下发。
+              {{ schedulingDraftReleased ? '排机单已进入执行，日报页可以承接班次回报。' : schedulingReviewRequested ? '排机草稿已提交主管审核，通过后下发到车间。' : schedulingDraftGenerated ? '排机草稿尚未提交审核，先回排机工作台确认。' : '当前还没有可下发的排机草稿。' }}
             </p>
           </div>
           <div class="flex flex-wrap gap-3">
             <button
               type="button"
-              class="rounded-2xl px-5 py-3 text-sm font-semibold transition"
-              :class="schedulingDraftGenerated ? 'bg-sky-100 text-sky-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
-              @click="generateSchedulingDraft"
-            >
-              {{ schedulingDraftGenerated ? '重新生成草稿' : '生成结果草稿' }}
-            </button>
-            <button
-              type="button"
               class="rounded-2xl px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
               :class="schedulingDraftReleased ? 'bg-emerald-100 text-emerald-700' : 'bg-teal-600 text-white hover:bg-teal-700'"
-              :disabled="!schedulingDraftGenerated"
-              @click="releaseSchedulingDraft"
+              :disabled="!schedulingReviewRequested || schedulingDraftReleased"
+              @click="approveSchedulingDraft"
             >
-              {{ schedulingDraftReleased ? '已下发执行' : '确认下发执行' }}
+              {{ schedulingDraftReleased ? '已下发执行' : '主管审核通过' }}
             </button>
           </div>
         </div>
