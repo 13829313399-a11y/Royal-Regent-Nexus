@@ -31,10 +31,16 @@ backend/data/*.sqlite3
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Markdown documents
 *.md
 !/README.md
+!/AGENT.md
+!/AGENTS.md
+!/AGENTS.MD
+!/PROJECT_MEMORY.md
+!/docs/aliyun-docker-deploy.md
 
 # Editor directories and files
 .vscode/*
@@ -46,3 +52,6 @@ backend/data/*.sqlite3
 *.njsproj
 *.sln
 *.sw?
+
+# Local Netlify folder
+.netlify
