@@ -166,7 +166,14 @@ const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
-const today = '2026-07-03'
+function getTodayText(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
+const today = getTodayText()
 const activeView = ref<ViewKey>('overview')
 const overviewDisplayMode = ref<OverviewDisplayMode>('board')
 const materialBalancePeriodMode = ref<MaterialBalancePeriodMode>('day')
@@ -182,6 +189,7 @@ const createSuccessToast = ref<CreateSuccessToast | null>(null)
 const editingRejectedOrderId = ref('')
 const approvalNote = ref('')
 const approvalSubmitting = ref(false)
+const withdrawSubmitting = ref(false)
 const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
@@ -203,6 +211,7 @@ const boardStatuses: MoldingSampleStatus[] = [
   '生产中',
   '已完成',
   '已驳回',
+  '已撤回',
 ]
 
 const materialBalancePeriodOptions: MaterialBalancePeriodOption[] = [
@@ -218,6 +227,7 @@ const statusToneClasses: Record<MoldingSampleStatus, string> = {
   生产中: 'border-teal-200 bg-teal-50 text-teal-700',
   已完成: 'border-emerald-200 bg-emerald-50 text-emerald-700',
   已驳回: 'border-red-200 bg-red-50 text-red-700',
+  已撤回: 'border-slate-200 bg-slate-50 text-slate-600',
 }
 
 const statusDotClasses: Record<MoldingSampleStatus, string> = {
@@ -227,6 +237,7 @@ const statusDotClasses: Record<MoldingSampleStatus, string> = {
   生产中: 'bg-teal-400',
   已完成: 'bg-emerald-400',
   已驳回: 'bg-red-400',
+  已撤回: 'bg-slate-400',
 }
 
 const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
@@ -309,6 +320,7 @@ const kpiCards = computed<KpiCard[]>(() => {
   const completedCount = records.filter((record) => record.order.status === '已完成').length
   const blockedCount = records.filter((record) =>
     record.order.status === '已驳回'
+    || record.order.status === '已撤回'
     || record.problems.length > 0
     || buildCompletionGate(record.order, record.items).missing_item_ids.length > 0,
   ).length
@@ -343,7 +355,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
     },
     {
-      label: '卡点 / 驳回',
+      label: '卡点 / 退回',
       value: String(blockedCount),
       detail: '需要工程跟进',
       icon: TriangleAlert,
@@ -387,6 +399,7 @@ const detailRows = computed(() => selectedItems.value.slice(0, 8))
 const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
 const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft'))
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
+const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
 const canExportSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
@@ -395,8 +408,14 @@ const canExportSelectedOrder = computed(() =>
 )
 const canEditSelectedRejectedOrder = computed(() =>
   Boolean(selectedRecord.value)
-  && selectedOrder.value.status === '已驳回'
+  && ['已驳回', '已撤回'].includes(selectedOrder.value.status)
   && canEditDraftOrder.value,
+)
+const canWithdrawSelectedOrder = computed(() =>
+  Boolean(selectedRecord.value)
+  && selectedOrder.value.status === '待审核'
+  && canEditDraftOrder.value
+  && (selectedOrder.value.eng_name === '' || selectedOrder.value.eng_name === authStore.currentUser?.display_name),
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
@@ -661,7 +680,7 @@ function startRejectedEdit() {
   }
 
   if (!canEditSelectedRejectedOrder.value) {
-    actionMessage.value = '当前账号没有编辑驳回单权限。'
+    actionMessage.value = `当前账号没有编辑${editingRevisionOrderLabel.value}权限。`
     return
   }
 
@@ -669,7 +688,7 @@ function startRejectedEdit() {
   createDraft.value = createDraftFromRecord(selectedRecord.value)
   createErrors.value = []
   activeView.value = 'create'
-  actionMessage.value = `已载入驳回单 ${selectedOrder.value.id}，修改后可重新提交主管审核。`
+  actionMessage.value = `已载入${editingRevisionOrderLabel.value} ${selectedOrder.value.id}，修改后可重新提交主管审核。`
 }
 
 function cancelRejectedEdit() {
@@ -877,16 +896,17 @@ async function submitManualCreate() {
   createDraft.value.factory_id = selectedFactoryId.value
   createErrors.value = []
   const result = buildManualMoldingSampleCreateRequest(createDraft.value, selectedFactoryId.value)
+  const revisionLabel = editingRevisionOrderLabel.value
 
   if (!result.payload) {
     createErrors.value = result.errors
-    actionMessage.value = `${isEditingRejectedOrder.value ? '驳回单重提' : '新建啤办单'}未提交：${result.errors[0] ?? '请检查表单'}`
+    actionMessage.value = `${isEditingRejectedOrder.value ? `${revisionLabel}重提` : '新建啤办单'}未提交：${result.errors[0] ?? '请检查表单'}`
     return
   }
 
   createSubmitting.value = true
   const isRejectedResubmit = isEditingRejectedOrder.value
-  actionMessage.value = isRejectedResubmit ? '正在保存修改并重提啤办单...' : '正在提交新建啤办单...'
+  actionMessage.value = isRejectedResubmit ? `正在保存${revisionLabel}修改并重提啤办单...` : '正在提交新建啤办单...'
 
   try {
     const created = isRejectedResubmit
@@ -897,7 +917,7 @@ async function submitManualCreate() {
     selectedOrderId.value = created.order.id
     activeView.value = 'detail'
     actionMessage.value = isRejectedResubmit
-      ? `啤办单 ${created.order.id} 已保存修改并重提主管审核。`
+      ? `啤办单 ${created.order.id} 已保存${revisionLabel}修改并重提主管审核。`
       : `啤办单 ${created.order.id} 已提交主管审核，正式列表已刷新。`
     if (!isRejectedResubmit) {
       clearSavedCreateDraft()
@@ -906,7 +926,7 @@ async function submitManualCreate() {
     resetCreateDraft()
   }
   catch (error) {
-    actionMessage.value = `${isEditingRejectedOrder.value ? '驳回单重提' : '新建啤办单'}提交失败：${getApiErrorMessage(error)}`
+    actionMessage.value = `${isEditingRejectedOrder.value ? `${revisionLabel}重提` : '新建啤办单'}提交失败：${getApiErrorMessage(error)}`
   }
   finally {
     createSubmitting.value = false
@@ -992,6 +1012,39 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
   }
 }
 
+async function withdrawSelectedOrder() {
+  if (!selectedRecord.value) {
+    actionMessage.value = '请先选择一张正式啤办单。'
+    return
+  }
+
+  if (!canWithdrawSelectedOrder.value) {
+    actionMessage.value = '只有开单工程师可以撤回待审核单。'
+    return
+  }
+
+  const actorName = (authStore.currentUser?.display_name ?? selectedOrder.value.eng_name) || '工程部'
+  withdrawSubmitting.value = true
+  actionMessage.value = '正在撤回主管审核...'
+
+  try {
+    const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, {
+      action: '工程撤回',
+      reason: `${actorName}撤回主管审核。`,
+      today,
+    })
+    replaceApiRecord(updated)
+    selectedOrderId.value = updated.order.id
+    actionMessage.value = `啤办单 ${updated.order.id} 已撤回，可修改后重新提交主管审核。`
+  }
+  catch (error) {
+    actionMessage.value = `撤回主管审核失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    withdrawSubmitting.value = false
+  }
+}
+
 function getStatusColumnDetail(status: MoldingSampleStatus) {
   const details: Record<MoldingSampleStatus, string> = {
     待审核: '等待主管处理',
@@ -1000,13 +1053,14 @@ function getStatusColumnDetail(status: MoldingSampleStatus) {
     生产中: '啤机部执行中',
     已完成: '完成后归档',
     已驳回: '退回工程处理',
+    已撤回: '工程主动撤回',
   }
 
   return details[status]
 }
 
 function getWorkflowStepState(status: MoldingSampleStatus): StatusState {
-  if (selectedOrder.value.status === '已驳回') {
+  if (selectedOrder.value.status === '已驳回' || selectedOrder.value.status === '已撤回') {
     return status === '待审核' ? 'rejected' : 'pending'
   }
 
@@ -1061,6 +1115,10 @@ function getFlowSummary(record: MoldingSampleWorkflowRecord) {
   }
   if (record.order.status === '已完成') {
     return record.order.completed_date ? `${record.order.completed_date} 完成` : '已完成'
+  }
+
+  if (record.order.status === '已撤回') {
+    return '工程已撤回，待修改重提'
   }
 
   return record.order.reject_reason || '退回工程处理'
@@ -1949,7 +2007,9 @@ onUnmounted(() => {
             单据详情
           </button>
           <ChevronRight v-if="isEditingRejectedOrder" class="size-3.5" aria-hidden="true" />
-          <span class="font-semibold text-slate-700">{{ isEditingRejectedOrder ? '修改驳回单并重提' : '新建啤办单' }}</span>
+          <span class="font-semibold text-slate-700">
+            {{ isEditingRejectedOrder ? selectedOrder.status === '已撤回' ? '修改撤回单并重提' : '修改驳回单并重提' : '新建啤办单' }}
+          </span>
         </div>
 
         <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -1959,7 +2019,7 @@ onUnmounted(() => {
                 <FileText class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold">基础资料</span>
                 <span class="ml-auto text-[11px] text-slate-400">
-                  {{ isEditingRejectedOrder ? `驳回单 ${editingRejectedOrderId}` : '单号自动生成 · BP-新' }}
+                  {{ isEditingRejectedOrder ? `${editingRevisionOrderLabel} ${editingRejectedOrderId}` : '单号自动生成 · BP-新' }}
                 </span>
               </div>
               <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
@@ -2139,9 +2199,10 @@ onUnmounted(() => {
               </div>
               <div
                 v-if="isEditingRejectedOrder"
-                class="mt-3 rounded-lg border border-red-200 bg-red-50 p-2.5 text-[11px] leading-5 text-red-700"
+                class="mt-3 rounded-lg border p-2.5 text-[11px] leading-5"
+                :class="selectedOrder.status === '已撤回' ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-red-200 bg-red-50 text-red-700'"
               >
-                当前单据已被驳回。保存修改后会自动重提，状态回到待审核，并保留审核轨迹。
+                {{ selectedOrder.status === '已撤回' ? '当前单据已由工程撤回。保存修改后会自动重提，状态回到待审核，并保留审核轨迹。' : '当前单据已被驳回。保存修改后会自动重提，状态回到待审核，并保留审核轨迹。' }}
               </div>
               <div v-if="createErrors.length" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] text-red-700">
                 <div v-for="error in createErrors" :key="error">{{ error }}</div>
@@ -2231,10 +2292,21 @@ onUnmounted(() => {
                 返回看板
               </button>
               <button
-                v-if="selectedOrder.status === '已驳回'"
+                v-if="selectedOrder.status === '待审核'"
+                type="button"
+                :disabled="!canWithdrawSelectedOrder || withdrawSubmitting"
+                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 text-[12px] font-semibold text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                @click="withdrawSelectedOrder"
+              >
+                <RotateCcw class="size-4" aria-hidden="true" />
+                {{ withdrawSubmitting ? '撤回中...' : '撤回审核' }}
+              </button>
+              <button
+                v-if="selectedOrder.status === '已驳回' || selectedOrder.status === '已撤回'"
                 type="button"
                 :disabled="!canEditSelectedRejectedOrder"
-                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 text-[12px] font-semibold text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                class="inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[12px] font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                :class="selectedOrder.status === '已撤回' ? 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100' : 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100'"
                 @click="startRejectedEdit"
               >
                 <PencilLine class="size-4" aria-hidden="true" />

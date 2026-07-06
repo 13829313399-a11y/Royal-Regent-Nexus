@@ -30,6 +30,7 @@ export type MoldingSampleStatusAction =
   | '经理通过'
   | '经理驳回'
   | '工程重提'
+  | '工程撤回'
   | '开始处理'
   | '标记完成'
 
@@ -169,6 +170,10 @@ function isAssignedSupervisor(order: MoldingSampleOrder, actorName: string) {
   return order.supervisor === '' || order.supervisor === actorName
 }
 
+function isOpeningEngineer(order: MoldingSampleOrder, actorName: string) {
+  return order.eng_name === '' || order.eng_name === actorName
+}
+
 function rejectedResult(
   order: MoldingSampleOrder,
   message: string,
@@ -245,11 +250,19 @@ export function getMoldingSampleStatusTransition(
   }
 
   if (action === '工程重提') {
-    if (order.status !== '已驳回' || actor_role !== '工程部') {
-      return rejectedResult(order, '只有工程部可以重提已驳回单。')
+    if (!['已驳回', '已撤回'].includes(order.status) || actor_role !== '工程部') {
+      return rejectedResult(order, '只有工程部可以重提已驳回或已撤回单。')
     }
 
     return { allowed: true, next_status: '待审核', completed_date: '' }
+  }
+
+  if (action === '工程撤回') {
+    if (order.status !== '待审核' || actor_role !== '工程部' || !isOpeningEngineer(order, actor_name)) {
+      return rejectedResult(order, '只有开单工程师可以撤回待审核单。')
+    }
+
+    return { allowed: true, next_status: '已撤回', completed_date: order.completed_date }
   }
 
   if (action === '开始处理') {

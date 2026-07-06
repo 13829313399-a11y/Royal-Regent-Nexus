@@ -135,6 +135,41 @@ assert.deepEqual(rejectedTransition, {
   reject_reason: '资料不齐',
 })
 
+const withdrawnTransition = getMoldingSampleStatusTransition({
+  order: baseOrder,
+  action: '工程撤回',
+  actor_role: '工程部',
+  actor_name: '肖科',
+  reason: '资料需要重新确认',
+})
+assert.deepEqual(withdrawnTransition, {
+  allowed: true,
+  next_status: '已撤回',
+  completed_date: '',
+})
+
+const blockedWithdrawTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '待生产' },
+  action: '工程撤回',
+  actor_role: '工程部',
+  actor_name: '肖科',
+})
+assert.equal(blockedWithdrawTransition.allowed, false)
+assert.equal(blockedWithdrawTransition.next_status, '待生产')
+assert.match(blockedWithdrawTransition.message ?? '', /待审核/)
+
+const resubmitWithdrawnTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '已撤回' },
+  action: '工程重提',
+  actor_role: '工程部',
+  actor_name: '肖科',
+})
+assert.deepEqual(resubmitWithdrawnTransition, {
+  allowed: true,
+  next_status: '待审核',
+  completed_date: '',
+})
+
 assert.equal(isExternalMoldingSampleOrder({ ...baseOrder, send_to: '发至湖南' }), true)
 assert.equal(isExternalMoldingSampleOrder({ ...baseOrder, workshop: '模厂' }), true)
 

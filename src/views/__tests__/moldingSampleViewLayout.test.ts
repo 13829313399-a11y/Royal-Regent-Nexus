@@ -27,7 +27,9 @@ for (const requiredCopy of [
   '流程状态',
   '审核轨迹',
   '提交主管审核',
+  '撤回审核',
   '修改驳回单并重提',
+  '修改撤回单并重提',
   '修改后重提',
   '保存并重提',
   '重置修改',
@@ -48,6 +50,7 @@ for (const preservedStatus of [
   '生产中',
   '已完成',
   '已驳回',
+  '已撤回',
 ]) {
   assert.match(source, new RegExp(preservedStatus))
 }
@@ -102,9 +105,12 @@ for (const requiredImplementation of [
   'URL.createObjectURL',
   'approvalNote',
   'runApprovalTransition',
+  'withdrawSelectedOrder',
   'moldingSampleApi.updateStatus',
+  "'工程撤回'",
   "'工程重提'",
   'canEditSelectedRejectedOrder',
+  'canWithdrawSelectedOrder',
   'useAuthStore',
   'authStore.currentUser',
   'authStore.hasPermission',

@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
 import { nextTick } from 'vue'
 import { moldingSampleApi } from '@/api/moldingSample'
+import type { MoldingSampleDetailResponse } from '@/api/moldingSample'
 import { useAuthStore } from '@/stores/auth'
+import type { MoldingSampleStatus } from '@/types/moldingSample'
 import MoldingSampleProductionTaskView from '../MoldingSampleProductionTaskView.vue'
 import MoldingSampleView from '../MoldingSampleView.vue'
 
@@ -111,6 +113,36 @@ function getButtonByText(wrapper: VueWrapper, text: string) {
   return button!
 }
 
+function createMoldingSampleRecord(status: MoldingSampleStatus = '待审核'): MoldingSampleDetailResponse {
+  return {
+    order: {
+      id: 'BP-WITHDRAW-UI',
+      factory_id: 'huaxing',
+      order_number: '62437',
+      doc_number: 'W-G026-00',
+      product_name: '链条枪',
+      client_name: 'BuzzBee',
+      date: '2026-07-01',
+      stage: 'T0',
+      order_type: '啤办',
+      workshop: 'A车间',
+      send_to: '',
+      supervisor: '华兴工程主管',
+      eng_name: '测试账号',
+      reason: '对办颜色和试啤。',
+      status,
+      reject_reason: '',
+      completed_date: '',
+      created_at: '2026-07-01 08:00',
+      updated_at: '2026-07-01 08:00',
+    },
+    items: [],
+    audit_logs: [],
+    notifications: [],
+    problems: [],
+  }
+}
+
 describe('molding sample runtime error handling', () => {
   beforeEach(() => {
     routeState.path = '/modules/molding-sample'
@@ -156,6 +188,52 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.createProblem).not.toHaveBeenCalled()
+  })
+
+  it('lets the opening engineer withdraw a pending review order from the detail page', async () => {
+    const pendingRecord = createMoldingSampleRecord()
+    const withdrawnRecord = {
+      ...pendingRecord,
+      order: {
+        ...pendingRecord.order,
+        status: '已撤回',
+      },
+      audit_logs: [
+        {
+          id: 'audit-withdraw',
+          order_id: pendingRecord.order.id,
+          action: '工程撤回',
+          actor_name: '测试账号',
+          actor_role: '工程部',
+          decision: '撤回',
+          from_status: '待审核',
+          to_status: '已撤回',
+          reason: '测试账号撤回主管审核。',
+          created_at: '2026-07-01 09:00',
+          tone: 'amber',
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([pendingRecord])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(withdrawnRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, 'BP-WITHDRAW-UI').trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, '撤回审核').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
+      action: '工程撤回',
+      reason: '测试账号撤回主管审核。',
+      today: '2026-07-06',
+    })
+    expect(wrapper.text()).toContain('已撤回')
+
+    wrapper.unmount()
   })
 
   it('restores a partially filled new-order draft after leaving the page and clears it after submit', async () => {
