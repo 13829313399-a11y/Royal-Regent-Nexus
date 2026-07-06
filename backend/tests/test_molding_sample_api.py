@@ -900,6 +900,40 @@ def test_export_and_import_molding_sample_excel_template(client):
     assert imported["items"][0]["id"] == "BP-XLSX-002-001"
 
 
+def test_export_molding_sample_excel_template_has_report_styling(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-XLSX-STYLE-001"))
+
+    export_response = client.get("/api/injection/BP-XLSX-STYLE-001/export-excel")
+    assert export_response.status_code == 200
+
+    detail_header_row = 10
+
+    with ZipFile(BytesIO(export_response.content)) as workbook:
+        sheet_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        styles_xml = workbook.read("xl/styles.xml").decode("utf-8")
+
+    assert '<mergeCell ref="A1:V1"/>' in sheet_xml
+    assert '<pane ySplit="10" topLeftCell="A11" activePane="bottomLeft" state="frozen"/>' in sheet_xml
+    assert f'<autoFilter ref="A{detail_header_row}:V{detail_header_row}"/>' in sheet_xml
+    assert '<cols>' in sheet_xml
+    assert 'customWidth="1"' in sheet_xml
+    assert '<col min="2" max="2" width="24" customWidth="1"/>' in sheet_xml
+    assert '<col min="4" max="4" width="30" customWidth="1"/>' in sheet_xml
+    assert '<row r="2" ht="22" customHeight="1">' in sheet_xml
+    assert f'<row r="{detail_header_row}" ht="24" customHeight="1">' in sheet_xml
+    assert ' s="1"' in sheet_xml
+    assert ' s="2"' in sheet_xml
+    assert ' s="3"' in sheet_xml
+    assert ' s="4"' in sheet_xml
+    assert ' s="5"' in sheet_xml
+    assert '<cellXfs count="6">' in styles_xml
+    assert '<fgColor rgb="FF0F172A"/>' in styles_xml
+    assert '<fgColor rgb="FFECFDF5"/>' in styles_xml
+    assert '<sheetView workbookViewId="0">' in sheet_xml
+    assert '<pageSetup orientation="landscape" paperSize="9" fitToWidth="1" fitToHeight="0"/>' in sheet_xml
+
+
 def test_preview_molding_sample_excel_import_does_not_create_order(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-XLSX-SOURCE"))

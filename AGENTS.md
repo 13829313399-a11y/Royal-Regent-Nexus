@@ -23,6 +23,12 @@ These rules apply to:
 - documentation changes that affect project requirements, technical direction, constraints, or future workflow
 - follow-up fixes caused by browser comments or changed product requirements
 
+## Git Operations
+
+Do not run `git commit`, create commits, push branches, or open pull requests unless the user explicitly asks for that Git operation in the current turn.
+
+When code changes are made without an explicit Git operation request, leave them as working-tree changes and report the changed files plus verification results.
+
 ## Required Update After Work
 
 After completing an implementation or requirement change, the agent must update `PROJECT_MEMORY.md` with:

@@ -136,6 +136,38 @@ NUMERIC_ITEM_FIELDS = {
     "exchange_rate_at_save",
 }
 
+DETAIL_HEADER_ROW_INDEX = 10
+TITLE_STYLE_ID = 1
+ORDER_LABEL_STYLE_ID = 2
+ORDER_VALUE_STYLE_ID = 3
+DETAIL_HEADER_STYLE_ID = 4
+DETAIL_BODY_STYLE_ID = 5
+
+ITEM_COLUMN_WIDTHS = [
+    22,
+    24,
+    20,
+    30,
+    14,
+    22,
+    18,
+    15,
+    11,
+    11,
+    12,
+    12,
+    15,
+    15,
+    30,
+    18,
+    12,
+    14,
+    14,
+    14,
+    14,
+    12,
+]
+
 
 def export_order_to_excel(order: MoldingSampleOrder) -> bytes:
     rows: list[list[object | None]] = [[TEMPLATE_TITLE]]
@@ -470,25 +502,81 @@ def _parse_int(value: object) -> int:
 def _sheet_xml(rows: list[list[object | None]]) -> str:
     row_xml = []
     for row_index, row in enumerate(rows, start=1):
-        cells = [_cell_xml(_column_name(col_index), row_index, value) for col_index, value in enumerate(row, start=1)]
-        row_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+        cells = [
+            _cell_xml(
+                _column_name(col_index),
+                row_index,
+                value,
+                style_id=_style_for_cell(row_index, col_index),
+            )
+            for col_index, value in enumerate(row, start=1)
+        ]
+        row_xml.append(f'<row {_row_attributes(row_index)}>{"".join(cells)}</row>')
+
+    last_column = _column_name(len(ITEM_COLUMNS))
+    last_row = max(len(rows), 1)
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<dimension ref="A1:{last_column}{last_row}"/>'
+        '<sheetViews><sheetView workbookViewId="0">'
+        '<pane ySplit="10" topLeftCell="A11" activePane="bottomLeft" state="frozen"/>'
+        '<selection pane="bottomLeft" activeCell="A11" sqref="A11"/>'
+        '</sheetView></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="18"/>'
+        f"{_columns_xml()}"
         f"<sheetData>{''.join(row_xml)}</sheetData>"
+        f'<autoFilter ref="A{DETAIL_HEADER_ROW_INDEX}:{last_column}{DETAIL_HEADER_ROW_INDEX}"/>'
+        f'<mergeCells count="1"><mergeCell ref="A1:{last_column}1"/></mergeCells>'
+        '<pageMargins left="0.35" right="0.35" top="0.55" bottom="0.55" header="0.2" footer="0.2"/>'
+        '<pageSetup orientation="landscape" paperSize="9" fitToWidth="1" fitToHeight="0"/>'
         "</worksheet>"
     )
 
 
-def _cell_xml(column_name: str, row_index: int, value: object | None) -> str:
+def _row_attributes(row_index: int) -> str:
+    if row_index == 1:
+        return f'r="{row_index}" ht="32" customHeight="1"'
+    if 2 <= row_index < DETAIL_HEADER_ROW_INDEX:
+        return f'r="{row_index}" ht="22" customHeight="1"'
+    if row_index == DETAIL_HEADER_ROW_INDEX:
+        return f'r="{row_index}" ht="24" customHeight="1"'
+    return f'r="{row_index}"'
+
+
+def _columns_xml() -> str:
+    columns = [
+        f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+        for index, width in enumerate(ITEM_COLUMN_WIDTHS, start=1)
+    ]
+    return f"<cols>{''.join(columns)}</cols>"
+
+
+def _style_for_cell(row_index: int, col_index: int) -> int | None:
+    if row_index == 1 and col_index == 1:
+        return TITLE_STYLE_ID
+    if 2 <= row_index < DETAIL_HEADER_ROW_INDEX:
+        if col_index in {1, 3}:
+            return ORDER_LABEL_STYLE_ID
+        if col_index in {2, 4}:
+            return ORDER_VALUE_STYLE_ID
+    if row_index == DETAIL_HEADER_ROW_INDEX:
+        return DETAIL_HEADER_STYLE_ID
+    if row_index > DETAIL_HEADER_ROW_INDEX:
+        return DETAIL_BODY_STYLE_ID
+    return None
+
+
+def _cell_xml(column_name: str, row_index: int, value: object | None, style_id: int | None = None) -> str:
     cell_ref = f"{column_name}{row_index}"
+    style_attr = f' s="{style_id}"' if style_id is not None else ""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f'<c r="{cell_ref}"><v>{value}</v></c>'
+        return f'<c r="{cell_ref}"{style_attr}><v>{value}</v></c>'
 
     text = _escape_xml("" if value is None else str(value))
-    return f'<c r="{cell_ref}" t="inlineStr"><is><t>{text}</t></is></c>'
+    return f'<c r="{cell_ref}"{style_attr} t="inlineStr"><is><t>{text}</t></is></c>'
 
 
 def _column_name(index: int) -> str:
@@ -565,11 +653,49 @@ def _styles_xml() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>"
-        "<fills count=\"1\"><fill><patternFill patternType=\"none\"/></fill></fills>"
-        "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"
-        "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
-        "<cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs>"
+        '<fonts count="4">'
+        '<font><sz val="11"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="18"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="11"/><color rgb="FF475569"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
+        '</fonts>'
+        '<fills count="5">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF0F172A"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFECFDF5"/><bgColor indexed="64"/></patternFill></fill>'
+        '</fills>'
+        '<borders count="2">'
+        '<border><left/><right/><top/><bottom/><diagonal/></border>'
+        '<border>'
+        '<left style="thin"><color rgb="FFCBD5E1"/></left>'
+        '<right style="thin"><color rgb="FFCBD5E1"/></right>'
+        '<top style="thin"><color rgb="FFCBD5E1"/></top>'
+        '<bottom style="thin"><color rgb="FFCBD5E1"/></bottom>'
+        '<diagonal/>'
+        '</border>'
+        '</borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="6">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="right" vertical="center"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="left" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="left" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '</cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
         "</styleSheet>"
     )
 
