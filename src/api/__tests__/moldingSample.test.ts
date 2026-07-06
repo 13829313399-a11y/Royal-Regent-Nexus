@@ -65,7 +65,7 @@ await api.deleteOrder('BP-1')
 
 const importBuffer = new ArrayBuffer(4)
 await api.exportOrderExcel('BP-1')
-await api.importOrderExcel(importBuffer, { order_id: 'BP-2' })
+await api.importOrderExcel(importBuffer, { order_id: 'BP-2', factory_id: 'huadeng' })
 
 await api.listSensitiveAuditLogs()
 
@@ -143,7 +143,7 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'put /injection/BP-1',
   'delete /injection/BP-1',
   'get /injection/BP-1/export-excel',
-  'post /injection/import-excel?order_id=BP-2',
+  'post /injection/import-excel?order_id=BP-2&factory_id=huadeng',
   'get /sensitive-audit-logs',
   'get /molding-sample-notifications?target_module=production_molding_sample_task&factory_id=huakang-a&status=%E6%9C%AA%E8%AF%BB',
   'patch /molding-sample-notifications/N-BP-1',
@@ -183,7 +183,7 @@ assert.deepEqual(calls.find((call) => call.method === 'put' && call.url === '/in
   },
   items: [{ id: 'BP-1-001', mold_name: '左右枪身' }],
 })
-assert.equal(calls.find((call) => call.url === '/injection/import-excel?order_id=BP-2')?.data, importBuffer)
+assert.equal(calls.find((call) => call.url === '/injection/import-excel?order_id=BP-2&factory_id=huadeng')?.data, importBuffer)
 assert.deepEqual(calls.find((call) => call.url === '/manager-update-prices')?.data, {
   prices: [{ material: 'HIPS 425', unit_price: 6, notes: '新经理价' }],
   rmb_to_hkd_rate: 1.1,

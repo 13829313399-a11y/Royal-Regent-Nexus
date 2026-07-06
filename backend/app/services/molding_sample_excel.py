@@ -165,7 +165,11 @@ def export_order_to_excel(order: MoldingSampleOrder) -> bytes:
     return buffer.getvalue()
 
 
-def parse_order_excel(workbook_bytes: bytes, order_id_override: str | None = None) -> MoldingSampleCreateRequest:
+def parse_order_excel(
+    workbook_bytes: bytes,
+    order_id_override: str | None = None,
+    factory_id_override: str | None = None,
+) -> MoldingSampleCreateRequest:
     rows = _read_first_sheet_rows(workbook_bytes)
     if not rows:
         raise ValueError("Excel 文件没有可读取的工作表内容")
@@ -178,6 +182,8 @@ def parse_order_excel(workbook_bytes: bytes, order_id_override: str | None = Non
         row for row in rows[detail_header_index + 1 :] if _row_contains_order_metadata(row)
     ]
     order_data = _parse_order_metadata(metadata_rows)
+    if factory_id_override:
+        order_data["factory_id"] = factory_id_override
     if order_id_override:
         order_data["id"] = order_id_override
 
@@ -323,14 +329,12 @@ def _parse_order_metadata(rows: list[list[str]]) -> dict[str, str]:
         "workshop": "A车间",
     }
 
-    if _looks_like_huaxing_engineering_template(rows):
+    if _looks_like_engineering_molding_sample_template(rows):
         parsed.update(
             {
-                "factory_id": "huaxing",
                 "stage": "T0",
                 "workshop": "工程部",
-                "supervisor": "华兴工程主管",
-                "reason": "华兴工程部啤办通知单导入",
+                "reason": "工程部啤办通知单导入",
             }
         )
 
@@ -344,10 +348,10 @@ def _parse_order_metadata(rows: list[list[str]]) -> dict[str, str]:
     return parsed
 
 
-def _looks_like_huaxing_engineering_template(rows: list[list[str]]) -> bool:
+def _looks_like_engineering_molding_sample_template(rows: list[list[str]]) -> bool:
     flat_values = [str(value or "").strip() for row in rows for value in row if str(value or "").strip()]
 
-    return any("华兴玩具" in value for value in flat_values) and any("啤办通知单" in value for value in flat_values)
+    return any("啤办通知单" in value for value in flat_values)
 
 
 def _split_label_value(value: object) -> tuple[str, str]:

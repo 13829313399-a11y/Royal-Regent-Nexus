@@ -739,8 +739,9 @@ def test_import_huaxing_engineering_molding_sample_template(client):
         "stage": "T0",
         "order_type": "啤办",
         "workshop": "工程部",
-        "supervisor": "华兴工程主管",
+        "supervisor": "",
         "eng_name": "杨敬作",
+        "reason": "工程部啤办通知单导入",
     }
     assert len(imported["items"]) == 2
 
@@ -758,6 +759,25 @@ def test_import_huaxing_engineering_molding_sample_template(client):
     assert first_item["mold_return_time"] == "2026-02-10"
     assert first_item["completion_time"] == "2026-02-10"
     assert first_item["notes"] == "报价周期：3天；要求：加急；备注：第一次试模"
+
+
+def test_import_engineering_molding_sample_template_uses_selected_factory(client):
+    login_as(client, "admin")
+    import_response = client.post(
+        "/api/injection/import-excel",
+        params={"order_id": "BP-HD-XLSX-001", "factory_id": "huadeng"},
+        content=huaxing_engineering_template_workbook(),
+        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    )
+
+    assert import_response.status_code == 201
+    imported = import_response.json()
+    assert imported["order"]["id"] == "BP-HD-XLSX-001"
+    assert imported["order"]["factory_id"] == "huadeng"
+    assert imported["order"]["workshop"] == "工程部"
+    assert imported["order"]["supervisor"] == ""
+    assert imported["order"]["reason"] == "工程部啤办通知单导入"
+    assert imported["items"][0]["id"] == "BP-HD-XLSX-001-001"
 
 
 def test_sensitive_audit_logs_return_latest_200_rows(client):

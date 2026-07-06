@@ -778,7 +778,9 @@ async function handleExcelImportFile(event: Event) {
 
   try {
     const workbook = await readWorkbookAsArrayBuffer(file)
-    const imported = await moldingSampleApi.importOrderExcel(workbook)
+    const imported = await moldingSampleApi.importOrderExcel(workbook, {
+      factory_id: selectedFactoryId.value,
+    })
     replaceApiRecord(imported)
     selectedOrderId.value = imported.order.id
     activeView.value = 'detail'
