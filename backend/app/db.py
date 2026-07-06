@@ -32,6 +32,9 @@ engine = _create_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 SQLITE_LEGACY_COLUMNS = {
+    "molding_sample_items": [
+        ("production_machine", "production_machine VARCHAR(128) NOT NULL DEFAULT ''"),
+    ],
     "molding_sample_audit_logs": [
         ("actor_user_id", "actor_user_id VARCHAR(64) NOT NULL DEFAULT ''"),
         ("actor_roles", "actor_roles TEXT NOT NULL DEFAULT ''"),

@@ -2841,7 +2841,7 @@ onUnmounted(() => {
                 </button>
               </div>
               <div class="overflow-x-auto">
-                <table class="w-full min-w-[920px] text-[12px]">
+                <table class="w-full min-w-[1020px] text-[12px]">
                   <thead>
                     <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                       <th class="w-8 px-2 py-2 font-medium">#</th>
@@ -2851,6 +2851,7 @@ onUnmounted(() => {
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
                       <th class="px-2 py-2 text-right font-medium">实际用料</th>
+                      <th class="px-2 py-2 text-left font-medium">啤办机台</th>
                       <th class="px-2 py-2 text-right font-medium">费用</th>
                       <th class="px-2 py-2 text-left font-medium">状态</th>
                     </tr>
@@ -2869,6 +2870,7 @@ onUnmounted(() => {
                       </td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</td>
+                      <td class="px-2 py-1.5">{{ formatBlank(item.production_machine) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(item.actual_amount_hkd) }}</td>
                       <td class="px-2 py-1.5">
                         <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
@@ -2877,7 +2879,7 @@ onUnmounted(() => {
                       </td>
                     </tr>
                     <tr v-if="selectedItems.length > detailRows.length">
-                      <td colspan="9" class="px-2 py-2 text-center text-[11px] font-medium text-slate-400">
+                      <td colspan="10" class="px-2 py-2 text-center text-[11px] font-medium text-slate-400">
                         还有 {{ selectedItems.length - detailRows.length }} 项明细，滚动后续详情视图继续查看
                       </td>
                     </tr>
@@ -2962,6 +2964,7 @@ onUnmounted(() => {
                       </div>
                       <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
                         <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
+                        <div><span class="text-slate-400">啤办机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                         <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                         <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                         <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>

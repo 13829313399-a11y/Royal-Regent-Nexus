@@ -65,6 +65,7 @@ ALLOWED_ITEM_PATCH_FIELDS = {
     "actual_weight_kg",
     "actual_amount_hkd",
     "injection_cost",
+    "production_machine",
 }
 
 

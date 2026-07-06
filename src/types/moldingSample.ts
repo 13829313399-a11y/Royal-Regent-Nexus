@@ -61,6 +61,7 @@ export interface MoldingSampleItem {
   mold_id: string
   mold_name: string
   machine_type: string
+  production_machine: string
   material: string
   color: string
   pigment_no: string

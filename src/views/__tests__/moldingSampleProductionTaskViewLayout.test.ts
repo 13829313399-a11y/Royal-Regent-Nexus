@@ -16,6 +16,7 @@ for (const requiredCopy of [
   '每页 10 条',
   '开始生产',
   '保存回填',
+  '啤办机台',
   '完成并回传',
   '啤机回填明细',
   '完成通知回传',
@@ -37,6 +38,7 @@ for (const requiredImplementation of [
   'moldingSampleApi.listOrders',
   'moldingSampleApi.listNotifications',
   'moldingSampleApi.updateItems',
+  'production_machine',
   'moldingSampleApi.updateStatus',
   'moldingSampleApi.updateNotification',
   'moldingSampleApi.createProblem',
@@ -73,6 +75,9 @@ for (const requiredImplementation of [
 ]) {
   assert.match(source, new RegExp(requiredImplementation))
 }
+
+assert.match(source, /<div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">[\s\S]*<div class="fixed right-4 top-4 z-50 flex items-center gap-2[\s\S]*当前厂区：\{\{ activeFactory\.shortName \}\}[\s\S]*<AccountMenu \/>/)
+assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
 
 for (const excludedWorkbenchCopy of [
   '主管工作台',

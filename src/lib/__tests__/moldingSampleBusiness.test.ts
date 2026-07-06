@@ -44,6 +44,7 @@ const baseItem: MoldingSampleItem = {
   mold_id: 'M-001',
   mold_name: '左右枪身',
   machine_type: '160T',
+  production_machine: '',
   material: 'HIPS 425',
   color: '深绿色',
   pigment_no: '71139',

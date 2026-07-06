@@ -520,9 +520,26 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
 
     item_response = client.patch(
         "/api/injection/BP-WORKFLOW-001/items",
-        json={"items": [{"id": "BP-WORKFLOW-001-001", "actual_weight_kg": 2, "injection_cost": 100}]},
+        json={
+            "items": [
+                {
+                    "id": "BP-WORKFLOW-001-001",
+                    "actual_weight_kg": 2,
+                    "injection_cost": 100,
+                    "production_machine": "啤办机台-08",
+                }
+            ]
+        },
     )
     assert item_response.status_code == 200
+    assert item_response.json()["items"][0]["production_machine"] == "啤办机台-08"
+
+    login_as(client, "engineer")
+    engineering_detail_response = client.get("/api/injection/BP-WORKFLOW-001")
+    assert engineering_detail_response.status_code == 200
+    assert engineering_detail_response.json()["items"][0]["production_machine"] == "啤办机台-08"
+
+    login_as(client, "molding_clerk")
 
     completed_response = client.patch(
         "/api/injection/BP-WORKFLOW-001/status",

@@ -36,6 +36,7 @@ class MoldingSampleItemIn(BaseModel):
     mold_id: str = ""
     mold_name: str = ""
     machine_type: str = ""
+    production_machine: str = ""
     material: str = ""
     color: str = ""
     pigment_no: str = ""
