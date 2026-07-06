@@ -759,6 +759,18 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Implementation: replaced the inline `actionMessage` banner in `MoldingSampleView.vue` with a fixed top-center operation toast that uses success/info/error tones, auto-hides non-loading messages, and leaves the Excel import/export/refresh actions as a compact right-aligned toolbar.
 - Files changed: `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
 - Verification: `node_modules\.bin\jiti.cmd src\views\__tests__\moldingSampleViewLayout.test.ts`, `npm.cmd run test:unit -- src\views\__tests__\moldingSampleRuntime.spec.ts`, `git diff --check`, and `npm.cmd run build` passed. Build still prints the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Requirement: prevent the molding-sample board, list, and material-balance pages from becoming very long when data grows; each visible data area should show 10 rows/cards per page and render only the current page.
+- Implementation: added shared client-side pagination state with a fixed `10` item page size for every board status column, the overview list, the material-balance period table, and the material-balance detail table; page changes now lazily render only the current page rows while retaining full-count summaries.
+- Files changed: `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: added a runtime regression with 12 records proving the first page renders only 10 records and page 2 renders the remaining records; `npm.cmd run test:unit -- src\views\__tests__\moldingSampleRuntime.spec.ts` passed with 7 tests.
+- Requirement: allow withdrawn molding-sample orders to be deleted from the engineering detail page so a user can remove a no-longer-needed withdrawn order.
+- Implementation: kept administrator deletion unchanged and exposed the existing delete action for `已撤回` orders when the current account has `molding_sample:delete_draft`; the frontend still requires the existing two-click delete confirmation.
+- Files changed: `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
+- Verification: added a runtime regression proving a non-admin engineering account with draft-delete permission can delete a selected `已撤回` order after confirmation; `npm.cmd run test:unit -- src\views\__tests__\moldingSampleRuntime.spec.ts` passed with 8 tests.
+- Requirement: improve the central top molding-sample operation popup so it has clear entrance and exit animation transitions.
+- Implementation: upgraded the operation toast `Transition` to use initial `appear`, keyed `out-in` message transitions, and combined translate/scale/opacity enter-leave classes with a GPU transform origin so initial display, message changes, manual close, and auto-hide all animate consistently.
+- Files changed: `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
+- Verification: added layout assertions for the toast animation contract; `node_modules\.bin\jiti.cmd src\views\__tests__\moldingSampleViewLayout.test.ts` passed.
 
 ## Open Assumptions
 

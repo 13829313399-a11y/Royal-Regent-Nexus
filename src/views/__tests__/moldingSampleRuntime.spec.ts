@@ -73,23 +73,32 @@ function createRuntimeError(statusCode: number) {
   return new Error(`Request failed with status code ${statusCode}`)
 }
 
-async function mountRuntimeView(component: Component) {
+async function mountRuntimeView(
+  component: Component,
+  options: {
+    roles?: string[]
+    permissions?: string[]
+    displayName?: string
+  } = {},
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
+
+  const permissions = options.permissions ?? [
+    'molding_sample:create',
+    'molding_sample:edit_draft',
+    'molding_sample:delete_draft',
+    'molding_sample:supervisor_review',
+    'molding_sample:manager_review',
+    'system:user_manage',
+  ]
 
   useAuthStore().applySession({
     id: 'tester',
     username: 'tester',
-    display_name: '测试账号',
-    roles: ['系统管理员'],
-    permissions: [
-      'molding_sample:create',
-      'molding_sample:edit_draft',
-      'molding_sample:delete_draft',
-      'molding_sample:supervisor_review',
-      'molding_sample:manager_review',
-      'system:user_manage',
-    ],
+    display_name: options.displayName ?? '测试账号',
+    roles: options.roles ?? ['系统管理员'],
+    permissions,
     factory_scopes: ['*'],
     department_scopes: ['*'],
     force_password_change: false,
@@ -115,16 +124,30 @@ function getButtonByText(wrapper: VueWrapper, text: string) {
   return button!
 }
 
-function createMoldingSampleRecord(status: MoldingSampleStatus = '待审核'): MoldingSampleDetailResponse {
+function getButtonByExactText(wrapper: VueWrapper, text: string) {
+  const button = wrapper.findAll('button').find((candidate) => candidate.text().trim() === text)
+
+  expect(button, `button with exact text "${text}"`).toBeTruthy()
+
+  return button!
+}
+
+function createMoldingSampleRecord(
+  status: MoldingSampleStatus = '待审核',
+  id = 'BP-WITHDRAW-UI',
+  sequence = 1,
+): MoldingSampleDetailResponse {
+  const day = String(sequence).padStart(2, '0')
+
   return {
     order: {
-      id: 'BP-WITHDRAW-UI',
+      id,
       factory_id: 'huaxing',
       order_number: '62437',
       doc_number: 'W-G026-00',
-      product_name: '链条枪',
+      product_name: `链条枪${sequence}`,
       client_name: 'BuzzBee',
-      date: '2026-07-01',
+      date: `2026-07-${day}`,
       stage: 'T0',
       order_type: '啤办',
       workshop: 'A车间',
@@ -135,8 +158,8 @@ function createMoldingSampleRecord(status: MoldingSampleStatus = '待审核'): M
       status,
       reject_reason: '',
       completed_date: '',
-      created_at: '2026-07-01 08:00',
-      updated_at: '2026-07-01 08:00',
+      created_at: `2026-07-${day} 08:00`,
+      updated_at: `2026-07-${day} 08:00`,
     },
     items: [],
     audit_logs: [],
@@ -293,6 +316,80 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).toContain('啤办单 BP-WITHDRAW-UI 已删除')
     expect(wrapper.text()).toContain('当前厂区单据0')
     expect(wrapper.text()).not.toContain('链条枪')
+
+    wrapper.unmount()
+  })
+
+  it('lets an engineer delete a withdrawn molding sample order after confirmation', async () => {
+    const withdrawnRecord = createMoldingSampleRecord('已撤回')
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([withdrawnRecord])
+    mockedMoldingSampleApi.deleteOrder.mockResolvedValueOnce(undefined)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程部'],
+      permissions: [
+        'molding_sample:create',
+        'molding_sample:edit_draft',
+        'molding_sample:delete_draft',
+      ],
+      displayName: '测试账号',
+    })
+
+    await getButtonByText(wrapper, 'BP-WITHDRAW-UI').trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, '删除啤办单').trigger('click')
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.deleteOrder).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('再次点击确认删除')
+
+    await getButtonByText(wrapper, '确认删除').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.deleteOrder).toHaveBeenCalledWith('BP-WITHDRAW-UI')
+    expect(wrapper.text()).toContain('啤办单 BP-WITHDRAW-UI 已删除')
+
+    wrapper.unmount()
+  })
+
+  it('lazy-paginates overview and material balance rows at ten records per page', async () => {
+    const records = Array.from({ length: 12 }, (_, index) =>
+      createMoldingSampleRecord('待审核', `BP-PAGE-${String(index + 1).padStart(3, '0')}`, index + 1),
+    )
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(wrapper.text()).toContain('每页 10 条')
+    expect(wrapper.text()).toContain('BP-PAGE-010')
+    expect(wrapper.text()).not.toContain('BP-PAGE-011')
+
+    await getButtonByText(wrapper, '下一页').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('BP-PAGE-011')
+    expect(wrapper.text()).toContain('BP-PAGE-012')
+    expect(wrapper.text()).not.toContain('BP-PAGE-010')
+
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('BP-PAGE-010')
+    expect(wrapper.text()).not.toContain('BP-PAGE-011')
+
+    await getButtonByText(wrapper, '物料结余').trigger('click')
+    await nextTick()
+
+    const periodTableText = wrapper.get('table[aria-label="物料周期结余"]').text()
+    const detailTableText = wrapper.get('table[aria-label="物料结余明细"]').text()
+
+    expect(periodTableText).toContain('BP-PAGE-003')
+    expect(periodTableText).not.toContain('BP-PAGE-002')
+    expect(detailTableText).toContain('BP-PAGE-010')
+    expect(detailTableText).not.toContain('BP-PAGE-011')
 
     wrapper.unmount()
   })
