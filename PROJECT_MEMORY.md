@@ -17,7 +17,7 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Product name: Royal Regent Nexus
 - Package name: `royal-regent-nexus`
 - Project root: `D:\RR\royal-regent-nexus`
-- Mandatory agent workflow document: `AGENT.md`
+- Mandatory agent workflow document: `AGENTS.md`
 - Current app type: Vue 3 enterprise management single-page application
 - Backend direction: FastAPI service with PostgreSQL database
 
@@ -49,7 +49,7 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 ## Current Source Structure
 
 - `src/main.ts` mounts the Vue app.
-- `AGENT.md` defines the required agent workflow, including reading `AGENT.md` and `PROJECT_MEMORY.md` before any code or project-direction edit.
+- `AGENTS.md` defines the required agent workflow, including reading `AGENTS.md` and `PROJECT_MEMORY.md` before any code or project-direction edit.
 - `src/main.ts` registers Pinia and Vue Router before mounting the app.
 - `src/App.vue` contains the current application shell and top-level navigation.
 - `src/router/index.ts` defines the route table and document title updates.
@@ -364,7 +364,7 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - The molding sample progress page must render as a full standalone page, not inside the standard enterprise shell with top bar and sidebar.
 - The standard Engineering department navigation, permission matrix, todo queue, and other Engineering module cards remain unchanged.
 - The initial molding sample page uses mock data extracted from the user-provided Excel notice for BuzzBee product `62437` (`链条枪`), including 14 detail rows and 420 target shots.
-- `AGENT.md` is the explicit local workflow document for agents. It requires reading `AGENT.md` and `PROJECT_MEMORY.md` before changing code, configuration, tests, routes, data models, UI behavior, backend behavior, or project-direction documentation.
+- `AGENTS.md` is the explicit local workflow document for agents. It requires reading `AGENTS.md` and `PROJECT_MEMORY.md` before changing code, configuration, tests, routes, data models, UI behavior, backend behavior, or project-direction documentation.
 - The `啤办进度追踪` module is a shared Engineering module for Huakang A, Huakang B, Huadeng, and Huaxing. The module card stays common, but its route includes the selected factory id and the detail page renders that factory's molding sample data.
 - `/modules/molding-sample` accepts a `factory` query parameter. Supported production factory ids are `huakang-a`, `huakang-b`, `huadeng`, and `huaxing`; invalid or missing values fall back to Huakang A.
 - The standard application desktop sidebar must stay fixed below the sticky top bar while the main page content scrolls.
@@ -444,7 +444,7 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - `npm.cmd run build` passed after replacing the first Engineering module card with the `啤办进度追踪` route entry and adding the molding sample progress page.
 - Browser verification confirmed clicking the `啤办进度追踪` card navigates to `http://127.0.0.1:5173/modules/molding-sample`.
 - Browser verification confirmed `/modules/molding-sample` has no standard app `header`, no sidebar `aside`, renders a page-root `main`, contains 14 table rows, and reports no console errors.
-- Created `AGENT.md` and verified the root agent workflow file exists with the mandatory pre-change read rules.
+- Created the root agent workflow file, later renamed to `AGENTS.md`, and verified it exists with the mandatory pre-change read rules.
 - `npm.cmd run build` passed after making the molding sample module factory-aware.
 - Browser verification confirmed the module center default card links to `/modules/molding-sample?factory=huakang-a` and shows Huakang A stats (`明细 14 · 风险 2`).
 - Browser verification confirmed `/modules/molding-sample?factory=huakang-b` renders Huakang B data (`73120`, 4 detail rows) instead of the Huakang A `62437` data.
@@ -688,7 +688,7 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Requirement implementation: create the `/modules/molding-sample` route for molding sample progress tracking based on the provided Excel notice.
 - Requirement change: the `/modules/molding-sample` route must render as a standalone full page instead of inside the standard top-bar/sidebar layout.
 - Files changed: `src/data/enterpriseMock.ts`, `src/components/modules/ModuleCard.vue`, `src/router/index.ts`, `src/components/layout/AppShell.vue`, and `src/views/MoldingSampleView.vue`.
-- Requirement implementation: create root `AGENT.md` to explicitly require reading `AGENT.md` and `PROJECT_MEMORY.md` before every future code or project-direction update, and update `PROJECT_MEMORY.md` to reference this workflow document.
+- Requirement implementation: create root agent workflow rules to explicitly require reading `AGENTS.md` and `PROJECT_MEMORY.md` before every future code or project-direction update, and update `PROJECT_MEMORY.md` to reference this workflow document. The original file was created as `AGENT.md` and later renamed to `AGENTS.md`.
 - Requirement change: `啤办进度追踪` is a shared Engineering module across Huakang A, Huakang B, Huadeng, and Huaxing. Clicking it must respond with the selected factory's own data.
 - Requirement implementation: make the module center generate factory-specific molding sample links and stats from the active production factory, and make `MoldingSampleView.vue` read the `factory` query parameter, sync it into the app store, and render the corresponding factory record.
 - Files changed: `src/data/enterpriseMock.ts`, `src/views/ModuleCenterView.vue`, and `src/views/MoldingSampleView.vue`.
@@ -736,6 +736,13 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: the clean PR branch passed `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_molding_sample_api.py -q` with 18 tests, `npm.cmd run test:unit -- src/views/__tests__/moldingSampleRuntime.spec.ts` with 6 tests, static page/API assertions, `git diff --check`, and `npm.cmd run build`. The current dirty local worktree passed its existing backend molding sample tests, frontend runtime tests, page assertions, `git diff --check`, and `npm.cmd run build`.
 - Git workflow status: a new local branch `codex/molding-sample-withdraw-admin-delete` was created in the clean temporary worktree and local commit `82b9077 修复啤办撤回身份并支持管理员删除` was made. `origin/main` was fetched and advanced from `4b1d18e` to `740b698`; merging latest `origin/main` into this branch and pushing are still pending because the user interrupted to ask about memory maintenance.
 - Decision: do not create Git commits, push branches, or open PRs unless the user explicitly asks. The user explicitly asked for the current branch/commit/fetch/merge/push sequence, but also clarified that future commits should not be automatic.
+- Requirement change: use the Codex-standard repository instruction file name `AGENTS.md` instead of the earlier singular `AGENT.md`.
+- Implementation: renamed `AGENT.md` to `AGENTS.md`, updated the workflow file's mandatory-read checklist, and updated current project memory references so future agents read `AGENTS.md` plus `PROJECT_MEMORY.md`.
+- Files changed: `AGENTS.md` and `PROJECT_MEMORY.md`.
+- Verification: static search confirmed current references in `AGENTS.md`, `README.md`, and `PROJECT_MEMORY.md` use `AGENTS.md`; `.gitignore` still permits both the old and new names so the rename remains trackable.
+- Requirement: include the root `README.md` update in the local Git commit together with the Git ignore/tracking adjustments.
+- Implementation: keep the root README exception in `.gitignore`, include current `.gitignore` tracking exceptions, and stage `README.md` with the agent-rule rename and project-memory updates for a local commit.
+- Verification: `README.md` is already tracked by Git and not blocked by ignore rules.
 
 ## Open Assumptions
 

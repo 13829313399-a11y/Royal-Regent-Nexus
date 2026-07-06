@@ -7,7 +7,7 @@ This document defines the required workflow for future agent work in this reposi
 Before changing any source code, configuration, scripts, tests, routes, data models, UI behavior, backend behavior, or project documentation that affects development direction, the agent must read:
 
 ```text
-AGENT.md
+AGENTS.md
 PROJECT_MEMORY.md
 ```
 
@@ -46,7 +46,7 @@ The newest direct user instruction takes priority, but the final state should st
 
 Before editing:
 
-1. Read `AGENT.md`.
+1. Read `AGENTS.md`.
 2. Read `PROJECT_MEMORY.md`.
 3. Identify current project constraints and prior decisions.
 4. Keep the change scoped to the user request.
