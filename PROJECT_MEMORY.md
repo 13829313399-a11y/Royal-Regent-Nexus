@@ -841,6 +841,25 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Files changed: `src/views/RawMaterialManagementView.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
 - Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 3 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `Invoke-WebRequest http://127.0.0.1:5173/modules/pmc-warehouse/raw-material-management -UseBasicParsing` returned `200`; Playwright with system Chrome and mocked auth confirmed the material table header is `序号|物料编号|原料名称 / 型号|规格|类别|单位|供应商|单价(HKD/磅)|安全库存(KG)|当前库存(KG)|状态|操作`, shows 10 rows on page 1, still shows the 286-row import, does not show raw Excel headers such as `商品编号` or `混料01名称`, has no old factory switcher, and has no console errors.
 
+### 2026-07-07
+
+- Requirement: continue the carton-mark verification module and resolve the confusing state where an OCR timeout could still leave the QA page saying an automatic check result was generated.
+- Implementation: increased only the carton-mark automatic-check request timeout to 120 seconds; persisted each photo record's auto-check result, error message, and check time; added history record summary, `查看核验`, and `重新自动核对` actions; reworked the result panel to restore saved results/errors from the selected photo record while preserving the PDF/photo evidence view.
+- Files changed: `src/api/cartonMark.ts`, `src/api/__tests__/cartonMark.test.ts`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, and `PROJECT_MEMORY.md`.
+- Verification: `node_modules\.bin\jiti.cmd src\api\__tests__\cartonMark.test.ts`, `node_modules\.bin\jiti.cmd src\api\__tests__\moldingSample.test.ts`, and `node_modules\.bin\jiti.cmd src\api\__tests__\auth.test.ts` passed; `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `node_modules\.bin\vite.cmd build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF warnings.
+- Verification limitation: `npm.cmd run build` could not complete because local `node_modules` currently lacks `vitest/config`, which is referenced by `vitest.config.ts`; the application-specific TS check and Vite build passed. Backend `pytest` could not run because `backend\.venv\Scripts\python.exe` cannot create a process in this environment and there is no `python` or `py` on PATH.
+- Decisions: automatic-check failures are now treated as a saved QA record with a visible retry path, not as a false successful auto-check.
+- Follow-up: restore/install the local backend Python environment and missing `vitest` package before relying on full `npm run build` or backend pytest as final release gates.
+
+### 2026-07-07
+
+- Requirement: carton-mark photo OCR recognized some content but field recognition accuracy was too poor, producing many `照片未识别` rows.
+- Implementation: upgraded backend photo OCR to run EXIF-corrected, resized, contrast-enhanced, sharpened, binary, and content-cropped image variants through multiple Tesseract page-segmentation modes, then merge unique OCR lines; expanded carton-mark aliases for common PO/ITEM/QTY/CTN/GW/NW/barcode label variants; made field extraction tolerant of OCR confusions such as `O` vs `0`, `I` vs `1`, table pipes, missing punctuation, `PO NO`, `ITEM NO`, and values split into the next cell/line; added a fallback that marks a field as matched when the photo OCR raw text contains the PDF expected value even if the label was not reliably extracted.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, and `PROJECT_MEMORY.md`.
+- Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary local assertion script using the bundled Python confirmed noisy OCR rows like `P.0 N0 | 2033 | ITEM N0 | 2017` extract PO/ITEM/QTY/GW/NW/CTN and that raw-value matches can pass PO/ITEM/barcode comparisons; `node_modules\.bin\jiti.cmd src\api\__tests__\cartonMark.test.ts` passed; `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `node_modules\.bin\vite.cmd build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF warnings.
+- Verification limitation: full backend pytest still could not be run because the local `.venv` Python launcher cannot create a process and bundled Python lacks pytest; the OCR assertions were run directly instead.
+- Decisions: keep the current local Tesseract approach for this slice and improve pre-processing/field matching first; a future PaddleOCR or cloud OCR integration can be evaluated if real photo samples still fail.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.

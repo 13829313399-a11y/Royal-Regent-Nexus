@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { CheckCircle2, FileText, Image as ImageIcon, Plus, Trash2, UploadCloud, XCircle } from '@lucide/vue'
+import { CheckCircle2, Eye, FileText, Image as ImageIcon, Plus, RefreshCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { cartonMarkApi, type CartonMarkAutoCheckResponse, type CartonMarkComparisonItem } from '@/api/cartonMark'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
+import { getApiErrorMessage } from '@/lib/http'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
@@ -41,6 +43,9 @@ interface CartonMarkPhotoRecord {
   status: string
   reviewedAt?: string
   reviewedBy?: string
+  autoCheckResult?: CartonMarkAutoCheckResponse
+  autoCheckErrorMessage?: string
+  autoCheckedAt?: string
   imageUrl?: string
   imageBlob?: Blob
   frontFileName?: string
@@ -104,6 +109,9 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const frontPhotoFileInput = ref<HTMLInputElement | null>(null)
 const sidePhotoFileInput = ref<HTMLInputElement | null>(null)
 const comparisonRecord = ref<CartonMarkPhotoRecord | null>(null)
+const autoCheckResult = ref<CartonMarkAutoCheckResponse | null>(null)
+const autoCheckErrorMessage = ref('')
+const recheckingPhotoId = ref('')
 const activeCustomer = ref(ALL_CUSTOMERS)
 const newCustomerName = ref('')
 const searchKeyword = ref('')
@@ -204,27 +212,7 @@ const comparisonTemplate = computed(() => {
   const photo = comparisonRecord.value
   if (!photo) return null
 
-  const matchedById = records.value.find((record) => record.id === photo.templateId)
-  if (matchedById) return matchedById
-
-  const matchedByPo = records.value.find((record) => {
-    return normalizeKey(record.customerName) === normalizeKey(photo.customerName)
-      && normalizeKey(record.po) === normalizeKey(photo.po)
-      && normalizeKey(record.item) === normalizeKey(photo.item)
-  })
-  if (matchedByPo) return matchedByPo
-
-  const selectedTemplate = selectedTemplateForPhoto.value
-  if (
-    selectedTemplate
-    && normalizeKey(selectedTemplate.customerName) === normalizeKey(photo.customerName)
-    && normalizeKey(selectedTemplate.po) === normalizeKey(photo.po)
-    && normalizeKey(selectedTemplate.item) === normalizeKey(photo.item)
-  ) {
-    return selectedTemplate
-  }
-
-  return null
+  return findTemplateForPhoto(photo)
 })
 
 const comparisonPdfPreviewUrl = computed(() => {
@@ -284,7 +272,17 @@ const canSubmitPhoto = computed(() => {
 const hasBothSelectedPhotos = computed(() => Boolean(selectedFrontPhotoFile.value && selectedSidePhotoFile.value))
 const photoSubmitLabel = computed(() => {
   if (isSavingPhoto.value) return '对比中'
-  return hasBothSelectedPhotos.value ? '开始对比' : '上传正唛和侧唛'
+  return hasBothSelectedPhotos.value ? '开始自动核对' : '上传正唛和侧唛'
+})
+const autoCheckComparisons = computed(() => autoCheckResult.value?.comparisons ?? [])
+const frontAutoCheckComparisons = computed(() => {
+  return autoCheckComparisons.value.filter((item) => item.side === 'front')
+})
+const sideAutoCheckComparisons = computed(() => {
+  return autoCheckComparisons.value.filter((item) => item.side === 'side')
+})
+const autoCheckExtractionMessages = computed(() => {
+  return (autoCheckResult.value?.extraction ?? []).filter((status) => status.message || !status.ok)
 })
 
 const customerGroups = computed(() => {
@@ -491,6 +489,85 @@ function sortPhotoRecords(nextRecords: CartonMarkPhotoRecord[]) {
   return [...nextRecords].sort((left, right) => right.uploadedAt.localeCompare(left.uploadedAt))
 }
 
+function findTemplateForPhoto(photo: CartonMarkPhotoRecord) {
+  const matchedById = records.value.find((record) => record.id === photo.templateId)
+  if (matchedById) return matchedById
+
+  const matchedByPo = records.value.find((record) => {
+    return normalizeKey(record.customerName) === normalizeKey(photo.customerName)
+      && normalizeKey(record.po) === normalizeKey(photo.po)
+      && normalizeKey(record.item) === normalizeKey(photo.item)
+  })
+  if (matchedByPo) return matchedByPo
+
+  const selectedTemplate = selectedTemplateForPhoto.value
+  if (
+    selectedTemplate
+    && normalizeKey(selectedTemplate.customerName) === normalizeKey(photo.customerName)
+    && normalizeKey(selectedTemplate.po) === normalizeKey(photo.po)
+    && normalizeKey(selectedTemplate.item) === normalizeKey(photo.item)
+  ) {
+    return selectedTemplate
+  }
+
+  return null
+}
+
+function showPhotoAutoCheck(photo: CartonMarkPhotoRecord) {
+  comparisonRecord.value = photo
+  autoCheckResult.value = photo.autoCheckResult ?? null
+  autoCheckErrorMessage.value = photo.autoCheckErrorMessage ?? ''
+}
+
+function getPhotoAutoCheckSummary(photo: CartonMarkPhotoRecord) {
+  if (photo.autoCheckResult) {
+    const summary = photo.autoCheckResult.summary
+    return `自动核对：${summary.overall_status} · 通过 ${summary.pass_count} / 异常 ${summary.mismatch_count} / 待复核 ${summary.review_count + summary.missing_count}`
+  }
+
+  if (photo.autoCheckErrorMessage) {
+    return photo.autoCheckErrorMessage
+  }
+
+  return '尚未生成自动核对明细。'
+}
+
+async function runCartonMarkAutoCheck(
+  template: CartonMarkTemplateRecord,
+  frontPhoto: Blob,
+  sidePhoto: Blob,
+) {
+  return cartonMarkApi.autoCheck({
+    customerName: template.customerName,
+    po: template.po,
+    item: template.item,
+    pdfTemplate: template.fileBlob as Blob,
+    frontPhoto,
+    sidePhoto,
+  })
+}
+
+async function replaceStoredPhotoRecord(nextPhoto: CartonMarkPhotoRecord) {
+  const nextPhotoRecords = sortPhotoRecords(allPhotoRecords.value.map((record) => {
+    return record.id === nextPhoto.id ? nextPhoto : record
+  }))
+
+  allPhotoRecords.value = nextPhotoRecords
+
+  try {
+    if (storageMode.value === 'indexedDb') {
+      await savePhotoRecordSnapshotToDb(nextPhoto)
+    } else {
+      writePhotoRecordsToLocalStorage(nextPhotoRecords)
+    }
+  } catch {
+    storageMode.value = 'localStorage'
+    writePhotoRecordsToLocalStorage(nextPhotoRecords)
+  }
+
+  return nextPhoto
+}
+
 function resetForm() {
   form.customerName = ''
   form.po = ''
@@ -508,6 +585,8 @@ function clearPhotoSelection(side: CartonMarkPhotoSide, clearComparison = true) 
 
   if (clearComparison) {
     comparisonRecord.value = null
+    autoCheckResult.value = null
+    autoCheckErrorMessage.value = ''
   }
 
   if (side === 'front') {
@@ -727,6 +806,8 @@ function handlePhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
   }
 
   comparisonRecord.value = null
+  autoCheckResult.value = null
+  autoCheckErrorMessage.value = ''
 
   if (side === 'front') {
     clearPhotoSelection('front', false)
@@ -863,6 +944,8 @@ async function deleteTemplateRecord(record: CartonMarkTemplateRecord) {
 async function submitPhoto() {
   photoErrorMessage.value = ''
   photoSuccessMessage.value = ''
+  autoCheckErrorMessage.value = ''
+  autoCheckResult.value = null
 
   if (!canUploadPhoto.value) {
     photoErrorMessage.value = '当前账号无权上传实拍图片，请使用 QA 检验员账号操作。'
@@ -883,6 +966,11 @@ async function submitPhoto() {
 
   if (!canSubmitPhoto.value) {
     photoErrorMessage.value = '请选择模板，并上传有效的正唛和侧唛图片。'
+    return
+  }
+
+  if (!template.fileBlob) {
+    photoErrorMessage.value = '当前模板只有索引，没有 PDF 原件，无法自动核对。请纸箱仓管重新上传这份 PDF 模板。'
     return
   }
 
@@ -923,6 +1011,20 @@ async function submitPhoto() {
   }
 
   try {
+    const result = await runCartonMarkAutoCheck(template, frontFile, sideFile)
+    photoRecord.status = getPhotoStatusFromAutoCheck(result.summary.overall_status)
+    photoRecord.autoCheckResult = result
+    photoRecord.autoCheckErrorMessage = ''
+    photoRecord.autoCheckedAt = new Date().toISOString()
+    autoCheckResult.value = result
+  } catch (error) {
+    const message = `自动核对未完成：${getApiErrorMessage(error)}`
+    photoRecord.autoCheckErrorMessage = message
+    photoRecord.autoCheckedAt = new Date().toISOString()
+    autoCheckErrorMessage.value = message
+  }
+
+  try {
     if (storageMode.value === 'indexedDb') {
       await savePhotoRecordToDb(photoRecord)
     } else {
@@ -930,18 +1032,85 @@ async function submitPhoto() {
     }
 
     allPhotoRecords.value = sortPhotoRecords([photoRecord, ...allPhotoRecords.value])
-    comparisonRecord.value = photoRecord
     resetPhotoSelection(false)
-    photoSuccessMessage.value = `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 已按 PDF 正唛和侧唛参考区开始对比。`
+    showPhotoAutoCheck(photoRecord)
+    photoSuccessMessage.value = photoRecord.autoCheckResult
+      ? `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
+      : `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
   } catch {
     storageMode.value = 'localStorage'
     allPhotoRecords.value = sortPhotoRecords([photoRecord, ...allPhotoRecords.value])
     writePhotoRecordsToLocalStorage(allPhotoRecords.value)
-    comparisonRecord.value = photoRecord
     resetPhotoSelection(false)
-    photoSuccessMessage.value = `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 已按 PDF 正唛和侧唛参考区开始对比。`
+    showPhotoAutoCheck(photoRecord)
+    photoSuccessMessage.value = photoRecord.autoCheckResult
+      ? `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
+      : `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
   } finally {
     isSavingPhoto.value = false
+  }
+}
+
+function getPhotoStatusFromAutoCheck(status: string) {
+  if (status === '核对通过' || status === '发现异常' || status === '需复核' || status === '未识别') {
+    return status
+  }
+
+  return '待复核'
+}
+
+async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) {
+  photoErrorMessage.value = ''
+  photoSuccessMessage.value = ''
+
+  if (!canReviewPhoto.value) {
+    photoErrorMessage.value = '当前账号无权重新自动核对箱唛，请使用 QA 检验员账号操作。'
+    return
+  }
+
+  const template = findTemplateForPhoto(photo)
+  if (!template?.fileBlob) {
+    photoErrorMessage.value = '没有找到可用于自动核对的 PDF 原件，请纸箱仓管重新上传这份 PDF 模板。'
+    showPhotoAutoCheck(photo)
+    return
+  }
+
+  const frontPhoto = photo.frontImageBlob ?? photo.imageBlob
+  const sidePhoto = photo.sideImageBlob
+  if (!frontPhoto || !sidePhoto) {
+    photoErrorMessage.value = '当前浏览器没有保存完整正唛/侧唛图片原件，请重新上传实拍图片后再自动核对。'
+    showPhotoAutoCheck(photo)
+    return
+  }
+
+  recheckingPhotoId.value = photo.id
+
+  try {
+    const result = await runCartonMarkAutoCheck(template, frontPhoto, sidePhoto)
+    const checkedPhoto: CartonMarkPhotoRecord = {
+      ...photo,
+      status: getPhotoStatusFromAutoCheck(result.summary.overall_status),
+      autoCheckResult: result,
+      autoCheckErrorMessage: '',
+      autoCheckedAt: new Date().toISOString(),
+    }
+
+    await replaceStoredPhotoRecord(checkedPhoto)
+    showPhotoAutoCheck(checkedPhoto)
+    photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 已重新生成自动核对结果。`
+  } catch (error) {
+    const message = `自动核对未完成：${getApiErrorMessage(error)}`
+    const failedPhoto: CartonMarkPhotoRecord = {
+      ...photo,
+      autoCheckErrorMessage: message,
+      autoCheckedAt: new Date().toISOString(),
+    }
+
+    await replaceStoredPhotoRecord(failedPhoto)
+    showPhotoAutoCheck(failedPhoto)
+    photoErrorMessage.value = message
+  } finally {
+    recheckingPhotoId.value = ''
   }
 }
 
@@ -955,6 +1124,42 @@ function getPhotoStatusClass(status: string) {
   }
 
   return 'bg-amber-50 text-amber-700'
+}
+
+function getAutoCheckStatusClass(status: string) {
+  if (status === '核对通过') {
+    return 'border-green-200 bg-green-50 text-green-700'
+  }
+
+  if (status === '发现异常') {
+    return 'border-red-200 bg-red-50 text-red-700'
+  }
+
+  if (status === '未识别') {
+    return 'border-slate-200 bg-slate-50 text-slate-600'
+  }
+
+  return 'border-amber-200 bg-amber-50 text-amber-700'
+}
+
+function getComparisonStatusLabel(status: CartonMarkComparisonItem['status']) {
+  if (status === 'pass') return '通过'
+  if (status === 'mismatch') return '不一致'
+  if (status === 'missing_expected') return 'PDF 未识别'
+  if (status === 'missing_actual') return '照片未识别'
+  if (status === 'review') return '需复核'
+  return '待判断'
+}
+
+function getComparisonStatusClass(status: CartonMarkComparisonItem['status']) {
+  if (status === 'pass') return 'bg-green-50 text-green-700'
+  if (status === 'mismatch') return 'bg-red-50 text-red-700'
+  if (status === 'missing_expected' || status === 'missing_actual') return 'bg-orange-50 text-orange-700'
+  return 'bg-amber-50 text-amber-700'
+}
+
+function formatConfidence(confidence: number) {
+  return `${Math.round(confidence * 100)}%`
 }
 
 async function deletePhotoRecord(photo: CartonMarkPhotoRecord) {
@@ -995,6 +1200,8 @@ async function deletePhotoRecord(photo: CartonMarkPhotoRecord) {
 
   if (comparisonRecord.value?.id === photo.id) {
     comparisonRecord.value = null
+    autoCheckResult.value = null
+    autoCheckErrorMessage.value = ''
   }
 
   photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 的实拍记录已删除，可以重新上传正唛和侧唛。`
@@ -1016,21 +1223,9 @@ async function reviewPhoto(photo: CartonMarkPhotoRecord, status: '核对通过' 
     reviewedAt: new Date().toISOString(),
     reviewedBy: currentUserName.value,
   }
-  const nextPhotoRecords = sortPhotoRecords(allPhotoRecords.value.map((record) => {
-    return record.id === photo.id ? reviewedPhoto : record
-  }))
-
-  allPhotoRecords.value = nextPhotoRecords
-
-  try {
-    if (storageMode.value === 'indexedDb') {
-      await savePhotoRecordSnapshotToDb(reviewedPhoto)
-    } else {
-      writePhotoRecordsToLocalStorage(nextPhotoRecords)
-    }
-  } catch {
-    storageMode.value = 'localStorage'
-    writePhotoRecordsToLocalStorage(nextPhotoRecords)
+  await replaceStoredPhotoRecord(reviewedPhoto)
+  if (comparisonRecord.value?.id === photo.id) {
+    showPhotoAutoCheck(reviewedPhoto)
   }
 
   photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 已标记为${status}。`
@@ -1656,6 +1851,9 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           <p v-if="photoSuccessMessage" class="mt-4 rounded-lg border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">
             {{ photoSuccessMessage }}
           </p>
+          <p v-if="autoCheckErrorMessage" class="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            {{ autoCheckErrorMessage }}
+          </p>
 
           <button
             type="submit"
@@ -1720,7 +1918,35 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 <p v-if="photo.reviewedAt" class="mt-1 text-xs text-slate-500">
                   核对：{{ photo.reviewedBy }} · {{ formatDate(photo.reviewedAt) }}
                 </p>
+                <p
+                  class="mt-1 line-clamp-2 text-xs"
+                  :class="photo.autoCheckErrorMessage && !photo.autoCheckResult ? 'text-amber-700' : 'text-slate-500'"
+                >
+                  {{ getPhotoAutoCheckSummary(photo) }}
+                </p>
                 <div class="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
+                    @click="showPhotoAutoCheck(photo)"
+                  >
+                    <Eye class="size-3.5" aria-hidden="true" />
+                    查看核验
+                  </button>
+                  <button
+                    v-if="canReviewPhoto"
+                    type="button"
+                    :disabled="recheckingPhotoId === photo.id"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    @click="rerunAutoCheckForPhoto(photo)"
+                  >
+                    <RefreshCw
+                      class="size-3.5"
+                      :class="recheckingPhotoId === photo.id ? 'animate-spin' : ''"
+                      aria-hidden="true"
+                    />
+                    {{ recheckingPhotoId === photo.id ? '重算中' : '重新自动核对' }}
+                  </button>
                   <button
                     v-if="canReviewPhoto"
                     type="button"
@@ -1759,122 +1985,281 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           >
             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">PDF 对照</p>
-                <h3 class="mt-2 text-lg font-semibold tracking-tight text-slate-950">图片与 PDF 对照结果</h3>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">AUTO CHECK</p>
+                <h3 class="mt-2 text-lg font-semibold tracking-tight text-slate-950">自动核对结果</h3>
                 <p class="mt-1 text-xs text-slate-600">
                   {{ comparisonRecord.customerName }} · PO：{{ comparisonRecord.po }} · ITEM：{{ comparisonRecord.item }}
                 </p>
+                <p v-if="comparisonRecord.autoCheckedAt" class="mt-1 text-xs text-slate-500">
+                  自动核对：{{ formatDate(comparisonRecord.autoCheckedAt) }}
+                </p>
               </div>
-              <a
-                v-if="comparisonTemplate?.pdfUrl"
-                :href="comparisonTemplate.pdfUrl"
-                target="_blank"
-                rel="noreferrer"
-                class="inline-flex h-9 w-fit items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
+              <div class="flex flex-wrap items-center gap-2">
+                <span
+                  v-if="autoCheckResult"
+                  class="inline-flex h-9 items-center rounded-lg border px-3 text-xs font-semibold"
+                  :class="getAutoCheckStatusClass(autoCheckResult.summary.overall_status)"
+                >
+                  {{ autoCheckResult.summary.overall_status }}
+                </span>
+                <a
+                  v-if="comparisonTemplate?.pdfUrl"
+                  :href="comparisonTemplate.pdfUrl"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="inline-flex h-9 w-fit items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
+                >
+                  <FileText class="size-3.5" aria-hidden="true" />
+                  打开 PDF 模板
+                </a>
+              </div>
+            </div>
+
+            <div
+              v-if="autoCheckResult"
+              class="mt-4 grid gap-3 sm:grid-cols-4"
+            >
+              <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p class="text-xs font-semibold text-slate-500">通过</p>
+                <p class="mt-1 text-xl font-semibold text-green-700">{{ autoCheckResult.summary.pass_count }}</p>
+              </div>
+              <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p class="text-xs font-semibold text-slate-500">不一致</p>
+                <p class="mt-1 text-xl font-semibold text-red-700">{{ autoCheckResult.summary.mismatch_count }}</p>
+              </div>
+              <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p class="text-xs font-semibold text-slate-500">缺失识别</p>
+                <p class="mt-1 text-xl font-semibold text-orange-700">{{ autoCheckResult.summary.missing_count }}</p>
+              </div>
+              <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p class="text-xs font-semibold text-slate-500">需复核</p>
+                <p class="mt-1 text-xl font-semibold text-amber-700">{{ autoCheckResult.summary.review_count }}</p>
+              </div>
+            </div>
+
+            <div
+              v-if="autoCheckErrorMessage && !autoCheckResult"
+              class="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700"
+            >
+              {{ autoCheckErrorMessage }}
+            </div>
+            <div
+              v-else-if="!autoCheckResult"
+              class="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500"
+            >
+              自动核对结果尚未生成，请选择 PDF 模板并上传正唛、侧唛两张照片后开始自动核对。
+            </div>
+
+            <div
+              v-if="autoCheckResult"
+              class="mt-5 space-y-5"
+            >
+              <div
+                v-if="autoCheckExtractionMessages.length"
+                class="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-800"
               >
-                <FileText class="size-3.5" aria-hidden="true" />
-                打开 PDF 模板
-              </a>
-            </div>
-
-            <div class="mt-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
-              <div class="flex flex-wrap gap-2">
-                <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-blue-700">客名</span>
-                <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-blue-700">PO</span>
-                <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-blue-700">ITEM</span>
-                <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-blue-700">条码</span>
-                <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-blue-700">箱号/数量</span>
-                <span class="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-blue-700">正侧唛类型</span>
+                <p class="font-semibold">识别提示</p>
+                <ul class="mt-2 space-y-1">
+                  <li
+                    v-for="status in autoCheckExtractionMessages"
+                    :key="`${status.source}-${status.engine}`"
+                  >
+                    {{ status.source }} · {{ status.engine }}：{{ status.message || '识别结果需要复核' }}
+                  </li>
+                </ul>
               </div>
-            </div>
 
-            <div class="mt-5 space-y-5">
-              <section class="border-t border-slate-200 pt-5">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <h4 class="text-sm font-semibold text-slate-950">正唛对照</h4>
-                  <span class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">PDF 中较长的大框</span>
+              <section class="rounded-lg border border-slate-200">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+                  <h4 class="text-sm font-semibold text-slate-950">正唛字段核对</h4>
+                  <span class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">PDF 长框 vs QA 正唛</span>
                 </div>
-
-                <div class="mt-3 grid gap-4 xl:grid-cols-2">
-                  <figure class="min-w-0">
-                    <figcaption class="mb-2 text-xs font-semibold text-slate-700">PDF 模板</figcaption>
-                    <div class="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                      <object
-                        v-if="comparisonPdfPreviewUrl"
-                        :data="comparisonPdfPreviewUrl"
-                        type="application/pdf"
-                        class="h-72 w-full"
+                <div
+                  v-if="frontAutoCheckComparisons.length"
+                  class="overflow-x-auto"
+                >
+                  <table class="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                      <tr>
+                        <th class="px-4 py-3">字段</th>
+                        <th class="px-4 py-3">PDF 模板</th>
+                        <th class="px-4 py-3">照片识别</th>
+                        <th class="px-4 py-3">结果</th>
+                        <th class="px-4 py-3">置信度</th>
+                        <th class="px-4 py-3">说明</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 bg-white">
+                      <tr
+                        v-for="item in frontAutoCheckComparisons"
+                        :key="`front-check-${item.field_key}`"
                       >
-                        <div class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500">
-                          当前浏览器无法预览 PDF
-                        </div>
-                      </object>
-                      <div
-                        v-else
-                        class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500"
-                      >
-                        {{ comparisonPdfMissingMessage }}
-                      </div>
-                    </div>
-                  </figure>
-
-                  <figure class="min-w-0">
-                    <figcaption class="mb-2 text-xs font-semibold text-slate-700">QA 实拍正唛</figcaption>
-                    <div class="flex min-h-72 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                      <img
-                        v-if="comparisonRecord.frontImageUrl || comparisonRecord.imageUrl"
-                        :src="comparisonRecord.frontImageUrl || comparisonRecord.imageUrl"
-                        :alt="`${comparisonRecord.customerName} 正唛实拍对照`"
-                        class="max-h-[520px] w-full object-contain"
-                      >
-                    </div>
-                  </figure>
+                        <td class="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">{{ item.label }}</td>
+                        <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.expected || '-' }}</td>
+                        <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.actual || '-' }}</td>
+                        <td class="whitespace-nowrap px-4 py-3">
+                          <span
+                            class="rounded-full px-2.5 py-1 text-xs font-semibold"
+                            :class="getComparisonStatusClass(item.status)"
+                          >
+                            {{ getComparisonStatusLabel(item.status) }}
+                          </span>
+                        </td>
+                        <td class="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{{ formatConfidence(item.confidence) }}</td>
+                        <td class="min-w-48 px-4 py-3 text-xs text-slate-500">{{ item.note || '-' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
+                <p
+                  v-else
+                  class="px-4 py-4 text-sm text-slate-500"
+                >
+                  正唛暂未识别到可核对字段。
+                </p>
               </section>
 
-              <section class="border-t border-slate-200 pt-5">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <h4 class="text-sm font-semibold text-slate-950">侧唛对照</h4>
-                  <span class="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">PDF 中较短的小框</span>
+              <section class="rounded-lg border border-slate-200">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+                  <h4 class="text-sm font-semibold text-slate-950">侧唛字段核对</h4>
+                  <span class="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">PDF 短框 vs QA 侧唛</span>
                 </div>
-
-                <div class="mt-3 grid gap-4 xl:grid-cols-2">
-                  <figure class="min-w-0">
-                    <figcaption class="mb-2 text-xs font-semibold text-slate-700">PDF 模板</figcaption>
-                    <div class="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                      <object
-                        v-if="comparisonPdfPreviewUrl"
-                        :data="comparisonPdfPreviewUrl"
-                        type="application/pdf"
-                        class="h-72 w-full"
+                <div
+                  v-if="sideAutoCheckComparisons.length"
+                  class="overflow-x-auto"
+                >
+                  <table class="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                      <tr>
+                        <th class="px-4 py-3">字段</th>
+                        <th class="px-4 py-3">PDF 模板</th>
+                        <th class="px-4 py-3">照片识别</th>
+                        <th class="px-4 py-3">结果</th>
+                        <th class="px-4 py-3">置信度</th>
+                        <th class="px-4 py-3">说明</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 bg-white">
+                      <tr
+                        v-for="item in sideAutoCheckComparisons"
+                        :key="`side-check-${item.field_key}`"
                       >
-                        <div class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500">
-                          当前浏览器无法预览 PDF
-                        </div>
-                      </object>
-                      <div
-                        v-else
-                        class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500"
-                      >
-                        {{ comparisonPdfMissingMessage }}
-                      </div>
-                    </div>
-                  </figure>
-
-                  <figure class="min-w-0">
-                    <figcaption class="mb-2 text-xs font-semibold text-slate-700">QA 实拍侧唛</figcaption>
-                    <div class="flex min-h-72 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                      <img
-                        v-if="comparisonRecord.sideImageUrl"
-                        :src="comparisonRecord.sideImageUrl"
-                        :alt="`${comparisonRecord.customerName} 侧唛实拍对照`"
-                        class="max-h-[520px] w-full object-contain"
-                      >
-                    </div>
-                  </figure>
+                        <td class="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">{{ item.label }}</td>
+                        <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.expected || '-' }}</td>
+                        <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.actual || '-' }}</td>
+                        <td class="whitespace-nowrap px-4 py-3">
+                          <span
+                            class="rounded-full px-2.5 py-1 text-xs font-semibold"
+                            :class="getComparisonStatusClass(item.status)"
+                          >
+                            {{ getComparisonStatusLabel(item.status) }}
+                          </span>
+                        </td>
+                        <td class="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{{ formatConfidence(item.confidence) }}</td>
+                        <td class="min-w-48 px-4 py-3 text-xs text-slate-500">{{ item.note || '-' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
+                <p
+                  v-else
+                  class="px-4 py-4 text-sm text-slate-500"
+                >
+                  侧唛暂未识别到可核对字段。
+                </p>
               </section>
             </div>
+
+            <details class="mt-5 rounded-lg border border-slate-200 bg-white">
+              <summary class="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">查看 PDF 与实拍图片证据</summary>
+              <div class="space-y-5 border-t border-slate-200 px-4 py-4">
+                <section>
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <h4 class="text-sm font-semibold text-slate-950">正唛对照</h4>
+                    <span class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">PDF 中较长的大框</span>
+                  </div>
+
+                  <div class="mt-3 grid gap-4 xl:grid-cols-2">
+                    <figure class="min-w-0">
+                      <figcaption class="mb-2 text-xs font-semibold text-slate-700">PDF 模板</figcaption>
+                      <div class="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                        <object
+                          v-if="comparisonPdfPreviewUrl"
+                          :data="comparisonPdfPreviewUrl"
+                          type="application/pdf"
+                          class="h-72 w-full"
+                        >
+                          <div class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500">
+                            当前浏览器无法预览 PDF
+                          </div>
+                        </object>
+                        <div
+                          v-else
+                          class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500"
+                        >
+                          {{ comparisonPdfMissingMessage }}
+                        </div>
+                      </div>
+                    </figure>
+
+                    <figure class="min-w-0">
+                      <figcaption class="mb-2 text-xs font-semibold text-slate-700">QA 实拍正唛</figcaption>
+                      <div class="flex min-h-72 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                        <img
+                          v-if="comparisonRecord.frontImageUrl || comparisonRecord.imageUrl"
+                          :src="comparisonRecord.frontImageUrl || comparisonRecord.imageUrl"
+                          :alt="`${comparisonRecord.customerName} 正唛实拍对照`"
+                          class="max-h-[520px] w-full object-contain"
+                        >
+                      </div>
+                    </figure>
+                  </div>
+                </section>
+
+                <section class="border-t border-slate-200 pt-5">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <h4 class="text-sm font-semibold text-slate-950">侧唛对照</h4>
+                    <span class="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">PDF 中较短的小框</span>
+                  </div>
+
+                  <div class="mt-3 grid gap-4 xl:grid-cols-2">
+                    <figure class="min-w-0">
+                      <figcaption class="mb-2 text-xs font-semibold text-slate-700">PDF 模板</figcaption>
+                      <div class="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                        <object
+                          v-if="comparisonPdfPreviewUrl"
+                          :data="comparisonPdfPreviewUrl"
+                          type="application/pdf"
+                          class="h-72 w-full"
+                        >
+                          <div class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500">
+                            当前浏览器无法预览 PDF
+                          </div>
+                        </object>
+                        <div
+                          v-else
+                          class="flex h-72 items-center justify-center px-4 text-center text-sm text-slate-500"
+                        >
+                          {{ comparisonPdfMissingMessage }}
+                        </div>
+                      </div>
+                    </figure>
+
+                    <figure class="min-w-0">
+                      <figcaption class="mb-2 text-xs font-semibold text-slate-700">QA 实拍侧唛</figcaption>
+                      <div class="flex min-h-72 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                        <img
+                          v-if="comparisonRecord.sideImageUrl"
+                          :src="comparisonRecord.sideImageUrl"
+                          :alt="`${comparisonRecord.customerName} 侧唛实拍对照`"
+                          class="max-h-[520px] w-full object-contain"
+                        >
+                      </div>
+                    </figure>
+                  </div>
+                </section>
+              </div>
+            </details>
           </section>
         </form>
       </div>
