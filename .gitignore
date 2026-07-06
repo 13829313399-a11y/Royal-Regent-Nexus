@@ -35,6 +35,10 @@ backend/data/*.sqlite3
 # Markdown documents
 *.md
 !/README.md
+!/AGENT.md
+!/AGENTS.md
+!/AGENTS.MD
+!/PROJECT_MEMORY.md
 
 # Editor directories and files
 .vscode/*
