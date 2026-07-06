@@ -527,6 +527,15 @@ def ensure_order_write_allowed(
     raise HTTPException(status_code=403, detail="当前状态不允许改删")
 
 
+def ensure_order_delete_allowed(db: Session, order: MoldingSampleOrder, current_user: AuthContext) -> None:
+    ensure_factory_scope(db, current_user, order.factory_id)
+    if order.status in LOCKED_STATUSES:
+        ensure_permission(db, current_user, "system:user_manage")
+        return
+
+    ensure_permission(db, current_user, "molding_sample:delete_draft")
+
+
 def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, current_user: AuthContext) -> MoldingSampleOrder:
     order = load_order(db, order_id, current_user)
     if payload.order.id != order_id:
@@ -578,7 +587,7 @@ def delete_order(
     current_user: AuthContext,
 ) -> None:
     order = load_order(db, order_id, current_user)
-    ensure_order_write_allowed(db, order, current_user, "molding_sample:delete_draft")
+    ensure_order_delete_allowed(db, order, current_user)
     db.delete(order)
     db.commit()
 
@@ -876,6 +885,18 @@ def completion_missing_item_ids(order: MoldingSampleOrder) -> list[str]:
     ]
 
 
+def is_opening_engineer(order: MoldingSampleOrder, current_user: AuthContext) -> bool:
+    submitter_user_ids = {
+        audit.actor_user_id
+        for audit in order.audit_logs
+        if audit.action.startswith("工程提交") and audit.actor_user_id
+    }
+    if submitter_user_ids:
+        return current_user.id in submitter_user_ids
+
+    return order.eng_name == "" or order.eng_name == current_user.display_name
+
+
 def calculate_item_costs(
     db: Session,
     order: MoldingSampleOrder,
@@ -983,10 +1004,17 @@ def transition_status(
         order.reject_reason = request.reason
     elif action == "工程重提":
         ensure_permission(db, current_user, "molding_sample:edit_draft")
-        if order.status != "已驳回":
-            raise HTTPException(status_code=403, detail="只有工程部可以重提已驳回单")
+        if order.status not in {"已驳回", "已撤回"}:
+            raise HTTPException(status_code=403, detail="只有工程部可以重提已驳回或已撤回单")
         next_status = "待审核"
         order.reject_reason = ""
+    elif action == "工程撤回":
+        ensure_permission(db, current_user, "molding_sample:edit_draft")
+        if order.status != "待审核":
+            raise HTTPException(status_code=403, detail="只有开单工程师可以撤回待审核单")
+        if not is_opening_engineer(order, current_user):
+            raise HTTPException(status_code=403, detail="只有开单工程师可以撤回本人提交的待审核单")
+        next_status = "已撤回"
     elif action == "开始处理":
         ensure_permission(db, current_user, "molding_sample:production_start")
         if order.status != "待生产":

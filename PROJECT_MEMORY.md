@@ -743,6 +743,10 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Requirement: include the root `README.md` update in the local Git commit together with the Git ignore/tracking adjustments.
 - Implementation: keep the root README exception in `.gitignore`, include current `.gitignore` tracking exceptions, and stage `README.md` with the agent-rule rename and project-memory updates for a local commit.
 - Verification: `README.md` is already tracked by Git and not blocked by ignore rules.
+- Requirement: create a new branch, make one local Git commit for the current molding-sample module sync, and push that branch to the remote repository.
+- Implementation scope: the branch commit includes the current molding-sample source and test changes for engineer withdraw/resubmit, administrator deletion, factory-aware Excel import, the material-balance view, production module card copy, and Vitest conversion of the production module entry assertion.
+- Files planned for commit: backend molding-sample API/service/Excel parser/tests, frontend molding-sample API/business/types/views/tests, and this project memory update.
+- Verification: `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_molding_sample_api.py -q` passed with 17 tests; `node_modules\.bin\jiti.cmd src\api\__tests__\moldingSample.test.ts`, `node_modules\.bin\jiti.cmd src\lib\__tests__\moldingSampleBusiness.test.ts`, and `node_modules\.bin\jiti.cmd src\views\__tests__\moldingSampleViewLayout.test.ts` passed; `npm.cmd run test:unit -- src\views\__tests__\moldingSampleRuntime.spec.ts` passed with 4 tests; `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 2 tests; `git diff --check` passed with only Windows LF-to-CRLF notices; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings. Generated `outputs/` artifacts and `public/_redirects` are not included in this branch commit.
 
 ## Open Assumptions
 

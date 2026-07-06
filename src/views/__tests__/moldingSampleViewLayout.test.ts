@@ -10,6 +10,14 @@ for (const requiredCopy of [
   '看板总览',
   '工程部 · 新建开单',
   '单据详情 · 审核',
+  '物料结余',
+  '日结余',
+  '周结余',
+  '月结余',
+  '周期结余',
+  '预计用料',
+  '实际用料',
+  '结余金额',
   '啤办生产任务单',
   '新建啤办单',
   '导入Excel',
@@ -19,7 +27,9 @@ for (const requiredCopy of [
   '流程状态',
   '审核轨迹',
   '提交主管审核',
+  '撤回审核',
   '修改驳回单并重提',
+  '修改撤回单并重提',
   '修改后重提',
   '保存并重提',
   '重置修改',
@@ -40,19 +50,30 @@ for (const preservedStatus of [
   '生产中',
   '已完成',
   '已驳回',
+  '已撤回',
 ]) {
   assert.match(source, new RegExp(preservedStatus))
 }
 
 for (const requiredImplementation of [
-  "type ViewKey = 'overview' \\| 'create' \\| 'detail'",
+  "type ViewKey = 'overview' \\| 'create' \\| 'detail' \\| 'material-balance'",
+  "type MaterialBalancePeriodMode = 'day' \\| 'week' \\| 'month'",
   'workflowSteps',
   'normalizeBoardStatus',
   'boardColumns',
+  'materialBalanceRows',
+  'materialBalanceSummary',
+  'materialBalancePeriodMode',
+  'materialBalancePeriodRows',
+  'buildMaterialBalancePeriodRows',
+  'getMaterialBalancePeriodKey',
+  'formatSignedWeight',
+  'formatSignedMoney',
   'selectedFactoryId',
   'productionTaskRoute',
   'apiRecords',
   'apiState',
+  'overviewDisplayMode',
   "'error'",
   'loadApiData',
   'sourceRecords',
@@ -84,9 +105,12 @@ for (const requiredImplementation of [
   'URL.createObjectURL',
   'approvalNote',
   'runApprovalTransition',
+  'withdrawSelectedOrder',
   'moldingSampleApi.updateStatus',
+  "'工程撤回'",
   "'工程重提'",
   'canEditSelectedRejectedOrder',
+  'canWithdrawSelectedOrder',
   'useAuthStore',
   'authStore.currentUser',
   'authStore.hasPermission',
@@ -98,6 +122,25 @@ for (const requiredImplementation of [
 ]) {
   assert.match(source, new RegExp(requiredImplementation))
 }
+
+assert.match(source, /type OverviewDisplayMode = 'board' \| 'list'/)
+assert.match(source, /overviewDisplayMode = ref<OverviewDisplayMode>\('board'\)/)
+assert.match(source, /@click="overviewDisplayMode = 'board'"/)
+assert.match(source, /@click="overviewDisplayMode = 'list'"/)
+assert.match(source, /v-if="overviewDisplayMode === 'board'"/)
+assert.match(source, /v-else[\s\S]*aria-label="啤办单列表"/)
+assert.match(source, /v-for="record in visibleRecords"[\s\S]*openRecord\(record\)/)
+assert.match(source, /@click="setView\('material-balance'\)"/)
+assert.match(source, /activeView === 'material-balance'/)
+assert.match(source, /aria-label="物料结余明细"/)
+assert.match(source, /v-for="row in materialBalanceRows"/)
+assert.match(source, /v-for="option in materialBalancePeriodOptions"/)
+assert.match(source, /@click="materialBalancePeriodMode = option\.key"/)
+assert.match(source, /aria-label="物料周期结余"/)
+assert.match(source, /v-for="row in materialBalancePeriodRows"/)
+assert.match(source, /materialBalancePeriodMode === 'day'[\s\S]*materialBalancePeriodMode === 'week'[\s\S]*materialBalancePeriodMode === 'month'/)
+assert.match(source, /required_material_kg[\s\S]*actual_weight_kg[\s\S]*balanceWeightKg/)
+assert.match(source, /balanceAmountHkd/)
 
 assert.equal(source.includes('文件编号'), false, 'new-order form should not show the unused file-number field')
 assert.equal(source.includes('v-model="createDraft.doc_number"'), false, 'new-order form should not bind an unused file-number input')
@@ -134,6 +177,7 @@ assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
 assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.gross_weight_g"[\s\S]*v-model="line\.required_material_kg"[\s\S]*v-model="line\.required_date"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
 assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
+assert.match(source, /moldingSampleApi\.importOrderExcel\(workbook,\s*\{\s*factory_id:\s*selectedFactoryId\.value,\s*\}\)/)
 
 for (const removedClearedLayoutCopy of [
   'MOLDING SAMPLE REDESIGN',
