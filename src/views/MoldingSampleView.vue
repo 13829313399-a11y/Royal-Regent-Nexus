@@ -6,6 +6,7 @@ import {
   Building2,
   Check,
   CheckCheck,
+  ChevronLeft,
   ChevronRight,
   Clock,
   ClipboardCheck,
@@ -89,7 +90,20 @@ interface BoardColumn {
   label: string
   detail: string
   records: MoldingSampleWorkflowRecord[]
+  pagedRecords: MoldingSampleWorkflowRecord[]
+  pagination: PaginationState<MoldingSampleWorkflowRecord>
   dotClass: string
+}
+
+interface PaginationState<T> {
+  rows: T[]
+  total: number
+  page: number
+  pageCount: number
+  start: number
+  end: number
+  hasPrevious: boolean
+  hasNext: boolean
 }
 
 interface MaterialBalanceItemRow {
@@ -181,6 +195,10 @@ const overviewDisplayMode = ref<OverviewDisplayMode>('board')
 const materialBalancePeriodMode = ref<MaterialBalancePeriodMode>('day')
 const selectedOrderId = ref(readQueryString(route.query.order_id))
 const searchKeyword = ref('')
+const overviewListPage = ref(1)
+const boardPageByStatus = ref<Partial<Record<MoldingSampleStatus, number>>>({})
+const materialBalancePeriodPage = ref(1)
+const materialBalanceDetailPage = ref(1)
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取正式啤办单列表...')
@@ -225,6 +243,8 @@ const materialBalancePeriodOptions: MaterialBalancePeriodOption[] = [
   { key: 'week', label: '周结余', detail: '周一至周日' },
   { key: 'month', label: '月结余', detail: '自然月汇总' },
 ]
+
+const MOLDING_SAMPLE_PAGE_SIZE = 10
 
 const statusToneClasses: Record<MoldingSampleStatus, string> = {
   待审核: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -302,6 +322,11 @@ const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
   ].some((value) => String(value).toLowerCase().includes(keyword)))
 })
 
+const overviewListPagination = computed(() =>
+  createPaginationState(visibleRecords.value, overviewListPage.value),
+)
+const paginatedVisibleRecords = computed(() => overviewListPagination.value.rows)
+
 const selectedRecord = computed<MoldingSampleWorkflowRecord | null>(() =>
   visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
     ?? factoryRecords.value.find((record) => record.order.id === selectedOrderId.value)
@@ -371,13 +396,20 @@ const kpiCards = computed<KpiCard[]>(() => {
 })
 
 const boardColumns = computed<BoardColumn[]>(() =>
-  boardStatuses.map((status) => ({
-    status,
-    label: status,
-    detail: getStatusColumnDetail(status),
-    records: visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status),
-    dotClass: statusDotClasses[status],
-  })),
+  boardStatuses.map((status) => {
+    const records = visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status)
+    const pagination = createPaginationState(records, boardPageByStatus.value[status] ?? 1)
+
+    return {
+      status,
+      label: status,
+      detail: getStatusColumnDetail(status),
+      records,
+      pagedRecords: pagination.rows,
+      pagination,
+      dotClass: statusDotClasses[status],
+    }
+  }),
 )
 
 const materialBalanceRows = computed<MaterialBalanceOrderRow[]>(() =>
@@ -400,6 +432,15 @@ const materialBalanceSummary = computed<MaterialBalanceSummary>(() => {
 const materialBalancePeriodRows = computed<MaterialBalancePeriodRow[]>(() =>
   buildMaterialBalancePeriodRows(materialBalanceRows.value, materialBalancePeriodMode.value),
 )
+
+const materialBalancePeriodPagination = computed(() =>
+  createPaginationState(materialBalancePeriodRows.value, materialBalancePeriodPage.value),
+)
+const paginatedMaterialBalancePeriodRows = computed(() => materialBalancePeriodPagination.value.rows)
+const materialBalanceDetailPagination = computed(() =>
+  createPaginationState(materialBalanceRows.value, materialBalanceDetailPage.value),
+)
+const paginatedMaterialBalanceRows = computed(() => materialBalanceDetailPagination.value.rows)
 
 const actionToastTone = computed<ActionToastTone>(() => {
   if (apiState.value === 'error' || /失败|错误|未提交|不能|没有|请选择|缺失/.test(actionMessage.value)) {
@@ -440,6 +481,7 @@ const actionToastIconClass = computed(() => {
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
 const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
 const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft'))
+const canDeleteDraftOrder = computed(() => authStore.hasPermission('molding_sample:delete_draft'))
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
@@ -458,9 +500,17 @@ const canWithdrawSelectedOrder = computed(() =>
   && selectedOrder.value.status === '待审核'
   && canEditDraftOrder.value,
 )
+const canDeleteSelectedWithdrawnOrder = computed(() =>
+  Boolean(selectedRecord.value)
+  && selectedOrder.value.status === '已撤回'
+  && canDeleteDraftOrder.value,
+)
 const canDeleteSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
-  && authStore.hasPermission('system:user_manage'),
+  && (
+    authStore.hasPermission('system:user_manage')
+    || canDeleteSelectedWithdrawnOrder.value
+  ),
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
@@ -1145,7 +1195,7 @@ async function deleteSelectedOrder() {
   }
 
   if (!canDeleteSelectedOrder.value) {
-    actionMessage.value = '只有管理员可以删除啤办单。'
+    actionMessage.value = '只有管理员或可删草稿的工程账号可以删除当前啤办单。'
     return
   }
 
@@ -1251,6 +1301,68 @@ function getFlowSummary(record: MoldingSampleWorkflowRecord) {
   }
 
   return record.order.reject_reason || '退回工程处理'
+}
+
+function getPageCount(total: number) {
+  return Math.max(1, Math.ceil(total / MOLDING_SAMPLE_PAGE_SIZE))
+}
+
+function clampPage(page: number, total: number) {
+  return Math.min(Math.max(1, page), getPageCount(total))
+}
+
+function createPaginationState<T>(rows: T[], page: number): PaginationState<T> {
+  const total = rows.length
+  const pageCount = getPageCount(total)
+  const normalizedPage = clampPage(page, total)
+  const startIndex = (normalizedPage - 1) * MOLDING_SAMPLE_PAGE_SIZE
+  const pageRows = rows.slice(startIndex, startIndex + MOLDING_SAMPLE_PAGE_SIZE)
+  const start = total === 0 ? 0 : startIndex + 1
+  const end = total === 0 ? 0 : startIndex + pageRows.length
+
+  return {
+    rows: pageRows,
+    total,
+    page: normalizedPage,
+    pageCount,
+    start,
+    end,
+    hasPrevious: normalizedPage > 1,
+    hasNext: normalizedPage < pageCount,
+  }
+}
+
+function formatPaginationRange<T>(pagination: PaginationState<T>) {
+  return pagination.total === 0
+    ? '0 / 0 条'
+    : `${pagination.start}-${pagination.end} / ${pagination.total} 条`
+}
+
+function resetPagination() {
+  overviewListPage.value = 1
+  boardPageByStatus.value = {}
+  materialBalancePeriodPage.value = 1
+  materialBalanceDetailPage.value = 1
+}
+
+function setOverviewListPage(page: number) {
+  overviewListPage.value = clampPage(page, visibleRecords.value.length)
+}
+
+function setBoardColumnPage(status: MoldingSampleStatus, page: number) {
+  const total = visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status).length
+  boardPageByStatus.value = {
+    ...boardPageByStatus.value,
+    [status]: clampPage(page, total),
+  }
+}
+
+function setMaterialBalancePeriodPage(page: number) {
+  materialBalancePeriodPage.value = clampPage(page, materialBalancePeriodRows.value.length)
+}
+
+function setMaterialBalanceDetailPage(page: number) {
+  materialBalanceDetailPage.value = clampPage(page, materialBalanceRows.value.length)
 }
 
 function formatBlank(value: string | number | null | undefined, fallback = '待填写') {
@@ -1540,9 +1652,19 @@ watch(createDraft, () => {
 }, { deep: true })
 
 watch(selectedFactoryId, () => {
+  resetPagination()
+
   if (!isEditingRejectedOrder.value) {
     restoreSavedCreateDraft()
   }
+})
+
+watch(searchKeyword, () => {
+  resetPagination()
+})
+
+watch(materialBalancePeriodMode, () => {
+  materialBalancePeriodPage.value = 1
 })
 
 watch(actionMessage, (message) => {
@@ -1640,16 +1762,19 @@ onUnmounted(() => {
     </header>
 
     <Transition
-      enter-active-class="transition duration-200 ease-out"
-      enter-from-class="-translate-y-2 opacity-0"
-      enter-to-class="translate-y-0 opacity-100"
-      leave-active-class="transition duration-150 ease-in"
-      leave-from-class="translate-y-0 opacity-100"
-      leave-to-class="-translate-y-2 opacity-0"
+      appear
+      mode="out-in"
+      enter-active-class="transition duration-300 ease-out motion-reduce:transition-none"
+      enter-from-class="-translate-y-4 scale-95 opacity-0"
+      enter-to-class="translate-y-0 scale-100 opacity-100"
+      leave-active-class="transition duration-200 ease-in motion-reduce:transition-none"
+      leave-from-class="translate-y-0 scale-100 opacity-100"
+      leave-to-class="-translate-y-3 scale-95 opacity-0"
     >
       <aside
         v-if="actionToastVisible && actionMessage"
-        class="fixed left-1/2 top-24 z-50 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2"
+        :key="actionMessage"
+        class="fixed left-1/2 top-24 z-50 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 origin-top transform-gpu"
         role="status"
         aria-live="polite"
         aria-label="操作提示"
@@ -1848,7 +1973,7 @@ onUnmounted(() => {
 
             <div class="space-y-2 px-2 pb-2">
               <button
-                v-for="record in column.records"
+                v-for="record in column.pagedRecords"
                 :key="record.order.id"
                 type="button"
                 class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:shadow"
@@ -1874,14 +1999,71 @@ onUnmounted(() => {
                 暂无{{ column.label }}单据
               </div>
             </div>
+            <div
+              v-if="column.records.length"
+              class="border-t border-slate-200 px-2 py-2 text-[11px] text-slate-500"
+            >
+              <div class="mb-1.5 flex items-center justify-between gap-2">
+                <span class="font-medium">每页 10 条</span>
+                <span class="tabular-nums">{{ formatPaginationRange(column.pagination) }}</span>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="!column.pagination.hasPrevious"
+                  :aria-label="`${column.label}上一页`"
+                  @click="setBoardColumnPage(column.status, column.pagination.page - 1)"
+                >
+                  <ChevronLeft class="size-3.5" aria-hidden="true" />
+                  上一页
+                </button>
+                <span class="shrink-0 tabular-nums">{{ column.pagination.page }} / {{ column.pagination.pageCount }} 页</span>
+                <button
+                  type="button"
+                  class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="!column.pagination.hasNext"
+                  :aria-label="`${column.label}下一页`"
+                  @click="setBoardColumnPage(column.status, column.pagination.page + 1)"
+                >
+                  下一页
+                  <ChevronRight class="size-3.5" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
           </section>
         </div>
         <section v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
             <div class="flex items-center gap-2">
               <Table2 class="size-4 text-slate-400" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">啤办单列表</span>
               <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ visibleRecords.length }} 单</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span class="font-medium">每页 10 条</span>
+              <span class="tabular-nums">{{ formatPaginationRange(overviewListPagination) }}</span>
+              <button
+                type="button"
+                class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                :disabled="!overviewListPagination.hasPrevious"
+                aria-label="啤办单列表上一页"
+                @click="setOverviewListPage(overviewListPagination.page - 1)"
+              >
+                <ChevronLeft class="size-3.5" aria-hidden="true" />
+                上一页
+              </button>
+              <span class="tabular-nums">{{ overviewListPagination.page }} / {{ overviewListPagination.pageCount }} 页</span>
+              <button
+                type="button"
+                class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                :disabled="!overviewListPagination.hasNext"
+                aria-label="啤办单列表下一页"
+                @click="setOverviewListPage(overviewListPagination.page + 1)"
+              >
+                下一页
+                <ChevronRight class="size-3.5" aria-hidden="true" />
+              </button>
             </div>
           </div>
           <div class="overflow-x-auto">
@@ -1900,7 +2082,7 @@ onUnmounted(() => {
               </thead>
               <tbody class="divide-y divide-slate-50">
                 <tr
-                  v-for="record in visibleRecords"
+                  v-for="record in paginatedVisibleRecords"
                   :key="record.order.id"
                   class="cursor-pointer transition hover:bg-slate-50"
                   :class="selectedOrder.id === record.order.id ? 'bg-slate-50 ring-1 ring-inset ring-slate-200' : ''"
@@ -2022,17 +2204,44 @@ onUnmounted(() => {
               <span class="text-[13px] font-bold text-slate-950">周期结余</span>
               <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ materialBalancePeriodRows.length }} 组</span>
             </div>
-            <div class="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-              <button
-                v-for="option in materialBalancePeriodOptions"
-                :key="option.key"
-                type="button"
-                class="inline-flex min-w-[72px] items-center justify-center rounded-md px-2.5 py-1 text-[12px] transition"
-                :class="materialBalancePeriodMode === option.key ? 'bg-slate-900 font-semibold text-white' : 'font-medium text-slate-500 hover:text-slate-900'"
-                @click="materialBalancePeriodMode = option.key"
-              >
-                {{ option.label }}
-              </button>
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                <button
+                  v-for="option in materialBalancePeriodOptions"
+                  :key="option.key"
+                  type="button"
+                  class="inline-flex min-w-[72px] items-center justify-center rounded-md px-2.5 py-1 text-[12px] transition"
+                  :class="materialBalancePeriodMode === option.key ? 'bg-slate-900 font-semibold text-white' : 'font-medium text-slate-500 hover:text-slate-900'"
+                  @click="materialBalancePeriodMode = option.key"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                <span class="font-medium">每页 10 条</span>
+                <span class="tabular-nums">{{ formatPaginationRange(materialBalancePeriodPagination) }}</span>
+                <button
+                  type="button"
+                  class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="!materialBalancePeriodPagination.hasPrevious"
+                  aria-label="物料周期结余上一页"
+                  @click="setMaterialBalancePeriodPage(materialBalancePeriodPagination.page - 1)"
+                >
+                  <ChevronLeft class="size-3.5" aria-hidden="true" />
+                  上一页
+                </button>
+                <span class="tabular-nums">{{ materialBalancePeriodPagination.page }} / {{ materialBalancePeriodPagination.pageCount }} 页</span>
+                <button
+                  type="button"
+                  class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="!materialBalancePeriodPagination.hasNext"
+                  aria-label="物料周期结余下一页"
+                  @click="setMaterialBalancePeriodPage(materialBalancePeriodPagination.page + 1)"
+                >
+                  下一页
+                  <ChevronRight class="size-3.5" aria-hidden="true" />
+                </button>
+              </div>
             </div>
           </div>
           <div class="overflow-x-auto">
@@ -2049,7 +2258,7 @@ onUnmounted(() => {
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-50">
-                <tr v-for="row in materialBalancePeriodRows" :key="row.key" class="hover:bg-slate-50">
+                <tr v-for="row in paginatedMaterialBalancePeriodRows" :key="row.key" class="hover:bg-slate-50">
                   <td class="px-3 py-2.5 align-top">
                     <div class="font-semibold text-slate-950">{{ row.label }}</div>
                     <div class="mt-0.5 text-[10px] text-slate-400">{{ row.detail }} · {{ row.startDate }} 至 {{ row.endDate }}</div>
@@ -2088,11 +2297,36 @@ onUnmounted(() => {
         </section>
 
         <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
             <div class="flex items-center gap-2">
               <Beaker class="size-4 text-teal-500" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">物料结余明细</span>
               <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ materialBalanceRows.length }} 单</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span class="font-medium">每页 10 条</span>
+              <span class="tabular-nums">{{ formatPaginationRange(materialBalanceDetailPagination) }}</span>
+              <button
+                type="button"
+                class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                :disabled="!materialBalanceDetailPagination.hasPrevious"
+                aria-label="物料结余明细上一页"
+                @click="setMaterialBalanceDetailPage(materialBalanceDetailPagination.page - 1)"
+              >
+                <ChevronLeft class="size-3.5" aria-hidden="true" />
+                上一页
+              </button>
+              <span class="tabular-nums">{{ materialBalanceDetailPagination.page }} / {{ materialBalanceDetailPagination.pageCount }} 页</span>
+              <button
+                type="button"
+                class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                :disabled="!materialBalanceDetailPagination.hasNext"
+                aria-label="物料结余明细下一页"
+                @click="setMaterialBalanceDetailPage(materialBalanceDetailPagination.page + 1)"
+              >
+                下一页
+                <ChevronRight class="size-3.5" aria-hidden="true" />
+              </button>
             </div>
           </div>
           <div class="overflow-x-auto">
@@ -2112,7 +2346,7 @@ onUnmounted(() => {
               </thead>
               <tbody class="divide-y divide-slate-50">
                 <tr
-                  v-for="row in materialBalanceRows"
+                  v-for="row in paginatedMaterialBalanceRows"
                   :key="row.record.order.id"
                   class="cursor-pointer transition hover:bg-slate-50"
                   @click="openRecord(row.record)"

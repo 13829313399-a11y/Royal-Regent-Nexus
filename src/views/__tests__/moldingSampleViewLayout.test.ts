@@ -44,6 +44,7 @@ for (const requiredCopy of [
   '关闭操作提示',
   '新建成功',
   '已填写草稿会自动保留',
+  '每页 10 条',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -88,6 +89,16 @@ for (const requiredImplementation of [
   'loadApiData',
   'sourceRecords',
   'selectedProblems',
+  'MOLDING_SAMPLE_PAGE_SIZE = 10',
+  'createPaginationState',
+  'boardPageByStatus',
+  'paginatedVisibleRecords',
+  'paginatedMaterialBalanceRows',
+  'paginatedMaterialBalancePeriodRows',
+  'setBoardColumnPage',
+  'setOverviewListPage',
+  'setMaterialBalanceDetailPage',
+  'setMaterialBalancePeriodPage',
   'moldingSampleApi.listOrders',
   "'huaxing'",
   'createDraft',
@@ -122,6 +133,8 @@ for (const requiredImplementation of [
   'canEditSelectedRejectedOrder',
   'canWithdrawSelectedOrder',
   'canDeleteSelectedOrder',
+  'canDeleteDraftOrder',
+  'canDeleteSelectedWithdrawnOrder',
   'deleteSelectedOrder',
   'moldingSampleApi.deleteOrder',
   'useAuthStore',
@@ -139,21 +152,25 @@ for (const requiredImplementation of [
 assert.match(source, /type OverviewDisplayMode = 'board' \| 'list'/)
 assert.match(source, /type ActionToastTone = 'success' \| 'error' \| 'info'/)
 assert.match(source, /class="fixed left-1\/2 top-24 z-50/)
+assert.match(source, /<Transition[\s\S]*appear[\s\S]*mode="out-in"[\s\S]*enter-from-class="-translate-y-4 scale-95 opacity-0"/)
+assert.match(source, /leave-to-class="-translate-y-3 scale-95 opacity-0"[\s\S]*:key="actionMessage"/)
+assert.match(source, /class="fixed left-1\/2 top-24 z-50[\s\S]*origin-top transform-gpu/)
 assert.doesNotMatch(source, /<span>\{\{ actionMessage \}\}<\/span>/)
 assert.match(source, /overviewDisplayMode = ref<OverviewDisplayMode>\('board'\)/)
 assert.match(source, /@click="overviewDisplayMode = 'board'"/)
 assert.match(source, /@click="overviewDisplayMode = 'list'"/)
 assert.match(source, /v-if="overviewDisplayMode === 'board'"/)
 assert.match(source, /v-else[\s\S]*aria-label="啤办单列表"/)
-assert.match(source, /v-for="record in visibleRecords"[\s\S]*openRecord\(record\)/)
+assert.match(source, /v-for="record in column\.pagedRecords"[\s\S]*openRecord\(record\)/)
+assert.match(source, /v-for="record in paginatedVisibleRecords"[\s\S]*openRecord\(record\)/)
 assert.match(source, /@click="setView\('material-balance'\)"/)
 assert.match(source, /activeView === 'material-balance'/)
 assert.match(source, /aria-label="物料结余明细"/)
-assert.match(source, /v-for="row in materialBalanceRows"/)
+assert.match(source, /v-for="row in paginatedMaterialBalanceRows"/)
 assert.match(source, /v-for="option in materialBalancePeriodOptions"/)
 assert.match(source, /@click="materialBalancePeriodMode = option\.key"/)
 assert.match(source, /aria-label="物料周期结余"/)
-assert.match(source, /v-for="row in materialBalancePeriodRows"/)
+assert.match(source, /v-for="row in paginatedMaterialBalancePeriodRows"/)
 assert.match(source, /materialBalancePeriodMode === 'day'[\s\S]*materialBalancePeriodMode === 'week'[\s\S]*materialBalancePeriodMode === 'month'/)
 assert.match(source, /required_material_kg[\s\S]*actual_weight_kg[\s\S]*balanceWeightKg/)
 assert.match(source, /balanceAmountHkd/)
