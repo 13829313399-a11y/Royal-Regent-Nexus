@@ -6,15 +6,24 @@ interface PendingOrderMachineRow {
   orderNo: string
   productName?: string
   moldCode: string
+  productCode?: string
   color?: string
+  colorPowder?: string
   material?: string
   quantity?: string
+  orderQuantity?: string
+  producedQuantity?: string
+  shortageQuantity?: string
+  planTarget?: string
   dueDate?: string
   machineAdvice: string
   machineModel?: string
   armType?: string
   remark?: string
   moldSize?: string
+  unitWeight?: string
+  netWeight?: string
+  remainingMaterialKg?: string
   issue: string
   tone: Tone
 }
@@ -245,6 +254,130 @@ export function useInjectionWorkflowBridge({
     }
   }
 
+  const getMachineMapping = (row: PendingOrderMachineRow) =>
+    moldMachineMappingRows.value.find((item) => item.moldCode === row.moldCode)
+
+  const getRecommendationReason = (
+    row: PendingOrderMachineRow,
+    selectedMachine: string,
+    confirmed: boolean,
+  ) => {
+    const mapping = getMachineMapping(row)
+
+    if (confirmed) {
+      return '计划员已人工确认机台，草稿按人工选择下发。'
+    }
+
+    if (mapping?.recommendedMachine === selectedMachine) {
+      return '命中模具机台映射，优先采用推荐机台。'
+    }
+
+    if (mapping?.backupMachine === selectedMachine) {
+      return '推荐机台不可用时，使用备选机台保留产能。'
+    }
+
+    if (splitMachineOptions(row.machineAdvice).includes(selectedMachine)) {
+      return '沿用订单池中的历史推荐机型，待计划员复核。'
+    }
+
+    return '当前草稿按候选机台自动补位，提交前需人工确认。'
+  }
+
+  const getRecommendationBasis = (
+    row: PendingOrderMachineRow,
+    selectedMachine: string,
+    confirmed: boolean,
+  ) => {
+    const mapping = getMachineMapping(row)
+    const basis = [
+      row.machineModel ? `机型：${row.machineModel}` : '',
+      mapping?.recommendedMachine === selectedMachine ? '模具映射命中' : '',
+      mapping?.backupMachine === selectedMachine ? '备选池命中' : '',
+      confirmed ? '人工锁机' : '系统推荐',
+      row.armType ? `机械手：${row.armType}` : '',
+    ].filter(Boolean)
+
+    return basis.length > 0 ? basis : ['待补推荐依据']
+  }
+
+  const getDraftRisk = (
+    row: PendingOrderMachineRow,
+    options: string[],
+    selectedMachine: string,
+    index: number,
+  ) => {
+    if (selectedMachine.includes('待') || row.issue.includes('待补')) {
+      return {
+        label: '资料待补',
+        tone: 'red' as Tone,
+        detail: row.issue || '缺少模具或机台映射，不能直接下发。',
+      }
+    }
+
+    if (options.length <= 1) {
+      return {
+        label: '备选不足',
+        tone: 'amber' as Tone,
+        detail: '当前只有一个可选机台，审核时需确认停机和保养风险。',
+      }
+    }
+
+    if (row.remark?.includes('喷油')) {
+      return {
+        label: '工艺确认',
+        tone: 'amber' as Tone,
+        detail: '订单带喷油或特殊工艺备注，下发前确认后工序衔接。',
+      }
+    }
+
+    if (index > 0 && index % 4 === 0) {
+      return {
+        label: '换色确认',
+        tone: 'amber' as Tone,
+        detail: '排在换色节点附近，建议确认颜色切换顺序和洗机时间。',
+      }
+    }
+
+    return {
+      label: '低风险',
+      tone: 'green' as Tone,
+      detail: '机台候选和订单字段完整，可按草稿进入审核。',
+    }
+  }
+
+  const getReviewHint = (confirmed: boolean, riskTone: Tone) => {
+    if (riskTone === 'red') {
+      return '退回补资料后再提交审核'
+    }
+
+    if (riskTone === 'amber') {
+      return confirmed ? '主管复核风险后可通过' : '建议计划员先确认机台'
+    }
+
+    return confirmed ? '可直接提交主管审核' : '系统推荐可提交，建议抽查'
+  }
+
+  const getPriorityMeta = (index: number, row: PendingOrderMachineRow) => {
+    if (row.issue.includes('插单') || index < 3) {
+      return {
+        label: '优先',
+        tone: 'blue' as Tone,
+      }
+    }
+
+    if (index < 8) {
+      return {
+        label: '本班',
+        tone: 'teal' as Tone,
+      }
+    }
+
+    return {
+      label: '续排',
+      tone: 'slate' as Tone,
+    }
+  }
+
   const pendingOrderMachineDraftRows = computed(() =>
     pendingOrders.value
       .map((row, index) => {
@@ -252,6 +385,8 @@ export function useInjectionWorkflowBridge({
         const selectedMachine = getSelectedPendingOrderMachine(row)
         const confirmed = Boolean(selectedPendingOrderMachines.value[getPendingOrderMachineKey(row)])
         const productionWindow = estimateProductionWindow(row.quantity, index)
+        const risk = getDraftRisk(row, options, selectedMachine, index)
+        const priority = getPriorityMeta(index, row)
 
         return {
           ...row,
@@ -259,6 +394,14 @@ export function useInjectionWorkflowBridge({
           machineOptions: options,
           sequence: index + 1,
           ...productionWindow,
+          recommendationReason: getRecommendationReason(row, selectedMachine, confirmed),
+          recommendationBasis: getRecommendationBasis(row, selectedMachine, confirmed),
+          riskLabel: risk.label,
+          riskTone: risk.tone,
+          riskDetail: risk.detail,
+          reviewHint: getReviewHint(confirmed, risk.tone),
+          priorityLabel: priority.label,
+          priorityTone: priority.tone,
           confirmState: confirmed ? '人工已确认' : '系统推荐',
           confirmTone: confirmed ? 'green' : row.tone,
           releaseState: schedulingDraftReleased.value

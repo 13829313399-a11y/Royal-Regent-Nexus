@@ -59,15 +59,24 @@ interface ActivePendingOrderRow {
   customer: string
   productName: string
   moldCode: string
+  productCode?: string
   color: string
+  colorPowder?: string
   material: string
   quantity: string
+  orderQuantity?: string
+  producedQuantity?: string
+  shortageQuantity?: string
+  planTarget?: string
   dueDate: string
   machineAdvice: string
   machineModel?: string
   armType?: string
   remark?: string
   moldSize?: string
+  unitWeight?: string
+  netWeight?: string
+  remainingMaterialKg?: string
   issue: string
   tone: Tone
 }
@@ -173,6 +182,336 @@ const schedulingWorkbenchSteps = computed(() => [
   },
 ] satisfies { label: string; value: string | number; detail: string; tone: PanelTone }[])
 
+const schedulingDraftStatusMeta = computed<{
+  title: string
+  label: string
+  detail: string
+  tone: Tone
+  owner: string
+}>(() => {
+  if (schedulingDraftReleased.value) {
+    return {
+      title: '主管已通过',
+      label: '已下发',
+      detail: '排机草稿已通过审核，车间执行页可以承接任务。',
+      tone: 'green',
+      owner: '主管 / 计划',
+    }
+  }
+
+  if (schedulingReviewRequested.value) {
+    return {
+      title: '等待主管审核',
+      label: '待审核',
+      detail: '草稿已提交，若计划员再次改机台会回到待提交状态。',
+      tone: 'amber',
+      owner: '主管',
+    }
+  }
+
+  if (schedulingDraftGenerated.value) {
+    return {
+      title: '计划员确认中',
+      label: '草稿中',
+      detail: '请确认推荐原因、风险提示和机台改选，再提交主管审核。',
+      tone: 'blue',
+      owner: '计划员',
+    }
+  }
+
+  return {
+    title: '等待生成草稿',
+    label: '未生成',
+    detail: '先从当前订单池生成排机草稿，再进入审核流。',
+    tone: 'slate',
+    owner: '计划员',
+  }
+})
+
+const schedulingApprovalSteps = computed(() => [
+  {
+    title: '生成草稿',
+    owner: '计划员',
+    detail: '从订单池生成候选机台和预计开机窗口。',
+    status: schedulingDraftGenerated.value ? '已完成' : '待开始',
+    tone: schedulingDraftGenerated.value ? 'green' : 'slate',
+  },
+  {
+    title: '计划员复核',
+    owner: '计划员',
+    detail: '逐个模号确认排位，也可以批量确认全部待排模号。',
+    status: allScheduledMoldsConfirmed.value
+      ? '已确认'
+      : schedulingDraftGenerated.value
+          ? `${confirmedScheduleCount.value}/${pendingOrderMachineDraftRows.value.length}`
+          : '待草稿',
+    tone: allScheduledMoldsConfirmed.value ? 'green' : schedulingDraftGenerated.value ? 'amber' : 'slate',
+  },
+  {
+    title: '提交主管',
+    owner: '计划员',
+    detail: '所有模号确认后提交审核，主管只看整体排单和掉期情况。',
+    status: schedulingReviewRequested.value || schedulingDraftReleased.value ? '已提交' : '待提交',
+    tone: schedulingReviewRequested.value || schedulingDraftReleased.value ? 'green' : schedulingDraftGenerated.value ? 'amber' : 'slate',
+  },
+  {
+    title: '审核下发',
+    owner: '主管',
+    detail: '主管通过后流转到车间执行和日报回报。',
+    status: schedulingDraftReleased.value ? '已通过' : schedulingReviewRequested.value ? '待审核' : '未进入',
+    tone: schedulingDraftReleased.value ? 'green' : schedulingReviewRequested.value ? 'amber' : 'slate',
+  },
+] satisfies { title: string; owner: string; detail: string; status: string; tone: Tone }[])
+
+const schedulingDraftRiskCards = computed(() => {
+  const rows = pendingOrderMachineDraftRows.value
+  const blocked = Math.max(0, compactPendingOrders.value.length - rows.length)
+  const highRisk = rows.filter((row) => row.riskTone === 'red').length
+  const warningRisk = rows.filter((row) => row.riskTone === 'amber').length
+
+  return [
+    {
+      label: '草稿状态',
+      value: schedulingDraftStatusMeta.value.label,
+      detail: schedulingDraftStatusMeta.value.detail,
+      tone: schedulingDraftStatusMeta.value.tone,
+    },
+    {
+      label: '风险提示',
+      value: `${highRisk + warningRisk}`,
+      detail: highRisk > 0
+        ? `${highRisk} 条硬风险需先处理`
+        : warningRisk > 0
+            ? `${warningRisk} 条需审核时确认`
+            : '当前草稿无明显风险',
+      tone: highRisk > 0 ? 'red' : warningRisk > 0 ? 'amber' : 'green',
+    },
+    {
+      label: '人工确认',
+      value: `${confirmedScheduleCount.value}/${rows.length}`,
+      detail: allScheduledMoldsConfirmed.value ? '全部模号已确认，可提交主管' : '可逐个确认，也可一键确认全部',
+      tone: allScheduledMoldsConfirmed.value ? 'green' : rows.length > 0 ? 'amber' : 'slate',
+    },
+    {
+      label: '不可排订单',
+      value: `${blocked}`,
+      detail: blocked > 0 ? '订单池中仍有待补机台规则' : '订单池均可生成草稿',
+      tone: blocked > 0 ? 'red' : 'green',
+    },
+  ] satisfies { label: string; value: string; detail: string; tone: Tone }[]
+})
+
+type WorkbenchDraftRow = (typeof pendingOrderMachineDraftRows.value)[number]
+
+const selectedWorkbenchMoldKey = ref('')
+const confirmedScheduleKeys = ref<Record<string, boolean>>({})
+
+const getWorkbenchDraftKey = (row: WorkbenchDraftRow) => getPendingOrderMachineKey(row)
+
+const selectWorkbenchMold = (row: WorkbenchDraftRow) => {
+  selectedWorkbenchMoldKey.value = getWorkbenchDraftKey(row)
+}
+
+const selectedWorkbenchDraftRow = computed(() =>
+  pendingOrderMachineDraftRows.value.find((row) => getWorkbenchDraftKey(row) === selectedWorkbenchMoldKey.value)
+    ?? pendingOrderMachineDraftRows.value[0]
+    ?? null,
+)
+
+const selectedWorkbenchMachineQueueRows = computed(() => {
+  const selected = selectedWorkbenchDraftRow.value
+  if (!selected) {
+    return []
+  }
+
+  return pendingOrderMachineDraftRows.value
+    .filter((row) => row.selectedMachine === selected.selectedMachine)
+    .slice(0, 8)
+})
+
+const isScheduleMoldConfirmed = (row: WorkbenchDraftRow) =>
+  Boolean(confirmedScheduleKeys.value[getWorkbenchDraftKey(row)])
+
+const confirmScheduledMold = (row: WorkbenchDraftRow) => {
+  if (schedulingDraftReleased.value) {
+    return
+  }
+
+  if (!schedulingDraftGenerated.value) {
+    generateSchedulingDraft()
+  }
+
+  const key = getWorkbenchDraftKey(row)
+  selectedWorkbenchMoldKey.value = key
+
+  if (confirmedScheduleKeys.value[key]) {
+    const nextConfirmed = { ...confirmedScheduleKeys.value }
+    delete nextConfirmed[key]
+    confirmedScheduleKeys.value = nextConfirmed
+
+    if (schedulingReviewRequested.value) {
+      schedulingReviewRequested.value = false
+    }
+    return
+  }
+
+  confirmedScheduleKeys.value = {
+    ...confirmedScheduleKeys.value,
+    [key]: true,
+  }
+}
+
+const confirmAllScheduledMolds = () => {
+  if (schedulingDraftReleased.value) {
+    return
+  }
+
+  if (!schedulingDraftGenerated.value) {
+    generateSchedulingDraft()
+  }
+
+  if (allScheduledMoldsConfirmed.value) {
+    confirmedScheduleKeys.value = {}
+
+    if (schedulingReviewRequested.value) {
+      schedulingReviewRequested.value = false
+    }
+    return
+  }
+
+  confirmedScheduleKeys.value = pendingOrderMachineDraftRows.value.reduce((confirmed, row) => {
+    confirmed[getWorkbenchDraftKey(row)] = true
+    return confirmed
+  }, {} as Record<string, boolean>)
+}
+
+const handleWorkbenchDraftMachineChange = (row: WorkbenchDraftRow, event: Event) => {
+  handleDraftMachineChange(row, event)
+  selectedWorkbenchMoldKey.value = getWorkbenchDraftKey(row)
+
+  const nextConfirmed = { ...confirmedScheduleKeys.value }
+  delete nextConfirmed[getWorkbenchDraftKey(row)]
+  confirmedScheduleKeys.value = nextConfirmed
+}
+
+const confirmedScheduleCount = computed(() =>
+  pendingOrderMachineDraftRows.value.filter((row) => isScheduleMoldConfirmed(row)).length,
+)
+
+const allScheduledMoldsConfirmed = computed(() =>
+  pendingOrderMachineDraftRows.value.length > 0
+  && confirmedScheduleCount.value === pendingOrderMachineDraftRows.value.length,
+)
+
+const parseScheduleDate = (value = '') => {
+  const match = value.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (!match) {
+    return null
+  }
+
+  const [, year, month, day] = match
+  const date = new Date(Number(year), Number(month) - 1, Number(day))
+
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const getScheduleDelayDays = (row: WorkbenchDraftRow) => {
+  const dueDate = parseScheduleDate(row.dueDate)
+  const completionDate = parseScheduleDate(row.estimatedCompletionDate)
+
+  if (!dueDate || !completionDate) {
+    return null
+  }
+
+  return Math.ceil((completionDate.getTime() - dueDate.getTime()) / 86400000)
+}
+
+const getScheduleDelayLabel = (row: WorkbenchDraftRow) => {
+  const days = getScheduleDelayDays(row)
+  if (days === null) {
+    return '交期待确认'
+  }
+
+  if (days > 0) {
+    return `掉期 ${days} 天`
+  }
+
+  if (days === 0) {
+    return '当天完成'
+  }
+
+  return `提前 ${Math.abs(days)} 天`
+}
+
+const getScheduleDelayTone = (row: WorkbenchDraftRow): Tone => {
+  const days = getScheduleDelayDays(row)
+  if (days === null) {
+    return 'slate'
+  }
+
+  if (days > 0) {
+    return 'red'
+  }
+
+  return days === 0 ? 'amber' : 'green'
+}
+
+const getWorkbenchDisplayValue = (value: string | undefined, fallback = '待补') => {
+  const normalized = value?.trim()
+  return normalized || fallback
+}
+
+const parseWorkbenchNumber = (value: string | undefined) => {
+  const parsed = Number(String(value ?? '').replace(/,/g, '').replace(/[^\d.-]/g, ''))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const formatWorkbenchNumber = (value: number) =>
+  Math.max(0, Math.round(value)).toLocaleString('en-US')
+
+const formatWorkbenchKg = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '待补'
+  }
+
+  const rounded = Math.round(value * 10) / 10
+  return Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1)
+}
+
+const getWorkbenchMachineModel = (row: WorkbenchDraftRow) =>
+  getWorkbenchDisplayValue(row.machineModel || row.selectedMachine, '待确认')
+
+const getWorkbenchOrderQuantity = (row: WorkbenchDraftRow) =>
+  getWorkbenchDisplayValue(row.orderQuantity || row.quantity)
+
+const getWorkbenchShortageQuantity = (row: WorkbenchDraftRow) =>
+  getWorkbenchDisplayValue(row.shortageQuantity || row.quantity)
+
+const getWorkbenchProducedQuantity = (row: WorkbenchDraftRow) => {
+  if (row.producedQuantity) {
+    return row.producedQuantity
+  }
+
+  const orderQuantity = parseWorkbenchNumber(getWorkbenchOrderQuantity(row))
+  const shortageQuantity = parseWorkbenchNumber(getWorkbenchShortageQuantity(row))
+
+  return formatWorkbenchNumber(Math.max(0, orderQuantity - shortageQuantity))
+}
+
+const getWorkbenchNetWeight = (row: WorkbenchDraftRow) =>
+  getWorkbenchDisplayValue(row.netWeight || row.unitWeight)
+
+const getWorkbenchRemainingMaterialKg = (row: WorkbenchDraftRow) => {
+  if (row.remainingMaterialKg) {
+    return row.remainingMaterialKg
+  }
+
+  const shortageQuantity = parseWorkbenchNumber(getWorkbenchShortageQuantity(row))
+  const netWeight = parseWorkbenchNumber(getWorkbenchNetWeight(row))
+
+  return formatWorkbenchKg((shortageQuantity * netWeight) / 1000)
+}
+
 const panelTone = {
   green: 'bg-emerald-50 border-emerald-100',
   blue: 'bg-blue-50 border-blue-100',
@@ -271,15 +610,24 @@ const createManualPendingOrder = () => {
       customer: form.customer.trim() || form.orderNo.trim().slice(0, 3) || '手工客户',
       productName: form.productName.trim(),
       moldCode: form.moldCode.trim(),
+      productCode: '待补',
       color: form.color.trim() || '待补颜色',
+      colorPowder: form.color.trim() || '待补',
       material: form.material.trim() || '待补料型',
       quantity: form.quantity.trim(),
+      orderQuantity: form.quantity.trim(),
+      producedQuantity: '0',
+      shortageQuantity: form.quantity.trim(),
+      planTarget: '待补',
       dueDate: form.dueDate.trim() || '待补交期',
       machineAdvice,
       machineModel: form.machineModel.trim(),
       armType: '',
       remark: form.remark.trim(),
       moldSize: '待补尺寸',
+      unitWeight: '',
+      netWeight: '待补',
+      remainingMaterialKg: '待补',
       issue: machineAdvice === '待系统推荐' ? '待补规则' : '手工补单',
       tone: machineAdvice === '待系统推荐' ? 'amber' : 'blue',
     },
@@ -856,15 +1204,24 @@ const buildImportedPendingOrderRows = (rows: ImportedOrderPreviewRow[]): ActiveP
         customer: row.customer || row.orderNo.slice(0, 3) || '导入客户',
         productName: row.productName,
         moldCode: row.moldCode,
+        productCode: '待补',
         color: row.color,
+        colorPowder: row.color,
         material: row.material,
         quantity: row.quantity,
+        orderQuantity: row.quantity,
+        producedQuantity: '0',
+        shortageQuantity: row.quantity,
+        planTarget: '待补',
         dueDate: row.dueDate,
         machineAdvice,
         machineModel: row.machineModel,
         armType: '',
         remark: row.remark,
         moldSize: '待补尺寸',
+        unitWeight: '',
+        netWeight: '待补',
+        remainingMaterialKg: '待补',
         issue: hasMachineAdvice ? row.issue : '待补规则',
         tone: hasMachineAdvice ? row.tone : 'amber',
       }
@@ -1367,111 +1724,253 @@ const openImportFilePicker = () => {
 
     <template v-else-if="props.activeSection === 'smart-scheduling'">
       <SectionPanel
-        title="排机草稿与审核"
-        subtitle="订单池确认后生成排机草稿，计划员可微调机台，主管审核通过后进入车间执行。"
+        title="导入订单与智能待排明细"
+        subtitle="文员在这里导入订单；系统先完成机台筛选，页面只显示已具备候选机型的待排明细。"
       >
+        <template #action>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              @click="manualOrderFormVisible = !manualOrderFormVisible"
+            >
+              <Plus class="size-4" aria-hidden="true" />
+              手工补单
+            </button>
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+              @click="openImportFilePicker"
+            >
+              <UploadCloud class="size-4" aria-hidden="true" />
+              上传订单
+            </button>
+          </div>
+        </template>
+
         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <article
-            v-for="metric in schedulingDraftMetrics"
-            :key="metric.label"
+            v-for="metric in pendingOrderPoolSummaryCards"
+            :key="`workbench-pool-${metric.label}`"
             class="rounded-2xl border p-4"
             :class="panelTone[metric.tone]"
           >
-            <p class="text-sm text-slate-500">{{ metric.label }}</p>
-            <p class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
-            <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{{ metric.label }}</p>
+              <StatusPill :label="String(metric.value)" :tone="metric.tone" compact />
+            </div>
+            <p class="mt-3 text-sm leading-6 text-slate-600">{{ metric.detail }}</p>
           </article>
         </div>
 
-        <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-4">
+        <article class="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
+          <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div class="flex items-start gap-4">
+              <span class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-teal-50 text-teal-700">
+                <FileSpreadsheet class="size-5" aria-hidden="true" />
+              </span>
+              <div>
+                <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Excel / CSV</p>
+                <h3 class="mt-2 text-lg font-semibold text-slate-950">
+                  {{ importedFileName || '选择订单文件' }}
+                </h3>
+                <p class="mt-2 text-sm leading-6 text-slate-600">
+                  {{ importedSheetName || '上传后自动识别订单字段，并带入当前待排明细。' }}
+                </p>
+              </div>
+            </div>
+            <div class="flex shrink-0 flex-wrap gap-2">
+              <input
+                ref="importFileInput"
+                type="file"
+                accept=".xlsx,.csv,.tsv,.txt"
+                class="hidden"
+                @change="handleOrderImportFile"
+              >
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+                @click="openImportFilePicker"
+              >
+                <UploadCloud class="size-4" aria-hidden="true" />
+                上传订单
+              </button>
+              <button
+                v-if="importedRows.length > 0 || importErrorMessage"
+                type="button"
+                class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                @click="clearImportedOrderPreview"
+              >
+                清空预览
+              </button>
+            </div>
+          </div>
+
+          <div
+            v-if="importErrorMessage"
+            class="mt-4 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700"
+          >
+            {{ importErrorMessage }}
+          </div>
+
+          <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <article
+              v-for="metric in importSummaryCards"
+              :key="`workbench-import-${metric.label}`"
+              class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">{{ metric.label }}</p>
+                <StatusPill :label="String(metric.value)" :tone="metric.tone" compact />
+              </div>
+              <p class="mt-2 text-xl font-semibold text-slate-950">{{ metric.value }}</p>
+              <p class="mt-1 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+            </article>
+          </div>
+        </article>
+
+        <article
+          v-if="manualOrderFormVisible"
+          class="mt-5 rounded-2xl border border-blue-100 bg-blue-50 p-5"
+        >
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 class="font-semibold text-slate-950">手工补单</h3>
+              <p class="mt-1 text-sm leading-6 text-slate-600">临时插单或漏导订单直接补进当前工作台，参与智能筛选和排机确认。</p>
+            </div>
+            <StatusPill label="前端草稿" tone="blue" compact />
+          </div>
+
+          <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <input v-model="manualOrderForm.orderNo" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="订单号 *">
+            <input v-model="manualOrderForm.productName" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="产品名称 *">
+            <input v-model="manualOrderForm.moldCode" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="模具编号 *">
+            <input v-model="manualOrderForm.quantity" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="待排数量 *">
+            <input v-model="manualOrderForm.dueDate" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="交期">
+            <input v-model="manualOrderForm.customer" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="客户">
+            <input v-model="manualOrderForm.color" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="颜色">
+            <input v-model="manualOrderForm.material" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="料型">
+            <input v-model="manualOrderForm.machineModel" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="推荐机型">
+            <input v-model="manualOrderForm.remark" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-300" placeholder="备注">
+          </div>
+
+          <div class="mt-4 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+              @click="resetManualOrderForm"
+            >
+              清空
+            </button>
+            <button
+              type="button"
+              class="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              :disabled="!manualOrderForm.orderNo || !manualOrderForm.productName || !manualOrderForm.moldCode || !manualOrderForm.quantity"
+              @click="createManualPendingOrder"
+            >
+              加入待排
+            </button>
+          </div>
+        </article>
+
+        <div class="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h3 class="font-semibold text-slate-950">草稿状态</h3>
-            <p class="mt-1 text-sm leading-6 text-slate-600">
-              {{ schedulingDraftReleased ? '主管已通过，执行页可以承接车间任务。' : schedulingReviewRequested ? '草稿已提交主管审核，机台改动后会退回待提交。' : schedulingDraftGenerated ? '草稿已生成，可继续改机台后提交审核。' : '当前订单池可直接生成排机草稿。' }}
-            </p>
+            <h3 class="font-semibold text-slate-950">智能筛选后的待排明细</h3>
+            <p class="mt-1 text-sm leading-6 text-slate-600">这里只显示已经命中候选机台的待排订单；每个模号可查看当前排位和备选机型。</p>
           </div>
-          <div class="flex flex-wrap gap-3">
-            <button
-              type="button"
-              class="rounded-2xl px-5 py-3 text-sm font-semibold transition"
-              :class="schedulingDraftGenerated ? 'bg-sky-100 text-sky-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
-              @click="generateSchedulingDraft"
-            >
-              {{ schedulingDraftGenerated ? '重新排机' : '生成排机草稿' }}
-            </button>
-            <button
-              type="button"
-              class="rounded-2xl px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-              :class="schedulingReviewRequested ? 'bg-amber-100 text-amber-700' : 'bg-teal-600 text-white hover:bg-teal-700'"
-              :disabled="!schedulingDraftGenerated || schedulingDraftReleased"
-              @click="submitSchedulingReview"
-            >
-              {{ schedulingReviewRequested ? '已提交审核' : '提交主管审核' }}
-            </button>
-            <button
-              type="button"
-              class="rounded-2xl px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-              :class="schedulingDraftReleased ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
-              :disabled="!schedulingReviewRequested"
-              @click="approveSchedulingDraft"
-            >
-              {{ schedulingDraftReleased ? '主管已通过' : '主管审核通过' }}
-            </button>
-          </div>
+          <button
+            type="button"
+            class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+            :disabled="pendingOrderMachineDraftRows.length === 0 || schedulingDraftReleased"
+            @click="confirmAllScheduledMolds"
+          >
+            {{ allScheduledMoldsConfirmed ? '撤回全部确认' : '全部确认' }}
+          </button>
         </div>
 
-        <div v-if="schedulingDraftGenerated" class="mt-5 overflow-x-auto">
-          <table class="min-w-full text-left text-sm">
-            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+        <div class="mt-4 overflow-x-auto">
+          <table class="min-w-[1900px] text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
               <tr>
-                <th class="pb-3 pr-4 font-medium">顺位</th>
-                <th class="pb-3 pr-4 font-medium">单号 / 产品</th>
-                <th class="pb-3 pr-4 font-medium">模具</th>
-                <th class="pb-3 pr-4 font-medium">颜色 / 料型</th>
-                <th class="pb-3 pr-4 font-medium">下发机台</th>
-                <th class="pb-3 pr-4 font-medium">预计完成</th>
-                <th class="pb-3 font-medium">状态</th>
+                <th class="pb-3 pr-4 font-medium">机型</th>
+                <th class="pb-3 pr-4 font-medium">工模</th>
+                <th class="pb-3 pr-4 font-medium">名称</th>
+                <th class="pb-3 pr-4 font-medium">单号</th>
+                <th class="pb-3 pr-4 font-medium">货号</th>
+                <th class="pb-3 pr-4 font-medium">数量</th>
+                <th class="pb-3 pr-4 font-medium">订单数</th>
+                <th class="pb-3 pr-4 font-medium">已啤数</th>
+                <th class="pb-3 pr-4 font-medium">欠数</th>
+                <th class="pb-3 pr-4 font-medium">计划目标</th>
+                <th class="pb-3 pr-4 font-medium">颜色</th>
+                <th class="pb-3 pr-4 font-medium">色粉</th>
+                <th class="pb-3 pr-4 font-medium">用料</th>
+                <th class="pb-3 pr-4 font-medium">净重</th>
+                <th class="pb-3 pr-4 font-medium">剩余欠数用料重（KG）</th>
+                <th class="pb-3 pr-4 font-medium">备注</th>
+                <th class="pb-3 font-medium">人工确认</th>
               </tr>
             </thead>
             <tbody>
               <tr
                 v-for="row in pendingOrderMachineDraftRows"
-                :key="`schedule-draft-${getPendingOrderMachineKey(row)}-${row.selectedMachine}`"
+                :key="`workbench-pending-${getWorkbenchDraftKey(row)}`"
                 class="border-b border-slate-100 align-top last:border-b-0"
+                :class="selectedWorkbenchDraftRow && getWorkbenchDraftKey(selectedWorkbenchDraftRow) === getWorkbenchDraftKey(row) ? 'bg-blue-50/60' : ''"
               >
-                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.sequence }}</td>
                 <td class="py-4 pr-4 text-slate-600">
-                  <div class="font-semibold text-slate-950">{{ row.orderNo }}</div>
-                  <div class="mt-1 text-xs text-slate-500">{{ row.productName }}</div>
-                </td>
-                <td class="py-4 pr-4 text-slate-600">{{ row.moldCode }}</td>
-                <td class="py-4 pr-4 text-slate-600">
-                  <div>{{ row.color }}</div>
-                  <div class="mt-1 text-xs text-slate-500">{{ row.material }}</div>
-                </td>
-                <td class="py-4 pr-4">
+                  <div class="font-semibold text-slate-950">{{ getWorkbenchMachineModel(row) }}</div>
                   <select
-                    class="w-40 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                    class="mt-2 w-44 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
                     :value="row.selectedMachine"
                     aria-label="修改下发机台"
-                    @change="handleDraftMachineChange(row, $event)"
+                    @change="handleWorkbenchDraftMachineChange(row, $event)"
                   >
                     <option
                       v-for="machine in row.machineOptions"
-                      :key="`schedule-draft-machine-${getPendingOrderMachineKey(row)}-${machine}`"
+                      :key="`workbench-machine-${getWorkbenchDraftKey(row)}-${machine}`"
                       :value="machine"
                     >
                       {{ machine }}
                     </option>
                   </select>
-                  <div class="mt-1 text-xs leading-5 text-slate-500">{{ row.confirmState }}</div>
                 </td>
+                <td class="py-4 pr-4 font-semibold text-slate-950">{{ row.moldCode }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.productName }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.orderNo }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchDisplayValue(row.productCode) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchDisplayValue(row.quantity) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchOrderQuantity(row) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchProducedQuantity(row) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchShortageQuantity(row) }}</td>
+                <td class="py-4 pr-4 font-semibold text-red-600">{{ getWorkbenchDisplayValue(row.planTarget) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchDisplayValue(row.color) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchDisplayValue(row.colorPowder) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchDisplayValue(row.material) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchNetWeight(row) }}</td>
+                <td class="py-4 pr-4 text-slate-600">{{ getWorkbenchRemainingMaterialKg(row) }}</td>
                 <td class="py-4 pr-4 text-slate-600">
-                  <div class="font-semibold text-slate-950">{{ row.estimatedCompletionDate }}</div>
-                  <div class="mt-1 text-xs text-slate-500">{{ row.estimatedStartWindow }}</div>
+                  <button
+                    type="button"
+                    class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+                    @click="selectWorkbenchMold(row)"
+                  >
+                    {{ getWorkbenchDisplayValue(row.remark, '查看排位') }}
+                  </button>
+                  <p class="mt-1 max-w-48 text-xs leading-5 text-slate-500">
+                    备选：{{ row.machineOptions.join(' / ') }}
+                  </p>
                 </td>
                 <td class="py-4">
-                  <StatusPill :label="row.releaseState" :tone="row.releaseTone" compact />
+                  <button
+                    type="button"
+                    class="rounded-lg px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    :class="isScheduleMoldConfirmed(row) ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-950 text-white hover:bg-slate-800'"
+                    :disabled="schedulingDraftReleased"
+                    @click="confirmScheduledMold(row)"
+                  >
+                    {{ isScheduleMoldConfirmed(row) ? '撤回确认' : '确认此模号' }}
+                  </button>
                 </td>
               </tr>
             </tbody>
@@ -1481,37 +1980,439 @@ const openImportFilePicker = () => {
             v-if="pendingOrderMachineDraftRows.length === 0"
             class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
           >
-            当前订单池还没有可排机台，先补模具映射或机台规则。
+            当前订单池还没有命中候选机台的待排明细，先补模具映射或机台规则。
           </p>
         </div>
+      </SectionPanel>
+
+      <SectionPanel
+        title="计划员排机工作台"
+        subtitle="把草稿生成、机台复核、风险提示和主管审核放在同一屏处理。"
+      >
+        <div class="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+          <article class="rounded-2xl border border-slate-200 bg-white p-5">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <StatusPill :label="schedulingDraftStatusMeta.label" :tone="schedulingDraftStatusMeta.tone" compact />
+                  <span class="text-xs text-slate-500">负责人：{{ schedulingDraftStatusMeta.owner }}</span>
+                </div>
+                <h3 class="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{{ schedulingDraftStatusMeta.title }}</h3>
+                <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{{ schedulingDraftStatusMeta.detail }}</p>
+              </div>
+
+              <div class="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  class="rounded-lg px-4 py-2 text-sm font-semibold transition"
+                  :class="schedulingDraftGenerated ? 'bg-sky-100 text-sky-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
+                  @click="generateSchedulingDraft"
+                >
+                  {{ schedulingDraftGenerated ? '刷新智能排机' : '生成排机草稿' }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                  :class="schedulingReviewRequested ? 'bg-amber-100 text-amber-700' : 'bg-teal-600 text-white hover:bg-teal-700'"
+                  :disabled="!schedulingDraftGenerated || !allScheduledMoldsConfirmed || schedulingDraftReleased"
+                  @click="submitSchedulingReview"
+                >
+                  {{ schedulingReviewRequested ? '已提交' : '提交审核' }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                  :class="schedulingDraftReleased ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
+                  :disabled="!schedulingReviewRequested"
+                  @click="approveSchedulingDraft"
+                >
+                  {{ schedulingDraftReleased ? '生产中' : '主管通过并开始生产' }}
+                </button>
+              </div>
+            </div>
+
+            <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <article
+                v-for="metric in schedulingDraftMetrics"
+                :key="metric.label"
+                class="rounded-xl border p-4"
+                :class="panelTone[metric.tone]"
+              >
+                <p class="text-xs text-slate-500">{{ metric.label }}</p>
+                <p class="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
+                <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+              </article>
+            </div>
+          </article>
+
+          <article class="rounded-2xl border border-slate-200 bg-white p-5">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Approval Flow</p>
+                <h3 class="mt-2 font-semibold text-slate-950">审核流</h3>
+              </div>
+              <StatusPill :label="schedulingDraftStatusMeta.label" :tone="schedulingDraftStatusMeta.tone" compact />
+            </div>
+
+            <div class="mt-5 space-y-3">
+              <article
+                v-for="step in schedulingApprovalSteps"
+                :key="step.title"
+                class="rounded-xl border px-4 py-3"
+                :class="panelTone[step.tone]"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 class="font-semibold text-slate-950">{{ step.title }}</h4>
+                    <p class="mt-1 text-xs text-slate-500">{{ step.owner }}</p>
+                  </div>
+                  <StatusPill :label="step.status" :tone="step.tone" compact />
+                </div>
+                <p class="mt-2 text-sm leading-6 text-slate-600">{{ step.detail }}</p>
+              </article>
+            </div>
+          </article>
+        </div>
+
+        <div class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <article
+            v-for="card in schedulingDraftRiskCards"
+            :key="card.label"
+            class="rounded-2xl border p-4"
+            :class="panelTone[card.tone]"
+          >
+            <p class="text-sm text-slate-500">{{ card.label }}</p>
+            <p class="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{{ card.value }}</p>
+            <p class="mt-2 text-xs leading-5 text-slate-500">{{ card.detail }}</p>
+          </article>
+        </div>
+      </SectionPanel>
+
+      <SectionPanel
+        title="已排订单总览"
+        subtitle="点选待排明细后，这里显示该模号当前排到哪台机、同机台队列和掉期情况。"
+      >
+        <template #action>
+          <StatusPill
+            :label="schedulingDraftGenerated ? `${pendingOrderMachineDraftRows.length} 条已排` : '待生成'"
+            :tone="schedulingDraftGenerated ? 'blue' : 'slate'"
+          />
+        </template>
+
+        <article
+          v-if="selectedWorkbenchDraftRow"
+          class="mb-5 rounded-2xl border border-blue-100 bg-blue-50 p-5"
+        >
+          <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <StatusPill :label="`顺位 #${selectedWorkbenchDraftRow.sequence}`" tone="blue" compact />
+                <StatusPill :label="selectedWorkbenchDraftRow.selectedMachine" tone="teal" compact />
+                <StatusPill
+                  :label="getScheduleDelayLabel(selectedWorkbenchDraftRow)"
+                  :tone="getScheduleDelayTone(selectedWorkbenchDraftRow)"
+                  compact
+                />
+              </div>
+              <h3 class="mt-3 text-xl font-semibold tracking-tight text-slate-950">
+                {{ selectedWorkbenchDraftRow.moldCode }} · {{ selectedWorkbenchDraftRow.orderNo }}
+              </h3>
+              <p class="mt-2 text-sm leading-6 text-slate-600">
+                {{ selectedWorkbenchDraftRow.productName }}，计划 {{ selectedWorkbenchDraftRow.estimatedStartWindow }} 开始，预计 {{ selectedWorkbenchDraftRow.estimatedCompletionDate }} 完成。
+              </p>
+            </div>
+            <button
+              type="button"
+              class="rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+              :class="isScheduleMoldConfirmed(selectedWorkbenchDraftRow) ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-950 text-white hover:bg-slate-800'"
+              :disabled="schedulingDraftReleased"
+              @click="confirmScheduledMold(selectedWorkbenchDraftRow)"
+            >
+              {{ isScheduleMoldConfirmed(selectedWorkbenchDraftRow) ? '撤回确认' : '确认此模号' }}
+            </button>
+          </div>
+
+          <div class="mt-5 grid gap-3 lg:grid-cols-3">
+            <div class="rounded-xl bg-white px-4 py-3">
+              <p class="text-xs uppercase tracking-[0.16em] text-slate-500">候选机型</p>
+              <p class="mt-2 text-sm font-semibold text-slate-950">{{ selectedWorkbenchDraftRow.machineOptions.join(' / ') }}</p>
+            </div>
+            <div class="rounded-xl bg-white px-4 py-3">
+              <p class="text-xs uppercase tracking-[0.16em] text-slate-500">推荐原因</p>
+              <p class="mt-2 text-sm leading-6 text-slate-700">{{ selectedWorkbenchDraftRow.recommendationReason }}</p>
+            </div>
+            <div class="rounded-xl bg-white px-4 py-3">
+              <p class="text-xs uppercase tracking-[0.16em] text-slate-500">风险提示</p>
+              <p class="mt-2 text-sm leading-6 text-slate-700">{{ selectedWorkbenchDraftRow.riskDetail }}</p>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <h4 class="font-semibold text-slate-950">同机台排位</h4>
+            <div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <article
+                v-for="row in selectedWorkbenchMachineQueueRows"
+                :key="`selected-machine-queue-${getWorkbenchDraftKey(row)}`"
+                class="rounded-xl border bg-white px-4 py-3"
+                :class="getWorkbenchDraftKey(row) === getWorkbenchDraftKey(selectedWorkbenchDraftRow) ? 'border-blue-200' : 'border-slate-200'"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <p class="font-semibold text-slate-950">#{{ row.sequence }} {{ row.moldCode }}</p>
+                  <StatusPill :label="getScheduleDelayLabel(row)" :tone="getScheduleDelayTone(row)" compact />
+                </div>
+                <p class="mt-2 text-xs leading-5 text-slate-500">{{ row.orderNo }} · {{ row.estimatedStartWindow }}</p>
+              </article>
+            </div>
+          </div>
+        </article>
+
+        <div
+          v-if="schedulingDraftGenerated && pendingOrderMachineDraftRows.length > 0"
+          class="grid gap-4 xl:grid-cols-2"
+        >
+          <article
+            v-for="row in pendingOrderMachineDraftRows"
+            :key="`schedule-draft-card-${getPendingOrderMachineKey(row)}-${row.selectedMachine}`"
+            class="rounded-2xl border border-slate-200 bg-white p-5"
+          >
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <StatusPill :label="`#${row.sequence}`" :tone="row.priorityTone" compact />
+                  <StatusPill :label="row.priorityLabel" :tone="row.priorityTone" compact />
+                  <StatusPill :label="row.releaseState" :tone="row.releaseTone" compact />
+                </div>
+                <h3 class="mt-3 text-lg font-semibold tracking-tight text-slate-950">{{ row.orderNo }}</h3>
+                <p class="mt-1 text-sm leading-6 text-slate-600">{{ row.productName }}</p>
+              </div>
+
+              <div class="text-sm text-slate-600 lg:text-right">
+                <p class="font-semibold text-slate-950">{{ row.estimatedCompletionDate }}</p>
+                <p class="mt-1 text-xs text-slate-500">{{ row.estimatedStartWindow }}</p>
+              </div>
+            </div>
+
+            <div class="mt-5 grid gap-3 md:grid-cols-3">
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">模具</p>
+                <p class="mt-2 font-semibold text-slate-950">{{ row.moldCode }}</p>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">颜色 / 料型</p>
+                <p class="mt-2 text-sm text-slate-700">{{ row.color }} / {{ row.material }}</p>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">待排数量</p>
+                <p class="mt-2 font-semibold text-slate-950">{{ row.quantity }}</p>
+              </div>
+            </div>
+
+            <div class="mt-5 grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+              <div>
+                <label class="text-xs uppercase tracking-[0.16em] text-slate-500">下发机台</label>
+                <select
+                  class="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  :value="row.selectedMachine"
+                  aria-label="修改下发机台"
+                  @change="handleWorkbenchDraftMachineChange(row, $event)"
+                >
+                  <option
+                    v-for="machine in row.machineOptions"
+                    :key="`schedule-draft-machine-${getPendingOrderMachineKey(row)}-${machine}`"
+                    :value="machine"
+                  >
+                    {{ machine }}
+                  </option>
+                </select>
+                <p class="mt-2 text-xs leading-5 text-slate-500">{{ row.confirmState }}</p>
+              </div>
+
+              <div class="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <StatusPill :label="row.confirmState" :tone="row.confirmTone" compact />
+                  <span
+                    v-for="basis in row.recommendationBasis"
+                    :key="`${row.orderNo}-${basis}`"
+                    class="rounded-full bg-white px-2.5 py-1 text-xs text-slate-600"
+                  >
+                    {{ basis }}
+                  </span>
+                </div>
+                <p class="mt-3 text-sm leading-6 text-slate-700">{{ row.recommendationReason }}</p>
+              </div>
+            </div>
+
+            <div class="mt-4 rounded-xl border px-4 py-3" :class="panelTone[row.riskTone]">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <StatusPill :label="row.riskLabel" :tone="row.riskTone" compact />
+                  <span class="text-sm font-semibold text-slate-950">{{ row.reviewHint }}</span>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-xs text-slate-500">候选 {{ row.machineOptions.length }} 台</span>
+                  <button
+                    type="button"
+                    class="rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    :class="isScheduleMoldConfirmed(row) ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-white text-slate-700 hover:bg-slate-50'"
+                    :disabled="schedulingDraftReleased"
+                    @click="confirmScheduledMold(row)"
+                  >
+                    {{ isScheduleMoldConfirmed(row) ? '撤回确认' : '确认模号' }}
+                  </button>
+                </div>
+              </div>
+              <p class="mt-2 text-sm leading-6 text-slate-600">{{ row.riskDetail }}</p>
+            </div>
+          </article>
+        </div>
+
+        <p
+          v-else-if="schedulingDraftGenerated"
+          class="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
+        >
+          当前订单池还没有可排机台，先补模具映射或机台规则。
+        </p>
         <p
           v-else
-          class="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
+          class="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600"
         >
           生成草稿后，这里会显示可人工微调的排机明细。
         </p>
       </SectionPanel>
 
-      <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <article
-          v-for="metric in injectionExecutionRuleMetrics"
-          :key="metric.label"
-          class="rounded-2xl border border-slate-200 bg-white p-5"
-        >
-          <p class="text-sm text-slate-500">{{ metric.label }}</p>
-          <p class="mt-4 text-3xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
-          <p class="mt-3 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
-        </article>
-      </section>
+      <SectionPanel
+        title="主管审核排单总览"
+        subtitle="主管只看全部排单、机台分布和掉期情况；审核通过后进入生产。"
+      >
+        <template #action>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+              :class="schedulingReviewRequested ? 'bg-amber-100 text-amber-700' : 'bg-teal-600 text-white hover:bg-teal-700'"
+              :disabled="!schedulingDraftGenerated || !allScheduledMoldsConfirmed || schedulingDraftReleased"
+              @click="submitSchedulingReview"
+            >
+              {{ schedulingReviewRequested ? '已提交主管' : '提交主管审核' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+              :class="schedulingDraftReleased ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-950 text-white hover:bg-slate-800'"
+              :disabled="!schedulingReviewRequested"
+              @click="approveSchedulingDraft"
+            >
+              {{ schedulingDraftReleased ? '已开始生产' : '审核通过并开始生产' }}
+            </button>
+          </div>
+        </template>
 
-      <div class="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+        <div class="mb-5 rounded-2xl border px-5 py-4"
+          :class="schedulingDraftReleased ? 'border-emerald-100 bg-emerald-50' : schedulingReviewRequested ? 'border-amber-100 bg-amber-50' : 'border-slate-200 bg-slate-50'"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 class="font-semibold text-slate-950">
+                {{ schedulingDraftReleased ? '主管已审核，生产已开始' : schedulingReviewRequested ? '等待主管审核' : allScheduledMoldsConfirmed ? '可提交主管审核' : '等待文员确认全部模号' }}
+              </h3>
+              <p class="mt-1 text-sm leading-6 text-slate-600">
+                {{ schedulingDraftReleased ? '日报回报将只承接这些已排机模号。' : schedulingReviewRequested ? '主管审核时重点看整张排单和掉期情况。' : allScheduledMoldsConfirmed ? '全部模号已确认，可以提交主管。' : '先在待排明细中逐个确认，或点击全部确认。' }}
+              </p>
+            </div>
+            <StatusPill
+              :label="schedulingDraftReleased ? '生产中' : schedulingReviewRequested ? '待主管审核' : `${confirmedScheduleCount}/${pendingOrderMachineDraftRows.length} 已确认`"
+              :tone="schedulingDraftReleased ? 'green' : schedulingReviewRequested ? 'amber' : allScheduledMoldsConfirmed ? 'blue' : 'slate'"
+            />
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
+              <tr>
+                <th class="pb-3 pr-4 font-medium">顺位</th>
+                <th class="pb-3 pr-4 font-medium">模号 / 单号</th>
+                <th class="pb-3 pr-4 font-medium">机台</th>
+                <th class="pb-3 pr-4 font-medium">开机 / 完成</th>
+                <th class="pb-3 pr-4 font-medium">交期</th>
+                <th class="pb-3 pr-4 font-medium">掉期</th>
+                <th class="pb-3 font-medium">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in pendingOrderMachineDraftRows"
+                :key="`supervisor-schedule-${getWorkbenchDraftKey(row)}`"
+                class="border-b border-slate-100 align-top last:border-b-0"
+              >
+                <td class="py-4 pr-4 font-semibold text-slate-950">#{{ row.sequence }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div class="font-semibold text-slate-950">{{ row.moldCode }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.orderNo }} · {{ row.productName }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.selectedMachine }}</td>
+                <td class="py-4 pr-4 text-slate-600">
+                  <div>{{ row.estimatedStartWindow }}</div>
+                  <div class="mt-1 text-xs text-slate-500">{{ row.estimatedCompletionDate }}</div>
+                </td>
+                <td class="py-4 pr-4 text-slate-600">{{ row.dueDate }}</td>
+                <td class="py-4 pr-4">
+                  <StatusPill :label="getScheduleDelayLabel(row)" :tone="getScheduleDelayTone(row)" compact />
+                </td>
+                <td class="py-4">
+                  <StatusPill
+                    :label="schedulingDraftReleased ? '生产中' : schedulingReviewRequested ? '待审核' : isScheduleMoldConfirmed(row) ? '已确认' : '待确认'"
+                    :tone="schedulingDraftReleased ? 'green' : schedulingReviewRequested ? 'amber' : isScheduleMoldConfirmed(row) ? 'blue' : 'slate'"
+                    compact
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionPanel>
+
+      <div class="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <SectionPanel
-          title="候选机台"
-          subtitle="这里只放推荐结果和阻塞原因，计划员点击进来就知道下一步该怎么排。"
+          title="决策辅助"
+          subtitle="保留关键排机规则和换色风险，让计划员确认草稿时不用切页。"
+        >
+          <div class="grid gap-4 md:grid-cols-2">
+            <article
+              v-for="metric in injectionExecutionRuleMetrics"
+              :key="metric.label"
+              class="rounded-2xl border border-slate-200 bg-white p-4"
+            >
+              <p class="text-sm text-slate-500">{{ metric.label }}</p>
+              <p class="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
+              <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+            </article>
+          </div>
+
+          <div class="mt-5 space-y-3">
+            <article
+              v-for="risk in injectionColorTransitionRisks.slice(0, 4)"
+              :key="`workbench-risk-${risk.machine}`"
+              class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h4 class="font-semibold text-slate-950">{{ risk.machine }}</h4>
+                  <p class="mt-1 text-xs text-slate-500">{{ risk.route.join(' → ') }}</p>
+                </div>
+                <StatusPill :label="risk.risk" :tone="risk.tone" compact />
+              </div>
+            </article>
+          </div>
+        </SectionPanel>
+
+        <SectionPanel
+          title="候选与拦截"
+          subtitle="展示推荐机台、备选机台和设备限制，辅助判断是否需要人工改机。"
         >
           <div class="space-y-4">
             <article
-              v-for="row in compactCandidateRows"
+              v-for="row in compactCandidateRows.slice(0, 4)"
               :key="`${row.orderNo}-${row.moldCode}`"
               class="rounded-2xl border border-slate-200 bg-white p-5"
             >
@@ -1534,17 +2435,10 @@ const openImportFilePicker = () => {
               </div>
               <p class="mt-4 text-sm leading-6 text-slate-600">{{ row.reason }}</p>
             </article>
-          </div>
-        </SectionPanel>
 
-        <SectionPanel
-          title="设备拦截规则"
-          subtitle="把工艺限制单独列出来，避免现场同事来回切页找原因。"
-        >
-          <div class="space-y-3">
             <article
-              v-for="item in injectionExecutionConstraintRows"
-              :key="item.machine"
+              v-for="item in injectionExecutionConstraintRows.slice(0, 3)"
+              :key="`workbench-constraint-${item.machine}`"
               class="rounded-2xl border p-4"
               :class="panelTone[item.tone]"
             >
@@ -1564,7 +2458,7 @@ const openImportFilePicker = () => {
 
       <SectionPanel
         title="规则流程"
-        subtitle="智能排机页只保留排机逻辑主链，让页面更像操作台，而不是汇报页。"
+        subtitle="保留排机逻辑主链，方便后续接入真实排机引擎。"
       >
         <div class="grid gap-4 xl:grid-cols-5">
           <article
@@ -1852,8 +2746,8 @@ const openImportFilePicker = () => {
 
     <template v-else-if="props.activeSection === 'daily-report'">
       <SectionPanel
-        title="待回报任务"
-        subtitle="承接主管已审核下发的排机任务，记录本班产量并预览欠数刷新。"
+        title="啤机部日报回报"
+        subtitle="只承接已排机模号，文员逐个填写本班产量、停机和欠数，再统一确认。"
       >
         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <article
