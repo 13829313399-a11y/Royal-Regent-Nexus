@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
 import { nextTick } from 'vue'
 import { moldingSampleApi } from '@/api/moldingSample'
-import type { MoldingSampleCreateRequest, MoldingSampleDetailResponse } from '@/api/moldingSample'
+import type {
+  MoldingSampleCreateRequest,
+  MoldingSampleDetailResponse,
+  MoldingSampleNotificationResponse,
+} from '@/api/moldingSample'
 import { useAuthStore } from '@/stores/auth'
 import type { MoldingSampleStatus } from '@/types/moldingSample'
 import MoldingSampleProductionTaskView from '../MoldingSampleProductionTaskView.vue'
@@ -169,6 +173,31 @@ function createMoldingSampleRecord(
   }
 }
 
+function createProductionTaskNotification(
+  orderId: string,
+  sequence = 1,
+): MoldingSampleNotificationResponse {
+  const day = String(sequence).padStart(2, '0')
+
+  return {
+    id: `N-${orderId}`,
+    order_id: orderId,
+    factory_id: 'huaxing',
+    target_module: 'production_molding_sample_task',
+    target_role: '啤机部',
+    event_type: '主管通过',
+    title: `生产任务 ${orderId}`,
+    message: '主管审核通过，进入啤机部任务队列。',
+    from_status: '待审核',
+    to_status: '待生产',
+    status: '未读',
+    actor_name: '华兴工程主管',
+    read_at: '',
+    handled_at: '',
+    created_at: `2026-07-${day} 09:00`,
+  }
+}
+
 describe('molding sample runtime error handling', () => {
   beforeEach(() => {
     routeState.path = '/modules/molding-sample'
@@ -216,6 +245,117 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.createProblem).not.toHaveBeenCalled()
   })
 
+  it('paginates the production task board and list at ten tasks per page', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing' }
+    const records = Array.from({ length: 12 }, (_, index) => {
+      const id = `BP-PROD-${String(index + 1).padStart(3, '0')}`
+      return createMoldingSampleRecord('待生产', id, index + 1)
+    })
+    const notifications = records.map((record, index) =>
+      createProductionTaskNotification(record.order.id, index + 1),
+    )
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce(notifications)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+    const queue = () => wrapper.get('[aria-label="啤办生产任务队列"]')
+
+    expect(wrapper.text()).toContain('看板')
+    expect(wrapper.text()).toContain('列表')
+    expect(queue().text()).toContain('每页 10 条')
+    expect(queue().text()).toContain('BP-PROD-010')
+    expect(queue().text()).not.toContain('BP-PROD-011')
+
+    await getButtonByText(wrapper, '下一页').trigger('click')
+    await nextTick()
+
+    expect(queue().text()).toContain('BP-PROD-011')
+    expect(queue().text()).toContain('BP-PROD-012')
+    expect(queue().text()).not.toContain('BP-PROD-010')
+
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await nextTick()
+
+    expect(queue().text()).toContain('BP-PROD-010')
+    expect(queue().text()).not.toContain('BP-PROD-011')
+
+    wrapper.unmount()
+  })
+
+  it('expands the production task page to show the full molding sample order data', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-FULL-001' }
+    const detailedRecord = {
+      ...createMoldingSampleRecord('待生产', 'BP-PROD-FULL-001'),
+      order: {
+        ...createMoldingSampleRecord('待生产', 'BP-PROD-FULL-001').order,
+        order_number: 'P50002008',
+        doc_number: 'W-G026-00',
+        product_name: '30寸黑武士',
+        client_name: 'ShuShuPaPa',
+        workshop: '工程部',
+        reason: '生产回填前需要查看完整啤办资料。',
+      },
+      items: [
+        {
+          id: 'BP-PROD-FULL-001-001',
+          order_id: 'BP-PROD-FULL-001',
+          sort_order: 1,
+          mold_id: 'P50002008-01-01',
+          mold_name: '头盔',
+          machine_type: '160T',
+          material: 'PP (AV161)',
+          color: '黑色',
+          pigment_no: 'PMS 黑色',
+          quantity: '1/1',
+          shoot_qty: 30,
+          gross_weight_g: 82,
+          required_material_kg: 15,
+          mold_return_time: '2026-02-03',
+          completion_time: '2026-02-04',
+          notes: '啤机回填前核对完整资料。',
+          receipt_no: 'RC-20260203-01',
+          collected_weight_kg: 14.5,
+          actual_weight_kg: null,
+          actual_amount_hkd: null,
+          injection_cost: null,
+          injection_cost_hkd: null,
+          exchange_rate_at_save: null,
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([detailedRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(detailedRecord.order.id),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    expect(wrapper.text()).not.toContain('完整单据数据')
+    expect(wrapper.text()).not.toContain('整啤毛重(g)')
+    expect(wrapper.text()).not.toContain('RC-20260203-01')
+
+    await getButtonByText(wrapper, '展开完整数据').trigger('click')
+    await nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('完整单据数据')
+    expect(text).toContain('产品编号')
+    expect(text).toContain('P50002008')
+    expect(text).toContain('文件编号')
+    expect(text).toContain('W-G026-00')
+    expect(text).toContain('整啤毛重(g)')
+    expect(text).toContain('82.00 g')
+    expect(text).toContain('PMS 黑色')
+    expect(text).toContain('RC-20260203-01')
+    expect(text).toContain('啤机回填前核对完整资料。')
+
+    wrapper.unmount()
+  })
+
   it('lets the opening engineer withdraw a pending review order from the detail page', async () => {
     const pendingRecord = createMoldingSampleRecord()
     const withdrawnRecord = {
@@ -258,6 +398,79 @@ describe('molding sample runtime error handling', () => {
       today: '2026-07-06',
     })
     expect(wrapper.text()).toContain('已撤回')
+
+    wrapper.unmount()
+  })
+
+  it('expands the detail page to show the full molding sample order data', async () => {
+    const detailedRecord = {
+      ...createMoldingSampleRecord('待审核', 'BP-DETAIL-FULL-001'),
+      order: {
+        ...createMoldingSampleRecord('待审核', 'BP-DETAIL-FULL-001').order,
+        order_number: 'P50002008',
+        doc_number: 'W-G026-00',
+        product_name: '30寸黑武士',
+        client_name: 'ShuShuPaPa',
+        workshop: '工程部',
+        send_to: '',
+        reason: '试啤确认颜色、PMS 与啤办用料。',
+      },
+      items: [
+        {
+          id: 'BP-DETAIL-FULL-001-001',
+          order_id: 'BP-DETAIL-FULL-001',
+          sort_order: 1,
+          mold_id: 'P50002008-01-01',
+          mold_name: '头盔',
+          machine_type: '160T',
+          material: 'PP (AV161)',
+          color: '黑色',
+          pigment_no: 'PMS 黑色',
+          quantity: '1/1',
+          shoot_qty: 30,
+          gross_weight_g: 82,
+          required_material_kg: 15,
+          mold_return_time: '2026-02-03',
+          completion_time: '2026-02-04',
+          notes: '确认披锋与缩水。',
+          receipt_no: 'RC-20260203-01',
+          collected_weight_kg: 14.5,
+          actual_weight_kg: 14.2,
+          actual_amount_hkd: 98.76,
+          injection_cost: 120,
+          injection_cost_hkd: 129.6,
+          exchange_rate_at_save: 1.08,
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([detailedRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, 'BP-DETAIL-FULL-001').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).not.toContain('完整单据数据')
+    expect(wrapper.text()).not.toContain('整啤毛重(g)')
+    expect(wrapper.text()).not.toContain('RC-20260203-01')
+
+    await getButtonByText(wrapper, '展开完整数据').trigger('click')
+    await nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('完整单据数据')
+    expect(text).toContain('产品编号')
+    expect(text).toContain('P50002008')
+    expect(text).toContain('文件编号')
+    expect(text).toContain('W-G026-00')
+    expect(text).toContain('整啤毛重(g)')
+    expect(text).toContain('82.00 g')
+    expect(text).toContain('PMS 黑色')
+    expect(text).toContain('RC-20260203-01')
+    expect(text).toContain('啤办费(HKD)')
+    expect(text).toContain('HKD 129.60')
+    expect(text).toContain('确认披锋与缩水。')
 
     wrapper.unmount()
   })
