@@ -717,6 +717,15 @@ def test_trial_accounts_do_not_expose_unused_warehouse_permissions(client):
     retired_login_response = client.post("/api/auth/login", json={"username": "warehouse", "password": "123456"})
     assert retired_login_response.status_code == 401
 
+    carton_warehouse_profile = login_as(client, "carton_warehouse")
+    assert "carton_mark:template_upload" in carton_warehouse_profile["permissions"]
+    assert "molding_sample:inventory_issue" not in carton_warehouse_profile["permissions"]
+    carton_warehouse_batch_response = client.post(
+        "/api/inventory-batches",
+        json={"material": "HIPS 425", "batch_no": "HIPS-20260701-A", "location": "A-01", "initial_weight_kg": 3},
+    )
+    assert carton_warehouse_batch_response.status_code == 403
+
     login_as(client, "molding_clerk")
     clerk_batch_response = client.post(
         "/api/inventory-batches",

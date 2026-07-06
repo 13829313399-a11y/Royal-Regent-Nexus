@@ -17,6 +17,8 @@ for (const requiredCopy of [
   '企业微信',
   '扫码登录',
   '华兴试点账号',
+  'carton_warehouse',
+  'qa_inspector',
   'molding_clerk',
   'admin',
 ]) {

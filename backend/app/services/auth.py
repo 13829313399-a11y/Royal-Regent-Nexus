@@ -41,6 +41,10 @@ MOLDING_SAMPLE_PERMISSIONS = [
     "molding_sample:price_update",
     "molding_sample:audit_read",
     "molding_sample:notification_read",
+    "carton_mark:read",
+    "carton_mark:template_upload",
+    "carton_mark:photo_upload",
+    "carton_mark:review",
     "system:user_manage",
     "system:role_manage",
 ]
@@ -49,6 +53,8 @@ DEFAULT_ROLES = [
     ("engineer", "工程师", "工程部开单与草稿维护"),
     ("engineering_supervisor", "工程主管", "工程主管审核"),
     ("manager", "经理", "经理终审、改价和敏感审计"),
+    ("carton_warehouse_keeper", "纸箱仓管", "纸箱箱唛 PDF 模板维护"),
+    ("qa_inspector", "QA 检验员", "QA 箱唛实拍上传与核对"),
     ("molding_clerk", "啤机部文员", "啤机部啤办任务接收、回填和完成"),
     ("admin", "系统管理员", "系统配置和权限管理"),
 ]
@@ -80,6 +86,15 @@ ROLE_PERMISSIONS = {
         "molding_sample:warehouse_requisition",
         "molding_sample:inventory_issue",
         "molding_sample:notification_read",
+    },
+    "carton_warehouse_keeper": {
+        "carton_mark:read",
+        "carton_mark:template_upload",
+    },
+    "qa_inspector": {
+        "carton_mark:read",
+        "carton_mark:photo_upload",
+        "carton_mark:review",
     },
     "molding_clerk": {
         "molding_sample:read",
@@ -113,12 +128,15 @@ DEFAULT_USERS = [
     ("user-engineer", "engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
     ("user-supervisor", "supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),
     ("user-manager", "manager", "华兴经理", "manager", "huaxing", "management"),
+    ("user-carton-warehouse", "carton_warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
+    ("user-qa-inspector", "qa_inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
     ("user-molding-clerk", "molding_clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
     ("user-admin", "admin", "系统管理员", "admin", "*", "system"),
 ]
 
 RETIRED_DEFAULT_USERNAMES = {"molding", "warehouse"}
 RETIRED_DEFAULT_USER_IDS = {"user-molding", "user-warehouse"}
+DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
 
 
 @dataclass(frozen=True)
@@ -302,9 +320,14 @@ def seed_auth_defaults(db: Session) -> None:
 
 
 def authenticate_user(db: Session, username: str, password: str, request: Request | None = None) -> AuthUser:
-    user = db.scalar(select(AuthUser).where(AuthUser.username == username.strip()))
+    normalized_username = username.strip()
+    user = db.scalar(select(AuthUser).where(AuthUser.username == normalized_username))
+    if user is None and normalized_username in DEFAULT_USERNAMES:
+        seed_auth_defaults(db)
+        user = db.scalar(select(AuthUser).where(AuthUser.username == normalized_username))
+
     if not user or user.status != "active" or not verify_password(password, user):
-        add_auth_audit(db, "login_denied", username=username.strip(), detail="用户名或密码错误", request=request)
+        add_auth_audit(db, "login_denied", username=normalized_username, detail="用户名或密码错误", request=request)
         db.commit()
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
