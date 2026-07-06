@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
 import { nextTick } from 'vue'
 import { moldingSampleApi } from '@/api/moldingSample'
-import type { MoldingSampleDetailResponse } from '@/api/moldingSample'
+import type { MoldingSampleCreateRequest, MoldingSampleDetailResponse } from '@/api/moldingSample'
 import { useAuthStore } from '@/stores/auth'
 import type { MoldingSampleStatus } from '@/types/moldingSample'
 import MoldingSampleProductionTaskView from '../MoldingSampleProductionTaskView.vue'
@@ -27,6 +27,7 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   deleteOrder: vi.fn(),
   exportOrderExcel: vi.fn(),
   importOrderExcel: vi.fn(),
+  previewOrderExcel: vi.fn(),
   updateStatus: vi.fn(),
   updateItems: vi.fn(),
   listNotifications: vi.fn(),
@@ -448,5 +449,75 @@ describe('molding sample runtime error handling', () => {
     expect(restoredWrapper.text()).toContain('新建成功')
 
     restoredWrapper.unmount()
+  })
+
+  it('imports Excel into the new-order draft before formal submission', async () => {
+    const previewPayload = {
+      order: {
+        id: 'BP-XLSX-DRAFT-001',
+        factory_id: 'huaxing',
+        order_number: 'P50002008',
+        doc_number: 'W-G026-00',
+        product_name: '30寸黑武士',
+        client_name: 'ShuShuPaPa',
+        date: '2026-02-03',
+        stage: 'T0',
+        order_type: '啤办',
+        workshop: '工程部',
+        send_to: '内部',
+        supervisor: '',
+        eng_name: '杨敬作',
+        reason: '工程部啤办通知单导入',
+      },
+      items: [
+        {
+          id: 'BP-XLSX-DRAFT-001-001',
+          mold_id: 'P50002008-01-01',
+          mold_name: '30寸黑武士-头盔',
+          material: 'PP（AV161）',
+          color: '黑色 / PMS Black C',
+          pigment_no: '黑种',
+          quantity: '2',
+          shoot_qty: 30,
+          required_material_kg: 15,
+          mold_return_time: '2026-02-10',
+          completion_time: '2026-02-10',
+          notes: '报价周期：3天；要求：加急；备注：第一次试模',
+        },
+      ],
+    } satisfies MoldingSampleCreateRequest
+
+    mockedMoldingSampleApi.previewOrderExcel.mockResolvedValueOnce(previewPayload)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    const input = wrapper.get('input[type="file"]')
+    const file = new File([new Uint8Array([1, 2, 3])], '华兴啤办.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+
+    Object.defineProperty(input.element, 'files', {
+      value: [file],
+      configurable: true,
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.previewOrderExcel).toHaveBeenCalledWith(expect.any(ArrayBuffer), {
+      factory_id: 'huaxing',
+    })
+    expect(mockedMoldingSampleApi.importOrderExcel).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.createOrder).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Excel已导入到新建开单草稿')
+    expect(wrapper.text()).toContain('提交主管审核')
+    expect((wrapper.get('[data-testid="create-order-id"]').element as HTMLInputElement).value).toBe('BP-XLSX-DRAFT-001')
+    expect((wrapper.get('[data-testid="create-product-no"]').element as HTMLInputElement).value).toBe('P50002008')
+    expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('30寸黑武士')
+    expect((wrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('P50002008-01-01')
+    expect((wrapper.get('[data-testid="create-line-color"]').element as HTMLInputElement).value).toBe('黑色')
+    expect((wrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('15')
+
+    wrapper.unmount()
   })
 })

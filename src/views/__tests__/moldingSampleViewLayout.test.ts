@@ -117,12 +117,13 @@ for (const requiredImplementation of [
   'moldingSampleApi.createOrder',
   'moldingSampleApi.editOrder',
   'moldingSampleApi.exportOrderExcel',
-  'moldingSampleApi.importOrderExcel',
+  'moldingSampleApi.previewOrderExcel',
   'excelFileInput',
   'triggerExcelImport',
   'handleExcelImportFile',
   'downloadOrderExcel',
   'readWorkbookAsArrayBuffer',
+  'createDraftFromExcelPreview',
   'URL.createObjectURL',
   'approvalNote',
   'runApprovalTransition',
@@ -210,7 +211,9 @@ assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
 assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.gross_weight_g"[\s\S]*v-model="line\.required_material_kg"[\s\S]*v-model="line\.required_date"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
 assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
-assert.match(source, /moldingSampleApi\.importOrderExcel\(workbook,\s*\{\s*factory_id:\s*selectedFactoryId\.value,\s*\}\)/)
+assert.match(source, /moldingSampleApi\.previewOrderExcel\(workbook,\s*\{\s*factory_id:\s*selectedFactoryId\.value,\s*\}\)/)
+assert.match(source, /activeView\.value = 'create'/)
+assert.match(source, /Excel已导入到新建开单草稿/)
 
 for (const removedClearedLayoutCopy of [
   'MOLDING SAMPLE REDESIGN',

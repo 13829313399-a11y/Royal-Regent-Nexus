@@ -257,6 +257,26 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       )
       return response.data
     },
+    async previewOrderExcel(workbook: ArrayBuffer, options: MoldingSampleExcelImportOptions = {}) {
+      const params = new URLSearchParams()
+      if (options.order_id) {
+        params.set('order_id', options.order_id)
+      }
+      if (options.factory_id) {
+        params.set('factory_id', options.factory_id)
+      }
+      const query = params.toString()
+      const response = await client.post<MoldingSampleCreateRequest>(
+        query ? `/injection/import-excel-preview?${query}` : '/injection/import-excel-preview',
+        workbook,
+        {
+          headers: {
+            'content-type': MOLDING_SAMPLE_XLSX_MIME,
+          },
+        },
+      )
+      return response.data
+    },
     async updateStatus(orderId: string, payload: MoldingSampleStatusRequest) {
       const response = await client.patch<MoldingSampleDetailResponse>(`/injection/${orderId}/status`, payload)
       return response.data
