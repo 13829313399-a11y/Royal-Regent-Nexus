@@ -87,6 +87,7 @@ const statusTones: Record<MoldingSampleStatus, Tone> = {
   生产中: 'teal',
   已完成: 'green',
   已驳回: 'red',
+  已撤回: 'slate',
 }
 
 const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
@@ -286,6 +287,7 @@ function getTaskPriority(status: MoldingSampleStatus) {
     待经理审核: 3,
     已完成: 4,
     已驳回: 5,
+    已撤回: 6,
   }
 
   return priorities[status]

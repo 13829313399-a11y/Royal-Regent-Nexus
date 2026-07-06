@@ -876,6 +876,10 @@ def completion_missing_item_ids(order: MoldingSampleOrder) -> list[str]:
     ]
 
 
+def is_opening_engineer(order: MoldingSampleOrder, current_user: AuthContext) -> bool:
+    return order.eng_name == "" or order.eng_name == current_user.display_name
+
+
 def calculate_item_costs(
     db: Session,
     order: MoldingSampleOrder,
@@ -983,10 +987,17 @@ def transition_status(
         order.reject_reason = request.reason
     elif action == "工程重提":
         ensure_permission(db, current_user, "molding_sample:edit_draft")
-        if order.status != "已驳回":
-            raise HTTPException(status_code=403, detail="只有工程部可以重提已驳回单")
+        if order.status not in {"已驳回", "已撤回"}:
+            raise HTTPException(status_code=403, detail="只有工程部可以重提已驳回或已撤回单")
         next_status = "待审核"
         order.reject_reason = ""
+    elif action == "工程撤回":
+        ensure_permission(db, current_user, "molding_sample:edit_draft")
+        if order.status != "待审核":
+            raise HTTPException(status_code=403, detail="只有开单工程师可以撤回待审核单")
+        if not is_opening_engineer(order, current_user):
+            raise HTTPException(status_code=403, detail="只有开单工程师可以撤回本人提交的待审核单")
+        next_status = "已撤回"
     elif action == "开始处理":
         ensure_permission(db, current_user, "molding_sample:production_start")
         if order.status != "待生产":

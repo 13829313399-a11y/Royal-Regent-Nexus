@@ -404,6 +404,61 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert completed_response.json()["order"]["completed_date"] == "2026-07-01"
 
 
+def test_engineer_can_withdraw_pending_order_and_resubmit(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-WITHDRAW-001"))
+
+    withdraw_response = client.patch(
+        "/api/injection/BP-WITHDRAW-001/status",
+        json={"action": "工程撤回", "reason": "资料需要重新确认"},
+    )
+    assert withdraw_response.status_code == 200
+    withdrawn_payload = withdraw_response.json()
+    assert withdrawn_payload["order"]["status"] == "已撤回"
+    assert withdrawn_payload["audit_logs"][0]["action"] == "工程撤回"
+    assert withdrawn_payload["audit_logs"][0]["from_status"] == "待审核"
+    assert withdrawn_payload["audit_logs"][0]["to_status"] == "已撤回"
+    assert withdrawn_payload["audit_logs"][0]["reason"] == "资料需要重新确认"
+
+    edited_payload = sample_order_payload("BP-WITHDRAW-001")
+    edited_payload["order"]["product_name"] = "链条枪撤回修正版"
+    edited_payload["items"][0]["color"] = "深蓝色"
+
+    edit_response = client.put("/api/injection/BP-WITHDRAW-001", json=edited_payload)
+    assert edit_response.status_code == 200
+    assert edit_response.json()["order"]["status"] == "已撤回"
+    assert edit_response.json()["order"]["product_name"] == "链条枪撤回修正版"
+
+    resubmit_response = client.patch(
+        "/api/injection/BP-WITHDRAW-001/status",
+        json={"action": "工程重提", "reason": "撤回后已修正资料"},
+    )
+    assert resubmit_response.status_code == 200
+    assert resubmit_response.json()["order"]["status"] == "待审核"
+    assert resubmit_response.json()["audit_logs"][0]["action"] == "工程重提"
+
+
+def test_engineer_cannot_withdraw_after_supervisor_approval(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-WITHDRAW-LOCK-001"))
+
+    login_as(client, "supervisor")
+    approved_response = client.patch(
+        "/api/injection/BP-WITHDRAW-LOCK-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "engineer")
+    withdraw_response = client.patch(
+        "/api/injection/BP-WITHDRAW-LOCK-001/status",
+        json={"action": "工程撤回", "reason": "主管已通过后尝试撤回"},
+    )
+    assert withdraw_response.status_code == 403
+    assert "待审核" in withdraw_response.json()["detail"]
+
+
 def test_rejected_order_can_be_edited_and_resubmitted_by_engineering(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-REJECT-001"))
