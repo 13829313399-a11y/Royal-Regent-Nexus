@@ -55,6 +55,8 @@ def test_huaxing_trial_accounts_are_seeded_without_legacy_default_users(monkeypa
             "engineer": ("华兴工程师", "工程师", "molding_sample:create", ["huaxing"]),
             "supervisor": ("华兴工程主管", "工程主管", "molding_sample:supervisor_review", ["huaxing"]),
             "manager": ("华兴经理", "经理", "molding_sample:manager_review", ["huaxing"]),
+            "carton_warehouse": ("华兴纸箱仓管", "纸箱仓管", "carton_mark:template_upload", ["huaxing"]),
+            "qa_inspector": ("华兴QA检验员", "QA 检验员", "carton_mark:review", ["huaxing"]),
             "molding_clerk": ("华兴啤机部文员", "啤机部文员", "molding_sample:production_start", ["huaxing"]),
             "admin": ("系统管理员", "系统管理员", "system:user_manage", ["*"]),
         }
@@ -78,6 +80,26 @@ def test_huaxing_trial_accounts_are_seeded_without_legacy_default_users(monkeypa
                 json={"username": retired_username, "password": "123456"},
             )
             assert retired_response.status_code == 401
+
+
+def test_default_trial_login_self_heals_missing_seeded_user(monkeypatch):
+    with make_client(monkeypatch) as client:
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            db.query(auth_models.AuthUserRole).filter(auth_models.AuthUserRole.user_id == "user-carton-warehouse").delete()
+            db.query(auth_models.AuthUser).filter(auth_models.AuthUser.username == "carton_warehouse").delete()
+            db.commit()
+
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "carton_warehouse", "password": "123456"},
+        )
+
+        assert login_response.status_code == 200
+        profile = login_response.json()
+        assert profile["username"] == "carton_warehouse"
+        assert "carton_mark:template_upload" in profile["permissions"]
 
 
 def test_wrong_password_and_missing_session_are_rejected(monkeypatch):
