@@ -139,6 +139,15 @@ const parseUnitWeight = (value: string) => {
 
 const formatInteger = (value: number) => Math.max(0, Math.round(value)).toLocaleString('en-US')
 
+const formatWeightKg = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '待补'
+  }
+
+  const rounded = Math.round(value * 10) / 10
+  return Number.isInteger(rounded) ? `${rounded}` : `${rounded.toFixed(1)}`
+}
+
 const buildColorRiskLabel = (color: string, machine: string) => {
   if (!color) {
     return `${machine} 颜色待补`
@@ -1140,6 +1149,11 @@ const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) 
   const writebackState = huaxingWritebackStateMap.get(`${row.orderNo}::${row.moldCode}`)
   const analysis = huaxingOrderAnalysisMap.get(`${row.orderNo}::${row.moldCode}`)
   const machineAdvice = analysis?.recommendedMachine ?? row.machineAdvice
+  const orderQuantity = parseOrderNumber(analysis?.shortageQty ?? row.quantity)
+  const displayShortage = parseOrderNumber(writebackState?.shortageAfter ?? analysis?.shortageQty ?? row.quantity)
+  const producedQuantity = Math.max(0, orderQuantity - displayShortage)
+  const unitWeight = parseUnitWeight(row.unitWeight)
+  const remainingMaterialKg = formatWeightKg((displayShortage * unitWeight) / 1000)
 
   if (!writebackState) {
     const issue = analysis
@@ -1152,6 +1166,14 @@ const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) 
 
     return {
       ...row,
+      productCode: analysis?.productCode ?? '',
+      colorPowder: analysis?.colorCode ?? row.color,
+      orderQuantity: formatInteger(orderQuantity),
+      producedQuantity: formatInteger(producedQuantity),
+      shortageQuantity: formatInteger(displayShortage),
+      planTarget: analysis?.planTarget ?? '待补',
+      netWeight: row.unitWeight,
+      remainingMaterialKg,
       machineAdvice,
       machineModel: analysis?.machineModel ?? '',
       armType: analysis?.armType ?? '',
@@ -1172,6 +1194,14 @@ const injectionPendingOrderDetailRows = huaxingPendingOrderImportRows.map((row) 
   return {
     ...row,
     quantity: writebackState.shortageAfter,
+    productCode: analysis?.productCode ?? '',
+    colorPowder: analysis?.colorCode ?? row.color,
+    orderQuantity: formatInteger(orderQuantity),
+    producedQuantity: formatInteger(producedQuantity),
+    shortageQuantity: formatInteger(displayShortage),
+    planTarget: analysis?.planTarget ?? '待补',
+    netWeight: row.unitWeight,
+    remainingMaterialKg,
     machineAdvice,
     machineModel: analysis?.machineModel ?? '',
     armType: analysis?.armType ?? '',
