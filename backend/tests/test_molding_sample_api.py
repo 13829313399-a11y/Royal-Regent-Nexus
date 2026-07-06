@@ -457,6 +457,35 @@ def test_engineer_can_withdraw_order_they_submitted_when_display_engineer_name_d
     assert withdraw_response.json()["audit_logs"][0]["actor_user_id"] == "user-engineer"
 
 
+def test_engineer_can_withdraw_legacy_order_submitted_by_actor_name(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-WITHDRAW-LEGACY-ACTOR-001")
+    payload["order"]["eng_name"] = "杨敬作"
+    create_response = client.post("/api/injection", json=payload)
+    assert create_response.status_code == 201
+
+    db_module = importlib.import_module("app.db")
+    model_module = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        audit_log = (
+            db.query(model_module.MoldingSampleAuditLog)
+            .filter(model_module.MoldingSampleAuditLog.order_id == "BP-WITHDRAW-LEGACY-ACTOR-001")
+            .first()
+        )
+        assert audit_log is not None
+        audit_log.actor_user_id = ""
+        db.commit()
+
+    withdraw_response = client.patch(
+        "/api/injection/BP-WITHDRAW-LEGACY-ACTOR-001/status",
+        json={"action": "工程撤回", "reason": "历史账号撤回主管审核"},
+    )
+
+    assert withdraw_response.status_code == 200
+    assert withdraw_response.json()["order"]["status"] == "已撤回"
+    assert withdraw_response.json()["audit_logs"][0]["actor_name"] == "华兴工程师"
+
+
 def test_engineer_cannot_withdraw_after_supervisor_approval(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-WITHDRAW-LOCK-001"))

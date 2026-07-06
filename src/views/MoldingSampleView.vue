@@ -73,6 +73,7 @@ import { useAuthStore } from '@/stores/auth'
 type ViewKey = 'overview' | 'create' | 'detail' | 'material-balance'
 type OverviewDisplayMode = 'board' | 'list'
 type MaterialBalancePeriodMode = 'day' | 'week' | 'month'
+type ActionToastTone = 'success' | 'error' | 'info'
 type StatusState = 'done' | 'current' | 'pending' | 'rejected'
 
 interface KpiCard {
@@ -183,6 +184,7 @@ const searchKeyword = ref('')
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取正式啤办单列表...')
+const actionToastVisible = ref(true)
 const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
 const createErrors = ref<string[]>([])
 const createSubmitting = ref(false)
@@ -200,6 +202,7 @@ const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
 const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 let createSuccessToastTimer: ReturnType<typeof setTimeout> | null = null
+let actionToastTimer: ReturnType<typeof setTimeout> | null = null
 
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
@@ -397,6 +400,42 @@ const materialBalanceSummary = computed<MaterialBalanceSummary>(() => {
 const materialBalancePeriodRows = computed<MaterialBalancePeriodRow[]>(() =>
   buildMaterialBalancePeriodRows(materialBalanceRows.value, materialBalancePeriodMode.value),
 )
+
+const actionToastTone = computed<ActionToastTone>(() => {
+  if (apiState.value === 'error' || /失败|错误|未提交|不能|没有|请选择|缺失/.test(actionMessage.value)) {
+    return 'error'
+  }
+
+  if (/正在|导入中|导出中/.test(actionMessage.value)) {
+    return 'info'
+  }
+
+  return 'success'
+})
+
+const actionToastFrameClass = computed(() => {
+  if (actionToastTone.value === 'error') {
+    return 'border-red-200 bg-white text-red-700 shadow-red-100/70'
+  }
+
+  if (actionToastTone.value === 'info') {
+    return 'border-sky-200 bg-white text-sky-700 shadow-sky-100/70'
+  }
+
+  return 'border-teal-200 bg-white text-teal-700 shadow-teal-100/70'
+})
+
+const actionToastIconClass = computed(() => {
+  if (actionToastTone.value === 'error') {
+    return 'bg-red-50 text-red-600'
+  }
+
+  if (actionToastTone.value === 'info') {
+    return 'bg-sky-50 text-sky-600'
+  }
+
+  return 'bg-teal-50 text-teal-700'
+})
 
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
 const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
@@ -888,6 +927,43 @@ function hideCreateSuccessToast() {
   }
 
   createSuccessToast.value = null
+}
+
+function clearActionToastTimer() {
+  if (actionToastTimer) {
+    clearTimeout(actionToastTimer)
+    actionToastTimer = null
+  }
+}
+
+function hideActionToast() {
+  clearActionToastTimer()
+  actionToastVisible.value = false
+}
+
+function getActionToastDuration(message: string) {
+  if (/正在/.test(message)) {
+    return 0
+  }
+
+  if (/失败|错误|未提交|不能|没有|请选择|缺失/.test(message)) {
+    return 6500
+  }
+
+  return 4200
+}
+
+function showActionToast(message = actionMessage.value) {
+  clearActionToastTimer()
+  actionToastVisible.value = Boolean(message)
+
+  const duration = getActionToastDuration(message)
+  if (duration > 0) {
+    actionToastTimer = setTimeout(() => {
+      actionToastVisible.value = false
+      actionToastTimer = null
+    }, duration)
+  }
 }
 
 function showCreateSuccessToast(orderId: string) {
@@ -1469,11 +1545,16 @@ watch(selectedFactoryId, () => {
   }
 })
 
+watch(actionMessage, (message) => {
+  showActionToast(message)
+}, { immediate: true })
+
 onMounted(() => {
   void loadApiData()
 })
 
 onUnmounted(() => {
+  hideActionToast()
   hideCreateSuccessToast()
 })
 </script>
@@ -1560,6 +1641,50 @@ onUnmounted(() => {
 
     <Transition
       enter-active-class="transition duration-200 ease-out"
+      enter-from-class="-translate-y-2 opacity-0"
+      enter-to-class="translate-y-0 opacity-100"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="translate-y-0 opacity-100"
+      leave-to-class="-translate-y-2 opacity-0"
+    >
+      <aside
+        v-if="actionToastVisible && actionMessage"
+        class="fixed left-1/2 top-24 z-50 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2"
+        role="status"
+        aria-live="polite"
+        aria-label="操作提示"
+      >
+        <div
+          class="rounded-lg border px-3 py-2.5 shadow-xl backdrop-blur"
+          :class="actionToastFrameClass"
+        >
+          <div class="flex items-start gap-2.5">
+            <span
+              class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+              :class="actionToastIconClass"
+            >
+              <TriangleAlert v-if="actionToastTone === 'error'" class="size-4" aria-hidden="true" />
+              <Clock v-else-if="actionToastTone === 'info'" class="size-4" aria-hidden="true" />
+              <Check v-else class="size-4" aria-hidden="true" />
+            </span>
+            <p class="min-w-0 flex-1 text-[12.5px] font-semibold leading-6 text-slate-800">
+              {{ actionMessage }}
+            </p>
+            <button
+              type="button"
+              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              aria-label="关闭操作提示"
+              @click="hideActionToast"
+            >
+              <X class="size-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </aside>
+    </Transition>
+
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
       enter-from-class="-translate-y-1.5 opacity-0"
       enter-to-class="translate-y-0 opacity-100"
       leave-active-class="transition duration-150 ease-in"
@@ -1597,45 +1722,39 @@ onUnmounted(() => {
     </Transition>
 
     <div class="mx-auto max-w-[1720px] px-5 py-4">
-      <div
-        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-[12px]"
-        :class="apiState === 'error' ? 'border-red-200 bg-red-50 text-red-700' : apiState === 'connected' ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'"
-      >
-        <span>{{ actionMessage }}</span>
-        <div class="flex flex-wrap items-center gap-1.5">
-          <input
-            ref="excelFileInput"
-            type="file"
-            class="hidden"
-            :accept="excelAccept"
-            @change="handleExcelImportFile"
-          >
-          <button
-            type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="excelImporting || !canCreateOrder"
-            @click="triggerExcelImport"
-          >
-            <Upload class="size-3.5" aria-hidden="true" />
-            {{ excelImporting ? '导入中...' : '导入Excel' }}
-          </button>
-          <button
-            type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="excelExporting || !canExportSelectedOrder"
-            @click="downloadOrderExcel"
-          >
-            <Download class="size-3.5" aria-hidden="true" />
-            {{ excelExporting ? '导出中...' : '导出Excel' }}
-          </button>
-          <button
-            type="button"
-            class="inline-flex h-7 items-center rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100"
-            @click="loadApiData"
-          >
-            刷新正式列表
-          </button>
-        </div>
+      <div class="mb-3 flex flex-wrap items-center justify-end gap-1.5 text-[12px] text-teal-700">
+        <input
+          ref="excelFileInput"
+          type="file"
+          class="hidden"
+          :accept="excelAccept"
+          @change="handleExcelImportFile"
+        >
+        <button
+          type="button"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="excelImporting || !canCreateOrder"
+          @click="triggerExcelImport"
+        >
+          <Upload class="size-3.5" aria-hidden="true" />
+          {{ excelImporting ? '导入中...' : '导入Excel' }}
+        </button>
+        <button
+          type="button"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="excelExporting || !canExportSelectedOrder"
+          @click="downloadOrderExcel"
+        >
+          <Download class="size-3.5" aria-hidden="true" />
+          {{ excelExporting ? '导出中...' : '导出Excel' }}
+        </button>
+        <button
+          type="button"
+          class="inline-flex h-7 items-center rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100"
+          @click="loadApiData"
+        >
+          刷新正式列表
+        </button>
       </div>
 
       <section v-if="activeView === 'overview'" class="space-y-4">

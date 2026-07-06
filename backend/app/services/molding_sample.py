@@ -886,15 +886,30 @@ def completion_missing_item_ids(order: MoldingSampleOrder) -> list[str]:
 
 
 def is_opening_engineer(order: MoldingSampleOrder, current_user: AuthContext) -> bool:
+    def same_text(left: str | None, right: str | None) -> bool:
+        return bool(left and right and left.strip() == right.strip())
+
+    if order.eng_name == "" or same_text(order.eng_name, current_user.display_name):
+        return True
+
+    submit_actions = ("工程提交", "工程开单")
     submitter_user_ids = {
         audit.actor_user_id
         for audit in order.audit_logs
-        if audit.action.startswith("工程提交") and audit.actor_user_id
+        if audit.action.startswith(submit_actions) and audit.actor_user_id
     }
-    if submitter_user_ids:
-        return current_user.id in submitter_user_ids
+    if current_user.id in submitter_user_ids:
+        return True
 
-    return order.eng_name == "" or order.eng_name == current_user.display_name
+    submitter_names = {
+        audit.actor_name.strip()
+        for audit in order.audit_logs
+        if audit.action.startswith(submit_actions) and audit.actor_name and audit.actor_name.strip()
+    }
+    if current_user.display_name.strip() in submitter_names:
+        return True
+
+    return False
 
 
 def calculate_item_costs(
