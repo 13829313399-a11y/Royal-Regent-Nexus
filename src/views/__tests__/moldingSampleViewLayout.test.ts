@@ -176,8 +176,11 @@ assert.match(source, /materialBalancePeriodMode === 'day'[\s\S]*materialBalanceP
 assert.match(source, /required_material_kg[\s\S]*actual_weight_kg[\s\S]*balanceWeightKg/)
 assert.match(source, /balanceAmountHkd/)
 
-assert.equal(source.includes('文件编号'), false, 'new-order form should not show the unused file-number field')
 assert.equal(source.includes('v-model="createDraft.doc_number"'), false, 'new-order form should not bind an unused file-number input')
+assert.match(source, /完整单据数据/)
+assert.match(source, /文件编号/)
+assert.match(source, /展开完整数据/)
+assert.match(source, /收起完整数据/)
 assert.match(source, /填写部/)
 assert.match(source, /<select v-model="createDraft\.workshop"[\s\S]*<option>工程部<\/option>/)
 assert.doesNotMatch(source, /<select v-model="createDraft\.send_to"/)

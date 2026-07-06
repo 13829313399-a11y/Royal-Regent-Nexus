@@ -53,6 +53,8 @@ PRODUCTION_TASK_MODULE = "production_molding_sample_task"
 ENGINEERING_MOLDING_SAMPLE_MODULE = "engineering_molding_sample"
 PRODUCTION_TARGET_ROLE = "啤机部"
 ENGINEERING_TARGET_ROLE = "工程部"
+ENGINEERING_SUPERVISOR_TARGET_ROLE = "工程主管"
+MANAGER_TARGET_ROLE = "经理"
 NOTIFICATION_STATUSES = {"未读", "已读", "已处理"}
 PROBLEM_STATUSES = {"待处理", "已解决"}
 
@@ -310,6 +312,69 @@ def mark_order_notifications_handled(
         notification.handled_at = notification.handled_at or handled_at
 
 
+def append_supervisor_review_notification(
+    db: Session,
+    order: MoldingSampleOrder,
+    from_status: str = "",
+    actor_name: str = "",
+) -> None:
+    append_notification(
+        db,
+        order,
+        target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+        target_role=ENGINEERING_SUPERVISOR_TARGET_ROLE,
+        event_type="待主管审核",
+        title="啤办单待主管审核",
+        message=f"啤办单 {order.id} 已提交主管审核，请及时处理。",
+        from_status=from_status,
+        to_status="待审核",
+        actor_name=actor_name,
+    )
+
+
+def append_manager_review_notification(
+    db: Session,
+    order: MoldingSampleOrder,
+    from_status: str = "",
+    actor_name: str = "",
+) -> None:
+    append_notification(
+        db,
+        order,
+        target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+        target_role=MANAGER_TARGET_ROLE,
+        event_type="待经理审核",
+        title="啤办单待经理审核",
+        message=f"啤办单 {order.id} 已提交经理终审，请及时处理。",
+        from_status=from_status,
+        to_status="待经理审核",
+        actor_name=actor_name,
+    )
+
+
+def append_engineering_rework_notification(
+    db: Session,
+    order: MoldingSampleOrder,
+    from_status: str,
+    to_status: str,
+    reason: str = "",
+    actor_name: str = "",
+) -> None:
+    reason_text = f" 原因：{reason}" if reason else ""
+    append_notification(
+        db,
+        order,
+        target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+        target_role=ENGINEERING_TARGET_ROLE,
+        event_type="审核驳回",
+        title="啤办单被驳回",
+        message=f"啤办单 {order.id} 已被驳回，请工程部修改后重提。{reason_text}",
+        from_status=from_status,
+        to_status=to_status,
+        actor_name=actor_name,
+    )
+
+
 def list_notifications(
     db: Session,
     current_user: AuthContext,
@@ -327,6 +392,8 @@ def list_notifications(
         statement = statement.where(MoldingSampleNotification.target_module == target_module)
     elif "molding_sample:production_read" not in current_user.permissions and "*" not in current_user.factory_scopes:
         statement = statement.where(MoldingSampleNotification.target_module != PRODUCTION_TASK_MODULE)
+    if target_role:
+        statement = statement.where(MoldingSampleNotification.target_role == target_role)
     if factory_id:
         ensure_factory_scope(db, current_user, factory_id)
         statement = statement.where(MoldingSampleNotification.factory_id == factory_id)
@@ -505,6 +572,8 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
         )
 
     append_audit(db, order, "工程提交主管审核", current_user, status, status, "工程开单完成。")
+    if status == "待审核":
+        append_supervisor_review_notification(db, order, from_status=status, actor_name=current_user.display_name)
     db.commit()
     db.refresh(order)
     return load_order(db, order.id, current_user)
@@ -1053,7 +1122,38 @@ def transition_status(
     order.status = next_status
     order.updated_at = now_text()
     append_audit(db, order, action, current_user, from_status, next_status, request.reason)
-    if action in {"主管通过", "经理通过"} and next_status == "待生产":
+    if action in {"主管通过", "主管驳回", "经理通过", "经理驳回", "工程撤回", "工程重提"}:
+        mark_order_notifications_handled(
+            db,
+            order_id=order.id,
+            target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+            actor_name=current_user.display_name,
+        )
+
+    if action == "工程重提":
+        append_supervisor_review_notification(
+            db,
+            order,
+            from_status=from_status,
+            actor_name=current_user.display_name,
+        )
+    elif action in {"主管驳回", "经理驳回"}:
+        append_engineering_rework_notification(
+            db,
+            order,
+            from_status=from_status,
+            to_status=next_status,
+            reason=request.reason,
+            actor_name=current_user.display_name,
+        )
+    elif action in {"主管通过", "经理通过"} and next_status == "待经理审核":
+        append_manager_review_notification(
+            db,
+            order,
+            from_status=from_status,
+            actor_name=current_user.display_name,
+        )
+    elif action in {"主管通过", "经理通过"} and next_status == "待生产":
         append_notification(
             db,
             order,

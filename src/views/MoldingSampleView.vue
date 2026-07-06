@@ -480,6 +480,7 @@ const actionToastIconClass = computed(() => {
 })
 
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
+const isSelectedOrderDataExpanded = ref(false)
 const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
 const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft'))
 const canDeleteDraftOrder = computed(() => authStore.hasPermission('molding_sample:delete_draft'))
@@ -1418,6 +1419,10 @@ function formatWeight(value: number | null | undefined) {
   return value === null || value === undefined ? '待填写' : `${value.toFixed(2)} kg`
 }
 
+function formatGram(value: number | null | undefined) {
+  return value === null || value === undefined ? '待填写' : `${value.toFixed(2)} g`
+}
+
 function formatMoney(value: number | null | undefined, currency = 'HKD') {
   return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
@@ -1702,6 +1707,10 @@ watch(selectedFactoryId, () => {
   if (!isEditingRejectedOrder.value) {
     restoreSavedCreateDraft()
   }
+})
+
+watch(selectedOrderId, () => {
+  isSelectedOrderDataExpanded.value = false
 })
 
 watch(searchKeyword, () => {
@@ -2819,10 +2828,17 @@ onUnmounted(() => {
         <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div class="space-y-4">
             <section class="rounded-lg border border-slate-200 bg-white">
-              <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
+              <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
                 <Table2 class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold">模具明细</span>
                 <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{{ selectedItems.length }} 项</span>
+                <button
+                  type="button"
+                  class="ml-auto inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+                  @click="isSelectedOrderDataExpanded = !isSelectedOrderDataExpanded"
+                >
+                  {{ isSelectedOrderDataExpanded ? '收起完整数据' : '展开完整数据' }}
+                </button>
               </div>
               <div class="overflow-x-auto">
                 <table class="w-full min-w-[920px] text-[12px]">
@@ -2868,6 +2884,105 @@ onUnmounted(() => {
                   </tbody>
                 </table>
               </div>
+              <Transition
+                enter-active-class="transition duration-200 ease-out"
+                enter-from-class="-translate-y-2 opacity-0"
+                enter-to-class="translate-y-0 opacity-100"
+                leave-active-class="transition duration-150 ease-in"
+                leave-from-class="translate-y-0 opacity-100"
+                leave-to-class="-translate-y-2 opacity-0"
+              >
+                <div v-if="isSelectedOrderDataExpanded" class="border-t border-slate-100 bg-slate-50/70 p-4">
+                  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 class="text-[13px] font-bold text-slate-950">完整单据数据</h3>
+                      <p class="text-[11px] text-slate-500">单头资料与所有模具明细字段，供审核前完整核对。</p>
+                    </div>
+                    <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                      {{ selectedOrder.id }}
+                    </span>
+                  </div>
+
+                  <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">产品编号</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.order_number) }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">文件编号</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.doc_number) }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">产品 / 客户</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ selectedOrder.product_name }} · {{ selectedOrder.client_name }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">状态 / 阶段 / 类型</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ selectedOrder.status }} · {{ selectedOrder.stage || '待填写' }} · {{ selectedOrder.order_type }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">填写部 / 发至</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.workshop) }} / {{ formatBlank(selectedOrder.send_to, '内部') }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">工程 / 主管</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.eng_name) }} / {{ formatBlank(selectedOrder.supervisor) }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">开单 / 完成</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.date) }} / {{ formatBlank(selectedOrder.completed_date) }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">更新时间</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.updated_at) }}</div>
+                    </div>
+                  </div>
+
+                  <div class="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">注意事项 / 开单事由</div>
+                    <p class="mt-1 text-[12px] leading-5 text-slate-700">{{ formatBlank(selectedOrder.reason) }}</p>
+                    <p v-if="selectedOrder.reject_reason" class="mt-1 text-[12px] leading-5 text-red-600">
+                      驳回原因：{{ selectedOrder.reject_reason }}
+                    </p>
+                  </div>
+
+                  <div class="mt-3 space-y-2">
+                    <article
+                      v-for="item in selectedItems"
+                      :key="`full-${item.id}`"
+                      class="rounded-lg border border-slate-200 bg-white p-3"
+                    >
+                      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div class="font-semibold text-slate-950">
+                          {{ item.sort_order }}. {{ item.mold_id }} · {{ item.mold_name }}
+                        </div>
+                        <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
+                          {{ getItemState(item) }}
+                        </span>
+                      </div>
+                      <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
+                        <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
+                        <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
+                        <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
+                        <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
+                        <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
+                        <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
+                        <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
+                        <div><span class="text-slate-400">收据编号</span><div class="font-semibold">{{ formatBlank(item.receipt_no) }}</div></div>
+                        <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
+                        <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
+                        <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
+                        <div><span class="text-slate-400">啤办费(RMB)</span><div class="font-semibold">{{ formatMoney(item.injection_cost, 'RMB') }}</div></div>
+                        <div><span class="text-slate-400">啤办费(HKD)</span><div class="font-semibold">{{ formatMoney(item.injection_cost_hkd) }}</div></div>
+                        <div><span class="text-slate-400">汇率</span><div class="font-semibold">{{ formatBlank(item.exchange_rate_at_save) }}</div></div>
+                      </div>
+                      <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
+                        备注：{{ formatBlank(item.notes) }}
+                      </p>
+                    </article>
+                  </div>
+                </div>
+              </Transition>
             </section>
 
             <section class="rounded-lg border border-slate-200 bg-white p-4">

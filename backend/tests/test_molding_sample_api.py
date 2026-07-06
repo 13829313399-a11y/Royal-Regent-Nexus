@@ -349,6 +349,135 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert notifications[0]["target_role"] == "啤机部"
 
 
+def test_engineer_submission_notifies_engineering_supervisor(client):
+    login_as(client, "engineer")
+    create_response = client.post("/api/injection", json=sample_order_payload("BP-NOTIFY-SUP-001"))
+    assert create_response.status_code == 201
+
+    login_as(client, "supervisor")
+    notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "target_module": "engineering_molding_sample",
+            "target_role": "工程主管",
+            "factory_id": "huaxing",
+            "status": "未读",
+        },
+    )
+
+    assert notifications_response.status_code == 200
+    notifications = notifications_response.json()
+    assert len(notifications) == 1
+    assert notifications[0]["order_id"] == "BP-NOTIFY-SUP-001"
+    assert notifications[0]["target_role"] == "工程主管"
+    assert notifications[0]["event_type"] == "待主管审核"
+
+
+def test_supervisor_review_notification_is_handled_after_approval(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-NOTIFY-HANDLED-001"))
+
+    login_as(client, "supervisor")
+    approve_response = client.patch(
+        "/api/injection/BP-NOTIFY-HANDLED-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approve_response.status_code == 200
+
+    notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "target_module": "engineering_molding_sample",
+            "target_role": "工程主管",
+            "order_id": "BP-NOTIFY-HANDLED-001",
+            "status": "已处理",
+        },
+    )
+
+    assert notifications_response.status_code == 200
+    notifications = notifications_response.json()
+    assert len(notifications) == 1
+    assert notifications[0]["event_type"] == "待主管审核"
+    assert notifications[0]["actor_name"] == "华兴工程主管"
+
+
+def test_supervisor_rejection_notifies_engineering_rework_queue(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-NOTIFY-REJECT-001"))
+
+    login_as(client, "supervisor")
+    reject_response = client.patch(
+        "/api/injection/BP-NOTIFY-REJECT-001/status",
+        json={"action": "主管驳回", "reason": "资料不完整"},
+    )
+    assert reject_response.status_code == 200
+
+    login_as(client, "engineer")
+    notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "target_module": "engineering_molding_sample",
+            "target_role": "工程部",
+            "factory_id": "huaxing",
+            "status": "未读",
+        },
+    )
+
+    assert notifications_response.status_code == 200
+    notifications = notifications_response.json()
+    assert len(notifications) == 1
+    assert notifications[0]["order_id"] == "BP-NOTIFY-REJECT-001"
+    assert notifications[0]["target_role"] == "工程部"
+    assert notifications[0]["event_type"] == "审核驳回"
+
+
+def test_notification_list_filters_by_target_role(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-NOTIFY-FILTER-001"))
+
+    login_as(client, "supervisor")
+    approve_response = client.patch(
+        "/api/injection/BP-NOTIFY-FILTER-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approve_response.status_code == 200
+
+    login_as(client, "molding_clerk")
+    problem_response = client.post(
+        "/api/problems",
+        json={"order_id": "BP-NOTIFY-FILTER-001", "description": "啤机异常停机", "reported_by": "啤机部"},
+    )
+    assert problem_response.status_code == 201
+
+    login_as(client, "supervisor")
+    supervisor_notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "target_module": "engineering_molding_sample",
+            "target_role": "工程主管",
+            "order_id": "BP-NOTIFY-FILTER-001",
+            "status": "未读",
+        },
+    )
+    assert supervisor_notifications_response.status_code == 200
+    assert supervisor_notifications_response.json() == []
+
+    login_as(client, "engineer")
+    engineer_notifications_response = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "target_module": "engineering_molding_sample",
+            "target_role": "工程部",
+            "order_id": "BP-NOTIFY-FILTER-001",
+            "status": "未读",
+        },
+    )
+    assert engineer_notifications_response.status_code == 200
+    notifications = engineer_notifications_response.json()
+    assert len(notifications) == 1
+    assert notifications[0]["event_type"] == "生产问题反馈"
+
+
 def test_workflow_uses_logged_in_roles_without_pin(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-WORKFLOW-001"))

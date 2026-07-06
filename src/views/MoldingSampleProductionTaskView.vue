@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Flag,
+  LayoutDashboard,
   ListChecks,
   Lock,
   Package,
@@ -16,6 +17,7 @@ import {
   Save,
   Send,
   ShieldAlert,
+  Table2,
 } from '@lucide/vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
@@ -60,7 +62,19 @@ interface ItemFillbackDraft {
 }
 
 type ProductionQueueFilter = '全部' | '待接单' | '生产中'
+type ProductionTaskDisplayMode = 'board' | 'list'
 type NotificationStatus = MoldingSampleNotificationResponse['status']
+
+interface PaginationState<T> {
+  rows: T[]
+  total: number
+  page: number
+  pageCount: number
+  start: number
+  end: number
+  hasPrevious: boolean
+  hasNext: boolean
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -68,17 +82,21 @@ const appStore = useAppStore()
 
 const today = '2026-07-03'
 const PRODUCTION_NOTIFICATION_MODULE = 'production_molding_sample_task'
+const PRODUCTION_TASK_PAGE_SIZE = 10
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiNotifications = ref<MoldingSampleNotificationResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取啤办生产任务...')
 const selectedOrderId = ref('')
 const queueFilter = ref<ProductionQueueFilter>('全部')
+const queueDisplayMode = ref<ProductionTaskDisplayMode>('board')
+const queuePage = ref(1)
 const productionProblem = ref('')
 const problemSubmitting = ref(false)
 const notificationUpdating = ref(false)
 const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
+const isSelectedTaskDataExpanded = ref(false)
 
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'blue',
@@ -216,6 +234,12 @@ const filteredTaskEntries = computed(() => taskEntries.value.filter((entry) => {
   return true
 }))
 
+const filteredTaskPagination = computed(() =>
+  createPaginationState(filteredTaskEntries.value, queuePage.value),
+)
+
+const paginatedFilteredTaskEntries = computed(() => filteredTaskPagination.value.rows)
+
 const waitingTaskCount = computed(() =>
   taskEntries.value.filter((entry) => entry.order.status === '待生产').length,
 )
@@ -277,6 +301,46 @@ function readQueryString(value: unknown) {
   }
 
   return ''
+}
+
+function getPageCount(total: number) {
+  return Math.max(1, Math.ceil(total / PRODUCTION_TASK_PAGE_SIZE))
+}
+
+function createPaginationState<T>(rows: T[], page: number): PaginationState<T> {
+  const total = rows.length
+  const pageCount = getPageCount(total)
+  const normalizedPage = Math.min(Math.max(page, 1), pageCount)
+  const startIndex = (normalizedPage - 1) * PRODUCTION_TASK_PAGE_SIZE
+  const pageRows = rows.slice(startIndex, startIndex + PRODUCTION_TASK_PAGE_SIZE)
+
+  return {
+    rows: pageRows,
+    total,
+    page: normalizedPage,
+    pageCount,
+    start: total ? startIndex + 1 : 0,
+    end: Math.min(startIndex + pageRows.length, total),
+    hasPrevious: normalizedPage > 1,
+    hasNext: normalizedPage < pageCount,
+  }
+}
+
+function formatPaginationRange<T>(pagination: PaginationState<T>) {
+  if (!pagination.total) {
+    return '0 / 0'
+  }
+
+  return `${pagination.start}-${pagination.end} / ${pagination.total}`
+}
+
+function setQueuePage(page: number) {
+  queuePage.value = Math.min(Math.max(page, 1), filteredTaskPagination.value.pageCount)
+}
+
+function setQueueDisplayMode(mode: ProductionTaskDisplayMode) {
+  queueDisplayMode.value = mode
+  queuePage.value = 1
 }
 
 function getTaskPriority(status: MoldingSampleStatus) {
@@ -369,6 +433,19 @@ function formatDecimal(value: number | null | undefined, fallback = '—') {
   }
 
   return Number(value).toFixed(2)
+}
+
+function formatGram(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return '待填写'
+  }
+
+  return `${Number(value).toFixed(2)} g`
+}
+
+function formatWeight(value: number | null | undefined) {
+  const formatted = formatDecimal(value, '待填写')
+  return formatted === '待填写' ? formatted : `${formatted} kg`
 }
 
 function formatCurrency(value: number | null | undefined, fallback = '—') {
@@ -693,7 +770,12 @@ onMounted(() => {
 
 watch(selectedTask, () => {
   syncItemDrafts()
+  isSelectedTaskDataExpanded.value = false
 }, { immediate: true })
+
+watch([queueFilter, selectedFactoryId], () => {
+  queuePage.value = 1
+})
 
 watchEffect(() => {
   appStore.setActiveFactory(selectedFactoryId.value)
@@ -760,8 +842,8 @@ watchEffect(() => {
         </div>
       </section>
 
-      <div class="grid min-w-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-        <aside class="min-w-0 space-y-3 xl:sticky xl:top-20 xl:self-start">
+      <div class="grid min-w-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside class="min-w-0 space-y-3 xl:sticky xl:top-20 xl:self-start" aria-label="啤办生产任务队列">
           <section class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
             <div class="flex items-center justify-between gap-3">
               <div>
@@ -782,34 +864,103 @@ watchEffect(() => {
                 {{ filter }} {{ getQueueFilterCount(filter) }}
               </button>
             </div>
+            <div class="mt-3 flex rounded-lg border border-slate-200 bg-slate-50 p-1 text-[11px] font-semibold">
+              <button
+                type="button"
+                class="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md transition"
+                :class="queueDisplayMode === 'board' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-slate-900'"
+                @click="setQueueDisplayMode('board')"
+              >
+                <LayoutDashboard class="size-3.5" aria-hidden="true" />
+                看板
+              </button>
+              <button
+                type="button"
+                class="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md transition"
+                :class="queueDisplayMode === 'list' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-slate-900'"
+                @click="setQueueDisplayMode('list')"
+              >
+                <Table2 class="size-3.5" aria-hidden="true" />
+                列表
+              </button>
+            </div>
           </section>
 
           <div v-if="filteredTaskEntries.length" class="space-y-2">
-            <button
-              v-for="entry in filteredTaskEntries"
-              :key="entry.order.id"
-              type="button"
-              class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:border-indigo-300 hover:bg-slate-50"
-              :class="selectedTask?.order.id === entry.order.id ? 'border-2 border-teal-300 bg-teal-50/60' : 'border-slate-200'"
-              @click="selectTask(entry.order.id, entry.factory_id)"
-            >
-              <div class="flex items-start justify-between gap-2">
-                <span class="font-mono text-[12px] font-bold text-slate-800">{{ entry.order.id }}</span>
-                <StatusPill :label="getQueueStatusLabel(entry.order.status)" :tone="statusTones[entry.order.status]" compact />
-              </div>
-              <p class="mt-0.5 truncate text-[12px] font-semibold text-slate-950">{{ entry.order.product_name }}</p>
-              <p class="truncate text-[11px] text-slate-400">
-                {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 交期 {{ entry.items[0]?.completion_time || entry.order.date }}
-              </p>
-              <p class="mt-1 truncate text-[10px] font-semibold text-blue-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
-              <p
-                v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
-                class="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-500"
+            <div v-if="queueDisplayMode === 'board'" class="space-y-2">
+              <button
+                v-for="entry in paginatedFilteredTaskEntries"
+                :key="entry.order.id"
+                type="button"
+                class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:border-indigo-300 hover:bg-slate-50"
+                :class="selectedTask?.order.id === entry.order.id ? 'border-2 border-teal-300 bg-teal-50/60' : 'border-slate-200'"
+                @click="selectTask(entry.order.id, entry.factory_id)"
               >
-                <AlertTriangle class="size-3" aria-hidden="true" />
-                {{ entry.items.filter((item) => !(Number(item.actual_weight_kg) > 0)).length }} 项缺实际用料
-              </p>
-            </button>
+                <div class="flex items-start justify-between gap-2">
+                  <span class="font-mono text-[12px] font-bold text-slate-800">{{ entry.order.id }}</span>
+                  <StatusPill :label="getQueueStatusLabel(entry.order.status)" :tone="statusTones[entry.order.status]" compact />
+                </div>
+                <p class="mt-0.5 truncate text-[12px] font-semibold text-slate-950">{{ entry.order.product_name }}</p>
+                <p class="truncate text-[11px] text-slate-400">
+                  {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 交期 {{ entry.items[0]?.completion_time || entry.order.date }}
+                </p>
+                <p class="mt-1 truncate text-[10px] font-semibold text-blue-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
+                <p
+                  v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
+                  class="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-500"
+                >
+                  <AlertTriangle class="size-3" aria-hidden="true" />
+                  {{ entry.items.filter((item) => !(Number(item.actual_weight_kg) > 0)).length }} 项缺实际用料
+                </p>
+              </button>
+            </div>
+
+            <div v-else class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" role="table" aria-label="啤办生产任务列表">
+              <div class="grid grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-500" role="row">
+                <div role="columnheader">单号</div>
+                <div role="columnheader">产品 / 客户</div>
+                <div class="text-right" role="columnheader">状态</div>
+              </div>
+              <button
+                v-for="entry in paginatedFilteredTaskEntries"
+                :key="`list-${entry.order.id}`"
+                type="button"
+                class="grid w-full grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 px-3 py-2 text-left text-[12px] transition last:border-b-0 hover:bg-slate-50"
+                :class="selectedTask?.order.id === entry.order.id ? 'bg-teal-50/70' : 'bg-white'"
+                role="row"
+                @click="selectTask(entry.order.id, entry.factory_id)"
+              >
+                <span class="min-w-0 truncate font-mono font-bold text-slate-800" role="cell">{{ entry.order.id }}</span>
+                <span class="min-w-0" role="cell">
+                  <span class="block truncate font-semibold text-slate-950">{{ entry.order.product_name }}</span>
+                  <span class="block truncate text-[11px] text-slate-400">{{ entry.order.client_name }} · {{ entry.items.length }} 项</span>
+                </span>
+                <span class="text-right text-[11px] font-semibold text-slate-500" role="cell">{{ getQueueStatusLabel(entry.order.status) }}</span>
+              </button>
+            </div>
+
+            <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500 shadow-sm">
+              <span class="font-medium">每页 10 条</span>
+              <span class="font-mono">{{ formatPaginationRange(filteredTaskPagination) }}</span>
+              <div class="flex gap-1">
+                <button
+                  type="button"
+                  :disabled="!filteredTaskPagination.hasPrevious"
+                  class="h-7 rounded-md border border-slate-200 px-2 font-semibold text-slate-600 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300"
+                  @click="setQueuePage(filteredTaskPagination.page - 1)"
+                >
+                  上一页
+                </button>
+                <button
+                  type="button"
+                  :disabled="!filteredTaskPagination.hasNext"
+                  class="h-7 rounded-md border border-slate-200 px-2 font-semibold text-slate-600 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300"
+                  @click="setQueuePage(filteredTaskPagination.page + 1)"
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
           </div>
           <div v-else class="rounded-xl border border-dashed border-slate-200 bg-white/70 p-5 text-center text-sm text-slate-500">
             当前筛选下没有内部啤机生产任务。
@@ -900,6 +1051,13 @@ watchEffect(() => {
               <PencilRuler class="size-4 text-slate-400" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">啤机回填明细 · 实际用料回填</span>
               <span class="ml-auto text-[11px] text-slate-400">汇率 RMB→HKD {{ moldingSampleRmbToHkdRate }} · 单价按原料表</span>
+              <button
+                type="button"
+                class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+                @click="isSelectedTaskDataExpanded = !isSelectedTaskDataExpanded"
+              >
+                {{ isSelectedTaskDataExpanded ? '收起完整数据' : '展开完整数据' }}
+              </button>
             </div>
             <div class="overflow-x-auto">
               <table class="w-full min-w-[900px] text-[12px]">
@@ -989,6 +1147,108 @@ watchEffect(() => {
                 </tfoot>
               </table>
             </div>
+            <Transition
+              enter-active-class="transition duration-200 ease-out"
+              enter-from-class="-translate-y-2 opacity-0"
+              enter-to-class="translate-y-0 opacity-100"
+              leave-active-class="transition duration-150 ease-in"
+              leave-from-class="translate-y-0 opacity-100"
+              leave-to-class="-translate-y-2 opacity-0"
+            >
+              <div v-if="isSelectedTaskDataExpanded" class="border-t border-slate-100 bg-slate-50/70 p-4">
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 class="text-[13px] font-bold text-slate-950">完整单据数据</h3>
+                    <p class="text-[11px] text-slate-500">单头资料与全部模具明细字段，供啤机回填前完整核对。</p>
+                  </div>
+                  <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                    {{ selectedTask.order.id }}
+                  </span>
+                </div>
+
+                <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">产品编号</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.order_number) }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">文件编号</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.doc_number) }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">产品 / 客户</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ selectedTask.order.product_name }} · {{ selectedTask.order.client_name }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">状态 / 阶段 / 类型</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }} · {{ selectedTask.order.order_type }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">填写部 / 发至</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.workshop) }} / {{ formatBlank(selectedTask.order.send_to, '内部') }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">工程 / 主管</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">开单 / 完成</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.date) }} / {{ formatBlank(selectedTask.order.completed_date) }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">更新时间</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.updated_at) }}</div>
+                  </div>
+                </div>
+
+                <div class="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <div class="text-[10px] font-semibold text-slate-400">注意事项 / 开单事由</div>
+                  <p class="mt-1 text-[12px] leading-5 text-slate-700">{{ formatBlank(selectedTask.order.reason) }}</p>
+                  <p v-if="selectedTask.order.reject_reason" class="mt-1 text-[12px] leading-5 text-red-600">
+                    驳回原因：{{ selectedTask.order.reject_reason }}
+                  </p>
+                </div>
+
+                <div class="mt-3 space-y-2">
+                  <article
+                    v-for="item in activeItems"
+                    :key="`production-full-${item.id}`"
+                    class="rounded-lg border border-slate-200 bg-white p-3"
+                  >
+                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div class="font-semibold text-slate-950">
+                        {{ item.sort_order }}. {{ item.mold_id }} · {{ item.mold_name }}
+                      </div>
+                      <span
+                        class="rounded-full border px-2 py-0.5 text-[10px] font-bold"
+                        :class="Number(item.actual_weight_kg) > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'"
+                      >
+                        {{ Number(item.actual_weight_kg) > 0 ? '已回填' : '待回填' }}
+                      </span>
+                    </div>
+                    <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
+                      <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
+                      <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
+                      <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
+                      <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
+                      <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
+                      <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
+                      <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
+                      <div><span class="text-slate-400">收据编号</span><div class="font-semibold">{{ formatBlank(item.receipt_no) }}</div></div>
+                      <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
+                      <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
+                      <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd ?? item.actual_amount_hkd) }}</div></div>
+                      <div><span class="text-slate-400">啤办费(RMB)</span><div class="font-semibold">{{ formatCurrency(item.injection_cost) }}</div></div>
+                      <div><span class="text-slate-400">啤办费(HKD)</span><div class="font-semibold">{{ formatCurrency(getReportRow(item.id)?.injection_cost_hkd ?? item.injection_cost_hkd) }}</div></div>
+                      <div><span class="text-slate-400">汇率</span><div class="font-semibold">{{ formatBlank(item.exchange_rate_at_save) }}</div></div>
+                    </div>
+                    <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
+                      备注：{{ formatBlank(item.notes) }}
+                    </p>
+                  </article>
+                </div>
+              </div>
+            </Transition>
           </section>
 
           <div class="grid gap-4 md:grid-cols-2">
