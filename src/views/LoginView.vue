@@ -63,6 +63,8 @@ const trialAccounts = [
   { role: '工程师', username: 'engineer' },
   { role: '工程主管', username: 'supervisor' },
   { role: '经理', username: 'manager' },
+  { role: '纸箱仓管', username: 'carton_warehouse' },
+  { role: 'QA 检验员', username: 'qa_inspector' },
   { role: '啤机部文员', username: 'molding_clerk' },
   { role: '管理员', username: 'admin' },
 ]
