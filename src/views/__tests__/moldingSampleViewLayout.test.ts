@@ -40,6 +40,8 @@ for (const requiredCopy of [
   '正式数据读取失败',
   '不会显示本地示例单据',
   '备注提示',
+  '操作提示',
+  '关闭操作提示',
   '新建成功',
   '已填写草稿会自动保留',
 ]) {
@@ -75,6 +77,12 @@ for (const requiredImplementation of [
   'productionTaskRoute',
   'apiRecords',
   'apiState',
+  'actionToastVisible',
+  'actionToastTone',
+  'actionToastFrameClass',
+  'actionToastIconClass',
+  'showActionToast',
+  'hideActionToast',
   'overviewDisplayMode',
   "'error'",
   'loadApiData',
@@ -129,6 +137,9 @@ for (const requiredImplementation of [
 }
 
 assert.match(source, /type OverviewDisplayMode = 'board' \| 'list'/)
+assert.match(source, /type ActionToastTone = 'success' \| 'error' \| 'info'/)
+assert.match(source, /class="fixed left-1\/2 top-24 z-50/)
+assert.doesNotMatch(source, /<span>\{\{ actionMessage \}\}<\/span>/)
 assert.match(source, /overviewDisplayMode = ref<OverviewDisplayMode>\('board'\)/)
 assert.match(source, /@click="overviewDisplayMode = 'board'"/)
 assert.match(source, /@click="overviewDisplayMode = 'list'"/)
