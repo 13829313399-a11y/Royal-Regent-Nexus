@@ -278,12 +278,20 @@ export interface PendingOrderDetailRow {
   customer: string
   productName: string
   moldCode: string
+  productCode?: string
   color: string
+  colorPowder?: string
   material: string
   quantity: string
+  orderQuantity?: string
+  producedQuantity?: string
+  shortageQuantity?: string
+  planTarget?: string
   dueDate: string
   cavity: string
   unitWeight: string
+  netWeight?: string
+  remainingMaterialKg?: string
   source: string
   planner: string
   machineAdvice: string
@@ -413,24 +421,14 @@ export const injectionSectionNav: InjectionNavItem[] = [
     summary: '总览待排、结转、机台负载、交期风险和重点异常。',
   },
   {
-    id: 'order-import',
-    label: '订单池',
-    summary: '导入订单、校验字段、确认待排数量和候选机台。',
-  },
-  {
     id: 'smart-scheduling',
     label: '排机工作台',
-    summary: '生成排机草稿，查看推荐原因并提交主管审核。',
-  },
-  {
-    id: 'scheduling-results',
-    label: '车间执行',
-    summary: '承接已审核排机单，按机台下发任务并查看执行状态。',
+    summary: '导入订单、查看智能待排明细、人工确认机台并提交主管审核。',
   },
   {
     id: 'daily-report',
     label: '日报回报',
-    summary: '承接班次产量、停机、欠数和结转交接。',
+    summary: '啤机部文员按已排机模号填写产量、停机、欠数和结转交接。',
   },
   {
     id: 'inbound-orders',
