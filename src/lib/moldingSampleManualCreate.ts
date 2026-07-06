@@ -255,6 +255,7 @@ export function buildManualMoldingSampleCreateRequest(
         mold_id: trimText(line.customer_mold_id),
         mold_name: trimText(line.mold_name),
         machine_type: '待工程确认',
+        production_machine: '',
         material: trimText(line.material),
         color: formatManualColorPms(line.color, line.pms),
         pigment_no: trimText(line.pigment_no),

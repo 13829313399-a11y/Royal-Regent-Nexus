@@ -59,6 +59,7 @@ import { useAppStore } from '@/stores/app'
 interface ItemFillbackDraft {
   actual_weight_kg: string
   injection_cost: string
+  production_machine: string
 }
 
 type ProductionQueueFilter = '全部' | '待接单' | '生产中'
@@ -203,6 +204,7 @@ const activeItems = computed<MoldingSampleItem[]>(() => {
       ...item,
       actual_weight_kg: parseOptionalNumber(draft.actual_weight_kg),
       injection_cost: parseOptionalNumber(draft.injection_cost),
+      production_machine: draft.production_machine.trim(),
     }
   })
 })
@@ -472,6 +474,7 @@ function buildItemPatches() {
     id: item.id,
     actual_weight_kg: item.actual_weight_kg,
     injection_cost: item.injection_cost,
+    production_machine: item.production_machine,
   }))
 }
 
@@ -485,6 +488,7 @@ function syncItemDrafts() {
     acc[item.id] = {
       actual_weight_kg: item.actual_weight_kg === null || item.actual_weight_kg === undefined ? '' : String(item.actual_weight_kg),
       injection_cost: item.injection_cost === null || item.injection_cost === undefined ? '' : String(item.injection_cost),
+      production_machine: item.production_machine ?? '',
     }
 
     return acc
@@ -495,7 +499,7 @@ function updateItemDraft(itemId: string, field: keyof ItemFillbackDraft, value: 
   itemDrafts.value = {
     ...itemDrafts.value,
     [itemId]: {
-      ...(itemDrafts.value[itemId] ?? { actual_weight_kg: '', injection_cost: '' }),
+      ...(itemDrafts.value[itemId] ?? { actual_weight_kg: '', injection_cost: '', production_machine: '' }),
       [field]: value,
     },
   }
@@ -541,10 +545,13 @@ function appendProblemForOrder(orderId: string, problem: MoldingSampleProblem) {
 function replaceApiNotificationsForOrder(record: MoldingSampleDetailResponse) {
   const productionNotifications = (record.notifications ?? [])
     .filter((notification) => notification.target_module === PRODUCTION_NOTIFICATION_MODULE)
+  const preservedNotifications = productionNotifications.length
+    ? productionNotifications
+    : apiNotifications.value.filter((notification) => notification.order_id === record.order.id)
   const otherNotifications = apiNotifications.value
     .filter((notification) => notification.order_id !== record.order.id)
 
-  apiNotifications.value = [...productionNotifications, ...otherNotifications]
+  apiNotifications.value = [...preservedNotifications, ...otherNotifications]
     .sort((left, right) => right.created_at.localeCompare(left.created_at))
 }
 
@@ -673,7 +680,7 @@ async function saveProductionFillback() {
   try {
     const updated = await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
     replaceApiRecord(updated)
-    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料和啤办费。'
+    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料、啤办机台和啤办费。'
   }
   catch (error) {
     actionMessage.value = `啤机回填保存失败：${getApiErrorMessage(error)}`
@@ -801,7 +808,7 @@ watchEffect(() => {
         <span class="font-semibold text-slate-700">
           生产任务单 · {{ selectedTask?.order.id || '未选择' }}
         </span>
-        <div class="ml-auto flex items-center gap-2">
+        <div class="fixed right-4 top-4 z-50 flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-2 py-1 shadow-sm backdrop-blur sm:right-6 xl:right-10">
           <span class="hidden font-medium text-slate-500 lg:inline">
             当前厂区：{{ activeFactory.shortName }} · {{ actionMessage }}
           </span>
@@ -1060,12 +1067,13 @@ watchEffect(() => {
               </button>
             </div>
             <div class="overflow-x-auto">
-              <table class="w-full min-w-[900px] text-[12px]">
+              <table class="w-full min-w-[1040px] text-[12px]">
                 <thead>
                   <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                     <th class="px-2 py-2 text-left font-medium">模具 / 原料</th>
                     <th class="px-2 py-2 text-right font-medium">领料(kg)</th>
                     <th class="px-2 py-2 text-right font-medium">实际用料(kg)</th>
+                    <th class="px-2 py-2 text-left font-medium">啤办机台</th>
                     <th class="px-2 py-2 text-right font-medium">料费(HKD)</th>
                     <th class="px-2 py-2 text-right font-medium">啤办费(RMB)</th>
                     <th class="px-2 py-2 text-right font-medium">啤办费(HKD)</th>
@@ -1100,6 +1108,7 @@ watchEffect(() => {
                       <input
                         :value="itemDrafts[item.id]?.actual_weight_kg ?? ''"
                         :disabled="!canFillbackSelectedTask"
+                        aria-label="实际用料"
                         type="number"
                         min="0"
                         step="0.01"
@@ -1109,6 +1118,17 @@ watchEffect(() => {
                         @input="updateItemDraft(item.id, 'actual_weight_kg', readInputValue($event))"
                       >
                     </td>
+                    <td class="px-2 py-1 text-left">
+                      <input
+                        :value="itemDrafts[item.id]?.production_machine ?? ''"
+                        :disabled="!canFillbackSelectedTask"
+                        aria-label="啤办机台"
+                        type="text"
+                        class="h-8 w-28 rounded-md border border-slate-200 px-2 text-left outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
+                        placeholder="机台号"
+                        @input="updateItemDraft(item.id, 'production_machine', readInputValue($event))"
+                      >
+                    </td>
                     <td class="px-2 py-2 text-right font-semibold tabular-nums" :class="getReportRow(item.id)?.actual_amount_hkd ? 'text-slate-900' : 'text-slate-300'">
                       {{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd) }}
                     </td>
@@ -1116,6 +1136,7 @@ watchEffect(() => {
                       <input
                         :value="itemDrafts[item.id]?.injection_cost ?? ''"
                         :disabled="!canFillbackSelectedTask"
+                        aria-label="啤办费"
                         type="number"
                         min="0"
                         step="0.01"
@@ -1137,6 +1158,7 @@ watchEffect(() => {
                     <td class="px-2 py-2">
                       合计{{ selectedReportSummary?.archive_ready ? '' : '（待补齐）' }}
                     </td>
+                    <td />
                     <td />
                     <td />
                     <td class="px-2 py-2 text-right tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</td>
@@ -1228,6 +1250,7 @@ watchEffect(() => {
                     </div>
                     <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
                       <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
+                      <div><span class="text-slate-400">啤办机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                       <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                       <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                       <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>

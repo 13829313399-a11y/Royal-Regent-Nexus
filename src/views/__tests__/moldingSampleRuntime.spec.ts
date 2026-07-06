@@ -306,6 +306,7 @@ describe('molding sample runtime error handling', () => {
           mold_id: 'P50002008-01-01',
           mold_name: '头盔',
           machine_type: '160T',
+          production_machine: '啤办机台-08',
           material: 'PP (AV161)',
           color: '黑色',
           pigment_no: 'PMS 黑色',
@@ -351,7 +352,86 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
     expect(text).toContain('RC-20260203-01')
+    expect(text).toContain('啤办机台')
+    expect(text).toContain('啤办机台-08')
     expect(text).toContain('啤机回填前核对完整资料。')
+
+    wrapper.unmount()
+  })
+
+  it('saves the production machine from the production fillback page', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-MACHINE-001' }
+    const runningRecord = {
+      ...createMoldingSampleRecord('生产中', 'BP-PROD-MACHINE-001'),
+      items: [
+        {
+          id: 'BP-PROD-MACHINE-001-001',
+          order_id: 'BP-PROD-MACHINE-001',
+          sort_order: 1,
+          mold_id: 'P50002008-01-01',
+          mold_name: '头盔',
+          machine_type: '160T',
+          production_machine: '',
+          material: 'PP (AV161)',
+          color: '黑色',
+          pigment_no: 'PMS 黑色',
+          quantity: '1/1',
+          shoot_qty: 30,
+          gross_weight_g: 82,
+          required_material_kg: 15,
+          mold_return_time: '2026-02-03',
+          completion_time: '2026-02-04',
+          notes: '确认机台回填。',
+          receipt_no: 'RC-20260203-01',
+          collected_weight_kg: 14.5,
+          actual_weight_kg: null,
+          actual_amount_hkd: null,
+          injection_cost: null,
+          injection_cost_hkd: null,
+          exchange_rate_at_save: null,
+        } as MoldingSampleDetailResponse['items'][number],
+      ],
+    } satisfies MoldingSampleDetailResponse
+    const updatedRecord = {
+      ...runningRecord,
+      items: [
+        {
+          ...runningRecord.items[0],
+          actual_weight_kg: 14.2,
+          injection_cost: 120,
+          production_machine: '啤办机台-08',
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([runningRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(runningRecord.order.id),
+    ])
+    mockedMoldingSampleApi.updateItems.mockResolvedValueOnce(updatedRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    await wrapper.get('input[aria-label="实际用料"]').setValue('14.2')
+    await wrapper.get('input[aria-label="啤办费"]').setValue('120')
+    await wrapper.get('input[aria-label="啤办机台"]').setValue('啤办机台-08')
+    await getButtonByText(wrapper, '保存回填').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateItems).toHaveBeenCalledWith('BP-PROD-MACHINE-001', {
+      items: [
+        {
+          id: 'BP-PROD-MACHINE-001-001',
+          actual_weight_kg: 14.2,
+          injection_cost: 120,
+          production_machine: '啤办机台-08',
+        },
+      ],
+    })
+    expect(wrapper.text()).toContain('啤办机台')
+    expect((wrapper.get('input[aria-label="啤办机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
 
     wrapper.unmount()
   })
@@ -423,6 +503,7 @@ describe('molding sample runtime error handling', () => {
           mold_id: 'P50002008-01-01',
           mold_name: '头盔',
           machine_type: '160T',
+          production_machine: '啤办机台-08',
           material: 'PP (AV161)',
           color: '黑色',
           pigment_no: 'PMS 黑色',
@@ -470,6 +551,8 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('RC-20260203-01')
     expect(text).toContain('啤办费(HKD)')
     expect(text).toContain('HKD 129.60')
+    expect(text).toContain('啤办机台')
+    expect(text).toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
 
     wrapper.unmount()

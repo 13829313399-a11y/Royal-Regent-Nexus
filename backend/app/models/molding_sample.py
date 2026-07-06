@@ -63,6 +63,7 @@ class MoldingSampleItem(Base):
     mold_id: Mapped[str] = mapped_column(String(128), default="")
     mold_name: Mapped[str] = mapped_column(String(255), default="")
     machine_type: Mapped[str] = mapped_column(String(64), default="")
+    production_machine: Mapped[str] = mapped_column(String(128), default="")
     material: Mapped[str] = mapped_column(String(255), default="")
     color: Mapped[str] = mapped_column(String(255), default="")
     pigment_no: Mapped[str] = mapped_column(String(128), default="")
