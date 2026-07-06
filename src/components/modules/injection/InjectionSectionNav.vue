@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import {
-  Boxes,
   ClipboardList,
   Database,
   FileText,
+  Factory,
+  LayoutDashboard,
   Package,
   SquareTerminal,
-  Waypoints,
 } from '@lucide/vue'
 import type { InjectionSectionId } from '@/data/injectionSchedulingMock'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
@@ -22,10 +22,10 @@ defineEmits<{
 const { injectionSectionNav } = useInjectionModuleData()
 
 const sectionIcons = {
-  'monthly-plan': Boxes,
+  'monthly-plan': LayoutDashboard,
   'order-import': ClipboardList,
   'smart-scheduling': SquareTerminal,
-  'scheduling-results': Waypoints,
+  'scheduling-results': Factory,
   'daily-report': FileText,
   'inbound-orders': Package,
   'master-data': Database,

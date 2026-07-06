@@ -438,6 +438,25 @@ def test_engineer_can_withdraw_pending_order_and_resubmit(client):
     assert resubmit_response.json()["audit_logs"][0]["action"] == "工程重提"
 
 
+def test_engineer_can_withdraw_order_they_submitted_when_display_engineer_name_differs(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-WITHDRAW-ACTOR-001")
+    payload["order"]["eng_name"] = "工程部协作"
+    create_response = client.post("/api/injection", json=payload)
+    assert create_response.status_code == 201
+    assert create_response.json()["order"]["eng_name"] == "工程部协作"
+    assert create_response.json()["audit_logs"][0]["actor_user_id"] == "user-engineer"
+
+    withdraw_response = client.patch(
+        "/api/injection/BP-WITHDRAW-ACTOR-001/status",
+        json={"action": "工程撤回", "reason": "提交账号撤回主管审核"},
+    )
+
+    assert withdraw_response.status_code == 200
+    assert withdraw_response.json()["order"]["status"] == "已撤回"
+    assert withdraw_response.json()["audit_logs"][0]["actor_user_id"] == "user-engineer"
+
+
 def test_engineer_cannot_withdraw_after_supervisor_approval(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-WITHDRAW-LOCK-001"))
@@ -632,6 +651,28 @@ def test_engineering_edit_delete_permissions_use_login_role(client):
     manager_edit_response = client.put("/api/injection/BP-LOCK-001", json=manager_payload)
     assert manager_edit_response.status_code == 200
     assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
+
+
+def test_only_admin_can_delete_locked_molding_sample_order(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-ADMIN-DELETE-001"))
+
+    login_as(client, "supervisor")
+    approved_response = client.patch(
+        "/api/injection/BP-ADMIN-DELETE-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "manager")
+    manager_delete_response = client.delete("/api/injection/BP-ADMIN-DELETE-001")
+    assert manager_delete_response.status_code == 403
+
+    login_as(client, "admin")
+    admin_delete_response = client.delete("/api/injection/BP-ADMIN-DELETE-001")
+    assert admin_delete_response.status_code == 204
+    assert client.get("/api/injection/BP-ADMIN-DELETE-001").status_code == 404
 
 
 def test_trial_accounts_do_not_expose_unused_warehouse_permissions(client):
