@@ -67,6 +67,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/pmc-warehouse/raw-material-management',
+    name: 'raw-material-management',
+    component: () => import('@/views/RawMaterialManagementView.vue'),
+    meta: {
+      title: '原料管理模块',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/:department/:module',
     name: 'module-detail',
     component: () => import('@/views/ModuleDetailView.vue'),

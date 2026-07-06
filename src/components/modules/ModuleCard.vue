@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowUpRight, ChevronRight } from '@lucide/vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import type { EnterpriseModule, Tone } from '@/data/enterpriseMock'
 import StatusPill from '@/components/common/StatusPill.vue'
 
@@ -9,7 +9,16 @@ defineProps<{
   active?: boolean
 }>()
 
+const router = useRouter()
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
+
+function openModule(module: EnterpriseModule) {
+  if (!module.route) {
+    return
+  }
+
+  void router.push(module.route)
+}
 
 const iconClasses: Record<Tone, string> = {
   teal: 'bg-teal-50 text-teal-700',
@@ -23,10 +32,19 @@ const iconClasses: Record<Tone, string> = {
 
 <template>
   <article
-    class="rounded-lg border p-5 transition-colors"
-    :class="active
-      ? 'border-teal-300 bg-white shadow-[0_12px_32px_rgba(13,148,136,0.12)]'
-      : 'border-slate-200 bg-slate-50'"
+    class="rounded-lg border p-5 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
+    :class="[
+      active
+        ? 'border-teal-300 bg-white shadow-[0_12px_32px_rgba(13,148,136,0.12)]'
+        : 'border-slate-200 bg-slate-50',
+      module.route ? 'cursor-pointer hover:border-teal-300' : '',
+    ]"
+    :role="module.route ? 'link' : undefined"
+    :tabindex="module.route ? 0 : undefined"
+    :aria-label="module.route ? `打开${module.title}` : undefined"
+    @click="openModule(module)"
+    @keydown.enter.prevent="openModule(module)"
+    @keydown.space.prevent="openModule(module)"
   >
     <div class="mb-5 flex items-start gap-4">
       <span
@@ -81,6 +99,7 @@ const iconClasses: Record<Tone, string> = {
         v-if="module.route"
         :to="module.route"
         class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+        @click.stop
       >
         查看模块
         <ChevronRight class="size-4" aria-hidden="true" />
@@ -89,6 +108,7 @@ const iconClasses: Record<Tone, string> = {
         v-if="module.href && !isExternalLink(module.href)"
         :to="module.href"
         class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+        @click.stop
       >
         打开系统
         <ArrowUpRight class="size-4" aria-hidden="true" />
@@ -99,6 +119,7 @@ const iconClasses: Record<Tone, string> = {
         target="_blank"
         rel="noreferrer"
         class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+        @click.stop
       >
         打开系统
         <ArrowUpRight class="size-4" aria-hidden="true" />
