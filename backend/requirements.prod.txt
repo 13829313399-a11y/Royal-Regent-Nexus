@@ -5,3 +5,8 @@ psycopg[binary]
 alembic
 pydantic-settings
 python-dotenv
+python-multipart
+pypdf
+pypdfium2
+Pillow
+pytesseract
