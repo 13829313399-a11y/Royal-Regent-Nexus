@@ -85,8 +85,10 @@ async function mountRuntimeView(component: Component) {
     permissions: [
       'molding_sample:create',
       'molding_sample:edit_draft',
+      'molding_sample:delete_draft',
       'molding_sample:supervisor_review',
       'molding_sample:manager_review',
+      'system:user_manage',
     ],
     factory_scopes: ['*'],
     department_scopes: ['*'],
@@ -232,6 +234,65 @@ describe('molding sample runtime error handling', () => {
       today: '2026-07-06',
     })
     expect(wrapper.text()).toContain('已撤回')
+
+    wrapper.unmount()
+  })
+
+  it('lets the submitting account withdraw even when the displayed engineer name differs', async () => {
+    const pendingRecord = createMoldingSampleRecord()
+    pendingRecord.order.eng_name = '工程部协作'
+    const withdrawnRecord = {
+      ...pendingRecord,
+      order: {
+        ...pendingRecord.order,
+        status: '已撤回',
+      },
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([pendingRecord])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(withdrawnRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, 'BP-WITHDRAW-UI').trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, '撤回审核').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
+      action: '工程撤回',
+      reason: '测试账号撤回主管审核。',
+      today: '2026-07-06',
+    })
+
+    wrapper.unmount()
+  })
+
+  it('lets an administrator delete the selected molding sample order after confirmation', async () => {
+    const completedRecord = createMoldingSampleRecord('已完成')
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([completedRecord])
+    mockedMoldingSampleApi.deleteOrder.mockResolvedValueOnce(undefined)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, 'BP-WITHDRAW-UI').trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, '删除啤办单').trigger('click')
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.deleteOrder).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('再次点击确认删除')
+
+    await getButtonByText(wrapper, '确认删除').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.deleteOrder).toHaveBeenCalledWith('BP-WITHDRAW-UI')
+    expect(wrapper.text()).toContain('啤办单 BP-WITHDRAW-UI 已删除')
+    expect(wrapper.text()).toContain('当前厂区单据0')
+    expect(wrapper.text()).not.toContain('链条枪')
 
     wrapper.unmount()
   })
