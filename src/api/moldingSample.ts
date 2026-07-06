@@ -31,6 +31,7 @@ export interface MoldingSampleEditRequest extends MoldingSampleCreateRequest {}
 
 export interface MoldingSampleExcelImportOptions {
   order_id?: string
+  factory_id?: string
 }
 
 export interface MoldingSampleDetailResponse {
@@ -240,6 +241,9 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const params = new URLSearchParams()
       if (options.order_id) {
         params.set('order_id', options.order_id)
+      }
+      if (options.factory_id) {
+        params.set('factory_id', options.factory_id)
       }
       const query = params.toString()
       const response = await client.post<MoldingSampleDetailResponse>(

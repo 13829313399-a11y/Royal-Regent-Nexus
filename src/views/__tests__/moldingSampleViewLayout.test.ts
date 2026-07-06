@@ -177,6 +177,7 @@ assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
 assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.gross_weight_g"[\s\S]*v-model="line\.required_material_kg"[\s\S]*v-model="line\.required_date"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
 assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
+assert.match(source, /moldingSampleApi\.importOrderExcel\(workbook,\s*\{\s*factory_id:\s*selectedFactoryId\.value,\s*\}\)/)
 
 for (const removedClearedLayoutCopy of [
   'MOLDING SAMPLE REDESIGN',

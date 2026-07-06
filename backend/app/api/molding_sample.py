@@ -66,6 +66,17 @@ def serialize_order(order) -> MoldingSampleDetailResponse:
     )
 
 
+def resolve_import_factory_id(current_user: AuthContext, factory_id: str | None) -> str | None:
+    if factory_id:
+        return factory_id
+
+    factory_scopes = [scope for scope in current_user.factory_scopes if scope != "*"]
+    if len(factory_scopes) == 1:
+        return factory_scopes[0]
+
+    return None
+
+
 @router.get("/api/injection", response_model=list[MoldingSampleDetailResponse])
 def get_injection_orders(
     db: Session = Depends(get_db),
@@ -114,11 +125,16 @@ def export_injection_order_excel(
 def import_injection_order_excel(
     body: bytes = Body(..., media_type=XLSX_MIME),
     order_id: str | None = None,
+    factory_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     try:
-        payload = parse_order_excel(body, order_id_override=order_id)
+        payload = parse_order_excel(
+            body,
+            order_id_override=order_id,
+            factory_id_override=resolve_import_factory_id(current_user, factory_id),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
