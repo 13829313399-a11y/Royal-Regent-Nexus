@@ -141,6 +141,26 @@ def import_injection_order_excel(
     return serialize_order(create_order(db, payload, current_user))
 
 
+@router.post("/api/injection/import-excel-preview", response_model=MoldingSampleCreateRequest)
+def preview_injection_order_excel(
+    body: bytes = Body(..., media_type=XLSX_MIME),
+    order_id: str | None = None,
+    factory_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    ensure_permission(db, current_user, "molding_sample:create")
+
+    try:
+        return parse_order_excel(
+            body,
+            order_id_override=order_id,
+            factory_id_override=resolve_import_factory_id(current_user, factory_id),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.put("/api/injection/{order_id}", response_model=MoldingSampleDetailResponse)
 def put_injection_order(
     order_id: str,

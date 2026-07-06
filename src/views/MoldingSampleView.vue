@@ -51,6 +51,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import {
   MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
+  type MoldingSampleCreateRequest,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
 } from '@/api/moldingSample'
@@ -744,6 +745,48 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
   })
 }
 
+function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
+  const order = payload.order
+  const items = payload.items.length
+    ? payload.items.map((item) => {
+        const colorParts = splitColorPms(item.color ?? '')
+
+        return createManualMoldingSampleLineDraft({
+          customer_mold_id: item.mold_id ?? '',
+          mold_name: item.mold_name ?? '',
+          material: item.material ?? '',
+          color: colorParts.color,
+          pms: colorParts.pms,
+          pigment_no: item.pigment_no ?? '',
+          quantity: item.quantity ?? '',
+          shoot_qty: String(item.shoot_qty || ''),
+          gross_weight_g: formatDraftNumber(item.gross_weight_g),
+          required_material_kg: formatDraftNumber(item.required_material_kg),
+          required_date: item.mold_return_time || item.completion_time || '',
+          notes: item.notes ?? '',
+        })
+      })
+    : [createManualMoldingSampleLineDraft()]
+
+  return createManualMoldingSampleOrderDraft({
+    id: order.id,
+    factory_id: order.factory_id || selectedFactoryId.value,
+    product_no: order.order_number || order.id.replace(/^BP-/, ''),
+    doc_number: order.doc_number ?? '',
+    client_name: order.client_name,
+    product_name: order.product_name,
+    order_date: order.date,
+    stage: order.stage ?? 'T0',
+    order_type: order.order_type ?? '啤办',
+    workshop: order.workshop || '工程部',
+    send_to: order.send_to || '内部',
+    supervisor: order.supervisor,
+    eng_name: order.eng_name,
+    reason: order.reason ?? '',
+    items,
+  })
+}
+
 function formatDraftNumber(value: number | null | undefined) {
   return value === null || value === undefined ? '' : String(value)
 }
@@ -867,13 +910,15 @@ async function handleExcelImportFile(event: Event) {
 
   try {
     const workbook = await readWorkbookAsArrayBuffer(file)
-    const imported = await moldingSampleApi.importOrderExcel(workbook, {
+    const preview = await moldingSampleApi.previewOrderExcel(workbook, {
       factory_id: selectedFactoryId.value,
     })
-    replaceApiRecord(imported)
-    selectedOrderId.value = imported.order.id
-    activeView.value = 'detail'
-    actionMessage.value = `Excel已导入为啤办单 ${imported.order.id}，正式列表已更新。`
+    editingRejectedOrderId.value = ''
+    createDraft.value = createDraftFromExcelPreview(preview)
+    createErrors.value = []
+    selectedOrderId.value = ''
+    activeView.value = 'create'
+    actionMessage.value = 'Excel已导入到新建开单草稿，请确认数据无误后提交主管审核。'
   }
   catch (error) {
     actionMessage.value = `Excel导入失败：${getApiErrorMessage(error)}`

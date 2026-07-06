@@ -745,6 +745,30 @@ def test_export_and_import_molding_sample_excel_template(client):
     assert imported["items"][0]["id"] == "BP-XLSX-002-001"
 
 
+def test_preview_molding_sample_excel_import_does_not_create_order(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-XLSX-SOURCE"))
+
+    export_response = client.get("/api/injection/BP-XLSX-SOURCE/export-excel")
+    assert export_response.status_code == 200
+
+    preview_response = client.post(
+        "/api/injection/import-excel-preview",
+        params={"order_id": "BP-XLSX-PREVIEW"},
+        content=export_response.content,
+        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    )
+
+    assert preview_response.status_code == 200
+    previewed = preview_response.json()
+    assert previewed["order"]["id"] == "BP-XLSX-PREVIEW"
+    assert previewed["items"][0]["id"] == "BP-XLSX-PREVIEW-001"
+    assert "audit_logs" not in previewed
+
+    lookup_response = client.get("/api/injection/BP-XLSX-PREVIEW")
+    assert lookup_response.status_code == 404
+
+
 def test_import_huaxing_engineering_molding_sample_template(client):
     login_as(client, "engineer")
     import_response = client.post(
