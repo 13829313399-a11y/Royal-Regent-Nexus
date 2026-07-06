@@ -28,6 +28,7 @@ import {
   Send,
   Table2,
   Tag,
+  Trash2,
   TriangleAlert,
   Upload,
   UserRound,
@@ -190,6 +191,8 @@ const editingRejectedOrderId = ref('')
 const approvalNote = ref('')
 const approvalSubmitting = ref(false)
 const withdrawSubmitting = ref(false)
+const deleteSubmitting = ref(false)
+const deleteConfirmingOrderId = ref('')
 const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
@@ -414,8 +417,11 @@ const canEditSelectedRejectedOrder = computed(() =>
 const canWithdrawSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
   && selectedOrder.value.status === '待审核'
-  && canEditDraftOrder.value
-  && (selectedOrder.value.eng_name === '' || selectedOrder.value.eng_name === authStore.currentUser?.display_name),
+  && canEditDraftOrder.value,
+)
+const canDeleteSelectedOrder = computed(() =>
+  Boolean(selectedRecord.value)
+  && authStore.hasPermission('system:user_manage'),
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
@@ -709,6 +715,13 @@ function replaceApiRecord(record: MoldingSampleDetailResponse) {
   apiState.value = 'connected'
 }
 
+function removeApiRecord(orderId: string) {
+  apiRecords.value = apiRecords.value.filter((entry) => entry.order.id !== orderId)
+  const nextFactoryRecord = factoryRecords.value.find((record) => record.order.id !== orderId)
+  selectedOrderId.value = nextFactoryRecord?.order.id ?? ''
+  apiState.value = apiRecords.value.length ? 'connected' : 'empty'
+}
+
 async function loadApiData() {
   apiState.value = 'checking'
   actionMessage.value = '正在读取正式啤办单列表...'
@@ -829,12 +842,14 @@ function readQueryString(value: unknown) {
 
 function setView(view: ViewKey) {
   activeView.value = view
+  deleteConfirmingOrderId.value = ''
 }
 
 function openRecord(record: MoldingSampleWorkflowRecord) {
   selectedOrderId.value = record.order.id
   activeView.value = 'detail'
   approvalNote.value = ''
+  deleteConfirmingOrderId.value = ''
 }
 
 function readInputValue(event: Event) {
@@ -1042,6 +1057,42 @@ async function withdrawSelectedOrder() {
   }
   finally {
     withdrawSubmitting.value = false
+  }
+}
+
+async function deleteSelectedOrder() {
+  if (!selectedRecord.value) {
+    actionMessage.value = '请先选择一张正式啤办单。'
+    return
+  }
+
+  if (!canDeleteSelectedOrder.value) {
+    actionMessage.value = '只有管理员可以删除啤办单。'
+    return
+  }
+
+  const orderId = selectedOrder.value.id
+  if (deleteConfirmingOrderId.value !== orderId) {
+    deleteConfirmingOrderId.value = orderId
+    actionMessage.value = `再次点击确认删除啤办单 ${orderId}。`
+    return
+  }
+
+  deleteSubmitting.value = true
+  actionMessage.value = `正在删除啤办单 ${orderId}...`
+
+  try {
+    await moldingSampleApi.deleteOrder(orderId)
+    removeApiRecord(orderId)
+    activeView.value = 'overview'
+    deleteConfirmingOrderId.value = ''
+    actionMessage.value = `啤办单 ${orderId} 已删除。`
+  }
+  catch (error) {
+    actionMessage.value = `删除啤办单失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    deleteSubmitting.value = false
   }
 }
 
@@ -2311,6 +2362,16 @@ onUnmounted(() => {
               >
                 <PencilLine class="size-4" aria-hidden="true" />
                 修改后重提
+              </button>
+              <button
+                v-if="canDeleteSelectedOrder"
+                type="button"
+                :disabled="deleteSubmitting"
+                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 text-[12px] font-semibold text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                @click="deleteSelectedOrder"
+              >
+                <Trash2 class="size-4" aria-hidden="true" />
+                {{ deleteSubmitting ? '删除中...' : deleteConfirmingOrderId === selectedOrder.id ? '确认删除' : '删除啤办单' }}
               </button>
               <RouterLink
                 :to="productionTaskRoute"
