@@ -151,11 +151,19 @@ for (const requiredImplementation of [
   'rawMaterialOptions',
   'rawMaterialOptionByValue',
   'rawMaterialOptionValueSet',
+  'RawMaterialPickerPosition',
+  'RAW_MATERIAL_PICKER_WIDTH',
+  'RAW_MATERIAL_PICKER_HEIGHT',
+  'RAW_MATERIAL_PICKER_GAP',
+  'RAW_MATERIAL_PICKER_VIEWPORT_PADDING',
   'RAW_MATERIAL_PICKER_VISIBLE_LIMIT',
   'activeRawMaterialPickerLineIndex',
   'rawMaterialSearchByLine',
+  'rawMaterialPickerPositionByLine',
   'hasUnknownRawMaterialValue',
   'getRawMaterialPickerText',
+  'updateRawMaterialPickerPosition',
+  'getRawMaterialPickerStyle',
   'getVisibleRawMaterialOptions',
   'updateRawMaterialSearch',
   'selectRawMaterialOption',
@@ -227,14 +235,19 @@ assert.match(source, /v-model="line\.notes"/)
 assert.match(source, /min-w-\[1720px\]/)
 assert.match(source, /data-testid="create-line-material"[\s\S]*role="combobox"[\s\S]*aria-label="选择所需用料"/)
 assert.match(source, /placeholder="搜索原料名称\/编号"/)
+assert.match(source, /@focus="openRawMaterialPicker\(index, line\.material, \$event\)"/)
 assert.match(source, /@input="updateRawMaterialSearch\(index, \$event\)"/)
 assert.match(source, /@keydown\.enter\.prevent="selectFirstRawMaterialOption\(line, index\)"/)
+assert.match(source, /<Teleport to="body">[\s\S]*role="listbox"/)
+assert.match(source, /class="fixed z-\[80\][^"]*shadow-xl shadow-slate-900\/10"/)
+assert.match(source, /:style="getRawMaterialPickerStyle\(index\)"/)
 assert.match(source, /role="listbox"/)
 assert.match(source, /v-if="hasUnknownRawMaterialValue\(line\.material\)"[\s\S]*当前值/)
 assert.match(source, /v-for="option in getVisibleRawMaterialOptions\(index\)"[\s\S]*:key="option\.value"[\s\S]*@click="selectRawMaterialOption\(line, index, option\)"/)
 assert.match(source, /aria-label="清除所需用料"[\s\S]*@click="clearRawMaterialSelection\(line, index\)"/)
 assert.doesNotMatch(source, /<select[\s\S]*v-model="line\.material"/)
 assert.doesNotMatch(source, /<input v-model="line\.material"/)
+assert.doesNotMatch(source, /class="absolute left-0 top-10[^"]*role="listbox"/)
 assert.doesNotMatch(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px\]/)
 assert.doesNotMatch(source, /role="columnheader">颜色 \/ PMS<\/div>/)
 assert.match(source, /role="columnheader">颜色<\/div>[\s\S]*role="columnheader">PMS<\/div>/)
