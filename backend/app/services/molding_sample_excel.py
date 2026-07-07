@@ -57,6 +57,29 @@ ITEM_COLUMNS = [
     ("保存汇率", "exchange_rate_at_save"),
 ]
 
+BATCH_ORDER_COLUMNS = [
+    ("单据ID", "id"),
+    ("工厂ID", "factory_id"),
+    ("订单号", "order_number"),
+    ("文件编号", "doc_number"),
+    ("产品名称", "product_name"),
+    ("客户", "client_name"),
+    ("日期", "date"),
+    ("阶段", "stage"),
+    ("单据类型", "order_type"),
+    ("车间", "workshop"),
+    ("发往", "send_to"),
+    ("主管", "supervisor"),
+    ("工程师", "eng_name"),
+    ("原因", "reason"),
+    ("状态", "status"),
+    ("驳回原因", "reject_reason"),
+    ("完成日期", "completed_date"),
+    ("更新时间", "updated_at"),
+]
+
+BATCH_EXPORT_COLUMNS = BATCH_ORDER_COLUMNS + ITEM_COLUMNS
+
 ORDER_ALIASES = {
     "单据id": "id",
     "单据ID": "id",
@@ -142,6 +165,20 @@ ORDER_LABEL_STYLE_ID = 2
 ORDER_VALUE_STYLE_ID = 3
 DETAIL_HEADER_STYLE_ID = 4
 DETAIL_BODY_STYLE_ID = 5
+MISSING_VALUE_STYLE_ID = 6
+SUBTOTAL_STYLE_ID = 7
+TOTAL_STYLE_ID = 8
+BATCH_ORDER_HEADER_STYLE_ID = 9
+BATCH_ITEM_HEADER_STYLE_ID = 10
+BATCH_ORDER_GROUP_A_STYLE_ID = 11
+BATCH_ORDER_GROUP_B_STYLE_ID = 12
+
+FILLBACK_REQUIRED_FIELDS = {
+    "actual_weight_kg",
+    "actual_amount_hkd",
+    "injection_cost",
+    "injection_cost_hkd",
+}
 
 ITEM_COLUMN_WIDTHS = [
     22,
@@ -168,21 +205,249 @@ ITEM_COLUMN_WIDTHS = [
     12,
 ]
 
+BATCH_COLUMN_WIDTHS = [
+    22,
+    14,
+    16,
+    18,
+    24,
+    18,
+    14,
+    10,
+    12,
+    14,
+    14,
+    18,
+    18,
+    30,
+    12,
+    24,
+    14,
+    18,
+    22,
+    10,
+    18,
+    22,
+    14,
+    22,
+    18,
+    15,
+    11,
+    11,
+    12,
+    12,
+    15,
+    15,
+    30,
+    18,
+    12,
+    14,
+    14,
+    14,
+    14,
+    12,
+]
+
 
 def export_order_to_excel(order: MoldingSampleOrder) -> bytes:
-    rows: list[list[object | None]] = [[TEMPLATE_TITLE]]
-    order_values = {field: getattr(order, field, "") for _, field in ORDER_FIELDS}
+    title = f"啤办单 · {_safe_text(order.product_name)}（{order.id}） · {_safe_text(order.status)}"
+    rows: list[list[object | None]] = [
+        [title],
+        [
+            "单据ID",
+            order.id,
+            "产品 / 客户",
+            f"{_safe_text(order.product_name)} / {_safe_text(order.client_name)}",
+            "阶段 / 车间",
+            f"{_safe_text(order.stage)} / {_safe_text(order.workshop)}（{_safe_text(order.send_to, '内部')}）",
+        ],
+        [
+            "工程 / 主管",
+            f"{_safe_text(order.eng_name)} / {_safe_text(order.supervisor)}",
+            "开单日期",
+            _safe_text(order.date),
+            "开单事由",
+            _safe_text(order.reason),
+        ],
+        [],
+        [label for label, _ in ITEM_COLUMNS],
+    ]
+    style_matrix: dict[tuple[int, int], int] = {}
+    missing_count = 0
 
-    for index in range(0, len(ORDER_FIELDS), 2):
-        left_label, left_field = ORDER_FIELDS[index]
-        right_label, right_field = ORDER_FIELDS[index + 1] if index + 1 < len(ORDER_FIELDS) else ("", "")
-        rows.append([left_label, order_values.get(left_field, ""), right_label, order_values.get(right_field, "")])
-
-    rows.append([])
-    rows.append([label for label, _ in ITEM_COLUMNS])
     for item in order.items:
-        rows.append([getattr(item, field, "") for _, field in ITEM_COLUMNS])
+        row: list[object | None] = []
+        row_index = len(rows) + 1
+        for column_index, (_, field) in enumerate(ITEM_COLUMNS, start=1):
+            value = getattr(item, field, "")
+            formatted_value, is_missing = _format_export_item_value(field, value)
+            row.append(formatted_value)
+            if is_missing:
+                style_matrix[(row_index, column_index)] = MISSING_VALUE_STYLE_ID
+                missing_count += 1
+        rows.append(row)
 
+    subtotal = _build_single_export_subtotal_row(order)
+    subtotal_row_index = len(rows) + 1
+    rows.append(subtotal)
+    total_row_index = len(rows) + 1
+    rows.append(_build_single_export_total_row(order, missing_count))
+
+    for column_index in range(1, len(ITEM_COLUMNS) + 1):
+        style_matrix[(subtotal_row_index, column_index)] = SUBTOTAL_STYLE_ID
+        style_matrix[(total_row_index, column_index)] = TOTAL_STYLE_ID
+
+    return _build_workbook(
+        _sheet_xml(
+            rows,
+            header_row_index=5,
+            style_matrix=style_matrix,
+            merge_ranges=[
+                "A1:V1",
+                "F2:V2",
+                "F3:V3",
+                f"A{subtotal_row_index}:Q{subtotal_row_index}",
+                f"A{total_row_index}:R{total_row_index}",
+                f"S{total_row_index}:V{total_row_index}",
+            ],
+        ),
+    )
+
+
+def export_orders_to_excel(orders: list[MoldingSampleOrder]) -> bytes:
+    date_values = sorted({str(order.date or "").strip() for order in orders if str(order.date or "").strip()})
+    date_range = ""
+    if len(date_values) == 1:
+        date_range = f" · {date_values[0]}"
+    elif len(date_values) > 1:
+        date_range = f" · {date_values[0]} ~ {date_values[-1]}"
+
+    rows: list[list[object | None]] = [
+        [f"啤办单批量导出 · {len(orders)} 张{date_range}"],
+        [label for label, _ in BATCH_EXPORT_COLUMNS],
+    ]
+    style_matrix: dict[tuple[int, int], int] = {}
+    merge_ranges = [f"A1:{_column_name(len(BATCH_EXPORT_COLUMNS))}1"]
+
+    for column_index in range(1, len(BATCH_EXPORT_COLUMNS) + 1):
+        style_matrix[(2, column_index)] = (
+            BATCH_ORDER_HEADER_STYLE_ID
+            if column_index <= len(BATCH_ORDER_COLUMNS)
+            else BATCH_ITEM_HEADER_STYLE_ID
+        )
+
+    for order_index, order in enumerate(orders):
+        order_values = [getattr(order, field, "") for _, field in BATCH_ORDER_COLUMNS]
+        items = list(order.items)
+        group_style = BATCH_ORDER_GROUP_A_STYLE_ID if order_index % 2 == 0 else BATCH_ORDER_GROUP_B_STYLE_ID
+        first_row_index = len(rows) + 1
+
+        if not items:
+            rows.append(order_values + ["" for _ in ITEM_COLUMNS])
+            for column_index in range(1, len(BATCH_ORDER_COLUMNS) + 1):
+                style_matrix[(len(rows), column_index)] = group_style
+            continue
+
+        for item_index, item in enumerate(items):
+            current_order_values = order_values if item_index == 0 else ["" for _ in BATCH_ORDER_COLUMNS]
+            row_index = len(rows) + 1
+            rows.append(
+                current_order_values
+                + [
+                    _format_export_item_value(field, getattr(item, field, ""))[0]
+                    for _, field in ITEM_COLUMNS
+                ],
+            )
+            for column_index in range(1, len(BATCH_ORDER_COLUMNS) + 1):
+                style_matrix[(row_index, column_index)] = group_style
+
+        last_row_index = len(rows)
+        if last_row_index > first_row_index:
+            for column_index in range(1, len(BATCH_ORDER_COLUMNS) + 1):
+                column_name = _column_name(column_index)
+                merge_ranges.append(f"{column_name}{first_row_index}:{column_name}{last_row_index}")
+
+    return _build_workbook(
+        _sheet_xml(
+            rows,
+            column_widths=BATCH_COLUMN_WIDTHS,
+            header_row_index=2,
+            style_matrix=style_matrix,
+            merge_ranges=merge_ranges,
+        ),
+    )
+
+
+def _safe_text(value: object, fallback: str = "—") -> str:
+    text = str(value or "").strip()
+    return text if text else fallback
+
+
+def _format_decimal(value: float | int | None, digits = 2) -> str:
+    if value is None:
+        return ""
+    return f"{float(value):.{digits}f}"
+
+
+def _format_export_item_value(field: str, value: object) -> tuple[object | None, bool]:
+    if value is None or str(value).strip() == "":
+        if field in FILLBACK_REQUIRED_FIELDS:
+            return "缺", True
+        if field in NUMERIC_ITEM_FIELDS:
+            return "—", False
+        return "", False
+
+    if field in NUMERIC_ITEM_FIELDS:
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return value, False
+        if field == "exchange_rate_at_save":
+            return f"{numeric_value:.4g}", False
+        return _format_decimal(numeric_value), False
+
+    return value, False
+
+
+def _sum_item_field(order: MoldingSampleOrder, field: str) -> float:
+    total = 0.0
+    for item in order.items:
+        value = getattr(item, field, None)
+        try:
+            total += float(value)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _build_single_export_subtotal_row(order: MoldingSampleOrder) -> list[object | None]:
+    materials = sorted({str(item.material or "").strip() for item in order.items if str(item.material or "").strip()})
+    material_label = "、".join(materials[:4])
+    if len(materials) > 4:
+        material_label = f"{material_label} 等 {len(materials)} 种原料"
+    elif not material_label:
+        material_label = "未填写原料"
+
+    row: list[object | None] = ["" for _ in ITEM_COLUMNS]
+    row[0] = f"原料小计（{material_label}，实际用料合计）"
+    row[17] = _format_decimal(_sum_item_field(order, "actual_weight_kg"))
+    row[18] = _format_decimal(_sum_item_field(order, "actual_amount_hkd"))
+    row[19] = _format_decimal(_sum_item_field(order, "injection_cost"))
+    row[20] = _format_decimal(_sum_item_field(order, "injection_cost_hkd"))
+    return row
+
+
+def _build_single_export_total_row(order: MoldingSampleOrder, missing_count: int) -> list[object | None]:
+    material_total = _sum_item_field(order, "actual_amount_hkd")
+    injection_total = _sum_item_field(order, "injection_cost_hkd")
+    row: list[object | None] = ["" for _ in ITEM_COLUMNS]
+    row[0] = f"总计 料费 {_format_decimal(material_total)} + 啤办费 {_format_decimal(injection_total)} ="
+    pending_text = f"（含 {missing_count} 项待回填）" if missing_count else "（资料完整）"
+    row[18] = f"HKD {_format_decimal(material_total + injection_total)}{pending_text}"
+    return row
+
+
+def _build_workbook(sheet_xml: str) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w", ZIP_DEFLATED) as workbook:
         workbook.writestr("[Content_Types].xml", _content_types_xml())
@@ -192,7 +457,7 @@ def export_order_to_excel(order: MoldingSampleOrder) -> bytes:
         workbook.writestr("xl/workbook.xml", _workbook_xml())
         workbook.writestr("xl/_rels/workbook.xml.rels", _workbook_rels_xml())
         workbook.writestr("xl/styles.xml", _styles_xml())
-        workbook.writestr("xl/worksheets/sheet1.xml", _sheet_xml(rows))
+        workbook.writestr("xl/worksheets/sheet1.xml", sheet_xml)
 
     return buffer.getvalue()
 
@@ -240,6 +505,8 @@ def parse_order_excel(
         if not any(str(value or "").strip() for value in row):
             continue
         if _row_contains_order_metadata(row):
+            continue
+        if _row_contains_export_summary(row):
             continue
 
         item_data: dict[str, object] = {}
@@ -374,10 +641,63 @@ def _parse_order_metadata(rows: list[list[str]]) -> dict[str, str]:
         for index, cell_value in enumerate(row):
             label, inline_value = _split_label_value(cell_value)
             value = inline_value or (str(row[index + 1] or "").strip() if index + 1 < len(row) else "")
+            if _parse_composite_order_metadata(parsed, label, value):
+                continue
             field = ORDER_ALIASES.get(label)
             if field and value:
                 parsed[field] = _normalize_order_value(field, value)
     return parsed
+
+
+def _parse_composite_order_metadata(parsed: dict[str, str], label: str, value: object) -> bool:
+    normalized_label = label.replace(" ", "")
+    text = str(value or "").strip()
+    if not text:
+        return False
+
+    if normalized_label == "产品/客户":
+        product_name, client_name = _split_pair_value(text)
+        if product_name:
+            parsed["product_name"] = product_name
+        if client_name:
+            parsed["client_name"] = client_name
+        return True
+
+    if normalized_label == "阶段/车间":
+        stage, workshop_text = _split_pair_value(text)
+        workshop, send_to = _split_parenthesized_value(workshop_text)
+        if stage:
+            parsed["stage"] = stage
+        if workshop:
+            parsed["workshop"] = workshop
+        if send_to:
+            parsed["send_to"] = send_to
+        return True
+
+    if normalized_label == "工程/主管":
+        engineer, supervisor = _split_pair_value(text)
+        if engineer:
+            parsed["eng_name"] = engineer
+        if supervisor:
+            parsed["supervisor"] = supervisor
+        return True
+
+    return False
+
+
+def _split_pair_value(value: str) -> tuple[str, str]:
+    parts = [part.strip() for part in re.split(r"\s*/\s*", value, maxsplit=1)]
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
+
+def _split_parenthesized_value(value: str) -> tuple[str, str]:
+    text = value.strip()
+    match = re.match(r"^(.*?)\s*[（(](.*?)[）)]\s*$", text)
+    if not match:
+        return text, ""
+    return match.group(1).strip(), match.group(2).strip()
 
 
 def _looks_like_engineering_molding_sample_template(rows: list[list[str]]) -> bool:
@@ -450,6 +770,11 @@ def _row_contains_order_metadata(row: list[str]) -> bool:
     return False
 
 
+def _row_contains_export_summary(row: list[str]) -> bool:
+    first_value = str(row[0] if row else "").strip()
+    return first_value.startswith("原料小计") or first_value.startswith("总计")
+
+
 def _format_color_pms(color: str, pms: str) -> str:
     normalized_color = color.strip()
     normalized_pms = pms.strip()
@@ -499,7 +824,14 @@ def _parse_int(value: object) -> int:
         return 0
 
 
-def _sheet_xml(rows: list[list[object | None]]) -> str:
+def _sheet_xml(
+    rows: list[list[object | None]],
+    column_widths: list[int] | None = None,
+    header_row_index: int = DETAIL_HEADER_ROW_INDEX,
+    style_matrix: dict[tuple[int, int], int] | None = None,
+    merge_ranges: list[str] | None = None,
+) -> str:
+    widths = column_widths or ITEM_COLUMN_WIDTHS
     row_xml = []
     for row_index, row in enumerate(rows, start=1):
         cells = [
@@ -507,14 +839,23 @@ def _sheet_xml(rows: list[list[object | None]]) -> str:
                 _column_name(col_index),
                 row_index,
                 value,
-                style_id=_style_for_cell(row_index, col_index),
+                style_id=_style_for_cell(row_index, col_index, header_row_index, style_matrix),
             )
             for col_index, value in enumerate(row, start=1)
         ]
-        row_xml.append(f'<row {_row_attributes(row_index)}>{"".join(cells)}</row>')
+        row_xml.append(f'<row {_row_attributes(row_index, header_row_index)}>{"".join(cells)}</row>')
 
-    last_column = _column_name(len(ITEM_COLUMNS))
+    last_column = _column_name(max(len(widths), max((len(row) for row in rows), default=1)))
     last_row = max(len(rows), 1)
+    top_left_row = header_row_index + 1
+    resolved_merge_ranges = merge_ranges if merge_ranges is not None else [f"A1:{last_column}1"]
+    merge_cells_xml = ""
+    if resolved_merge_ranges:
+        merge_cells_xml = (
+            f'<mergeCells count="{len(resolved_merge_ranges)}">'
+            + "".join(f'<mergeCell ref="{merge_range}"/>' for merge_range in resolved_merge_ranges)
+            + "</mergeCells>"
+        )
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -522,49 +863,57 @@ def _sheet_xml(rows: list[list[object | None]]) -> str:
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         f'<dimension ref="A1:{last_column}{last_row}"/>'
         '<sheetViews><sheetView workbookViewId="0">'
-        '<pane ySplit="10" topLeftCell="A11" activePane="bottomLeft" state="frozen"/>'
-        '<selection pane="bottomLeft" activeCell="A11" sqref="A11"/>'
+        f'<pane ySplit="{header_row_index}" topLeftCell="A{top_left_row}" activePane="bottomLeft" state="frozen"/>'
+        f'<selection pane="bottomLeft" activeCell="A{top_left_row}" sqref="A{top_left_row}"/>'
         '</sheetView></sheetViews>'
         '<sheetFormatPr defaultRowHeight="18"/>'
-        f"{_columns_xml()}"
+        f"{_columns_xml(widths)}"
         f"<sheetData>{''.join(row_xml)}</sheetData>"
-        f'<autoFilter ref="A{DETAIL_HEADER_ROW_INDEX}:{last_column}{DETAIL_HEADER_ROW_INDEX}"/>'
-        f'<mergeCells count="1"><mergeCell ref="A1:{last_column}1"/></mergeCells>'
+        f'<autoFilter ref="A{header_row_index}:{last_column}{header_row_index}"/>'
+        f"{merge_cells_xml}"
         '<pageMargins left="0.35" right="0.35" top="0.55" bottom="0.55" header="0.2" footer="0.2"/>'
         '<pageSetup orientation="landscape" paperSize="9" fitToWidth="1" fitToHeight="0"/>'
         "</worksheet>"
     )
 
 
-def _row_attributes(row_index: int) -> str:
+def _row_attributes(row_index: int, header_row_index: int = DETAIL_HEADER_ROW_INDEX) -> str:
     if row_index == 1:
         return f'r="{row_index}" ht="32" customHeight="1"'
-    if 2 <= row_index < DETAIL_HEADER_ROW_INDEX:
+    if 2 <= row_index < header_row_index:
         return f'r="{row_index}" ht="22" customHeight="1"'
-    if row_index == DETAIL_HEADER_ROW_INDEX:
+    if row_index == header_row_index:
         return f'r="{row_index}" ht="24" customHeight="1"'
     return f'r="{row_index}"'
 
 
-def _columns_xml() -> str:
+def _columns_xml(widths: list[int] | None = None) -> str:
+    column_widths = widths or ITEM_COLUMN_WIDTHS
     columns = [
         f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
-        for index, width in enumerate(ITEM_COLUMN_WIDTHS, start=1)
+        for index, width in enumerate(column_widths, start=1)
     ]
     return f"<cols>{''.join(columns)}</cols>"
 
 
-def _style_for_cell(row_index: int, col_index: int) -> int | None:
+def _style_for_cell(
+    row_index: int,
+    col_index: int,
+    header_row_index: int = DETAIL_HEADER_ROW_INDEX,
+    style_matrix: dict[tuple[int, int], int] | None = None,
+) -> int | None:
+    if style_matrix and (row_index, col_index) in style_matrix:
+        return style_matrix[(row_index, col_index)]
     if row_index == 1 and col_index == 1:
         return TITLE_STYLE_ID
-    if 2 <= row_index < DETAIL_HEADER_ROW_INDEX:
-        if col_index in {1, 3}:
+    if 2 <= row_index < header_row_index:
+        if col_index in {1, 3, 5}:
             return ORDER_LABEL_STYLE_ID
-        if col_index in {2, 4}:
+        if col_index in {2, 4, 6}:
             return ORDER_VALUE_STYLE_ID
-    if row_index == DETAIL_HEADER_ROW_INDEX:
+    if row_index == header_row_index:
         return DETAIL_HEADER_STYLE_ID
-    if row_index > DETAIL_HEADER_ROW_INDEX:
+    if row_index > header_row_index:
         return DETAIL_BODY_STYLE_ID
     return None
 
@@ -653,18 +1002,28 @@ def _styles_xml() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<fonts count="4">'
+        '<fonts count="7">'
         '<font><sz val="11"/><name val="Calibri"/></font>'
         '<font><b/><sz val="18"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
         '<font><b/><sz val="11"/><color rgb="FF475569"/><name val="Calibri"/></font>'
         '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="11"/><color rgb="FFB91C1C"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="11"/><color rgb="FF92400E"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
         '</fonts>'
-        '<fills count="5">'
+        '<fills count="12">'
         '<fill><patternFill patternType="none"/></fill>'
         '<fill><patternFill patternType="gray125"/></fill>'
         '<fill><patternFill patternType="solid"><fgColor rgb="FF0F172A"/><bgColor indexed="64"/></patternFill></fill>'
         '<fill><patternFill patternType="solid"><fgColor rgb="FFE2E8F0"/><bgColor indexed="64"/></patternFill></fill>'
         '<fill><patternFill patternType="solid"><fgColor rgb="FFECFDF5"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFFEF2F2"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFFFFBEB"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF0F766E"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF1E293B"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF0F766E"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFEFF6FF"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFF0FDF4"/><bgColor indexed="64"/></patternFill></fill>'
         '</fills>'
         '<borders count="2">'
         '<border><left/><right/><top/><bottom/><diagonal/></border>'
@@ -677,7 +1036,7 @@ def _styles_xml() -> str:
         '</border>'
         '</borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="6">'
+        '<cellXfs count="13">'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">'
         '<alignment horizontal="center" vertical="center"/>'
@@ -692,6 +1051,27 @@ def _styles_xml() -> str:
         '<alignment horizontal="center" vertical="center" wrapText="1"/>'
         '</xf>'
         '<xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="left" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="4" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="5" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="right" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="6" fillId="7" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="right" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="3" fillId="8" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="3" fillId="9" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="center" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="0" fillId="10" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="left" vertical="center" wrapText="1"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="0" fillId="11" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1">'
         '<alignment horizontal="left" vertical="center" wrapText="1"/>'
         '</xf>'
         '</cellXfs>'

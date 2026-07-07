@@ -237,6 +237,16 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       })
       return response.data
     },
+    async exportOrdersExcel(orderIds: string[]) {
+      const params = new URLSearchParams()
+      for (const orderId of orderIds) {
+        params.append('order_ids', orderId)
+      }
+      const response = await client.get<ArrayBuffer>(`/injection/export-excel?${params.toString()}`, {
+        responseType: 'arraybuffer',
+      })
+      return response.data
+    },
     async importOrderExcel(workbook: ArrayBuffer, options: MoldingSampleExcelImportOptions = {}) {
       const params = new URLSearchParams()
       if (options.order_id) {

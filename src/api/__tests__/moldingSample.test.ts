@@ -65,6 +65,7 @@ await api.deleteOrder('BP-1')
 
 const importBuffer = new ArrayBuffer(4)
 await api.exportOrderExcel('BP-1')
+await api.exportOrdersExcel(['BP-1', 'BP-2'])
 await api.importOrderExcel(importBuffer, { order_id: 'BP-2', factory_id: 'huadeng' })
 await api.previewOrderExcel(importBuffer, { factory_id: 'huadeng' })
 
@@ -144,6 +145,7 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'put /injection/BP-1',
   'delete /injection/BP-1',
   'get /injection/BP-1/export-excel',
+  'get /injection/export-excel?order_ids=BP-1&order_ids=BP-2',
   'post /injection/import-excel?order_id=BP-2&factory_id=huadeng',
   'post /injection/import-excel-preview?factory_id=huadeng',
   'get /sensitive-audit-logs',
