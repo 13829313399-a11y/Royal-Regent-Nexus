@@ -3535,7 +3535,7 @@ onUnmounted(() => {
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
                       <th class="px-2 py-2 text-right font-medium">预计料费</th>
                       <th class="px-2 py-2 text-right font-medium">实际用料</th>
-                      <th class="px-2 py-2 text-left font-medium">啤办机台</th>
+                      <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
                       <th class="px-2 py-2 text-right font-medium">实际料费</th>
                       <th class="px-2 py-2 text-left font-medium">状态</th>
                     </tr>
@@ -3648,8 +3648,7 @@ onUnmounted(() => {
                         </span>
                       </div>
                       <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                        <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
-                        <div><span class="text-slate-400">啤办机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
+                        <div><span class="text-slate-400">啤机确认机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                         <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                         <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                         <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
@@ -3657,7 +3656,6 @@ onUnmounted(() => {
                         <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
                         <div><span class="text-slate-400">预计料费(HKD)</span><div class="font-semibold">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</div></div>
                         <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
-                        <div><span class="text-slate-400">收据编号</span><div class="font-semibold">{{ formatBlank(item.receipt_no) }}</div></div>
                         <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
@@ -3884,7 +3882,7 @@ onUnmounted(() => {
                 <th>#</th>
                 <th>模号 / 名称</th>
                 <th>原料</th>
-                <th>机型 / 机台</th>
+                <th>啤机确认机台</th>
                 <th>颜色 / PMS</th>
                 <th>色粉</th>
                 <th>啤数 / 预料</th>
@@ -3902,10 +3900,7 @@ onUnmounted(() => {
                   <em>{{ formatBlank(item.id) }}</em>
                 </td>
                 <td>{{ formatBlank(item.material) }}</td>
-                <td>
-                  <strong>{{ formatBlank(item.machine_type) }}</strong>
-                  <span>{{ formatBlank(item.production_machine) }}</span>
-                </td>
+                <td>{{ formatBlank(item.production_machine) }}</td>
                 <td>
                   <strong>{{ formatBlank(item.color) }}</strong>
                   <span>PMS {{ formatBlank(item.pigment_no) }}</span>
@@ -3922,7 +3917,6 @@ onUnmounted(() => {
                   <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
                   <span>{{ formatMoney(item.actual_amount_hkd) }} · {{ formatMoney(item.injection_cost, 'RMB') }}</span>
                   <em>{{ formatMoney(item.injection_cost_hkd) }} · {{ formatExchangeRate(item.exchange_rate_at_save) }}</em>
-                  <em>收据 {{ formatBlank(item.receipt_no) }}</em>
                 </td>
                 <td>{{ formatBlank(item.notes) }}</td>
               </tr>

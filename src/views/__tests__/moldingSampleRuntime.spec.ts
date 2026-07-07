@@ -346,9 +346,11 @@ describe('molding sample runtime error handling', () => {
     expect(printPreview).toContain('BP-PRINT-002')
     expect(printArea).toContain('BP-PRINT-001')
     expect(printArea).toContain('打印模具A')
+    expect(printArea).toContain('啤机确认机台')
     expect(printArea).toContain('啤办机台-08')
     expect(printArea).toContain('ABS 750NSW')
-    expect(printArea).toContain('REC-001')
+    expect(printArea).not.toContain('160T')
+    expect(printArea).not.toContain('REC-001')
     expect(printArea).toContain('1.42 kg')
     expect(printArea).toContain('预计料费')
     expect(printArea).toContain('HKD 16.04')
@@ -499,8 +501,9 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('整啤毛重(g)')
     expect(text).toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
-    expect(text).toContain('RC-20260203-01')
-    expect(text).toContain('啤办机台')
+    expect(text).not.toContain('160T')
+    expect(text).not.toContain('RC-20260203-01')
+    expect(text).toContain('啤机确认机台')
     expect(text).toContain('啤办机台-08')
     expect(text).toContain('啤机回填前核对完整资料。')
 
@@ -563,7 +566,7 @@ describe('molding sample runtime error handling', () => {
 
     await wrapper.get('input[aria-label="实际用料"]').setValue('14.2')
     await wrapper.get('input[aria-label="啤办费"]').setValue('120')
-    await wrapper.get('input[aria-label="啤办机台"]').setValue('啤办机台-08')
+    await wrapper.get('input[aria-label="啤机确认机台"]').setValue('啤办机台-08')
     await getButtonByText(wrapper, '保存回填').trigger('click')
     await flushPromises()
     await nextTick()
@@ -578,8 +581,8 @@ describe('molding sample runtime error handling', () => {
         },
       ],
     })
-    expect(wrapper.text()).toContain('啤办机台')
-    expect((wrapper.get('input[aria-label="啤办机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
+    expect(wrapper.text()).toContain('啤机确认机台')
+    expect((wrapper.get('input[aria-label="啤机确认机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
 
     wrapper.unmount()
   })
@@ -865,10 +868,11 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('整啤毛重(g)')
     expect(text).toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
-    expect(text).toContain('RC-20260203-01')
+    expect(text).not.toContain('160T')
+    expect(text).not.toContain('RC-20260203-01')
     expect(text).toContain('啤办费(HKD)')
     expect(text).toContain('HKD 129.60')
-    expect(text).toContain('啤办机台')
+    expect(text).toContain('啤机确认机台')
     expect(text).toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
 
