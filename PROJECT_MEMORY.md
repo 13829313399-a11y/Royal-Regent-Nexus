@@ -912,6 +912,31 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary direct assertion script passed for rebuilding `NUMERO DE PEDIDO 62098330`, `MODELO 203302017`, and `PESO BRUTO 4.3 KGS` from simulated OCR word coordinates into extractable carton-mark fields.
 - Verification limitation: backend pytest still could not run in the bundled Python because pytest is not installed; focused backend assertions were executed directly.
 
+### 2026-07-07
+
+- Requirement: the Injection Scheduling Center page reached from the production module should be cleared and redesigned using the local RR style reference, and because this is a shared component/workbench page it must not expose in-page factory switching.
+- Implementation: rebuilt `src/views/InjectionSchedulingView.vue` into a dedicated injection production workbench with staged areas for machine overview, Excel import, order pool, and schedule orchestration; removed the previous embedded dashboard view and all page-level factory switch UI, including the old `Factory Scope` buttons and local factory selection state. The route/query/store factory context is still read as external context, but the page itself no longer lets users switch factories.
+- Files changed: `src/views/InjectionSchedulingView.vue` and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `npm.cmd run test:unit` passed 6 files / 35 tests; browser QA on `http://127.0.0.1:5173/modules/production/injection-scheduling?factory=huaxing&section=monthly-plan` after login confirmed zero `Factory Scope` labels, zero factory switch buttons, 76 machine cards, 14 order-pool rows, 7 schedule lanes, no desktop/mobile horizontal overflow, and no console/page errors after authenticated load; `git diff --check` passed with only LF-to-CRLF warnings.
+- Decision: factory selection belongs outside this shared module page. Future injection scheduling work should receive the current factory from route/store/backend context rather than adding page-local factory tabs or switches.
+
+### 2026-07-07
+
+- Requirement: restore the Injection Scheduling Center closer to the local `C:\Users\匡树杰\Desktop\rr项目样式参考` HTML reference after feedback that the step module was positioned incorrectly, and keep the shared page free of in-page factory switching.
+- Implementation: moved the four-step module into the sticky top bar like the reference HTML; rebuilt the workbench body around reference-style page header, focus cards, priority warning panel, current-factory display, machine grid, Excel import layout, order-pool side principles/table, and schedule-lane layout. The page still reads the active factory from route/store context but exposes only a current-factory display, not factory tabs or switch buttons.
+- Backend scope: inspected the backend and found no isolated `injection-scheduling` API layer to clear. The existing `backend/app/api/molding_sample.py` `/api/injection` endpoints belong to the啤办/molding-sample module and are used by other front-end code, so no backend files were changed or deleted for this UI-only restore.
+- Files changed: `src/views/InjectionSchedulingView.vue` and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `npm.cmd run test:unit` passed 6 files / 35 tests; `git diff --check` passed with only LF-to-CRLF warnings; browser QA confirmed the topbar step nav exists at the top of the page, there is no step nav inside the page body, factory switch button count is 0, the machine overview shows 6 focus cards, 6 priority rows, and 76 machine cards, Excel import shows 4 file rows, order pool shows 14 rows, schedule board shows 7 lanes, desktop and 390px mobile have no page-level horizontal overflow, and there were no console errors.
+- Decision: do not delete or rename `/api/injection` until a new dedicated injection scheduling backend is designed, because the current endpoints are shared by the啤办 module rather than this scheduling workbench.
+
+### 2026-07-07
+
+- Requirement: after browser feedback, the Excel import step of the Injection Scheduling Center must match `C:\Users\匡树杰\Desktop\rr项目样式参考\import.html` more closely, especially the page head and import body region.
+- Implementation: removed the machine-overview focus cards from the Excel import step, changed its back link text/target to the machine overview step, removed the extra `数据解析` pill so the header only shows `步骤 2 / 4`, and rebuilt the import body into the reference layout: `上传日排版表`, `识别结果`, `解析进度`, `字段映射预览`, and `数据质量校验`. The CSS now mirrors the reference dropzone, uploaded file row, progress line, timeline steps, field mapping rows, stats, and issue rows.
+- Files changed: `src/views/InjectionSchedulingView.vue` and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `npm.cmd run test:unit` passed 6 files / 35 tests; browser QA on `http://127.0.0.1:5173/modules/production/injection-scheduling?factory=huaxing&section=excel-import` confirmed `返回机台总览盘`, only one header pill `步骤 2 / 4`, zero focus cards, one import layout, one dropzone, one file row, four result stats, five parsing steps, eight mapping rows, four issue rows, no `数据解析` text, no console errors, and no desktop or 390px mobile page-level horizontal overflow; `git diff --check` passed with only LF-to-CRLF warnings.
+- Decision: for non-overview injection scheduling steps, do not reuse the machine-overview focus-card band unless the matching reference HTML contains that band.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.

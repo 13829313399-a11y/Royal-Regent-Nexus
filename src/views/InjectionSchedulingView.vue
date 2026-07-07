@@ -1,12 +1,28 @@
 <script setup lang="ts">
-import { ArrowLeft, Factory, Layers3 } from '@lucide/vue'
-import { computed, watchEffect } from 'vue'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  BarChart3,
+  Boxes,
+  CalendarDays,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  FileSpreadsheet,
+  Gauge,
+  Layers3,
+  PackageCheck,
+  Search,
+  ShieldAlert,
+  UploadCloud,
+  X,
+} from '@lucide/vue'
+import { computed, ref, watchEffect } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import StatusPill from '@/components/common/StatusPill.vue'
-import InjectionSchedulingDashboard from '@/components/modules/injection/InjectionSchedulingDashboard.vue'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import {
   factoryContexts,
-  type FactoryContext,
   getDepartmentRoute,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
@@ -14,8 +30,27 @@ import {
 } from '@/data/enterpriseMock'
 import { getInjectionFactoryConfig } from '@/factories/injection/registry'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
-import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
+
+type WorkspaceStepId = 'machine-overview' | 'excel-import' | 'order-pool' | 'schedule-board'
+type MachineStatusFilter = 'all' | Tone
+type FocusAction = 'risk' | 'attention' | 'ready' | 'machine-alert' | 'schedule' | 'writeback'
+
+interface MachineCard {
+  machine: string
+  tonnage: string
+  robot: string
+  workshop: string
+  processRange: string
+  colorPolicy: string
+  maintenance: string
+  status: string
+  tone: Tone
+  utilization: number
+  mold: string
+  material: string
+  queueDepth: string
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -23,13 +58,78 @@ const appStore = useAppStore()
 const {
   injectionOverviewMetrics,
   injectionDataSourceStatus,
+  injectionOrderImportTasks,
+  injectionPendingOrderValidationRules,
+  injectionPendingOrderFieldGroups,
+  injectionPendingOrderDetailRows,
+  injectionMachineLoad,
+  injectionMachineMasterRows,
+  injectionColorTransitionRisks,
+  injectionExecutionScheduleRows,
+  injectionExecutionConstraintRows,
+  injectionShiftReportRows,
+  injectionWarehouseInboundRows,
 } = useInjectionModuleData()
 
-type ProductionFactoryContext = FactoryContext & { id: ProductionFactoryContextId }
+const workspaceSteps = [
+  {
+    id: 'machine-overview',
+    label: '机台总览盘',
+    summary: '看运行、缺料、交期风险和重点机台',
+    icon: Gauge,
+  },
+  {
+    id: 'excel-import',
+    label: 'Excel 导入',
+    summary: '订单、机台、模具三类数据接入状态',
+    icon: FileSpreadsheet,
+  },
+  {
+    id: 'order-pool',
+    label: '订单池',
+    summary: '按交期、同模、机台候选做优先级排序',
+    icon: Boxes,
+  },
+  {
+    id: 'schedule-board',
+    label: '排期编排',
+    summary: '机台泳道、换模间隙和约束校验',
+    icon: BarChart3,
+  },
+] as const
 
-const productionFactories = factoryContexts.filter(
-  (factory): factory is ProductionFactoryContext => isProductionFactoryContextId(factory.id),
-)
+const legacyStepMap: Record<string, WorkspaceStepId> = {
+  dashboard: 'machine-overview',
+  'monthly-plan': 'machine-overview',
+  'data-center': 'excel-import',
+  'order-import': 'excel-import',
+  'smart-scheduling': 'order-pool',
+  execution: 'schedule-board',
+  'scheduling-results': 'schedule-board',
+  reporting: 'schedule-board',
+  'daily-report': 'schedule-board',
+  'inbound-orders': 'schedule-board',
+  config: 'excel-import',
+  'history-db': 'excel-import',
+  'machine-archive': 'excel-import',
+  'mold-targets': 'excel-import',
+}
+
+const normalizeWorkspaceStep = (value: unknown): WorkspaceStepId | null => {
+  const raw = Array.isArray(value) ? value[0] : value
+
+  if (typeof raw !== 'string') {
+    return null
+  }
+
+  if (raw in legacyStepMap) {
+    return legacyStepMap[raw]
+  }
+
+  return workspaceSteps.some((step) => step.id === raw)
+    ? (raw as WorkspaceStepId)
+    : null
+}
 
 const routeFactoryId = computed(() => {
   const rawFactory = Array.isArray(route.query.factory) ? route.query.factory[0] : route.query.factory
@@ -50,12 +150,93 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
 })
 
 const activeFactory = computed(() =>
-  productionFactories.find((factory) => factory.id === selectedFactoryId.value) ?? productionFactories[0],
+  factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
+    ?? factoryContexts.find((factory) => factory.id === 'huaxing')
+    ?? factoryContexts[0],
 )
 
 const activeFactoryConfig = computed(() => getInjectionFactoryConfig(selectedFactoryId.value))
+const activeStep = computed<WorkspaceStepId>(() => normalizeWorkspaceStep(route.query.section) ?? 'machine-overview')
+const activeStepMeta = computed(() =>
+  workspaceSteps.find((step) => step.id === activeStep.value) ?? workspaceSteps[0],
+)
+const activeStepIndex = computed(() =>
+  workspaceSteps.findIndex((step) => step.id === activeStep.value) + 1,
+)
+const pageHeadCopy = computed(() => {
+  if (activeStep.value === 'excel-import') {
+    return {
+      back: '返回机台总览盘',
+      title: 'Excel 排版表导入',
+      pillTone: 'blue' as Tone,
+      secondaryPill: null as string | null,
+      subtitle: '导入本厂区日排版表，自动识别机台主数据行与排期任务行。各厂区表格格式一致，一套解析规则通用。',
+    }
+  }
+
+  if (activeStep.value === 'order-pool') {
+    return {
+      back: '返回 Excel 导入',
+      title: '订单池 · 优先级计算排序',
+      pillTone: 'blue' as Tone,
+      secondaryPill: null as string | null,
+      subtitle: '塑胶仓下单后进入订单池，按排期六原则自动算分排序，同款同模自动分组，供排期编排调用。',
+    }
+  }
+
+  if (activeStep.value === 'schedule-board') {
+    return {
+      back: '返回订单池',
+      title: '排期编排看板',
+      pillTone: 'teal' as Tone,
+      secondaryPill: null as string | null,
+      subtitle: '左侧待排队列进入右侧机台泳道，系统按当前在啤模具串联计算换模换色间隙、计划完成期与交期差。',
+    }
+  }
+
+  return {
+    back: '生产部模块中心',
+    title: '注塑排产中枢',
+    pillTone: 'teal' as Tone,
+    secondaryPill: '实时看板' as string | null,
+    subtitle: `${activeFactory.value.name} · ${activeFactoryConfig.value.ownership} · ${activeFactoryConfig.value.dataStatus}`,
+  }
+})
+const pageBackTo = computed(() => {
+  if (activeStep.value === 'machine-overview') {
+    return getDepartmentRoute('production')
+  }
+
+  const sectionByStep: Record<Exclude<WorkspaceStepId, 'machine-overview'>, WorkspaceStepId> = {
+    'excel-import': 'machine-overview',
+    'order-pool': 'excel-import',
+    'schedule-board': 'order-pool',
+  }
+
+  return {
+    path: route.path,
+    query: {
+      ...route.query,
+      section: sectionByStep[activeStep.value],
+    },
+  }
+})
+const currentDataDate = computed(() => {
+  const orderSource = injectionDataSourceStatus.value.find((source) => source.name === '订单池')
+  const matched = orderSource?.freshness.match(/\d{4}-\d{2}-\d{2}/)
+
+  return matched?.[0] ?? '待接入'
+})
+
 const overviewCards = computed(() => injectionOverviewMetrics.value.slice(0, 4))
 const dataSourceCards = computed(() => injectionDataSourceStatus.value.slice(0, 3))
+const topPendingOrders = computed(() => injectionPendingOrderDetailRows.value.slice(0, 14))
+const topScheduleRows = computed(() => injectionExecutionScheduleRows.value.slice(0, 7))
+const topConstraintRows = computed(() => injectionExecutionConstraintRows.value.slice(0, 6))
+
+const machineSearchText = ref('')
+const machineStatusFilter = ref<MachineStatusFilter>('all')
+const selectedMachineId = ref('')
 
 const toneClasses: Record<Tone, string> = {
   teal: 'border-teal-200 bg-teal-50 text-teal-900',
@@ -66,144 +247,2554 @@ const toneClasses: Record<Tone, string> = {
   green: 'border-emerald-200 bg-emerald-50 text-emerald-900',
 }
 
+const softToneClasses: Record<Tone, string> = {
+  teal: 'bg-teal-50 text-teal-700 ring-teal-100',
+  blue: 'bg-blue-50 text-blue-700 ring-blue-100',
+  amber: 'bg-amber-50 text-amber-700 ring-amber-100',
+  red: 'bg-red-50 text-red-700 ring-red-100',
+  slate: 'bg-slate-100 text-slate-700 ring-slate-200',
+  green: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
+}
+
+const machineToneLabel: Record<MachineStatusFilter, string> = {
+  all: '全部',
+  green: '运行',
+  amber: '注意',
+  blue: '新购',
+  red: '风险',
+  slate: '空闲',
+  teal: '排程',
+}
+
+const toneProgressClass: Record<Tone, string> = {
+  teal: 'bg-teal-500',
+  blue: 'bg-blue-500',
+  amber: 'bg-amber-500',
+  red: 'bg-red-500',
+  slate: 'bg-slate-400',
+  green: 'bg-emerald-500',
+}
+
+const toneBarClass: Record<Tone, string> = {
+  teal: 'from-teal-600 to-cyan-500',
+  blue: 'from-blue-700 to-sky-500',
+  amber: 'from-amber-600 to-amber-400',
+  red: 'from-red-700 to-red-500',
+  slate: 'from-slate-600 to-slate-400',
+  green: 'from-emerald-700 to-teal-500',
+}
+
+const getFallbackUtilization = (tone: Tone) => {
+  const values: Record<Tone, number> = {
+    green: 74,
+    teal: 66,
+    amber: 48,
+    blue: 26,
+    red: 18,
+    slate: 8,
+  }
+
+  return values[tone]
+}
+
+const machineLoadMap = computed(() =>
+  new Map(injectionMachineLoad.value.map((row) => [row.machine, row] as const)),
+)
+
+const machineCards = computed<MachineCard[]>(() =>
+  injectionMachineMasterRows.value.map((machine) => {
+    const load = machineLoadMap.value.get(machine.machine)
+
+    return {
+      machine: machine.machine,
+      tonnage: machine.tonnage,
+      robot: machine.robot,
+      workshop: machine.workshop,
+      processRange: machine.processRange,
+      colorPolicy: machine.colorPolicy,
+      maintenance: machine.maintenance,
+      status: machine.status,
+      tone: load?.tone ?? machine.tone,
+      utilization: load?.utilization ?? getFallbackUtilization(machine.tone),
+      mold: load?.mold ?? (machine.activeMolds && machine.activeMolds !== '-' ? machine.activeMolds : '待接入当前模具'),
+      material: load?.material ?? `${machine.processRange} / ${machine.colorPolicy}`,
+      queueDepth: load?.queueDepth ?? machine.status,
+    }
+  }),
+)
+
+const machineFilterOptions = computed(() => {
+  const options: { id: MachineStatusFilter; label: string; count: number; tone: Tone }[] = [
+    { id: 'all', label: '全部', count: machineCards.value.length, tone: 'slate' },
+    { id: 'green', label: '运行', count: 0, tone: 'green' },
+    { id: 'amber', label: '注意', count: 0, tone: 'amber' },
+    { id: 'blue', label: '新购', count: 0, tone: 'blue' },
+    { id: 'red', label: '风险', count: 0, tone: 'red' },
+  ]
+
+  for (const option of options) {
+    if (option.id === 'all') {
+      continue
+    }
+
+    option.count = machineCards.value.filter((machine) => machine.tone === option.id).length
+  }
+
+  return options
+})
+
+const filteredMachineCards = computed(() => {
+  const keyword = machineSearchText.value.trim().toLowerCase()
+
+  return machineCards.value.filter((machine) => {
+    const matchesTone = machineStatusFilter.value === 'all' || machine.tone === machineStatusFilter.value
+    const haystack = [
+      machine.machine,
+      machine.tonnage,
+      machine.robot,
+      machine.workshop,
+      machine.processRange,
+      machine.colorPolicy,
+      machine.maintenance,
+      machine.status,
+      machine.mold,
+      machine.material,
+      machine.queueDepth,
+    ].join(' ').toLowerCase()
+
+    return matchesTone && (!keyword || haystack.includes(keyword))
+  })
+})
+
+const selectedMachine = computed(() =>
+  machineCards.value.find((machine) => machine.machine === selectedMachineId.value) ?? null,
+)
+
+const selectedMachineOrders = computed(() => {
+  const machine = selectedMachine.value
+
+  if (!machine) {
+    return []
+  }
+
+  return injectionPendingOrderDetailRows.value
+    .filter((order) => [order.machineAdvice, order.machineModel, order.remark].some((value) => value?.includes(machine.machine)))
+    .slice(0, 5)
+})
+
+const selectedMachineColorRisk = computed(() => {
+  const machine = selectedMachine.value
+
+  if (!machine) {
+    return null
+  }
+
+  return injectionColorTransitionRisks.value.find((risk) => risk.machine === machine.machine) ?? null
+})
+
+const focusCards = computed(() => {
+  const riskOrders = injectionPendingOrderDetailRows.value.filter((row) => row.tone === 'red').length
+  const attentionOrders = injectionPendingOrderDetailRows.value.filter((row) => row.tone === 'amber').length
+  const readyOrders = injectionPendingOrderDetailRows.value.filter((row) => row.tone === 'green' || row.tone === 'teal').length
+  const machineAlerts = machineCards.value.filter((row) => row.tone === 'amber' || row.tone === 'red').length
+
+  return [
+    {
+      label: '交期风险',
+      value: riskOrders,
+      detail: '优先跟催 / 需补规则',
+      tone: 'red',
+      icon: AlertTriangle,
+      action: 'risk',
+    },
+    {
+      label: '待确认订单',
+      value: attentionOrders,
+      detail: '候选机台或资料待补',
+      tone: 'amber',
+      icon: ShieldAlert,
+      action: 'attention',
+    },
+    {
+      label: '可直接排机',
+      value: readyOrders,
+      detail: '已有推荐机台',
+      tone: 'green',
+      icon: CheckCircle2,
+      action: 'ready',
+    },
+    {
+      label: '机台注意',
+      value: machineAlerts,
+      detail: '设备限制 / 新购确认',
+      tone: 'amber',
+      icon: Gauge,
+      action: 'machine-alert',
+    },
+    {
+      label: '排期草稿',
+      value: topScheduleRows.value.length,
+      detail: '本轮可进入泳道',
+      tone: 'blue',
+      icon: CalendarDays,
+      action: 'schedule',
+    },
+    {
+      label: '入库回写',
+      value: injectionWarehouseInboundRows.value.length,
+      detail: '日报后刷新欠数',
+      tone: 'teal',
+      icon: PackageCheck,
+      action: 'writeback',
+    },
+  ] satisfies {
+    label: string
+    value: string | number
+    detail: string
+    tone: Tone
+    icon: typeof AlertTriangle
+    action: FocusAction
+  }[]
+})
+
+const orderPoolRows = computed(() =>
+  topPendingOrders.value.map((row, index) => {
+    const urgencyBase: Record<Tone, number> = {
+      red: 96,
+      amber: 82,
+      blue: 70,
+      teal: 66,
+      green: 62,
+      slate: 52,
+    }
+    const score = Math.max(38, urgencyBase[row.tone] - index * 2)
+    const group = row.moldCode.split(/[-\s]/).filter(Boolean)[0] ?? '单模'
+
+    return {
+      ...row,
+      rank: index + 1,
+      score,
+      group,
+      scoreTone: score >= 85 ? 'red' : score >= 68 ? 'amber' : 'slate' as Tone,
+    }
+  }),
+)
+
+const priorityWatchRows = computed(() =>
+  [...orderPoolRows.value]
+    .sort((left, right) => {
+      const toneWeight: Record<Tone, number> = {
+        red: 4,
+        amber: 3,
+        blue: 2,
+        teal: 1,
+        green: 1,
+        slate: 0,
+      }
+
+      return toneWeight[right.tone] - toneWeight[left.tone] || right.score - left.score
+    })
+    .slice(0, 6),
+)
+
+const scheduleLaneRows = computed(() =>
+  topScheduleRows.value.map((row, index) => ({
+    ...row,
+    lane: row.machine || `待确认-${index + 1}`,
+    startPercent: 4 + (index % 4) * 11,
+    widthPercent: Math.min(42, 20 + (index % 3) * 7),
+  })),
+)
+
+const importSummaryCards = computed(() => [
+  ...dataSourceCards.value,
+  ...injectionDataSourceStatus.value.slice(3, 4),
+])
+
+const importRecognitionStats = [
+  { value: '39', label: '机台主数据行 · 旧机' },
+  { value: '37', label: '机台主数据行 · 新机' },
+  { value: '118', label: '机台排期任务行' },
+  { value: '60', label: '待排 / 异常暂存行' },
+]
+
+const importParsingSteps = [
+  {
+    title: '读取工作簿',
+    detail: 'Sheet1 · 289 行 × ST 列 · 缓存日期 2026-06-30',
+  },
+  {
+    title: '识别机台主数据行',
+    detail: '按 A 列机位匹配，得到 76 台机（旧 39 / 新 37）',
+  },
+  {
+    title: '识别任务行并绑定机台',
+    detail: '118 条排期任务挂接到对应机台队列',
+  },
+  {
+    title: '解析欠数 / 交期 / 颜色 / 用料',
+    detail: '欠数 = 订单数 − 已啤数；提取交货完成期与颜色',
+  },
+  {
+    title: '校验数据质量',
+    detail: '标出单价缺失、目标为空、负欠数、交期非日期',
+  },
+]
+
+const importFieldMappings = [
+  ['A/B', '机位 / 机号', 'machine_id'],
+  ['G', '吨位 / 工模编号', 'tonnage / mold_no'],
+  ['I / J', '单号 / 货号', 'order_no / item_no'],
+  ['L / M / N', '订单数 / 已啤 / 欠数', 'qty / done / balance'],
+  ['O', '计划目标/天', 'daily_target'],
+  ['Q / T', '颜色 / 用料', 'color / material'],
+  ['AB', '交货完成期', 'due_date'],
+  ['AH / AJ / AK', '计划完成/入库/交期差', 'plan_finish...'],
+]
+
+const importQualityIssues = [
+  {
+    tone: 'red' as Tone,
+    count: 13,
+    text: '行负欠数（已啤 > 订单，合计约 −2,211）——需确认冲单 / 补数 / 结案',
+  },
+  {
+    tone: 'amber' as Tone,
+    count: 36,
+    text: '行单价缺失（#N/A）——影响外发金额，需补单价表',
+  },
+  {
+    tone: 'amber' as Tone,
+    count: 7,
+    text: '行计划目标为空 / 为 0（#DIV/0!）——无法换算完成期',
+  },
+  {
+    tone: 'blue' as Tone,
+    count: 60,
+    text: '行待排 / 异常暂存（修模、退回厂家、转水口）——未挂机台，暂不计入正式排期',
+  },
+]
+
 watchEffect(() => {
   appStore.setActiveDepartment('production')
   appStore.setActiveFactory(selectedFactoryId.value)
 })
 
-watchEffect(() => {
-  if (routeFactoryId.value) {
-    return
-  }
-
-  router.replace({
-    query: {
-      ...route.query,
-      factory: selectedFactoryId.value,
-    },
-  })
-})
-
-function setFactory(factoryId: ProductionFactoryContextId) {
-  if (factoryId === selectedFactoryId.value) {
+function setWorkspaceStep(step: WorkspaceStepId) {
+  if (step === activeStep.value) {
     return
   }
 
   router.push({
     query: {
       ...route.query,
-      factory: factoryId,
+      section: step,
     },
   })
+}
+
+function setMachineStatusFilter(filter: MachineStatusFilter) {
+  machineStatusFilter.value = filter
+}
+
+function openMachineDrawer(machine: MachineCard) {
+  selectedMachineId.value = machine.machine
+}
+
+function closeMachineDrawer() {
+  selectedMachineId.value = ''
+}
+
+function handleFocusAction(action: FocusAction) {
+  if (action === 'risk') {
+    setWorkspaceStep('order-pool')
+    return
+  }
+
+  if (action === 'attention') {
+    setWorkspaceStep('order-pool')
+    return
+  }
+
+  if (action === 'ready') {
+    setWorkspaceStep('order-pool')
+    return
+  }
+
+  if (action === 'schedule' || action === 'writeback') {
+    setWorkspaceStep('schedule-board')
+    return
+  }
+
+  setWorkspaceStep('machine-overview')
+  setMachineStatusFilter('amber')
 }
 </script>
 
 <template>
-  <main class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.12),transparent_34%),linear-gradient(180deg,#f8fafc_0%,#eef4f8_100%)] px-4 py-6 text-slate-950 sm:px-6 xl:px-10">
-    <div class="mx-auto max-w-[1680px] space-y-5">
-      <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <RouterLink
-            :to="getDepartmentRoute('production')"
-            class="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-950"
-          >
-            <ArrowLeft class="size-4" aria-hidden="true" />
-            生产部模块中心
-          </RouterLink>
-          <div class="mt-3 flex flex-wrap items-center gap-3">
-            <h1 class="text-3xl font-semibold tracking-tight">注塑生产中枢</h1>
-            <StatusPill label="全页面工作台" tone="teal" />
-            <StatusPill :label="activeFactoryConfig.processStatus" tone="blue" />
-          </div>
-          <p class="mt-2 text-sm text-slate-600">
-            {{ activeFactory.name }} · {{ activeFactoryConfig.ownership }} · {{ activeFactoryConfig.dataStatus }}
-          </p>
+  <div class="injection-workbench min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.12),transparent_34%),linear-gradient(180deg,#f8fafc_0%,#eef4f8_100%)] text-slate-950">
+    <header class="injection-topbar">
+      <div class="injection-topbar-inner">
+        <div class="injection-brand">
+          <span class="injection-brand-mark">
+            <Layers3 class="size-[18px]" aria-hidden="true" />
+          </span>
+          啤机排产中枢
         </div>
 
-        <div class="space-y-3 xl:w-[860px]">
-          <div class="flex justify-end">
-            <AccountMenu />
+        <nav class="injection-step-nav" aria-label="注塑排产步骤">
+          <button
+            v-for="(step, index) in workspaceSteps"
+            :key="step.id"
+            type="button"
+            class="injection-step-tab"
+            :class="{ active: step.id === activeStep }"
+            @click="setWorkspaceStep(step.id)"
+          >
+            <span class="step-no">{{ index + 1 }}</span>
+            {{ step.label }}
+          </button>
+        </nav>
+
+        <label class="injection-global-search">
+          <Search class="size-[15px] shrink-0" aria-hidden="true" />
+          <input
+            v-model="machineSearchText"
+            type="search"
+            placeholder="搜单号 / 工模 / 机号 / 颜色"
+          >
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <div class="injection-topbar-right">
+          <StatusPill :label="`数据 ${currentDataDate}`" tone="teal" compact />
+          <AccountMenu />
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <header class="page-head">
+        <div>
+          <RouterLink
+            :to="pageBackTo"
+            class="back-link"
+          >
+            <ArrowLeft class="size-[15px]" aria-hidden="true" />
+            {{ pageHeadCopy.back }}
+          </RouterLink>
+          <div class="page-titlerow">
+            <h1 class="page-title">{{ pageHeadCopy.title }}</h1>
+            <StatusPill :label="activeStep === 'machine-overview' ? activeStepMeta.label : `步骤 ${activeStepIndex} / 4`" :tone="pageHeadCopy.pillTone" />
+            <StatusPill v-if="pageHeadCopy.secondaryPill" :label="pageHeadCopy.secondaryPill" tone="blue" />
           </div>
-          <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <p class="page-sub">{{ pageHeadCopy.subtitle }}</p>
+        </div>
+
+        <div v-if="activeStep !== 'excel-import'" class="metrics-wrap">
+          <div class="metrics">
             <article
               v-for="card in overviewCards"
               :key="card.label"
-              class="min-h-[92px] rounded-lg border bg-white p-4"
-              :class="toneClasses[card.tone]"
+              class="metric"
+              :class="card.tone"
             >
-              <p class="text-xs font-medium opacity-80">{{ card.label }}</p>
-              <p class="mt-1 text-xl font-semibold text-slate-950">{{ card.value }}</p>
-              <p class="mt-1 line-clamp-2 text-xs opacity-75">{{ card.detail }}</p>
+              <p class="metric-label">{{ card.label }}</p>
+              <p class="metric-value">{{ card.value }}</p>
+              <p class="metric-detail">{{ card.detail }}</p>
             </article>
           </div>
         </div>
-      </div>
+      </header>
 
-      <section class="rounded-lg border border-slate-200 bg-white p-4 shadow-[0_16px_38px_rgba(15,23,42,0.06)]">
-        <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div class="max-w-3xl">
-            <div class="flex items-center gap-3">
-              <span class="flex size-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700">
-                <Layers3 class="size-5" aria-hidden="true" />
+      <p v-if="activeStep === 'machine-overview'" class="eyebrow mb-2 flex items-center gap-2">
+        <Gauge class="size-[15px]" aria-hidden="true" />
+        今日运营焦点 · {{ activeStepMeta.label }} · 数据 {{ currentDataDate }} · 点击卡片定位
+      </p>
+
+      <section v-if="activeStep === 'machine-overview'" class="focus-band">
+        <button
+          v-for="card in focusCards"
+          :key="card.label"
+          type="button"
+          class="focus-card group"
+          :class="[card.tone === 'red' ? 'hot' : '', card.tone === 'amber' ? 'warn' : '']"
+          @click="handleFocusAction(card.action)"
+        >
+          <div class="fc-top">
+            <span class="fc-ico" :class="softToneClasses[card.tone]">
+              <component :is="card.icon" class="size-4" aria-hidden="true" />
+            </span>
+            <span class="fc-label">{{ card.label }}</span>
+          </div>
+          <div class="fc-value">{{ card.value }}</div>
+          <div class="fc-sub">{{ card.detail }}</div>
+          <span class="fc-arrow">
+            <ChevronRight class="size-[15px]" aria-hidden="true" />
+          </span>
+        </button>
+      </section>
+
+      <template v-if="activeStep === 'machine-overview'">
+        <section class="section watch-panel">
+          <div class="row between wrap gap-3 mb-3">
+            <div class="section-title">
+              <span class="ico red">
+                <ShieldAlert class="size-5" aria-hidden="true" />
               </span>
               <div>
-                <h2 class="text-xl font-semibold tracking-tight text-slate-950">{{ activeFactoryConfig.moduleTitle }}</h2>
-                <p class="mt-1 text-sm text-slate-600">{{ activeFactoryConfig.workspaceSummary }}</p>
+                <h2>排产预警 · 优先处理</h2>
+                <p class="small muted mt-0.5">按风险等级和优先级分排序，先处理推荐机台、交期和资料缺口。</p>
               </div>
             </div>
-            <div class="mt-4 flex flex-wrap gap-2">
-              <span
-                v-for="note in activeFactoryConfig.implementationNotes"
-                :key="note"
-                class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600"
-              >
-                {{ note }}
-              </span>
-            </div>
-          </div>
-
-          <div class="min-w-0 xl:w-[520px]">
-            <p class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-              <Factory class="size-4" aria-hidden="true" />
-              Factory Scope
-            </p>
-            <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div class="row gap-2">
+              <StatusPill :label="`${priorityWatchRows.length} 条重点`" tone="red" compact />
               <button
-                v-for="factory in productionFactories"
-                :key="factory.id"
                 type="button"
-                class="rounded-lg border px-3 py-2 text-left text-sm font-semibold transition-colors"
-                :class="factory.id === selectedFactoryId
-                  ? 'border-slate-950 bg-slate-950 text-white'
-                  : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-white'"
-                @click="setFactory(factory.id)"
+                class="btn sm"
+                @click="setWorkspaceStep('order-pool')"
               >
-                {{ factory.shortName }}
+                查看订单池
               </button>
             </div>
           </div>
-        </div>
-      </section>
 
-      <div class="grid gap-3 md:grid-cols-3">
-        <article
-          v-for="source in dataSourceCards"
-          :key="source.name"
-          class="rounded-lg border bg-white p-4"
-          :class="toneClasses[source.statusTone]"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <p class="text-xs font-semibold uppercase tracking-[0.18em] opacity-70">{{ source.name }}</p>
-              <p class="mt-2 text-sm font-semibold text-slate-950">{{ source.freshness }}</p>
-            </div>
-            <StatusPill :label="source.status" :tone="source.statusTone" compact />
+          <div class="overdue-head">
+            <span>#</span><span>工模 / 产品</span><span>单号 · 客户</span><span>欠数</span><span>机台</span><span>处理动作</span>
           </div>
-          <p class="mt-3 text-sm leading-6 opacity-80">{{ source.summary }}</p>
-        </article>
+          <div
+            v-for="row in priorityWatchRows"
+            :key="`watch-${row.orderNo}-${row.moldCode}`"
+            class="overdue-row"
+          >
+            <span class="rank">{{ row.rank }}</span>
+            <div>
+              <p class="mono strong text-xs">{{ row.moldCode }}</p>
+              <p class="xsmall muted mt-1">{{ row.productName }}</p>
+            </div>
+            <div>
+              <p class="mono text-xs text-slate-700">{{ row.orderNo }}</p>
+              <p class="xsmall muted mt-1">{{ row.customer }}</p>
+            </div>
+            <span class="num mono strong">{{ row.shortageQuantity ?? row.quantity }}</span>
+            <span class="tag mono">{{ row.machineAdvice }}</span>
+            <StatusPill :label="row.issue" :tone="row.tone" compact />
+          </div>
+          <div class="row between mt-3">
+            <span class="xsmall muted">显示 Top {{ priorityWatchRows.length }} · 其余任务进入订单池按客户/同模分组</span>
+            <button type="button" class="btn ghost sm" @click="setWorkspaceStep('order-pool')">
+              展开订单池
+            </button>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="row between wrap gap-4">
+            <div class="factory-scope">
+              <p class="eyebrow mb-2 flex items-center gap-2">
+                <Layers3 class="size-[15px]" aria-hidden="true" />
+                当前厂区 · 公共页面不在页内切换厂区
+              </p>
+              <div class="current-factory-card">
+                <strong>{{ activeFactory.shortName }}</strong>
+                <span>{{ activeFactory.name }} · {{ activeFactoryConfig.dataStatus }}</span>
+              </div>
+            </div>
+            <div class="col gap-2 min-w-[260px]">
+              <p class="eyebrow">状态筛选</p>
+              <div class="filterbar">
+              <button
+                v-for="filter in machineFilterOptions"
+                :key="filter.id"
+                type="button"
+                class="chip count"
+                :class="{ active: filter.id === machineStatusFilter }"
+                @click="setMachineStatusFilter(filter.id)"
+              >
+                {{ filter.label }}
+                <b>{{ filter.count }}</b>
+              </button>
+            </div>
+          </div>
+          </div>
+        </section>
+
+        <div class="grid-group-head">
+          <h3>机台盒子网格</h3>
+          <span class="tag">机台 {{ filteredMachineCards.length }} / {{ machineCards.length }}</span>
+          <span class="line"></span>
+          <span class="small muted">点击任意机台查看详情</span>
+        </div>
+
+          <div class="machine-grid">
+            <button
+              v-for="machine in filteredMachineCards"
+              :key="machine.machine"
+              type="button"
+              class="machine-card"
+              :class="machine.tone"
+              @click="openMachineDrawer(machine)"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex items-baseline gap-2">
+                    <h3 class="truncate text-[17px] font-bold text-slate-950">{{ machine.machine }}</h3>
+                    <span class="shrink-0 text-[11px] text-slate-500">{{ machine.tonnage }} · {{ machine.robot }}</span>
+                  </div>
+                  <p class="mt-1 text-xs text-slate-500">{{ machine.workshop }} · {{ machine.processRange }}</p>
+                </div>
+                <StatusPill :label="machineToneLabel[machine.tone]" :tone="machine.tone" compact />
+              </div>
+
+              <div class="mt-3 border-t border-dashed border-slate-200 pt-3">
+                <p class="truncate font-mono text-sm font-bold text-slate-900">{{ machine.mold }}</p>
+                <p class="mt-1 line-clamp-1 text-xs text-slate-500">{{ machine.material }}</p>
+              </div>
+
+              <div class="mt-3 flex items-center gap-2">
+                <span class="shrink-0 text-xs text-slate-500">负载</span>
+                <div class="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
+                  <span
+                    class="block h-full rounded-full"
+                    :class="toneProgressClass[machine.tone]"
+                    :style="{ width: `${Math.min(machine.utilization, 100)}%` }"
+                  />
+                </div>
+                <span class="w-9 text-right text-xs font-bold tabular-nums text-slate-700">{{ machine.utilization }}%</span>
+              </div>
+
+              <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                <span class="text-slate-400">下一步</span>
+                <span class="ml-1 font-medium text-slate-700">{{ machine.queueDepth }}</span>
+              </div>
+            </button>
+          </div>
+
+          <p
+            v-if="filteredMachineCards.length === 0"
+            class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500"
+          >
+            没有匹配机台，请清空搜索或切换筛选。
+          </p>
+      </template>
+
+      <template v-else-if="activeStep === 'excel-import'">
+        <div class="import-layout">
+          <div class="col gap-4 import-main">
+            <section class="section">
+              <div class="section-title import-section-title">
+                <span class="ico">
+                  <UploadCloud class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>上传日排版表</h2>
+                  <p class="small muted mt-0.5">支持 .xlsx / .xls · 单文件 ≤ 20MB</p>
+                </div>
+              </div>
+
+              <div class="dropzone">
+                <div class="cloud">
+                  <UploadCloud class="size-8" aria-hidden="true" />
+                </div>
+                <h3>拖拽 Excel 文件到此处，或点击选择</h3>
+                <p>华兴 / 华康A / 华康B / 华登 通用同一模板</p>
+              </div>
+
+              <div class="file-row import-uploaded-file">
+                <div class="file-ico">XLSX</div>
+                <div class="grow">
+                  <div class="row between">
+                    <span class="strong small">华兴日排版表6-30.xlsx</span>
+                    <span class="small muted">解析完成 100%</span>
+                  </div>
+                  <div class="progress-line"><span style="width:100%" /></div>
+                  <div class="xsmall muted mt-2">Sheet1《河源华兴啤机生产日计划表》 · 289 行 · 表内日期 2026-06-30</div>
+                </div>
+                <StatusPill label="解析完成" tone="green" compact />
+              </div>
+
+              <div class="hint mt-4">
+                <span class="hint-ico">
+                  <Gauge class="size-[15px]" aria-hidden="true" />
+                </span>
+                <span>系统按 <b>A 列机位（旧1–旧39 / 新1–新37）</b> 识别机台主数据行，其余带工模+订单数的行识别为任务行。待排/异常暂存区（第 220 行后）单独归类，不计入正式排期。</span>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-title import-section-title">
+                <span class="ico green">
+                  <CheckCircle2 class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>识别结果</h2>
+                  <p class="small muted mt-0.5">解析后自动写入机台总览盘与订单池</p>
+                </div>
+              </div>
+
+              <div class="stat-grid">
+                <article
+                  v-for="stat in importRecognitionStats"
+                  :key="stat.label"
+                  class="stat"
+                >
+                  <div class="n">{{ stat.value }}</div>
+                  <div class="l">{{ stat.label }}</div>
+                </article>
+              </div>
+
+              <div class="divider"></div>
+              <div class="row between small">
+                <span class="muted">总欠数（∑ 欠数列）</span><span class="strong mono">1,860,805</span>
+              </div>
+              <div class="row between small mt-2">
+                <span class="muted">超期任务（交期差 &lt; 0）</span><StatusPill label="88 条" tone="red" compact />
+              </div>
+              <div class="row between small mt-2">
+                <span class="muted">特急任务（含 ▲ 标识）</span><StatusPill label="15 条" tone="amber" compact />
+              </div>
+              <div class="row gap-2 mt-4">
+                <button type="button" class="btn primary grow justify-center" @click="setWorkspaceStep('order-pool')">
+                  确认并进入订单池
+                  <ChevronRight class="size-[15px]" aria-hidden="true" />
+                </button>
+                <button type="button" class="btn">重新上传</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="col gap-4 import-side">
+            <section class="section">
+              <div class="section-title import-section-title">
+                <span class="ico blue">
+                  <Gauge class="size-5" aria-hidden="true" />
+                </span>
+                <div><h2>解析进度</h2></div>
+              </div>
+
+              <div class="steps">
+                <div
+                  v-for="(step, index) in importParsingSteps"
+                  :key="step.title"
+                  class="step"
+                >
+                  <div class="marker">
+                    <span class="bullet">✓</span>
+                    <span v-if="index < importParsingSteps.length - 1" class="line"></span>
+                  </div>
+                  <div class="body">
+                    <div class="t">{{ step.title }}</div>
+                    <div class="d">{{ step.detail }}</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-title import-section-title compact-title">
+                <span class="ico violet">
+                  <BarChart3 class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>字段映射预览</h2>
+                  <p class="small muted mt-0.5">Excel 列 → 系统字段</p>
+                </div>
+              </div>
+
+              <div class="mt-3">
+                <div
+                  v-for="mapping in importFieldMappings"
+                  :key="`${mapping[0]}-${mapping[2]}`"
+                  class="maprow"
+                >
+                  <span class="col-tag">{{ mapping[0] }}</span>
+                  <span class="field-name">{{ mapping[1] }}</span>
+                  <span class="arrow">→</span>
+                  <span class="field-name">{{ mapping[2] }}</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-title import-section-title">
+                <span class="ico amber">
+                  <AlertTriangle class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>数据质量校验</h2>
+                  <p class="small muted mt-0.5">排产前置检查 · 不阻断导入</p>
+                </div>
+              </div>
+
+              <div
+                v-for="issue in importQualityIssues"
+                :key="`${issue.tone}-${issue.count}-${issue.text}`"
+                class="issue"
+                :class="issue.tone"
+              >
+                <AlertTriangle class="issue-icon" aria-hidden="true" />
+                <span><b>{{ issue.count }}</b> {{ issue.text }}</span>
+              </div>
+            </section>
+          </div>
+        </div>
+      </template>
+
+      <template v-else-if="activeStep === 'order-pool'">
+        <div class="pool-layout">
+          <aside class="section principle-panel">
+            <div class="section-title">
+              <span class="ico violet">
+                <ShieldAlert class="size-5" aria-hidden="true" />
+              </span>
+              <div>
+                <h2>排期六原则</h2>
+                <p class="small muted mt-0.5">订单池排序权重依据</p>
+              </div>
+            </div>
+
+            <div class="principles">
+              <div class="principle-row">
+                <span class="bg-red-500">1</span>
+                <div><p>交期优先级</p><small>交期越近越靠前</small></div>
+              </div>
+              <div class="principle-row">
+                <span class="bg-red-500">2</span>
+                <div><p>急单 / 超期</p><small>特急和超期置顶</small></div>
+              </div>
+              <div class="principle-row">
+                <span class="bg-violet-500">3</span>
+                <div><p>同款同模连排</p><small>减少换模和试机</small></div>
+              </div>
+              <div class="principle-row">
+                <span class="bg-blue-500">4</span>
+                <div><p>模具尺寸匹配</p><small>大模不上小机</small></div>
+              </div>
+              <div class="principle-row">
+                <span class="bg-teal-500">5</span>
+                <div><p>浅色先排</p><small>降低串色风险</small></div>
+              </div>
+              <div class="principle-row">
+                <span class="bg-amber-500">6</span>
+                <div><p>缺料补料优先</p><small>在啤机台当天补齐</small></div>
+              </div>
+            </div>
+          </aside>
+
+          <section class="section order-panel">
+            <div class="row between wrap gap-3 mb-4">
+              <div class="section-title">
+                <span class="ico">
+                  <Boxes class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>订单池 · 优先级排序</h2>
+                  <p class="small muted mt-0.5">来自当前厂区订单导入数据，按风险、同模组和候选机台整理。</p>
+                </div>
+              </div>
+              <div class="row gap-2">
+                <StatusPill :label="`${orderPoolRows.length} 条显示`" tone="slate" compact />
+                <StatusPill :label="`${injectionPendingOrderDetailRows.length} 条总池`" tone="blue" compact />
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="grid-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>优先级</th>
+                    <th>工模编号</th>
+                    <th>同模组</th>
+                    <th>产品 / 单号</th>
+                    <th class="right">欠数</th>
+                    <th>颜色 / 料型</th>
+                    <th>交期</th>
+                    <th>建议机台</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="row in orderPoolRows"
+                    :key="`${row.orderNo}-${row.moldCode}-${row.rank}`"
+                    class="table-row"
+                  >
+                    <td class="mono muted">{{ row.rank }}</td>
+                    <td>
+                      <span
+                        class="score-badge"
+                        :class="softToneClasses[row.scoreTone]"
+                      >
+                        {{ row.score }}
+                      </span>
+                    </td>
+                    <td class="mono strong">{{ row.moldCode }}</td>
+                    <td>
+                      <span class="group-tag">
+                        {{ row.group }}
+                      </span>
+                    </td>
+                    <td>
+                      <div class="strong">{{ row.productName }}</div>
+                      <div class="mono xsmall muted mt-1">{{ row.orderNo }}</div>
+                    </td>
+                    <td class="right mono strong">{{ row.shortageQuantity ?? row.quantity }}</td>
+                    <td>
+                      <div>{{ row.color }}</div>
+                      <div class="xsmall muted mt-1">{{ row.material }}</div>
+                    </td>
+                    <td class="mono">{{ row.dueDate }}</td>
+                    <td>
+                      <span class="tag mono">
+                        {{ row.machineAdvice }}
+                      </span>
+                    </td>
+                    <td>
+                      <StatusPill :label="row.issue" :tone="row.tone" compact />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="sched-layout">
+          <section class="section schedule-main">
+            <div class="row between wrap gap-3 mb-4">
+              <div class="section-title">
+                <span class="ico blue">
+                  <CalendarDays class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>机台泳道 · 7 日排期</h2>
+                  <p class="small muted mt-0.5">块宽表示生产周期，颜色表示风险状态。</p>
+                </div>
+              </div>
+              <div class="legend">
+                <span><i class="green" />正常</span>
+                <span><i class="amber" />待确认</span>
+                <span><i class="red" />风险</span>
+              </div>
+            </div>
+
+            <div class="lane-wrap">
+              <div class="lane-stage">
+                <div class="gantt-axis">
+                  <div>机台</div>
+                  <div v-for="day in ['07-07', '07-08', '07-09', '07-10', '07-11', '07-12', '07-13']" :key="day">
+                    <b>{{ day }}</b>
+                    <span>排期</span>
+                  </div>
+                </div>
+
+                <div
+                  v-for="row in scheduleLaneRows"
+                  :key="`${row.orderNo}-${row.machine}-${row.startWindow}`"
+                  class="gantt-lane"
+                >
+                  <div class="lane-label">
+                    <p>{{ row.lane }}</p>
+                    <span>{{ row.shiftPlan }}</span>
+                  </div>
+                  <div class="lane-body">
+                    <div class="lane-lines">
+                      <span v-for="index in 7" :key="index" />
+                    </div>
+                    <div
+                      class="gantt-block"
+                      :class="toneBarClass[row.tone]"
+                      :style="{ left: `${row.startPercent}%`, width: `${row.widthPercent}%` }"
+                    >
+                      <span class="mono">{{ row.orderNo }}</span>
+                      <small>{{ row.expectedOutput }}</small>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <aside class="sched-side">
+            <section class="section">
+              <div class="section-title">
+                <span class="ico amber">
+                  <ShieldAlert class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>约束校验</h2>
+                  <p class="small muted mt-0.5">发布前确认机台限制。</p>
+                </div>
+              </div>
+              <div class="issue-list">
+                <article
+                  v-for="row in topConstraintRows"
+                  :key="`${row.machine}-${row.limit}`"
+                  class="issue-card"
+                  :class="toneClasses[row.tone]"
+                >
+                  <div class="row between">
+                    <h3>{{ row.machine }}</h3>
+                    <StatusPill :label="row.tonnage" :tone="row.tone" compact />
+                  </div>
+                  <p class="xsmall muted mt-2">{{ row.workshop }} · {{ row.robot }}</p>
+                  <p class="small mt-2">{{ row.limit }}</p>
+                  <p class="xsmall muted mt-1">{{ row.action }}</p>
+                </article>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-title">
+                <span class="ico">
+                  <Clock3 class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>日报 / 入库回写</h2>
+                  <p class="small muted mt-0.5">班次回报后刷新欠数。</p>
+                </div>
+              </div>
+              <div class="writeback-grid">
+                <div>
+                  <p class="small muted">日报记录</p>
+                  <b>{{ injectionShiftReportRows.length }}</b>
+                </div>
+                <div>
+                  <p class="small muted">入库单</p>
+                  <b>{{ injectionWarehouseInboundRows.length }}</b>
+                </div>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </template>
+
+    <div
+      v-if="selectedMachine"
+      class="fixed inset-0 z-50 bg-slate-950/40"
+      aria-hidden="true"
+      @click="closeMachineDrawer"
+    />
+    <aside
+      v-if="selectedMachine"
+      class="fixed right-0 top-0 z-50 flex h-full w-[min(520px,94vw)] flex-col bg-white shadow-[0_24px_60px_rgba(15,23,42,0.18)]"
+      aria-label="机台详情"
+    >
+      <div class="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+        <div>
+          <div class="flex items-center gap-3">
+            <h2 class="text-2xl font-semibold tracking-tight text-slate-950">{{ selectedMachine.machine }}</h2>
+            <StatusPill :label="selectedMachine.status" :tone="selectedMachine.tone" />
+          </div>
+          <p class="mt-2 text-sm text-slate-500">
+            {{ selectedMachine.tonnage }} · {{ selectedMachine.robot }} · {{ selectedMachine.workshop }}
+          </p>
+        </div>
+        <button
+          type="button"
+          class="flex size-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50"
+          aria-label="关闭机台详情"
+          @click="closeMachineDrawer"
+        >
+          <X class="size-4" aria-hidden="true" />
+        </button>
       </div>
 
-      <InjectionSchedulingDashboard :show-hero="false" />
-    </div>
-  </main>
+      <div class="flex-1 overflow-y-auto p-5">
+        <section class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">当前任务</p>
+          <h3 class="mt-3 font-mono text-base font-bold text-slate-950">{{ selectedMachine.mold }}</h3>
+          <p class="mt-2 text-sm leading-6 text-slate-600">{{ selectedMachine.material }}</p>
+          <div class="mt-4 flex items-center gap-2">
+            <div class="h-2 flex-1 overflow-hidden rounded-full bg-white">
+              <span
+                class="block h-full rounded-full"
+                :class="toneProgressClass[selectedMachine.tone]"
+                :style="{ width: `${Math.min(selectedMachine.utilization, 100)}%` }"
+              />
+            </div>
+            <span class="text-sm font-bold tabular-nums text-slate-700">{{ selectedMachine.utilization }}%</span>
+          </div>
+        </section>
+
+        <section class="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">机台约束</p>
+          <div class="mt-3 grid grid-cols-2 gap-3">
+            <div class="rounded-lg bg-slate-50 p-3">
+              <p class="text-xs text-slate-500">工艺范围</p>
+              <p class="mt-1 font-semibold text-slate-950">{{ selectedMachine.processRange }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 p-3">
+              <p class="text-xs text-slate-500">颜色策略</p>
+              <p class="mt-1 font-semibold text-slate-950">{{ selectedMachine.colorPolicy }}</p>
+            </div>
+            <div class="col-span-2 rounded-lg bg-slate-50 p-3">
+              <p class="text-xs text-slate-500">保养 / 限制</p>
+              <p class="mt-1 font-semibold text-slate-950">{{ selectedMachine.maintenance }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="selectedMachineColorRisk" class="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">颜色切换</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <span
+              v-for="color in selectedMachineColorRisk.route"
+              :key="color"
+              class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600"
+            >
+              {{ color }}
+            </span>
+          </div>
+          <StatusPill class="mt-3" :label="selectedMachineColorRisk.risk" :tone="selectedMachineColorRisk.tone" compact />
+        </section>
+
+        <section class="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">候选订单</p>
+          <div v-if="selectedMachineOrders.length" class="mt-3 space-y-3">
+            <article
+              v-for="order in selectedMachineOrders"
+              :key="`${order.orderNo}-${order.moldCode}`"
+              class="rounded-lg border border-slate-200 p-3"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <p class="font-mono text-sm font-bold text-slate-950">{{ order.moldCode }}</p>
+                  <p class="mt-1 text-xs text-slate-500">{{ order.productName }} · {{ order.orderNo }}</p>
+                </div>
+                <StatusPill :label="order.issue" :tone="order.tone" compact />
+              </div>
+              <p class="mt-2 text-xs text-slate-600">{{ order.color }} · {{ order.material }} · 欠 {{ order.shortageQuantity ?? order.quantity }}</p>
+            </article>
+          </div>
+          <p v-else class="mt-3 rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">
+            暂无直接命中的候选订单，等待排期草稿补充。
+          </p>
+        </section>
+      </div>
+    </aside>
+    </main>
+  </div>
 </template>
+
+<style scoped>
+.injection-workbench {
+  --primary: oklch(0.45 0.09 182);
+  --primary-strong: oklch(0.38 0.1 182);
+  --text-950: #020617;
+  --text-900: #0f172a;
+  --text-700: #334155;
+  --text-600: #475569;
+  --text-500: #64748b;
+  --text-400: #94a3b8;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --surface: #fff;
+  --surface-muted: #f1f5f9;
+  --surface-sunken: #f8fafc;
+  --teal-bg: #f0fdfa;
+  --teal-bd: #99f6e4;
+  --teal-fg: #0f766e;
+  --teal-solid: #14b8a6;
+  --blue-bg: #eff6ff;
+  --blue-bd: #bfdbfe;
+  --blue-fg: #1e40af;
+  --blue-solid: #3b82f6;
+  --amber-bg: #fffbeb;
+  --amber-bd: #fde68a;
+  --amber-fg: #b45309;
+  --amber-solid: #f59e0b;
+  --red-bg: #fef2f2;
+  --red-bd: #fecaca;
+  --red-fg: #b91c1c;
+  --red-solid: #ef4444;
+  --slate-bg: #f8fafc;
+  --slate-bd: #e2e8f0;
+  --slate-fg: #475569;
+  --slate-solid: #94a3b8;
+  --green-bg: #ecfdf5;
+  --green-bd: #a7f3d0;
+  --green-fg: #047857;
+  --green-solid: #10b981;
+  --violet-bg: #f5f3ff;
+  --violet-bd: #ddd6fe;
+  --violet-fg: #6d28d9;
+  --violet-solid: #8b5cf6;
+  --radius: 0.625rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --shadow-card: 0 16px 38px rgba(15, 23, 42, 0.06);
+  --shadow-soft: 0 14px 35px rgba(15, 23, 42, 0.05);
+}
+
+.page {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 20px 24px 48px;
+}
+
+.page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-500);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.back-link:hover {
+  color: var(--text-950);
+}
+
+.page-titlerow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.page-title {
+  margin: 0;
+  color: var(--text-950);
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.18;
+}
+
+.page-sub {
+  margin: 8px 0 0;
+  color: var(--text-600);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.metrics-wrap {
+  width: 100%;
+  max-width: 860px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metric {
+  min-height: 92px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 14px 16px;
+}
+
+.metric.teal {
+  border-color: var(--teal-bd);
+  background: var(--teal-bg);
+}
+
+.metric.blue {
+  border-color: var(--blue-bd);
+  background: var(--blue-bg);
+}
+
+.metric.amber {
+  border-color: var(--amber-bd);
+  background: var(--amber-bg);
+}
+
+.metric.red {
+  border-color: var(--red-bd);
+  background: var(--red-bg);
+}
+
+.metric.green {
+  border-color: var(--green-bd);
+  background: var(--green-bg);
+}
+
+.metric-label {
+  color: var(--text-700);
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.82;
+}
+
+.metric-value {
+  margin-top: 4px;
+  color: var(--text-950);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.metric-detail {
+  margin-top: 4px;
+  color: var(--text-600);
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.78;
+}
+
+.section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  padding: 20px;
+  box-shadow: var(--shadow-soft);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-title h2 {
+  margin: 0;
+  color: var(--text-950);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.ico {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--teal-bg);
+  color: var(--teal-fg);
+  flex-shrink: 0;
+}
+
+.ico.red {
+  background: var(--red-bg);
+  color: var(--red-fg);
+}
+
+.ico.blue {
+  background: var(--blue-bg);
+  color: var(--blue-fg);
+}
+
+.ico.green {
+  background: var(--green-bg);
+  color: var(--green-fg);
+}
+
+.ico.amber {
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+}
+
+.ico.violet {
+  background: var(--violet-bg);
+  color: var(--violet-fg);
+}
+
+.eyebrow {
+  color: var(--text-500);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.focus-band {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.focus-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 13px 14px;
+  text-align: left;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.focus-card:hover {
+  box-shadow: var(--shadow-card);
+  transform: translateY(-2px);
+}
+
+.focus-card.hot {
+  border-color: var(--red-bd);
+  background: linear-gradient(180deg, var(--red-bg), #fff);
+}
+
+.focus-card.warn {
+  border-color: var(--amber-bd);
+  background: linear-gradient(180deg, var(--amber-bg), #fff);
+}
+
+.fc-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.fc-ico {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 7px;
+}
+
+.fc-label {
+  color: var(--text-600);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.fc-value {
+  margin-top: 8px;
+  color: var(--text-950);
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.fc-sub {
+  margin-top: 4px;
+  color: var(--text-500);
+  font-size: 11px;
+}
+
+.fc-arrow {
+  position: absolute;
+  top: 13px;
+  right: 12px;
+  color: var(--text-400);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.focus-card:hover .fc-arrow {
+  opacity: 1;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.row.between {
+  justify-content: space-between;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+}
+
+.muted {
+  color: var(--text-500);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.xsmall {
+  font-size: 11px;
+}
+
+.strong {
+  color: var(--text-950);
+  font-weight: 700;
+}
+
+.mono {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag {
+  display: inline-block;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-600);
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--text-700);
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-sunken);
+}
+
+.btn.primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn.primary:hover {
+  border-color: var(--primary-strong);
+  background: var(--primary-strong);
+}
+
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-600);
+}
+
+.btn.sm {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.grow {
+  flex: 1;
+}
+
+.divider {
+  height: 1px;
+  margin: 14px 0;
+  background: var(--border);
+}
+
+.watch-panel {
+  border-color: var(--red-bd);
+  background: linear-gradient(180deg, #fff5f5, #fff);
+}
+
+.overdue-head,
+.overdue-row {
+  display: grid;
+  grid-template-columns: 30px 1.4fr 1fr 90px 100px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.overdue-head {
+  border-radius: 8px 8px 0 0;
+  background: var(--surface-sunken);
+  color: var(--text-500);
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.overdue-row {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.overdue-row:last-of-type {
+  border-bottom: 0;
+}
+
+.overdue-row:hover {
+  background: var(--red-bg);
+}
+
+.overdue-row .rank {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--red-solid);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.factory-scope {
+  min-width: 0;
+}
+
+.current-factory-card {
+  display: flex;
+  min-width: min(460px, 100%);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  padding: 10px 12px;
+}
+
+.current-factory-card strong {
+  color: var(--text-950);
+  font-size: 14px;
+}
+
+.current-factory-card span {
+  color: var(--text-500);
+  font-size: 12px;
+}
+
+.filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text-600);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chip.active {
+  border-color: var(--text-950);
+  background: var(--text-950);
+  color: #fff;
+}
+
+.chip.count b {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 22px 0 12px;
+}
+
+.grid-group-head h3 {
+  margin: 0;
+  color: var(--text-900);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.grid-group-head .line {
+  height: 1px;
+  flex: 1;
+  background: var(--border);
+}
+
+.import-layout,
+.pool-layout,
+.sched-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.import-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.import-main,
+.order-panel,
+.schedule-main {
+  min-width: 0;
+}
+
+.import-side,
+.sched-side {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dropzone {
+  margin-top: 14px;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface-sunken);
+  padding: 40px 28px;
+  text-align: center;
+  transition: background 0.18s ease, border-color 0.18s ease;
+  cursor: pointer;
+}
+
+.dropzone:hover {
+  border-color: var(--primary);
+  background: var(--teal-bg);
+}
+
+.dropzone .cloud {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 14px;
+  place-items: center;
+  border-radius: 18px;
+  background: #fff;
+  color: var(--primary);
+  box-shadow: var(--shadow-card);
+}
+
+.dropzone h3 {
+  margin: 0 0 6px;
+  color: var(--text-950);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.dropzone p {
+  margin: 0;
+  color: var(--text-500);
+  font-size: 13px;
+}
+
+.file-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 12px 14px;
+}
+
+.file-ico {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--green-bg);
+  color: var(--green-fg);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.progress-line {
+  height: 5px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-muted);
+}
+
+.progress-line > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.hint {
+  display: flex;
+  gap: 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  color: var(--text-600);
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.hint-ico {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--primary);
+  padding-top: 1px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.stat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 14px;
+}
+
+.stat .n {
+  color: var(--text-950);
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat .l {
+  margin-top: 2px;
+  color: var(--text-500);
+  font-size: 12px;
+}
+
+.steps,
+.issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 16px;
+}
+
+.step {
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.step .marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.step .bullet {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--green-solid);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.step .line {
+  width: 2px;
+  flex: 1;
+  margin: 2px 0;
+  background: var(--border);
+}
+
+.step .body {
+  padding-bottom: 6px;
+}
+
+.step .body .t {
+  color: var(--text-900);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.step .body .d {
+  margin-top: 2px;
+  color: var(--text-500);
+  font-size: 12px;
+}
+
+.maprow {
+  display: grid;
+  grid-template-columns: 44px 1fr 24px 1fr;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px dashed var(--border);
+  padding: 7px 0;
+}
+
+.maprow:last-child {
+  border-bottom: 0;
+}
+
+.col-tag {
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--text-500);
+  padding: 3px 0;
+  text-align: center;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.arrow {
+  color: var(--text-400);
+  text-align: center;
+}
+
+.field-name {
+  color: var(--text-900);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.issue.red {
+  border: 1px solid var(--red-bd);
+  background: var(--red-bg);
+  color: var(--red-fg);
+}
+
+.issue.amber {
+  border: 1px solid var(--amber-bd);
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+}
+
+.issue.blue {
+  border: 1px solid var(--blue-bd);
+  background: var(--blue-bg);
+  color: var(--blue-fg);
+}
+
+.issue b {
+  font-variant-numeric: tabular-nums;
+}
+
+.issue-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.pool-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.principle-panel {
+  align-self: start;
+}
+
+.principles {
+  margin-top: 16px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.grid-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+}
+
+.grid-table th {
+  background: var(--surface-sunken);
+  color: var(--text-500);
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.grid-table td {
+  border-top: 1px solid var(--border);
+  color: var(--text-700);
+  padding: 12px;
+  vertical-align: top;
+}
+
+.grid-table .right {
+  text-align: right;
+}
+
+.table-row:hover td {
+  background: var(--surface-sunken);
+}
+
+.score-badge {
+  display: inline-flex;
+  min-width: 38px;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.group-tag {
+  display: inline-flex;
+  border-radius: 7px;
+  background: var(--violet-bg);
+  color: var(--violet-fg);
+  padding: 4px 8px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sched-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--text-500);
+  font-size: 12px;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 4px;
+}
+
+.legend i.green {
+  background: var(--green-solid);
+}
+
+.legend i.amber {
+  background: var(--amber-solid);
+}
+
+.legend i.red {
+  background: var(--red-solid);
+}
+
+.lane-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.lane-stage {
+  min-width: 920px;
+}
+
+.lane-label {
+  border-right: 1px solid var(--border);
+  padding: 12px;
+}
+
+.lane-label p {
+  margin: 0;
+  color: var(--text-950);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lane-label span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-500);
+  font-size: 11px;
+}
+
+.lane-body {
+  position: relative;
+  min-height: 64px;
+}
+
+.lane-lines {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.lane-lines span {
+  border-left: 1px dashed var(--border);
+}
+
+.lane-lines span:first-child {
+  border-left: 0;
+}
+
+.gantt-block {
+  position: absolute;
+  top: 12px;
+  display: flex;
+  height: 40px;
+  min-width: 120px;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 9px;
+  background-image: linear-gradient(90deg, var(--teal-fg), var(--teal-solid));
+  color: #fff;
+  padding: 0 12px;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+}
+
+.gantt-block span,
+.gantt-block small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gantt-block span {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.gantt-block small {
+  font-size: 11px;
+  opacity: 0.88;
+}
+
+.issue-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.issue-card h3 {
+  margin: 0;
+  color: var(--text-950);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.writeback-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.writeback-grid > div {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  padding: 12px;
+}
+
+.writeback-grid b {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-950);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+@media (min-width: 1100px) {
+  .pool-layout {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+
+  .principle-panel {
+    position: sticky;
+    top: 78px;
+  }
+}
+
+@media (min-width: 1180px) {
+  .import-layout {
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  }
+
+  .sched-layout {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+}
+
+@media (min-width: 720px) {
+  .focus-band {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 768px) {
+  .metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1180px) {
+  .focus-band {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .page {
+    padding: 24px 40px 56px;
+  }
+
+  .page-head {
+    flex-direction: row;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+}
+
+.injection-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  border-bottom: 1px solid #e2e8f0;
+  background: rgba(248, 250, 252, 0.86);
+  backdrop-filter: saturate(1.4) blur(8px);
+}
+
+.injection-topbar-inner {
+  display: flex;
+  max-width: 1680px;
+  min-height: 58px;
+  margin: 0 auto;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 24px;
+}
+
+.injection-brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  color: #020617;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.injection-brand-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  background: oklch(0.45 0.09 182);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(13, 118, 110, 0.35);
+}
+
+.injection-step-nav {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.injection-step-nav::-webkit-scrollbar {
+  height: 4px;
+}
+
+.injection-step-nav::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.injection-step-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border-radius: 999px;
+  padding: 7px 14px;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.injection-step-tab:hover {
+  background: #f1f5f9;
+  color: #020617;
+}
+
+.injection-step-tab.active {
+  background: oklch(0.45 0.09 182);
+  color: #fff;
+}
+
+.step-no {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  place-items: center;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.injection-step-tab.active .step-no {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+
+.injection-global-search {
+  display: flex;
+  width: min(312px, 24vw);
+  min-width: 230px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #fff;
+  padding: 6px 12px;
+  color: #94a3b8;
+}
+
+.injection-global-search:focus-within {
+  border-color: oklch(0.45 0.09 182);
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.12);
+}
+
+.injection-global-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  font-size: 13px;
+  outline: none;
+}
+
+.injection-global-search input::placeholder {
+  color: #94a3b8;
+}
+
+.injection-global-search kbd {
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.injection-topbar-right {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+@media (min-width: 1280px) {
+  .injection-topbar-inner {
+    padding: 10px 40px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .injection-topbar-inner {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .injection-step-nav {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .injection-global-search {
+    margin-left: auto;
+    width: min(360px, 44vw);
+  }
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 18px 16px 40px;
+  }
+
+  .file-row {
+    flex-wrap: wrap;
+  }
+
+  .stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .maprow {
+    grid-template-columns: 1fr;
+  }
+
+  .watch-panel {
+    overflow-x: auto;
+  }
+
+  .overdue-head,
+  .overdue-row {
+    min-width: 640px;
+  }
+
+  .injection-topbar-inner {
+    gap: 10px;
+    padding: 10px 16px;
+  }
+
+  .injection-global-search {
+    order: 4;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .injection-topbar-right {
+    margin-left: auto;
+  }
+}
+
+.machine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(292px, 1fr));
+  gap: 12px;
+}
+
+.machine-card {
+  position: relative;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-left-width: 4px;
+  border-radius: 0.75rem;
+  background: #fff;
+  padding: 13px;
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.machine-card:hover {
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.08);
+  transform: translateY(-2px);
+}
+
+.machine-card.green,
+.machine-card.teal {
+  border-left-color: #10b981;
+}
+
+.machine-card.amber {
+  border-left-color: #f59e0b;
+}
+
+.machine-card.red {
+  border-left-color: #ef4444;
+}
+
+.machine-card.blue {
+  border-left-color: #3b82f6;
+}
+
+.machine-card.slate {
+  border-left-color: #94a3b8;
+}
+
+.principle-row {
+  display: flex;
+  gap: 11px;
+  border-bottom: 1px dashed #e2e8f0;
+  padding: 11px 0;
+}
+
+.principle-row:last-child {
+  border-bottom: 0;
+}
+
+.principle-row > span {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.principle-row p {
+  margin: 0;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.principle-row small {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.gantt-axis {
+  display: grid;
+  grid-template-columns: 136px repeat(7, minmax(92px, 1fr));
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.gantt-lane {
+  display: grid;
+  grid-template-columns: 136px minmax(0, 1fr);
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.gantt-lane:last-child {
+  border-bottom: 0;
+}
+
+.gantt-lane:hover {
+  background: #f8fafc;
+}
+</style>
