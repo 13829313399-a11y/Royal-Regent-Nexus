@@ -146,6 +146,22 @@ for (const requiredImplementation of [
   '/modules/production/molding-sample-tasks',
   'appStore.setActiveFactory',
   'isProductionFactoryContextId',
+  'rawMaterialDatabaseRows',
+  'RawMaterialSelectOption',
+  'rawMaterialOptions',
+  'rawMaterialOptionByValue',
+  'rawMaterialOptionValueSet',
+  'RAW_MATERIAL_PICKER_VISIBLE_LIMIT',
+  'activeRawMaterialPickerLineIndex',
+  'rawMaterialSearchByLine',
+  'hasUnknownRawMaterialValue',
+  'getRawMaterialPickerText',
+  'getVisibleRawMaterialOptions',
+  'updateRawMaterialSearch',
+  'selectRawMaterialOption',
+  'selectFirstRawMaterialOption',
+  'clearRawMaterialSelection',
+  'handleRawMaterialPickerFocusOut',
 ]) {
   assert.match(source, new RegExp(requiredImplementation))
 }
@@ -199,7 +215,7 @@ assert.match(source, /role="table"/)
 assert.match(source, /<div class="space-y-4 xl:contents">/)
 assert.match(source, /<aside class="space-y-4 xl:col-start-2 xl:row-start-1">/)
 assert.match(source, /<section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">/)
-assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_132px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_190px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
 assert.match(source, /:class="createLineGridClass"/)
 assert.match(source, /role="columnheader">整啤毛重\(g\)<\/div>/)
 assert.match(source, /role="columnheader">所需用料\(kg\)<\/div>/)
@@ -208,7 +224,17 @@ assert.match(source, /v-model="line\.required_material_kg"/)
 assert.match(source, /data-testid="create-line-gross-weight"/)
 assert.match(source, /data-testid="create-line-required-material"/)
 assert.match(source, /v-model="line\.notes"/)
-assert.match(source, /min-w-\[1660px\]/)
+assert.match(source, /min-w-\[1720px\]/)
+assert.match(source, /data-testid="create-line-material"[\s\S]*role="combobox"[\s\S]*aria-label="选择所需用料"/)
+assert.match(source, /placeholder="搜索原料名称\/编号"/)
+assert.match(source, /@input="updateRawMaterialSearch\(index, \$event\)"/)
+assert.match(source, /@keydown\.enter\.prevent="selectFirstRawMaterialOption\(line, index\)"/)
+assert.match(source, /role="listbox"/)
+assert.match(source, /v-if="hasUnknownRawMaterialValue\(line\.material\)"[\s\S]*当前值/)
+assert.match(source, /v-for="option in getVisibleRawMaterialOptions\(index\)"[\s\S]*:key="option\.value"[\s\S]*@click="selectRawMaterialOption\(line, index, option\)"/)
+assert.match(source, /aria-label="清除所需用料"[\s\S]*@click="clearRawMaterialSelection\(line, index\)"/)
+assert.doesNotMatch(source, /<select[\s\S]*v-model="line\.material"/)
+assert.doesNotMatch(source, /<input v-model="line\.material"/)
 assert.doesNotMatch(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_96px_152px_72px\]/)
 assert.doesNotMatch(source, /role="columnheader">颜色 \/ PMS<\/div>/)
 assert.match(source, /role="columnheader">颜色<\/div>[\s\S]*role="columnheader">PMS<\/div>/)
