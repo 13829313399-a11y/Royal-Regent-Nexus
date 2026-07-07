@@ -42,6 +42,7 @@ import {
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
+import { rawMaterialDatabaseRows } from '@/data/rawMaterialDatabase'
 import {
   buildCompletionGate,
   isExternalMoldingSampleOrder,
@@ -179,6 +180,21 @@ interface CreateSuccessToast {
   detail: string
 }
 
+interface RawMaterialSelectOption {
+  value: string
+  label: string
+  code: string
+  category: string
+  origin: string
+  searchText: string
+}
+
+interface RawMaterialPickerPosition {
+  left: number
+  top: number
+  width: number
+}
+
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
@@ -218,8 +234,16 @@ const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_132px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
+const RAW_MATERIAL_PICKER_WIDTH = 360
+const RAW_MATERIAL_PICKER_HEIGHT = 256
+const RAW_MATERIAL_PICKER_GAP = 8
+const RAW_MATERIAL_PICKER_VIEWPORT_PADDING = 12
+const RAW_MATERIAL_PICKER_VISIBLE_LIMIT = 60
+const activeRawMaterialPickerLineIndex = ref<number | null>(null)
+const rawMaterialSearchByLine = ref<Record<number, string>>({})
+const rawMaterialPickerPositionByLine = ref<Record<number, RawMaterialPickerPosition>>({})
 let createSuccessToastTimer: ReturnType<typeof setTimeout> | null = null
 let actionToastTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -283,6 +307,49 @@ const activeFactory = computed(() =>
   factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
     ?? factoryContexts.find((factory) => factory.id === 'huaxing')
     ?? factoryContexts[1],
+)
+
+const rawMaterialOptions = computed<RawMaterialSelectOption[]>(() => {
+  const seenValues = new Set<string>()
+
+  return rawMaterialDatabaseRows.flatMap((row) => {
+    const value = row.materialName.trim()
+
+    if (!value || seenValues.has(value)) {
+      return []
+    }
+
+    seenValues.add(value)
+
+    const sourceParts = [row.materialCode, row.plasticCategory].filter(Boolean)
+    const label = sourceParts.length ? `${value}（${sourceParts.join(' / ')}）` : value
+    const searchText = [
+      value,
+      label,
+      row.materialCode,
+      row.plasticCategory,
+      row.commodityName,
+      row.origin,
+      row.remarks,
+    ].join(' ').toLowerCase()
+
+    return [{
+      value,
+      label,
+      code: row.materialCode,
+      category: row.plasticCategory,
+      origin: row.origin,
+      searchText,
+    }]
+  })
+})
+
+const rawMaterialOptionByValue = computed(() =>
+  new Map(rawMaterialOptions.value.map((option) => [option.value, option])),
+)
+
+const rawMaterialOptionValueSet = computed(() =>
+  new Set(rawMaterialOptionByValue.value.keys()),
 )
 
 const productionTaskRoute = computed(() => {
@@ -1008,6 +1075,8 @@ function addCreateLine() {
 }
 
 function removeCreateLine(index: number) {
+  resetRawMaterialPickerState()
+
   if (createDraft.value.items.length <= 1) {
     createDraft.value.items = [createManualMoldingSampleLineDraft()]
     return
@@ -1435,6 +1504,161 @@ function readMaterialWeight(value: number | null | undefined) {
 
 function roundMaterialWeight(value: number) {
   return Math.round(value * 100) / 100
+}
+
+function hasUnknownRawMaterialValue(value: string) {
+  return value !== '' && !rawMaterialOptionValueSet.value.has(value)
+}
+
+function resetRawMaterialPickerState() {
+  activeRawMaterialPickerLineIndex.value = null
+  rawMaterialSearchByLine.value = {}
+  rawMaterialPickerPositionByLine.value = {}
+}
+
+function getRawMaterialListboxId(index: number) {
+  return `raw-material-options-${index}`
+}
+
+function getRawMaterialPickerText(index: number, selectedValue: string) {
+  if (activeRawMaterialPickerLineIndex.value === index) {
+    return rawMaterialSearchByLine.value[index] ?? selectedValue
+  }
+
+  return selectedValue
+}
+
+function getRawMaterialOptionTitle(value: string) {
+  return rawMaterialOptionByValue.value.get(value)?.label ?? value
+}
+
+function updateRawMaterialPickerPosition(index: number, target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return
+  }
+
+  const rect = target.getBoundingClientRect()
+  const maxLeft = window.innerWidth - RAW_MATERIAL_PICKER_WIDTH - RAW_MATERIAL_PICKER_VIEWPORT_PADDING
+  const left = Math.min(
+    Math.max(RAW_MATERIAL_PICKER_VIEWPORT_PADDING, rect.left),
+    Math.max(RAW_MATERIAL_PICKER_VIEWPORT_PADDING, maxLeft),
+  )
+  const top = Math.max(
+    RAW_MATERIAL_PICKER_VIEWPORT_PADDING,
+    rect.top - RAW_MATERIAL_PICKER_HEIGHT - RAW_MATERIAL_PICKER_GAP,
+  )
+
+  rawMaterialPickerPositionByLine.value = {
+    ...rawMaterialPickerPositionByLine.value,
+    [index]: {
+      left,
+      top,
+      width: RAW_MATERIAL_PICKER_WIDTH,
+    },
+  }
+}
+
+function getRawMaterialPickerStyle(index: number) {
+  const position = rawMaterialPickerPositionByLine.value[index]
+
+  if (!position) {
+    return {
+      width: `${RAW_MATERIAL_PICKER_WIDTH}px`,
+    }
+  }
+
+  return {
+    left: `${position.left}px`,
+    top: `${position.top}px`,
+    width: `${position.width}px`,
+  }
+}
+
+function openRawMaterialPicker(index: number, selectedValue: string, event: FocusEvent) {
+  activeRawMaterialPickerLineIndex.value = index
+  rawMaterialSearchByLine.value = {
+    ...rawMaterialSearchByLine.value,
+    [index]: selectedValue,
+  }
+  updateRawMaterialPickerPosition(index, event.currentTarget)
+}
+
+function closeRawMaterialPicker(index: number) {
+  if (activeRawMaterialPickerLineIndex.value === index) {
+    activeRawMaterialPickerLineIndex.value = null
+  }
+
+  const nextSearchByLine = { ...rawMaterialSearchByLine.value }
+  delete nextSearchByLine[index]
+  rawMaterialSearchByLine.value = nextSearchByLine
+
+  const nextPositionByLine = { ...rawMaterialPickerPositionByLine.value }
+  delete nextPositionByLine[index]
+  rawMaterialPickerPositionByLine.value = nextPositionByLine
+}
+
+function handleRawMaterialPickerFocusOut(index: number, event: FocusEvent) {
+  const currentTarget = event.currentTarget
+  const nextTarget = event.relatedTarget
+
+  if (
+    currentTarget instanceof HTMLElement
+    && nextTarget instanceof Node
+    && currentTarget.contains(nextTarget)
+  ) {
+    return
+  }
+
+  closeRawMaterialPicker(index)
+}
+
+function updateRawMaterialSearch(index: number, event: Event) {
+  const input = event.target as HTMLInputElement
+
+  activeRawMaterialPickerLineIndex.value = index
+  updateRawMaterialPickerPosition(index, event.currentTarget)
+  rawMaterialSearchByLine.value = {
+    ...rawMaterialSearchByLine.value,
+    [index]: input.value,
+  }
+}
+
+function getVisibleRawMaterialOptions(index: number) {
+  const query = (rawMaterialSearchByLine.value[index] ?? '').trim().toLowerCase()
+  const options = query
+    ? rawMaterialOptions.value.filter((option) => option.searchText.includes(query))
+    : rawMaterialOptions.value
+
+  return options.slice(0, RAW_MATERIAL_PICKER_VISIBLE_LIMIT)
+}
+
+function selectRawMaterialOption(
+  line: ManualMoldingSampleLineDraft,
+  index: number,
+  option: RawMaterialSelectOption,
+) {
+  line.material = option.value
+  closeRawMaterialPicker(index)
+}
+
+function selectFirstRawMaterialOption(line: ManualMoldingSampleLineDraft, index: number) {
+  const option = getVisibleRawMaterialOptions(index)[0]
+
+  if (option) {
+    selectRawMaterialOption(line, index, option)
+    return
+  }
+
+  closeRawMaterialPicker(index)
+}
+
+function clearRawMaterialSelection(line: ManualMoldingSampleLineDraft, index: number) {
+  line.material = ''
+  rawMaterialSearchByLine.value = {
+    ...rawMaterialSearchByLine.value,
+    [index]: '',
+  }
+  activeRawMaterialPickerLineIndex.value = index
 }
 
 function buildMaterialBalanceItemRow(item: MoldingSampleItem): MaterialBalanceItemRow {
@@ -2554,7 +2778,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[1660px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[1720px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -2592,8 +2816,87 @@ onUnmounted(() => {
                         <div class="min-w-0" role="cell">
                           <input v-model="line.mold_name" data-testid="create-line-mold-name" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
-                        <div class="min-w-0" role="cell">
-                          <input v-model="line.material" data-testid="create-line-material" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        <div
+                          class="relative min-w-0"
+                          role="cell"
+                          @focusout="handleRawMaterialPickerFocusOut(index, $event)"
+                        >
+                          <div class="relative">
+                            <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                            <input
+                              :value="getRawMaterialPickerText(index, line.material)"
+                              data-testid="create-line-material"
+                              role="combobox"
+                              aria-label="选择所需用料"
+                              aria-haspopup="listbox"
+                              autocomplete="off"
+                              :aria-expanded="activeRawMaterialPickerLineIndex === index"
+                              :aria-controls="getRawMaterialListboxId(index)"
+                              :title="getRawMaterialOptionTitle(line.material) || '请选择原料'"
+                              placeholder="搜索原料名称/编号"
+                              class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white py-0 pl-8 pr-7 text-[12px] outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                              @focus="openRawMaterialPicker(index, line.material, $event)"
+                              @input="updateRawMaterialSearch(index, $event)"
+                              @keydown.enter.prevent="selectFirstRawMaterialOption(line, index)"
+                              @keydown.esc.prevent="closeRawMaterialPicker(index)"
+                            >
+                            <button
+                              v-if="line.material"
+                              type="button"
+                              class="absolute right-1.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                              aria-label="清除所需用料"
+                              @mousedown.prevent
+                              @click="clearRawMaterialSelection(line, index)"
+                            >
+                              <X class="size-3.5" aria-hidden="true" />
+                            </button>
+                          </div>
+                          <Teleport to="body">
+                            <div
+                              v-if="activeRawMaterialPickerLineIndex === index"
+                              :id="getRawMaterialListboxId(index)"
+                              class="fixed z-[80] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-900/10"
+                              :style="getRawMaterialPickerStyle(index)"
+                              role="listbox"
+                            >
+                              <div class="max-h-64 overflow-y-auto py-1">
+                                <button
+                                  v-if="hasUnknownRawMaterialValue(line.material)"
+                                  type="button"
+                                  class="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12px] text-slate-700 transition hover:bg-slate-50"
+                                  role="option"
+                                  :aria-selected="true"
+                                  @mousedown.prevent
+                                  @click="closeRawMaterialPicker(index)"
+                                >
+                                  <span class="min-w-0 truncate font-semibold">{{ line.material }}</span>
+                                  <span class="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">当前值</span>
+                                </button>
+                                <button
+                                  v-for="option in getVisibleRawMaterialOptions(index)"
+                                  :key="option.value"
+                                  type="button"
+                                  class="grid w-full grid-cols-[minmax(0,1fr)_76px_72px] items-center gap-2 px-3 py-2 text-left text-[12px] text-slate-700 transition hover:bg-slate-50"
+                                  :class="line.material === option.value ? 'bg-slate-50 text-slate-950' : ''"
+                                  role="option"
+                                  :aria-selected="line.material === option.value"
+                                  :title="option.label"
+                                  @mousedown.prevent
+                                  @click="selectRawMaterialOption(line, index, option)"
+                                >
+                                  <span class="min-w-0 truncate font-semibold">{{ option.value }}</span>
+                                  <span class="min-w-0 truncate font-mono text-[10px] text-slate-400">{{ option.code || '无编号' }}</span>
+                                  <span class="min-w-0 truncate rounded bg-slate-100 px-1.5 py-0.5 text-center text-[10px] font-semibold text-slate-500">{{ option.category || '未分类' }}</span>
+                                </button>
+                                <div
+                                  v-if="!getVisibleRawMaterialOptions(index).length && !hasUnknownRawMaterialValue(line.material)"
+                                  class="px-3 py-3 text-[12px] font-medium text-slate-400"
+                                >
+                                  未找到匹配原料
+                                </div>
+                              </div>
+                            </div>
+                          </Teleport>
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.color" data-testid="create-line-color" placeholder="颜色" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
