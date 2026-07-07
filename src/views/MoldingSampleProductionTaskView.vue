@@ -65,6 +65,7 @@ interface ItemFillbackDraft {
 type ProductionQueueFilter = '全部' | '待接单' | '生产中'
 type ProductionTaskDisplayMode = 'board' | 'list'
 type NotificationStatus = MoldingSampleNotificationResponse['status']
+type ProductionTransitionAction = '开始处理' | '标记完成' | '撤回完成'
 
 interface PaginationState<T> {
   rows: T[]
@@ -287,6 +288,7 @@ const selectedMissingItems = computed(() => {
 const canStartSelectedTask = computed(() => selectedTask.value?.order.status === '待生产')
 const canFillbackSelectedTask = computed(() => selectedTask.value?.order.status === '生产中')
 const canCompleteSelectedTask = computed(() => canFillbackSelectedTask.value && completionGate.value.can_complete)
+const canRollbackCompletedTask = computed(() => selectedTask.value?.order.status === '已完成')
 const canMarkSelectedNotificationRead = computed(() =>
   selectedNotification.value?.status === '未读',
 )
@@ -687,7 +689,18 @@ async function saveProductionFillback() {
   }
 }
 
-async function runProductionTransition(action: '开始处理' | '标记完成') {
+function getProductionTransitionReason(action: ProductionTransitionAction) {
+  if (action === '开始处理') {
+    return '啤办生产任务单接收后开始执行。'
+  }
+  if (action === '标记完成') {
+    return '啤机部完成生产并回传工程啤办单。'
+  }
+
+  return '啤机部撤回完成回传，回到生产中继续修正。'
+}
+
+async function runProductionTransition(action: ProductionTransitionAction) {
   if (!selectedTask.value) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
     return
@@ -698,6 +711,10 @@ async function runProductionTransition(action: '开始处理' | '标记完成') 
   }
   if (action === '标记完成' && !canCompleteSelectedTask.value) {
     actionMessage.value = completionGate.value.message
+    return
+  }
+  if (action === '撤回完成' && !canRollbackCompletedTask.value) {
+    actionMessage.value = '只有已完成任务可以撤回完成回传。'
     return
   }
 
@@ -719,16 +736,20 @@ async function runProductionTransition(action: '开始处理' | '标记完成') 
 
     const payload: MoldingSampleStatusRequest = {
       action,
-      reason: action === '开始处理'
-        ? '啤办生产任务单接收后开始执行。'
-        : '啤机部完成生产并回传工程啤办单。',
+      reason: getProductionTransitionReason(action),
       today,
     }
     const updated = await moldingSampleApi.updateStatus(orderId, payload)
     replaceApiRecord(updated)
-    actionMessage.value = action === '开始处理'
-      ? '啤办生产任务已开始执行。'
-      : '生产完成通知已回传到工程啤办单。'
+    if (action === '开始处理') {
+      actionMessage.value = '啤办生产任务已开始执行。'
+    }
+    else if (action === '标记完成') {
+      actionMessage.value = '生产完成通知已回传到工程啤办单。'
+    }
+    else {
+      actionMessage.value = '生产完成已撤回，可继续修正回填后重新完成。'
+    }
   }
   catch (error) {
     actionMessage.value = `生产任务状态更新失败：${getApiErrorMessage(error)}`
@@ -1298,9 +1319,18 @@ watchEffect(() => {
                   :class="canCompleteSelectedTask ? 'bg-emerald-700 text-white hover:bg-emerald-800' : ''"
                   @click="runProductionTransition('标记完成')"
                 >
-                  <CheckCircle2 v-if="canCompleteSelectedTask" class="size-4" aria-hidden="true" />
+                  <CheckCircle2 v-if="canCompleteSelectedTask || selectedTask.order.status === '已完成'" class="size-4" aria-hidden="true" />
                   <Lock v-else class="size-4" aria-hidden="true" />
-                  {{ canCompleteSelectedTask ? '完成并回传' : `标记完成（缺 ${completionGate.missing_item_ids.length} 项用料）` }}
+                  {{ selectedTask.order.status === '已完成' ? '已完成回传' : canCompleteSelectedTask ? '完成并回传' : `标记完成（缺 ${completionGate.missing_item_ids.length} 项用料）` }}
+                </button>
+                <button
+                  v-if="canRollbackCompletedTask"
+                  type="button"
+                  class="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-amber-200 bg-amber-50 text-[13px] font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-100"
+                  @click="runProductionTransition('撤回完成')"
+                >
+                  <RotateCcw class="size-4" aria-hidden="true" />
+                  撤回完成
                 </button>
                 <div class="flex gap-2">
                   <button

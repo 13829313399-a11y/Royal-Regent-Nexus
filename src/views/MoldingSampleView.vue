@@ -220,6 +220,7 @@ const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取正式啤办单列表...')
 const actionToastVisible = ref(true)
+const currentRmbToHkdRate = ref<number | null>(null)
 const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
 const createErrors = ref<string[]>([])
 const createSubmitting = ref(false)
@@ -946,6 +947,16 @@ async function loadApiData() {
   }
 }
 
+async function loadMaterialPricing() {
+  try {
+    const pricing = await moldingSampleApi.getMaterialPrices()
+    currentRmbToHkdRate.value = pricing.rmb_to_hkd_rate
+  }
+  catch {
+    currentRmbToHkdRate.value = null
+  }
+}
+
 function triggerExcelImport() {
   if (!canCreateOrder.value) {
     actionMessage.value = '当前账号没有从Excel导入啤办单权限。'
@@ -1496,6 +1507,22 @@ function formatMoney(value: number | null | undefined, currency = 'HKD') {
   return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
 
+function formatExchangeRate(value: number | null | undefined) {
+  const rate = value ?? currentRmbToHkdRate.value
+
+  if (rate === null || rate === undefined || !Number.isFinite(rate)) {
+    return '待读取'
+  }
+
+  return rate.toFixed(4).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+}
+
+function getExchangeRateLabel(item: Pick<MoldingSampleItem, 'exchange_rate_at_save'>) {
+  return item.exchange_rate_at_save === null || item.exchange_rate_at_save === undefined
+    ? '当前汇率(RMB→HKD)'
+    : '保存汇率(RMB→HKD)'
+}
+
 function readMaterialWeight(value: number | null | undefined) {
   const parsed = Number(value)
 
@@ -1951,6 +1978,7 @@ watch(actionMessage, (message) => {
 
 onMounted(() => {
   void loadApiData()
+  void loadMaterialPricing()
 })
 
 onUnmounted(() => {
@@ -3280,7 +3308,7 @@ onUnmounted(() => {
                         <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
                         <div><span class="text-slate-400">啤办费(RMB)</span><div class="font-semibold">{{ formatMoney(item.injection_cost, 'RMB') }}</div></div>
                         <div><span class="text-slate-400">啤办费(HKD)</span><div class="font-semibold">{{ formatMoney(item.injection_cost_hkd) }}</div></div>
-                        <div><span class="text-slate-400">汇率</span><div class="font-semibold">{{ formatBlank(item.exchange_rate_at_save) }}</div></div>
+                        <div><span class="text-slate-400">{{ getExchangeRateLabel(item) }}</span><div class="font-semibold">{{ formatExchangeRate(item.exchange_rate_at_save) }}</div></div>
                       </div>
                       <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
                         备注：{{ formatBlank(item.notes) }}

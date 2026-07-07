@@ -137,6 +137,13 @@ function getButtonByExactText(wrapper: VueWrapper, text: string) {
   return button!
 }
 
+function getCurrentDateText(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
 function createMoldingSampleRecord(
   status: MoldingSampleStatus = '待审核',
   id = 'BP-WITHDRAW-UI',
@@ -207,6 +214,10 @@ describe('molding sample runtime error handling', () => {
     window.localStorage.clear()
     mockedMoldingSampleApi.listOrders.mockResolvedValue([])
     mockedMoldingSampleApi.listNotifications.mockResolvedValue([])
+    mockedMoldingSampleApi.getMaterialPrices.mockResolvedValue({
+      prices: [],
+      rmb_to_hkd_rate: 1.08,
+    })
   })
 
   afterEach(() => {
@@ -436,6 +447,68 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('lets the molding clerk withdraw a completed production handoff', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-ROLLBACK-001' }
+    const completedRecord = {
+      ...createMoldingSampleRecord('已完成', 'BP-PROD-ROLLBACK-001'),
+      order: {
+        ...createMoldingSampleRecord('已完成', 'BP-PROD-ROLLBACK-001').order,
+        completed_date: '2026-07-03',
+      },
+    } satisfies MoldingSampleDetailResponse
+    const rollbackRecord = {
+      ...completedRecord,
+      order: {
+        ...completedRecord.order,
+        status: '生产中',
+        completed_date: '',
+      },
+      audit_logs: [
+        {
+          id: 'audit-production-rollback',
+          order_id: completedRecord.order.id,
+          action: '撤回完成',
+          actor_user_id: 'tester',
+          actor_name: '测试账号',
+          actor_role: '啤机部',
+          actor_roles: '啤机部文员',
+          factory_scope: 'huaxing',
+          decision: '撤回',
+          from_status: '已完成',
+          to_status: '生产中',
+          reason: '啤机部撤回完成回传，回到生产中继续修正。',
+          created_at: '2026-07-03 15:00',
+          tone: 'amber',
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([completedRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(completedRecord.order.id),
+    ])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(rollbackRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    expect(wrapper.text()).toContain('已回传')
+    await getButtonByText(wrapper, '撤回完成').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-ROLLBACK-001', {
+      action: '撤回完成',
+      reason: '啤机部撤回完成回传，回到生产中继续修正。',
+      today: '2026-07-03',
+    })
+    expect(wrapper.text()).toContain('生产完成已撤回，可继续修正回填后重新完成。')
+    expect(wrapper.text()).toContain('生产中')
+    expect(wrapper.text()).toContain('待回传')
+
+    wrapper.unmount()
+  })
+
   it('lets the opening engineer withdraw a pending review order from the detail page', async () => {
     const pendingRecord = createMoldingSampleRecord()
     const withdrawnRecord = {
@@ -475,7 +548,7 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
       action: '工程撤回',
       reason: '测试账号撤回主管审核。',
-      today: '2026-07-06',
+      today: getCurrentDateText(),
     })
     expect(wrapper.text()).toContain('已撤回')
 
@@ -558,6 +631,61 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('shows the current RMB to HKD rate when an item has no saved exchange rate', async () => {
+    const detailedRecord = {
+      ...createMoldingSampleRecord('生产中', 'BP-RATE-LIVE-001'),
+      items: [
+        {
+          id: 'BP-RATE-LIVE-001-001',
+          order_id: 'BP-RATE-LIVE-001',
+          sort_order: 1,
+          mold_id: 'P50002008-01-01',
+          mold_name: '头盔',
+          machine_type: '160T',
+          production_machine: '啤办机台-08',
+          material: 'PP (AV161)',
+          color: '黑色',
+          pigment_no: 'PMS 黑色',
+          quantity: '1/1',
+          shoot_qty: 30,
+          gross_weight_g: 82,
+          required_material_kg: 15,
+          mold_return_time: '2026-02-03',
+          completion_time: '2026-02-04',
+          notes: '待保存啤办费。',
+          receipt_no: '',
+          collected_weight_kg: null,
+          actual_weight_kg: 14.2,
+          actual_amount_hkd: null,
+          injection_cost: null,
+          injection_cost_hkd: null,
+          exchange_rate_at_save: null,
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([detailedRecord])
+    mockedMoldingSampleApi.getMaterialPrices.mockResolvedValueOnce({
+      prices: [],
+      rmb_to_hkd_rate: 1.1234,
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, 'BP-RATE-LIVE-001').trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, '展开完整数据').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('当前汇率(RMB→HKD)')
+    expect(text).toContain('1.1234')
+    expect(text).not.toContain('汇率待填写')
+
+    wrapper.unmount()
+  })
+
   it('lets the submitting account withdraw even when the displayed engineer name differs', async () => {
     const pendingRecord = createMoldingSampleRecord()
     pendingRecord.order.eng_name = '工程部协作'
@@ -583,7 +711,7 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
       action: '工程撤回',
       reason: '测试账号撤回主管审核。',
-      today: '2026-07-06',
+      today: getCurrentDateText(),
     })
 
     wrapper.unmount()
@@ -702,7 +830,10 @@ describe('molding sample runtime error handling', () => {
     await wrapper.get('[data-testid="create-engineer"]').setValue('华兴工程师')
     await wrapper.get('[data-testid="create-line-mold-id"]').setValue('BK-01')
     await wrapper.get('[data-testid="create-line-mold-name"]').setValue('主灯罩')
-    await wrapper.get('[data-testid="create-line-material"]').setValue('PC 110')
+    const materialInput = wrapper.get('[data-testid="create-line-material"]')
+    await materialInput.trigger('focus')
+    await materialInput.setValue('ABS 750NSW')
+    await materialInput.trigger('keydown.enter')
     await wrapper.get('[data-testid="create-line-color"]').setValue('透明蓝')
     await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
     await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')
