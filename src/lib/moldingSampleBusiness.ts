@@ -281,7 +281,7 @@ export function getMoldingSampleStatusTransition(
       return rejectedResult(order, '只有啤机部可以撤回生产中单据到待生产。')
     }
 
-    return { allowed: true, next_status: '待生产', completed_date: order.completed_date }
+    return { allowed: true, next_status: '待生产', completed_date: '' }
   }
 
   if (action === '标记完成') {
