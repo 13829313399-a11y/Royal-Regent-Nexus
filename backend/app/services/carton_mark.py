@@ -33,6 +33,16 @@ class PdfMarkRegion:
     box: tuple[int, int, int, int]
 
 
+@dataclass(frozen=True)
+class OcrWord:
+    text: str
+    left: int
+    top: int
+    right: int
+    bottom: int
+    confidence: float
+
+
 FIELD_DEFINITIONS = [
     FieldDefinition("customer_name", "客名", ("CUSTOMER", "CLIENT", "CLIENTE", "NOMBRE", "CUSTOMER NAME")),
     FieldDefinition("po", "PO", (
@@ -52,7 +62,8 @@ FIELD_DEFINITIONS = [
     )),
     FieldDefinition("carton_no", "箱号", (
         "CARTON NO", "CARTON NO.", "CARTON NUMBER", "CTN NO", "CTN NO.", "CTN#", "C/NO",
-        "CARTON", "CAJA NUMERO", "CAJA NÚMERO",
+        "CARTON", "CAJA NUMERO", "CAJA NÚMERO", "BULTO", "BULTOS", "BULTO NO",
+        "BULTO NO.", "NO DE BULTO", "NO. DE BULTO", "NRO BULTO", "NRO. BULTO",
     )),
     FieldDefinition("gw", "G.W", ("G.W", "G.W.", "GW", "GROSS WEIGHT", "PESO BRUTO")),
     FieldDefinition("nw", "N.W", ("N.W", "N.W.", "NW", "NET WEIGHT", "PESO NETO")),
@@ -65,6 +76,19 @@ FIELD_DEFINITIONS = [
 
 FIELD_BY_KEY = {field.key: field for field in FIELD_DEFINITIONS}
 FIELD_ORDER = [field.key for field in FIELD_DEFINITIONS]
+IDENTIFIER_FIELD_KEYS = {"po", "item", "sku", "carton_no", "barcode"}
+OCR_IDENTIFIER_TRANSLATION = str.maketrans({
+    "O": "0",
+    "Q": "0",
+    "D": "0",
+    "I": "1",
+    "L": "1",
+    "|": "1",
+    "S": "5",
+    "Z": "2",
+    "B": "8",
+    "G": "6",
+})
 TEXT_CHARS = set(string.printable) | set("，。：；、（）【】《》±×")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TESSERACT_CANDIDATE_PATHS = (
@@ -177,16 +201,28 @@ def build_carton_mark_auto_check(
         source="template_metadata",
     )
 
-    front_expected_fields = front_template_fields or template_fields
-    side_expected_fields = side_template_fields or template_fields
+    front_extracted_fields = extract_fields(front_text, source="front_photo")
+    side_extracted_fields = extract_fields(side_text, source="side_photo")
+    front_expected_fields = enrich_expected_fields_from_actual_values(
+        front_template_fields or template_fields,
+        front_extracted_fields,
+        f"{front_pdf_text}\n{pdf_text}",
+        source="pdf_front_value_match",
+    )
+    side_expected_fields = enrich_expected_fields_from_actual_values(
+        side_template_fields or template_fields,
+        side_extracted_fields,
+        f"{side_pdf_text}\n{pdf_text}",
+        source="pdf_side_value_match",
+    )
     front_fields = enrich_fields_from_expected_values(
-        extract_fields(front_text, source="front_photo"),
+        front_extracted_fields,
         front_expected_fields,
         front_text,
         source="front_photo_value_match",
     )
     side_fields = enrich_fields_from_expected_values(
-        extract_fields(side_text, source="side_photo"),
+        side_extracted_fields,
         side_expected_fields,
         side_text,
         source="side_photo_value_match",
@@ -200,8 +236,8 @@ def build_carton_mark_auto_check(
     return CartonMarkAutoCheckResponse(
         summary=summary,
         template_fields=template_fields,
-        front_template_fields=front_template_fields,
-        side_template_fields=side_template_fields,
+        front_template_fields=front_expected_fields,
+        side_template_fields=side_expected_fields,
         front_photo_fields=front_fields,
         side_photo_fields=side_fields,
         comparisons=comparisons,
@@ -249,8 +285,11 @@ def extract_pdf_template_side_texts(pdf_bytes: bytes, *, fallback_text: str) -> 
     if not regions:
         return fallback_text, fallback_text, status
 
-    front_text = merge_region_texts(region for region in regions if region.kind == "front")
-    side_text = merge_region_texts(region for region in regions if region.kind == "side")
+    regions = select_primary_pdf_mark_regions(regions)
+    front_region = next((region for region in regions if region.kind == "front"), None)
+    side_region = next((region for region in regions if region.kind == "side"), None)
+    front_text = front_region.text.strip() if front_region else ""
+    side_text = side_region.text.strip() if side_region else ""
 
     if not front_text:
         front_text = fallback_text
@@ -310,7 +349,7 @@ def extract_pdf_mark_regions(pdf_bytes: bytes) -> tuple[list[PdfMarkRegion], Car
                 continue
             regions.append(PdfMarkRegion(kind="", text=text, box=box))
 
-        regions = classify_pdf_mark_regions(regions)
+        regions = select_primary_pdf_mark_regions(classify_pdf_mark_regions(regions))
         combined_text = merge_region_texts(regions)
         if not regions:
             full_page_text = pytesseract.image_to_string(rendered, lang=tesseract_lang)
@@ -339,7 +378,7 @@ def extract_pdf_mark_regions(pdf_bytes: bytes) -> tuple[list[PdfMarkRegion], Car
             source="pdf_template_regions",
             ok=True,
             engine="pypdfium2+pytesseract",
-            message="已按 PDF 页面上的长框/短框自动分离正唛和侧唛区域。",
+            message="已按 PDF 页面顺序只提取第一组正唛和侧唛区域。",
             raw_text=clip_text(combined_text),
         )
     except Exception as exc:
@@ -484,15 +523,22 @@ def filter_plausible_mark_boxes(
     return filtered
 
 
-def find_connected_boxes(mask) -> list[tuple[int, int, int, int]]:
+def find_connected_boxes(
+    mask,
+    *,
+    min_width_ratio: float = 0.035,
+    min_height_ratio: float = 0.03,
+    min_area_ratio: float = 0.0008,
+    max_area_ratio: float = 0.18,
+) -> list[tuple[int, int, int, int]]:
     width, height = mask.size
     pixels = mask.load()
     visited = bytearray(width * height)
     boxes: list[tuple[int, int, int, int]] = []
-    min_width = max(28, int(width * 0.035))
-    min_height = max(22, int(height * 0.03))
-    min_area = max(500, int(width * height * 0.0008))
-    max_area = int(width * height * 0.18)
+    min_width = max(28, int(width * min_width_ratio))
+    min_height = max(22, int(height * min_height_ratio))
+    min_area = max(500, int(width * height * min_area_ratio))
+    max_area = int(width * height * max_area_ratio)
 
     for y in range(height):
         for x in range(width):
@@ -590,7 +636,46 @@ def classify_pdf_mark_regions(regions: list[PdfMarkRegion]) -> list[PdfMarkRegio
         kind = "front" if width >= width_threshold or aspect_ratio >= 1.08 else "side"
         classified.append(PdfMarkRegion(kind=kind, text=region.text, box=region.box))
 
-    return sorted(classified, key=lambda region: (region.kind, region.box[1], region.box[0]))
+    return sorted(classified, key=pdf_region_position_key)
+
+
+def select_primary_pdf_mark_regions(regions: list[PdfMarkRegion]) -> list[PdfMarkRegion]:
+    if not regions:
+        return []
+
+    ordered = sorted(regions, key=pdf_region_position_key)
+    front_region = next((region for region in ordered if region.kind == "front"), None)
+    if front_region is None:
+        front_region = ordered[0]
+
+    front_index = next(
+        (index for index, region in enumerate(ordered) if region is front_region),
+        0,
+    )
+    side_region = next(
+        (region for region in ordered[front_index + 1:] if region.kind == "side"),
+        None,
+    )
+    if side_region is None:
+        side_region = next(
+            (region for region in ordered if region.kind == "side" and region is not front_region),
+            None,
+        )
+    if side_region is None:
+        side_region = next((region for region in ordered[front_index + 1:] if region is not front_region), None)
+
+    selected = [
+        PdfMarkRegion(kind="front", text=front_region.text, box=front_region.box),
+    ]
+    if side_region is not None:
+        selected.append(PdfMarkRegion(kind="side", text=side_region.text, box=side_region.box))
+
+    return selected
+
+
+def pdf_region_position_key(region: PdfMarkRegion) -> tuple[int, int, int]:
+    left, top, right, bottom = region.box
+    return (left, top, -((right - left) * (bottom - top)))
 
 
 def merge_region_texts(regions) -> str:
@@ -623,18 +708,44 @@ def extract_image_text(image_bytes: bytes, *, source: str) -> tuple[str, CartonM
 
         image = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGB")
         texts = []
-        for variant in build_photo_ocr_variants(image, ImageEnhance, ImageFilter, ImageOps):
-            for config in ("--oem 3 --psm 6 -c preserve_interword_spaces=1", "--oem 3 --psm 11"):
-                text = pytesseract.image_to_string(variant, lang=tesseract_lang, config=config)
+        primary_configs = (
+            "--oem 3 --psm 6 -c preserve_interword_spaces=1",
+            "--oem 3 --psm 4 -c preserve_interword_spaces=1",
+            "--oem 3 --psm 11",
+        )
+        crop_configs = (
+            "--oem 3 --psm 6 -c preserve_interword_spaces=1",
+            "--oem 3 --psm 11",
+        )
+        for index, variant in enumerate(build_photo_ocr_variants(image, ImageEnhance, ImageFilter, ImageOps)):
+            configs = primary_configs if index < 3 else crop_configs
+            for config in configs:
+                text = tesseract_image_to_string(
+                    pytesseract,
+                    variant,
+                    lang=tesseract_lang,
+                    config=config,
+                    timeout=10,
+                )
                 if text.strip():
                     texts.append(text)
+            if index < 8:
+                table_text = tesseract_image_to_table_text(
+                    pytesseract,
+                    variant,
+                    lang=tesseract_lang,
+                    config="--oem 3 --psm 6 -c preserve_interword_spaces=1",
+                    timeout=10,
+                )
+                if table_text.strip():
+                    texts.append(table_text)
 
         text = merge_ocr_text_outputs(texts)
         return text, CartonMarkExtractionStatus(
             source=source,
             ok=bool(text.strip()),
             engine="pytesseract-multi-pass",
-            message="" if text.strip() else "图片 OCR 未识别到文字，请检查照片清晰度或 OCR 语言包。",
+            message="" if text.strip() else "图片 OCR 已尝试整图、箱唛候选区域裁剪和轻微旋转，仍未识别到文字；请检查照片清晰度或改用更强 OCR 引擎。",
             raw_text=clip_text(text),
         )
     except Exception as exc:
@@ -647,8 +758,217 @@ def extract_image_text(image_bytes: bytes, *, source: str) -> tuple[str, CartonM
         )
 
 
+def tesseract_image_to_string(pytesseract_module, image, *, lang: str, config: str, timeout: int) -> str:
+    try:
+        return pytesseract_module.image_to_string(image, lang=lang, config=config, timeout=timeout)
+    except TypeError:
+        return pytesseract_module.image_to_string(image, lang=lang, config=config)
+    except RuntimeError:
+        return ""
+
+
+def tesseract_image_to_table_text(pytesseract_module, image, *, lang: str, config: str, timeout: int) -> str:
+    try:
+        from pytesseract import Output  # type: ignore
+    except Exception:
+        return ""
+
+    try:
+        data = pytesseract_module.image_to_data(
+            image,
+            lang=lang,
+            config=config,
+            output_type=Output.DICT,
+            timeout=timeout,
+        )
+    except TypeError:
+        data = pytesseract_module.image_to_data(
+            image,
+            lang=lang,
+            config=config,
+            output_type=Output.DICT,
+        )
+    except RuntimeError:
+        return ""
+
+    return build_ocr_word_table_text(collect_ocr_words(data))
+
+
+def collect_ocr_words(data: dict) -> list[OcrWord]:
+    words: list[OcrWord] = []
+    texts = data.get("text", [])
+    for index, raw_text in enumerate(texts):
+        text = str(raw_text or "").strip()
+        if not re.search(r"[A-Z0-9一-龥]", text, re.IGNORECASE):
+            continue
+
+        try:
+            confidence = float(data.get("conf", [])[index])
+        except Exception:
+            confidence = 0
+        if confidence < 8 and len(normalize_compare_value(text)) < 3:
+            continue
+
+        try:
+            left = int(float(data.get("left", [])[index]))
+            top = int(float(data.get("top", [])[index]))
+            width = int(float(data.get("width", [])[index]))
+            height = int(float(data.get("height", [])[index]))
+        except Exception:
+            continue
+        if width <= 0 or height <= 0:
+            continue
+
+        words.append(OcrWord(
+            text=text,
+            left=left,
+            top=top,
+            right=left + width,
+            bottom=top + height,
+            confidence=confidence,
+        ))
+
+    return words
+
+
+def build_ocr_word_table_text(words: list[OcrWord]) -> str:
+    if not words:
+        return ""
+
+    rows = group_ocr_words_into_rows(words)
+    lines = []
+    lines.extend(words_to_spaced_line(row) for row in rows)
+    lines.extend(build_label_value_lines_from_rows(rows))
+    return merge_ocr_text_outputs(lines)
+
+
+def group_ocr_words_into_rows(words: list[OcrWord]) -> list[list[OcrWord]]:
+    sorted_words = sorted(words, key=lambda word: (word.top + word.bottom, word.left))
+    median_height = median_number([word.bottom - word.top for word in sorted_words]) or 12
+    row_threshold = max(10, int(median_height * 0.75))
+    rows: list[list[OcrWord]] = []
+
+    for word in sorted_words:
+        center_y = (word.top + word.bottom) // 2
+        best_row = None
+        best_distance = row_threshold + 1
+        for row in rows:
+            row_center = sum((item.top + item.bottom) // 2 for item in row) // len(row)
+            distance = abs(center_y - row_center)
+            if distance <= row_threshold and distance < best_distance:
+                best_row = row
+                best_distance = distance
+
+        if best_row is None:
+            rows.append([word])
+        else:
+            best_row.append(word)
+
+    return [sorted(row, key=lambda word: word.left) for row in rows]
+
+
+def words_to_spaced_line(words: list[OcrWord]) -> str:
+    if not words:
+        return ""
+
+    sorted_words = sorted(words, key=lambda word: word.left)
+    widths = [word.right - word.left for word in sorted_words]
+    median_width = median_number(widths) or 16
+    parts = [sorted_words[0].text]
+    previous = sorted_words[0]
+
+    for word in sorted_words[1:]:
+        gap = word.left - previous.right
+        parts.append(" | " if gap > median_width * 1.8 else " ")
+        parts.append(word.text)
+        previous = word
+
+    return "".join(parts)
+
+
+def build_label_value_lines_from_rows(rows: list[list[OcrWord]]) -> list[str]:
+    lines: list[str] = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+
+        row_line = words_to_spaced_line(row)
+        for definition in FIELD_DEFINITIONS:
+            alias_match = find_alias_word_span(row, definition)
+            if alias_match is None:
+                continue
+
+            alias_text, alias_right = alias_match
+            value_words = [
+                word
+                for word in row
+                if word.left >= alias_right - 2 and not word_looks_like_any_alias(word.text)
+            ]
+            value_text = clean_field_value(" ".join(word.text for word in value_words))
+            if is_plausible_field_value(value_text, definition):
+                lines.append(f"{alias_text} {value_text}")
+            elif line_looks_like_alias(row_line, alias_text):
+                lines.append(row_line)
+
+    return lines
+
+
+def find_alias_word_span(row: list[OcrWord], definition: FieldDefinition) -> tuple[str, int] | None:
+    normalized_words = [normalize_compare_value(word.text) for word in row]
+    for alias in sorted(definition.aliases, key=lambda value: len(normalize_compare_value(value)), reverse=True):
+        alias_key = normalize_compare_value(alias)
+        if not alias_key:
+            continue
+
+        for start in range(len(row)):
+            combined = ""
+            for end in range(start, min(len(row), start + 6)):
+                combined += normalized_words[end]
+                if combined == alias_key:
+                    return alias, row[end].right
+                if len(combined) > len(alias_key) + 4:
+                    break
+
+    return None
+
+
+def word_looks_like_any_alias(text: str) -> bool:
+    normalized = normalize_compare_value(text)
+    if not normalized:
+        return False
+    return any(
+        normalized == normalize_compare_value(alias)
+        for definition in FIELD_DEFINITIONS
+        for alias in definition.aliases
+    )
+
+
+def median_number(values: list[int]) -> float:
+    if not values:
+        return 0
+
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return float(ordered[middle])
+
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
 def build_photo_ocr_variants(image, image_enhance, image_filter, image_ops) -> list:
     base = resize_for_ocr(image.convert("RGB"))
+    variants = []
+    seen_sizes: set[tuple[int, int, int]] = set()
+
+    def add_variant(variant) -> None:
+        key = (variant.width, variant.height, len(variants))
+        if variant.width < 120 or variant.height < 80:
+            return
+        if key in seen_sizes:
+            return
+        seen_sizes.add(key)
+        variants.append(variant)
+
     gray = image_ops.grayscale(base)
     contrast = image_ops.autocontrast(gray)
     enhanced = image_enhance.Contrast(contrast).enhance(1.8)
@@ -657,14 +977,140 @@ def build_photo_ocr_variants(image, image_enhance, image_filter, image_ops) -> l
     threshold = estimate_binary_threshold(denoised)
     binary = denoised.point(lambda pixel: 255 if pixel > threshold else 0)
 
-    variants = [base, denoised, binary]
+    add_variant(base)
+    add_variant(denoised)
+    add_variant(binary)
+
     content_crop = crop_to_dark_content(base)
     if content_crop is not None:
-        crop_gray = image_ops.grayscale(resize_for_ocr(content_crop))
-        crop_contrast = image_ops.autocontrast(crop_gray)
-        variants.append(image_enhance.Sharpness(crop_contrast).enhance(2.0))
+        add_photo_region_variants(content_crop, variants, seen_sizes, image_enhance, image_filter, image_ops)
 
-    return variants
+    for box in locate_photo_mark_boxes(base, image_filter, image_ops)[:4]:
+        region = base.crop(box)
+        add_photo_region_variants(region, variants, seen_sizes, image_enhance, image_filter, image_ops)
+
+    rotated = [
+        base.rotate(angle, expand=True, fillcolor=(255, 255, 255))
+        for angle in (-2, 2)
+    ]
+    for rotated_base in rotated:
+        rotated_crop = crop_to_dark_content(rotated_base)
+        if rotated_crop is not None:
+            add_photo_region_variants(rotated_crop, variants, seen_sizes, image_enhance, image_filter, image_ops)
+
+    return variants[:12]
+
+
+def add_photo_region_variants(region, variants: list, seen_sizes: set[tuple[int, int, int]], image_enhance, image_filter, image_ops) -> None:
+    def add_variant(variant) -> None:
+        key = (variant.width, variant.height, len(variants))
+        if variant.width < 120 or variant.height < 80:
+            return
+        if key in seen_sizes:
+            return
+        seen_sizes.add(key)
+        variants.append(variant)
+
+    region = resize_for_ocr(region.convert("RGB"))
+    crop_gray = image_ops.grayscale(region)
+    crop_contrast = image_ops.autocontrast(crop_gray)
+    crop_enhanced = image_enhance.Contrast(crop_contrast).enhance(2.2)
+    crop_sharp = image_enhance.Sharpness(crop_enhanced).enhance(2.4)
+    crop_denoised = crop_sharp.filter(image_filter.MedianFilter(size=3))
+    crop_threshold = estimate_binary_threshold(crop_denoised)
+    crop_binary = crop_denoised.point(lambda pixel: 255 if pixel > crop_threshold else 0)
+
+    add_variant(region)
+    add_variant(crop_denoised)
+    add_variant(crop_binary)
+
+
+def locate_photo_mark_boxes(image, image_filter, image_ops) -> list[tuple[int, int, int, int]]:
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return []
+
+    max_analysis_width = 1200
+    scale = min(1.0, max_analysis_width / max(width, 1))
+    analysis_image = image.resize((int(width * scale), int(height * scale))) if scale < 1 else image
+    gray = image_ops.autocontrast(image_ops.grayscale(analysis_image))
+
+    masks = []
+    edge_mask = gray.filter(image_filter.FIND_EDGES)
+    edge_threshold = estimate_highlight_threshold(edge_mask)
+    masks.append(edge_mask.point(lambda pixel: 255 if pixel > edge_threshold else 0))
+
+    dark_threshold = estimate_binary_threshold(gray)
+    masks.append(gray.point(lambda pixel: 255 if pixel < dark_threshold else 0))
+
+    candidate_boxes = []
+    for mask in masks:
+        grouped = mask.filter(image_filter.MaxFilter(31)).filter(image_filter.MinFilter(7))
+        candidate_boxes.extend(find_connected_boxes(
+            grouped,
+            min_width_ratio=0.08,
+            min_height_ratio=0.08,
+            min_area_ratio=0.008,
+            max_area_ratio=0.72,
+        ))
+
+    boxes = []
+    for box in filter_plausible_photo_mark_boxes(candidate_boxes, analysis_image.width, analysis_image.height):
+        boxes.append(expand_box(
+            (
+                int(box[0] / scale),
+                int(box[1] / scale),
+                int(box[2] / scale),
+                int(box[3] / scale),
+            ),
+            width,
+            height,
+            padding=max(30, int(min(width, height) * 0.025)),
+        ))
+
+    return dedupe_boxes(sorted(
+        boxes,
+        key=lambda box: (box[2] - box[0]) * (box[3] - box[1]),
+        reverse=True,
+    ))
+
+
+def estimate_highlight_threshold(gray_image) -> int:
+    histogram = gray_image.histogram()
+    total = sum(histogram)
+    if not total:
+        return 28
+
+    weighted_sum = sum(index * count for index, count in enumerate(histogram))
+    mean = weighted_sum / total
+    return max(18, min(55, int(mean * 1.35)))
+
+
+def filter_plausible_photo_mark_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    image_width: int,
+    image_height: int,
+) -> list[tuple[int, int, int, int]]:
+    filtered = []
+
+    for box in boxes:
+        width = box[2] - box[0]
+        height = box[3] - box[1]
+        if width <= 0 or height <= 0:
+            continue
+
+        area_ratio = (width * height) / max(image_width * image_height, 1)
+        aspect_ratio = width / max(height, 1)
+        if area_ratio < 0.02 or area_ratio > 0.78:
+            continue
+        if aspect_ratio < 0.35 or aspect_ratio > 4.8:
+            continue
+        if width < image_width * 0.12 or height < image_height * 0.10:
+            continue
+
+        filtered.append(box)
+
+    return filtered
 
 
 def resize_for_ocr(image):
@@ -770,8 +1216,7 @@ def enrich_fields_from_expected_values(
     source: str,
 ) -> list[CartonMarkExtractedField]:
     merged = {field.key: field for field in fields}
-    normalized_text = normalize_compare_value(text)
-    if not normalized_text:
+    if not normalize_compare_value(text):
         return fields
 
     for expected in expected_fields:
@@ -779,10 +1224,7 @@ def enrich_fields_from_expected_values(
             continue
 
         expected_value = expected.value.strip()
-        normalized_expected = normalize_compare_value(expected_value)
-        if not is_searchable_expected_value(expected.key, normalized_expected):
-            continue
-        if normalized_expected not in normalized_text:
+        if not photo_text_matches_expected_value(text, expected_value, expected.key):
             continue
 
         definition = FIELD_BY_KEY.get(expected.key)
@@ -800,6 +1242,69 @@ def enrich_fields_from_expected_values(
     return [merged[key] for key in FIELD_ORDER if key in merged]
 
 
+def enrich_expected_fields_from_actual_values(
+    expected_fields: list[CartonMarkExtractedField],
+    actual_fields: list[CartonMarkExtractedField],
+    template_text: str,
+    *,
+    source: str,
+) -> list[CartonMarkExtractedField]:
+    merged = {field.key: field for field in expected_fields}
+    if not normalize_compare_value(template_text):
+        return expected_fields
+
+    for actual in actual_fields:
+        if actual.key in merged:
+            continue
+
+        actual_value = actual.value.strip()
+        if not actual_value:
+            continue
+        if not photo_text_matches_expected_value(template_text, actual_value, actual.key):
+            continue
+
+        definition = FIELD_BY_KEY.get(actual.key)
+        if not definition:
+            continue
+
+        merged[actual.key] = CartonMarkExtractedField(
+            key=definition.key,
+            label=definition.label,
+            value=actual_value,
+            confidence=min(0.62, actual.confidence),
+            source=source,
+        )
+
+    return [merged[key] for key in FIELD_ORDER if key in merged]
+
+
+def photo_text_matches_expected_value(text: str, expected_value: str, key: str) -> bool:
+    normalized_expected = normalize_compare_value(expected_value)
+    if not is_searchable_expected_value(key, normalized_expected):
+        return False
+
+    normalized_text = normalize_compare_value(text)
+    if normalized_expected in normalized_text:
+        return True
+    if key not in IDENTIFIER_FIELD_KEYS:
+        return False
+
+    numeric_bias = key in {"po", "item", "carton_no", "barcode"}
+    expected_identifier = normalize_identifier_value(expected_value, numeric_bias=numeric_bias)
+    if not is_searchable_expected_value(key, expected_identifier):
+        return False
+
+    candidates = build_identifier_candidates(text, numeric_bias=numeric_bias)
+    if any(expected_identifier in candidate for candidate in candidates):
+        return True
+
+    max_distance = 2 if len(expected_identifier) >= 8 else 1
+    return any(
+        fuzzy_contains_identifier(candidate, expected_identifier, max_distance)
+        for candidate in candidates
+    )
+
+
 def is_searchable_expected_value(key: str, normalized_value: str) -> bool:
     if key == "barcode":
         return len(normalized_value) >= 8
@@ -807,6 +1312,86 @@ def is_searchable_expected_value(key: str, normalized_value: str) -> bool:
         return len(normalized_value) >= 4
 
     return len(normalized_value) >= 6
+
+
+def normalize_identifier_value(value: str, *, numeric_bias: bool) -> str:
+    normalized = value.upper()
+    if numeric_bias:
+        normalized = normalized.translate(OCR_IDENTIFIER_TRANSLATION)
+    return re.sub(r"[^A-Z0-9]+", "", normalized)
+
+
+def build_identifier_candidates(text: str, *, numeric_bias: bool) -> list[str]:
+    tokens = [
+        normalize_identifier_value(token, numeric_bias=numeric_bias)
+        for token in re.findall(r"[A-Z0-9|]+", text.upper())
+    ]
+    tokens = [token for token in tokens if token]
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add_candidate(candidate: str) -> None:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    for token in tokens:
+        add_candidate(token)
+
+    max_window_size = min(6, len(tokens))
+    for window_size in range(2, max_window_size + 1):
+        for start in range(0, len(tokens) - window_size + 1):
+            add_candidate("".join(tokens[start:start + window_size]))
+
+    joined = "".join(tokens)
+    if len(joined) <= 300:
+        add_candidate(joined)
+
+    return candidates
+
+
+def fuzzy_contains_identifier(candidate: str, expected: str, max_distance: int) -> bool:
+    if not candidate or not expected:
+        return False
+    if expected in candidate:
+        return True
+
+    min_length = max(1, len(expected) - max_distance)
+    max_length = len(expected) + max_distance
+    for length in range(min_length, max_length + 1):
+        if length > len(candidate):
+            continue
+        for start in range(0, len(candidate) - length + 1):
+            segment = candidate[start:start + length]
+            if levenshtein_distance_at_most(expected, segment, max_distance):
+                return True
+
+    return False
+
+
+def levenshtein_distance_at_most(left: str, right: str, max_distance: int) -> bool:
+    if abs(len(left) - len(right)) > max_distance:
+        return False
+
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        row_min = current[0]
+        for right_index, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            current.append(min(
+                current[right_index - 1] + 1,
+                previous[right_index] + 1,
+                previous[right_index - 1] + cost,
+            ))
+            row_min = min(row_min, current[-1])
+
+        if row_min > max_distance:
+            return False
+        previous = current
+
+    return previous[-1] <= max_distance
 
 
 def merge_metadata_fields(
@@ -863,7 +1448,7 @@ def compare_side(
         elif not actual:
             status = "review" if not photo_status.ok else "missing_actual"
             note = photo_status.message if not photo_status.ok else "照片未识别到该字段。"
-        elif normalize_compare_value(expected) == normalize_compare_value(actual):
+        elif field_values_match(key, expected, actual):
             status = "pass"
             note = ""
         else:
@@ -882,6 +1467,15 @@ def compare_side(
         ))
 
     return comparisons
+
+
+def field_values_match(key: str, expected: str, actual: str) -> bool:
+    if normalize_compare_value(expected) == normalize_compare_value(actual):
+        return True
+    if key in IDENTIFIER_FIELD_KEYS:
+        return photo_text_matches_expected_value(actual, expected, key)
+
+    return False
 
 
 def summarize_comparisons(comparisons: list[CartonMarkComparisonItem]) -> CartonMarkAutoCheckSummary:

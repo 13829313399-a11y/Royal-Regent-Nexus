@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { CheckCircle2, Eye, FileText, Image as ImageIcon, Plus, RefreshCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
+import { CheckCircle2, Crop, Eye, FileText, Image as ImageIcon, Plus, RefreshCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { cartonMarkApi, type CartonMarkAutoCheckResponse, type CartonMarkComparisonItem } from '@/api/cartonMark'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
+import {
+  clampRatio,
+  cropImageBlob,
+  getContainedImageFrame,
+  isUsableCropSelection,
+  normalizeCropSelection,
+  type NormalizedCropSelection,
+} from '@/lib/imageCrop'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
@@ -65,6 +73,15 @@ interface StoredCartonMarkPhotoRecord extends Omit<CartonMarkPhotoRecord, 'image
 
 type CartonMarkPhotoSide = 'front' | 'side'
 
+interface PhotoCropState {
+  enabled: boolean
+  isDragging: boolean
+  startPoint: { x: number, y: number } | null
+  selection: NormalizedCropSelection | null
+  applied: boolean
+  errorMessage: string
+}
+
 interface CustomerNameRecord {
   id: string
   factoryId: ProductionFactoryContextId
@@ -105,6 +122,9 @@ const selectedFrontPhotoFile = ref<File | null>(null)
 const selectedSidePhotoFile = ref<File | null>(null)
 const selectedFrontPreviewUrl = ref('')
 const selectedSidePreviewUrl = ref('')
+const frontPreviewImage = ref<HTMLImageElement | null>(null)
+const sidePreviewImage = ref<HTMLImageElement | null>(null)
+const photoPreviewRenderTick = ref(0)
 const fileInput = ref<HTMLInputElement | null>(null)
 const frontPhotoFileInput = ref<HTMLInputElement | null>(null)
 const sidePhotoFileInput = ref<HTMLInputElement | null>(null)
@@ -128,6 +148,10 @@ const deletingPhotoRecordId = ref('')
 const storageMode = ref<'indexedDb' | 'localStorage'>('indexedDb')
 const pdfUrls = new Set<string>()
 const imageUrls = new Set<string>()
+const photoCropState = reactive<Record<CartonMarkPhotoSide, PhotoCropState>>({
+  front: createPhotoCropState(),
+  side: createPhotoCropState(),
+})
 
 const activeFactory = computed(() => appStore.activeProductionFactory)
 const activeFactoryId = computed(() => activeFactory.value.id as ProductionFactoryContextId)
@@ -441,6 +465,190 @@ function revokeImageUrl(url: string) {
   imageUrls.delete(url)
 }
 
+function createPhotoCropState(): PhotoCropState {
+  return {
+    enabled: false,
+    isDragging: false,
+    startPoint: null,
+    selection: null,
+    applied: false,
+    errorMessage: '',
+  }
+}
+
+function resetPhotoCropState(side: CartonMarkPhotoSide, keepApplied = false) {
+  const state = photoCropState[side]
+  state.enabled = false
+  state.isDragging = false
+  state.startPoint = null
+  state.selection = null
+  state.errorMessage = ''
+  if (!keepApplied) {
+    state.applied = false
+  }
+}
+
+function getPhotoPreviewImage(side: CartonMarkPhotoSide) {
+  return side === 'front' ? frontPreviewImage.value : sidePreviewImage.value
+}
+
+function getSelectedPhotoFile(side: CartonMarkPhotoSide) {
+  return side === 'front' ? selectedFrontPhotoFile.value : selectedSidePhotoFile.value
+}
+
+function setSelectedPhotoFile(side: CartonMarkPhotoSide, file: File) {
+  if (side === 'front') {
+    selectedFrontPhotoFile.value = file
+    if (selectedFrontPreviewUrl.value) {
+      revokeImageUrl(selectedFrontPreviewUrl.value)
+    }
+    selectedFrontPreviewUrl.value = createImageUrl(file)
+    return
+  }
+
+  selectedSidePhotoFile.value = file
+  if (selectedSidePreviewUrl.value) {
+    revokeImageUrl(selectedSidePreviewUrl.value)
+  }
+  selectedSidePreviewUrl.value = createImageUrl(file)
+}
+
+function enablePhotoCrop(side: CartonMarkPhotoSide) {
+  const state = photoCropState[side]
+  state.enabled = true
+  state.isDragging = false
+  state.startPoint = null
+  state.selection = null
+  state.errorMessage = ''
+  photoErrorMessage.value = ''
+  photoSuccessMessage.value = ''
+  photoPreviewRenderTick.value += 1
+}
+
+function cancelPhotoCrop(side: CartonMarkPhotoSide) {
+  resetPhotoCropState(side, true)
+}
+
+function getCropPointFromPointer(event: PointerEvent) {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  return {
+    x: clampRatio((event.clientX - rect.left) / Math.max(1, rect.width)),
+    y: clampRatio((event.clientY - rect.top) / Math.max(1, rect.height)),
+  }
+}
+
+function startPhotoCrop(event: PointerEvent, side: CartonMarkPhotoSide) {
+  const state = photoCropState[side]
+  if (!state.enabled) return
+
+  event.preventDefault()
+  ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
+  const point = getCropPointFromPointer(event)
+  state.isDragging = true
+  state.startPoint = point
+  state.selection = {
+    x: point.x,
+    y: point.y,
+    width: 0,
+    height: 0,
+  }
+}
+
+function movePhotoCrop(event: PointerEvent, side: CartonMarkPhotoSide) {
+  const state = photoCropState[side]
+  if (!state.enabled || !state.isDragging || !state.startPoint) return
+
+  event.preventDefault()
+  state.selection = normalizeCropSelection(state.startPoint, getCropPointFromPointer(event))
+}
+
+function finishPhotoCrop(event: PointerEvent, side: CartonMarkPhotoSide) {
+  const state = photoCropState[side]
+  if (!state.isDragging) return
+
+  movePhotoCrop(event, side)
+  state.isDragging = false
+  state.startPoint = null
+  ;(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId)
+}
+
+function getPhotoCropFrameStyle(side: CartonMarkPhotoSide) {
+  photoPreviewRenderTick.value
+  const image = getPhotoPreviewImage(side)
+  if (!image) {
+    return {
+      inset: '0px',
+    }
+  }
+
+  const frame = getContainedImageFrame(
+    image.clientWidth,
+    image.clientHeight,
+    image.naturalWidth,
+    image.naturalHeight,
+  )
+
+  return {
+    left: `${frame.left}px`,
+    top: `${frame.top}px`,
+    width: `${frame.width}px`,
+    height: `${frame.height}px`,
+  }
+}
+
+function getPhotoCropSelectionStyle(side: CartonMarkPhotoSide) {
+  const selection = photoCropState[side].selection
+  if (!selection) {
+    return {
+      display: 'none',
+    }
+  }
+
+  return {
+    left: `${selection.x * 100}%`,
+    top: `${selection.y * 100}%`,
+    width: `${selection.width * 100}%`,
+    height: `${selection.height * 100}%`,
+  }
+}
+
+function handlePhotoPreviewLoad() {
+  photoPreviewRenderTick.value += 1
+}
+
+function buildCroppedPhotoFileName(fileName: string) {
+  const dotIndex = fileName.lastIndexOf('.')
+  if (dotIndex <= 0) {
+    return `${fileName}-crop.png`
+  }
+
+  return `${fileName.slice(0, dotIndex)}-crop.png`
+}
+
+async function applyPhotoCrop(side: CartonMarkPhotoSide) {
+  const state = photoCropState[side]
+  const file = getSelectedPhotoFile(side)
+  if (!file) return
+
+  if (!isUsableCropSelection(state.selection)) {
+    state.errorMessage = '请框选完整箱唛区域后再应用。'
+    return
+  }
+
+  try {
+    const croppedFile = await cropImageBlob(file, state.selection as NormalizedCropSelection, buildCroppedPhotoFileName(file.name))
+    setSelectedPhotoFile(side, croppedFile)
+    resetPhotoCropState(side)
+    photoCropState[side].applied = true
+    photoSuccessMessage.value = side === 'front'
+      ? '正唛已裁剪为箱唛区域，将使用裁剪图自动核对。'
+      : '侧唛已裁剪为箱唛区域，将使用裁剪图自动核对。'
+    photoPreviewRenderTick.value += 1
+  } catch (error) {
+    state.errorMessage = getApiErrorMessage(error)
+  }
+}
+
 function hydrateRecord(record: StoredCartonMarkTemplateRecord): CartonMarkTemplateRecord {
   return {
     ...record,
@@ -591,6 +799,7 @@ function clearPhotoSelection(side: CartonMarkPhotoSide, clearComparison = true) 
 
   if (side === 'front') {
     selectedFrontPhotoFile.value = null
+    resetPhotoCropState('front')
 
     if (selectedFrontPreviewUrl.value) {
       revokeImageUrl(selectedFrontPreviewUrl.value)
@@ -605,6 +814,7 @@ function clearPhotoSelection(side: CartonMarkPhotoSide, clearComparison = true) 
   }
 
   selectedSidePhotoFile.value = null
+  resetPhotoCropState('side')
 
   if (selectedSidePreviewUrl.value) {
     revokeImageUrl(selectedSidePreviewUrl.value)
@@ -811,14 +1021,12 @@ function handlePhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
 
   if (side === 'front') {
     clearPhotoSelection('front', false)
-    selectedFrontPhotoFile.value = file
-    selectedFrontPreviewUrl.value = createImageUrl(file)
+    setSelectedPhotoFile('front', file)
     return
   }
 
   clearPhotoSelection('side', false)
-  selectedSidePhotoFile.value = file
-  selectedSidePreviewUrl.value = createImageUrl(file)
+  setSelectedPhotoFile('side', file)
 }
 
 async function submitTemplate() {
@@ -1785,11 +1993,72 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 v-if="selectedFrontPreviewUrl"
                 class="mt-4 overflow-hidden rounded-lg border border-blue-100 bg-white"
               >
-                <img
-                  :src="selectedFrontPreviewUrl"
-                  alt="正唛待对比预览"
-                  class="h-48 w-full bg-slate-100 object-contain"
+                <div class="relative h-56 bg-slate-100">
+                  <img
+                    ref="frontPreviewImage"
+                    :src="selectedFrontPreviewUrl"
+                    alt="正唛待对比预览"
+                    class="h-full w-full select-none object-contain"
+                    draggable="false"
+                    @load="handlePhotoPreviewLoad"
+                  >
+                  <div
+                    v-if="photoCropState.front.enabled"
+                    class="absolute cursor-crosshair touch-none border border-blue-300/70 bg-blue-500/5"
+                    :style="getPhotoCropFrameStyle('front')"
+                    @pointerdown="startPhotoCrop($event, 'front')"
+                    @pointermove="movePhotoCrop($event, 'front')"
+                    @pointerup="finishPhotoCrop($event, 'front')"
+                    @pointercancel="finishPhotoCrop($event, 'front')"
+                  >
+                    <div
+                      class="absolute border-2 border-blue-500 bg-blue-400/20 shadow-[0_0_0_9999px_rgba(15,23,42,0.28)]"
+                      :style="getPhotoCropSelectionStyle('front')"
+                    />
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-blue-100 px-3 py-2">
+                  <span
+                    v-if="photoCropState.front.applied"
+                    class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700"
+                  >
+                    已裁剪
+                  </span>
+                  <span v-else class="text-xs font-medium text-slate-500">正唛 OCR 图片</span>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      v-if="!photoCropState.front.enabled"
+                      type="button"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
+                      @click="enablePhotoCrop('front')"
+                    >
+                      <Crop class="size-3.5" aria-hidden="true" />
+                      框选箱唛区域
+                    </button>
+                    <template v-else>
+                      <button
+                        type="button"
+                        class="inline-flex h-8 items-center rounded-lg border border-blue-200 bg-blue-600 px-3 text-xs font-semibold text-white transition hover:bg-blue-700"
+                        @click="applyPhotoCrop('front')"
+                      >
+                        应用裁剪
+                      </button>
+                      <button
+                        type="button"
+                        class="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300"
+                        @click="cancelPhotoCrop('front')"
+                      >
+                        取消
+                      </button>
+                    </template>
+                  </div>
+                </div>
+                <p
+                  v-if="photoCropState.front.errorMessage"
+                  class="border-t border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-700"
                 >
+                  {{ photoCropState.front.errorMessage }}
+                </p>
               </div>
             </div>
 
@@ -1836,11 +2105,72 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 v-if="selectedSidePreviewUrl"
                 class="mt-4 overflow-hidden rounded-lg border border-blue-100 bg-white"
               >
-                <img
-                  :src="selectedSidePreviewUrl"
-                  alt="侧唛待对比预览"
-                  class="h-48 w-full bg-slate-100 object-contain"
+                <div class="relative h-56 bg-slate-100">
+                  <img
+                    ref="sidePreviewImage"
+                    :src="selectedSidePreviewUrl"
+                    alt="侧唛待对比预览"
+                    class="h-full w-full select-none object-contain"
+                    draggable="false"
+                    @load="handlePhotoPreviewLoad"
+                  >
+                  <div
+                    v-if="photoCropState.side.enabled"
+                    class="absolute cursor-crosshair touch-none border border-blue-300/70 bg-blue-500/5"
+                    :style="getPhotoCropFrameStyle('side')"
+                    @pointerdown="startPhotoCrop($event, 'side')"
+                    @pointermove="movePhotoCrop($event, 'side')"
+                    @pointerup="finishPhotoCrop($event, 'side')"
+                    @pointercancel="finishPhotoCrop($event, 'side')"
+                  >
+                    <div
+                      class="absolute border-2 border-blue-500 bg-blue-400/20 shadow-[0_0_0_9999px_rgba(15,23,42,0.28)]"
+                      :style="getPhotoCropSelectionStyle('side')"
+                    />
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-blue-100 px-3 py-2">
+                  <span
+                    v-if="photoCropState.side.applied"
+                    class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700"
+                  >
+                    已裁剪
+                  </span>
+                  <span v-else class="text-xs font-medium text-slate-500">侧唛 OCR 图片</span>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      v-if="!photoCropState.side.enabled"
+                      type="button"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
+                      @click="enablePhotoCrop('side')"
+                    >
+                      <Crop class="size-3.5" aria-hidden="true" />
+                      框选箱唛区域
+                    </button>
+                    <template v-else>
+                      <button
+                        type="button"
+                        class="inline-flex h-8 items-center rounded-lg border border-blue-200 bg-blue-600 px-3 text-xs font-semibold text-white transition hover:bg-blue-700"
+                        @click="applyPhotoCrop('side')"
+                      >
+                        应用裁剪
+                      </button>
+                      <button
+                        type="button"
+                        class="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-slate-300"
+                        @click="cancelPhotoCrop('side')"
+                      >
+                        取消
+                      </button>
+                    </template>
+                  </div>
+                </div>
+                <p
+                  v-if="photoCropState.side.errorMessage"
+                  class="border-t border-red-100 bg-red-50 px-3 py-2 text-xs font-medium text-red-700"
                 >
+                  {{ photoCropState.side.errorMessage }}
+                </p>
               </div>
             </div>
           </div>
