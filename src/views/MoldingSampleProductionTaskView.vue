@@ -683,7 +683,7 @@ async function saveProductionFillback() {
   try {
     const updated = await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
     replaceApiRecord(updated)
-    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料、啤办机台和啤办费。'
+    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料、啤机确认机台和啤办费。'
   }
   catch (error) {
     actionMessage.value = `啤机回填保存失败：${getApiErrorMessage(error)}`
@@ -1105,7 +1105,7 @@ watchEffect(() => {
                     <th class="px-2 py-2 text-left font-medium">模具 / 原料</th>
                     <th class="px-2 py-2 text-right font-medium">领料(kg)</th>
                     <th class="px-2 py-2 text-right font-medium">实际用料(kg)</th>
-                    <th class="px-2 py-2 text-left font-medium">啤办机台</th>
+                    <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
                     <th class="px-2 py-2 text-right font-medium">料费(HKD)</th>
                     <th class="px-2 py-2 text-right font-medium">啤办费(RMB)</th>
                     <th class="px-2 py-2 text-right font-medium">啤办费(HKD)</th>
@@ -1154,7 +1154,7 @@ watchEffect(() => {
                       <input
                         :value="itemDrafts[item.id]?.production_machine ?? ''"
                         :disabled="!canFillbackSelectedTask"
-                        aria-label="啤办机台"
+                        aria-label="啤机确认机台"
                         type="text"
                         class="h-8 w-28 rounded-md border border-slate-200 px-2 text-left outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
                         placeholder="机台号"
@@ -1281,15 +1281,13 @@ watchEffect(() => {
                       </span>
                     </div>
                     <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                      <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
-                      <div><span class="text-slate-400">啤办机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
+                      <div><span class="text-slate-400">啤机确认机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                       <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                       <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                       <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
                       <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
                       <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
                       <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
-                      <div><span class="text-slate-400">收据编号</span><div class="font-semibold">{{ formatBlank(item.receipt_no) }}</div></div>
                       <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                       <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                       <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd ?? item.actual_amount_hkd) }}</div></div>
