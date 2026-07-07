@@ -33,6 +33,7 @@ export type MoldingSampleStatusAction =
   | '工程撤回'
   | '开始处理'
   | '标记完成'
+  | '撤回完成'
 
 export interface MoldingSampleStatusTransitionInput {
   order: MoldingSampleOrder
@@ -283,6 +284,14 @@ export function getMoldingSampleStatusTransition(
       next_status: '已完成',
       completed_date: today || order.completed_date || order.date,
     }
+  }
+
+  if (action === '撤回完成') {
+    if (order.status !== '已完成' || actor_role !== '啤机部') {
+      return rejectedResult(order, '只有啤机部可以撤回已完成单据。')
+    }
+
+    return { allowed: true, next_status: '生产中', completed_date: '' }
   }
 
   return rejectedResult(order, '未知状态动作。')
