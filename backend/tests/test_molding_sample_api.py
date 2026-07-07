@@ -642,6 +642,41 @@ def test_molding_clerk_can_withdraw_completed_production_handoff(client):
     assert rollback_payload["audit_logs"][0]["reason"] == "啤机部发现回填用料需修正"
 
 
+def test_molding_clerk_can_withdraw_started_production_to_pending(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-PROD-START-ROLLBACK-001"))
+
+    login_as(client, "supervisor")
+    approved_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "molding_clerk")
+    start_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "开始处理"},
+    )
+    assert start_response.status_code == 200
+    assert start_response.json()["order"]["status"] == "生产中"
+
+    rollback_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "撤回开始生产", "reason": "啤机部误点开始生产，退回待生产"},
+    )
+
+    assert rollback_response.status_code == 200
+    rollback_payload = rollback_response.json()
+    assert rollback_payload["order"]["status"] == "待生产"
+    assert rollback_payload["order"]["completed_date"] == ""
+    assert rollback_payload["audit_logs"][0]["action"] == "撤回开始生产"
+    assert rollback_payload["audit_logs"][0]["from_status"] == "生产中"
+    assert rollback_payload["audit_logs"][0]["to_status"] == "待生产"
+    assert rollback_payload["audit_logs"][0]["reason"] == "啤机部误点开始生产，退回待生产"
+
+
 def test_engineer_can_withdraw_order_they_submitted_when_display_engineer_name_differs(client):
     login_as(client, "engineer")
     payload = sample_order_payload("BP-WITHDRAW-ACTOR-001")
@@ -973,13 +1008,15 @@ def test_export_molding_sample_excel_template_has_report_styling(client):
 
     assert "啤办单 · 链条枪（BP-XLSX-STYLE-001） · 待审核" in sheet_xml
     assert "产品 / 客户" in sheet_xml
+    assert "预计料费HKD" in sheet_xml
+    assert "29.83" in sheet_xml
     assert "缺" in sheet_xml
     assert "原料小计" in sheet_xml
     assert "总计" in sheet_xml
-    assert '<mergeCell ref="A1:V1"/>' in sheet_xml
-    assert '<mergeCell ref="F2:V2"/>' in sheet_xml
+    assert '<mergeCell ref="A1:W1"/>' in sheet_xml
+    assert '<mergeCell ref="F2:W2"/>' in sheet_xml
     assert '<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>' in sheet_xml
-    assert f'<autoFilter ref="A{detail_header_row}:V{detail_header_row}"/>' in sheet_xml
+    assert f'<autoFilter ref="A{detail_header_row}:W{detail_header_row}"/>' in sheet_xml
     assert '<cols>' in sheet_xml
     assert 'customWidth="1"' in sheet_xml
     assert '<col min="2" max="2" width="24" customWidth="1"/>' in sheet_xml

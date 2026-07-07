@@ -46,7 +46,9 @@ import {
 import { rawMaterialDatabaseRows } from '@/data/rawMaterialDatabase'
 import {
   buildCompletionGate,
+  calculateExpectedMaterialAmountHkd,
   isExternalMoldingSampleOrder,
+  resolveMaterialPrice,
   roundMoney,
 } from '@/lib/moldingSampleBusiness'
 import { getApiErrorMessage } from '@/lib/http'
@@ -214,6 +216,7 @@ const materialBalancePeriodMode = ref<MaterialBalancePeriodMode>('day')
 const selectedOrderId = ref(readQueryString(route.query.order_id))
 const selectedBatchOrderIds = ref<string[]>([])
 const printableRecords = ref<MoldingSampleWorkflowRecord[]>([])
+const printPreviewVisible = ref(false)
 const searchKeyword = ref('')
 const overviewListPage = ref(1)
 const boardPageByStatus = ref<Partial<Record<MoldingSampleStatus, number>>>({})
@@ -238,12 +241,19 @@ const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
 const RAW_MATERIAL_PICKER_GAP = 8
 const RAW_MATERIAL_PICKER_VIEWPORT_PADDING = 12
+const rawMaterialPriceList = rawMaterialDatabaseRows.flatMap((row) => {
+  const unitPrice = Number(row.unitPriceHkdPerLb)
+
+  return row.materialName.trim() && Number.isFinite(unitPrice) && unitPrice > 0
+    ? [{ material: row.materialName.trim(), unit_price: unitPrice, notes: '原料资料' }]
+    : []
+})
 const RAW_MATERIAL_PICKER_VISIBLE_LIMIT = 60
 const activeRawMaterialPickerLineIndex = ref<number | null>(null)
 const rawMaterialSearchByLine = ref<Record<number, string>>({})
@@ -568,6 +578,28 @@ const actionToastIconClass = computed(() => {
 })
 
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
+const printPreviewItemCount = computed(() =>
+  printableRecords.value.reduce((total, record) => total + record.items.length, 0),
+)
+
+function getExpectedMaterialAmountHkd(item: MoldingSampleItem) {
+  return calculateExpectedMaterialAmountHkd(item, rawMaterialPriceList)
+}
+
+function getRawMaterialUnitPrice(material: string) {
+  return resolveMaterialPrice(material, rawMaterialPriceList)?.unit_price ?? null
+}
+
+function getRawMaterialUnitPriceLabel(material: string) {
+  const unitPrice = getRawMaterialUnitPrice(material)
+
+  if (unitPrice !== null) {
+    return formatMoney(unitPrice)
+  }
+
+  return material.trim() ? '待维护' : '待选择'
+}
+
 const isSelectedOrderDataExpanded = ref(false)
 const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
 const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft'))
@@ -1088,16 +1120,35 @@ async function printOverview() {
   const records = batchActionRecords.value
 
   if (!records.length) {
+    printPreviewVisible.value = false
     actionMessage.value = '请先勾选或选择已从后端读取到的正式啤办单，再打印。'
     return
   }
 
   printableRecords.value = records
+  printPreviewVisible.value = true
   actionMessage.value = records.length === 1
-    ? `已准备打印啤办单 ${records[0].order.id} 的详细内容。`
-    : `已准备打印 ${records.length} 张啤办单的详细内容。`
+    ? `已打开啤办单 ${records[0].order.id} 的打印预览。`
+    : `已打开 ${records.length} 张啤办单的打印预览。`
+  await nextTick()
+}
+
+async function confirmPrintOverview() {
+  if (!printableRecords.value.length) {
+    printPreviewVisible.value = false
+    actionMessage.value = '请先勾选或选择已从后端读取到的正式啤办单，再打印。'
+    return
+  }
+
+  actionMessage.value = printableRecords.value.length === 1
+    ? `正在打印啤办单 ${printableRecords.value[0].order.id} 的详细内容。`
+    : `正在打印 ${printableRecords.value.length} 张啤办单的详细内容。`
   await nextTick()
   window.print()
+}
+
+function closePrintPreview() {
+  printPreviewVisible.value = false
 }
 
 function saveWorkbookAsExcel(workbook: ArrayBuffer, filename: string) {
@@ -2226,6 +2277,153 @@ onUnmounted(() => {
       </aside>
     </Transition>
 
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="opacity-0"
+      enter-to-class="opacity-100"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <section
+        v-if="printPreviewVisible"
+        class="fixed inset-0 z-[60] bg-slate-950/45 px-4 py-5 backdrop-blur-sm"
+        role="dialog"
+        aria-modal="true"
+        aria-label="啤办单打印预览"
+        data-testid="molding-sample-print-preview"
+      >
+        <div class="mx-auto flex h-full max-w-6xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl shadow-slate-950/30">
+          <header class="flex shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-3">
+            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+              <Printer class="size-4" aria-hidden="true" />
+            </span>
+            <div class="min-w-0">
+              <div class="text-[15px] font-bold text-slate-950">打印预览</div>
+              <p class="mt-0.5 text-[12px] text-slate-500">
+                {{ printableRecords.length }} 张单据 · {{ printPreviewItemCount }} 条模具明细
+              </p>
+            </div>
+            <button
+              type="button"
+              class="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              aria-label="关闭打印预览"
+              @click="closePrintPreview"
+            >
+              <X class="size-4" aria-hidden="true" />
+            </button>
+          </header>
+
+          <div class="min-h-0 flex-1 overflow-y-auto bg-slate-100 px-4 py-4">
+            <div class="mx-auto space-y-4">
+              <article
+                v-for="record in printableRecords"
+                :key="`preview-${record.order.id}`"
+                class="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                  <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-bold text-teal-700">{{ record.order.status }}</span>
+                      <strong class="font-mono text-[14px] text-slate-950">{{ record.order.id }}</strong>
+                    </div>
+                    <div class="mt-1 text-[13px] font-semibold text-slate-800">
+                      {{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}
+                    </div>
+                  </div>
+                  <div class="rounded-md border border-slate-200 px-3 py-2 text-right">
+                    <div class="text-[11px] text-slate-400">阶段 / 类型</div>
+                    <div class="text-[12px] font-bold text-slate-700">{{ record.order.stage || '待填写' }} · {{ record.order.order_type }}</div>
+                  </div>
+                </div>
+
+                <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 xl:grid-cols-4">
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">订单 / 文件编号</span>
+                    <strong class="font-mono text-slate-800">{{ formatBlank(record.order.order_number) }} / {{ formatBlank(record.order.doc_number) }}</strong>
+                  </div>
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">填写部 / 发至</span>
+                    <strong class="text-slate-800">{{ formatBlank(record.order.workshop) }} / {{ formatBlank(record.order.send_to, '内部') }}</strong>
+                  </div>
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">工程 / 主管</span>
+                    <strong class="text-slate-800">{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong>
+                  </div>
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">开单 / 更新</span>
+                    <strong class="text-slate-800">{{ formatBlank(record.order.date) }} / {{ formatBlank(record.order.updated_at) }}</strong>
+                  </div>
+                </div>
+
+                <div class="mt-3 rounded-md border border-slate-200">
+                  <div class="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
+                    <span class="text-[12px] font-bold text-slate-700">模具明细</span>
+                    <span class="text-[11px] font-semibold text-slate-400">共 {{ record.items.length }} 条</span>
+                  </div>
+                  <div v-if="!record.items.length" class="px-3 py-5 text-center text-[12px] font-medium text-slate-400">
+                    暂无明细
+                  </div>
+                  <div v-else class="overflow-x-auto">
+                    <table class="w-full min-w-[860px] text-[12px]">
+                      <thead>
+                        <tr class="border-b border-slate-100 text-[11px] text-slate-400">
+                          <th class="px-3 py-2 text-left font-medium">模号 / 名称</th>
+                          <th class="px-3 py-2 text-left font-medium">原料</th>
+                          <th class="px-3 py-2 text-left font-medium">颜色 / PMS</th>
+                          <th class="px-3 py-2 text-right font-medium">预计用料</th>
+                          <th class="px-3 py-2 text-right font-medium">实际用料</th>
+                          <th class="px-3 py-2 text-right font-medium">费用</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="item in record.items"
+                          :key="`preview-${item.id}`"
+                          class="border-b border-slate-100 last:border-0"
+                        >
+                          <td class="px-3 py-2">
+                            <strong class="block text-slate-800">{{ formatBlank(item.mold_id) }}</strong>
+                            <span class="text-slate-500">{{ formatBlank(item.mold_name) }}</span>
+                          </td>
+                          <td class="px-3 py-2 text-slate-700">{{ formatBlank(item.material) }}</td>
+                          <td class="px-3 py-2 text-slate-700">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</td>
+                          <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatWeight(item.required_material_kg) }}</td>
+                          <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatWeight(item.actual_weight_kg) }}</td>
+                          <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatMoney(item.actual_amount_hkd) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <footer class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3">
+            <div class="text-[12px] font-medium text-slate-500">打印内容将使用正式 A4 纸面样式。</div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                @click="closePrintPreview"
+              >
+                关闭预览
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-slate-900 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-700"
+                @click="confirmPrintOverview"
+              >
+                <Printer class="size-3.5" aria-hidden="true" />
+                确认打印
+              </button>
+            </div>
+          </footer>
+        </div>
+      </section>
+    </Transition>
+
     <div class="mx-auto max-w-[1720px] px-5 py-4">
       <section
         class="mb-3 flex flex-wrap items-center justify-end gap-2"
@@ -2948,7 +3146,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[1720px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[1840px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -2958,6 +3156,7 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">客模具编号</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
+                      <div class="min-w-0 truncate px-2 text-right" role="columnheader">原料价格(HKD/磅)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">颜色</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">PMS</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">色粉</div>
@@ -3067,6 +3266,17 @@ onUnmounted(() => {
                               </div>
                             </div>
                           </Teleport>
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <div
+                            data-testid="create-line-material-price"
+                            class="flex h-9 w-full min-w-0 items-center justify-end gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 text-[12px] text-slate-500"
+                            :class="getRawMaterialUnitPrice(line.material) !== null ? 'font-semibold tabular-nums text-slate-700' : ''"
+                            :title="line.material ? `${line.material} · ${getRawMaterialUnitPriceLabel(line.material)} / 磅` : '请选择所需用料后显示原料价格'"
+                          >
+                            <span>{{ getRawMaterialUnitPriceLabel(line.material) }}</span>
+                            <span v-if="getRawMaterialUnitPrice(line.material) !== null" class="text-[10px] font-medium text-slate-400">/ 磅</span>
+                          </div>
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.color" data-testid="create-line-color" placeholder="颜色" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
@@ -3314,7 +3524,7 @@ onUnmounted(() => {
                 </button>
               </div>
               <div class="overflow-x-auto">
-                <table class="w-full min-w-[1020px] text-[12px]">
+                <table class="w-full min-w-[1120px] text-[12px]">
                   <thead>
                     <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                       <th class="w-8 px-2 py-2 font-medium">#</th>
@@ -3323,9 +3533,10 @@ onUnmounted(() => {
                       <th class="px-2 py-2 text-left font-medium">原料</th>
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
+                      <th class="px-2 py-2 text-right font-medium">预计料费</th>
                       <th class="px-2 py-2 text-right font-medium">实际用料</th>
                       <th class="px-2 py-2 text-left font-medium">啤办机台</th>
-                      <th class="px-2 py-2 text-right font-medium">费用</th>
+                      <th class="px-2 py-2 text-right font-medium">实际料费</th>
                       <th class="px-2 py-2 text-left font-medium">状态</th>
                     </tr>
                   </thead>
@@ -3342,6 +3553,7 @@ onUnmounted(() => {
                         </span>
                       </td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td>
+                      <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</td>
                       <td class="px-2 py-1.5">{{ formatBlank(item.production_machine) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(item.actual_amount_hkd) }}</td>
@@ -3443,6 +3655,7 @@ onUnmounted(() => {
                         <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
                         <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
                         <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
+                        <div><span class="text-slate-400">预计料费(HKD)</span><div class="font-semibold">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</div></div>
                         <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
                         <div><span class="text-slate-400">收据编号</span><div class="font-semibold">{{ formatBlank(item.receipt_no) }}</div></div>
                         <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
@@ -3701,6 +3914,7 @@ onUnmounted(() => {
                 <td>
                   <strong>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</strong>
                   <span>{{ formatWeight(item.required_material_kg) }}</span>
+                  <span>预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
                   <em>{{ formatGram(item.gross_weight_g) }}</em>
                 </td>
                 <td>{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</td>

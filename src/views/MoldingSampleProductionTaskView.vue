@@ -65,7 +65,7 @@ interface ItemFillbackDraft {
 type ProductionQueueFilter = '全部' | '待接单' | '生产中'
 type ProductionTaskDisplayMode = 'board' | 'list'
 type NotificationStatus = MoldingSampleNotificationResponse['status']
-type ProductionTransitionAction = '开始处理' | '标记完成' | '撤回完成'
+type ProductionTransitionAction = '开始处理' | '撤回开始生产' | '标记完成' | '撤回完成'
 
 interface PaginationState<T> {
   rows: T[]
@@ -288,6 +288,7 @@ const selectedMissingItems = computed(() => {
 const canStartSelectedTask = computed(() => selectedTask.value?.order.status === '待生产')
 const canFillbackSelectedTask = computed(() => selectedTask.value?.order.status === '生产中')
 const canCompleteSelectedTask = computed(() => canFillbackSelectedTask.value && completionGate.value.can_complete)
+const canRollbackStartedTask = computed(() => selectedTask.value?.order.status === '生产中')
 const canRollbackCompletedTask = computed(() => selectedTask.value?.order.status === '已完成')
 const canMarkSelectedNotificationRead = computed(() =>
   selectedNotification.value?.status === '未读',
@@ -693,6 +694,9 @@ function getProductionTransitionReason(action: ProductionTransitionAction) {
   if (action === '开始处理') {
     return '啤办生产任务单接收后开始执行。'
   }
+  if (action === '撤回开始生产') {
+    return '啤机部撤回开始生产，任务回到待生产。'
+  }
   if (action === '标记完成') {
     return '啤机部完成生产并回传工程啤办单。'
   }
@@ -707,6 +711,10 @@ async function runProductionTransition(action: ProductionTransitionAction) {
   }
   if (action === '开始处理' && !canStartSelectedTask.value) {
     actionMessage.value = '只有待生产任务可以开始执行。'
+    return
+  }
+  if (action === '撤回开始生产' && !canRollbackStartedTask.value) {
+    actionMessage.value = '只有生产中任务可以撤回开始生产。'
     return
   }
   if (action === '标记完成' && !canCompleteSelectedTask.value) {
@@ -743,6 +751,9 @@ async function runProductionTransition(action: ProductionTransitionAction) {
     replaceApiRecord(updated)
     if (action === '开始处理') {
       actionMessage.value = '啤办生产任务已开始执行。'
+    }
+    else if (action === '撤回开始生产') {
+      actionMessage.value = '已撤回开始生产，任务回到待生产。'
     }
     else if (action === '标记完成') {
       actionMessage.value = '生产完成通知已回传到工程啤办单。'
@@ -1311,6 +1322,15 @@ watchEffect(() => {
                 >
                   <Play class="size-4" aria-hidden="true" />
                   开始生产
+                </button>
+                <button
+                  v-if="canRollbackStartedTask"
+                  type="button"
+                  class="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-amber-200 bg-amber-50 text-[13px] font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-100"
+                  @click="runProductionTransition('撤回开始生产')"
+                >
+                  <RotateCcw class="size-4" aria-hidden="true" />
+                  撤回开始生产
                 </button>
                 <button
                   type="button"
