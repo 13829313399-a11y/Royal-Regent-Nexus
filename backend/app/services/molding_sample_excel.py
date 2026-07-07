@@ -7,8 +7,9 @@ from io import BytesIO
 from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from app.models.molding_sample import MoldingSampleOrder
+from app.models.molding_sample import MoldingSampleMaterialPrice, MoldingSampleOrder
 from app.schemas.molding_sample import MoldingSampleCreateRequest, MoldingSampleItemIn, MoldingSampleOrderIn
+from app.services.molding_sample import KG_TO_LB, resolve_material_price, round_money
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 SHEET_NAME = "啤办单"
@@ -45,6 +46,7 @@ ITEM_COLUMNS = [
     ("啤数", "shoot_qty"),
     ("毛重g", "gross_weight_g"),
     ("需料kg", "required_material_kg"),
+    ("预计料费HKD", "expected_amount_hkd"),
     ("回模时间", "mold_return_time"),
     ("完成时间", "completion_time"),
     ("备注", "notes"),
@@ -151,6 +153,7 @@ ITEM_ALIASES.update(
 NUMERIC_ITEM_FIELDS = {
     "gross_weight_g",
     "required_material_kg",
+    "expected_amount_hkd",
     "collected_weight_kg",
     "actual_weight_kg",
     "actual_amount_hkd",
@@ -193,6 +196,7 @@ ITEM_COLUMN_WIDTHS = [
     11,
     12,
     12,
+    14,
     15,
     15,
     30,
@@ -236,6 +240,7 @@ BATCH_COLUMN_WIDTHS = [
     11,
     12,
     12,
+    14,
     15,
     15,
     30,
@@ -249,7 +254,15 @@ BATCH_COLUMN_WIDTHS = [
 ]
 
 
-def export_order_to_excel(order: MoldingSampleOrder) -> bytes:
+def export_order_to_excel(
+    order: MoldingSampleOrder,
+    material_prices: list[MoldingSampleMaterialPrice] | None = None,
+) -> bytes:
+    last_column = _column_name(len(ITEM_COLUMNS))
+    actual_weight_column_index = _field_column_index("actual_weight_kg")
+    actual_amount_column_index = _field_column_index("actual_amount_hkd")
+    total_label_end_column = _column_name(actual_amount_column_index - 1)
+    total_amount_start_column = _column_name(actual_amount_column_index)
     title = f"啤办单 · {_safe_text(order.product_name)}（{order.id}） · {_safe_text(order.status)}"
     rows: list[list[object | None]] = [
         [title],
@@ -279,7 +292,7 @@ def export_order_to_excel(order: MoldingSampleOrder) -> bytes:
         row: list[object | None] = []
         row_index = len(rows) + 1
         for column_index, (_, field) in enumerate(ITEM_COLUMNS, start=1):
-            value = getattr(item, field, "")
+            value = _get_export_item_value(item, field, material_prices)
             formatted_value, is_missing = _format_export_item_value(field, value)
             row.append(formatted_value)
             if is_missing:
@@ -303,18 +316,21 @@ def export_order_to_excel(order: MoldingSampleOrder) -> bytes:
             header_row_index=5,
             style_matrix=style_matrix,
             merge_ranges=[
-                "A1:V1",
-                "F2:V2",
-                "F3:V3",
-                f"A{subtotal_row_index}:Q{subtotal_row_index}",
-                f"A{total_row_index}:R{total_row_index}",
-                f"S{total_row_index}:V{total_row_index}",
+                f"A1:{last_column}1",
+                f"F2:{last_column}2",
+                f"F3:{last_column}3",
+                f"A{subtotal_row_index}:{_column_name(actual_weight_column_index - 1)}{subtotal_row_index}",
+                f"A{total_row_index}:{total_label_end_column}{total_row_index}",
+                f"{total_amount_start_column}{total_row_index}:{last_column}{total_row_index}",
             ],
         ),
     )
 
 
-def export_orders_to_excel(orders: list[MoldingSampleOrder]) -> bytes:
+def export_orders_to_excel(
+    orders: list[MoldingSampleOrder],
+    material_prices: list[MoldingSampleMaterialPrice] | None = None,
+) -> bytes:
     date_values = sorted({str(order.date or "").strip() for order in orders if str(order.date or "").strip()})
     date_range = ""
     if len(date_values) == 1:
@@ -354,7 +370,7 @@ def export_orders_to_excel(orders: list[MoldingSampleOrder]) -> bytes:
             rows.append(
                 current_order_values
                 + [
-                    _format_export_item_value(field, getattr(item, field, ""))[0]
+                    _format_export_item_value(field, _get_export_item_value(item, field, material_prices))[0]
                     for _, field in ITEM_COLUMNS
                 ],
             )
@@ -409,6 +425,45 @@ def _format_export_item_value(field: str, value: object) -> tuple[object | None,
     return value, False
 
 
+def _field_column_index(field: str) -> int:
+    for index, (_, column_field) in enumerate(ITEM_COLUMNS, start=1):
+        if column_field == field:
+            return index
+
+    raise ValueError(f"Unknown item export field: {field}")
+
+
+def _calculate_expected_amount_hkd(
+    item: object,
+    material_prices: list[MoldingSampleMaterialPrice] | None,
+) -> float | None:
+    if not material_prices:
+        return None
+
+    required_material_kg = getattr(item, "required_material_kg", None)
+    try:
+        expected_weight_kg = float(required_material_kg)
+    except (TypeError, ValueError):
+        return None
+
+    material_price = resolve_material_price(str(getattr(item, "material", "") or ""), material_prices)
+    if expected_weight_kg <= 0 or material_price is None:
+        return None
+
+    return round_money(expected_weight_kg * KG_TO_LB * material_price.unit_price)
+
+
+def _get_export_item_value(
+    item: object,
+    field: str,
+    material_prices: list[MoldingSampleMaterialPrice] | None,
+) -> object:
+    if field == "expected_amount_hkd":
+        return _calculate_expected_amount_hkd(item, material_prices)
+
+    return getattr(item, field, "")
+
+
 def _sum_item_field(order: MoldingSampleOrder, field: str) -> float:
     total = 0.0
     for item in order.items:
@@ -430,10 +485,10 @@ def _build_single_export_subtotal_row(order: MoldingSampleOrder) -> list[object 
 
     row: list[object | None] = ["" for _ in ITEM_COLUMNS]
     row[0] = f"原料小计（{material_label}，实际用料合计）"
-    row[17] = _format_decimal(_sum_item_field(order, "actual_weight_kg"))
-    row[18] = _format_decimal(_sum_item_field(order, "actual_amount_hkd"))
-    row[19] = _format_decimal(_sum_item_field(order, "injection_cost"))
-    row[20] = _format_decimal(_sum_item_field(order, "injection_cost_hkd"))
+    row[_field_column_index("actual_weight_kg") - 1] = _format_decimal(_sum_item_field(order, "actual_weight_kg"))
+    row[_field_column_index("actual_amount_hkd") - 1] = _format_decimal(_sum_item_field(order, "actual_amount_hkd"))
+    row[_field_column_index("injection_cost") - 1] = _format_decimal(_sum_item_field(order, "injection_cost"))
+    row[_field_column_index("injection_cost_hkd") - 1] = _format_decimal(_sum_item_field(order, "injection_cost_hkd"))
     return row
 
 
@@ -443,7 +498,7 @@ def _build_single_export_total_row(order: MoldingSampleOrder, missing_count: int
     row: list[object | None] = ["" for _ in ITEM_COLUMNS]
     row[0] = f"总计 料费 {_format_decimal(material_total)} + 啤办费 {_format_decimal(injection_total)} ="
     pending_text = f"（含 {missing_count} 项待回填）" if missing_count else "（资料完整）"
-    row[18] = f"HKD {_format_decimal(material_total + injection_total)}{pending_text}"
+    row[_field_column_index("actual_amount_hkd") - 1] = f"HKD {_format_decimal(material_total + injection_total)}{pending_text}"
     return row
 
 

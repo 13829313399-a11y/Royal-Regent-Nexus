@@ -98,7 +98,7 @@ def export_injection_orders_excel(
         raise HTTPException(status_code=400, detail="请选择需要导出的啤办单")
 
     orders = [load_order(db, order_id, current_user) for order_id in normalized_order_ids]
-    content = export_orders_to_excel(orders)
+    content = export_orders_to_excel(orders, get_prices(db))
     filename = f"molding-sample-{len(orders)}-orders.xlsx"
     return Response(
         content=content,
@@ -134,7 +134,7 @@ def export_injection_order_excel(
 ):
     ensure_permission(db, current_user, "molding_sample:read")
     order = load_order(db, order_id, current_user)
-    content = export_order_to_excel(order)
+    content = export_order_to_excel(order, get_prices(db))
     filename = f"{order.id}-molding-sample.xlsx"
     return Response(
         content=content,

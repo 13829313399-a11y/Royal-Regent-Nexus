@@ -24,6 +24,9 @@ for (const requiredCopy of [
   '全选当前筛选单据',
   '清空选择',
   '啤办单打印内容',
+  '打印预览',
+  '确认打印',
+  '关闭预览',
   '啤办业务导出打印操作区',
   '导出 / 打印',
   '默认当前单据',
@@ -131,6 +134,9 @@ for (const requiredImplementation of [
   'handleExcelImportFile',
   'downloadOrderExcel',
   'printOverview',
+  'confirmPrintOverview',
+  'closePrintPreview',
+  'printPreviewVisible',
   'selectedBatchOrderIds',
   'selectedBatchRecords',
   'batchActionRecords',
@@ -217,6 +223,9 @@ assert.match(source, /balanceAmountHkd/)
 
 assert.equal(source.includes('v-model="createDraft.doc_number"'), false, 'new-order form should not bind an unused file-number input')
 assert.match(source, /完整单据数据/)
+assert.match(source, /data-testid="molding-sample-print-preview"/)
+assert.match(source, /@click="confirmPrintOverview"/)
+assert.match(source, /window\.print\(\)/)
 assert.match(source, /文件编号/)
 assert.match(source, /啤办机台/)
 assert.match(source, /production_machine/)
@@ -238,16 +247,19 @@ assert.match(source, /role="table"/)
 assert.match(source, /<div class="space-y-4 xl:contents">/)
 assert.match(source, /<aside class="space-y-4 xl:col-start-2 xl:row-start-1">/)
 assert.match(source, /<section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">/)
-assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_190px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
 assert.match(source, /:class="createLineGridClass"/)
+assert.match(source, /role="columnheader">原料价格\(HKD\/磅\)<\/div>/)
 assert.match(source, /role="columnheader">整啤毛重\(g\)<\/div>/)
 assert.match(source, /role="columnheader">所需用料\(kg\)<\/div>/)
+assert.match(source, /data-testid="create-line-material-price"/)
+assert.match(source, /getRawMaterialUnitPrice\(line\.material\)/)
 assert.match(source, /v-model="line\.gross_weight_g"/)
 assert.match(source, /v-model="line\.required_material_kg"/)
 assert.match(source, /data-testid="create-line-gross-weight"/)
 assert.match(source, /data-testid="create-line-required-material"/)
 assert.match(source, /v-model="line\.notes"/)
-assert.match(source, /min-w-\[1720px\]/)
+assert.match(source, /min-w-\[1840px\]/)
 assert.match(source, /data-testid="create-line-material"[\s\S]*role="combobox"[\s\S]*aria-label="选择所需用料"/)
 assert.match(source, /placeholder="搜索原料名称\/编号"/)
 assert.match(source, /@focus="openRawMaterialPicker\(index, line\.material, \$event\)"/)
