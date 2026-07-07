@@ -860,6 +860,58 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification limitation: full backend pytest still could not be run because the local `.venv` Python launcher cannot create a process and bundled Python lacks pytest; the OCR assertions were run directly instead.
 - Decisions: keep the current local Tesseract approach for this slice and improve pre-processing/field matching first; a future PaddleOCR or cloud OCR integration can be evaluated if real photo samples still fail.
 
+### 2026-07-07
+
+- Requirement: carton-mark photo recognition still missed too many real photo fields after the first OCR improvement, especially when OCR split numbers or confused `O/0`, `I/1/L/|`, and similar identifier characters.
+- Implementation: added identifier-focused fuzzy matching for PO, ITEM, SKU, carton number, and barcode values. The auto-check now builds normalized OCR identifier candidates from tokens and nearby token windows, applies numeric OCR substitutions for numeric carton-mark identifiers, allows small edit-distance matches, and uses the same tolerant comparison when a photo field was extracted but its value contains OCR character mistakes.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, and `PROJECT_MEMORY.md`.
+- Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary direct assertion script passed for both raw-photo OCR text like `2O 33 20I7 I979I96I9` and extracted label rows like `PO 2O33 / ITEM 20I7 / BARCODE I979I96I9`; `node_modules\.bin\jiti.cmd src\api\__tests__\cartonMark.test.ts` passed; `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `git diff --check` passed with only LF-to-CRLF warnings.
+- Verification limitation: bundled Python still does not have pytest installed, so the new pytest-style backend tests were validated through the temporary direct assertion script rather than `pytest`.
+- Decisions: this slice keeps local OCR but makes the verifier less brittle against common camera/Tesseract identifier errors; if real photos still miss long text fields, the next step should be a stronger OCR engine or field-specific image crop flow.
+
+### 2026-07-07
+
+- Requirement: carton-mark photo OCR still produced many blank photo fields after identifier fuzzy matching, indicating the OCR engine was not seeing enough usable text from the real photos.
+- Implementation: upgraded photo OCR input generation to detect likely carton-mark label regions from photo edges and dark text/table clusters, crop and enlarge those regions, add light deskew variants, run Tesseract with full-image and crop-specific page segmentation modes, and cap both candidate count and per-pass OCR timeout to reduce repeat timeout risk. The no-text status message now says the system attempted full image, candidate crops, and rotation before failing.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, and `PROJECT_MEMORY.md`.
+- Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary direct assertion script passed for synthetic carton-on-box crop detection plus the prior noisy OCR identifier cases; `node_modules\.bin\jiti.cmd src\api\__tests__\cartonMark.test.ts` passed; `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `git diff --check` passed with only LF-to-CRLF warnings.
+- Verification limitation: backend pytest still could not be run through the bundled Python because pytest is not installed there; the same focused assertions were executed directly instead.
+- Follow-up: if real uploaded photos remain mostly blank after this crop-first pass, move beyond local Tesseract and integrate a stronger OCR backend such as PaddleOCR or a cloud OCR service, or add a manual crop/retake flow in the upload UI.
+
+### 2026-07-07
+
+- Requirement: automatic crop and Tesseract improvements were still not enough for real carton-mark photos, so the next step is to let QA manually isolate the actual carton-mark area before OCR.
+- Implementation: added a reusable front-end image crop helper for normalized drag selections, object-contain preview frame math, source-pixel conversion, and browser canvas cropping; added manual crop controls to the carton-mark QA upload previews for both front and side photos. QA can now select a photo, click `框选箱唛区域`, drag over the visible label area, apply the crop, and the cropped image becomes the saved preview and the blob sent to backend auto-check.
+- Files changed: `src/lib/imageCrop.ts`, `src/lib/__tests__/imageCrop.test.ts`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, and `PROJECT_MEMORY.md`.
+- Verification: `node_modules\.bin\jiti.cmd src\lib\__tests__\imageCrop.test.ts` passed; `node_modules\.bin\jiti.cmd src\api\__tests__\cartonMark.test.ts` passed; `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; `node_modules\.bin\vite.cmd build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF warnings.
+- Decision: this manual crop flow is the immediate reliability step before adding a heavier OCR dependency or a paid/cloud OCR integration.
+- Follow-up: if cropped photos are still not accurate enough, integrate PaddleOCR or a cloud OCR service as an optional backend OCR engine and keep this manual crop flow as the region selection step.
+
+### 2026-07-07
+
+- Requirement: after manual crop, real carton-mark results still showed `PDF 未识别` for values that were visible in the PDF/photo evidence, such as unlabeled color values, and side labels like `BULTO` were not handled well.
+- Implementation: added bidirectional evidence enrichment in carton-mark auto-check. The backend now extracts photo fields first, then uses those photo field values to search the relevant PDF text and backfill missing PDF expected fields when the same value appears in the template; this turns cases like photo `COLOR MULTICOLOR` plus unlabeled PDF `MULTICOLOR` into a normal pass instead of `PDF 未识别`. Added Spanish carton/package aliases including `BULTO`, `BULTOS`, `NO DE BULTO`, and `NRO BULTO` for carton-number extraction.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, and `PROJECT_MEMORY.md`.
+- Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary direct assertion script passed for `BULTO 1-10`, noisy identifier matching, and unlabeled PDF `MULTICOLOR` backfill; `node_modules\.bin\jiti.cmd src\lib\__tests__\imageCrop.test.ts` passed; `node_modules\.bin\jiti.cmd src\api\__tests__\cartonMark.test.ts` passed; `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `node_modules\.bin\vite.cmd build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF warnings.
+- Verification limitation: backend pytest still could not run in the bundled Python because pytest is not installed; focused backend assertions were executed directly.
+- Follow-up: if values are still missed after crop plus bidirectional evidence matching, the remaining improvement should be replacing/augmenting Tesseract with PaddleOCR or a cloud OCR service rather than adding more parser heuristics.
+
+### 2026-07-07
+
+- Requirement: uploaded carton-mark PDFs can contain the same marks repeated horizontally as `1 正唛 / 2 侧唛 / 3 正唛 / 4 侧唛`; automatic verification should only use the first front/side pair and ignore the repeated second pair.
+- Implementation: added primary PDF mark-region selection in the backend. Classified PDF mark regions now keep coordinate order, then `select_primary_pdf_mark_regions` returns only the first front mark and the next side mark, with a fallback to the first two positioned regions. `extract_pdf_template_side_texts` now uses those selected regions directly instead of merging all front or all side regions.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, and `PROJECT_MEMORY.md`.
+- Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary direct assertion script passed for selecting only `FRONT 1`/`SIDE 2` from a four-region `FRONT 1 / SIDE 2 / FRONT 3 / SIDE 4` PDF layout and for excluding `FRONT 3`/`SIDE 4` from side-specific template text; `git diff --check` passed with only LF-to-CRLF warnings.
+- Verification limitation: backend pytest still could not run in the bundled Python because pytest is not installed, so the new pytest-style cases were also validated through a direct assertion script.
+
+### 2026-07-07
+
+- Requirement: after PDF first-pair extraction, real carton-mark photos still produced many `照片未识别` and mismatch rows, especially for values laid out in small left-label/right-value tables.
+- Implementation: added a coordinate-based OCR recovery path for photo recognition. The backend now also calls Tesseract `image_to_data` on key full-image and cropped variants, collects word boxes, groups words into y-aligned table rows, rebuilds spaced rows, and emits extra label/value candidate lines from words to the right of recognized aliases. These table-reconstructed lines are merged with the existing multi-pass OCR text before field extraction.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, and `PROJECT_MEMORY.md`.
+- Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary direct assertion script passed for rebuilding `NUMERO DE PEDIDO 62098330`, `MODELO 203302017`, and `PESO BRUTO 4.3 KGS` from simulated OCR word coordinates into extractable carton-mark fields.
+- Verification limitation: backend pytest still could not run in the bundled Python because pytest is not installed; focused backend assertions were executed directly.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.
