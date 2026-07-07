@@ -30,6 +30,7 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   editOrder: vi.fn(),
   deleteOrder: vi.fn(),
   exportOrderExcel: vi.fn(),
+  exportOrdersExcel: vi.fn(),
   importOrderExcel: vi.fn(),
   previewOrderExcel: vi.fn(),
   updateStatus: vi.fn(),
@@ -236,6 +237,129 @@ describe('molding sample runtime error handling', () => {
     expect(text).not.toContain('BP-56206')
     expect(text).not.toContain('软弹枪配色')
     expect(text).not.toContain('Prime Kids')
+  })
+
+  it('prints the current molding sample order detail from the top action bar', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([
+      createMoldingSampleRecord('待审核', 'BP-PRINT-CURRENT', 1),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByExactText(wrapper, '打印').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(printSpy).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="molding-sample-print-area"]').text()).toContain('BP-PRINT-CURRENT')
+
+    wrapper.unmount()
+  })
+
+  it('exports one combined Excel workbook for multiple checked molding sample orders', async () => {
+    const records = [
+      createMoldingSampleRecord('待审核', 'BP-BATCH-001', 1),
+      createMoldingSampleRecord('待生产', 'BP-BATCH-002', 2),
+      createMoldingSampleRecord('已完成', 'BP-BATCH-003', 3),
+    ]
+    const createObjectUrl = vi.fn(() => 'blob:molding-sample-export')
+    const revokeObjectUrl = vi.fn()
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    vi.stubGlobal('URL', Object.assign(URL, {
+      createObjectURL: createObjectUrl,
+      revokeObjectURL: revokeObjectUrl,
+    }))
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+    mockedMoldingSampleApi.exportOrdersExcel.mockResolvedValue(new Uint8Array([1, 2, 3]).buffer)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await wrapper.get('[aria-label="选择单据 BP-BATCH-001"]').setValue(true)
+    await wrapper.get('[aria-label="选择单据 BP-BATCH-003"]').setValue(true)
+    await getButtonByExactText(wrapper, '导出Excel').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.exportOrderExcel).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.exportOrdersExcel).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.exportOrdersExcel).toHaveBeenCalledWith(['BP-BATCH-001', 'BP-BATCH-003'])
+    expect(wrapper.text()).toContain('已导出 2 张啤办单到一个Excel文件')
+
+    wrapper.unmount()
+  })
+
+  it('prints detailed content for all checked molding sample orders', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    const records = [
+      createMoldingSampleRecord('待审核', 'BP-PRINT-001', 1),
+      createMoldingSampleRecord('待生产', 'BP-PRINT-002', 2),
+    ]
+
+    records[0].items = [{
+      id: 'BP-PRINT-001-001',
+      order_id: 'BP-PRINT-001',
+      sort_order: 1,
+      mold_id: 'MOLD-A',
+      mold_name: '打印模具A',
+      machine_type: '160T',
+      production_machine: '啤办机台-08',
+      material: 'ABS 750NSW',
+      color: '黑色',
+      pigment_no: 'PMS',
+      quantity: '1',
+      shoot_qty: 30,
+      gross_weight_g: 11,
+      required_material_kg: 1.5,
+      mold_return_time: '2026-07-10',
+      completion_time: '',
+      notes: '打印明细备注',
+      receipt_no: 'REC-001',
+      collected_weight_kg: 1.7,
+      actual_weight_kg: 1.42,
+      actual_amount_hkd: 8.5,
+      injection_cost: 120,
+      injection_cost_hkd: 111.11,
+      exchange_rate_at_save: 1.08,
+    }]
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByExactText(wrapper, '全选当前筛选单据').trigger('click')
+    await getButtonByExactText(wrapper, '打印').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    const printArea = wrapper.get('[data-testid="molding-sample-print-area"]').text()
+    expect(printSpy).toHaveBeenCalledTimes(1)
+    expect(printArea).toContain('BP-PRINT-001')
+    expect(printArea).toContain('打印模具A')
+    expect(printArea).toContain('啤办机台-08')
+    expect(printArea).toContain('ABS 750NSW')
+    expect(printArea).toContain('REC-001')
+    expect(printArea).toContain('1.42 kg')
+    expect(printArea).toContain('HKD 8.50')
+    expect(printArea).toContain('RMB 120.00')
+    expect(printArea).toContain('1.08')
+    expect(printArea).toContain('BP-PRINT-002')
+    expect(printArea).toContain('Royal Regent Nexus')
+    expect(printArea).toContain('工程啤办通知单')
+    expect(printArea).toContain('单据资料')
+    expect(printArea).toContain('签核栏')
+    expect(printArea).toContain('经办确认')
+    expect(printArea).toContain('主管审核')
+    expect(printArea).toContain('啤机确认')
+    expect(printArea).toContain('T0 阶段')
+    expect(printArea).toContain('共 1 条模具明细')
+    expect(printArea).toContain('模具明细（一行一模具，节省纸张）')
+    expect(printArea).toContain('扫码查看单据')
+    expect(printArea).toContain('第 1 / 1 页')
+
+    wrapper.unmount()
   })
 
   it('shows production task failure without rendering or operating on sample tasks', async () => {
