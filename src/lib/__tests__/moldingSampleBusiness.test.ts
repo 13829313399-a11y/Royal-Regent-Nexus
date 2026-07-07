@@ -171,6 +171,28 @@ assert.deepEqual(resubmitWithdrawnTransition, {
   completed_date: '',
 })
 
+const rollbackStartedTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '生产中' },
+  action: '撤回开始生产',
+  actor_role: '啤机部',
+  actor_name: '啤机部文员',
+})
+assert.deepEqual(rollbackStartedTransition, {
+  allowed: true,
+  next_status: '待生产',
+  completed_date: '',
+})
+
+const blockedRollbackStartedTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '已完成' },
+  action: '撤回开始生产',
+  actor_role: '啤机部',
+  actor_name: '啤机部文员',
+})
+assert.equal(blockedRollbackStartedTransition.allowed, false)
+assert.equal(blockedRollbackStartedTransition.next_status, '已完成')
+assert.match(blockedRollbackStartedTransition.message ?? '', /生产中/)
+
 const rollbackCompletedTransition = getMoldingSampleStatusTransition({
   order: { ...baseOrder, status: '已完成', completed_date: '2026-07-03' },
   action: '撤回完成',

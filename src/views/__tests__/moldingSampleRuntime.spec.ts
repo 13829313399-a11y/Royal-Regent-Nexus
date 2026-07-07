@@ -571,6 +571,60 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('lets the molding clerk withdraw a started production task', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-START-ROLLBACK-001' }
+    const runningRecord = createMoldingSampleRecord('生产中', 'BP-PROD-START-ROLLBACK-001')
+    const rollbackRecord = {
+      ...runningRecord,
+      order: {
+        ...runningRecord.order,
+        status: '待生产',
+        completed_date: '',
+      },
+      audit_logs: [
+        {
+          id: 'audit-production-start-rollback',
+          order_id: runningRecord.order.id,
+          action: '撤回开始生产',
+          actor_user_id: 'tester',
+          actor_name: '测试账号',
+          actor_role: '啤机部',
+          actor_roles: '啤机部文员',
+          factory_scope: 'huaxing',
+          decision: '撤回',
+          from_status: '生产中',
+          to_status: '待生产',
+          reason: '啤机部撤回开始生产，任务回到待生产。',
+          created_at: '2026-07-03 15:10',
+          tone: 'amber',
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([runningRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(runningRecord.order.id),
+    ])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(rollbackRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    await getButtonByText(wrapper, '撤回开始生产').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-START-ROLLBACK-001', {
+      action: '撤回开始生产',
+      reason: '啤机部撤回开始生产，任务回到待生产。',
+      today: '2026-07-03',
+    })
+    expect(wrapper.text()).toContain('已撤回开始生产，任务回到待生产。')
+    expect(wrapper.text()).toContain('待生产')
+
+    wrapper.unmount()
+  })
+
   it('lets the molding clerk withdraw a completed production handoff', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-ROLLBACK-001' }

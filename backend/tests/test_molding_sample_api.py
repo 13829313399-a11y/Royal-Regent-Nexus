@@ -642,6 +642,41 @@ def test_molding_clerk_can_withdraw_completed_production_handoff(client):
     assert rollback_payload["audit_logs"][0]["reason"] == "啤机部发现回填用料需修正"
 
 
+def test_molding_clerk_can_withdraw_started_production_task(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-PROD-START-ROLLBACK-001"))
+
+    login_as(client, "supervisor")
+    approved_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "molding_clerk")
+    start_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "开始处理"},
+    )
+    assert start_response.status_code == 200
+    assert start_response.json()["order"]["status"] == "生产中"
+
+    rollback_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "撤回开始生产", "reason": "啤机部误点开始生产，退回待生产"},
+    )
+
+    assert rollback_response.status_code == 200
+    rollback_payload = rollback_response.json()
+    assert rollback_payload["order"]["status"] == "待生产"
+    assert rollback_payload["order"]["completed_date"] == ""
+    assert rollback_payload["audit_logs"][0]["action"] == "撤回开始生产"
+    assert rollback_payload["audit_logs"][0]["from_status"] == "生产中"
+    assert rollback_payload["audit_logs"][0]["to_status"] == "待生产"
+    assert rollback_payload["audit_logs"][0]["reason"] == "啤机部误点开始生产，退回待生产"
+
+
 def test_engineer_can_withdraw_order_they_submitted_when_display_engineer_name_differs(client):
     login_as(client, "engineer")
     payload = sample_order_payload("BP-WITHDRAW-ACTOR-001")

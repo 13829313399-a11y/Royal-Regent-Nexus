@@ -28,7 +28,7 @@ export type MoldingSampleRole =
   | '啤机主管'
   | '系统管理员'
 
-export type MoldingSampleAuditDecision = '提交' | '通过' | '驳回' | '重提' | '撤回' | '开始处理' | '完成' | '改价' | '重算'
+export type MoldingSampleAuditDecision = '提交' | '通过' | '驳回' | '重提' | '撤回' | '开始处理' | '撤回开始生产' | '完成' | '改价' | '重算'
 
 export type MoldingSampleTone = 'teal' | 'blue' | 'amber' | 'red' | 'slate' | 'green'
 

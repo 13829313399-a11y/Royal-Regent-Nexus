@@ -32,6 +32,7 @@ export type MoldingSampleStatusAction =
   | '工程重提'
   | '工程撤回'
   | '开始处理'
+  | '撤回开始生产'
   | '标记完成'
   | '撤回完成'
 
@@ -272,6 +273,14 @@ export function getMoldingSampleStatusTransition(
     }
 
     return { allowed: true, next_status: '生产中', completed_date: order.completed_date }
+  }
+
+  if (action === '撤回开始生产') {
+    if (order.status !== '生产中' || actor_role !== '啤机部') {
+      return rejectedResult(order, '只有啤机部可以撤回生产中单据到待生产。')
+    }
+
+    return { allowed: true, next_status: '待生产', completed_date: '' }
   }
 
   if (action === '标记完成') {
