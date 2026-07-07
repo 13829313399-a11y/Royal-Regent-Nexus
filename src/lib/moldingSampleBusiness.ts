@@ -61,6 +61,7 @@ export interface MoldingSampleCompletionGate {
 
 export interface MoldingSampleItemCostResult {
   actual_weight_kg: number | null
+  expected_amount_hkd: number | null
   actual_amount_hkd: number | null
   injection_cost_hkd: number | null
   exchange_rate_at_save: number | null
@@ -342,6 +343,7 @@ export function normalizeMaterialName(value: string) {
     .toLowerCase()
     .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xFEE0))
     .replace(/度/g, '°')
+    .replace(/^\s*\d+\s*#/, '')
     .replace(/[\s\-()（）_]/g, '')
 }
 
@@ -379,6 +381,22 @@ export function resolveMaterialPrice(
   return priceMap.get(normalizeMaterialName(mixedParts[0].material)) ?? null
 }
 
+export function calculateExpectedMaterialAmountHkd(
+  item: Pick<MoldingSampleItem, 'material' | 'required_material_kg'>,
+  prices: MoldingSampleMaterialPrice[],
+) {
+  if (item.required_material_kg === null || item.required_material_kg === undefined) {
+    return null
+  }
+
+  const expectedWeightKg = Number(item.required_material_kg)
+  const materialPrice = resolveMaterialPrice(item.material, prices)
+
+  return Number.isFinite(expectedWeightKg) && expectedWeightKg > 0 && materialPrice
+    ? roundMoney(expectedWeightKg * KG_TO_LB * materialPrice.unit_price)
+    : null
+}
+
 export function calculateMoldingSampleItemCosts(
   item: MoldingSampleItem,
   prices: MoldingSampleMaterialPrice[],
@@ -401,6 +419,7 @@ export function calculateMoldingSampleItemCosts(
 
   return {
     actual_weight_kg: actualWeightKg,
+    expected_amount_hkd: calculateExpectedMaterialAmountHkd(item, prices),
     actual_amount_hkd: actualAmountHkd,
     injection_cost_hkd: injectionCostHkd,
     exchange_rate_at_save: injectionCostHkd !== null ? rmbToHkdRate : null,

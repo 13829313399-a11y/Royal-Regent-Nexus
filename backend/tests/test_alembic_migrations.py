@@ -12,7 +12,8 @@ ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 BASE_MIGRATION_REVISION = "20260701_0001"
 NOTIFICATION_MIGRATION_REVISION = "20260703_0002"
 AUTH_MIGRATION_REVISION = "20260703_0003"
-MIGRATION_REVISION = "20260703_0004"
+PROBLEM_MIGRATION_REVISION = "20260703_0004"
+MIGRATION_REVISION = "20260706_0005"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -49,10 +50,16 @@ def test_alembic_has_single_molding_sample_head():
 
     assert script.get_heads() == [MIGRATION_REVISION]
     revision = script.get_revision(MIGRATION_REVISION)
-    assert revision.down_revision == AUTH_MIGRATION_REVISION
+    assert revision.down_revision == PROBLEM_MIGRATION_REVISION
 
     migration_content = Path(revision.path).read_text(encoding="utf-8")
-    assert "molding_sample_problems" in migration_content
+    assert "production_machine" in migration_content
+
+    problem_revision = script.get_revision(PROBLEM_MIGRATION_REVISION)
+    assert problem_revision.down_revision == AUTH_MIGRATION_REVISION
+
+    problem_migration_content = Path(problem_revision.path).read_text(encoding="utf-8")
+    assert "molding_sample_problems" in problem_migration_content
 
     auth_revision = script.get_revision(AUTH_MIGRATION_REVISION)
     auth_migration_content = Path(auth_revision.path).read_text(encoding="utf-8")

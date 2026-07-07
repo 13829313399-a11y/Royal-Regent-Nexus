@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -88,6 +89,7 @@ def round_weight(value: float) -> float:
 def normalize_material_name(value: str) -> str:
     fullwidth_digits = {ord(chr(code)): str(code - 0xFF10) for code in range(0xFF10, 0xFF1A)}
     normalized = value.lower().translate(fullwidth_digits).replace("度", "°")
+    normalized = re.sub(r"^\s*\d+\s*#", "", normalized)
 
     for token in (" ", "\t", "\n", "-", "_", "(", ")", "（", "）"):
         normalized = normalized.replace(token, "")
@@ -1211,6 +1213,7 @@ def transition_status(
             message=f"啤机部已撤回啤办单 {order.id} 的开始生产动作，任务回到待生产。",
             from_status=from_status,
             to_status=next_status,
+            status="已处理",
             actor_name=current_user.display_name,
         )
     elif action == "标记完成":
