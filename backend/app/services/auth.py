@@ -53,6 +53,13 @@ MOLDING_SAMPLE_PERMISSIONS = [
     "system:role_manage",
 ]
 
+INJECTION_SCHEDULE_PERMISSIONS = [
+    "injection_schedule:read",
+    "injection_schedule:import",
+]
+
+APPLICATION_PERMISSIONS = MOLDING_SAMPLE_PERMISSIONS + INJECTION_SCHEDULE_PERMISSIONS
+
 DEFAULT_ROLES = [
     ("engineer", "工程师", "工程部开单与草稿维护"),
     ("engineering_supervisor", "工程主管", "工程主管审核"),
@@ -108,6 +115,8 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_fillback",
         "molding_sample:production_complete",
         "molding_sample:notification_read",
+        "injection_schedule:read",
+        "injection_schedule:import",
     },
     "sales_customer_owner": {
         "customer_price:read",
@@ -122,6 +131,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_fillback",
         "molding_sample:production_complete",
         "molding_sample:notification_read",
+        "injection_schedule:read",
     },
     "molding_supervisor": {
         "molding_sample:read",
@@ -131,8 +141,10 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_complete",
         "molding_sample:audit_read",
         "molding_sample:notification_read",
+        "injection_schedule:read",
+        "injection_schedule:import",
     },
-    "admin": set(MOLDING_SAMPLE_PERMISSIONS),
+    "admin": set(APPLICATION_PERMISSIONS),
 }
 
 DEFAULT_USERS = [
@@ -237,7 +249,7 @@ def seed_auth_defaults(db: Session) -> None:
     active_default_user_ids = {user_id for user_id, *_ in DEFAULT_USERS}
     active_role_ids = {role_id for role_id, *_ in DEFAULT_ROLES}
 
-    for code in MOLDING_SAMPLE_PERMISSIONS:
+    for code in APPLICATION_PERMISSIONS:
         permission_id = f"perm-{code.replace(':', '-')}"
         if db.get(AuthPermission, permission_id) is None:
             db.add(AuthPermission(id=permission_id, code=code, name=code, description=""))

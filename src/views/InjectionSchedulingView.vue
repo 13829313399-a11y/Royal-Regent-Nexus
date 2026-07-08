@@ -19,6 +19,8 @@ import {
 } from '@lucide/vue'
 import { computed, nextTick, ref, watchEffect } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { injectionScheduleApi } from '@/api/injectionSchedule'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import {
   getDepartmentRoute,
   isProductionFactoryContextId,
@@ -26,7 +28,9 @@ import {
   type Tone,
 } from '@/data/enterpriseMock'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
+import { getApiErrorMessage } from '@/lib/http'
 import { useAppStore } from '@/stores/app'
+import type { InjectionScheduleImportPreview } from '@/types/injectionSchedule'
 
 type WorkspaceStepId = 'machine-overview' | 'excel-import' | 'order-pool' | 'schedule-board'
 type MachineBoxStatus = 'running' | 'short' | 'down' | 'idle'
@@ -624,35 +628,86 @@ const importSummaryCards = computed(() => [
   ...injectionDataSourceStatus.value.slice(3, 4),
 ])
 
-const importRecognitionStats = [
-  { value: '39', label: '机台主数据行 · 旧机' },
-  { value: '37', label: '机台主数据行 · 新机' },
-  { value: '118', label: '机台排期任务行' },
-  { value: '60', label: '待排 / 异常暂存行' },
-]
+const dailyScheduleFileInput = ref<HTMLInputElement | null>(null)
+const dailyScheduleImportPreview = ref<InjectionScheduleImportPreview | null>(null)
+const dailyScheduleImportError = ref('')
+const isImportingDailySchedule = ref(false)
 
-const importParsingSteps = [
-  {
-    title: '读取工作簿',
-    detail: 'Sheet1 · 289 行 × ST 列 · 缓存日期 2026-06-30',
-  },
-  {
-    title: '识别机台主数据行',
-    detail: '按 A 列机位匹配，得到 76 台机（旧 39 / 新 37）',
-  },
-  {
-    title: '识别任务行并绑定机台',
-    detail: '118 条排期任务挂接到对应机台队列',
-  },
-  {
-    title: '解析欠数 / 交期 / 颜色 / 用料',
-    detail: '欠数 = 订单数 − 已啤数；提取交货完成期与颜色',
-  },
-  {
-    title: '校验数据质量',
-    detail: '标出单价缺失、目标为空、负欠数、交期非日期',
-  },
-]
+const formatImportNumber = (value: number | null | undefined) =>
+  Math.round(value ?? 0).toLocaleString('zh-CN')
+
+const importRecognitionStats = computed(() => {
+  const summary = dailyScheduleImportPreview.value?.summary
+
+  if (!summary) {
+    return [
+      { value: '39', label: '机台主数据行 · 旧机' },
+      { value: '37', label: '机台主数据行 · 新机' },
+      { value: '118', label: '机台排期任务行' },
+      { value: '60', label: '待排 / 异常暂存行' },
+    ]
+  }
+
+  return [
+    { value: formatImportNumber(summary.old_machine_count), label: '机台主数据行 · 旧机' },
+    { value: formatImportNumber(summary.new_machine_count), label: '机台主数据行 · 新机' },
+    { value: formatImportNumber(summary.scheduled_task_count), label: '真实日期排期任务' },
+    { value: formatImportNumber(summary.pending_task_count), label: '待排 / 相对时间 / 无计划' },
+  ]
+})
+
+const importParsingSteps = computed(() => {
+  const preview = dailyScheduleImportPreview.value
+  const summary = preview?.summary
+
+  if (!summary) {
+    return [
+      {
+        title: '读取工作簿',
+        detail: 'Sheet1 · 289 行 × ST 列 · 缓存日期 2026-06-30',
+      },
+      {
+        title: '识别机台主数据行',
+        detail: '按 A/B 列机位匹配，得到 76 台机（旧 39 / 新 37）',
+      },
+      {
+        title: '识别任务行并绑定机台',
+        detail: '按 G/H/I/J + K:O 数量区识别任务行',
+      },
+      {
+        title: '解析欠数 / 交期 / 颜色 / 用料',
+        detail: '提取 AB/AG/AH/AJ/AK 日期与交期差',
+      },
+      {
+        title: '校验数据质量',
+        detail: '标出缺交期、负欠数、1900 相对时间、外链公式风险',
+      },
+    ]
+  }
+
+  return [
+    {
+      title: '读取工作簿',
+      detail: `${preview.source_file_name} · 表内日期 ${summary.business_date || '待确认'}`,
+    },
+    {
+      title: '识别机台主数据行',
+      detail: `得到 ${formatImportNumber(summary.machine_count)} 台机（旧 ${formatImportNumber(summary.old_machine_count)} / 新 ${formatImportNumber(summary.new_machine_count)}）`,
+    },
+    {
+      title: '识别任务行并绑定机台',
+      detail: `${formatImportNumber(summary.task_count)} 条任务 · 真实排期 ${formatImportNumber(summary.scheduled_task_count)} · 待排 ${formatImportNumber(summary.pending_task_count)}`,
+    },
+    {
+      title: '解析日期轴与欠数',
+      detail: `${formatImportNumber(summary.date_axis_days)} 天白夜班横向排期 · 总欠数 ${formatImportNumber(summary.total_shortage_qty)}`,
+    },
+    {
+      title: '校验数据质量',
+      detail: `${formatImportNumber(dailyScheduleImportPreview.value?.issues.length ?? 0)} 条异常/提示已进入导入预览`,
+    },
+  ]
+})
 
 const importFieldMappings = [
   ['A/B', '机位 / 机号', 'machine_id'],
@@ -665,28 +720,74 @@ const importFieldMappings = [
   ['AH / AJ / AK', '计划完成/入库/交期差', 'plan_finish...'],
 ]
 
-const importQualityIssues = [
-  {
-    tone: 'red' as Tone,
-    count: 13,
-    text: '行负欠数（已啤 > 订单，合计约 −2,211）——需确认冲单 / 补数 / 结案',
-  },
-  {
-    tone: 'amber' as Tone,
-    count: 36,
-    text: '行单价缺失（#N/A）——影响外发金额，需补单价表',
-  },
-  {
-    tone: 'amber' as Tone,
-    count: 7,
-    text: '行计划目标为空 / 为 0（#DIV/0!）——无法换算完成期',
-  },
-  {
-    tone: 'blue' as Tone,
-    count: 60,
-    text: '行待排 / 异常暂存（修模、退回厂家、转水口）——未挂机台，暂不计入正式排期',
-  },
-]
+const importQualityIssues = computed(() => {
+  const summary = dailyScheduleImportPreview.value?.summary
+
+  if (!summary) {
+    return [
+      {
+        tone: 'red' as Tone,
+        count: 13,
+        text: '行负欠数（已啤 > 订单，合计约 -2,211）——需确认冲单 / 补数 / 结案',
+      },
+      {
+        tone: 'amber' as Tone,
+        count: 36,
+        text: '行单价缺失（#N/A）——影响外发金额，需补单价表',
+      },
+      {
+        tone: 'amber' as Tone,
+        count: 7,
+        text: '行计划目标为空 / 为 0（#DIV/0!）——无法换算完成期',
+      },
+      {
+        tone: 'blue' as Tone,
+        count: 60,
+        text: '行待排 / 异常暂存（修模、退回厂家、转水口）——未挂机台，暂不计入正式排期',
+      },
+    ]
+  }
+
+  return [
+    {
+      tone: 'red' as Tone,
+      count: summary.missing_due_count,
+      text: '行缺交货完成期——不能自动发布到正式排期',
+    },
+    {
+      tone: 'amber' as Tone,
+      count: summary.pending_task_count,
+      text: '行 1900 相对时间 / 无计划任务——先进入待排池',
+    },
+    {
+      tone: 'amber' as Tone,
+      count: summary.huge_negative_gap_count,
+      text: '行巨大负数交期差——需人工核对日期公式或交期来源',
+    },
+    {
+      tone: 'blue' as Tone,
+      count: summary.negative_or_zero_shortage_count,
+      text: '行欠数小于或等于 0——需确认完工或回写状态',
+    },
+  ].filter((issue) => issue.count > 0)
+})
+
+const importUploadedFileName = computed(() =>
+  dailyScheduleImportPreview.value?.source_file_name ?? '华兴日排版表6-30.xlsx',
+)
+const importUploadedFileStatus = computed(() =>
+  isImportingDailySchedule.value ? '解析中...' : dailyScheduleImportPreview.value ? '解析完成 100%' : '解析完成 100%',
+)
+const importUploadedFileDetail = computed(() => {
+  const summary = dailyScheduleImportPreview.value?.summary
+
+  if (!summary) {
+    return 'Sheet1《河源华兴啤机生产日计划表》 · 289 行 · 表内日期 2026-06-30'
+  }
+
+  return `批次 ${dailyScheduleImportPreview.value?.batch_id} · ${formatImportNumber(summary.machine_count)} 台机 · ${formatImportNumber(summary.task_count)} 条任务 · 表内日期 ${summary.business_date || '待确认'}`
+})
+const importTopIssues = computed(() => dailyScheduleImportPreview.value?.issues.slice(0, 5) ?? [])
 
 const orderHeadMetrics = [
   { label: '订单池任务', value: '118', detail: '来自 6-30 排版表', tone: 'blue' as Tone },
@@ -1205,6 +1306,35 @@ function handleFocusAction(action: FocusAction) {
   setWorkspaceStep('machine-overview')
   setMachineStatusFilter('short')
 }
+
+function openDailySchedulePicker() {
+  if (isImportingDailySchedule.value) {
+    return
+  }
+
+  dailyScheduleFileInput.value?.click()
+}
+
+async function handleDailyScheduleFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+
+  if (!file) {
+    return
+  }
+
+  dailyScheduleImportError.value = ''
+  isImportingDailySchedule.value = true
+
+  try {
+    dailyScheduleImportPreview.value = await injectionScheduleApi.importDailySchedule(file, selectedFactoryId.value)
+  } catch (error) {
+    dailyScheduleImportError.value = getApiErrorMessage(error)
+  } finally {
+    isImportingDailySchedule.value = false
+    input.value = ''
+  }
+}
 </script>
 
 <template>
@@ -1247,10 +1377,7 @@ function handleFocusAction(action: FocusAction) {
             <span class="dot"></span>
             数据 {{ currentDataDate }}
           </span>
-          <span class="account">
-            <span class="avatar">华</span>
-            河源华兴 · 啤机文员
-          </span>
+          <AccountMenu />
         </div>
       </div>
     </header>
@@ -1509,32 +1636,56 @@ function handleFocusAction(action: FocusAction) {
                 </div>
               </div>
 
-              <div class="dropzone">
+              <input
+                ref="dailyScheduleFileInput"
+                class="sr-only"
+                type="file"
+                accept=".xlsx,.xlsm"
+                @change="handleDailyScheduleFileChange"
+              />
+
+              <div
+                class="dropzone"
+                role="button"
+                tabindex="0"
+                @click="openDailySchedulePicker"
+                @keydown.enter.prevent="openDailySchedulePicker"
+                @keydown.space.prevent="openDailySchedulePicker"
+              >
                 <div class="cloud">
                   <UploadCloud class="size-8" aria-hidden="true" />
                 </div>
-                <h3>拖拽 Excel 文件到此处，或点击选择</h3>
-                <p>华兴 / 华康A / 华康B / 华登 通用同一模板</p>
+                <h3>{{ isImportingDailySchedule ? '正在解析日排版表...' : '拖拽 Excel 文件到此处，或点击选择' }}</h3>
+                <p>华兴 / 华康A / 华康B / 华登 通用同一模板 · 后端落库生成导入批次</p>
               </div>
 
               <div class="file-row import-uploaded-file">
                 <div class="file-ico">XLSX</div>
                 <div class="grow">
                   <div class="row between">
-                    <span class="strong small">华兴日排版表6-30.xlsx</span>
-                    <span class="small muted">解析完成 100%</span>
+                    <span class="strong small">{{ importUploadedFileName }}</span>
+                    <span class="small muted">{{ importUploadedFileStatus }}</span>
                   </div>
-                  <div class="progress-line"><span style="width:100%" /></div>
-                  <div class="xsmall muted mt-2">Sheet1《河源华兴啤机生产日计划表》 · 289 行 · 表内日期 2026-06-30</div>
+                  <div class="progress-line"><span :style="{ width: isImportingDailySchedule ? '64%' : '100%' }" /></div>
+                  <div class="xsmall muted mt-2">{{ importUploadedFileDetail }}</div>
                 </div>
-                <span class="pill green compact"><span class="dot"></span>解析完成</span>
+                <span class="pill compact" :class="dailyScheduleImportError ? 'red' : isImportingDailySchedule ? 'amber' : 'green'">
+                  <span class="dot"></span>{{ dailyScheduleImportError ? '解析失败' : isImportingDailySchedule ? '解析中' : '解析完成' }}
+                </span>
+              </div>
+
+              <div v-if="dailyScheduleImportError" class="hint mt-4 error-hint">
+                <span class="hint-ico">
+                  <AlertTriangle class="size-[15px]" aria-hidden="true" />
+                </span>
+                <span>{{ dailyScheduleImportError }}</span>
               </div>
 
               <div class="hint mt-4">
                 <span class="hint-ico">
                   <Gauge class="size-[15px]" aria-hidden="true" />
                 </span>
-                <span>系统按 <b>A 列机位（旧1–旧39 / 新1–新37）</b> 识别机台主数据行，其余带工模+订单数的行识别为任务行。待排/异常暂存区（第 220 行后）单独归类，不计入正式排期。</span>
+                <span>系统按 <b>B/G/H/I 机台行</b> 与 <b>G/H/I/J + K:O 任务行</b> 识别日排版表；1900 相对时间与无计划行先进入待排池，不计入真实日期排期。</span>
               </div>
             </section>
 
@@ -1562,20 +1713,20 @@ function handleFocusAction(action: FocusAction) {
 
               <div class="divider"></div>
               <div class="row between small">
-                <span class="muted">总欠数（∑ 欠数列）</span><span class="strong mono">1,860,805</span>
+                <span class="muted">总欠数（∑ 欠数列）</span><span class="strong mono">{{ formatImportNumber(dailyScheduleImportPreview?.summary.total_shortage_qty ?? 1860805) }}</span>
               </div>
               <div class="row between small mt-2">
-                <span class="muted">超期任务（交期差 &lt; 0）</span><span class="pill red compact">88 条</span>
+                <span class="muted">超期任务（交期差 &lt; 0）</span><span class="pill red compact">{{ formatImportNumber(dailyScheduleImportPreview?.summary.overdue_count ?? 88) }} 条</span>
               </div>
               <div class="row between small mt-2">
-                <span class="muted">特急任务（含 ▲ 标识）</span><span class="pill amber compact">15 条</span>
+                <span class="muted">外链公式风险</span><span class="pill amber compact">{{ formatImportNumber(dailyScheduleImportPreview?.summary.external_formula_risk_count ?? 0) }} 条</span>
               </div>
               <div class="row gap-2 mt-4">
                 <button type="button" class="btn primary grow justify-center" @click="setWorkspaceStep('order-pool')">
                   确认并进入订单池
                   <ChevronRight class="size-[15px]" aria-hidden="true" />
                 </button>
-                <button type="button" class="btn">重新上传</button>
+                <button type="button" class="btn" :disabled="isImportingDailySchedule" @click="openDailySchedulePicker">重新上传</button>
               </div>
             </section>
           </div>
@@ -1651,6 +1802,18 @@ function handleFocusAction(action: FocusAction) {
               >
                 <AlertTriangle class="issue-icon" aria-hidden="true" />
                 <span><b>{{ issue.count }}</b> {{ issue.text }}</span>
+              </div>
+
+              <div v-if="importTopIssues.length" class="issue-detail-list">
+                <div
+                  v-for="issue in importTopIssues"
+                  :key="issue.id"
+                  class="issue-detail"
+                  :class="issue.severity"
+                >
+                  <span class="mono">#{{ issue.source_row || '-' }}</span>
+                  <span>{{ issue.message }}</span>
+                </div>
               </div>
             </section>
           </div>
@@ -2351,31 +2514,6 @@ function handleFocusAction(action: FocusAction) {
   gap: 12px;
 }
 
-.account {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #fff;
-  padding: 5px 12px 5px 6px;
-  color: var(--text-700);
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.avatar {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border-radius: 999px;
-  background: var(--primary);
-  color: #fff;
-  font-size: 12px;
-}
-
 .page-head {
   display: flex;
   flex-direction: column;
@@ -3069,6 +3207,16 @@ function handleFocusAction(action: FocusAction) {
   padding-top: 1px;
 }
 
+.error-hint {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: #fff7f7;
+  color: #991b1b;
+}
+
+.error-hint .hint-ico {
+  color: var(--red-solid);
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3224,6 +3372,36 @@ function handleFocusAction(action: FocusAction) {
   height: 15px;
   flex-shrink: 0;
   margin-top: 1px;
+}
+
+.issue-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.issue-detail {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px 10px;
+  color: var(--text-600);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.issue-detail.error {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: #fff7f7;
+}
+
+.issue-detail.warning {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: #fffbeb;
 }
 
 .pool-layout {
