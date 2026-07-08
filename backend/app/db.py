@@ -76,6 +76,7 @@ def ensure_sqlite_legacy_columns() -> None:
 
 def init_db() -> None:
     from app.models import auth  # noqa: F401
+    from app.models import injection_schedule  # noqa: F401
     from app.models import molding_sample  # noqa: F401
     from app.services.auth import seed_auth_defaults
     from app.services.molding_sample import seed_molding_sample_defaults
