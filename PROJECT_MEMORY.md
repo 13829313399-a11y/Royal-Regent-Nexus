@@ -954,6 +954,14 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification limitation: direct browser frame sampling through coordinate click timed out in the automation tool, so the final verification did not claim a frame-by-frame visual trace.
 - Decision: keep the drawer animation local to this module and avoid adding a new motion dependency.
 
+### 2026-07-08
+
+- Requirement: browser feedback requested all four Injection Scheduling Center pages (`machine-overview`, `excel-import`, `order-pool`, `schedule-board`) be restored more directly from `C:\Users\匡树杰\Desktop\rr项目样式参考` HTML/CSS, because the module is still a static page; the only exception is that in-page factory switch buttons must stay removed.
+- Implementation: moved the topbar closer to the reference by keeping search/data controls only on the overview page and removing them from the import/order/schedule pages; converted the step/page pills in this view from shared `StatusPill` usage to local `.pill` markup; restored the order-pool page header metrics, six-principle panel, score-factor legend, reference-style priority table with score/factor/group/swatch columns; restored the schedule-board page to the reference layout with left pending queue, 7-day gantt lanes, trial results, and constraint checks; kept the overview current-factory display static without factory switch buttons.
+- Files changed: `src/views/InjectionSchedulingView.vue` and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `npm.cmd run test:unit` passed 6 files / 35 tests; `git diff --check` passed with only LF-to-CRLF warnings; browser DOM QA across all four section URLs confirmed zero `.factory-btn` factory switch buttons, overview-only search/data controls, overview 4 metrics / 6 focus cards / 6 overdue rows / 5 chips / 39 machine boxes, import layout/dropzone/file/4 stats/5 parsing steps/8 mapping rows/4 issues, order-pool 4 metrics / 6 principles / 15 factorbars / 15 rows / 15 scores / 15 group tags, schedule pending queue / 7-day gantt / 6 lanes / 10 blocks / 4 gaps / 4 trials / 5 constraints, no desktop horizontal overflow, and no console errors.
+- Decision: this pass favors static visual fidelity to the local reference HTML/CSS over dynamic backend-driven table/lane data; factory context remains external and page-local factory switching remains intentionally absent.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.

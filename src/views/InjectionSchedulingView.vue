@@ -19,7 +19,6 @@ import {
 } from '@lucide/vue'
 import { computed, nextTick, ref, watchEffect } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import StatusPill from '@/components/common/StatusPill.vue'
 import {
   getDepartmentRoute,
   isProductionFactoryContextId,
@@ -188,8 +187,8 @@ const pageHeadCopy = computed(() => {
       back: '返回订单池',
       title: '排期编排看板',
       pillTone: 'teal' as Tone,
-      secondaryPill: null as string | null,
-      subtitle: '左侧待排队列进入右侧机台泳道，系统按当前在啤模具串联计算换模换色间隙、计划完成期与交期差。',
+      secondaryPill: '系统试算' as string | null,
+      subtitle: '左侧待排队列拖入右侧机台泳道，系统按当前在啤模具串联计算换模换色间隙、计划完成期与交期差。',
     }
   }
 
@@ -689,6 +688,444 @@ const importQualityIssues = [
   },
 ]
 
+const orderHeadMetrics = [
+  { label: '订单池任务', value: '118', detail: '来自 6-30 排版表', tone: 'blue' as Tone },
+  { label: '急单 / 超期', value: '15 / 88', detail: '优先安排', tone: 'red' as Tone },
+  { label: '同模分组', value: '12 组', detail: '可连排省换模', tone: 'teal' as Tone },
+  { label: '待补料', value: '6', detail: '缺料补料优先', tone: 'amber' as Tone },
+]
+
+const priorityFactorColors = [
+  'var(--red-solid)',
+  'var(--amber-solid)',
+  'var(--violet-solid)',
+  'var(--teal-solid)',
+  'var(--blue-solid)',
+]
+
+const staticOrderPoolRows = [
+  {
+    mold: 'T01-BN328-00300000-2',
+    group: 'BN328',
+    groupClass: 'grp-a',
+    product: '圆刷/目标刷',
+    order: 'F12-BN328',
+    owe: 1000,
+    color: '白色',
+    colorHex: '#f8fafc',
+    due: '07-08',
+    overdue: true,
+    urgent: true,
+    machine: '旧7 18A',
+    status: '特急',
+    statusTone: 'amber' as Tone,
+    score: 96,
+    factors: [40, 25, 12, 9, 10],
+  },
+  {
+    mold: 'T01-BN328-00300000-1',
+    group: 'BN328',
+    groupClass: 'grp-a',
+    product: '圆刷/目标刷',
+    order: 'F12-BN328',
+    owe: 1200,
+    color: '白色',
+    colorHex: '#f8fafc',
+    due: '07-08',
+    overdue: true,
+    urgent: true,
+    machine: '旧7 18A',
+    status: '特急',
+    statusTone: 'amber' as Tone,
+    score: 94,
+    factors: [40, 25, 15, 8, 6],
+    grouped: true,
+  },
+  {
+    mold: 'SE-20230217-01',
+    group: '—',
+    groupClass: 'grp-none',
+    product: '吊钩固定座',
+    order: 'W86255',
+    owe: 484,
+    color: '浅头色',
+    colorHex: '#e7d9b8',
+    due: '07-16',
+    overdue: false,
+    urgent: true,
+    machine: '旧1 50A',
+    status: '特急',
+    statusTone: 'amber' as Tone,
+    score: 88,
+    factors: [28, 25, 0, 10, 8],
+  },
+  {
+    mold: '20 383 3006-002',
+    group: '383',
+    groupClass: 'grp-b',
+    product: '马桶车圆刷',
+    order: '20 383 4003',
+    owe: 2002,
+    color: '白色',
+    colorHex: '#f8fafc',
+    due: '07-09',
+    overdue: true,
+    urgent: false,
+    machine: '旧11 24A',
+    status: '缺料',
+    statusTone: 'red' as Tone,
+    score: 85,
+    factors: [38, 10, 14, 9, 8],
+  },
+  {
+    mold: '20 383 6003-015',
+    group: '383',
+    groupClass: 'grp-b',
+    product: '柄部公扣',
+    order: '20 383 4003',
+    owe: 349,
+    color: '白色',
+    colorHex: '#f8fafc',
+    due: '07-09',
+    overdue: true,
+    urgent: false,
+    machine: '旧38 7A',
+    status: '待排',
+    statusTone: 'slate' as Tone,
+    score: 82,
+    factors: [38, 10, 15, 9, 6],
+    grouped: true,
+  },
+  {
+    mold: 'PAMT-01M-01',
+    group: 'PAMT',
+    groupClass: 'grp-c',
+    product: '水杯',
+    order: '9560',
+    owe: 11470,
+    color: '透明',
+    colorHex: '#dbeafe',
+    due: '07-14',
+    overdue: false,
+    urgent: false,
+    machine: '旧2 32A',
+    status: '在啤',
+    statusTone: 'green' as Tone,
+    score: 74,
+    factors: [26, 0, 15, 10, 10],
+  },
+  {
+    mold: 'PAMT-01M-01',
+    group: 'PAMT',
+    groupClass: 'grp-c',
+    product: '水杯',
+    order: '9560',
+    owe: 23420,
+    color: '透明',
+    colorHex: '#dbeafe',
+    due: '07-18',
+    overdue: false,
+    urgent: false,
+    machine: '旧2 32A',
+    status: '待排',
+    statusTone: 'slate' as Tone,
+    score: 72,
+    factors: [22, 0, 15, 10, 10],
+    grouped: true,
+  },
+  {
+    mold: 'PAMT-01M-01',
+    group: 'PAMT',
+    groupClass: 'grp-c',
+    product: '水杯',
+    order: '9560',
+    owe: 60000,
+    color: '透明',
+    colorHex: '#dbeafe',
+    due: '07-24',
+    overdue: false,
+    urgent: false,
+    machine: '旧2 32A',
+    status: '待排',
+    statusTone: 'slate' as Tone,
+    score: 70,
+    factors: [18, 0, 15, 12, 10],
+    grouped: true,
+  },
+  {
+    mold: 'SMCT 0610-06-4',
+    group: '0610',
+    groupClass: 'grp-a',
+    product: '马桶手柄',
+    order: 'W86255',
+    owe: 220,
+    color: '浅头色',
+    colorHex: '#e7d9b8',
+    due: '07-16',
+    overdue: false,
+    urgent: false,
+    machine: '旧12 12A',
+    status: '在啤',
+    statusTone: 'green' as Tone,
+    score: 68,
+    factors: [24, 0, 15, 10, 7],
+  },
+  {
+    mold: 'SMCT 0610-08',
+    group: '0610',
+    groupClass: 'grp-a',
+    product: '马桶小手柄',
+    order: 'W86255',
+    owe: 650,
+    color: '浅头色',
+    colorHex: '#e7d9b8',
+    due: '07-16',
+    overdue: false,
+    urgent: false,
+    machine: '旧5 24A',
+    status: '待排',
+    statusTone: 'slate' as Tone,
+    score: 66,
+    factors: [24, 0, 14, 10, 6],
+    grouped: true,
+  },
+  {
+    mold: 'BBT 93229-09',
+    group: '93229',
+    groupClass: 'grp-b',
+    product: '胶枪身',
+    order: '93229',
+    owe: 8775,
+    color: '红色',
+    colorHex: '#dc2626',
+    due: '07-13',
+    overdue: false,
+    urgent: false,
+    machine: '旧4 24A',
+    status: '缺料',
+    statusTone: 'red' as Tone,
+    score: 64,
+    factors: [26, 0, 12, 4, 10],
+  },
+  {
+    mold: 'BBT 93229-04',
+    group: '93229',
+    groupClass: 'grp-b',
+    product: '接电筒/电筒',
+    order: '93229',
+    owe: 15335,
+    color: '黑色',
+    colorHex: '#334155',
+    due: '07-15',
+    overdue: false,
+    urgent: false,
+    machine: '旧9 18A',
+    status: '在啤',
+    statusTone: 'green' as Tone,
+    score: 60,
+    factors: [22, 0, 12, 2, 10],
+    grouped: true,
+  },
+  {
+    mold: 'MNVN-19M-06',
+    group: 'MNVN',
+    groupClass: 'grp-c',
+    product: '包装底座',
+    order: '77794',
+    owe: 70595,
+    color: '黑色',
+    colorHex: '#334155',
+    due: '07-24',
+    overdue: false,
+    urgent: false,
+    machine: '旧3 32A',
+    status: '在啤',
+    statusTone: 'green' as Tone,
+    score: 56,
+    factors: [16, 0, 15, 3, 10],
+  },
+  {
+    mold: 'MNVN-19M-05',
+    group: 'MNVN',
+    groupClass: 'grp-c',
+    product: '包装底座',
+    order: '77794',
+    owe: 71930,
+    color: '黑色',
+    colorHex: '#334155',
+    due: '07-24',
+    overdue: false,
+    urgent: false,
+    machine: '旧10 18A',
+    status: '待排',
+    statusTone: 'slate' as Tone,
+    score: 54,
+    factors: [16, 0, 15, 2, 10],
+    grouped: true,
+  },
+  {
+    mold: '20 375 3004-004',
+    group: '375',
+    groupClass: 'grp-none',
+    product: '刷部',
+    order: '20 375 3004',
+    owe: 200,
+    color: '透明红',
+    colorHex: '#fca5a5',
+    due: '07-20',
+    overdue: false,
+    urgent: false,
+    machine: '旧38 7A',
+    status: '待排',
+    statusTone: 'slate' as Tone,
+    score: 48,
+    factors: [14, 0, 0, 8, 6],
+  },
+]
+
+const scheduleDays = ['07-07', '07-08', '07-09', '07-10', '07-11', '07-12', '07-13']
+
+const schedulePendingCards = [
+  {
+    mold: 'T01-BN328-00300000-1',
+    score: '▲94',
+    className: 'urgent',
+    color: '白色',
+    colorHex: '#f8fafc',
+    meta: '欠1,200 · 交07-08 · 同模▣BN328',
+    tone: 'amber' as Tone,
+  },
+  {
+    mold: '20 383 3006-002',
+    score: '缺85',
+    className: 'short',
+    color: '白色',
+    colorHex: '#f8fafc',
+    meta: '欠2,002 · 待补料 · ▣383',
+    tone: 'red' as Tone,
+  },
+  {
+    mold: 'PAMT-01M-01',
+    score: '72',
+    className: '',
+    color: '透明',
+    colorHex: '#dbeafe',
+    meta: '欠23,420 · ▣PAMT 连排',
+    tone: 'slate' as Tone,
+  },
+  {
+    mold: 'SMCT 0610-08',
+    score: '66',
+    className: '',
+    color: '浅头色',
+    colorHex: '#e7d9b8',
+    meta: '欠650 · ▣0610',
+    tone: 'slate' as Tone,
+  },
+  {
+    mold: 'MNVN-19M-05',
+    score: '54',
+    className: '',
+    color: '黑色',
+    colorHex: '#334155',
+    meta: '欠71,930 · ▣MNVN',
+    tone: 'slate' as Tone,
+  },
+  {
+    mold: '20 375 3004-004',
+    score: '48',
+    className: '',
+    color: '透明红',
+    colorHex: '#fca5a5',
+    meta: '欠200 · 单模',
+    tone: 'slate' as Tone,
+  },
+]
+
+type ScheduleLaneBlock =
+  | { s: number; l: number; mold: string; sub: string; type: 'running' | 'same-mold' | 'normal' | 'urgent' | 'short' }
+  | { gap: number; gl: number; lbl: string }
+
+const scheduleLanes: { mid: string; spec: string; blocks: ScheduleLaneBlock[] }[] = [
+  {
+    mid: '旧1',
+    spec: '50A 400T 高速',
+    blocks: [
+      { s: 0, l: 0.9, mold: 'SE-20230217-01', sub: '浅头色·欠484', type: 'running' },
+      { gap: 0.9, gl: 0.1, lbl: '转模0.03' },
+      { s: 1.0, l: 2.6, mold: 'PAMT-01M-01', sub: '透明·连排', type: 'same-mold' },
+    ],
+  },
+  {
+    mid: '旧2',
+    spec: '32A 320T 高速',
+    blocks: [
+      { s: 0, l: 3.2, mold: 'PAMT-01M-01', sub: '透明·欠11,470', type: 'running' },
+      { s: 3.2, l: 2.8, mold: 'PAMT-01M-01', sub: '透明·连排 欠23,420', type: 'same-mold' },
+    ],
+  },
+  {
+    mid: '旧4',
+    spec: '24A 260T 高速',
+    blocks: [
+      { gap: 0, gl: 0.6, lbl: '待补料' },
+      { s: 0.6, l: 2.1, mold: 'BBT 93229-09', sub: '红色·欠8,775', type: 'short' },
+    ],
+  },
+  {
+    mid: '旧7',
+    spec: '18A 200T 高速',
+    blocks: [
+      { s: 0, l: 1.4, mold: 'T01-BN328-...-2', sub: '白色·特急 欠1,000', type: 'urgent' },
+      { gap: 1.4, gl: 0.05, lbl: '同模0' },
+      { s: 1.45, l: 1.6, mold: 'T01-BN328-...-1', sub: '白色·连排 欠1,200', type: 'same-mold' },
+    ],
+  },
+  {
+    mid: '旧9',
+    spec: '18A 200T 高速',
+    blocks: [
+      { s: 0, l: 4.5, mold: 'BBT 93229-04', sub: '黑色·欠15,335', type: 'running' },
+    ],
+  },
+  {
+    mid: '旧12',
+    spec: '12A 150T 高速',
+    blocks: [
+      { s: 0, l: 0.5, mold: 'SMCT 0610-06-4', sub: '浅头色·欠220', type: 'running' },
+      { gap: 0.5, gl: 0.08, lbl: '同模0' },
+      { s: 0.58, l: 1.2, mold: 'SMCT 0610-08', sub: '浅头色·连排', type: 'same-mold' },
+    ],
+  },
+]
+
+const scheduleTrialStats = [
+  { value: '6', label: '本次排入任务', className: 'trial-teal' },
+  { value: '4', label: '同模连排（省 4 次换模）', className: 'trial-violet' },
+  { value: '0.21天', label: '总换线时间', className: 'trial-amber' },
+  { value: '1', label: '预计超期任务', className: 'trial-red' },
+]
+
+const scheduleConstraints = [
+  { tone: 'ok', title: '模具匹配', text: 'BN328 白色刷（18A）已排旧7（18A 200T），未出现大模上小机' },
+  { tone: 'ok', title: '浅色先排', text: '旧1 浅头色 → 透明 顺序正确，无深转浅串色风险' },
+  { tone: 'ok', title: '同模连排', text: 'PAMT-01M-01 三单连排、MNVN 两单连排，换线 0' },
+  { tone: 'warn', title: '缺料预警', text: '旧4 胶枪身红色料未齐，07-08 前需补料，否则顺延超期' },
+  { tone: 'warn', title: '机台数据缺失', text: '部分模具无容模量数据，机台匹配为人工确认（大单未自动排高速机）' },
+]
+
+function scoreClass(score: number) {
+  return score >= 85 ? 'hi' : score >= 65 ? 'mid' : 'lo'
+}
+
+function schedulePercent(value: number) {
+  return `${(value / 7) * 100}%`
+}
+
+function isScheduleGap(block: ScheduleLaneBlock): block is Extract<ScheduleLaneBlock, { gap: number }> {
+  return 'gap' in block
+}
+
 watchEffect(() => {
   appStore.setActiveDepartment('production')
   appStore.setActiveFactory(selectedFactoryId.value)
@@ -795,7 +1232,7 @@ function handleFocusAction(action: FocusAction) {
           </button>
         </nav>
 
-        <label class="search">
+        <label v-if="activeStep === 'machine-overview'" class="search">
           <Search class="size-[15px] shrink-0" aria-hidden="true" />
           <input
             v-model="machineSearchText"
@@ -806,7 +1243,10 @@ function handleFocusAction(action: FocusAction) {
         </label>
 
         <div class="topbar-right">
-          <StatusPill :label="`数据 ${currentDataDate}`" tone="teal" compact />
+          <span v-if="activeStep === 'machine-overview'" class="pill teal compact">
+            <span class="dot"></span>
+            数据 {{ currentDataDate }}
+          </span>
           <span class="account">
             <span class="avatar">华</span>
             河源华兴 · 啤机文员
@@ -827,8 +1267,14 @@ function handleFocusAction(action: FocusAction) {
           </RouterLink>
           <div class="page-titlerow">
             <h1 class="page-title">{{ pageHeadCopy.title }}</h1>
-            <StatusPill :label="activeStep === 'machine-overview' ? activeStepMeta.label : `步骤 ${activeStepIndex} / 4`" :tone="pageHeadCopy.pillTone" />
-            <StatusPill v-if="pageHeadCopy.secondaryPill" :label="pageHeadCopy.secondaryPill" tone="blue" />
+            <span
+              class="pill"
+              :class="activeStep === 'order-pool' ? 'violet' : pageHeadCopy.pillTone"
+            >
+              <span class="dot"></span>
+              {{ activeStep === 'machine-overview' ? activeStepMeta.label : `步骤 ${activeStepIndex} / 4` }}
+            </span>
+            <span v-if="pageHeadCopy.secondaryPill" class="pill blue">{{ pageHeadCopy.secondaryPill }}</span>
           </div>
           <p class="page-sub">{{ pageHeadCopy.subtitle }}</p>
         </div>
@@ -846,6 +1292,32 @@ function handleFocusAction(action: FocusAction) {
               <p class="metric-detail">{{ card.detail }}</p>
             </article>
           </div>
+        </div>
+
+        <div v-else-if="activeStep === 'order-pool'" class="order-metrics-wrap">
+          <div class="metrics">
+            <article
+              v-for="card in orderHeadMetrics"
+              :key="card.label"
+              class="metric"
+              :class="card.tone"
+            >
+              <p class="metric-label">{{ card.label }}</p>
+              <p class="metric-value">{{ card.value }}</p>
+              <p class="metric-detail">{{ card.detail }}</p>
+            </article>
+          </div>
+        </div>
+
+        <div v-else-if="activeStep === 'schedule-board'" class="row gap-2 schedule-head-actions">
+          <button type="button" class="btn">
+            <Gauge class="size-[15px]" aria-hidden="true" />
+            一键智能排期
+          </button>
+          <button type="button" class="btn primary">
+            <CheckCircle2 class="size-[15px]" aria-hidden="true" />
+            发布排期
+          </button>
         </div>
       </header>
 
@@ -1055,7 +1527,7 @@ function handleFocusAction(action: FocusAction) {
                   <div class="progress-line"><span style="width:100%" /></div>
                   <div class="xsmall muted mt-2">Sheet1《河源华兴啤机生产日计划表》 · 289 行 · 表内日期 2026-06-30</div>
                 </div>
-                <StatusPill label="解析完成" tone="green" compact />
+                <span class="pill green compact"><span class="dot"></span>解析完成</span>
               </div>
 
               <div class="hint mt-4">
@@ -1093,10 +1565,10 @@ function handleFocusAction(action: FocusAction) {
                 <span class="muted">总欠数（∑ 欠数列）</span><span class="strong mono">1,860,805</span>
               </div>
               <div class="row between small mt-2">
-                <span class="muted">超期任务（交期差 &lt; 0）</span><StatusPill label="88 条" tone="red" compact />
+                <span class="muted">超期任务（交期差 &lt; 0）</span><span class="pill red compact">88 条</span>
               </div>
               <div class="row between small mt-2">
-                <span class="muted">特急任务（含 ▲ 标识）</span><StatusPill label="15 条" tone="amber" compact />
+                <span class="muted">特急任务（含 ▲ 标识）</span><span class="pill amber compact">15 条</span>
               </div>
               <div class="row gap-2 mt-4">
                 <button type="button" class="btn primary grow justify-center" @click="setWorkspaceStep('order-pool')">
@@ -1187,73 +1659,91 @@ function handleFocusAction(action: FocusAction) {
 
       <template v-else-if="activeStep === 'order-pool'">
         <div class="pool-layout">
-          <aside class="section principle-panel">
-            <div class="section-title">
-              <span class="ico violet">
-                <ShieldAlert class="size-5" aria-hidden="true" />
-              </span>
-              <div>
-                <h2>排期六原则</h2>
-                <p class="small muted mt-0.5">订单池排序权重依据</p>
+          <div class="col gap-4">
+            <section class="section">
+              <div class="section-title" style="margin-bottom:12px">
+                <span class="ico violet">
+                  <ShieldAlert class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>排期六原则</h2>
+                  <p class="small muted mt-0.5">算分权重依据</p>
+                </div>
               </div>
-            </div>
+              <div class="principle">
+                <span class="badge" style="background:var(--red-solid)">1</span>
+                <div><div class="t">交期优先级</div><div class="d">按订单期限确立优先级，交期越近分越高</div></div>
+              </div>
+              <div class="principle">
+                <span class="badge" style="background:var(--red-solid)">2</span>
+                <div><div class="t">急单 / 交期紧急</div><div class="d">▲特急、超期任务置顶优先安排</div></div>
+              </div>
+              <div class="principle">
+                <span class="badge" style="background:var(--violet-solid)">3</span>
+                <div><div class="t">同款同模连排</div><div class="d">前缀相同（-01/-06/-08...同套模）尽量一起排，减少换模</div></div>
+              </div>
+              <div class="principle">
+                <span class="badge" style="background:var(--blue-solid)">4</span>
+                <div><div class="t">模具尺寸匹配机台</div><div class="d">大模不上小机、小模不占大机，大单尽量排高速机</div></div>
+              </div>
+              <div class="principle">
+                <span class="badge" style="background:var(--teal-solid)">5</span>
+                <div><div class="t">浅色先排深色后排</div><div class="d">同机台按颜色由浅到深，防止串色</div></div>
+              </div>
+              <div class="principle">
+                <span class="badge" style="background:var(--amber-solid)">6</span>
+                <div><div class="t">缺料补料优先</div><div class="d">在啤机台缺料的，安排当天补料</div></div>
+              </div>
+            </section>
 
-            <div class="principles">
-              <div class="principle-row">
-                <span class="bg-red-500">1</span>
-                <div><p>交期优先级</p><small>交期越近越靠前</small></div>
+            <section class="section">
+              <p class="eyebrow" style="margin-bottom:10px">分数构成</p>
+              <div class="legend">
+                <span><i style="background:var(--red-solid)"></i>交期紧迫</span>
+                <span><i style="background:var(--amber-solid)"></i>急单加权</span>
+                <span><i style="background:var(--violet-solid)"></i>同模连排</span>
+                <span><i style="background:var(--teal-solid)"></i>颜色顺序</span>
+                <span><i style="background:var(--blue-solid)"></i>机台匹配</span>
               </div>
-              <div class="principle-row">
-                <span class="bg-red-500">2</span>
-                <div><p>急单 / 超期</p><small>特急和超期置顶</small></div>
+              <div class="hint mt-3">
+                <span class="hint-ico">
+                  <Gauge class="size-[15px]" aria-hidden="true" />
+                </span>
+                <span>优先级分 = 交期紧迫 ×0.4 + 急单 ×0.25 + 同模连排 ×0.15 + 颜色顺序 ×0.1 + 机台匹配 ×0.1，分越高越靠前。</span>
               </div>
-              <div class="principle-row">
-                <span class="bg-violet-500">3</span>
-                <div><p>同款同模连排</p><small>减少换模和试机</small></div>
-              </div>
-              <div class="principle-row">
-                <span class="bg-blue-500">4</span>
-                <div><p>模具尺寸匹配</p><small>大模不上小机</small></div>
-              </div>
-              <div class="principle-row">
-                <span class="bg-teal-500">5</span>
-                <div><p>浅色先排</p><small>降低串色风险</small></div>
-              </div>
-              <div class="principle-row">
-                <span class="bg-amber-500">6</span>
-                <div><p>缺料补料优先</p><small>在啤机台当天补齐</small></div>
-              </div>
-            </div>
-          </aside>
+            </section>
+          </div>
 
-          <section class="section order-panel">
+          <section class="section">
             <div class="row between wrap gap-3 mb-4">
               <div class="section-title">
                 <span class="ico">
                   <Boxes class="size-5" aria-hidden="true" />
                 </span>
                 <div>
-                  <h2>订单池 · 优先级排序</h2>
-                  <p class="small muted mt-0.5">来自当前厂区订单导入数据，按风险、同模组和候选机台整理。</p>
+                  <h2>订单池（按优先级排序）</h2>
+                  <p class="small muted mt-0.5">同模自动分组高亮 · 点击可展开明细</p>
                 </div>
               </div>
               <div class="row gap-2">
-                <StatusPill :label="`${orderPoolRows.length} 条显示`" tone="slate" compact />
-                <StatusPill :label="`${injectionPendingOrderDetailRows.length} 条总池`" tone="blue" compact />
+                <button type="button" class="btn sm">按交期</button>
+                <button type="button" class="btn sm primary">按优先级分</button>
+                <button type="button" class="btn sm">按同模分组</button>
               </div>
             </div>
 
             <div class="table-wrap">
-              <table class="grid-table">
+              <table class="grid">
                 <thead>
                   <tr>
                     <th>#</th>
                     <th>优先级</th>
+                    <th>分数构成</th>
                     <th>工模编号</th>
                     <th>同模组</th>
                     <th>产品 / 单号</th>
-                    <th class="right">欠数</th>
-                    <th>颜色 / 料型</th>
+                    <th class="num">欠数</th>
+                    <th>颜色</th>
                     <th>交期</th>
                     <th>建议机台</th>
                     <th>状态</th>
@@ -1261,46 +1751,64 @@ function handleFocusAction(action: FocusAction) {
                 </thead>
                 <tbody>
                   <tr
-                    v-for="row in orderPoolRows"
-                    :key="`${row.orderNo}-${row.moldCode}-${row.rank}`"
-                    class="table-row"
+                    v-for="(row, index) in staticOrderPoolRows"
+                    :key="`${row.order}-${row.mold}-${index}`"
+                    :class="{ grouprow: row.grouped }"
                   >
-                    <td class="mono muted">{{ row.rank }}</td>
+                    <td class="mono muted">{{ index + 1 }}</td>
                     <td>
-                      <span
-                        class="score-badge"
-                        :class="softToneClasses[row.scoreTone]"
-                      >
+                      <span class="score" :class="scoreClass(row.score)">
                         {{ row.score }}
                       </span>
                     </td>
-                    <td class="mono strong">{{ row.moldCode }}</td>
                     <td>
-                      <span class="group-tag">
-                        {{ row.group }}
+                      <div class="factorbar">
+                        <span
+                          v-for="(factor, factorIndex) in row.factors"
+                          :key="`${row.mold}-${factorIndex}`"
+                          class="seg"
+                          :style="{ width: `${factor * 0.9}px`, background: priorityFactorColors[factorIndex] }"
+                        ></span>
+                      </div>
+                    </td>
+                    <td><span class="mono strong">{{ row.mold }}</span></td>
+                    <td>
+                      <span class="grp-tag" :class="row.groupClass">
+                        {{ row.group === '—' ? '单模' : `▣ ${row.group}` }}
                       </span>
                     </td>
                     <td>
-                      <div class="strong">{{ row.productName }}</div>
-                      <div class="mono xsmall muted mt-1">{{ row.orderNo }}</div>
+                      <div class="small">{{ row.product }}</div>
+                      <div class="mono xsmall muted mt-1">{{ row.order }}</div>
                     </td>
-                    <td class="right mono strong">{{ row.shortageQuantity ?? row.quantity }}</td>
+                    <td class="num mono strong">{{ row.owe.toLocaleString() }}</td>
                     <td>
-                      <div>{{ row.color }}</div>
-                      <div class="xsmall muted mt-1">{{ row.material }}</div>
+                      <span class="swatch" :style="{ background: row.colorHex }"></span>
+                      <span class="small">{{ row.color }}</span>
                     </td>
-                    <td class="mono">{{ row.dueDate }}</td>
                     <td>
-                      <span class="tag mono">
-                        {{ row.machineAdvice }}
+                      <span class="small mono">{{ row.due }}</span>
+                      <div v-if="row.overdue" class="xsmall text-red-700">已超期</div>
+                    </td>
+                    <td>
+                      <span class="tag mono">{{ row.machine }}</span>
+                    </td>
+                    <td>
+                      <span class="pill compact" :class="row.statusTone">
+                        {{ row.urgent ? '▲' : '' }}{{ row.status }}
                       </span>
-                    </td>
-                    <td>
-                      <StatusPill :label="row.issue" :tone="row.tone" compact />
                     </td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+
+            <div class="row between mt-4">
+              <span class="small muted">显示前 15 条 · 共 118 条订单任务</span>
+              <button type="button" class="btn primary" @click="setWorkspaceStep('schedule-board')">
+                进入排期编排
+                <ChevronRight class="size-[15px]" aria-hidden="true" />
+              </button>
             </div>
           </section>
         </div>
@@ -1308,112 +1816,170 @@ function handleFocusAction(action: FocusAction) {
 
       <template v-else>
         <div class="sched-layout">
-          <section class="section schedule-main">
-            <div class="row between wrap gap-3 mb-4">
+          <section class="section pending-panel">
+            <div class="row between" style="margin-bottom:12px">
               <div class="section-title">
-                <span class="ico blue">
-                  <CalendarDays class="size-5" aria-hidden="true" />
+                <span class="ico slate">
+                  <Boxes class="size-5" aria-hidden="true" />
                 </span>
-                <div>
-                  <h2>机台泳道 · 7 日排期</h2>
-                  <p class="small muted mt-0.5">块宽表示生产周期，颜色表示风险状态。</p>
-                </div>
+                <div><h2 style="font-size:16px">待排队列</h2></div>
               </div>
-              <div class="legend">
-                <span><i class="green" />正常</span>
-                <span><i class="amber" />待确认</span>
-                <span><i class="red" />风险</span>
+              <span class="pill slate compact">14</span>
+            </div>
+            <p class="xsmall muted" style="margin:0 0 10px">按优先级分排序 · 拖入右侧泳道</p>
+
+            <div
+              v-for="card in schedulePendingCards"
+              :key="card.mold"
+              class="pending-card"
+              :class="card.className"
+            >
+              <div class="row1">
+                <span class="mold">{{ card.mold }}</span>
+                <span class="pill compact" :class="card.tone">{{ card.score }}</span>
+              </div>
+              <div class="meta">
+                <span class="swatch" :style="{ background: card.colorHex }"></span>
+                {{ card.color }} · {{ card.meta }}
               </div>
             </div>
 
-            <div class="lane-wrap">
-              <div class="lane-stage">
-                <div class="gantt-axis">
-                  <div>机台</div>
-                  <div v-for="day in ['07-07', '07-08', '07-09', '07-10', '07-11', '07-12', '07-13']" :key="day">
-                    <b>{{ day }}</b>
-                    <span>排期</span>
-                  </div>
-                </div>
-
-                <div
-                  v-for="row in scheduleLaneRows"
-                  :key="`${row.orderNo}-${row.machine}-${row.startWindow}`"
-                  class="gantt-lane"
-                >
-                  <div class="lane-label">
-                    <p>{{ row.lane }}</p>
-                    <span>{{ row.shiftPlan }}</span>
-                  </div>
-                  <div class="lane-body">
-                    <div class="lane-lines">
-                      <span v-for="index in 7" :key="index" />
-                    </div>
-                    <div
-                      class="gantt-block"
-                      :class="toneBarClass[row.tone]"
-                      :style="{ left: `${row.startPercent}%`, width: `${row.widthPercent}%` }"
-                    >
-                      <span class="mono">{{ row.orderNo }}</span>
-                      <small>{{ row.expectedOutput }}</small>
-                    </div>
-                  </div>
-                </div>
-              </div>
+            <div class="hint mt-3">
+              <span class="hint-ico">
+                <Gauge class="size-[15px]" aria-hidden="true" />
+              </span>
+              <span>同模（▣ 相同）优先拖到已排该模的机台，可省一次换模。</span>
             </div>
           </section>
 
-          <aside class="sched-side">
+          <div class="col gap-4">
             <section class="section">
-              <div class="section-title">
+              <div class="row between wrap gap-3" style="margin-bottom:12px">
+                <div class="section-title">
+                  <span class="ico">
+                    <CalendarDays class="size-5" aria-hidden="true" />
+                  </span>
+                  <div>
+                    <h2>机台泳道 · 7 日排期</h2>
+                    <p class="small muted mt-0.5">2026-07-07 起 · 块宽 = 生产周期</p>
+                  </div>
+                </div>
+                <div class="legend2">
+                  <span><i class="block running legend-block"></i>在啤</span>
+                  <span><i class="block same-mold legend-block"></i>同模连排</span>
+                  <span><i class="block urgent legend-block"></i>特急</span>
+                  <span><i class="block short legend-block"></i>缺料</span>
+                  <span><i class="legend-gap"></i>换模/色</span>
+                </div>
+              </div>
+
+              <div class="gantt">
+                <div class="gantt-inner">
+                  <div class="timeaxis">
+                    <div class="corner">机台</div>
+                    <div v-for="day in scheduleDays" :key="day" class="day">
+                      <b>{{ day }}</b>
+                      排期
+                    </div>
+                  </div>
+
+                  <div
+                    v-for="lane in scheduleLanes"
+                    :key="lane.mid"
+                    class="lane"
+                  >
+                    <div class="lane-head">
+                      <div class="mid">{{ lane.mid }}</div>
+                      <div class="spec">{{ lane.spec }}</div>
+                    </div>
+                    <div class="lane-track">
+                      <div class="grid-lines">
+                        <span v-for="index in 7" :key="`${lane.mid}-line-${index}`"></span>
+                      </div>
+                      <template
+                        v-for="(block, index) in lane.blocks"
+                        :key="`${lane.mid}-block-${index}`"
+                      >
+                        <div
+                          v-if="isScheduleGap(block)"
+                          class="gap"
+                          :style="{ left: schedulePercent(block.gap), width: schedulePercent(block.gl) }"
+                        >
+                          <span class="gap-lbl">{{ block.lbl }}</span>
+                        </div>
+                        <div
+                          v-else
+                          class="block"
+                          :class="block.type"
+                          :style="{ left: schedulePercent(block.s), width: schedulePercent(block.l) }"
+                        >
+                          <span class="bm">{{ block.mold }}</span>
+                          <span class="bs">{{ block.sub }}</span>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-title" style="margin-bottom:14px">
+                <span class="ico blue">
+                  <BarChart3 class="size-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>本次排期试算结果</h2>
+                  <p class="small muted mt-0.5">发布前自动核算交期风险</p>
+                </div>
+              </div>
+              <div class="trial-grid">
+                <div
+                  v-for="trial in scheduleTrialStats"
+                  :key="trial.label"
+                  class="trial"
+                  :class="trial.className"
+                >
+                  <div class="n">{{ trial.value }}</div>
+                  <div class="l">{{ trial.label }}</div>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between small"><span class="muted">最早计划完成期</span><span class="strong mono">2026-07-08 02:10</span></div>
+              <div class="row between small mt-2"><span class="muted">最晚计划完成期</span><span class="strong mono">2026-07-13 18:40</span></div>
+              <div class="row between small mt-2"><span class="muted">统一入库缓冲</span><span class="strong">完工 +3 天</span></div>
+            </section>
+
+            <section class="section">
+              <div class="section-title" style="margin-bottom:14px">
                 <span class="ico amber">
                   <ShieldAlert class="size-5" aria-hidden="true" />
                 </span>
                 <div>
-                  <h2>约束校验</h2>
-                  <p class="small muted mt-0.5">发布前确认机台限制。</p>
+                  <h2>排期约束校验</h2>
+                  <p class="small muted mt-0.5">六原则实时检查</p>
                 </div>
               </div>
-              <div class="issue-list">
-                <article
-                  v-for="row in topConstraintRows"
-                  :key="`${row.machine}-${row.limit}`"
-                  class="issue-card"
-                  :class="toneClasses[row.tone]"
-                >
-                  <div class="row between">
-                    <h3>{{ row.machine }}</h3>
-                    <StatusPill :label="row.tonnage" :tone="row.tone" compact />
-                  </div>
-                  <p class="xsmall muted mt-2">{{ row.workshop }} · {{ row.robot }}</p>
-                  <p class="small mt-2">{{ row.limit }}</p>
-                  <p class="xsmall muted mt-1">{{ row.action }}</p>
-                </article>
-              </div>
-            </section>
-
-            <section class="section">
-              <div class="section-title">
-                <span class="ico">
-                  <Clock3 class="size-5" aria-hidden="true" />
-                </span>
-                <div>
-                  <h2>日报 / 入库回写</h2>
-                  <p class="small muted mt-0.5">班次回报后刷新欠数。</p>
-                </div>
-              </div>
-              <div class="writeback-grid">
-                <div>
-                  <p class="small muted">日报记录</p>
-                  <b>{{ injectionShiftReportRows.length }}</b>
-                </div>
-                <div>
-                  <p class="small muted">入库单</p>
-                  <b>{{ injectionWarehouseInboundRows.length }}</b>
-                </div>
+              <div
+                v-for="constraint in scheduleConstraints"
+                :key="constraint.title"
+                class="constraint"
+                :class="constraint.tone"
+              >
+                <CheckCircle2
+                  v-if="constraint.tone === 'ok'"
+                  class="size-[15px] shrink-0"
+                  aria-hidden="true"
+                />
+                <AlertTriangle
+                  v-else
+                  class="size-[15px] shrink-0"
+                  aria-hidden="true"
+                />
+                <span><b>{{ constraint.title }}</b>：{{ constraint.text }}</span>
               </div>
             </section>
-          </aside>
+          </div>
         </div>
       </template>
 
@@ -1926,6 +2492,16 @@ function handleFocusAction(action: FocusAction) {
   max-width: 860px;
 }
 
+.order-metrics-wrap {
+  width: 100%;
+  max-width: 520px;
+}
+
+.schedule-head-actions {
+  width: 100%;
+  justify-content: flex-start;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2044,6 +2620,11 @@ function handleFocusAction(action: FocusAction) {
 .ico.violet {
   background: var(--violet-bg);
   color: var(--violet-fg);
+}
+
+.ico.slate {
+  background: var(--slate-bg);
+  color: var(--slate-fg);
 }
 
 .eyebrow {
@@ -2664,6 +3245,41 @@ function handleFocusAction(action: FocusAction) {
   background: #fff;
 }
 
+table.grid {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.grid th {
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-sunken);
+  color: var(--text-500);
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+table.grid td {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-700);
+  padding: 10px 12px;
+  vertical-align: middle;
+}
+
+table.grid tbody tr:hover {
+  background: var(--surface-sunken);
+}
+
+table.grid tbody tr:last-child td {
+  border-bottom: 0;
+}
+
 .grid-table {
   width: 100%;
   min-width: 1080px;
@@ -2715,6 +3331,115 @@ function handleFocusAction(action: FocusAction) {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 11px;
   font-weight: 700;
+}
+
+.principle {
+  display: flex;
+  gap: 11px;
+  border-bottom: 1px dashed var(--border);
+  padding: 11px 0;
+}
+
+.principle:last-child {
+  border-bottom: 0;
+}
+
+.principle .badge {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.principle .t {
+  color: var(--text-900);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.principle .d {
+  margin-top: 2px;
+  color: var(--text-500);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.score {
+  display: inline-flex;
+  min-width: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.score.hi {
+  background: var(--red-bg);
+  color: var(--red-fg);
+}
+
+.score.mid {
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+}
+
+.score.lo {
+  background: var(--slate-bg);
+  color: var(--slate-fg);
+}
+
+.grp-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.grp-a {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.grp-b {
+  background: #cffafe;
+  color: #0e7490;
+}
+
+.grp-c {
+  background: #fce7f3;
+  color: #be185d;
+}
+
+.grp-none {
+  background: var(--surface-muted);
+  color: var(--text-400);
+}
+
+tr.grouprow td {
+  background: var(--violet-bg) !important;
+}
+
+.factorbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.factorbar .seg {
+  height: 6px;
+  border-radius: 2px;
 }
 
 .sched-layout {
@@ -2872,12 +3597,313 @@ function handleFocusAction(action: FocusAction) {
   line-height: 1;
 }
 
+.pending-panel {
+  align-self: start;
+}
+
+.pending-card {
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--slate-solid);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 11px 12px;
+  cursor: grab;
+  transition: box-shadow 0.15s ease;
+}
+
+.pending-card:hover {
+  box-shadow: var(--shadow-card);
+}
+
+.pending-card.urgent {
+  border-left-color: var(--red-solid);
+}
+
+.pending-card.short {
+  border-left-color: var(--amber-solid);
+}
+
+.pending-card .row1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.pending-card .mold {
+  color: var(--text-900);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pending-card .meta {
+  margin-top: 4px;
+  color: var(--text-500);
+  font-size: 11px;
+}
+
+.gantt {
+  overflow-x: auto;
+}
+
+.gantt-inner {
+  min-width: 900px;
+}
+
+.timeaxis {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: 120px repeat(7, 1fr);
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+}
+
+.timeaxis .corner {
+  padding: 8px 10px;
+  color: var(--text-500);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.timeaxis .day {
+  border-left: 1px solid var(--border);
+  padding: 8px 6px;
+  color: var(--text-500);
+  text-align: center;
+  font-size: 11px;
+}
+
+.timeaxis .day b {
+  display: block;
+  color: var(--text-900);
+  font-size: 13px;
+}
+
+.lane {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  border-bottom: 1px solid var(--border);
+}
+
+.lane:hover {
+  background: var(--surface-sunken);
+}
+
+.lane-head {
+  border-right: 1px solid var(--border);
+  padding: 10px;
+}
+
+.lane-head .mid {
+  color: var(--text-950);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.lane-head .spec {
+  margin-top: 2px;
+  color: var(--text-500);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lane-track {
+  position: relative;
+  height: 56px;
+}
+
+.grid-lines {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.grid-lines span {
+  border-left: 1px dashed var(--border);
+}
+
+.block {
+  position: absolute;
+  top: 8px;
+  display: flex;
+  height: 40px;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 7px;
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 11px;
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.14);
+  cursor: pointer;
+}
+
+.block .bm {
+  overflow: hidden;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.block .bs {
+  font-size: 10px;
+  opacity: 0.9;
+}
+
+.block.running {
+  background: linear-gradient(135deg, #0d9488, #14b8a6);
+}
+
+.block.same-mold {
+  background: linear-gradient(135deg, #7c3aed, #8b5cf6);
+}
+
+.block.normal {
+  background: linear-gradient(135deg, #0369a1, #0ea5e9);
+}
+
+.block.urgent {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+}
+
+.block.short {
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+}
+
+.gap {
+  position: absolute;
+  top: 8px;
+  height: 40px;
+  border: 1px solid var(--amber-bd);
+  border-radius: 4px;
+  background: repeating-linear-gradient(45deg, #fde68a 0 5px, #fef3c7 5px 10px);
+}
+
+.gap-lbl {
+  position: absolute;
+  top: -6px;
+  left: 0;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--amber-fg);
+  padding: 0 3px;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.legend2 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: var(--text-600);
+  font-size: 11px;
+}
+
+.legend2 span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend2 i {
+  display: inline-block;
+  width: 16px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.legend2 .legend-block {
+  position: static;
+  box-shadow: none;
+  cursor: default;
+}
+
+.legend-gap {
+  border: 1px solid var(--amber-bd);
+  background: repeating-linear-gradient(45deg, #fde68a 0 4px, #fef3c7 4px 8px);
+}
+
+.trial-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trial {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+.trial .n {
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.trial .l {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.trial-teal {
+  border-color: var(--teal-bd);
+  background: var(--teal-bg);
+  color: var(--teal-fg);
+}
+
+.trial-violet {
+  border-color: var(--violet-bd);
+  background: var(--violet-bg);
+  color: var(--violet-fg);
+}
+
+.trial-amber {
+  border-color: var(--amber-bd);
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+}
+
+.trial-red {
+  border-color: var(--red-bd);
+  background: var(--red-bg);
+  color: var(--red-fg);
+}
+
+.constraint {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: var(--radius);
+  margin-bottom: 7px;
+  padding: 9px 11px;
+  font-size: 12px;
+}
+
+.constraint.ok {
+  border: 1px solid var(--green-bd);
+  background: var(--green-bg);
+  color: var(--green-fg);
+}
+
+.constraint.warn {
+  border: 1px solid var(--amber-bd);
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+}
+
 @media (min-width: 1100px) {
   .pool-layout {
     grid-template-columns: 300px minmax(0, 1fr);
   }
 
-  .principle-panel {
+  .pool-layout > .col:first-child {
     position: sticky;
     top: 78px;
   }
@@ -2887,15 +3913,29 @@ function handleFocusAction(action: FocusAction) {
   .import-layout {
     grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   }
+}
 
+@media (min-width: 1280px) {
   .sched-layout {
-    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-columns: 290px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .pending-panel {
+    position: sticky;
+    top: 64px;
   }
 }
 
 @media (min-width: 720px) {
   .focus-band {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 640px) {
+  .trial-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
