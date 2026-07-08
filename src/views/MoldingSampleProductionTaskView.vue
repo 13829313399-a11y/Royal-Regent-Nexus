@@ -65,6 +65,7 @@ interface ItemFillbackDraft {
 type ProductionQueueFilter = '全部' | '待接单' | '生产中'
 type ProductionTaskDisplayMode = 'board' | 'list'
 type NotificationStatus = MoldingSampleNotificationResponse['status']
+type ProductionTransitionAction = '开始处理' | '撤回开始生产' | '标记完成' | '撤回完成'
 
 interface PaginationState<T> {
   rows: T[]
@@ -287,6 +288,8 @@ const selectedMissingItems = computed(() => {
 const canStartSelectedTask = computed(() => selectedTask.value?.order.status === '待生产')
 const canFillbackSelectedTask = computed(() => selectedTask.value?.order.status === '生产中')
 const canCompleteSelectedTask = computed(() => canFillbackSelectedTask.value && completionGate.value.can_complete)
+const canRollbackStartedTask = computed(() => selectedTask.value?.order.status === '生产中')
+const canRollbackCompletedTask = computed(() => selectedTask.value?.order.status === '已完成')
 const canMarkSelectedNotificationRead = computed(() =>
   selectedNotification.value?.status === '未读',
 )
@@ -680,14 +683,28 @@ async function saveProductionFillback() {
   try {
     const updated = await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
     replaceApiRecord(updated)
-    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料、啤办机台和啤办费。'
+    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料、啤机确认机台和啤办费。'
   }
   catch (error) {
     actionMessage.value = `啤机回填保存失败：${getApiErrorMessage(error)}`
   }
 }
 
-async function runProductionTransition(action: '开始处理' | '标记完成') {
+function getProductionTransitionReason(action: ProductionTransitionAction) {
+  if (action === '开始处理') {
+    return '啤办生产任务单接收后开始执行。'
+  }
+  if (action === '撤回开始生产') {
+    return '啤机部撤回开始生产，任务回到待生产。'
+  }
+  if (action === '标记完成') {
+    return '啤机部完成生产并回传工程啤办单。'
+  }
+
+  return '啤机部撤回完成回传，回到生产中继续修正。'
+}
+
+async function runProductionTransition(action: ProductionTransitionAction) {
   if (!selectedTask.value) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
     return
@@ -696,8 +713,16 @@ async function runProductionTransition(action: '开始处理' | '标记完成') 
     actionMessage.value = '只有待生产任务可以开始执行。'
     return
   }
+  if (action === '撤回开始生产' && !canRollbackStartedTask.value) {
+    actionMessage.value = '只有生产中任务可以撤回开始生产。'
+    return
+  }
   if (action === '标记完成' && !canCompleteSelectedTask.value) {
     actionMessage.value = completionGate.value.message
+    return
+  }
+  if (action === '撤回完成' && !canRollbackCompletedTask.value) {
+    actionMessage.value = '只有已完成任务可以撤回完成回传。'
     return
   }
 
@@ -719,16 +744,23 @@ async function runProductionTransition(action: '开始处理' | '标记完成') 
 
     const payload: MoldingSampleStatusRequest = {
       action,
-      reason: action === '开始处理'
-        ? '啤办生产任务单接收后开始执行。'
-        : '啤机部完成生产并回传工程啤办单。',
+      reason: getProductionTransitionReason(action),
       today,
     }
     const updated = await moldingSampleApi.updateStatus(orderId, payload)
     replaceApiRecord(updated)
-    actionMessage.value = action === '开始处理'
-      ? '啤办生产任务已开始执行。'
-      : '生产完成通知已回传到工程啤办单。'
+    if (action === '开始处理') {
+      actionMessage.value = '啤办生产任务已开始执行。'
+    }
+    else if (action === '撤回开始生产') {
+      actionMessage.value = '已撤回开始生产，任务回到待生产。'
+    }
+    else if (action === '标记完成') {
+      actionMessage.value = '生产完成通知已回传到工程啤办单。'
+    }
+    else {
+      actionMessage.value = '生产完成已撤回，可继续修正回填后重新完成。'
+    }
   }
   catch (error) {
     actionMessage.value = `生产任务状态更新失败：${getApiErrorMessage(error)}`
@@ -1073,7 +1105,7 @@ watchEffect(() => {
                     <th class="px-2 py-2 text-left font-medium">模具 / 原料</th>
                     <th class="px-2 py-2 text-right font-medium">领料(kg)</th>
                     <th class="px-2 py-2 text-right font-medium">实际用料(kg)</th>
-                    <th class="px-2 py-2 text-left font-medium">啤办机台</th>
+                    <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
                     <th class="px-2 py-2 text-right font-medium">料费(HKD)</th>
                     <th class="px-2 py-2 text-right font-medium">啤办费(RMB)</th>
                     <th class="px-2 py-2 text-right font-medium">啤办费(HKD)</th>
@@ -1122,7 +1154,7 @@ watchEffect(() => {
                       <input
                         :value="itemDrafts[item.id]?.production_machine ?? ''"
                         :disabled="!canFillbackSelectedTask"
-                        aria-label="啤办机台"
+                        aria-label="啤机确认机台"
                         type="text"
                         class="h-8 w-28 rounded-md border border-slate-200 px-2 text-left outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
                         placeholder="机台号"
@@ -1249,15 +1281,13 @@ watchEffect(() => {
                       </span>
                     </div>
                     <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                      <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
-                      <div><span class="text-slate-400">啤办机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
+                      <div><span class="text-slate-400">啤机确认机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                       <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                       <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                       <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
                       <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
                       <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
                       <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
-                      <div><span class="text-slate-400">收据编号</span><div class="font-semibold">{{ formatBlank(item.receipt_no) }}</div></div>
                       <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                       <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                       <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd ?? item.actual_amount_hkd) }}</div></div>
@@ -1292,15 +1322,33 @@ watchEffect(() => {
                   开始生产
                 </button>
                 <button
+                  v-if="canRollbackStartedTask"
+                  type="button"
+                  class="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-amber-200 bg-amber-50 text-[13px] font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-100"
+                  @click="runProductionTransition('撤回开始生产')"
+                >
+                  <RotateCcw class="size-4" aria-hidden="true" />
+                  撤回开始生产
+                </button>
+                <button
                   type="button"
                   :disabled="!canCompleteSelectedTask"
                   class="flex h-10 w-full items-center justify-center gap-2 rounded-lg text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                   :class="canCompleteSelectedTask ? 'bg-emerald-700 text-white hover:bg-emerald-800' : ''"
                   @click="runProductionTransition('标记完成')"
                 >
-                  <CheckCircle2 v-if="canCompleteSelectedTask" class="size-4" aria-hidden="true" />
+                  <CheckCircle2 v-if="canCompleteSelectedTask || selectedTask.order.status === '已完成'" class="size-4" aria-hidden="true" />
                   <Lock v-else class="size-4" aria-hidden="true" />
-                  {{ canCompleteSelectedTask ? '完成并回传' : `标记完成（缺 ${completionGate.missing_item_ids.length} 项用料）` }}
+                  {{ selectedTask.order.status === '已完成' ? '已完成回传' : canCompleteSelectedTask ? '完成并回传' : `标记完成（缺 ${completionGate.missing_item_ids.length} 项用料）` }}
+                </button>
+                <button
+                  v-if="canRollbackCompletedTask"
+                  type="button"
+                  class="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-amber-200 bg-amber-50 text-[13px] font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-100"
+                  @click="runProductionTransition('撤回完成')"
+                >
+                  <RotateCcw class="size-4" aria-hidden="true" />
+                  撤回完成
                 </button>
                 <div class="flex gap-2">
                   <button

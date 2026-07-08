@@ -102,8 +102,8 @@ async function submitLogin() {
       <div class="brand-grid absolute inset-0" aria-hidden="true"></div>
       <div class="brand-glow absolute inset-0" aria-hidden="true"></div>
 
-      <div class="relative z-10 flex items-center gap-3 px-14 pt-12">
-        <span class="flex size-14 shrink-0 items-center justify-center rounded-lg bg-white/95 p-1.5 shadow-lg shadow-black/20">
+      <div class="relative z-10 flex items-center gap-4 px-14 pt-12">
+        <span class="flex size-20 shrink-0 items-center justify-center rounded-xl bg-white/95 p-2 shadow-lg shadow-black/20">
           <img
             src="/brand/huadeng_group_dynamic_logo.svg"
             alt="华登集团"
@@ -111,8 +111,8 @@ async function submitLogin() {
           >
         </span>
         <div>
-          <div class="text-[17px] font-semibold leading-tight">Royal Regent Nexus</div>
-          <div class="text-[12px] text-slate-400">华登集团 · 集团级业务中台</div>
+          <div class="text-[21px] font-semibold leading-tight">Royal Regent Nexus</div>
+          <div class="mt-1 text-[13px] text-slate-400">华登集团 · 集团级业务中台</div>
         </div>
       </div>
 
@@ -152,12 +152,12 @@ async function submitLogin() {
 
     <section class="flex w-full flex-col lg:w-[44%]">
       <div class="flex items-center gap-3 border-b border-slate-800 bg-slate-950 px-6 py-3 text-white lg:hidden">
-        <span class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-white/95 p-1">
+        <span class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-white/95 p-1.5">
           <img src="/brand/huadeng_group_dynamic_logo.svg" alt="华登集团" class="h-full w-full object-contain">
         </span>
         <div>
-          <div class="text-[15px] font-semibold leading-tight">Royal Regent Nexus</div>
-          <div class="text-[10px] text-slate-400">华登集团 · 集团级业务中台</div>
+          <div class="text-[16px] font-semibold leading-tight">Royal Regent Nexus</div>
+          <div class="text-[11px] text-slate-400">华登集团 · 集团级业务中台</div>
         </div>
       </div>
 

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -88,6 +89,7 @@ def round_weight(value: float) -> float:
 def normalize_material_name(value: str) -> str:
     fullwidth_digits = {ord(chr(code)): str(code - 0xFF10) for code in range(0xFF10, 0xFF1A)}
     normalized = value.lower().translate(fullwidth_digits).replace("度", "°")
+    normalized = re.sub(r"^\s*\d+\s*#", "", normalized)
 
     for token in (" ", "\t", "\n", "-", "_", "(", ")", "（", "）"):
         normalized = normalized.replace(token, "")
@@ -1105,6 +1107,12 @@ def transition_status(
         if order.status != "待生产":
             raise HTTPException(status_code=403, detail="只有啤机部可以开始处理待生产单")
         next_status = "生产中"
+    elif action == "撤回开始生产":
+        ensure_permission(db, current_user, "molding_sample:production_start")
+        if order.status != "生产中":
+            raise HTTPException(status_code=403, detail="只有啤机部可以撤回生产中单")
+        next_status = "待生产"
+        order.completed_date = ""
     elif action == "标记完成":
         ensure_permission(db, current_user, "molding_sample:production_complete")
         if order.status != "生产中":
@@ -1117,6 +1125,13 @@ def transition_status(
         next_status = "已完成"
         order.completed_date = request.today or order.date
         recalculate_order_costs(db, order, force_material_amount=True)
+    elif action == "撤回完成":
+        ensure_permission(db, current_user, "molding_sample:production_complete")
+        if order.status != "已完成":
+            raise HTTPException(status_code=403, detail="只有啤机部可以撤回已完成单")
+
+        next_status = "生产中"
+        order.completed_date = ""
     else:
         raise HTTPException(status_code=400, detail="未知状态动作")
 
@@ -1187,6 +1202,20 @@ def transition_status(
             status="已处理",
             actor_name=current_user.display_name,
         )
+    elif action == "撤回开始生产":
+        append_notification(
+            db,
+            order,
+            target_module=PRODUCTION_TASK_MODULE,
+            target_role=PRODUCTION_TARGET_ROLE,
+            event_type="生产开始撤回",
+            title="啤办开始生产已撤回",
+            message=f"啤机部已撤回啤办单 {order.id} 的开始生产动作，任务回到待生产。",
+            from_status=from_status,
+            to_status=next_status,
+            status="已处理",
+            actor_name=current_user.display_name,
+        )
     elif action == "标记完成":
         mark_order_notifications_handled(
             db,
@@ -1202,6 +1231,25 @@ def transition_status(
             event_type="生产完成回传",
             title="啤办生产完成",
             message=f"啤机部已完成啤办单 {order.id}，实际用料和啤办费已回传。",
+            from_status=from_status,
+            to_status=next_status,
+            actor_name=current_user.display_name,
+        )
+    elif action == "撤回完成":
+        mark_order_notifications_handled(
+            db,
+            order_id=order.id,
+            target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+            actor_name=current_user.display_name,
+        )
+        append_notification(
+            db,
+            order,
+            target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+            target_role=ENGINEERING_TARGET_ROLE,
+            event_type="生产完成撤回",
+            title="啤办完成回传已撤回",
+            message=f"啤机部已撤回啤办单 {order.id} 的完成回传，单据回到生产中等待修正后重新完成。",
             from_status=from_status,
             to_status=next_status,
             actor_name=current_user.display_name,

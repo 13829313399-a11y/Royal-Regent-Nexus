@@ -30,6 +30,7 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   editOrder: vi.fn(),
   deleteOrder: vi.fn(),
   exportOrderExcel: vi.fn(),
+  exportOrdersExcel: vi.fn(),
   importOrderExcel: vi.fn(),
   previewOrderExcel: vi.fn(),
   updateStatus: vi.fn(),
@@ -137,6 +138,13 @@ function getButtonByExactText(wrapper: VueWrapper, text: string) {
   return button!
 }
 
+function getCurrentDateText(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
 function createMoldingSampleRecord(
   status: MoldingSampleStatus = '待审核',
   id = 'BP-WITHDRAW-UI',
@@ -207,6 +215,10 @@ describe('molding sample runtime error handling', () => {
     window.localStorage.clear()
     mockedMoldingSampleApi.listOrders.mockResolvedValue([])
     mockedMoldingSampleApi.listNotifications.mockResolvedValue([])
+    mockedMoldingSampleApi.getMaterialPrices.mockResolvedValue({
+      prices: [],
+      rmb_to_hkd_rate: 1.08,
+    })
   })
 
   afterEach(() => {
@@ -225,6 +237,144 @@ describe('molding sample runtime error handling', () => {
     expect(text).not.toContain('BP-56206')
     expect(text).not.toContain('软弹枪配色')
     expect(text).not.toContain('Prime Kids')
+  })
+
+  it('opens an in-app print preview before printing the current molding sample order', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([
+      createMoldingSampleRecord('待审核', 'BP-PRINT-CURRENT', 1),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByExactText(wrapper, '打印').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(printSpy).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="molding-sample-print-preview"]').text()).toContain('BP-PRINT-CURRENT')
+    expect(wrapper.get('[data-testid="molding-sample-print-area"]').text()).toContain('BP-PRINT-CURRENT')
+
+    await getButtonByExactText(wrapper, '确认打印').trigger('click')
+    expect(printSpy).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+  })
+
+  it('exports one combined Excel workbook for multiple checked molding sample orders', async () => {
+    const records = [
+      createMoldingSampleRecord('待审核', 'BP-BATCH-001', 1),
+      createMoldingSampleRecord('待生产', 'BP-BATCH-002', 2),
+      createMoldingSampleRecord('已完成', 'BP-BATCH-003', 3),
+    ]
+    const createObjectUrl = vi.fn(() => 'blob:molding-sample-export')
+    const revokeObjectUrl = vi.fn()
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    vi.stubGlobal('URL', Object.assign(URL, {
+      createObjectURL: createObjectUrl,
+      revokeObjectURL: revokeObjectUrl,
+    }))
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+    mockedMoldingSampleApi.exportOrdersExcel.mockResolvedValue(new Uint8Array([1, 2, 3]).buffer)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await wrapper.get('[aria-label="选择单据 BP-BATCH-001"]').setValue(true)
+    await wrapper.get('[aria-label="选择单据 BP-BATCH-003"]').setValue(true)
+    await getButtonByExactText(wrapper, '导出Excel').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.exportOrderExcel).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.exportOrdersExcel).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.exportOrdersExcel).toHaveBeenCalledWith(['BP-BATCH-001', 'BP-BATCH-003'])
+    expect(wrapper.text()).toContain('已导出 2 张啤办单到一个Excel文件')
+
+    wrapper.unmount()
+  })
+
+  it('prints detailed content for all checked molding sample orders', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    const records = [
+      createMoldingSampleRecord('待审核', 'BP-PRINT-001', 1),
+      createMoldingSampleRecord('待生产', 'BP-PRINT-002', 2),
+    ]
+
+    records[0].items = [{
+      id: 'BP-PRINT-001-001',
+      order_id: 'BP-PRINT-001',
+      sort_order: 1,
+      mold_id: 'MOLD-A',
+      mold_name: '打印模具A',
+      machine_type: '160T',
+      production_machine: '啤办机台-08',
+      material: 'ABS 750NSW',
+      color: '黑色',
+      pigment_no: 'PMS',
+      quantity: '1',
+      shoot_qty: 30,
+      gross_weight_g: 11,
+      required_material_kg: 1.5,
+      mold_return_time: '2026-07-10',
+      completion_time: '',
+      notes: '打印明细备注',
+      receipt_no: 'REC-001',
+      collected_weight_kg: 1.7,
+      actual_weight_kg: 1.42,
+      actual_amount_hkd: 8.5,
+      injection_cost: 120,
+      injection_cost_hkd: 111.11,
+      exchange_rate_at_save: 1.08,
+    }]
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByExactText(wrapper, '全选当前筛选单据').trigger('click')
+    await getButtonByExactText(wrapper, '打印').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    const printArea = wrapper.get('[data-testid="molding-sample-print-area"]').text()
+    const printPreview = wrapper.get('[data-testid="molding-sample-print-preview"]').text()
+    expect(printSpy).not.toHaveBeenCalled()
+    expect(printPreview).toContain('打印预览')
+    expect(printPreview).toContain('BP-PRINT-001')
+    expect(printPreview).toContain('BP-PRINT-002')
+    expect(printArea).toContain('BP-PRINT-001')
+    expect(printArea).toContain('打印模具A')
+    expect(printArea).toContain('啤机确认机台')
+    expect(printArea).toContain('啤办机台-08')
+    expect(printArea).toContain('ABS 750NSW')
+    expect(printArea).not.toContain('160T')
+    expect(printArea).not.toContain('REC-001')
+    expect(printArea).toContain('1.42 kg')
+    expect(printArea).toContain('预计料费')
+    expect(printArea).toContain('HKD 16.04')
+    expect(printArea).toContain('HKD 8.50')
+    expect(printArea).toContain('RMB 120.00')
+    expect(printArea).toContain('1.08')
+    expect(printArea).toContain('BP-PRINT-002')
+    expect(printArea).toContain('Royal Regent Nexus')
+    expect(printArea).toContain('工程啤办通知单')
+    expect(printArea).toContain('单据资料')
+    expect(printArea).toContain('签核栏')
+    expect(printArea).toContain('经办确认')
+    expect(printArea).toContain('主管审核')
+    expect(printArea).toContain('啤机确认')
+    expect(printArea).toContain('T0 阶段')
+    expect(printArea).toContain('共 1 条模具明细')
+    expect(printArea).toContain('模具明细（一行一模具，节省纸张）')
+    expect(printArea).toContain('扫码查看单据')
+    expect(printArea).toContain('第 1 / 1 页')
+
+    await getButtonByExactText(wrapper, '确认打印').trigger('click')
+    expect(printSpy).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
   })
 
   it('shows production task failure without rendering or operating on sample tasks', async () => {
@@ -351,8 +501,9 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('整啤毛重(g)')
     expect(text).toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
-    expect(text).toContain('RC-20260203-01')
-    expect(text).toContain('啤办机台')
+    expect(text).not.toContain('160T')
+    expect(text).not.toContain('RC-20260203-01')
+    expect(text).toContain('啤机确认机台')
     expect(text).toContain('啤办机台-08')
     expect(text).toContain('啤机回填前核对完整资料。')
 
@@ -415,7 +566,7 @@ describe('molding sample runtime error handling', () => {
 
     await wrapper.get('input[aria-label="实际用料"]').setValue('14.2')
     await wrapper.get('input[aria-label="啤办费"]').setValue('120')
-    await wrapper.get('input[aria-label="啤办机台"]').setValue('啤办机台-08')
+    await wrapper.get('input[aria-label="啤机确认机台"]').setValue('啤办机台-08')
     await getButtonByText(wrapper, '保存回填').trigger('click')
     await flushPromises()
     await nextTick()
@@ -430,8 +581,177 @@ describe('molding sample runtime error handling', () => {
         },
       ],
     })
-    expect(wrapper.text()).toContain('啤办机台')
-    expect((wrapper.get('input[aria-label="啤办机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
+    expect(wrapper.text()).toContain('啤机确认机台')
+    expect((wrapper.get('input[aria-label="啤机确认机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
+
+    wrapper.unmount()
+  })
+
+  it('lets the molding clerk withdraw a started production task', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-START-ROLLBACK-001' }
+    const runningRecord = createMoldingSampleRecord('生产中', 'BP-PROD-START-ROLLBACK-001')
+    const rollbackRecord = {
+      ...runningRecord,
+      order: {
+        ...runningRecord.order,
+        status: '待生产',
+        completed_date: '',
+      },
+      audit_logs: [
+        {
+          id: 'audit-production-start-rollback',
+          order_id: runningRecord.order.id,
+          action: '撤回开始生产',
+          actor_user_id: 'tester',
+          actor_name: '测试账号',
+          actor_role: '啤机部',
+          actor_roles: '啤机部文员',
+          factory_scope: 'huaxing',
+          decision: '撤回',
+          from_status: '生产中',
+          to_status: '待生产',
+          reason: '啤机部撤回开始生产，任务回到待生产。',
+          created_at: '2026-07-03 15:10',
+          tone: 'amber',
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([runningRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(runningRecord.order.id),
+    ])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(rollbackRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    await getButtonByText(wrapper, '撤回开始生产').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-START-ROLLBACK-001', {
+      action: '撤回开始生产',
+      reason: '啤机部撤回开始生产，任务回到待生产。',
+      today: '2026-07-03',
+    })
+    expect(wrapper.text()).toContain('已撤回开始生产，任务回到待生产。')
+    expect(wrapper.text()).toContain('待生产')
+
+    wrapper.unmount()
+  })
+
+  it('lets the molding clerk withdraw a completed production handoff', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-ROLLBACK-001' }
+    const completedRecord = {
+      ...createMoldingSampleRecord('已完成', 'BP-PROD-ROLLBACK-001'),
+      order: {
+        ...createMoldingSampleRecord('已完成', 'BP-PROD-ROLLBACK-001').order,
+        completed_date: '2026-07-03',
+      },
+    } satisfies MoldingSampleDetailResponse
+    const rollbackRecord = {
+      ...completedRecord,
+      order: {
+        ...completedRecord.order,
+        status: '生产中',
+        completed_date: '',
+      },
+      audit_logs: [
+        {
+          id: 'audit-production-rollback',
+          order_id: completedRecord.order.id,
+          action: '撤回完成',
+          actor_user_id: 'tester',
+          actor_name: '测试账号',
+          actor_role: '啤机部',
+          actor_roles: '啤机部文员',
+          factory_scope: 'huaxing',
+          decision: '撤回',
+          from_status: '已完成',
+          to_status: '生产中',
+          reason: '啤机部撤回完成回传，回到生产中继续修正。',
+          created_at: '2026-07-03 15:00',
+          tone: 'amber',
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([completedRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(completedRecord.order.id),
+    ])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(rollbackRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    expect(wrapper.text()).toContain('已回传')
+    await getButtonByText(wrapper, '撤回完成').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-ROLLBACK-001', {
+      action: '撤回完成',
+      reason: '啤机部撤回完成回传，回到生产中继续修正。',
+      today: '2026-07-03',
+    })
+    expect(wrapper.text()).toContain('生产完成已撤回，可继续修正回填后重新完成。')
+    expect(wrapper.text()).toContain('生产中')
+    expect(wrapper.text()).toContain('待回传')
+
+    wrapper.unmount()
+  })
+
+  it('lets the molding clerk withdraw a started production task back to pending production', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-START-ROLLBACK-001' }
+    const runningRecord = createMoldingSampleRecord('生产中', 'BP-PROD-START-ROLLBACK-001')
+    const rollbackRecord = {
+      ...runningRecord,
+      order: {
+        ...runningRecord.order,
+        status: '待生产',
+      },
+      audit_logs: [
+        {
+          id: 'audit-production-start-rollback',
+          order_id: runningRecord.order.id,
+          action: '撤回开始生产',
+          actor_user_id: 'tester',
+          actor_name: '测试账号',
+          actor_role: '啤机部',
+          actor_roles: '啤机部文员',
+          factory_scope: 'huaxing',
+          decision: '撤回',
+          from_status: '生产中',
+          to_status: '待生产',
+          reason: '啤机部撤回开始生产，任务回到待生产。',
+          created_at: '2026-07-03 15:10',
+          tone: 'amber',
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([runningRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(runningRecord.order.id),
+    ])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(rollbackRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    await getButtonByText(wrapper, '撤回开始生产').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-START-ROLLBACK-001', {
+      action: '撤回开始生产',
+      reason: '啤机部撤回开始生产，任务回到待生产。',
+      today: '2026-07-03',
+    })
+    expect(wrapper.text()).toContain('已撤回开始生产，任务回到待生产。')
+    expect(wrapper.text()).toContain('待生产')
 
     wrapper.unmount()
   })
@@ -475,7 +795,7 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
       action: '工程撤回',
       reason: '测试账号撤回主管审核。',
-      today: '2026-07-06',
+      today: getCurrentDateText(),
     })
     expect(wrapper.text()).toContain('已撤回')
 
@@ -548,12 +868,68 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('整啤毛重(g)')
     expect(text).toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
-    expect(text).toContain('RC-20260203-01')
+    expect(text).not.toContain('160T')
+    expect(text).not.toContain('RC-20260203-01')
     expect(text).toContain('啤办费(HKD)')
     expect(text).toContain('HKD 129.60')
-    expect(text).toContain('啤办机台')
+    expect(text).toContain('啤机确认机台')
     expect(text).toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
+
+    wrapper.unmount()
+  })
+
+  it('shows the current RMB to HKD rate when an item has no saved exchange rate', async () => {
+    const detailedRecord = {
+      ...createMoldingSampleRecord('生产中', 'BP-RATE-LIVE-001'),
+      items: [
+        {
+          id: 'BP-RATE-LIVE-001-001',
+          order_id: 'BP-RATE-LIVE-001',
+          sort_order: 1,
+          mold_id: 'P50002008-01-01',
+          mold_name: '头盔',
+          machine_type: '160T',
+          production_machine: '啤办机台-08',
+          material: 'PP (AV161)',
+          color: '黑色',
+          pigment_no: 'PMS 黑色',
+          quantity: '1/1',
+          shoot_qty: 30,
+          gross_weight_g: 82,
+          required_material_kg: 15,
+          mold_return_time: '2026-02-03',
+          completion_time: '2026-02-04',
+          notes: '待保存啤办费。',
+          receipt_no: '',
+          collected_weight_kg: null,
+          actual_weight_kg: 14.2,
+          actual_amount_hkd: null,
+          injection_cost: null,
+          injection_cost_hkd: null,
+          exchange_rate_at_save: null,
+        },
+      ],
+    } satisfies MoldingSampleDetailResponse
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([detailedRecord])
+    mockedMoldingSampleApi.getMaterialPrices.mockResolvedValueOnce({
+      prices: [],
+      rmb_to_hkd_rate: 1.1234,
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, 'BP-RATE-LIVE-001').trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, '展开完整数据').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('当前汇率(RMB→HKD)')
+    expect(text).toContain('1.1234')
+    expect(text).not.toContain('汇率待填写')
 
     wrapper.unmount()
   })
@@ -583,7 +959,7 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
       action: '工程撤回',
       reason: '测试账号撤回主管审核。',
-      today: '2026-07-06',
+      today: getCurrentDateText(),
     })
 
     wrapper.unmount()
@@ -702,7 +1078,11 @@ describe('molding sample runtime error handling', () => {
     await wrapper.get('[data-testid="create-engineer"]').setValue('华兴工程师')
     await wrapper.get('[data-testid="create-line-mold-id"]').setValue('BK-01')
     await wrapper.get('[data-testid="create-line-mold-name"]').setValue('主灯罩')
-    await wrapper.get('[data-testid="create-line-material"]').setValue('PC 110')
+    const materialInput = wrapper.get('[data-testid="create-line-material"]')
+    await materialInput.trigger('focus')
+    await materialInput.setValue('ABS 750NSW')
+    await materialInput.trigger('keydown.enter')
+    expect(wrapper.get('[data-testid="create-line-material-price"]').text()).toContain('HKD 4.85')
     await wrapper.get('[data-testid="create-line-color"]').setValue('透明蓝')
     await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
     await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')

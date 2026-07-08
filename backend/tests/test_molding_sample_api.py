@@ -584,6 +584,99 @@ def test_engineer_can_withdraw_pending_order_and_resubmit(client):
     assert resubmit_response.json()["audit_logs"][0]["action"] == "工程重提"
 
 
+def test_molding_clerk_can_withdraw_completed_production_handoff(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-PROD-ROLLBACK-001"))
+
+    login_as(client, "supervisor")
+    approved_response = client.patch(
+        "/api/injection/BP-PROD-ROLLBACK-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "molding_clerk")
+    start_response = client.patch(
+        "/api/injection/BP-PROD-ROLLBACK-001/status",
+        json={"action": "开始处理"},
+    )
+    assert start_response.status_code == 200
+    assert start_response.json()["order"]["status"] == "生产中"
+
+    item_response = client.patch(
+        "/api/injection/BP-PROD-ROLLBACK-001/items",
+        json={
+            "items": [
+                {
+                    "id": "BP-PROD-ROLLBACK-001-001",
+                    "actual_weight_kg": 2,
+                    "injection_cost": 100,
+                    "production_machine": "啤办机台-08",
+                }
+            ]
+        },
+    )
+    assert item_response.status_code == 200
+
+    completed_response = client.patch(
+        "/api/injection/BP-PROD-ROLLBACK-001/status",
+        json={"action": "标记完成", "today": "2026-07-03"},
+    )
+    assert completed_response.status_code == 200
+    assert completed_response.json()["order"]["status"] == "已完成"
+    assert completed_response.json()["order"]["completed_date"] == "2026-07-03"
+
+    rollback_response = client.patch(
+        "/api/injection/BP-PROD-ROLLBACK-001/status",
+        json={"action": "撤回完成", "reason": "啤机部发现回填用料需修正"},
+    )
+
+    assert rollback_response.status_code == 200
+    rollback_payload = rollback_response.json()
+    assert rollback_payload["order"]["status"] == "生产中"
+    assert rollback_payload["order"]["completed_date"] == ""
+    assert rollback_payload["audit_logs"][0]["action"] == "撤回完成"
+    assert rollback_payload["audit_logs"][0]["from_status"] == "已完成"
+    assert rollback_payload["audit_logs"][0]["to_status"] == "生产中"
+    assert rollback_payload["audit_logs"][0]["reason"] == "啤机部发现回填用料需修正"
+
+
+def test_molding_clerk_can_withdraw_started_production_to_pending(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-PROD-START-ROLLBACK-001"))
+
+    login_as(client, "supervisor")
+    approved_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "molding_clerk")
+    start_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "开始处理"},
+    )
+    assert start_response.status_code == 200
+    assert start_response.json()["order"]["status"] == "生产中"
+
+    rollback_response = client.patch(
+        "/api/injection/BP-PROD-START-ROLLBACK-001/status",
+        json={"action": "撤回开始生产", "reason": "啤机部误点开始生产，退回待生产"},
+    )
+
+    assert rollback_response.status_code == 200
+    rollback_payload = rollback_response.json()
+    assert rollback_payload["order"]["status"] == "待生产"
+    assert rollback_payload["order"]["completed_date"] == ""
+    assert rollback_payload["audit_logs"][0]["action"] == "撤回开始生产"
+    assert rollback_payload["audit_logs"][0]["from_status"] == "生产中"
+    assert rollback_payload["audit_logs"][0]["to_status"] == "待生产"
+    assert rollback_payload["audit_logs"][0]["reason"] == "啤机部误点开始生产，退回待生产"
+
+
 def test_engineer_can_withdraw_order_they_submitted_when_display_engineer_name_differs(client):
     login_as(client, "engineer")
     payload = sample_order_payload("BP-WITHDRAW-ACTOR-001")
@@ -907,15 +1000,23 @@ def test_export_molding_sample_excel_template_has_report_styling(client):
     export_response = client.get("/api/injection/BP-XLSX-STYLE-001/export-excel")
     assert export_response.status_code == 200
 
-    detail_header_row = 10
+    detail_header_row = 5
 
     with ZipFile(BytesIO(export_response.content)) as workbook:
         sheet_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
         styles_xml = workbook.read("xl/styles.xml").decode("utf-8")
 
-    assert '<mergeCell ref="A1:V1"/>' in sheet_xml
-    assert '<pane ySplit="10" topLeftCell="A11" activePane="bottomLeft" state="frozen"/>' in sheet_xml
-    assert f'<autoFilter ref="A{detail_header_row}:V{detail_header_row}"/>' in sheet_xml
+    assert "啤办单 · 链条枪（BP-XLSX-STYLE-001） · 待审核" in sheet_xml
+    assert "产品 / 客户" in sheet_xml
+    assert "预计料费HKD" in sheet_xml
+    assert "29.83" in sheet_xml
+    assert "缺" in sheet_xml
+    assert "原料小计" in sheet_xml
+    assert "总计" in sheet_xml
+    assert '<mergeCell ref="A1:W1"/>' in sheet_xml
+    assert '<mergeCell ref="F2:W2"/>' in sheet_xml
+    assert '<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>' in sheet_xml
+    assert f'<autoFilter ref="A{detail_header_row}:W{detail_header_row}"/>' in sheet_xml
     assert '<cols>' in sheet_xml
     assert 'customWidth="1"' in sheet_xml
     assert '<col min="2" max="2" width="24" customWidth="1"/>' in sheet_xml
@@ -927,11 +1028,62 @@ def test_export_molding_sample_excel_template_has_report_styling(client):
     assert ' s="3"' in sheet_xml
     assert ' s="4"' in sheet_xml
     assert ' s="5"' in sheet_xml
-    assert '<cellXfs count="6">' in styles_xml
+    assert '<cellXfs count="13">' in styles_xml
     assert '<fgColor rgb="FF0F172A"/>' in styles_xml
     assert '<fgColor rgb="FFECFDF5"/>' in styles_xml
+    assert '<fgColor rgb="FFFEF2F2"/>' in styles_xml
+    assert '<fgColor rgb="FFFFFBEB"/>' in styles_xml
+    assert '<fgColor rgb="FF0F766E"/>' in styles_xml
     assert '<sheetView workbookViewId="0">' in sheet_xml
     assert '<pageSetup orientation="landscape" paperSize="9" fitToWidth="1" fitToHeight="0"/>' in sheet_xml
+
+
+def test_export_multiple_molding_sample_orders_as_one_excel_table(client):
+    login_as(client, "engineer")
+    first_order_payload = sample_order_payload("BP-XLSX-BATCH-001")
+    first_order_payload["items"].append(
+        {
+            **first_order_payload["items"][0],
+            "id": "BP-XLSX-BATCH-001-002",
+            "sort_order": 2,
+            "mold_id": "M-002",
+            "mold_name": "装饰件",
+            "material": "ABS 740",
+        }
+    )
+    client.post("/api/injection", json=first_order_payload)
+    client.post("/api/injection", json=sample_order_payload("BP-XLSX-BATCH-002"))
+
+    export_response = client.get(
+        "/api/injection/export-excel",
+        params=[
+            ("order_ids", "BP-XLSX-BATCH-001"),
+            ("order_ids", "BP-XLSX-BATCH-002"),
+        ],
+    )
+
+    assert export_response.status_code == 200
+    assert export_response.content[:2] == b"PK"
+    assert 'filename="molding-sample-2-orders.xlsx"' in export_response.headers["content-disposition"]
+
+    with ZipFile(BytesIO(export_response.content)) as workbook:
+        worksheet_names = [name for name in workbook.namelist() if name.startswith("xl/worksheets/")]
+        sheet_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    assert worksheet_names == ["xl/worksheets/sheet1.xml"]
+    assert "啤办单批量导出 · 2 张" in sheet_xml
+    assert "单据ID" in sheet_xml
+    assert "明细ID" in sheet_xml
+    assert "BP-XLSX-BATCH-001" in sheet_xml
+    assert "BP-XLSX-BATCH-001-001" in sheet_xml
+    assert "BP-XLSX-BATCH-001-002" in sheet_xml
+    assert "BP-XLSX-BATCH-002" in sheet_xml
+    assert "BP-XLSX-BATCH-002-001" in sheet_xml
+    assert sheet_xml.count("<t>BP-XLSX-BATCH-001</t>") == 1
+    assert '<mergeCell ref="A3:A4"/>' in sheet_xml
+    assert ' s="9"' in sheet_xml
+    assert ' s="10"' in sheet_xml
+    assert ' s="11"' in sheet_xml
 
 
 def test_preview_molding_sample_excel_import_does_not_create_order(client):

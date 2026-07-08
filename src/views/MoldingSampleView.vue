@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import {
   ArrowLeft,
   Beaker,
@@ -23,6 +23,7 @@ import {
   MessageSquareText,
   PencilLine,
   Plus,
+  Printer,
   RotateCcw,
   Save,
   Search,
@@ -45,7 +46,9 @@ import {
 import { rawMaterialDatabaseRows } from '@/data/rawMaterialDatabase'
 import {
   buildCompletionGate,
+  calculateExpectedMaterialAmountHkd,
   isExternalMoldingSampleOrder,
+  resolveMaterialPrice,
   roundMoney,
 } from '@/lib/moldingSampleBusiness'
 import { getApiErrorMessage } from '@/lib/http'
@@ -211,6 +214,9 @@ const activeView = ref<ViewKey>('overview')
 const overviewDisplayMode = ref<OverviewDisplayMode>('board')
 const materialBalancePeriodMode = ref<MaterialBalancePeriodMode>('day')
 const selectedOrderId = ref(readQueryString(route.query.order_id))
+const selectedBatchOrderIds = ref<string[]>([])
+const printableRecords = ref<MoldingSampleWorkflowRecord[]>([])
+const printPreviewVisible = ref(false)
 const searchKeyword = ref('')
 const overviewListPage = ref(1)
 const boardPageByStatus = ref<Partial<Record<MoldingSampleStatus, number>>>({})
@@ -220,6 +226,7 @@ const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取正式啤办单列表...')
 const actionToastVisible = ref(true)
+const currentRmbToHkdRate = ref<number | null>(null)
 const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
 const createErrors = ref<string[]>([])
 const createSubmitting = ref(false)
@@ -234,12 +241,19 @@ const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
 const RAW_MATERIAL_PICKER_GAP = 8
 const RAW_MATERIAL_PICKER_VIEWPORT_PADDING = 12
+const rawMaterialPriceList = rawMaterialDatabaseRows.flatMap((row) => {
+  const unitPrice = Number(row.unitPriceHkdPerLb)
+
+  return row.materialName.trim() && Number.isFinite(unitPrice) && unitPrice > 0
+    ? [{ material: row.materialName.trim(), unit_price: unitPrice, notes: '原料资料' }]
+    : []
+})
 const RAW_MATERIAL_PICKER_VISIBLE_LIMIT = 60
 const activeRawMaterialPickerLineIndex = ref<number | null>(null)
 const rawMaterialSearchByLine = ref<Record<number, string>>({})
@@ -402,6 +416,23 @@ const selectedRecord = computed<MoldingSampleWorkflowRecord | null>(() =>
     ?? null,
 )
 
+const selectedBatchOrderIdSet = computed(() => new Set(selectedBatchOrderIds.value))
+const selectedBatchRecords = computed(() =>
+  visibleRecords.value.filter((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
+)
+const batchActionRecords = computed(() =>
+  selectedBatchRecords.value.length > 0
+    ? selectedBatchRecords.value
+    : selectedRecord.value
+      ? [selectedRecord.value]
+      : [],
+)
+const selectedBatchCount = computed(() => selectedBatchRecords.value.length)
+const isAllVisibleOrdersSelected = computed(() =>
+  visibleRecords.value.length > 0
+  && visibleRecords.value.every((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
+)
+
 const selectedOrder = computed<MoldingSampleOrder>(() => selectedRecord.value?.order ?? createEmptySelectedOrder())
 const selectedItems = computed(() => selectedRecord.value?.items ?? [])
 const selectedProblems = computed(() => selectedRecord.value?.problems ?? [])
@@ -547,6 +578,28 @@ const actionToastIconClass = computed(() => {
 })
 
 const detailRows = computed(() => selectedItems.value.slice(0, 8))
+const printPreviewItemCount = computed(() =>
+  printableRecords.value.reduce((total, record) => total + record.items.length, 0),
+)
+
+function getExpectedMaterialAmountHkd(item: MoldingSampleItem) {
+  return calculateExpectedMaterialAmountHkd(item, rawMaterialPriceList)
+}
+
+function getRawMaterialUnitPrice(material: string) {
+  return resolveMaterialPrice(material, rawMaterialPriceList)?.unit_price ?? null
+}
+
+function getRawMaterialUnitPriceLabel(material: string) {
+  const unitPrice = getRawMaterialUnitPrice(material)
+
+  if (unitPrice !== null) {
+    return formatMoney(unitPrice)
+  }
+
+  return material.trim() ? '待维护' : '待选择'
+}
+
 const isSelectedOrderDataExpanded = ref(false)
 const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
 const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft'))
@@ -555,9 +608,11 @@ const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
 const canExportSelectedOrder = computed(() =>
-  Boolean(selectedRecord.value)
+  batchActionRecords.value.length > 0
   && apiState.value === 'connected'
-  && apiRecords.value.some((record) => record.order.id === selectedOrder.value.id),
+  && batchActionRecords.value.every((target) =>
+    apiRecords.value.some((record) => record.order.id === target.order.id),
+  ),
 )
 const canEditSelectedRejectedOrder = computed(() =>
   Boolean(selectedRecord.value)
@@ -946,6 +1001,16 @@ async function loadApiData() {
   }
 }
 
+async function loadMaterialPricing() {
+  try {
+    const pricing = await moldingSampleApi.getMaterialPrices()
+    currentRmbToHkdRate.value = pricing.rmb_to_hkd_rate
+  }
+  catch {
+    currentRmbToHkdRate.value = null
+  }
+}
+
 function triggerExcelImport() {
   if (!canCreateOrder.value) {
     actionMessage.value = '当前账号没有从Excel导入啤办单权限。'
@@ -997,20 +1062,51 @@ async function handleExcelImportFile(event: Event) {
   }
 }
 
+function isOrderBatchSelected(orderId: string) {
+  return selectedBatchOrderIdSet.value.has(orderId)
+}
+
+function setOrderBatchSelection(orderId: string, checked: boolean) {
+  selectedBatchOrderIds.value = checked
+    ? Array.from(new Set([...selectedBatchOrderIds.value, orderId]))
+    : selectedBatchOrderIds.value.filter((selectedId) => selectedId !== orderId)
+}
+
+function toggleOrderBatchSelection(orderId: string, event: Event) {
+  setOrderBatchSelection(orderId, (event.target as HTMLInputElement).checked)
+}
+
+function selectAllVisibleOrders() {
+  selectedBatchOrderIds.value = visibleRecords.value.map((record) => record.order.id)
+}
+
+function clearBatchSelection() {
+  selectedBatchOrderIds.value = []
+}
+
 async function downloadOrderExcel() {
   if (!canExportSelectedOrder.value) {
-    actionMessage.value = '请先选择已从后端读取到的正式啤办单，再导出Excel。'
+    actionMessage.value = '请先勾选或选择已从后端读取到的正式啤办单，再导出Excel。'
     return
   }
 
-  const orderId = selectedOrder.value.id
+  const records = batchActionRecords.value
   excelExporting.value = true
-  actionMessage.value = `正在导出啤办单 ${orderId} 的Excel文件...`
+  actionMessage.value = records.length === 1
+    ? `正在导出啤办单 ${records[0].order.id} 的Excel文件...`
+    : `正在合并导出 ${records.length} 张啤办单的Excel文件...`
 
   try {
-    const workbook = await moldingSampleApi.exportOrderExcel(orderId)
-    saveWorkbookAsExcel(workbook, `${orderId}-molding-sample.xlsx`)
-    actionMessage.value = `啤办单 ${orderId} 的Excel文件已开始下载。`
+    const orderIds = records.map((record) => record.order.id)
+    const workbook = await moldingSampleApi.exportOrdersExcel(orderIds)
+    const filename = records.length === 1
+      ? `${records[0].order.id}-molding-sample.xlsx`
+      : `molding-sample-${records.length}-orders.xlsx`
+    saveWorkbookAsExcel(workbook, filename)
+
+    actionMessage.value = records.length === 1
+      ? `啤办单 ${records[0].order.id} 的Excel文件已开始下载。`
+      : `已导出 ${records.length} 张啤办单到一个Excel文件。`
   }
   catch (error) {
     actionMessage.value = `Excel导出失败：${getApiErrorMessage(error)}`
@@ -1018,6 +1114,41 @@ async function downloadOrderExcel() {
   finally {
     excelExporting.value = false
   }
+}
+
+async function printOverview() {
+  const records = batchActionRecords.value
+
+  if (!records.length) {
+    printPreviewVisible.value = false
+    actionMessage.value = '请先勾选或选择已从后端读取到的正式啤办单，再打印。'
+    return
+  }
+
+  printableRecords.value = records
+  printPreviewVisible.value = true
+  actionMessage.value = records.length === 1
+    ? `已打开啤办单 ${records[0].order.id} 的打印预览。`
+    : `已打开 ${records.length} 张啤办单的打印预览。`
+  await nextTick()
+}
+
+async function confirmPrintOverview() {
+  if (!printableRecords.value.length) {
+    printPreviewVisible.value = false
+    actionMessage.value = '请先勾选或选择已从后端读取到的正式啤办单，再打印。'
+    return
+  }
+
+  actionMessage.value = printableRecords.value.length === 1
+    ? `正在打印啤办单 ${printableRecords.value[0].order.id} 的详细内容。`
+    : `正在打印 ${printableRecords.value.length} 张啤办单的详细内容。`
+  await nextTick()
+  window.print()
+}
+
+function closePrintPreview() {
+  printPreviewVisible.value = false
 }
 
 function saveWorkbookAsExcel(workbook: ArrayBuffer, filename: string) {
@@ -1496,6 +1627,22 @@ function formatMoney(value: number | null | undefined, currency = 'HKD') {
   return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
 
+function formatExchangeRate(value: number | null | undefined) {
+  const rate = value ?? currentRmbToHkdRate.value
+
+  if (rate === null || rate === undefined || !Number.isFinite(rate)) {
+    return '待读取'
+  }
+
+  return rate.toFixed(4).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+}
+
+function getExchangeRateLabel(item: Pick<MoldingSampleItem, 'exchange_rate_at_save'>) {
+  return item.exchange_rate_at_save === null || item.exchange_rate_at_save === undefined
+    ? '当前汇率(RMB→HKD)'
+    : '保存汇率(RMB→HKD)'
+}
+
 function readMaterialWeight(value: number | null | undefined) {
   const parsed = Number(value)
 
@@ -1941,6 +2088,11 @@ watch(searchKeyword, () => {
   resetPagination()
 })
 
+watch(visibleRecords, (records) => {
+  const visibleOrderIds = new Set(records.map((record) => record.order.id))
+  selectedBatchOrderIds.value = selectedBatchOrderIds.value.filter((orderId) => visibleOrderIds.has(orderId))
+})
+
 watch(materialBalancePeriodMode, () => {
   materialBalancePeriodPage.value = 1
 })
@@ -1951,6 +2103,7 @@ watch(actionMessage, (message) => {
 
 onMounted(() => {
   void loadApiData()
+  void loadMaterialPricing()
 })
 
 onUnmounted(() => {
@@ -2124,8 +2277,159 @@ onUnmounted(() => {
       </aside>
     </Transition>
 
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="opacity-0"
+      enter-to-class="opacity-100"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <section
+        v-if="printPreviewVisible"
+        class="fixed inset-0 z-[60] bg-slate-950/45 px-4 py-5 backdrop-blur-sm"
+        role="dialog"
+        aria-modal="true"
+        aria-label="啤办单打印预览"
+        data-testid="molding-sample-print-preview"
+      >
+        <div class="mx-auto flex h-full max-w-6xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl shadow-slate-950/30">
+          <header class="flex shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-3">
+            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+              <Printer class="size-4" aria-hidden="true" />
+            </span>
+            <div class="min-w-0">
+              <div class="text-[15px] font-bold text-slate-950">打印预览</div>
+              <p class="mt-0.5 text-[12px] text-slate-500">
+                {{ printableRecords.length }} 张单据 · {{ printPreviewItemCount }} 条模具明细
+              </p>
+            </div>
+            <button
+              type="button"
+              class="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              aria-label="关闭打印预览"
+              @click="closePrintPreview"
+            >
+              <X class="size-4" aria-hidden="true" />
+            </button>
+          </header>
+
+          <div class="min-h-0 flex-1 overflow-y-auto bg-slate-100 px-4 py-4">
+            <div class="mx-auto space-y-4">
+              <article
+                v-for="record in printableRecords"
+                :key="`preview-${record.order.id}`"
+                class="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                  <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-bold text-teal-700">{{ record.order.status }}</span>
+                      <strong class="font-mono text-[14px] text-slate-950">{{ record.order.id }}</strong>
+                    </div>
+                    <div class="mt-1 text-[13px] font-semibold text-slate-800">
+                      {{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}
+                    </div>
+                  </div>
+                  <div class="rounded-md border border-slate-200 px-3 py-2 text-right">
+                    <div class="text-[11px] text-slate-400">阶段 / 类型</div>
+                    <div class="text-[12px] font-bold text-slate-700">{{ record.order.stage || '待填写' }} · {{ record.order.order_type }}</div>
+                  </div>
+                </div>
+
+                <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 xl:grid-cols-4">
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">订单 / 文件编号</span>
+                    <strong class="font-mono text-slate-800">{{ formatBlank(record.order.order_number) }} / {{ formatBlank(record.order.doc_number) }}</strong>
+                  </div>
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">填写部 / 发至</span>
+                    <strong class="text-slate-800">{{ formatBlank(record.order.workshop) }} / {{ formatBlank(record.order.send_to, '内部') }}</strong>
+                  </div>
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">工程 / 主管</span>
+                    <strong class="text-slate-800">{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong>
+                  </div>
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">开单 / 更新</span>
+                    <strong class="text-slate-800">{{ formatBlank(record.order.date) }} / {{ formatBlank(record.order.updated_at) }}</strong>
+                  </div>
+                </div>
+
+                <div class="mt-3 rounded-md border border-slate-200">
+                  <div class="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
+                    <span class="text-[12px] font-bold text-slate-700">模具明细</span>
+                    <span class="text-[11px] font-semibold text-slate-400">共 {{ record.items.length }} 条</span>
+                  </div>
+                  <div v-if="!record.items.length" class="px-3 py-5 text-center text-[12px] font-medium text-slate-400">
+                    暂无明细
+                  </div>
+                  <div v-else class="overflow-x-auto">
+                    <table class="w-full min-w-[860px] text-[12px]">
+                      <thead>
+                        <tr class="border-b border-slate-100 text-[11px] text-slate-400">
+                          <th class="px-3 py-2 text-left font-medium">模号 / 名称</th>
+                          <th class="px-3 py-2 text-left font-medium">原料</th>
+                          <th class="px-3 py-2 text-left font-medium">颜色 / PMS</th>
+                          <th class="px-3 py-2 text-right font-medium">预计用料</th>
+                          <th class="px-3 py-2 text-right font-medium">实际用料</th>
+                          <th class="px-3 py-2 text-right font-medium">费用</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="item in record.items"
+                          :key="`preview-${item.id}`"
+                          class="border-b border-slate-100 last:border-0"
+                        >
+                          <td class="px-3 py-2">
+                            <strong class="block text-slate-800">{{ formatBlank(item.mold_id) }}</strong>
+                            <span class="text-slate-500">{{ formatBlank(item.mold_name) }}</span>
+                          </td>
+                          <td class="px-3 py-2 text-slate-700">{{ formatBlank(item.material) }}</td>
+                          <td class="px-3 py-2 text-slate-700">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</td>
+                          <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatWeight(item.required_material_kg) }}</td>
+                          <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatWeight(item.actual_weight_kg) }}</td>
+                          <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatMoney(item.actual_amount_hkd) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <footer class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3">
+            <div class="text-[12px] font-medium text-slate-500">打印内容将使用正式 A4 纸面样式。</div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                @click="closePrintPreview"
+              >
+                关闭预览
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-slate-900 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-700"
+                @click="confirmPrintOverview"
+              >
+                <Printer class="size-3.5" aria-hidden="true" />
+                确认打印
+              </button>
+            </div>
+          </footer>
+        </div>
+      </section>
+    </Transition>
+
     <div class="mx-auto max-w-[1720px] px-5 py-4">
-      <div class="mb-3 flex flex-wrap items-center justify-end gap-1.5 text-[12px] text-teal-700">
+      <section
+        class="mb-3 flex flex-wrap items-center justify-end gap-2"
+        aria-label="啤办业务导出打印操作区"
+        data-testid="molding-sample-export-print-toolbar"
+      >
         <input
           ref="excelFileInput"
           type="file"
@@ -2133,9 +2437,27 @@ onUnmounted(() => {
           :accept="excelAccept"
           @change="handleExcelImportFile"
         >
+        <div class="flex min-h-9 flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm shadow-slate-200/60">
+          <div class="mr-1 border-r border-slate-200 pr-2">
+            <div class="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500">导出 / 打印</div>
+            <div class="text-[11px] text-slate-400">选择单据后可打印详情或合并导出</div>
+          </div>
+          <span
+            class="inline-flex h-7 items-center rounded-md border border-teal-100 bg-teal-50 px-2 text-[12px] font-bold text-teal-700"
+          >
+            {{ selectedBatchCount ? `已选 ${selectedBatchCount} 单` : '默认当前单据' }}
+          </span>
         <button
           type="button"
-          class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50"
+          @click="printOverview"
+        >
+          <Printer class="size-3.5" aria-hidden="true" />
+          打印
+        </button>
+        <button
+          type="button"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="excelImporting || !canCreateOrder"
           @click="triggerExcelImport"
         >
@@ -2144,7 +2466,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="inline-flex h-7 items-center gap-1 rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="excelExporting || !canExportSelectedOrder"
           @click="downloadOrderExcel"
         >
@@ -2153,12 +2475,13 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="inline-flex h-7 items-center rounded-md border border-current px-2 font-semibold opacity-80 transition hover:opacity-100"
+          class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-slate-50 px-2 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-white"
           @click="loadApiData"
         >
           刷新正式列表
         </button>
-      </div>
+        </div>
+      </section>
 
       <section v-if="activeView === 'overview'" class="space-y-4">
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
@@ -2211,6 +2534,27 @@ onUnmounted(() => {
             <Tag class="size-3.5" aria-hidden="true" />
             类型：啤办
           </button>
+          <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-[12px] text-slate-600">
+            <button
+              type="button"
+              class="inline-flex h-7 items-center rounded-md px-2 font-semibold transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!visibleRecords.length || isAllVisibleOrdersSelected"
+              @click="selectAllVisibleOrders"
+            >
+              全选当前筛选单据
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-7 items-center rounded-md px-2 font-semibold transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="selectedBatchCount === 0"
+              @click="clearBatchSelection"
+            >
+              清空选择
+            </button>
+            <span class="rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
+              已选 {{ selectedBatchCount }} 单
+            </span>
+          </div>
           <button
             type="button"
             class="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-100"
@@ -2250,25 +2594,38 @@ onUnmounted(() => {
             </div>
 
             <div class="space-y-2 px-2 pb-2">
-              <button
+              <article
                 v-for="record in column.pagedRecords"
                 :key="record.order.id"
-                type="button"
                 class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:shadow"
-                :class="selectedOrder.id === record.order.id ? 'border-slate-950 ring-1 ring-slate-950' : 'border-slate-200 hover:border-slate-300'"
-                @click="openRecord(record)"
+                :class="selectedOrder.id === record.order.id ? 'border-slate-950 ring-1 ring-slate-950' : isOrderBatchSelected(record.order.id) ? 'border-teal-300 ring-1 ring-teal-200' : 'border-slate-200 hover:border-slate-300'"
               >
-                <div class="flex items-center justify-between gap-2">
-                  <span class="font-mono text-[12px] font-bold text-slate-800">{{ record.order.id }}</span>
-                  <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{{ record.order.stage || '啤办' }}</span>
+                <div class="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    class="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-teal-600"
+                    :checked="isOrderBatchSelected(record.order.id)"
+                    :aria-label="`选择单据 ${record.order.id}`"
+                    @change="toggleOrderBatchSelection(record.order.id, $event)"
+                  >
+                  <button
+                    type="button"
+                    class="min-w-0 flex-1 text-left"
+                    @click="openRecord(record)"
+                  >
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-mono text-[12px] font-bold text-slate-800">{{ record.order.id }}</span>
+                      <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{{ record.order.stage || '啤办' }}</span>
+                    </div>
+                    <div class="mt-1 truncate text-[13px] font-semibold">{{ record.order.product_name }}</div>
+                    <div class="truncate text-[11px] text-slate-400">{{ record.order.client_name }} · {{ record.items.length }} 项明细</div>
+                    <div class="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px]">
+                      <span class="truncate text-slate-500">{{ getFlowSummary(record) }}</span>
+                      <span class="shrink-0 text-slate-400">{{ record.order.date }}</span>
+                    </div>
+                  </button>
                 </div>
-                <div class="mt-1 truncate text-[13px] font-semibold">{{ record.order.product_name }}</div>
-                <div class="truncate text-[11px] text-slate-400">{{ record.order.client_name }} · {{ record.items.length }} 项明细</div>
-                <div class="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px]">
-                  <span class="truncate text-slate-500">{{ getFlowSummary(record) }}</span>
-                  <span class="shrink-0 text-slate-400">{{ record.order.date }}</span>
-                </div>
-              </button>
+              </article>
 
               <div
                 v-if="!column.records.length"
@@ -2348,6 +2705,7 @@ onUnmounted(() => {
             <table aria-label="啤办单列表" class="w-full min-w-[1040px] text-[12px]">
               <thead>
                 <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
+                  <th class="px-3 py-2 text-left font-medium">选择</th>
                   <th class="px-3 py-2 text-left font-medium">单号</th>
                   <th class="px-3 py-2 text-left font-medium">产品 / 客户</th>
                   <th class="px-3 py-2 text-left font-medium">状态</th>
@@ -2366,6 +2724,16 @@ onUnmounted(() => {
                   :class="selectedOrder.id === record.order.id ? 'bg-slate-50 ring-1 ring-inset ring-slate-200' : ''"
                   @click="openRecord(record)"
                 >
+                  <td class="px-3 py-2.5 align-top">
+                    <input
+                      type="checkbox"
+                      class="h-4 w-4 rounded border-slate-300 text-teal-600"
+                      :checked="isOrderBatchSelected(record.order.id)"
+                      :aria-label="`选择单据 ${record.order.id}`"
+                      @click.stop
+                      @change="toggleOrderBatchSelection(record.order.id, $event)"
+                    >
+                  </td>
                   <td class="px-3 py-2.5 align-top">
                     <button type="button" class="font-mono text-[12px] font-bold text-slate-900">
                       {{ record.order.id }}
@@ -2404,7 +2772,7 @@ onUnmounted(() => {
                   </td>
                 </tr>
                 <tr v-if="!visibleRecords.length">
-                  <td colspan="8" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
+                  <td colspan="9" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
                     暂无符合条件的啤办单
                   </td>
                 </tr>
@@ -2778,7 +3146,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[1720px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[1840px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -2788,6 +3156,7 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">客模具编号</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
+                      <div class="min-w-0 truncate px-2 text-right" role="columnheader">原料价格(HKD/磅)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">颜色</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">PMS</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">色粉</div>
@@ -2897,6 +3266,17 @@ onUnmounted(() => {
                               </div>
                             </div>
                           </Teleport>
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <div
+                            data-testid="create-line-material-price"
+                            class="flex h-9 w-full min-w-0 items-center justify-end gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 text-[12px] text-slate-500"
+                            :class="getRawMaterialUnitPrice(line.material) !== null ? 'font-semibold tabular-nums text-slate-700' : ''"
+                            :title="line.material ? `${line.material} · ${getRawMaterialUnitPriceLabel(line.material)} / 磅` : '请选择所需用料后显示原料价格'"
+                          >
+                            <span>{{ getRawMaterialUnitPriceLabel(line.material) }}</span>
+                            <span v-if="getRawMaterialUnitPrice(line.material) !== null" class="text-[10px] font-medium text-slate-400">/ 磅</span>
+                          </div>
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.color" data-testid="create-line-color" placeholder="颜色" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
@@ -3144,7 +3524,7 @@ onUnmounted(() => {
                 </button>
               </div>
               <div class="overflow-x-auto">
-                <table class="w-full min-w-[1020px] text-[12px]">
+                <table class="w-full min-w-[1120px] text-[12px]">
                   <thead>
                     <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                       <th class="w-8 px-2 py-2 font-medium">#</th>
@@ -3153,9 +3533,10 @@ onUnmounted(() => {
                       <th class="px-2 py-2 text-left font-medium">原料</th>
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
+                      <th class="px-2 py-2 text-right font-medium">预计料费</th>
                       <th class="px-2 py-2 text-right font-medium">实际用料</th>
-                      <th class="px-2 py-2 text-left font-medium">啤办机台</th>
-                      <th class="px-2 py-2 text-right font-medium">费用</th>
+                      <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
+                      <th class="px-2 py-2 text-right font-medium">实际料费</th>
                       <th class="px-2 py-2 text-left font-medium">状态</th>
                     </tr>
                   </thead>
@@ -3172,6 +3553,7 @@ onUnmounted(() => {
                         </span>
                       </td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td>
+                      <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</td>
                       <td class="px-2 py-1.5">{{ formatBlank(item.production_machine) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(item.actual_amount_hkd) }}</td>
@@ -3266,21 +3648,20 @@ onUnmounted(() => {
                         </span>
                       </div>
                       <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                        <div><span class="text-slate-400">机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
-                        <div><span class="text-slate-400">啤办机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
+                        <div><span class="text-slate-400">啤机确认机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                         <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                         <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                         <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
                         <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
                         <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
+                        <div><span class="text-slate-400">预计料费(HKD)</span><div class="font-semibold">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</div></div>
                         <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
-                        <div><span class="text-slate-400">收据编号</span><div class="font-semibold">{{ formatBlank(item.receipt_no) }}</div></div>
                         <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
                         <div><span class="text-slate-400">啤办费(RMB)</span><div class="font-semibold">{{ formatMoney(item.injection_cost, 'RMB') }}</div></div>
                         <div><span class="text-slate-400">啤办费(HKD)</span><div class="font-semibold">{{ formatMoney(item.injection_cost_hkd) }}</div></div>
-                        <div><span class="text-slate-400">汇率</span><div class="font-semibold">{{ formatBlank(item.exchange_rate_at_save) }}</div></div>
+                        <div><span class="text-slate-400">{{ getExchangeRateLabel(item) }}</span><div class="font-semibold">{{ formatExchangeRate(item.exchange_rate_at_save) }}</div></div>
                       </div>
                       <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
                         备注：{{ formatBlank(item.notes) }}
@@ -3410,5 +3791,518 @@ onUnmounted(() => {
         </button>
       </section>
     </div>
+
+    <section
+      class="molding-sample-print-root hidden"
+      data-testid="molding-sample-print-area"
+      aria-label="啤办单打印内容"
+    >
+      <article
+        v-for="record in printableRecords"
+        :key="record.order.id"
+        class="molding-sample-print-page"
+      >
+        <div class="molding-sample-print-statusband">
+          <span class="molding-sample-print-statuspill">{{ record.order.status }}</span>
+          <span>{{ record.order.stage || '待填写' }} 阶段 · {{ formatBlank(record.order.send_to, '内部') }} · {{ record.order.order_type }}</span>
+          <span class="molding-sample-print-statuscount">共 {{ record.items.length }} 条模具明细</span>
+        </div>
+
+        <header class="molding-sample-print-header">
+          <div class="molding-sample-print-brand">Royal Regent Nexus</div>
+          <div>
+            <div class="molding-sample-print-title">工程啤办通知单</div>
+            <div class="molding-sample-print-subtitle">Molding Sample Order</div>
+          </div>
+          <div class="molding-sample-print-docno">
+            <span>单据编号</span>
+            <strong>{{ record.order.id }}</strong>
+          </div>
+        </header>
+
+        <section class="molding-sample-print-section">
+          <div class="molding-sample-print-section-title">单据资料</div>
+          <table class="molding-sample-print-meta-table" aria-label="单据资料">
+            <tbody>
+              <tr>
+                <th>订单号</th>
+                <td>{{ formatBlank(record.order.order_number) }}</td>
+                <th>文件编号</th>
+                <td>{{ formatBlank(record.order.doc_number) }}</td>
+              </tr>
+              <tr>
+                <th>产品 / 客户</th>
+                <td>{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</td>
+                <th>状态</th>
+                <td>{{ record.order.status }} · {{ record.order.stage || '待填写' }} · {{ record.order.order_type }}</td>
+              </tr>
+              <tr>
+                <th>填写部 / 发至</th>
+                <td>{{ formatBlank(record.order.workshop) }} / {{ formatBlank(record.order.send_to, '内部') }}</td>
+                <th>工程 / 主管</th>
+                <td>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</td>
+              </tr>
+              <tr>
+                <th>开单 / 完成</th>
+                <td>{{ formatBlank(record.order.date) }} / {{ formatBlank(record.order.completed_date) }}</td>
+                <th>最近更新</th>
+                <td>{{ formatBlank(record.order.updated_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="molding-sample-print-section">
+          <div class="molding-sample-print-section-title">开单事由</div>
+          <div class="molding-sample-print-reason">{{ formatBlank(record.order.reason) }}</div>
+        </section>
+
+        <section class="molding-sample-print-section">
+          <div class="molding-sample-print-section-title">模具明细（一行一模具，节省纸张）</div>
+          <div v-if="!record.items.length" class="molding-sample-print-empty">暂无明细</div>
+          <table
+            v-else
+            class="molding-sample-print-detail-table"
+            aria-label="模具明细"
+          >
+            <colgroup>
+              <col class="molding-sample-print-col-index">
+              <col class="molding-sample-print-col-mold">
+              <col class="molding-sample-print-col-material">
+              <col class="molding-sample-print-col-machine">
+              <col class="molding-sample-print-col-color">
+              <col class="molding-sample-print-col-pigment">
+              <col class="molding-sample-print-col-shot">
+              <col class="molding-sample-print-col-date">
+              <col class="molding-sample-print-col-cost">
+              <col class="molding-sample-print-col-notes">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>模号 / 名称</th>
+                <th>原料</th>
+                <th>啤机确认机台</th>
+                <th>颜色 / PMS</th>
+                <th>色粉</th>
+                <th>啤数 / 预料</th>
+                <th>回模 / 完成</th>
+                <th>回填 / 费用</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in record.items" :key="item.id">
+                <td class="molding-sample-print-index">{{ item.sort_order }}</td>
+                <td>
+                  <strong>{{ formatBlank(item.mold_id) }}</strong>
+                  <span>{{ formatBlank(item.mold_name) }}</span>
+                  <em>{{ formatBlank(item.id) }}</em>
+                </td>
+                <td>{{ formatBlank(item.material) }}</td>
+                <td>{{ formatBlank(item.production_machine) }}</td>
+                <td>
+                  <strong>{{ formatBlank(item.color) }}</strong>
+                  <span>PMS {{ formatBlank(item.pigment_no) }}</span>
+                </td>
+                <td>{{ formatBlank(item.pigment_no) }}</td>
+                <td>
+                  <strong>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</strong>
+                  <span>{{ formatWeight(item.required_material_kg) }}</span>
+                  <span>预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
+                  <em>{{ formatGram(item.gross_weight_g) }}</em>
+                </td>
+                <td>{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</td>
+                <td>
+                  <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
+                  <span>{{ formatMoney(item.actual_amount_hkd) }} · {{ formatMoney(item.injection_cost, 'RMB') }}</span>
+                  <em>{{ formatMoney(item.injection_cost_hkd) }} · {{ formatExchangeRate(item.exchange_rate_at_save) }}</em>
+                </td>
+                <td>{{ formatBlank(item.notes) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="molding-sample-print-signatures" aria-label="签核栏">
+          <div class="molding-sample-print-signature-title">签核栏</div>
+          <div class="molding-sample-print-signature-cell">
+            <strong>经办确认</strong>
+            <span>签名 / 日期</span>
+          </div>
+          <div class="molding-sample-print-signature-cell">
+            <strong>主管审核</strong>
+            <span>签名 / 日期</span>
+          </div>
+          <div class="molding-sample-print-signature-cell">
+            <strong>啤机确认</strong>
+            <span>签名 / 日期</span>
+          </div>
+        </section>
+
+        <div class="molding-sample-print-footwrap">
+          <footer class="molding-sample-print-footer">
+            本单据由 Royal Regent Nexus 生成。打印前请核对单据资料、模具明细、用料及费用回填。
+          </footer>
+          <div class="molding-sample-print-qr">扫码<br>查看单据</div>
+          <div class="molding-sample-print-pageno">第 1 / 1 页</div>
+        </div>
+      </article>
+    </section>
   </main>
 </template>
+
+<style>
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm 10mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .molding-sample-print-root,
+  .molding-sample-print-root * {
+    visibility: visible;
+  }
+
+  .molding-sample-print-root {
+    display: block !important;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    background: white;
+    color: #111827;
+    padding: 0;
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.45;
+  }
+
+  .molding-sample-print-page {
+    break-after: page;
+    page-break-after: always;
+    min-height: 266mm;
+  }
+
+  .molding-sample-print-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .molding-sample-print-statusband {
+    display: flex;
+    align-items: center;
+    gap: 3mm;
+    margin-bottom: 4mm;
+    padding: 2.4mm 5mm;
+    background: linear-gradient(90deg, #0f766e, #14b8a6) !important;
+    color: #fff;
+    font-size: 9pt;
+  }
+
+  .molding-sample-print-statuspill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.22) !important;
+    padding: 0.8mm 3mm;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-statuscount {
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  .molding-sample-print-header {
+    display: grid;
+    grid-template-columns: 1fr 1.5fr 1fr;
+    align-items: end;
+    gap: 12mm;
+    border-bottom: 2px solid #111827;
+    padding-bottom: 4mm;
+    margin-bottom: 5mm;
+  }
+
+  .molding-sample-print-brand {
+    font-size: 10pt;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .molding-sample-print-title {
+    text-align: center;
+    font-size: 20pt;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
+
+  .molding-sample-print-subtitle {
+    margin-top: 1mm;
+    text-align: center;
+    font-size: 8.5pt;
+    color: #4b5563;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .molding-sample-print-docno {
+    text-align: right;
+    font-size: 9pt;
+  }
+
+  .molding-sample-print-docno span {
+    display: block;
+    color: #4b5563;
+  }
+
+  .molding-sample-print-docno strong {
+    display: block;
+    margin-top: 1mm;
+    font-size: 12pt;
+    color: #111827;
+  }
+
+  .molding-sample-print-section {
+    margin-top: 4mm;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .molding-sample-print-section-title {
+    display: flex;
+    align-items: center;
+    gap: 2mm;
+    margin-bottom: 1.8mm;
+    font-size: 10pt;
+    font-weight: 800;
+    color: #111827;
+  }
+
+  .molding-sample-print-section-title::before {
+    content: "";
+    display: block;
+    width: 3mm;
+    height: 3mm;
+    border: 1px solid #111827;
+  }
+
+  .molding-sample-print-meta-table,
+  .molding-sample-print-detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .molding-sample-print-meta-table th,
+  .molding-sample-print-meta-table td,
+  .molding-sample-print-detail-table th,
+  .molding-sample-print-detail-table td {
+    border: 1px solid #9ca3af;
+    padding: 2mm 2.3mm;
+    vertical-align: top;
+    word-break: break-word;
+  }
+
+  .molding-sample-print-meta-table th {
+    width: 19mm;
+    background: #f3f4f6 !important;
+    color: #374151;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .molding-sample-print-meta-table td {
+    width: 72mm;
+  }
+
+  .molding-sample-print-reason,
+  .molding-sample-print-empty {
+    min-height: 14mm;
+    border: 1px solid #9ca3af;
+    padding: 2.5mm 3mm;
+    color: #111827;
+  }
+
+  .molding-sample-print-empty {
+    text-align: center;
+    color: #6b7280;
+  }
+
+  .molding-sample-print-detail-table {
+    margin-bottom: 3mm;
+    font-size: 7.8pt;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .molding-sample-print-col-index {
+    width: 5%;
+  }
+
+  .molding-sample-print-col-mold {
+    width: 16%;
+  }
+
+  .molding-sample-print-col-material {
+    width: 10%;
+  }
+
+  .molding-sample-print-col-machine {
+    width: 10%;
+  }
+
+  .molding-sample-print-col-color {
+    width: 11%;
+  }
+
+  .molding-sample-print-col-pigment {
+    width: 8%;
+  }
+
+  .molding-sample-print-col-shot {
+    width: 9%;
+  }
+
+  .molding-sample-print-col-date {
+    width: 10%;
+  }
+
+  .molding-sample-print-col-cost {
+    width: 13%;
+  }
+
+  .molding-sample-print-col-notes {
+    width: 8%;
+  }
+
+  .molding-sample-print-detail-table thead th {
+    background: #0f172a !important;
+    color: #fff;
+    font-size: 7.4pt;
+    font-weight: 800;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .molding-sample-print-detail-table tbody td {
+    color: #111827;
+    padding: 1.6mm 1.7mm;
+  }
+
+  .molding-sample-print-detail-table tbody tr:nth-child(even) td {
+    background: #f8fafc !important;
+  }
+
+  .molding-sample-print-detail-table strong,
+  .molding-sample-print-detail-table span,
+  .molding-sample-print-detail-table em {
+    display: block;
+    font-style: normal;
+  }
+
+  .molding-sample-print-detail-table strong {
+    font-weight: 800;
+  }
+
+  .molding-sample-print-detail-table span {
+    color: #475569;
+  }
+
+  .molding-sample-print-detail-table em {
+    color: #64748b;
+    font-size: 7.1pt;
+  }
+
+  .molding-sample-print-index {
+    text-align: center;
+    color: #64748b !important;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .molding-sample-print-signatures {
+    display: grid;
+    grid-template-columns: 24mm repeat(3, 1fr);
+    margin-top: 6mm;
+    border: 1px solid #111827;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .molding-sample-print-signature-title,
+  .molding-sample-print-signature-cell {
+    min-height: 18mm;
+    border-right: 1px solid #111827;
+    padding: 2mm 3mm;
+  }
+
+  .molding-sample-print-signature-title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f3f4f6 !important;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-signature-cell {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .molding-sample-print-signature-cell:last-child {
+    border-right: 0;
+  }
+
+  .molding-sample-print-signature-cell strong {
+    font-size: 9.5pt;
+  }
+
+  .molding-sample-print-signature-cell span {
+    color: #6b7280;
+    font-size: 8.5pt;
+  }
+
+  .molding-sample-print-footwrap {
+    display: flex;
+    align-items: flex-end;
+    gap: 4mm;
+    margin-top: 4mm;
+  }
+
+  .molding-sample-print-footer {
+    flex: 1;
+    color: #6b7280;
+    font-size: 8.5pt;
+  }
+
+  .molding-sample-print-qr {
+    display: flex;
+    width: 16mm;
+    height: 16mm;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed #94a3b8;
+    border-radius: 1.6mm;
+    color: #94a3b8;
+    font-size: 7pt;
+    line-height: 1.2;
+    text-align: center;
+  }
+
+  .molding-sample-print-pageno {
+    color: #64748b;
+    font-size: 8pt;
+    white-space: nowrap;
+  }
+}
+</style>

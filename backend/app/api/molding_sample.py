@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -51,7 +51,7 @@ from app.services.molding_sample import (
     update_problem_status,
     update_requisition_status,
 )
-from app.services.molding_sample_excel import XLSX_MIME, export_order_to_excel, parse_order_excel
+from app.services.molding_sample_excel import XLSX_MIME, export_order_to_excel, export_orders_to_excel, parse_order_excel
 
 router = APIRouter()
 
@@ -85,6 +85,28 @@ def get_injection_orders(
     return [serialize_order(order) for order in list_orders(db, current_user)]
 
 
+@router.get("/api/injection/export-excel")
+def export_injection_orders_excel(
+    order_ids: list[str] = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    ensure_permission(db, current_user, "molding_sample:read")
+    normalized_order_ids = list(dict.fromkeys(order_id for order_id in order_ids if order_id.strip()))
+
+    if not normalized_order_ids:
+        raise HTTPException(status_code=400, detail="请选择需要导出的啤办单")
+
+    orders = [load_order(db, order_id, current_user) for order_id in normalized_order_ids]
+    content = export_orders_to_excel(orders, get_prices(db))
+    filename = f"molding-sample-{len(orders)}-orders.xlsx"
+    return Response(
+        content=content,
+        media_type=XLSX_MIME,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/api/injection/{order_id}", response_model=MoldingSampleDetailResponse)
 def get_injection_order(
     order_id: str,
@@ -112,7 +134,7 @@ def export_injection_order_excel(
 ):
     ensure_permission(db, current_user, "molding_sample:read")
     order = load_order(db, order_id, current_user)
-    content = export_order_to_excel(order)
+    content = export_order_to_excel(order, get_prices(db))
     filename = f"{order.id}-molding-sample.xlsx"
     return Response(
         content=content,

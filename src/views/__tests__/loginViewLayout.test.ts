@@ -36,6 +36,11 @@ for (const requiredImplementation of [
   'brand-grid',
   'brand-glow',
   '/brand/huadeng_group_dynamic_logo.svg',
+  'size-20 shrink-0',
 ]) {
   assert.match(source, new RegExp(requiredImplementation))
 }
+
+assert.match(source, /text-\[21px\] font-semibold leading-tight/)
+assert.match(source, /text-\[13px\] text-slate-400/)
+assert.doesNotMatch(source, /size-14 shrink-0/)

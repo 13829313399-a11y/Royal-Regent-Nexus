@@ -12,6 +12,7 @@ import {
   isMoldingSampleLocked,
   normalizeMaterialName,
   resolveMaterialPrice,
+  calculateExpectedMaterialAmountHkd,
 } from '../moldingSampleBusiness.js'
 import type { MoldingSampleItem, MoldingSampleOrder } from '../../types/moldingSample.js'
 
@@ -65,6 +66,7 @@ const baseItem: MoldingSampleItem = {
 }
 
 const prices = [
+  { material: '1#PP AV161', unit_price: 4.6, notes: '原料资料' },
   { material: 'HIPS425', unit_price: 5.5, notes: '经理价' },
   { material: 'ABS 740', unit_price: 8, notes: '经理价' },
   { material: 'ABS 750W', unit_price: 8.6, notes: '经理价' },
@@ -171,6 +173,50 @@ assert.deepEqual(resubmitWithdrawnTransition, {
   completed_date: '',
 })
 
+const rollbackStartedTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '生产中' },
+  action: '撤回开始生产',
+  actor_role: '啤机部',
+  actor_name: '啤机部文员',
+})
+assert.deepEqual(rollbackStartedTransition, {
+  allowed: true,
+  next_status: '待生产',
+  completed_date: '',
+})
+
+const blockedRollbackStartedTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '已完成' },
+  action: '撤回开始生产',
+  actor_role: '啤机部',
+  actor_name: '啤机部文员',
+})
+assert.equal(blockedRollbackStartedTransition.allowed, false)
+assert.equal(blockedRollbackStartedTransition.next_status, '已完成')
+assert.match(blockedRollbackStartedTransition.message ?? '', /生产中/)
+
+const rollbackCompletedTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '已完成', completed_date: '2026-07-03' },
+  action: '撤回完成',
+  actor_role: '啤机部',
+  actor_name: '啤机部文员',
+})
+assert.deepEqual(rollbackCompletedTransition, {
+  allowed: true,
+  next_status: '生产中',
+  completed_date: '',
+})
+
+const blockedRollbackCompletedTransition = getMoldingSampleStatusTransition({
+  order: { ...baseOrder, status: '待生产' },
+  action: '撤回完成',
+  actor_role: '啤机部',
+  actor_name: '啤机部文员',
+})
+assert.equal(blockedRollbackCompletedTransition.allowed, false)
+assert.equal(blockedRollbackCompletedTransition.next_status, '待生产')
+assert.match(blockedRollbackCompletedTransition.message ?? '', /已完成/)
+
 assert.equal(isExternalMoldingSampleOrder({ ...baseOrder, send_to: '发至湖南' }), true)
 assert.equal(isExternalMoldingSampleOrder({ ...baseOrder, workshop: '模厂' }), true)
 
@@ -190,8 +236,14 @@ assert.equal(passingGate.can_complete, true)
 
 assert.equal(normalizeMaterialName('PP(EP３３２K)-90度'), 'ppep332k90°')
 assert.equal(resolveMaterialPrice('HIPS-425', prices)?.unit_price, 5.5)
+assert.equal(resolveMaterialPrice('PP（AV161）', prices)?.unit_price, 4.6)
 assert.equal(resolveMaterialPrice('30% ABS抽粒 + 70% ABS 750W', prices)?.material, 'ABS 750W')
 assert.equal(resolveMaterialPrice('70% 未知料 + 30% ABS 750W', prices), null)
+
+assert.equal(calculateExpectedMaterialAmountHkd(
+  { ...baseItem, material: 'PP（AV161）', required_material_kg: 15 },
+  prices,
+), 152.12)
 
 const costedItem = calculateMoldingSampleItemCosts(
   { ...baseItem, actual_weight_kg: 2, injection_cost: 100 },
@@ -199,6 +251,7 @@ const costedItem = calculateMoldingSampleItemCosts(
   1.08,
   false,
 )
+assert.equal(costedItem.expected_amount_hkd, 29.83)
 assert.equal(costedItem.actual_amount_hkd, 24.25)
 assert.equal(costedItem.injection_cost_hkd, 108)
 assert.equal(costedItem.exchange_rate_at_save, 1.08)
