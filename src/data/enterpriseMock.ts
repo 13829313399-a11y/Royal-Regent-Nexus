@@ -895,7 +895,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         children: [
           {
             label: '客价转换台',
-            route: '/modules/sales-business/quote-center/customer-price-conversion',
+            route: '/modules/sales-business/quote-center',
             summary: '先选择本人客户，再导入内部报价 Excel 并输出报客价 Excel',
           },
           { label: '报价池', summary: '集中跟踪报价与状态' },
