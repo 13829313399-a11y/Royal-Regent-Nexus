@@ -17,23 +17,21 @@ import {
   UploadCloud,
   X,
 } from '@lucide/vue'
-import { computed, ref, watchEffect } from 'vue'
+import { computed, nextTick, ref, watchEffect } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import StatusPill from '@/components/common/StatusPill.vue'
-import AccountMenu from '@/components/layout/AccountMenu.vue'
 import {
-  factoryContexts,
   getDepartmentRoute,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
   type Tone,
 } from '@/data/enterpriseMock'
-import { getInjectionFactoryConfig } from '@/factories/injection/registry'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
 import { useAppStore } from '@/stores/app'
 
 type WorkspaceStepId = 'machine-overview' | 'excel-import' | 'order-pool' | 'schedule-board'
-type MachineStatusFilter = 'all' | Tone
+type MachineBoxStatus = 'running' | 'short' | 'down' | 'idle'
+type MachineStatusFilter = 'all' | MachineBoxStatus
 type FocusAction = 'risk' | 'attention' | 'ready' | 'machine-alert' | 'schedule' | 'writeback'
 
 interface MachineCard {
@@ -46,17 +44,25 @@ interface MachineCard {
   maintenance: string
   status: string
   tone: Tone
+  boxStatus: MachineBoxStatus
+  lampClass: 'g' | 'a' | 'r' | 's'
+  statusLabel: string
+  statusTone: Tone
+  flag: string
   utilization: number
   mold: string
   material: string
   queueDepth: string
+  dueText: string
+  nextMold: string
+  colorSwatch: string
+  owedQuantity: number
 }
 
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 const {
-  injectionOverviewMetrics,
   injectionDataSourceStatus,
   injectionOrderImportTasks,
   injectionPendingOrderValidationRules,
@@ -149,13 +155,6 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
     : 'huaxing'
 })
 
-const activeFactory = computed(() =>
-  factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
-    ?? factoryContexts.find((factory) => factory.id === 'huaxing')
-    ?? factoryContexts[0],
-)
-
-const activeFactoryConfig = computed(() => getInjectionFactoryConfig(selectedFactoryId.value))
 const activeStep = computed<WorkspaceStepId>(() => normalizeWorkspaceStep(route.query.section) ?? 'machine-overview')
 const activeStepMeta = computed(() =>
   workspaceSteps.find((step) => step.id === activeStep.value) ?? workspaceSteps[0],
@@ -199,7 +198,7 @@ const pageHeadCopy = computed(() => {
     title: '注塑排产中枢',
     pillTone: 'teal' as Tone,
     secondaryPill: '实时看板' as string | null,
-    subtitle: `${activeFactory.value.name} · ${activeFactoryConfig.value.ownership} · ${activeFactoryConfig.value.dataStatus}`,
+    subtitle: '河源华兴啤机部 · 自有产线 · 已解析 6-30 日排版表（39 台机 · 118 条排期任务）',
   }
 })
 const pageBackTo = computed(() => {
@@ -221,14 +220,34 @@ const pageBackTo = computed(() => {
     },
   }
 })
-const currentDataDate = computed(() => {
-  const orderSource = injectionDataSourceStatus.value.find((source) => source.name === '订单池')
-  const matched = orderSource?.freshness.match(/\d{4}-\d{2}-\d{2}/)
+const currentDataDate = computed(() => '2026-06-30')
 
-  return matched?.[0] ?? '待接入'
-})
-
-const overviewCards = computed(() => injectionOverviewMetrics.value.slice(0, 4))
+const overviewCards = computed(() => [
+  {
+    label: '在啤机台',
+    value: '31 / 39',
+    detail: '3 台缺料 · 2 台停机 · 3 台空闲',
+    tone: 'teal' as Tone,
+  },
+  {
+    label: '总欠数',
+    value: '1,860,805',
+    detail: '正欠数 1,863,016 · 负欠 13 行',
+    tone: 'blue' as Tone,
+  },
+  {
+    label: '超期任务',
+    value: '88',
+    detail: '交期差为负 · 需优先跟催',
+    tone: 'red' as Tone,
+  },
+  {
+    label: '特急 / 缺料',
+    value: '15 / 3',
+    detail: '特急▲ 15 条 · 待补料 3 台',
+    tone: 'amber' as Tone,
+  },
+])
 const dataSourceCards = computed(() => injectionDataSourceStatus.value.slice(0, 3))
 const topPendingOrders = computed(() => injectionPendingOrderDetailRows.value.slice(0, 14))
 const topScheduleRows = computed(() => injectionExecutionScheduleRows.value.slice(0, 7))
@@ -237,6 +256,9 @@ const topConstraintRows = computed(() => injectionExecutionConstraintRows.value.
 const machineSearchText = ref('')
 const machineStatusFilter = ref<MachineStatusFilter>('all')
 const selectedMachineId = ref('')
+const isMachineDrawerOpen = ref(false)
+const drawerAnimationMs = 280
+let drawerCloseTimer: ReturnType<typeof setTimeout> | null = null
 
 const toneClasses: Record<Tone, string> = {
   teal: 'border-teal-200 bg-teal-50 text-teal-900',
@@ -254,25 +276,6 @@ const softToneClasses: Record<Tone, string> = {
   red: 'bg-red-50 text-red-700 ring-red-100',
   slate: 'bg-slate-100 text-slate-700 ring-slate-200',
   green: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
-}
-
-const machineToneLabel: Record<MachineStatusFilter, string> = {
-  all: '全部',
-  green: '运行',
-  amber: '注意',
-  blue: '新购',
-  red: '风险',
-  slate: '空闲',
-  teal: '排程',
-}
-
-const toneProgressClass: Record<Tone, string> = {
-  teal: 'bg-teal-500',
-  blue: 'bg-blue-500',
-  amber: 'bg-amber-500',
-  red: 'bg-red-500',
-  slate: 'bg-slate-400',
-  green: 'bg-emerald-500',
 }
 
 const toneBarClass: Record<Tone, string> = {
@@ -297,13 +300,74 @@ const getFallbackUtilization = (tone: Tone) => {
   return values[tone]
 }
 
+const machineStatusMeta: Record<MachineBoxStatus, { label: string; tone: Tone; lamp: MachineCard['lampClass'] }> = {
+  running: { label: '在啤', tone: 'green', lamp: 'g' },
+  short: { label: '缺料', tone: 'amber', lamp: 'a' },
+  down: { label: '停机', tone: 'red', lamp: 'r' },
+  idle: { label: '空闲', tone: 'slate', lamp: 's' },
+}
+
+const statusByTone: Record<Tone, MachineBoxStatus> = {
+  teal: 'running',
+  green: 'running',
+  amber: 'short',
+  red: 'down',
+  blue: 'idle',
+  slate: 'idle',
+}
+
+const getMachineBoxStatus = (tone: Tone, utilization: number, status: string): MachineBoxStatus => {
+  if (/停|异常|修/.test(status) || tone === 'red') {
+    return 'down'
+  }
+
+  if (/缺|待料/.test(status) || tone === 'amber') {
+    return 'short'
+  }
+
+  if (/空|待排/.test(status) || tone === 'slate' || utilization <= 12) {
+    return 'idle'
+  }
+
+  return statusByTone[tone]
+}
+
+const getMachineFlag = (boxStatus: MachineBoxStatus, tone: Tone) => {
+  if (boxStatus === 'short') {
+    return '缺料'
+  }
+
+  if (boxStatus === 'down') {
+    return '停机'
+  }
+
+  if (tone === 'blue') {
+    return '新购'
+  }
+
+  return ''
+}
+
+const colorSwatches = ['#e7d9b8', '#dbeafe', '#fee2e2', '#dcfce7', '#f8fafc', '#ede9fe']
+
+const getColorSwatch = (index: number) => colorSwatches[index % colorSwatches.length]
+
+const formatOwedQuantity = (index: number, utilization: number) =>
+  Math.max(0, Math.round((100 - utilization) * 82 + (index % 7) * 137))
+
 const machineLoadMap = computed(() =>
   new Map(injectionMachineLoad.value.map((row) => [row.machine, row] as const)),
 )
 
 const machineCards = computed<MachineCard[]>(() =>
-  injectionMachineMasterRows.value.map((machine) => {
+  injectionMachineMasterRows.value.map((machine, index) => {
     const load = machineLoadMap.value.get(machine.machine)
+    const tone = load?.tone ?? machine.tone
+    const utilization = load?.utilization ?? getFallbackUtilization(machine.tone)
+    const boxStatus = getMachineBoxStatus(tone, utilization, machine.status)
+    const statusMeta = machineStatusMeta[boxStatus]
+    const mold = load?.mold ?? (machine.activeMolds && machine.activeMolds !== '-' ? machine.activeMolds : '待接入当前模具')
+    const owedQuantity = formatOwedQuantity(index, utilization)
 
     return {
       machine: machine.machine,
@@ -314,22 +378,39 @@ const machineCards = computed<MachineCard[]>(() =>
       colorPolicy: machine.colorPolicy,
       maintenance: machine.maintenance,
       status: machine.status,
-      tone: load?.tone ?? machine.tone,
-      utilization: load?.utilization ?? getFallbackUtilization(machine.tone),
-      mold: load?.mold ?? (machine.activeMolds && machine.activeMolds !== '-' ? machine.activeMolds : '待接入当前模具'),
+      tone,
+      boxStatus,
+      lampClass: statusMeta.lamp,
+      statusLabel: statusMeta.label,
+      statusTone: statusMeta.tone,
+      flag: getMachineFlag(boxStatus, tone),
+      utilization,
+      mold,
       material: load?.material ?? `${machine.processRange} / ${machine.colorPolicy}`,
       queueDepth: load?.queueDepth ?? machine.status,
+      dueText: `07-${String(8 + (index % 9)).padStart(2, '0')}`,
+      nextMold: injectionPendingOrderDetailRows.value.length
+        ? injectionPendingOrderDetailRows.value[index % injectionPendingOrderDetailRows.value.length]?.moldCode ?? '待接入订单池'
+        : '待接入订单池',
+      colorSwatch: getColorSwatch(index),
+      owedQuantity,
     }
   }),
 )
 
+const overviewMachineCards = computed(() => {
+  const oldWorkshopRows = machineCards.value.filter((machine) => /老|旧/.test(machine.workshop))
+
+  return (oldWorkshopRows.length ? oldWorkshopRows : machineCards.value).slice(0, 39)
+})
+
 const machineFilterOptions = computed(() => {
-  const options: { id: MachineStatusFilter; label: string; count: number; tone: Tone }[] = [
-    { id: 'all', label: '全部', count: machineCards.value.length, tone: 'slate' },
-    { id: 'green', label: '运行', count: 0, tone: 'green' },
-    { id: 'amber', label: '注意', count: 0, tone: 'amber' },
-    { id: 'blue', label: '新购', count: 0, tone: 'blue' },
-    { id: 'red', label: '风险', count: 0, tone: 'red' },
+  const options: { id: MachineStatusFilter; label: string; count: number; lamp?: MachineCard['lampClass'] }[] = [
+    { id: 'all', label: '全部', count: overviewMachineCards.value.length },
+    { id: 'running', label: '在啤', count: 0, lamp: 'g' },
+    { id: 'short', label: '缺料', count: 0, lamp: 'a' },
+    { id: 'down', label: '停机', count: 0, lamp: 'r' },
+    { id: 'idle', label: '空闲', count: 0, lamp: 's' },
   ]
 
   for (const option of options) {
@@ -337,7 +418,7 @@ const machineFilterOptions = computed(() => {
       continue
     }
 
-    option.count = machineCards.value.filter((machine) => machine.tone === option.id).length
+    option.count = overviewMachineCards.value.filter((machine) => machine.boxStatus === option.id).length
   }
 
   return options
@@ -346,8 +427,8 @@ const machineFilterOptions = computed(() => {
 const filteredMachineCards = computed(() => {
   const keyword = machineSearchText.value.trim().toLowerCase()
 
-  return machineCards.value.filter((machine) => {
-    const matchesTone = machineStatusFilter.value === 'all' || machine.tone === machineStatusFilter.value
+  return overviewMachineCards.value.filter((machine) => {
+    const matchesTone = machineStatusFilter.value === 'all' || machine.boxStatus === machineStatusFilter.value
     const haystack = [
       machine.machine,
       machine.tonnage,
@@ -392,70 +473,63 @@ const selectedMachineColorRisk = computed(() => {
   return injectionColorTransitionRisks.value.find((risk) => risk.machine === machine.machine) ?? null
 })
 
-const focusCards = computed(() => {
-  const riskOrders = injectionPendingOrderDetailRows.value.filter((row) => row.tone === 'red').length
-  const attentionOrders = injectionPendingOrderDetailRows.value.filter((row) => row.tone === 'amber').length
-  const readyOrders = injectionPendingOrderDetailRows.value.filter((row) => row.tone === 'green' || row.tone === 'teal').length
-  const machineAlerts = machineCards.value.filter((row) => row.tone === 'amber' || row.tone === 'red').length
-
-  return [
-    {
-      label: '交期风险',
-      value: riskOrders,
-      detail: '优先跟催 / 需补规则',
-      tone: 'red',
-      icon: AlertTriangle,
-      action: 'risk',
-    },
-    {
-      label: '待确认订单',
-      value: attentionOrders,
-      detail: '候选机台或资料待补',
-      tone: 'amber',
-      icon: ShieldAlert,
-      action: 'attention',
-    },
-    {
-      label: '可直接排机',
-      value: readyOrders,
-      detail: '已有推荐机台',
-      tone: 'green',
-      icon: CheckCircle2,
-      action: 'ready',
-    },
-    {
-      label: '机台注意',
-      value: machineAlerts,
-      detail: '设备限制 / 新购确认',
-      tone: 'amber',
-      icon: Gauge,
-      action: 'machine-alert',
-    },
-    {
-      label: '排期草稿',
-      value: topScheduleRows.value.length,
-      detail: '本轮可进入泳道',
-      tone: 'blue',
-      icon: CalendarDays,
-      action: 'schedule',
-    },
-    {
-      label: '入库回写',
-      value: injectionWarehouseInboundRows.value.length,
-      detail: '日报后刷新欠数',
-      tone: 'teal',
-      icon: PackageCheck,
-      action: 'writeback',
-    },
-  ] satisfies {
+const focusCards = computed(() => [
+  {
+    label: '超期跟催',
+    value: 88,
+    detail: '交期差为负 · 需协调',
+    tone: 'red',
+    icon: Clock3,
+    action: 'risk',
+  },
+  {
+    label: '待补料',
+    value: 3,
+    detail: '在啤缺料机台 · 当天补',
+    tone: 'amber',
+    icon: PackageCheck,
+    action: 'machine-alert',
+  },
+  {
+    label: '今日完工',
+    value: 4,
+    detail: '今日预计下机腾模',
+    tone: 'green',
+    icon: CheckCircle2,
+    action: 'ready',
+  },
+  {
+    label: '特急 ▲',
+    value: 15,
+    detail: '急单 / 交期紧急置顶',
+    tone: 'amber',
+    icon: AlertTriangle,
+    action: 'attention',
+  },
+  {
+    label: '异常处理',
+    value: 2,
+    detail: '修模/停机 · 待闭环',
+    tone: 'red',
+    icon: ShieldAlert,
+    action: 'machine-alert',
+  },
+  {
+    label: '待排暂存',
+    value: 60,
+    detail: '未挂机台 · 去订单池',
+    tone: 'slate',
+    icon: Boxes,
+    action: 'attention',
+  },
+] satisfies {
     label: string
     value: string | number
     detail: string
     tone: Tone
     icon: typeof AlertTriangle
     action: FocusAction
-  }[]
-})
+  }[])
 
 const orderPoolRows = computed(() =>
   topPendingOrders.value.map((row, index) => {
@@ -480,22 +554,62 @@ const orderPoolRows = computed(() =>
   }),
 )
 
-const priorityWatchRows = computed(() =>
-  [...orderPoolRows.value]
-    .sort((left, right) => {
-      const toneWeight: Record<Tone, number> = {
-        red: 4,
-        amber: 3,
-        blue: 2,
-        teal: 1,
-        green: 1,
-        slate: 0,
-      }
-
-      return toneWeight[right.tone] - toneWeight[left.tone] || right.score - left.score
-    })
-    .slice(0, 6),
-)
+const priorityWatchRows = computed(() => [
+  {
+    mold: '20 383 3006-002',
+    product: '马桶车圆刷',
+    order: '20 383 4003 · 外贸',
+    owed: 2002,
+    overdueDays: 6,
+    action: '待补料 PVC，补齐即开',
+    tone: 'red' as Tone,
+  },
+  {
+    mold: 'T01-BN328-00300000-2',
+    product: '圆刷/目标刷',
+    order: 'F12-BN328 · BN',
+    owed: 1000,
+    overdueDays: 4,
+    action: '▲特急 已排旧7，加夜班',
+    tone: 'amber' as Tone,
+  },
+  {
+    mold: 'BBT 93229-09',
+    product: '胶枪身',
+    order: '93229 · BBT',
+    owed: 8775,
+    overdueDays: 3,
+    action: '红色料未齐，物控跟进',
+    tone: 'red' as Tone,
+  },
+  {
+    mold: '20 383 6003-015',
+    product: '柄部公扣',
+    order: '20 383 4003 · 外贸',
+    owed: 349,
+    overdueDays: 3,
+    action: '同模连排 383 组',
+    tone: 'amber' as Tone,
+  },
+  {
+    mold: 'MNVN-19M-06',
+    product: '包装底座',
+    order: '77794 · MNVN',
+    owed: 70595,
+    overdueDays: 2,
+    action: '大单，建议加排高速机',
+    tone: 'amber' as Tone,
+  },
+  {
+    mold: 'SE-20230217-01',
+    product: '吊钩固定座',
+    order: 'W86255 · 塑胶仓',
+    owed: 484,
+    overdueDays: 1,
+    action: '▲特急 在啤旧1，达成中',
+    tone: 'amber' as Tone,
+  },
+])
 
 const scheduleLaneRows = computed(() =>
   topScheduleRows.value.map((row, index) => ({
@@ -598,16 +712,40 @@ function setMachineStatusFilter(filter: MachineStatusFilter) {
 }
 
 function openMachineDrawer(machine: MachineCard) {
+  if (drawerCloseTimer) {
+    clearTimeout(drawerCloseTimer)
+    drawerCloseTimer = null
+  }
+
   selectedMachineId.value = machine.machine
+  isMachineDrawerOpen.value = false
+
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      if (selectedMachineId.value === machine.machine) {
+        isMachineDrawerOpen.value = true
+      }
+    })
+  })
 }
 
 function closeMachineDrawer() {
-  selectedMachineId.value = ''
+  isMachineDrawerOpen.value = false
+
+  if (drawerCloseTimer) {
+    clearTimeout(drawerCloseTimer)
+  }
+
+  drawerCloseTimer = setTimeout(() => {
+    selectedMachineId.value = ''
+    drawerCloseTimer = null
+  }, drawerAnimationMs)
 }
 
 function handleFocusAction(action: FocusAction) {
   if (action === 'risk') {
-    setWorkspaceStep('order-pool')
+    setWorkspaceStep('machine-overview')
+    setMachineStatusFilter('all')
     return
   }
 
@@ -617,7 +755,8 @@ function handleFocusAction(action: FocusAction) {
   }
 
   if (action === 'ready') {
-    setWorkspaceStep('order-pool')
+    setWorkspaceStep('machine-overview')
+    setMachineStatusFilter('running')
     return
   }
 
@@ -627,27 +766,27 @@ function handleFocusAction(action: FocusAction) {
   }
 
   setWorkspaceStep('machine-overview')
-  setMachineStatusFilter('amber')
+  setMachineStatusFilter('short')
 }
 </script>
 
 <template>
   <div class="injection-workbench min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.12),transparent_34%),linear-gradient(180deg,#f8fafc_0%,#eef4f8_100%)] text-slate-950">
-    <header class="injection-topbar">
-      <div class="injection-topbar-inner">
-        <div class="injection-brand">
-          <span class="injection-brand-mark">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <span class="brand-mark">
             <Layers3 class="size-[18px]" aria-hidden="true" />
           </span>
           啤机排产中枢
         </div>
 
-        <nav class="injection-step-nav" aria-label="注塑排产步骤">
+        <nav class="nav" aria-label="注塑排产步骤">
           <button
             v-for="(step, index) in workspaceSteps"
             :key="step.id"
             type="button"
-            class="injection-step-tab"
+            class="nav-link"
             :class="{ active: step.id === activeStep }"
             @click="setWorkspaceStep(step.id)"
           >
@@ -656,7 +795,7 @@ function handleFocusAction(action: FocusAction) {
           </button>
         </nav>
 
-        <label class="injection-global-search">
+        <label class="search">
           <Search class="size-[15px] shrink-0" aria-hidden="true" />
           <input
             v-model="machineSearchText"
@@ -666,9 +805,12 @@ function handleFocusAction(action: FocusAction) {
           <kbd>Ctrl K</kbd>
         </label>
 
-        <div class="injection-topbar-right">
+        <div class="topbar-right">
           <StatusPill :label="`数据 ${currentDataDate}`" tone="teal" compact />
-          <AccountMenu />
+          <span class="account">
+            <span class="avatar">华</span>
+            河源华兴 · 啤机文员
+          </span>
         </div>
       </div>
     </header>
@@ -691,7 +833,7 @@ function handleFocusAction(action: FocusAction) {
           <p class="page-sub">{{ pageHeadCopy.subtitle }}</p>
         </div>
 
-        <div v-if="activeStep !== 'excel-import'" class="metrics-wrap">
+        <div v-if="activeStep === 'machine-overview'" class="metrics-wrap">
           <div class="metrics">
             <article
               v-for="card in overviewCards"
@@ -709,7 +851,7 @@ function handleFocusAction(action: FocusAction) {
 
       <p v-if="activeStep === 'machine-overview'" class="eyebrow mb-2 flex items-center gap-2">
         <Gauge class="size-[15px]" aria-hidden="true" />
-        今日运营焦点 · {{ activeStepMeta.label }} · 数据 {{ currentDataDate }} · 点击卡片定位
+        今日运营焦点 · 晨会 08:30 冻结版本（数据 {{ currentDataDate }}）· 点击卡片定位
       </p>
 
       <section v-if="activeStep === 'machine-overview'" class="focus-band">
@@ -743,47 +885,38 @@ function handleFocusAction(action: FocusAction) {
                 <ShieldAlert class="size-5" aria-hidden="true" />
               </span>
               <div>
-                <h2>排产预警 · 优先处理</h2>
-                <p class="small muted mt-0.5">按风险等级和优先级分排序，先处理推荐机台、交期和资料缺口。</p>
+                <h2>超期预警 · 优先跟催</h2>
+                <p class="small muted mt-0.5">交期差为负 88 条，按超期天数排序（报告 P0 第 1 优先级）</p>
               </div>
             </div>
             <div class="row gap-2">
-              <StatusPill :label="`${priorityWatchRows.length} 条重点`" tone="red" compact />
-              <button
-                type="button"
-                class="btn sm"
-                @click="setWorkspaceStep('order-pool')"
-              >
-                查看订单池
-              </button>
+              <span class="pill red compact">88 条超期</span>
+              <button type="button" class="btn sm">导出跟催清单</button>
             </div>
           </div>
 
           <div class="overdue-head">
-            <span>#</span><span>工模 / 产品</span><span>单号 · 客户</span><span>欠数</span><span>机台</span><span>处理动作</span>
+            <span>#</span><span>工模 / 产品</span><span>单号 · 客户</span><span>欠数</span><span>超期</span><span>处理动作</span>
           </div>
           <div
-            v-for="row in priorityWatchRows"
-            :key="`watch-${row.orderNo}-${row.moldCode}`"
+            v-for="(row, index) in priorityWatchRows"
+            :key="`watch-${row.order}-${row.mold}`"
             class="overdue-row"
           >
-            <span class="rank">{{ row.rank }}</span>
+            <span class="rank">{{ index + 1 }}</span>
             <div>
-              <p class="mono strong text-xs">{{ row.moldCode }}</p>
-              <p class="xsmall muted mt-1">{{ row.productName }}</p>
+              <p class="mono strong text-xs">{{ row.mold }}</p>
+              <p class="xsmall muted mt-1">{{ row.product }}</p>
             </div>
-            <div>
-              <p class="mono text-xs text-slate-700">{{ row.orderNo }}</p>
-              <p class="xsmall muted mt-1">{{ row.customer }}</p>
-            </div>
-            <span class="num mono strong">{{ row.shortageQuantity ?? row.quantity }}</span>
-            <span class="tag mono">{{ row.machineAdvice }}</span>
-            <StatusPill :label="row.issue" :tone="row.tone" compact />
+            <div class="small">{{ row.order }}</div>
+            <span class="num mono strong">{{ row.owed.toLocaleString() }}</span>
+            <span class="days-badge">-{{ row.overdueDays }}天</span>
+            <span class="pill compact" :class="row.tone">{{ row.action }}</span>
           </div>
           <div class="row between mt-3">
-            <span class="xsmall muted">显示 Top {{ priorityWatchRows.length }} · 其余任务进入订单池按客户/同模分组</span>
+            <span class="xsmall muted">显示 Top 6 · 其余 82 条可展开 / 按客户分组</span>
             <button type="button" class="btn ghost sm" @click="setWorkspaceStep('order-pool')">
-              展开订单池
+              展开全部 88 条 ▾
             </button>
           </div>
         </section>
@@ -793,89 +926,101 @@ function handleFocusAction(action: FocusAction) {
             <div class="factory-scope">
               <p class="eyebrow mb-2 flex items-center gap-2">
                 <Layers3 class="size-[15px]" aria-hidden="true" />
-                当前厂区 · 公共页面不在页内切换厂区
+                当前厂区 · 河源华兴日排版表
               </p>
               <div class="current-factory-card">
-                <strong>{{ activeFactory.shortName }}</strong>
-                <span>{{ activeFactory.name }} · {{ activeFactoryConfig.dataStatus }}</span>
+                <strong>华兴</strong>
+                <span>河源 · 自有产线 · 已解析 2026-06-30</span>
               </div>
             </div>
             <div class="col gap-2 min-w-[260px]">
               <p class="eyebrow">状态筛选</p>
               <div class="filterbar">
-              <button
-                v-for="filter in machineFilterOptions"
-                :key="filter.id"
-                type="button"
-                class="chip count"
-                :class="{ active: filter.id === machineStatusFilter }"
-                @click="setMachineStatusFilter(filter.id)"
-              >
-                {{ filter.label }}
-                <b>{{ filter.count }}</b>
-              </button>
+                <button
+                  v-for="filter in machineFilterOptions"
+                  :key="filter.id"
+                  type="button"
+                  class="chip count"
+                  :class="{ active: filter.id === machineStatusFilter }"
+                  @click="setMachineStatusFilter(filter.id)"
+                >
+                  <span v-if="filter.lamp" class="lamp" :class="filter.lamp"></span>
+                  {{ filter.label }}
+                  <b>{{ filter.count }}</b>
+                </button>
+              </div>
             </div>
-          </div>
           </div>
         </section>
 
         <div class="grid-group-head">
-          <h3>机台盒子网格</h3>
-          <span class="tag">机台 {{ filteredMachineCards.length }} / {{ machineCards.length }}</span>
+          <h3>旧机区</h3>
+          <span class="tag">旧1 – 旧39</span>
           <span class="line"></span>
           <span class="small muted">点击任意机台查看详情</span>
         </div>
 
-          <div class="machine-grid">
-            <button
-              v-for="machine in filteredMachineCards"
-              :key="machine.machine"
-              type="button"
-              class="machine-card"
-              :class="machine.tone"
-              @click="openMachineDrawer(machine)"
-            >
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <div class="flex items-baseline gap-2">
-                    <h3 class="truncate text-[17px] font-bold text-slate-950">{{ machine.machine }}</h3>
-                    <span class="shrink-0 text-[11px] text-slate-500">{{ machine.tonnage }} · {{ machine.robot }}</span>
-                  </div>
-                  <p class="mt-1 text-xs text-slate-500">{{ machine.workshop }} · {{ machine.processRange }}</p>
-                </div>
-                <StatusPill :label="machineToneLabel[machine.tone]" :tone="machine.tone" compact />
+        <div class="machine-grid">
+          <button
+            v-for="machine in filteredMachineCards"
+            :key="machine.machine"
+            type="button"
+            class="mbox"
+            :class="machine.boxStatus"
+            @click="openMachineDrawer(machine)"
+          >
+            <div class="mbox-top">
+              <div class="mbox-id">
+                <b>{{ machine.machine }}</b>
+                <span class="mbox-spec">{{ machine.tonnage }} · {{ machine.processRange }} · {{ machine.robot }}</span>
               </div>
+              <span class="status-lamp">
+                <span class="lamp" :class="machine.lampClass"></span>
+                {{ machine.statusLabel }}
+                <span
+                  v-if="machine.flag"
+                  class="pill compact"
+                  :class="machine.flag === '缺料' ? 'amber' : machine.flag === '停机' ? 'red' : 'slate'"
+                >
+                  {{ machine.flag }}
+                </span>
+              </span>
+            </div>
 
-              <div class="mt-3 border-t border-dashed border-slate-200 pt-3">
-                <p class="truncate font-mono text-sm font-bold text-slate-900">{{ machine.mold }}</p>
-                <p class="mt-1 line-clamp-1 text-xs text-slate-500">{{ machine.material }}</p>
+            <div class="mbox-mold">
+              <div class="name">{{ machine.mold }}</div>
+              <div class="meta">
+                <span class="swatch" :style="{ background: machine.colorSwatch }"></span>
+                {{ machine.material }} · {{ machine.workshop }}
               </div>
+            </div>
 
-              <div class="mt-3 flex items-center gap-2">
-                <span class="shrink-0 text-xs text-slate-500">负载</span>
-                <div class="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
+            <div class="mbox-owe">
+              <span class="n">欠 <b>{{ machine.owedQuantity.toLocaleString() }}</b></span>
+              <div class="bar" :class="[machine.boxStatus === 'short' ? 'amber' : '', machine.boxStatus === 'down' ? 'red' : '', machine.utilization >= 90 ? 'green' : '']">
                   <span
-                    class="block h-full rounded-full"
-                    :class="toneProgressClass[machine.tone]"
                     :style="{ width: `${Math.min(machine.utilization, 100)}%` }"
                   />
-                </div>
-                <span class="w-9 text-right text-xs font-bold tabular-nums text-slate-700">{{ machine.utilization }}%</span>
               </div>
+              <span class="pct">{{ machine.utilization }}%</span>
+            </div>
 
-              <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                <span class="text-slate-400">下一步</span>
-                <span class="ml-1 font-medium text-slate-700">{{ machine.queueDepth }}</span>
-              </div>
-            </button>
-          </div>
+            <div class="mbox-foot">
+              <span class="mbox-eta">预计完成 <b>{{ machine.dueText }}</b></span>
+            </div>
+            <div class="mbox-next">
+              <span class="lbl">下一模 ▸</span>
+              <span class="nm">{{ machine.nextMold }}</span>
+            </div>
+          </button>
+        </div>
 
-          <p
-            v-if="filteredMachineCards.length === 0"
-            class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500"
-          >
-            没有匹配机台，请清空搜索或切换筛选。
-          </p>
+        <p
+          v-if="filteredMachineCards.length === 0"
+          class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500"
+        >
+          无匹配机台 · 试试清空筛选或搜索
+        </p>
       </template>
 
       <template v-else-if="activeStep === 'excel-import'">
@@ -1272,110 +1417,163 @@ function handleFocusAction(action: FocusAction) {
         </div>
       </template>
 
-    <div
-      v-if="selectedMachine"
-      class="fixed inset-0 z-50 bg-slate-950/40"
-      aria-hidden="true"
-      @click="closeMachineDrawer"
-    />
-    <aside
-      v-if="selectedMachine"
-      class="fixed right-0 top-0 z-50 flex h-full w-[min(520px,94vw)] flex-col bg-white shadow-[0_24px_60px_rgba(15,23,42,0.18)]"
-      aria-label="机台详情"
-    >
-      <div class="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
-        <div>
-          <div class="flex items-center gap-3">
-            <h2 class="text-2xl font-semibold tracking-tight text-slate-950">{{ selectedMachine.machine }}</h2>
-            <StatusPill :label="selectedMachine.status" :tone="selectedMachine.tone" />
+      <div
+        v-if="selectedMachine"
+        class="drawer-mask"
+        :class="{ open: isMachineDrawerOpen }"
+        aria-hidden="true"
+        @click="closeMachineDrawer"
+      />
+      <aside
+        v-if="selectedMachine"
+        class="drawer"
+        :class="{ open: isMachineDrawerOpen }"
+        aria-label="机台详情"
+      >
+        <div class="drawer-head">
+          <div>
+            <div class="row gap-3">
+              <span class="strong drawer-machine-title">{{ selectedMachine.machine }}</span>
+              <span class="pill" :class="selectedMachine.statusTone">
+                <span class="dot"></span>
+                {{ selectedMachine.statusLabel }}
+              </span>
+            </div>
+            <p class="page-sub drawer-spec">
+              {{ selectedMachine.tonnage }} · {{ selectedMachine.processRange }} · {{ selectedMachine.robot }} · 全自动
+            </p>
           </div>
-          <p class="mt-2 text-sm text-slate-500">
-            {{ selectedMachine.tonnage }} · {{ selectedMachine.robot }} · {{ selectedMachine.workshop }}
-          </p>
+          <button
+            type="button"
+            class="close-x"
+            aria-label="关闭机台详情"
+            @click="closeMachineDrawer"
+          >
+            <X class="size-4" aria-hidden="true" />
+          </button>
         </div>
-        <button
-          type="button"
-          class="flex size-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50"
-          aria-label="关闭机台详情"
-          @click="closeMachineDrawer"
-        >
-          <X class="size-4" aria-hidden="true" />
-        </button>
-      </div>
 
-      <div class="flex-1 overflow-y-auto p-5">
-        <section class="rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">当前任务</p>
-          <h3 class="mt-3 font-mono text-base font-bold text-slate-950">{{ selectedMachine.mold }}</h3>
-          <p class="mt-2 text-sm leading-6 text-slate-600">{{ selectedMachine.material }}</p>
-          <div class="mt-4 flex items-center gap-2">
-            <div class="h-2 flex-1 overflow-hidden rounded-full bg-white">
+        <div class="drawer-body">
+          <p class="subhead mt-0">当前任务</p>
+          <div class="card card-pad drawer-task-card">
+            <div class="row between">
+              <div>
+                <div class="mono strong drawer-mold">{{ selectedMachine.mold }}</div>
+                <div class="small muted mt-2">{{ selectedMachine.material }} · {{ selectedMachine.workshop }}</div>
+              </div>
               <span
-                class="block h-full rounded-full"
-                :class="toneProgressClass[selectedMachine.tone]"
-                :style="{ width: `${Math.min(selectedMachine.utilization, 100)}%` }"
-              />
+                v-if="selectedMachine.flag"
+                class="pill compact"
+                :class="selectedMachine.flag === '缺料' ? 'amber' : selectedMachine.flag === '停机' ? 'red' : 'slate'"
+              >
+                {{ selectedMachine.flag }}
+              </span>
             </div>
-            <span class="text-sm font-bold tabular-nums text-slate-700">{{ selectedMachine.utilization }}%</span>
-          </div>
-        </section>
 
-        <section class="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">机台约束</p>
-          <div class="mt-3 grid grid-cols-2 gap-3">
-            <div class="rounded-lg bg-slate-50 p-3">
-              <p class="text-xs text-slate-500">工艺范围</p>
-              <p class="mt-1 font-semibold text-slate-950">{{ selectedMachine.processRange }}</p>
+            <div class="mt-3 kv">
+              <div class="item">
+                <div class="k">订单数</div>
+                <div class="v">{{ (selectedMachine.owedQuantity + 1716).toLocaleString() }}</div>
+              </div>
+              <div class="item">
+                <div class="k">已啤数</div>
+                <div class="v">1,716</div>
+              </div>
+              <div class="item">
+                <div class="k">欠数</div>
+                <div class="v danger">{{ selectedMachine.owedQuantity.toLocaleString() }}</div>
+              </div>
+              <div class="item">
+                <div class="k">计划目标/天</div>
+                <div class="v">2,500</div>
+              </div>
+              <div class="item">
+                <div class="k"><span class="swatch" :style="{ background: selectedMachine.colorSwatch }"></span>颜色</div>
+                <div class="v small-v">{{ selectedMachine.colorPolicy }}</div>
+              </div>
+              <div class="item">
+                <div class="k">用料</div>
+                <div class="v small-v">{{ selectedMachine.material }}</div>
+              </div>
+              <div class="item wide">
+                <div class="k">进度</div>
+                <div class="mt-2 mbox-owe">
+                  <div class="bar" :class="[selectedMachine.boxStatus === 'short' ? 'amber' : '', selectedMachine.boxStatus === 'down' ? 'red' : '']">
+                    <span :style="{ width: `${Math.min(selectedMachine.utilization, 100)}%` }"></span>
+                  </div>
+                  <span class="pct">{{ selectedMachine.utilization }}%</span>
+                </div>
+              </div>
             </div>
-            <div class="rounded-lg bg-slate-50 p-3">
-              <p class="text-xs text-slate-500">颜色策略</p>
-              <p class="mt-1 font-semibold text-slate-950">{{ selectedMachine.colorPolicy }}</p>
+
+            <div class="mt-3 row between small">
+              <span class="muted">计划完成期</span><span class="strong">2026-07-{{ selectedMachine.dueText.split('-')[1] }} 14:20</span>
             </div>
-            <div class="col-span-2 rounded-lg bg-slate-50 p-3">
-              <p class="text-xs text-slate-500">保养 / 限制</p>
-              <p class="mt-1 font-semibold text-slate-950">{{ selectedMachine.maintenance }}</p>
+            <div class="row between small mt-2">
+              <span class="muted">预计入库期（完工+3天）</span><span class="strong">2026-07-11</span>
+            </div>
+            <div class="row between small mt-2">
+              <span class="muted">交货完成期</span><span class="strong">2026-07-16</span>
+            </div>
+            <div class="row between small mt-2">
+              <span class="muted">交期差</span><span class="pill green compact">+5 天 · 安全</span>
             </div>
           </div>
-        </section>
 
-        <section v-if="selectedMachineColorRisk" class="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">颜色切换</p>
-          <div class="mt-3 flex flex-wrap gap-2">
+          <p class="subhead">排队队列 <span class="tag normal-tag">拖拽调整顺序</span></p>
+          <div class="queue-item now">
+            <span class="drag">⋮⋮</span><span class="seq">▶</span>
+            <div class="grow">
+              <div class="mono small strong">{{ selectedMachine.mold }}</div>
+              <div class="xsmall muted">{{ selectedMachine.material }} · 欠 {{ selectedMachine.owedQuantity.toLocaleString() }} · 进行中</div>
+            </div>
+          </div>
+          <div class="changeover">
+            换模/换色间隙 · 预计 0.5 班 · 按六原则自动校验
+          </div>
+          <div
+            v-for="(order, index) in selectedMachineOrders"
+            :key="`${order.orderNo}-${order.moldCode}`"
+            class="queue-item"
+          >
+            <span class="drag">⋮⋮</span><span class="seq">{{ index + 1 }}</span>
+            <div class="grow">
+              <div class="mono small strong">{{ order.moldCode }}</div>
+              <div class="xsmall muted">{{ order.color }} · 欠 {{ (order.shortageQuantity ?? order.quantity).toLocaleString() }} · {{ order.issue }}</div>
+            </div>
+          </div>
+          <p v-if="selectedMachineOrders.length === 0" class="empty-drawer-note">
+            暂无直接命中的候选订单，等待排期草稿补充。
+          </p>
+
+          <p class="subhead">机台约束</p>
+          <div class="kv">
+            <div class="item">
+              <div class="k">工艺范围</div>
+              <div class="v">{{ selectedMachine.processRange }}</div>
+            </div>
+            <div class="item">
+              <div class="k">颜色策略</div>
+              <div class="v">{{ selectedMachine.colorPolicy }}</div>
+            </div>
+            <div class="item wide">
+              <div class="k">保养 / 限制</div>
+              <div class="v">{{ selectedMachine.maintenance }}</div>
+            </div>
+          </div>
+
+          <div v-if="selectedMachineColorRisk" class="mt-3 color-risk-line">
             <span
               v-for="color in selectedMachineColorRisk.route"
               :key="color"
-              class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600"
+              class="tag"
             >
               {{ color }}
             </span>
+            <span class="pill compact" :class="selectedMachineColorRisk.tone">{{ selectedMachineColorRisk.risk }}</span>
           </div>
-          <StatusPill class="mt-3" :label="selectedMachineColorRisk.risk" :tone="selectedMachineColorRisk.tone" compact />
-        </section>
-
-        <section class="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">候选订单</p>
-          <div v-if="selectedMachineOrders.length" class="mt-3 space-y-3">
-            <article
-              v-for="order in selectedMachineOrders"
-              :key="`${order.orderNo}-${order.moldCode}`"
-              class="rounded-lg border border-slate-200 p-3"
-            >
-              <div class="flex items-start justify-between gap-3">
-                <div>
-                  <p class="font-mono text-sm font-bold text-slate-950">{{ order.moldCode }}</p>
-                  <p class="mt-1 text-xs text-slate-500">{{ order.productName }} · {{ order.orderNo }}</p>
-                </div>
-                <StatusPill :label="order.issue" :tone="order.tone" compact />
-              </div>
-              <p class="mt-2 text-xs text-slate-600">{{ order.color }} · {{ order.material }} · 欠 {{ order.shortageQuantity ?? order.quantity }}</p>
-            </article>
-          </div>
-          <p v-else class="mt-3 rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">
-            暂无直接命中的候选订单，等待排期草稿补充。
-          </p>
-        </section>
-      </div>
-    </aside>
+        </div>
+      </aside>
     </main>
   </div>
 </template>
@@ -1384,6 +1582,8 @@ function handleFocusAction(action: FocusAction) {
 .injection-workbench {
   --primary: oklch(0.45 0.09 182);
   --primary-strong: oklch(0.38 0.1 182);
+  --primary-foreground: oklch(0.985 0 0);
+  --ring: oklch(0.58 0.1 182);
   --text-950: #020617;
   --text-900: #0f172a;
   --text-700: #334155;
@@ -1428,12 +1628,186 @@ function handleFocusAction(action: FocusAction) {
   --radius-xl: 1rem;
   --shadow-card: 0 16px 38px rgba(15, 23, 42, 0.06);
   --shadow-soft: 0 14px 35px rgba(15, 23, 42, 0.05);
+  --shadow-pop: 0 24px 60px rgba(15, 23, 42, 0.18);
 }
 
 .page {
   max-width: 1680px;
   margin: 0 auto;
   padding: 20px 24px 48px;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  border-bottom: 1px solid var(--border);
+  background: rgba(248, 250, 252, 0.82);
+  backdrop-filter: saturate(1.4) blur(8px);
+}
+
+.topbar-inner {
+  display: flex;
+  max-width: 1680px;
+  margin: 0 auto;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 24px;
+}
+
+.brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-950);
+  font-weight: 700;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.brand-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(13, 118, 110, 0.35);
+}
+
+.nav {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.nav::-webkit-scrollbar {
+  height: 4px;
+}
+
+.nav::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+
+.nav-link {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border-radius: 999px;
+  padding: 7px 14px;
+  color: var(--text-500);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.nav-link:hover {
+  background: var(--surface-muted);
+  color: var(--text-950);
+}
+
+.nav-link.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.step-no {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-500);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.nav-link.active .step-no {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+
+.search {
+  display: flex;
+  width: min(312px, 24vw);
+  min-width: 240px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  padding: 6px 12px;
+  color: var(--text-400);
+}
+
+.search:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.12);
+}
+
+.search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-900);
+  font-size: 13px;
+  outline: none;
+}
+
+.search input::placeholder {
+  color: var(--text-400);
+}
+
+.search kbd {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--text-400);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.topbar-right {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  padding: 5px 12px 5px 6px;
+  color: var(--text-700);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.avatar {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 12px;
 }
 
 .page-head {
@@ -1478,6 +1852,73 @@ function handleFocusAction(action: FocusAction) {
   color: var(--text-600);
   font-size: 13px;
   line-height: 1.7;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.pill.teal {
+  border-color: var(--teal-bd);
+  background: var(--teal-bg);
+  color: var(--teal-fg);
+}
+
+.pill.blue {
+  border-color: var(--blue-bd);
+  background: var(--blue-bg);
+  color: var(--blue-fg);
+}
+
+.pill.amber {
+  border-color: var(--amber-bd);
+  background: var(--amber-bg);
+  color: var(--amber-fg);
+}
+
+.pill.red {
+  border-color: var(--red-bd);
+  background: var(--red-bg);
+  color: var(--red-fg);
+}
+
+.pill.slate {
+  border-color: var(--slate-bd);
+  background: var(--slate-bg);
+  color: var(--slate-fg);
+}
+
+.pill.green {
+  border-color: var(--green-bd);
+  background: var(--green-bg);
+  color: var(--green-fg);
+}
+
+.pill.violet {
+  border-color: var(--violet-bd);
+  background: var(--violet-bg);
+  color: var(--violet-fg);
+}
+
+.pill.compact {
+  padding: 2px 8px;
+  font-size: 11px;
 }
 
 .metrics-wrap {
@@ -2475,6 +2916,10 @@ function handleFocusAction(action: FocusAction) {
     padding: 24px 40px 56px;
   }
 
+  .topbar-inner {
+    padding: 10px 40px;
+  }
+
   .page-head {
     flex-direction: row;
     align-items: flex-end;
@@ -2637,6 +3082,21 @@ function handleFocusAction(action: FocusAction) {
 }
 
 @media (max-width: 1180px) {
+  .topbar-inner {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .nav {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .search {
+    margin-left: auto;
+    width: min(360px, 44vw);
+  }
+
   .injection-topbar-inner {
     flex-wrap: wrap;
     align-items: flex-start;
@@ -2656,6 +3116,21 @@ function handleFocusAction(action: FocusAction) {
 @media (max-width: 720px) {
   .page {
     padding: 18px 16px 40px;
+  }
+
+  .topbar-inner {
+    gap: 10px;
+    padding: 10px 16px;
+  }
+
+  .search {
+    order: 4;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .topbar-right {
+    margin-left: auto;
   }
 
   .file-row {
@@ -2701,42 +3176,473 @@ function handleFocusAction(action: FocusAction) {
   gap: 12px;
 }
 
-.machine-card {
-  position: relative;
-  width: 100%;
-  border: 1px solid #e2e8f0;
-  border-left-width: 4px;
-  border-radius: 0.75rem;
-  background: #fff;
-  padding: 13px;
-  text-align: left;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
 }
 
-.machine-card:hover {
-  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.08);
+.card-pad {
+  padding: 18px;
+}
+
+.bar {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-muted);
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.bar.amber > span {
+  background: var(--amber-solid);
+}
+
+.bar.red > span {
+  background: var(--red-solid);
+}
+
+.bar.green > span {
+  background: var(--green-solid);
+}
+
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  border-radius: 3px;
+  vertical-align: -1px;
+}
+
+.mbox {
+  position: relative;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--slate-solid);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 12px 13px 11px;
+  text-align: left;
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+
+.mbox:hover {
+  box-shadow: var(--shadow-card);
   transform: translateY(-2px);
 }
 
-.machine-card.green,
-.machine-card.teal {
-  border-left-color: #10b981;
+.mbox.running {
+  border-left-color: var(--green-solid);
 }
 
-.machine-card.amber {
-  border-left-color: #f59e0b;
+.mbox.short {
+  border-left-color: var(--amber-solid);
 }
 
-.machine-card.red {
-  border-left-color: #ef4444;
+.mbox.down {
+  border-left-color: var(--red-solid);
 }
 
-.machine-card.blue {
-  border-left-color: #3b82f6;
+.mbox.idle {
+  border-left-color: var(--slate-solid);
+  opacity: 0.82;
 }
 
-.machine-card.slate {
-  border-left-color: #94a3b8;
+.mbox-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mbox-id {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mbox-id b {
+  color: var(--text-950);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.mbox-spec {
+  overflow: hidden;
+  color: var(--text-500);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mbox-mold {
+  margin-top: 9px;
+  border-top: 1px dashed var(--border);
+  padding-top: 9px;
+}
+
+.mbox-mold .name {
+  overflow: hidden;
+  color: var(--text-900);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mbox-mold .meta {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text-500);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mbox-owe {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mbox-owe .n {
+  color: var(--text-600);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mbox-owe .n b {
+  color: var(--text-950);
+  font-variant-numeric: tabular-nums;
+}
+
+.mbox-owe .bar {
+  flex: 1;
+}
+
+.mbox-owe .pct {
+  color: var(--text-700);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.mbox-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--text-500);
+  font-size: 11px;
+}
+
+.mbox-eta b {
+  color: var(--text-700);
+  font-variant-numeric: tabular-nums;
+}
+
+.mbox-next {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  border-radius: 7px;
+  background: var(--surface-sunken);
+  padding: 5px 8px;
+  color: var(--text-600);
+  font-size: 11px;
+}
+
+.mbox-next .lbl {
+  color: var(--text-400);
+}
+
+.mbox-next .nm {
+  overflow: hidden;
+  color: var(--text-700);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-lamp {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-700);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.lamp {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.lamp.g {
+  background: var(--green-solid);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16);
+}
+
+.lamp.a {
+  background: var(--amber-solid);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+}
+
+.lamp.r {
+  background: var(--red-solid);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.16);
+}
+
+.lamp.s {
+  background: var(--slate-solid);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16);
+}
+
+.drawer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(15, 23, 42, 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+
+.drawer-mask.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 61;
+  display: flex;
+  width: min(520px, 94vw);
+  height: 100%;
+  flex-direction: column;
+  background: #fff;
+  box-shadow: var(--shadow-pop);
+  opacity: 0.98;
+  transform: translateX(100%);
+  transition:
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
+  will-change: transform;
+}
+
+.drawer.open {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer-mask,
+  .drawer {
+    transition-duration: 1ms;
+  }
+}
+
+.drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding: 18px 20px;
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+.drawer-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.drawer-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+
+.drawer-machine-title {
+  font-size: 22px;
+}
+
+.drawer-spec {
+  margin-top: 6px;
+}
+
+.drawer-task-card {
+  box-shadow: none;
+}
+
+.drawer-mold {
+  font-size: 15px;
+}
+
+.close-x {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-500);
+}
+
+.close-x:hover {
+  background: var(--surface-muted);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kv .item {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-sunken);
+  padding: 10px 12px;
+}
+
+.kv .item .k {
+  color: var(--text-500);
+  font-size: 11px;
+}
+
+.kv .item .v {
+  margin-top: 3px;
+  color: var(--text-950);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.kv .item .v.danger {
+  color: var(--amber-fg);
+}
+
+.kv .item .v.small-v {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kv .item.wide {
+  grid-column: 1 / -1;
+}
+
+.subhead {
+  margin: 20px 0 10px;
+  color: var(--text-700);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.normal-tag {
+  margin-left: 6px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  padding: 11px 12px;
+  margin-bottom: 8px;
+}
+
+.queue-item .seq {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--text-600);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.queue-item.now .seq {
+  background: var(--primary);
+  color: #fff;
+}
+
+.queue-item .drag {
+  color: var(--text-400);
+  cursor: grab;
+}
+
+.changeover {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 6px 10px 6px 34px;
+  color: var(--amber-fg);
+  font-size: 11px;
+}
+
+.changeover::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: 12px;
+  width: 2px;
+  background: repeating-linear-gradient(var(--amber-bd) 0 4px, transparent 4px 8px);
+}
+
+.empty-drawer-note {
+  border-radius: 9px;
+  background: var(--surface-sunken);
+  padding: 12px;
+  color: var(--text-500);
+  font-size: 12px;
+}
+
+.color-risk-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .principle-row {

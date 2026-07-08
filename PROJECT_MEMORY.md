@@ -937,6 +937,23 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `npm.cmd run test:unit` passed 6 files / 35 tests; browser QA on `http://127.0.0.1:5173/modules/production/injection-scheduling?factory=huaxing&section=excel-import` confirmed `返回机台总览盘`, only one header pill `步骤 2 / 4`, zero focus cards, one import layout, one dropzone, one file row, four result stats, five parsing steps, eight mapping rows, four issue rows, no `数据解析` text, no console errors, and no desktop or 390px mobile page-level horizontal overflow; `git diff --check` passed with only LF-to-CRLF warnings.
 - Decision: for non-overview injection scheduling steps, do not reuse the machine-overview focus-card band unless the matching reference HTML contains that band.
 
+### 2026-07-08
+
+- Requirement: browser feedback clarified that `C:\Users\匡树杰\Desktop\rr项目样式参考` was produced from `C:\Users\匡树杰\Desktop\啤机部项目资料\华兴日排版表6-30(1).xlsx`, so the Injection Scheduling Center overview should first restore that reference UI/design and 2026-06-30 Huaxing display口径 before further backend rewrite work.
+- Implementation: updated `src/views/InjectionSchedulingView.vue` overview to use the reference `topbar/nav/search/account`, 2026-06-30 metrics, six focus cards, `超期预警 · 优先跟催` table, current-factory display without in-page factory switching, `旧机区 / 旧1–旧39` dense `mbox` machine grid, and reference-style right drawer with current task, queue, constraints, and color risk sections. The page still avoids factory switch buttons because the shared workbench receives factory context externally.
+- Files changed: `src/views/InjectionSchedulingView.vue` and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `npm.cmd run test:unit` passed 6 files / 35 tests; browser QA on `http://127.0.0.1:5173/modules/production/injection-scheduling?factory=huaxing` confirmed one `.topbar`, four top nav buttons, active `机台总览盘`, data `2026-06-30`, four metrics, six focus cards, one watch panel, six overdue rows, five filter chips, 39 `.mbox` machine boxes, zero old `.machine-card` cards, zero factory switch buttons, no desktop or 390px mobile horizontal overflow, no console errors, and the machine drawer opens/closes correctly; `git diff --check` passed with only LF-to-CRLF warnings.
+- Decision: this slice prioritizes faithful front-end restoration from the local reference HTML/CSS and Huaxing 6-30 Excel-derived口径. Backend deletion/rewrite remains out of scope until a new dedicated injection scheduling backend contract is designed.
+
+### 2026-07-08
+
+- Requirement: browser feedback on the Injection Scheduling Center machine detail drawer requested an animated transition: opening should slide the drawer from right to left, and closing should slide it back out instead of appearing/disappearing instantly.
+- Implementation: changed the drawer from immediate `v-if` display with a static `.open` class to an explicit `isMachineDrawerOpen` animation state. Opening now inserts the drawer off-canvas, waits for the next DOM flush and animation frame, then adds `.open`; closing removes `.open`, waits 280ms, then clears `selectedMachineId` so the DOM remains long enough for the exit animation. The mask now fades with the same state and the CSS keeps a reduced-motion fallback.
+- Files changed: `src/views/InjectionSchedulingView.vue` and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; standalone `npm.cmd run test:unit` passed 6 files / 35 tests; `git diff --check` passed with only LF-to-CRLF warnings; Vite raw source at `http://127.0.0.1:5173/src/views/InjectionSchedulingView.vue?raw` confirmed the dev server is serving the updated drawer animation code.
+- Verification limitation: direct browser frame sampling through coordinate click timed out in the automation tool, so the final verification did not claim a frame-by-frame visual trace.
+- Decision: keep the drawer animation local to this module and avoid adding a new motion dependency.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.
