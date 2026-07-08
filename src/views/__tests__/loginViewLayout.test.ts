@@ -20,6 +20,8 @@ for (const requiredCopy of [
   'carton_warehouse',
   'qa_inspector',
   'molding_clerk',
+  '华兴跟客',
+  'huaxing_molding_a_sales',
   'admin',
 ]) {
   assert.match(source, new RegExp(requiredCopy))

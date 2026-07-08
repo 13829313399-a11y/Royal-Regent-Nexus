@@ -66,6 +66,7 @@ const trialAccounts = [
   { role: '纸箱仓管', username: 'carton_warehouse' },
   { role: 'QA 检验员', username: 'qa_inspector' },
   { role: '啤机部文员', username: 'molding_clerk' },
+  { role: '华兴跟客', username: 'huaxing_molding_a_sales' },
   { role: '管理员', username: 'admin' },
 ]
 

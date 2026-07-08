@@ -912,6 +912,101 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\carton_mark.py backend\tests\test_carton_mark_service.py` passed; a temporary direct assertion script passed for rebuilding `NUMERO DE PEDIDO 62098330`, `MODELO 203302017`, and `PESO BRUTO 4.3 KGS` from simulated OCR word coordinates into extractable carton-mark fields.
 - Verification limitation: backend pytest still could not run in the bundled Python because pytest is not installed; focused backend assertions were executed directly.
 
+### 2026-07-07
+
+- Requirement: in the Sales/Business department's `报价与成本中心`, add a named collection for converting each customer's internal price into a customer-facing quote, with the confirmed module name `客价转换台` and future permissions split by workshop business accounts.
+- Implementation: added a dedicated `QuoteCenterPanel` front-end module under the quote center detail page, showing `客价转换台`, `内部价转客价`, workshop/customer permission rules, scoped customer quote rows, a search field, `我的客户 / 全部待办` scope controls, and a `生成报客价` action that only enables for the current workshop account's own rows. Updated the sales quote-center mock registry so the module card exposes `客价转换台`, internal-price-to-customer-price wording, workshop permission metrics, and the `车间业务员` role.
+- Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/ModuleDetailView.vue`, `src/data/enterpriseMock.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `npm.cmd run build` passed. Build still prints the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decisions: the first slice is a front-end workbench and mock data collection inside `报价与成本中心`; real backend pricing records, customer binding tables, and login/session RBAC are future integration work.
+- Assumptions: current workshop account is represented by a local mock identity `车间业务-A01`; later authentication should replace that facade so each workshop business account only converts its own bound customer quotes.
+- Follow-up: connect `客价转换台` to real quote/cost data and define the backend permission model for workshop, customer, and manager/admin cross-workshop review.
+
+### 2026-07-07
+
+- Requirement correction: `客价转换台` workflow should be `选择自己的客户 -> 导入内部报价 Excel 表格 -> 输出报客价 Excel 表格`.
+- Implementation: reworked `QuoteCenterPanel` into a three-step flow with bound customer selection cards, a `.xls/.xlsx` internal quote file import control, current-customer import state, a guarded `输出报客价 Excel` action, and a browser-generated Excel-compatible `.xls` export for the selected customer's customer-facing quote rows. The quote-center card summary now describes this workflow.
+- Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/data/enterpriseMock.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `npm.cmd run build` passed. Build still prints the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decisions: this slice implements the front-end workflow and downloadable Excel-compatible output first; full parsing of the internal quotation workbook and backend persistence should wait for the official internal quote Excel template.
+- Follow-up: define the exact internal quotation Excel columns, customer price formula rules, and backend upload/export API before replacing the current client-side workbook facade.
+
+### 2026-07-07
+
+- Requirement correction: the lower half of `客价转换台` should become a display/comparison area because an uploaded internal quotation workbook can contain multiple sheets, and multiple exported customer quote files should be available for detail comparison.
+- Implementation: expanded `QuoteCenterPanel` with front-end workbook sheet/detail structures, mock multi-sheet detail generation after internal quote import, exported quote version tracking after each `输出报客价 Excel`, and a lower `多 Sheet / 多报客价明细对比区` with sheet filters, exported-version cards, comparison metrics, detail search, and a table comparing internal price, customer price, previous customer price, difference, and margin band.
+- Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `npm.cmd run build` passed. Build still prints the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decisions: the lower comparison area is intentionally modeled as a workbook/version review surface; real multi-sheet parsing, version persistence, and exact comparison columns should be connected after the official Excel template and conversion rules are confirmed.
+
+### 2026-07-07
+
+- Requirement correction: remove the two lower-area display chips for the current workshop business account and current workshop from `客价转换台`.
+- Implementation: removed the visible `车间业务-A01` and `啤机车间 A` chips from the lower toolbar while keeping the underlying account/workshop permission filtering logic. Added regression assertions that the template no longer renders `{{ currentAccount }}` or `{{ currentWorkshop }}`.
+- Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `npm.cmd run build` passed. Build still prints the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+
+### 2026-07-07
+
+- Requirement correction: clicking `客价转换台` from `报价与成本中心` should route to a dedicated page instead of rendering the full workbench directly inside the quote-center detail page.
+- Implementation: added `src/views/CustomerPriceConversionView.vue` as the dedicated page that wraps `QuoteCenterPanel`, registered `/modules/sales-business/quote-center/customer-price-conversion`, added that route to the `客价转换台` child entry, and changed the quote-center detail page into an entry page with a clickable `进入客价转换台` card while leaving other quote-center sections as planned entries.
+- Files changed: `src/views/CustomerPriceConversionView.vue`, `src/router/index.ts`, `src/views/ModuleDetailView.vue`, `src/data/enterpriseMock.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `npm.cmd run build` passed; `GET http://127.0.0.1:5173/modules/sales-business/quote-center/customer-price-conversion` returned HTTP 200. Build still prints the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+
+### 2026-07-07
+
+- Requirement: create the first Huaxing BuzzBee business follow-up account for the customer price conversion module, because each customer shares only the internal material price source while customer-facing quote formats and prices differ by customer.
+- Implementation: added seeded backend account `huaxing_buzzbee_sales` with display name `华兴 BuzzBee 跟客业务`, role `车间业务跟客`, factory scope `huaxing`, department scope `sales-business`, and default password `123456`. Added customer-price permissions (`customer_price:read`, `customer_price:import_internal_quote`, `customer_price:export_customer_quote`, `customer_price:compare`) and the `sales_customer_owner` role. Added the account to the login trial account list, and wired `QuoteCenterPanel` so this logged-in account is restricted to the BuzzBee customer and BuzzBee quote rows.
+- Files changed: `backend/app/services/auth.py`, `backend/tests/test_auth_api.py`, `src/views/LoginView.vue`, `src/views/__tests__/loginViewLayout.test.ts`, `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `node src\views\__tests__\loginViewLayout.test.ts` passed; `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\auth.py backend\tests\test_auth_api.py` passed; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF warnings.
+- Verification limitation: `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_auth_api.py -q` could not start because the local venv Python launcher failed to create a process. Bundled Python could not reuse the venv packages because `pydantic_core` is binary-incompatible with that Python version, so the backend pytest was not executed in this environment.
+- Decisions: BuzzBee is the first customer-specific conversion account; future customer accounts should use the same role pattern but add customer-binding data instead of hardcoding scope in the front-end.
+- Follow-up: define the official Huaxing BuzzBee internal quote Excel template, customer quote Excel template, field mapping, and material-price conversion rules before implementing real parsing/export APIs.
+
+### 2026-07-07
+
+- Requirement correction: customer price conversion permissions should not be split into one account per customer. Each workshop only needs one dedicated business follow-up account, and that account can handle all customers bound to the workshop.
+- Implementation: replaced the prior BuzzBee-specific seeded account with workshop-level account `huaxing_molding_a_sales`, display name `华兴啤机车间 A 跟客业务`, role `车间业务跟客`, factory scope `huaxing`, department scope `sales-business`, and default password `123456`. The old `huaxing_buzzbee_sales` default account is now retired. In `QuoteCenterPanel`, BuzzBee and Target are both bound to `huaxing_molding_a_sales`, and front-end filtering now checks whether the logged-in user has the `车间业务跟客` role; if so, it shows the customers whose `account` matches the logged-in workshop account instead of hardcoding a single customer.
+- Files changed: `backend/app/services/auth.py`, `backend/tests/test_auth_api.py`, `src/views/LoginView.vue`, `src/views/__tests__/loginViewLayout.test.ts`, `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `node src\views\__tests__\loginViewLayout.test.ts` passed; `C:\Users\Aalyaan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe -m py_compile backend\app\services\auth.py backend\tests\test_auth_api.py` passed; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF warnings.
+- Decisions: BuzzBee can remain the first Excel-template implementation target, but the login/permission model is workshop-level. Future workshop accounts should follow the same pattern, for example one account per Huaxing workshop rather than one per customer.
+- Follow-up: when backend customer-binding tables are added, replace the current front-end mock `account` field with persisted workshop-account-to-customer bindings.
+
+### 2026-07-07
+
+- Requirement correction: the login trial account card for `huaxing_molding_a_sales` should display `华兴跟客` instead of `华兴啤机A业务`.
+- Implementation: updated the `LoginView` trial account label while keeping the workshop-level username and permissions unchanged. Added a layout-test assertion for the new display copy.
+- Files changed: `src/views/LoginView.vue`, `src/views/__tests__/loginViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `node src\views\__tests__\loginViewLayout.test.ts` passed; `rg` confirmed the old `华兴啤机A业务` display copy no longer appears in the view/tests.
+- Decisions: this is a visible login-card label change only; account username remains `huaxing_molding_a_sales`.
+
+### 2026-07-07
+
+- Requirement: read the legacy BuzzBee internal-to-customer-price web tool under `D:\360安全云盘同步版\成果文件\李悦\内部转报客网页`, extract the conversion logic, and generate two documents: one requirements document for implementing the logic into `客价转换台`, and one Word form for other跟客 to fill while attaching each customer's internal quote Excel and customer quote Excel.
+- Implementation: analyzed the legacy webpage source (`defaults.js`, `parser.js`, `exporter.js`, `parse-client.js`, `compare.js`), the usage guide, the BuzzBee internal quote workbook, and the BuzzBee customer quote workbook. Generated `outputs/customer-price-conversion/客价转换台-BuzzBee内部转报客需求文档.md` covering workflow, permissions, input anchors, formulas, output layout, comparison logic, risks, and implementation recommendations. Generated `outputs/customer-price-conversion/客价转换规则收集表-跟客填写模板.docx` as a fillable rule-collection Word template for other customer templates. Supporting analysis/build files were placed in the same output folder.
+- Files changed: `outputs/customer-price-conversion/analyze_buzzbee_workbooks.cjs`, `outputs/customer-price-conversion/buzzbee_workbook_analysis.json`, `outputs/customer-price-conversion/build_buzzbee_docs.py`, `outputs/customer-price-conversion/客价转换台-BuzzBee内部转报客需求文档.md`, `outputs/customer-price-conversion/客价转换规则收集表-跟客填写模板.docx`, and `PROJECT_MEMORY.md`.
+- Verification: the analysis script successfully identified internal workbook anchors (`明细`, `A1:U80`, injection header row 8, cost start row 25) and customer quote anchors (`A1:J58`, INJECTION row 5, PURCHASE row 26, Additional Parts row 40, TOTAL Ex-fty row 43, US$ row 45, CARTON SIZE row 55, OUTTER row 58). Python structural checks confirmed the DOCX opens with 26 paragraphs and 10 tables, and the Markdown contains BuzzBee, workshop-account permission, P+O, and TOTAL Ex-fty content.
+- Verification limitation: DOCX visual render QA could not be completed because LibreOffice/`soffice` is not installed in this Windows environment; the packaged renderer failed with `FileNotFoundError`. Structural DOCX checks were completed instead.
+- Decisions: the Word file is a rule-collection form for other customers; the Markdown file is the implementation requirements source for `客价转换台`. BuzzBee remains the first customer-template implementation target.
+
+### 2026-07-07
+
+- Requirement: implement the first real `客价转换台` customer-specific converter for Huaxing BuzzBee according to the generated BuzzBee internal-to-customer-price requirements document, while preserving the fact that every customer has its own unique conversion logic.
+- Implementation: added a dedicated front-end `buzzbee` converter under `src/lib/customerPriceConverters/` that parses BuzzBee `.xlsx` internal quotation workbooks, identifies multi-sheet internal quote detail rows, applies BuzzBee-specific material/beer/purchase/process/P+O/Ex-fty conversion rules, generates a customer-facing `.xlsx` workbook, and returns sheet/detail comparison rows for the page. Wired `QuoteCenterPanel` so BuzzBee uploads must parse successfully before export, BuzzBee downloads use the generated `.xlsx`, import errors are shown in the upload card, and other customers remain on their own future converter path instead of reusing BuzzBee logic.
+- Files changed: `src/lib/customerPriceConverters/buzzbee.ts`, `src/components/modules/sales/QuoteCenterPanel.vue`, and `PROJECT_MEMORY.md`.
+- Verification: `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Verification note: direct `node_modules\.bin\vite.cmd build` failed once with a Vite/Rolldown Windows absolute `index.html` path error in the workspace path containing spaces, while the project script `npm.cmd run build` succeeded immediately afterward.
+- Decisions: customer conversion logic is customer-specific by `customerId`; only `buzzbee` is registered for real parsing/export now. `.xls` BuzzBee inputs should be saved as `.xlsx` before upload until an old BIFF parser/API path is added.
+- Follow-up: when other跟客 provide the filled Word rule form plus that customer's internal quote Excel and customer quote Excel, add a separate converter for that customer rather than extending the BuzzBee converter.
+
+### 2026-07-07
+
+- Requirement correction: the previously implemented BuzzBee converter logic was based on an incorrect understanding and should be cleared so the user can redefine the BuzzBee rules from scratch.
+- Implementation: removed the dedicated `src/lib/customerPriceConverters/buzzbee.ts` converter file, removed all BuzzBee-specific parsing/export imports and state from `QuoteCenterPanel`, restored internal quote import to the generic current-customer upload/mock-sheet display flow, restored export to the generic Excel-compatible output, and removed the BuzzBee-only `.xlsx` prompt plus parser error display.
+- Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/lib/customerPriceConverters/buzzbee.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `node_modules\.bin\vue-tsc.cmd -b tsconfig.app.json` passed; `npm.cmd run test:unit -- src\views\__tests__\productionModuleEntry.spec.ts` passed with 4 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decisions: `BuzzBee` remains as a selectable customer/workshop-bound business object, but it no longer has any customer-specific conversion algorithm in code. Future BuzzBee implementation should start from the user's rewritten rules.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.

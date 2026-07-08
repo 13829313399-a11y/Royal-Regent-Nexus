@@ -36,6 +36,7 @@ const currentModule = computed(() => {
 
 const isInjectionScheduling = computed(() => currentModule.value.id === 'injection-scheduling')
 const isCartonMarkCheck = computed(() => currentModule.value.id === 'carton-mark-check')
+const isQuoteCenter = computed(() => currentDepartmentId.value === 'sales-business' && currentModule.value.id === 'quote-center')
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
 
 watch(currentDepartmentId, (departmentId) => {
@@ -111,6 +112,48 @@ watch(currentDepartmentId, (departmentId) => {
       <div class="space-y-6">
         <InjectionSchedulingDashboard v-if="isInjectionScheduling" />
         <CartonMarkCheckPanel v-else-if="isCartonMarkCheck" />
+
+        <template v-else-if="isQuoteCenter">
+          <SectionPanel
+            title="报价与成本中心入口"
+            subtitle="先按业务动作拆出独立页面，后续报价池、核价复核和利润分析也可以继续独立落地"
+          >
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <article
+                v-for="child in currentModule.children"
+                :key="`${currentModule.id}-${child.label}`"
+                class="rounded-2xl border border-slate-200 bg-slate-50 p-5"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="text-xs uppercase tracking-[0.24em] text-slate-500">Workspace</p>
+                    <h3 class="mt-2 text-lg font-semibold text-slate-950">{{ child.label }}</h3>
+                  </div>
+                  <ChevronRight class="mt-1 size-4 text-slate-400" aria-hidden="true" />
+                </div>
+                <p class="mt-4 min-h-16 text-sm leading-6 text-slate-600">
+                  {{ child.summary || '这里承接报价与成本中心的一个业务页面。' }}
+                </p>
+                <RouterLink
+                  v-if="child.route"
+                  :to="child.route"
+                  class="mt-5 inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  进入{{ child.label }}
+                  <ArrowUpRight class="size-4" aria-hidden="true" />
+                </RouterLink>
+                <button
+                  v-else
+                  type="button"
+                  class="mt-5 inline-flex cursor-not-allowed items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-400"
+                  disabled
+                >
+                  规划中
+                </button>
+              </article>
+            </div>
+          </SectionPanel>
+        </template>
 
         <template v-else>
           <SectionPanel

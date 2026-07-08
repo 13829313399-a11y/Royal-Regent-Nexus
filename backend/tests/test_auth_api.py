@@ -58,6 +58,7 @@ def test_huaxing_trial_accounts_are_seeded_without_legacy_default_users(monkeypa
             "carton_warehouse": ("华兴纸箱仓管", "纸箱仓管", "carton_mark:template_upload", ["huaxing"]),
             "qa_inspector": ("华兴QA检验员", "QA 检验员", "carton_mark:review", ["huaxing"]),
             "molding_clerk": ("华兴啤机部文员", "啤机部文员", "molding_sample:production_start", ["huaxing"]),
+            "huaxing_molding_a_sales": ("华兴啤机车间 A 跟客业务", "车间业务跟客", "customer_price:export_customer_quote", ["huaxing"]),
             "admin": ("系统管理员", "系统管理员", "system:user_manage", ["*"]),
         }
 
@@ -72,9 +73,11 @@ def test_huaxing_trial_accounts_are_seeded_without_legacy_default_users(monkeypa
             assert role_name in profile["roles"]
             assert permission in profile["permissions"]
             assert profile["factory_scopes"] == factory_scopes
+            if username == "huaxing_molding_a_sales":
+                assert profile["department_scopes"] == ["sales-business"]
             client.post("/api/auth/logout")
 
-        for retired_username in ["molding", "warehouse"]:
+        for retired_username in ["molding", "warehouse", "huaxing_buzzbee_sales"]:
             retired_response = client.post(
                 "/api/auth/login",
                 json={"username": retired_username, "password": "123456"},

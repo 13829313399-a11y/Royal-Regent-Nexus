@@ -1,0 +1,896 @@
+[
+  {
+    "kind": "internal",
+    "fileName": "露营火堆套装枪报价2026-3-15（内部价钱）.xlsx",
+    "sheetNames": [
+      "明细"
+    ],
+    "sheets": [
+      {
+        "name": "明细",
+        "ref": "A1:U80",
+        "anchors": {
+          "injectionHeaderRows": [
+            8
+          ],
+          "internalCostStartRows": [
+            25
+          ],
+          "clientInjectionRows": [],
+          "clientPurchaseRows": [],
+          "clientCartonRows": [],
+          "clientOutterRows": [],
+          "additionalPartsRows": [],
+          "totalExFtyRows": [],
+          "usdRows": [],
+          "colorBoxRows": [
+            44
+          ]
+        },
+        "keyCells": {
+          "A1": null,
+          "A4": null,
+          "A5": null,
+          "F1": "PC料",
+          "G1": "K料",
+          "I27": "产品尺寸",
+          "J27": null
+        },
+        "firstRows": [
+          {
+            "row": 1,
+            "values": [
+              null,
+              null,
+              "料型",
+              "PP料",
+              "ABS料",
+              "PC料",
+              "K料",
+              "GP料",
+              "PE料",
+              "POM料",
+              "475料",
+              "C-ABS料"
+            ]
+          },
+          {
+            "row": 2,
+            "values": [
+              null,
+              null,
+              "单价/P",
+              6,
+              7.2,
+              8.5,
+              10.5,
+              5.5,
+              6.3,
+              13.5,
+              6,
+              12.5
+            ]
+          },
+          {
+            "row": 3,
+            "values": [
+              null,
+              null,
+              "料型",
+              "马力士",
+              "环保PVC",
+              "尼龙料",
+              "TPR料",
+              "SAN料",
+              "PP料明",
+              "HI75%+GP25%",
+              "HDPE料",
+              "汇率"
+            ]
+          },
+          {
+            "row": 4,
+            "values": [
+              null,
+              null,
+              "单价/P",
+              6.8,
+              7,
+              16.35,
+              13.5,
+              9.735,
+              9,
+              6,
+              6.5,
+              0.85
+            ]
+          },
+          {
+            "row": 5,
+            "values": [
+              null,
+              null,
+              "机型",
+              "4A-6A",
+              "7A-9A",
+              "10A-12A",
+              "14A",
+              "16A-18A",
+              "20A-24A",
+              "30A-34A",
+              "44A",
+              "46A-49.9A"
+            ]
+          },
+          {
+            "row": 6,
+            "values": [
+              null,
+              null,
+              "单价/元",
+              1040,
+              1160,
+              1280,
+              1650,
+              1890,
+              2130,
+              2460,
+              2700,
+              2790
+            ]
+          },
+          {
+            "row": 7,
+            "values": [
+              "露营火堆套装（按图报价）",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 8,
+            "values": [
+              null,
+              null,
+              "名称",
+              "料型",
+              "料重(G)",
+              "料价(G)",
+              "机型",
+              "1出几套",
+              "目标数",
+              "啤工",
+              "料金额",
+              "报客啤工"
+            ]
+          },
+          {
+            "row": 9,
+            "values": [
+              "1..",
+              null,
+              "下---大身面壳+底壳",
+              "ABS料",
+              135,
+              0.0158590308370044,
+              18,
+              1,
+              2800,
+              0.675,
+              2.14096916299559,
+              0.77625
+            ]
+          },
+          {
+            "row": 10,
+            "values": [
+              "2..",
+              null,
+              "上---大身面壳+底壳",
+              "ABS料",
+              115,
+              0.0158590308370044,
+              18,
+              1,
+              3800,
+              0.497368421052632,
+              1.82378854625551,
+              0.571973684210526
+            ]
+          },
+          {
+            "row": 11,
+            "values": [
+              "3..",
+              null,
+              "水箱面+底，电池门",
+              "ABS料",
+              46,
+              0.0158590308370044,
+              7,
+              1,
+              4000,
+              0.29,
+              0.729515418502203,
+              0.3335
+            ]
+          },
+          {
+            "row": 12,
+            "values": [
+              "4..",
+              null,
+              "水箱盖",
+              "PE料",
+              4,
+              0.0138766519823789,
+              7,
+              4,
+              4000,
+              0.0725,
+              0.0555066079295154,
+              0.083375
+            ]
+          },
+          {
+            "row": 13,
+            "values": [
+              "5..",
+              null,
+              "雾化器链接管，接头，配件",
+              "ABS料",
+              45,
+              0.0158590308370044,
+              14,
+              2,
+              3800,
+              0.217105263157895,
+              0.713656387665198,
+              0.249671052631579
+            ]
+          },
+          {
+            "row": 14,
+            "values": [
+              "6..",
+              null,
+              "牙箱/配件",
+              "ABS料",
+              18,
+              0.0158590308370044,
+              7,
+              2,
+              3600,
+              0.161111111111111,
+              0.285462555066079,
+              0.185277777777778
+            ]
+          },
+          {
+            "row": 15,
+            "values": [
+              "7..",
+              null,
+              "饼干",
+              "PP料",
+              8,
+              0.013215859030837,
+              7,
+              2,
+              4000,
+              0.145,
+              0.105726872246696,
+              0.16675
+            ]
+          },
+          {
+            "row": 16,
+            "values": [
+              "8..",
+              null,
+              "巧克力",
+              "PP料",
+              8,
+              0.013215859030837,
+              7,
+              2,
+              4000,
+              0.145,
+              0.105726872246696,
+              0.16675
+            ]
+          },
+          {
+            "row": 17,
+            "values": [
+              "9..",
+              null,
+              "火苗",
+              "PP料",
+              36,
+              0.013215859030837,
+              14,
+              2,
+              3400,
+              0.242647058823529,
+              0.475770925110132,
+              0.279044117647059
+            ]
+          },
+          {
+            "row": 18,
+            "values": [
+              "10..",
+              null,
+              "马灯-顶盖+电池箱",
+              "ABS料",
+              70,
+              0.0158590308370044,
+              14,
+              1,
+              3800,
+              0.434210526315789,
+              1.11013215859031,
+              0.499342105263158
+            ]
+          },
+          {
+            "row": 19,
+            "values": [
+              "11..",
+              null,
+              "马灯-大身",
+              "ABS料",
+              45,
+              0.0158590308370044,
+              14,
+              2,
+              3600,
+              0.229166666666667,
+              0.713656387665198,
+              0.263541666666667
+            ]
+          },
+          {
+            "row": 20,
+            "values": [
+              "12..",
+              null,
+              "马灯-透明罩",
+              "C-ABS料",
+              55,
+              0.0275330396475771,
+              14,
+              1,
+              3000,
+              0.55,
+              1.51431718061674,
+              0.6325
+            ]
+          },
+          {
+            "row": 21,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              585,
+              null,
+              null,
+              null,
+              null,
+              3.65910904712762,
+              9.77422907488987,
+              null
+            ]
+          },
+          {
+            "row": 23,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              "盐田柜",
+              "盐田散",
+              "香港柜",
+              "香港散",
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 25,
+            "values": [
+              null,
+              "料价",
+              "料价",
+              9.77422907488987,
+              null,
+              null,
+              null,
+              null,
+              "外箱:",
+              14,
+              9.25,
+              23.875
+            ]
+          },
+          {
+            "row": 26,
+            "values": [
+              null,
+              "啤工",
+              "啤工",
+              3.65910904712762,
+              null,
+              null,
+              null,
+              null,
+              "内箱",
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 27,
+            "values": [
+              null,
+              "装配工",
+              "火堆装工（42人/11h/3000）",
+              3.71,
+              null,
+              null,
+              null,
+              null,
+              "产品尺寸",
+              null,
+              null,
+              null
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "customer",
+    "fileName": "R0 RR ltem 露营火堆套装 box(2026-3-18）（报客价钱）.xls",
+    "sheetNames": [
+      "露营火堆套装"
+    ],
+    "sheets": [
+      {
+        "name": "露营火堆套装",
+        "ref": "A1:J58",
+        "anchors": {
+          "injectionHeaderRows": [],
+          "internalCostStartRows": [],
+          "clientInjectionRows": [
+            5
+          ],
+          "clientPurchaseRows": [
+            26
+          ],
+          "clientCartonRows": [
+            55
+          ],
+          "clientOutterRows": [
+            58
+          ],
+          "additionalPartsRows": [
+            40
+          ],
+          "totalExFtyRows": [
+            43
+          ],
+          "usdRows": [
+            45
+          ],
+          "colorBoxRows": [
+            54
+          ]
+        },
+        "keyCells": {
+          "A1": "COST BREAKDOWN SHEET (ROYAL REGENT)",
+          "A4": "ltem:露营火堆套装",
+          "A5": "INJECTION",
+          "F1": "DATE",
+          "G1": 46099,
+          "I27": "PLASTIC",
+          "J27": 10.229700000000001
+        },
+        "firstRows": [
+          {
+            "row": 1,
+            "values": [
+              "COST BREAKDOWN SHEET (ROYAL REGENT)",
+              null,
+              null,
+              null,
+              null,
+              "DATE",
+              46099,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 2,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              "REVISED",
+              0,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 4,
+            "values": [
+              "ltem:露营火堆套装",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 5,
+            "values": [
+              "INJECTION",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 6,
+            "values": [
+              "DESCRIPTION",
+              "MAT'L",
+              "WEIGHT",
+              "PRICE/KG",
+              "AMOUNT",
+              "SET/SHOT",
+              "COST",
+              null,
+              "Tooling",
+              null
+            ]
+          },
+          {
+            "row": 7,
+            "values": [
+              "下---大身面壳+底壳",
+              "ABS",
+              135,
+              16.5,
+              2.2275,
+              1,
+              0.776,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 8,
+            "values": [
+              "上---大身面壳+底壳",
+              "ABS",
+              115,
+              16.5,
+              1.8975,
+              1,
+              0.572,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 9,
+            "values": [
+              "水箱面+底，电池门",
+              "ABS",
+              46,
+              16.5,
+              0.759,
+              1,
+              0.334,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 10,
+            "values": [
+              "水箱盖",
+              "PE",
+              4,
+              14.5,
+              0.058,
+              4,
+              0.083,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 11,
+            "values": [
+              "雾化器链接管，接头，配件",
+              "ABS",
+              45,
+              16.5,
+              0.7425,
+              2,
+              0.25,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 12,
+            "values": [
+              "牙箱/配件",
+              "ABS",
+              18,
+              16.5,
+              0.297,
+              2,
+              0.185,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 13,
+            "values": [
+              "饼干",
+              "PP",
+              8,
+              12.1,
+              0.0968,
+              2,
+              0.167,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 14,
+            "values": [
+              "巧克力",
+              "PP",
+              8,
+              12.1,
+              0.0968,
+              2,
+              0.167,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 15,
+            "values": [
+              "火苗",
+              "PP",
+              36,
+              12.1,
+              0.4356,
+              2,
+              0.279,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 16,
+            "values": [
+              "马灯-顶盖+电池箱",
+              "ABS",
+              70,
+              16.5,
+              1.155,
+              1,
+              0.499,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 17,
+            "values": [
+              "马灯-大身",
+              "ABS",
+              45,
+              16.5,
+              0.7425,
+              2,
+              0.264,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 18,
+            "values": [
+              "马灯-透明罩",
+              "C-ABS",
+              55,
+              31.3,
+              1.7215,
+              1,
+              0.633,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 19,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              0,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 20,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              0,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 21,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              0,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 22,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              0,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 23,
+            "values": [
+              null,
+              null,
+              null,
+              null,
+              0,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "row": 24,
+            "values": [
+              "SUB TOTAL",
+              null,
+              585,
+              null,
+              10.229700000000001,
+              null,
+              4.209,
+              null,
+              0,
+              null
+            ]
+          },
+          {
+            "row": 26,
+            "values": [
+              "PURCHASE",
+              null,
+              null,
+              null,
+              null,
+              "TRANSPORTATION",
+              null,
+              null,
+              "BREAKDOWN",
+              null
+            ]
+          },
+          {
+            "row": 27,
+            "values": [
+              "DESCRIPTION",
+              "QTY",
+              "PRICE",
+              "AMOUNT",
+              null,
+              "PARTS",
+              null,
+              null,
+              "PLASTIC",
+              10.229700000000001
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
