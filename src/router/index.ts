@@ -87,13 +87,18 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/sales-business/quote-center/customer-price-conversion',
-    name: 'customer-price-conversion',
+    path: '/modules/sales-business/quote-center',
+    name: 'quote-center',
     component: () => import('@/views/CustomerPriceConversionView.vue'),
     meta: {
-      title: '客价转换台',
+      title: '报价与成本中心',
+      fullPage: true,
       requiresAuth: true,
     },
+  },
+  {
+    path: '/modules/sales-business/quote-center/customer-price-conversion',
+    redirect: '/modules/sales-business/quote-center',
   },
   {
     path: '/modules/:department/:module',
