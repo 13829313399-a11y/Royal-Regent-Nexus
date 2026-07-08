@@ -4,10 +4,13 @@ import { describe, expect, it } from 'vitest'
 
 const enterpriseSource = readFileSync(join(process.cwd(), 'src/data/enterpriseMock.ts'), 'utf8')
 const moduleCenterSource = readFileSync(join(process.cwd(), 'src/views/ModuleCenterView.vue'), 'utf8')
+const moduleDetailSource = readFileSync(join(process.cwd(), 'src/views/ModuleDetailView.vue'), 'utf8')
 const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
 const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/modules/ModuleCard.vue'), 'utf8')
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
 const rawMaterialDatabaseSource = readFileSync(join(process.cwd(), 'src/data/rawMaterialDatabase.ts'), 'utf8')
+const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
+const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
   it('keeps the molding sample production task wired to the real task page', () => {
@@ -109,5 +112,55 @@ describe('production module entry', () => {
     expect(moduleCardSource).toMatch(/router\.push\(module\.route\)/)
     expect(moduleCardSource).toMatch(/:role="module\.route \? 'link' : undefined"/)
     expect(moduleCardSource).toMatch(/@click\.stop/)
+  })
+
+  it('registers the customer price conversion desk inside the sales quote center', () => {
+    expect(enterpriseSource).toMatch(/id: 'quote-center'/)
+    expect(enterpriseSource).toMatch(/选择客户、导入内部报价、输出报客价 Excel/)
+    expect(enterpriseSource).toMatch(/待转换 2 · 待复核 1/)
+    expect(enterpriseSource).toMatch(/label: '客价转换台'/)
+    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
+    expect(enterpriseSource).toMatch(/先选择本人客户，再导入内部报价 Excel 并输出报客价 Excel/)
+    expect(enterpriseSource).toMatch(/role: '车间业务员'/)
+
+    expect(moduleDetailSource).toMatch(/currentDepartmentId\.value === 'sales-business'/)
+    expect(moduleDetailSource).toMatch(/currentModule\.value\.id === 'quote-center'/)
+    expect(moduleDetailSource).toMatch(/报价与成本中心入口/)
+    expect(moduleDetailSource).toMatch(/进入\{\{ child\.label \}\}/)
+
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
+    expect(routerSource).toMatch(/name: 'customer-price-conversion'/)
+    expect(routerSource).toMatch(/CustomerPriceConversionView\.vue/)
+    expect(routerSource).toMatch(/title: '客价转换台'/)
+
+    expect(customerPriceConversionViewSource).toMatch(/QuoteCenterPanel/)
+    expect(customerPriceConversionViewSource).toMatch(/返回报价与成本中心/)
+
+    for (const requiredCopy of [
+      '客价转换台',
+      '内部价转报客价，按车间客户权限管控',
+      '内部价转客价',
+      '1. 选择自己的客户',
+      '2. 导入内部报价 Excel',
+      '3. 输出报客价 Excel',
+      '输出报客价 Excel',
+      '多 Sheet / 多报客价明细对比区',
+      '导出版本',
+      'createMockWorkbookSheets',
+      'activeWorkbookSheets',
+      'selectedSheetRows',
+      'useAuthStore',
+      'huaxing_molding_a_sales',
+      'isWorkshopSalesAccount',
+      '仅本人车间客户可转换',
+      'handleInternalQuoteImport',
+      'exportCustomerQuoteExcel',
+      '权限口径：车间业务账号进来后只选择本人绑定客户',
+    ]) {
+      expect(quoteCenterPanelSource).toContain(requiredCopy)
+    }
+
+    expect(quoteCenterPanelSource).not.toContain('{{ currentAccount }}')
+    expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')
   })
 })

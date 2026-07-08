@@ -77,6 +77,15 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/sales-business/quote-center/customer-price-conversion',
+    name: 'customer-price-conversion',
+    component: () => import('@/views/CustomerPriceConversionView.vue'),
+    meta: {
+      title: '客价转换台',
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/:department/:module',
     name: 'module-detail',
     component: () => import('@/views/ModuleDetailView.vue'),

@@ -45,6 +45,10 @@ MOLDING_SAMPLE_PERMISSIONS = [
     "carton_mark:template_upload",
     "carton_mark:photo_upload",
     "carton_mark:review",
+    "customer_price:read",
+    "customer_price:import_internal_quote",
+    "customer_price:export_customer_quote",
+    "customer_price:compare",
     "system:user_manage",
     "system:role_manage",
 ]
@@ -56,6 +60,7 @@ DEFAULT_ROLES = [
     ("carton_warehouse_keeper", "纸箱仓管", "纸箱箱唛 PDF 模板维护"),
     ("qa_inspector", "QA 检验员", "QA 箱唛实拍上传与核对"),
     ("molding_clerk", "啤机部文员", "啤机部啤办任务接收、回填和完成"),
+    ("sales_customer_owner", "车间业务跟客", "按车间和客户范围转换报客价"),
     ("admin", "系统管理员", "系统配置和权限管理"),
 ]
 
@@ -104,6 +109,12 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_complete",
         "molding_sample:notification_read",
     },
+    "sales_customer_owner": {
+        "customer_price:read",
+        "customer_price:import_internal_quote",
+        "customer_price:export_customer_quote",
+        "customer_price:compare",
+    },
     "molding_operator": {
         "molding_sample:read",
         "molding_sample:production_read",
@@ -131,11 +142,19 @@ DEFAULT_USERS = [
     ("user-carton-warehouse", "carton_warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
     ("user-qa-inspector", "qa_inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
     ("user-molding-clerk", "molding_clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
+    (
+        "user-huaxing-molding-a-sales",
+        "huaxing_molding_a_sales",
+        "华兴啤机车间 A 跟客业务",
+        "sales_customer_owner",
+        "huaxing",
+        "sales-business",
+    ),
     ("user-admin", "admin", "系统管理员", "admin", "*", "system"),
 ]
 
-RETIRED_DEFAULT_USERNAMES = {"molding", "warehouse"}
-RETIRED_DEFAULT_USER_IDS = {"user-molding", "user-warehouse"}
+RETIRED_DEFAULT_USERNAMES = {"molding", "warehouse", "huaxing_buzzbee_sales"}
+RETIRED_DEFAULT_USER_IDS = {"user-molding", "user-warehouse", "user-huaxing-buzzbee-sales"}
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
 
 
