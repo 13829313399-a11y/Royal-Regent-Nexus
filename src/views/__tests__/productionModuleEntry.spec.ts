@@ -132,7 +132,7 @@ describe('production module entry', () => {
     expect(routerSource).toMatch(/redirect: '\/modules\/sales-business\/quote-center'/)
     expect(routerSource).toMatch(/CustomerPriceConversionView\.vue/)
     expect(routerSource).toMatch(/title: '报价与成本中心'/)
-    expect(routerSource).toContain("title: '报价与成本中心',\n      fullPage: true,")
+    expect(routerSource).toMatch(/title: '报价与成本中心',\s+fullPage: true,/)
 
     expect(customerPriceConversionViewSource).toMatch(/QuoteCenterPanel/)
     expect(customerPriceConversionViewSource).toMatch(/返回业务部模块中心/)
