@@ -6,6 +6,7 @@ alembic
 pydantic-settings
 python-dotenv
 python-multipart
+openpyxl
 pypdf
 pypdfium2
 Pillow
