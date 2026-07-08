@@ -6,6 +6,7 @@ import { factoryContexts } from '@/data/enterpriseMock'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import RouteLoadingBar from '@/components/layout/RouteLoadingBar.vue'
 import { moldingSampleApi, type MoldingSampleNotificationResponse } from '@/api/moldingSample'
+import { systemApi, type SystemNotificationResponse } from '@/api/system'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -17,6 +18,7 @@ const brandLogoSrc = '/brand/huadeng_group_dynamic_logo.svg'
 const isNotificationPanelOpen = ref(false)
 const notificationState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const notifications = ref<MoldingSampleNotificationResponse[]>([])
+const systemNotifications = ref<SystemNotificationResponse[]>([])
 const notificationToast = ref<MoldingSampleNotificationResponse | null>(null)
 const notificationError = ref('')
 const NOTIFICATION_REFRESH_INTERVAL_MS = 30_000
@@ -56,11 +58,18 @@ const accountNotificationKey = computed(() => [
 ].join('|'))
 
 const pendingNotifications = computed(() => getPendingNotificationsForCurrentAccount(notifications.value))
+const pendingSystemNotifications = computed(() =>
+  systemNotifications.value.filter((notification) => notification.status !== 'handled'),
+)
 
-const pendingNotificationCount = computed(() => pendingNotifications.value.length)
+const pendingNotificationCount = computed(() => pendingNotifications.value.length + pendingSystemNotifications.value.length)
 
 function hasNotificationPermission() {
   return authStore.isAuthenticated && authStore.hasPermission('molding_sample:notification_read')
+}
+
+function hasSystemNotificationPermission() {
+  return authStore.isAuthenticated && authStore.hasPermission('system:user_manage')
 }
 
 function isAdminAccount() {
@@ -135,6 +144,13 @@ function getNotificationRoute(notification: MoldingSampleNotificationResponse) {
   return `/modules/molding-sample?${params.toString()}`
 }
 
+function getSystemNotificationRoute(notification: SystemNotificationResponse) {
+  const requestId = typeof notification.payload.registration_request_id === 'string'
+    ? notification.payload.registration_request_id
+    : ''
+  return requestId ? `/system/users?request_id=${encodeURIComponent(requestId)}` : '/system/users'
+}
+
 function closeNotificationToast() {
   notificationToast.value = null
   if (notificationToastTimer) {
@@ -190,9 +206,30 @@ async function markNotificationHandled(notification: MoldingSampleNotificationRe
   }
 }
 
+async function markSystemNotificationHandled(notification: SystemNotificationResponse) {
+  closeNotificationToast()
+  isNotificationPanelOpen.value = false
+  systemNotifications.value = systemNotifications.value.map((item) =>
+    item.id === notification.id
+      ? { ...item, status: 'handled', handled_at: item.handled_at || new Date().toISOString() }
+      : item,
+  )
+
+  try {
+    await systemApi.updateNotification(notification.id, { status: 'handled' })
+  }
+  catch (error) {
+    notificationError.value = getApiErrorMessage(error)
+  }
+}
+
 async function loadAccountNotifications() {
-  if (!hasNotificationPermission()) {
+  const shouldLoadMoldingNotifications = hasNotificationPermission()
+  const shouldLoadSystemNotifications = hasSystemNotificationPermission()
+
+  if (!shouldLoadMoldingNotifications && !shouldLoadSystemNotifications) {
     notifications.value = []
+    systemNotifications.value = []
     notificationState.value = 'idle'
     notificationError.value = ''
     seenNotificationIds.clear()
@@ -200,17 +237,24 @@ async function loadAccountNotifications() {
     return
   }
 
-  notificationState.value = 'loading'
+  if (!notifications.value.length && !systemNotifications.value.length) {
+    notificationState.value = 'loading'
+  }
   notificationError.value = ''
 
   try {
-    const loadedNotifications = await moldingSampleApi.listNotifications()
+    const [loadedNotifications, loadedSystemNotifications] = await Promise.all([
+      shouldLoadMoldingNotifications ? moldingSampleApi.listNotifications() : Promise.resolve([]),
+      shouldLoadSystemNotifications ? systemApi.listNotifications() : Promise.resolve([]),
+    ])
     notifications.value = loadedNotifications
+    systemNotifications.value = loadedSystemNotifications
     notificationState.value = 'ready'
     announceNewPendingNotification(loadedNotifications)
   }
   catch (error) {
     notifications.value = []
+    systemNotifications.value = []
     notificationState.value = 'error'
     notificationError.value = getApiErrorMessage(error)
   }
@@ -327,10 +371,32 @@ onUnmounted(() => {
             <div v-else-if="notificationState === 'error'" class="rounded-lg border border-red-100 bg-red-50 px-3 py-3 text-sm text-red-700">
               通知读取失败：{{ notificationError }}
             </div>
-            <div v-else-if="!pendingNotifications.length" class="rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+            <div v-else-if="!pendingNotifications.length && !pendingSystemNotifications.length" class="rounded-lg bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
               当前账号暂无未处理项。
             </div>
             <div v-else class="space-y-2">
+              <div v-if="pendingSystemNotifications.length" class="space-y-2">
+                <p class="px-1 text-[11px] font-bold text-slate-500">系统通知</p>
+                <RouterLink
+                  v-for="notification in pendingSystemNotifications"
+                  :key="notification.id"
+                  :to="getSystemNotificationRoute(notification)"
+                  class="block rounded-lg border border-teal-100 bg-teal-50/60 px-3 py-2.5 text-left transition hover:border-teal-200 hover:bg-teal-50"
+                  @click="markSystemNotificationHandled(notification)"
+                >
+                  <div class="flex items-start justify-between gap-2">
+                    <span class="min-w-0 truncate text-[13px] font-bold text-slate-950">{{ notification.title }}</span>
+                    <span class="shrink-0 rounded-full bg-teal-100 px-1.5 py-0.5 text-[10px] font-bold text-teal-700">
+                      {{ notification.status === 'read' ? '已读' : '未读' }}
+                    </span>
+                  </div>
+                  <div class="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-slate-500">
+                    <span>{{ notification.type }}</span>
+                    <span>{{ notification.created_at }}</span>
+                  </div>
+                  <p class="mt-1 line-clamp-2 text-[11px] leading-5 text-slate-600">{{ notification.message }}</p>
+                </RouterLink>
+              </div>
               <RouterLink
                 v-for="notification in pendingNotifications"
                 :key="notification.id"

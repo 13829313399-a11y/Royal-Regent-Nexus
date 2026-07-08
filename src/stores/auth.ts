@@ -69,6 +69,9 @@ export const useAuthStore = defineStore('auth', {
     hasPermission(permission: string) {
       return this.permissions.includes(permission)
     },
+    hasAnyPermission(permissions: string[]) {
+      return permissions.some((permission) => this.hasPermission(permission))
+    },
     hasFactoryScope(factoryId: string) {
       return this.factoryScopes.includes('*') || this.factoryScopes.includes(factoryId)
     },

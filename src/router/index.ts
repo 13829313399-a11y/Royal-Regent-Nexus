@@ -17,6 +17,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/register',
+    name: 'register',
+    component: () => import('@/views/RegisterView.vue'),
+    meta: {
+      title: '账号申请',
+      fullPage: true,
+      requiresAuth: false,
+    },
+  },
+  {
     path: '/',
     name: 'dashboard',
     component: DashboardView,
@@ -133,6 +143,26 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/system/users',
+    name: 'system-users',
+    component: () => import('@/views/SystemUserManagementView.vue'),
+    meta: {
+      title: '账号与权限管理',
+      requiresAuth: true,
+      permissions: ['system:user_manage'],
+    },
+  },
+  {
+    path: '/forbidden',
+    name: 'forbidden',
+    component: () => import('@/views/ForbiddenView.vue'),
+    meta: {
+      title: '无权限访问',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: '/',
   },
@@ -187,6 +217,14 @@ router.beforeEach(async (to) => {
     return {
       name: 'login',
       query: { redirect: to.fullPath },
+      replace: true,
+    }
+  }
+
+  const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []
+  if (permissions.length && !authStore.hasAnyPermission(permissions)) {
+    return {
+      name: 'forbidden',
       replace: true,
     }
   }

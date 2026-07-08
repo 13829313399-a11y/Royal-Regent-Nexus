@@ -10,6 +10,23 @@ export interface LoginRequest {
   password: string
 }
 
+export interface RegisterRequest {
+  username: string
+  display_name: string
+  password: string
+  confirm_password: string
+  phone: string
+  email: string
+  factory_id: string
+  department: string
+  position: string
+}
+
+export interface RegisterResponse {
+  status: string
+  message: string
+}
+
 export interface AuthMeResponse {
   id: string
   username: string
@@ -25,6 +42,10 @@ export function createAuthApi(client: AuthHttpClient = http) {
   return {
     async login(payload: LoginRequest) {
       const response = await client.post<AuthMeResponse>('/auth/login', payload)
+      return response.data
+    },
+    async register(payload: RegisterRequest) {
+      const response = await client.post<RegisterResponse>('/auth/register', payload)
       return response.data
     },
     async getMe() {
