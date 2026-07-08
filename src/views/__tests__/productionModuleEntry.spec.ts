@@ -119,43 +119,48 @@ describe('production module entry', () => {
     expect(enterpriseSource).toMatch(/选择客户、导入内部报价、输出报客价 Excel/)
     expect(enterpriseSource).toMatch(/待转换 2 · 待复核 1/)
     expect(enterpriseSource).toMatch(/label: '客价转换台'/)
-    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
+    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/quote-center'/)
     expect(enterpriseSource).toMatch(/先选择本人客户，再导入内部报价 Excel 并输出报客价 Excel/)
     expect(enterpriseSource).toMatch(/role: '车间业务员'/)
 
-    expect(moduleDetailSource).toMatch(/currentDepartmentId\.value === 'sales-business'/)
-    expect(moduleDetailSource).toMatch(/currentModule\.value\.id === 'quote-center'/)
-    expect(moduleDetailSource).toMatch(/报价与成本中心入口/)
-    expect(moduleDetailSource).toMatch(/进入\{\{ child\.label \}\}/)
+    expect(moduleDetailSource).not.toMatch(/报价与成本中心入口/)
+    expect(moduleDetailSource).not.toMatch(/打开客价转换台/)
 
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center'/)
+    expect(routerSource).toMatch(/name: 'quote-center'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
-    expect(routerSource).toMatch(/name: 'customer-price-conversion'/)
+    expect(routerSource).toMatch(/redirect: '\/modules\/sales-business\/quote-center'/)
     expect(routerSource).toMatch(/CustomerPriceConversionView\.vue/)
-    expect(routerSource).toMatch(/title: '客价转换台'/)
+    expect(routerSource).toMatch(/title: '报价与成本中心'/)
+    expect(routerSource).toContain("title: '报价与成本中心',\n      fullPage: true,")
 
     expect(customerPriceConversionViewSource).toMatch(/QuoteCenterPanel/)
-    expect(customerPriceConversionViewSource).toMatch(/返回报价与成本中心/)
+    expect(customerPriceConversionViewSource).toMatch(/返回业务部模块中心/)
+    expect(customerPriceConversionViewSource).toMatch(/quoteDeskTabs/)
+    expect(customerPriceConversionViewSource).toMatch(/selectDesk/)
+    expect(customerPriceConversionViewSource).toMatch(/报价池/)
+    expect(customerPriceConversionViewSource).toMatch(/核价复核/)
+    expect(customerPriceConversionViewSource).toMatch(/利润分析/)
 
     for (const requiredCopy of [
-      '客价转换台',
-      '内部价转报客价，按车间客户权限管控',
-      '内部价转客价',
-      '1. 选择自己的客户',
-      '2. 导入内部报价 Excel',
-      '3. 输出报客价 Excel',
+      '导入内部报价',
+      '右上角先点选客户，再把内部报价 Excel 导入到当前客户名下',
+      '当前客户：',
+      '导入后会锁定客户并生成下方明细对比',
       '输出报客价 Excel',
+      '明细对比区',
+      '下方整块区域用于承接 Sheet、报客价版本、明细价格差异和利润带对比',
       '多 Sheet / 多报客价明细对比区',
       '导出版本',
+      'importOverviewMetrics',
       'createMockWorkbookSheets',
       'activeWorkbookSheets',
       'selectedSheetRows',
       'useAuthStore',
       'huaxing_molding_a_sales',
       'isWorkshopSalesAccount',
-      '仅本人车间客户可转换',
       'handleInternalQuoteImport',
       'exportCustomerQuoteExcel',
-      '权限口径：车间业务账号进来后只选择本人绑定客户',
     ]) {
       expect(quoteCenterPanelSource).toContain(requiredCopy)
     }
