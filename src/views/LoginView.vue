@@ -285,7 +285,7 @@ async function submitLogin() {
 
           <p class="mt-8 text-center text-[12px] text-slate-400">
             账号由集团数字化中心统一开通 ·
-            <button class="font-medium text-slate-600 transition-colors hover:text-slate-900" type="button">联系管理员</button>
+            <RouterLink class="font-medium text-slate-600 transition-colors hover:text-slate-900" to="/register">申请开通账号</RouterLink>
           </p>
         </div>
       </div>

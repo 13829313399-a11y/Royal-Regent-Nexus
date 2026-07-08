@@ -5,6 +5,7 @@ import TopBar from '../TopBar.vue'
 import { useAuthStore } from '@/stores/auth'
 import { moldingSampleApi } from '@/api/moldingSample'
 import type { MoldingSampleNotificationResponse } from '@/api/moldingSample'
+import { systemApi, type SystemNotificationResponse } from '@/api/system'
 
 const routeState = vi.hoisted(() => ({
   path: '/modules/production',
@@ -12,6 +13,11 @@ const routeState = vi.hoisted(() => ({
 }))
 
 const moldingSampleApiMock = vi.hoisted(() => ({
+  listNotifications: vi.fn(),
+  updateNotification: vi.fn(),
+}))
+
+const systemApiMock = vi.hoisted(() => ({
   listNotifications: vi.fn(),
   updateNotification: vi.fn(),
 }))
@@ -25,6 +31,10 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/api/moldingSample', () => ({
   moldingSampleApi: moldingSampleApiMock,
+}))
+
+vi.mock('@/api/system', () => ({
+  systemApi: systemApiMock,
 }))
 
 function createNotification(
@@ -41,6 +51,22 @@ function createNotification(
     read_at: '',
     handled_at: '',
     created_at: '2026-07-06 15:00',
+    ...input,
+  }
+}
+
+function createSystemNotification(input: Partial<SystemNotificationResponse> & Pick<SystemNotificationResponse, 'id' | 'title'>): SystemNotificationResponse {
+  return {
+    target_user_id: '',
+    target_permission: 'system:user_manage',
+    target_factory_id: 'huaxing',
+    type: 'user_registration',
+    message: `${input.title} 的系统消息`,
+    payload: { registration_request_id: 'registration-1' },
+    status: 'unread',
+    created_at: '2026-07-08 19:00',
+    read_at: '',
+    handled_at: '',
     ...input,
   }
 }
@@ -83,6 +109,8 @@ describe('TopBar notifications', () => {
     vi.clearAllMocks()
     moldingSampleApiMock.listNotifications.mockResolvedValue([])
     moldingSampleApiMock.updateNotification.mockResolvedValue({})
+    systemApiMock.listNotifications.mockResolvedValue([])
+    systemApiMock.updateNotification.mockResolvedValue({})
   })
 
   it('shows only unhandled notifications assigned to the current account role and factory', async () => {
@@ -339,5 +367,41 @@ describe('TopBar notifications', () => {
     finally {
       vi.useRealTimers()
     }
+  })
+
+  it('shows system registration notifications for user management admins', async () => {
+    seedAccount({
+      roles: ['系统管理员'],
+      permissions: ['system:user_manage'],
+      factoryScopes: ['*'],
+    })
+    systemApiMock.listNotifications.mockResolvedValue([
+      createSystemNotification({
+        id: 'SYS-REG-1',
+        title: '新用户注册待审批',
+        message: '华兴 / 工程部 / 张三 申请开通账号',
+      }),
+    ])
+
+    const wrapper = mountTopBar()
+    await flushPromises()
+
+    expect(systemApi.listNotifications).toHaveBeenCalledWith()
+    expect(wrapper.get('button[aria-label="未处理项通知"]').text()).toContain('1')
+
+    await wrapper.get('button[aria-label="未处理项通知"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('系统通知')
+    expect(wrapper.text()).toContain('新用户注册待审批')
+    const notificationLink = wrapper
+      .findAll('a')
+      .find((link) => link.attributes('href')?.includes('/system/users'))
+    expect(notificationLink?.attributes('href')).toContain('request_id=registration-1')
+
+    await notificationLink?.trigger('click')
+    await flushPromises()
+
+    expect(systemApi.updateNotification).toHaveBeenCalledWith('SYS-REG-1', { status: 'handled' })
   })
 })

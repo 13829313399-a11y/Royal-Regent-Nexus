@@ -53,6 +53,7 @@ export interface NavigationItem {
   to: string
   icon: Component
   departmentId?: DepartmentId
+  permissions?: string[]
 }
 
 export interface NavigationGroup {
@@ -343,14 +344,14 @@ export const navigationGroups: NavigationGroup[] = [
     items: [
       { label: '跨厂区审批', to: '/workbench', icon: GitBranch },
       { label: '异常与预警', to: '/workbench', icon: AlertTriangle },
-      { label: '权限与组织', to: getDepartmentRoute('engineering'), icon: Users },
+      { label: '权限与组织', to: '/system/users', icon: Users, permissions: ['system:user_manage'] },
     ],
   },
   {
     label: 'CONFIG',
     items: [
       { label: '模块配置', to: getDepartmentRoute('production'), icon: Settings2 },
-      { label: '角色权限', to: getDepartmentRoute('qa'), icon: UserCog },
+      { label: '角色权限', to: '/system/users', icon: UserCog, permissions: ['system:user_manage'] },
       { label: '流程中心', to: '/workbench', icon: Network },
     ],
   },

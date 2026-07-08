@@ -14,6 +14,8 @@ NOTIFICATION_MIGRATION_REVISION = "20260703_0002"
 AUTH_MIGRATION_REVISION = "20260703_0003"
 PROBLEM_MIGRATION_REVISION = "20260703_0004"
 MIGRATION_REVISION = "20260706_0005"
+INJECTION_SCHEDULE_MIGRATION_REVISION = "20260708_0006"
+AUTH_REGISTRATION_MIGRATION_REVISION = "20260708_0007"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -35,6 +37,8 @@ AUTH_TABLES = [
     "auth_user_roles",
     "auth_sessions",
     "auth_audit_logs",
+    "auth_registration_requests",
+    "system_notifications",
 ]
 REMOVED_PIN_TABLES = [
     "molding_sample_auth_pins",
@@ -48,7 +52,17 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [MIGRATION_REVISION]
+    assert script.get_heads() == [AUTH_REGISTRATION_MIGRATION_REVISION]
+
+    auth_registration_revision = script.get_revision(AUTH_REGISTRATION_MIGRATION_REVISION)
+    assert auth_registration_revision.down_revision == INJECTION_SCHEDULE_MIGRATION_REVISION
+    auth_registration_content = Path(auth_registration_revision.path).read_text(encoding="utf-8")
+    assert "auth_registration_requests" in auth_registration_content
+    assert "system_notifications" in auth_registration_content
+
+    injection_revision = script.get_revision(INJECTION_SCHEDULE_MIGRATION_REVISION)
+    assert injection_revision.down_revision == MIGRATION_REVISION
+
     revision = script.get_revision(MIGRATION_REVISION)
     assert revision.down_revision == PROBLEM_MIGRATION_REVISION
 
@@ -63,7 +77,11 @@ def test_alembic_has_single_molding_sample_head():
 
     auth_revision = script.get_revision(AUTH_MIGRATION_REVISION)
     auth_migration_content = Path(auth_revision.path).read_text(encoding="utf-8")
-    for table_name in AUTH_TABLES:
+    for table_name in [
+        name
+        for name in AUTH_TABLES
+        if name not in {"auth_registration_requests", "system_notifications"}
+    ]:
         assert table_name in auth_migration_content
     for table_name in REMOVED_PIN_TABLES:
         assert table_name in auth_migration_content

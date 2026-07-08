@@ -16,6 +16,7 @@ for (const requiredImplementation of [
   'authApi.getMe',
   'authApi.logout',
   'hasPermission',
+  'hasAnyPermission',
   'hasFactoryScope',
 ]) {
   assert.match(source, new RegExp(requiredImplementation))

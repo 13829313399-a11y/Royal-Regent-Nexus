@@ -80,3 +80,41 @@ class AuthAuditLog(Base):
     ip_address: Mapped[str] = mapped_column(String(128), default="")
     user_agent: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class AuthRegistrationRequest(Base):
+    __tablename__ = "auth_registration_requests"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    username: Mapped[str] = mapped_column(String(64), index=True)
+    display_name: Mapped[str] = mapped_column(String(128), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    email: Mapped[str] = mapped_column(String(128), default="")
+    factory_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    department: Mapped[str] = mapped_column(String(64), default="", index=True)
+    position: Mapped[str] = mapped_column(String(128), default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reviewer_user_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    review_comment: Mapped[str] = mapped_column(Text, default="")
+    submitted_at: Mapped[str] = mapped_column(String(32), default="")
+    reviewed_at: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class SystemNotification(Base):
+    __tablename__ = "system_notifications"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    target_user_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    target_permission: Mapped[str] = mapped_column(String(128), default="", index=True)
+    target_factory_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    title: Mapped[str] = mapped_column(String(128), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(32), default="unread", index=True)
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    read_at: Mapped[str] = mapped_column(String(32), default="")
+    handled_at: Mapped[str] = mapped_column(String(32), default="")

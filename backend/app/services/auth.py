@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,13 +13,15 @@ from app.db import get_db
 from app.models.auth import (
     AuthAuditLog,
     AuthPermission,
+    AuthRegistrationRequest,
     AuthRole,
     AuthRolePermission,
     AuthSession,
     AuthUser,
     AuthUserRole,
+    SystemNotification,
 )
-from app.schemas.auth import AuthMeResponse
+from app.schemas.auth import AuthMeResponse, RegisterRequest, RegisterResponse
 
 SESSION_COOKIE_NAME = "rr_session"
 DEFAULT_PASSWORD = "123456"
@@ -168,6 +171,14 @@ DEFAULT_USERS = [
 RETIRED_DEFAULT_USERNAMES = {"molding", "warehouse", "huaxing_buzzbee_sales"}
 RETIRED_DEFAULT_USER_IDS = {"user-molding", "user-warehouse", "user-huaxing-buzzbee-sales"}
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
+ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huadeng", "huaxing"}
+ALLOWED_DEPARTMENTS = {
+    "engineering",
+    "pmc-warehouse",
+    "production",
+    "qa",
+    "sales-business",
+}
 
 
 @dataclass(frozen=True)
@@ -357,16 +368,126 @@ def authenticate_user(db: Session, username: str, password: str, request: Reques
         seed_auth_defaults(db)
         user = db.scalar(select(AuthUser).where(AuthUser.username == normalized_username))
 
-    if not user or user.status != "active" or not verify_password(password, user):
+    if not user or not verify_password(password, user):
         add_auth_audit(db, "login_denied", username=normalized_username, detail="用户名或密码错误", request=request)
         db.commit()
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+    if user.status != "active":
+        status_message = {
+            "pending": "账号申请正在审批中，请等待管理员开通",
+            "rejected": "账号申请未通过，请联系管理员",
+            "suspended": "账号已停用，请联系管理员",
+            "left": "账号已注销，请联系管理员",
+            "locked": "账号已锁定，请联系管理员",
+        }.get(user.status, "账号不可用，请联系管理员")
+        add_auth_audit(
+            db,
+            "login_denied",
+            username=user.username,
+            user_id=user.id,
+            detail=f"账号状态不可登录：{user.status}",
+            request=request,
+        )
+        db.commit()
+        raise HTTPException(status_code=401, detail=status_message)
 
     user.last_login_at = now_text()
     user.updated_at = now_text()
     add_auth_audit(db, "login_success", username=user.username, user_id=user.id, detail="账号登录成功", request=request)
     db.commit()
     return user
+
+
+def register_user(db: Session, payload: RegisterRequest, request: Request | None = None) -> RegisterResponse:
+    username = payload.username.strip()
+    display_name = payload.display_name.strip()
+    phone = payload.phone.strip()
+    email = payload.email.strip()
+    factory_id = payload.factory_id.strip()
+    department = payload.department.strip()
+    position = payload.position.strip()
+
+    if not username:
+        raise HTTPException(status_code=400, detail="请输入账号或工号")
+    if not display_name:
+        raise HTTPException(status_code=400, detail="请输入姓名")
+    if payload.password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="两次输入的密码不一致")
+    if len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少需要 6 位")
+    if not phone and not email:
+        raise HTTPException(status_code=400, detail="手机或邮箱至少填写一项")
+    if factory_id not in ALLOWED_FACTORY_IDS:
+        raise HTTPException(status_code=400, detail="请选择有效厂区")
+    if department not in ALLOWED_DEPARTMENTS:
+        raise HTTPException(status_code=400, detail="请选择有效部门")
+    if not position:
+        raise HTTPException(status_code=400, detail="请输入职位")
+
+    existing_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
+    if existing_user is not None:
+        raise HTTPException(status_code=409, detail="账号或工号已存在")
+
+    now = now_text()
+    user_id = f"user-{secrets.token_hex(8)}"
+    salt, password_hash = make_password_hash(payload.password)
+    registration_request_id = f"registration-{secrets.token_hex(12)}"
+
+    db.add(
+        AuthUser(
+            id=user_id,
+            username=username,
+            display_name=display_name,
+            password_salt=salt,
+            password_hash=password_hash,
+            status="pending",
+            force_password_change=0,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.add(
+        AuthRegistrationRequest(
+            id=registration_request_id,
+            user_id=user_id,
+            username=username,
+            display_name=display_name,
+            phone=phone,
+            email=email,
+            factory_id=factory_id,
+            department=department,
+            position=position,
+            status="pending",
+            submitted_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.add(
+        SystemNotification(
+            id=f"system-notification-{secrets.token_hex(12)}",
+            target_permission="system:user_manage",
+            target_factory_id=factory_id,
+            type="user_registration",
+            title="新用户注册待审批",
+            message=f"{display_name}（{username}）提交账号申请，厂区 {factory_id}，部门 {department}",
+            payload_json=json.dumps({"registration_request_id": registration_request_id, "user_id": user_id}),
+            status="unread",
+            created_at=now,
+        )
+    )
+    add_auth_audit(
+        db,
+        "registration_submitted",
+        username=username,
+        user_id=user_id,
+        detail=f"账号申请提交：{factory_id}/{department}/{position}",
+        request=request,
+    )
+    db.commit()
+
+    return RegisterResponse(status="pending", message="账号申请已提交，请等待管理员审批")
 
 
 def create_session(db: Session, user: AuthUser, request: Request | None = None) -> str:

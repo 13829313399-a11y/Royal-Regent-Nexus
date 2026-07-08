@@ -1,17 +1,31 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { isModuleDepartmentId, navigationGroups, type NavigationItem } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const appStore = useAppStore()
+const authStore = useAuthStore()
+
+const visibleNavigationGroups = computed(() => navigationGroups
+  .map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.permissions?.length || authStore.hasAnyPermission(item.permissions)),
+  }))
+  .filter((group) => group.items.length))
 
 function isActive(item: NavigationItem) {
+  if (route.path === item.to) {
+    return true
+  }
+
   if (item.departmentId && route.path.startsWith('/modules')) {
     return item.departmentId === appStore.activeDepartmentId
   }
 
-  return route.path === item.to && !item.departmentId
+  return false
 }
 
 function handleSelect(item: NavigationItem) {
@@ -24,7 +38,7 @@ function handleSelect(item: NavigationItem) {
 <template>
   <aside class="sidebar-scrollbar hidden h-[calc(100vh-78px)] w-[260px] shrink-0 self-start overflow-y-auto border-r border-slate-200 bg-white lg:sticky lg:top-[78px] lg:flex lg:flex-col">
     <div class="flex-1 space-y-7 px-4 py-7">
-      <div v-for="group in navigationGroups" :key="group.label" class="space-y-2">
+      <div v-for="group in visibleNavigationGroups" :key="group.label" class="space-y-2">
         <p class="px-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">
           {{ group.label }}
         </p>
