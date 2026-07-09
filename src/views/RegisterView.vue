@@ -115,7 +115,7 @@ async function submitRegistration() {
 
 <template>
   <main class="register-page">
-    <div class="mx-auto flex min-h-screen w-full max-w-6xl items-center px-5 py-8">
+    <div class="register-wrap">
       <section class="register-card">
         <aside class="register-aside">
           <div class="aside-grid" aria-hidden="true"></div>
@@ -297,6 +297,8 @@ async function submitRegistration() {
               <span class="login-link">已有账号？<button type="button" @click="router.replace('/login')">返回登录</button></span>
             </div>
           </form>
+
+          <p class="register-note">账号由集团数字化中心统一开通 · 审批通过后使用企业账号登录。提交后管理员会在「账号与权限管理」中处理申请。</p>
         </section>
       </section>
     </div>
@@ -308,8 +310,19 @@ async function submitRegistration() {
   min-height: 100vh;
   background:
     radial-gradient(circle at top left, rgb(14 165 233 / 10%), transparent 34%),
+    radial-gradient(circle at 82% 8%, rgb(13 148 136 / 8%), transparent 40%),
     linear-gradient(180deg, #f8fafc 0%, #eef4f8 100%);
   color: #020617;
+}
+
+.register-wrap {
+  display: flex;
+  width: 100%;
+  min-height: 100vh;
+  max-width: 1040px;
+  align-items: center;
+  margin: 0 auto;
+  padding: 32px 20px;
 }
 
 .register-card {
@@ -319,13 +332,13 @@ async function submitRegistration() {
   border: 1px solid rgb(226 232 240);
   border-radius: 1rem;
   background: white;
-  box-shadow: 0 24px 60px rgb(15 23 42 / 18%);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 12px 32px rgb(15 23 42 / 10%), 0 40px 80px rgb(15 23 42 / 6%);
 }
 
 .register-aside {
   position: relative;
   display: none;
-  min-height: 640px;
+  min-height: 660px;
   flex-direction: column;
   overflow: hidden;
   background: #020617;
@@ -573,6 +586,15 @@ async function submitRegistration() {
 .login-link button {
   color: #0f766e;
   font-weight: 700;
+}
+
+.register-note {
+  margin: 22px 0 0;
+  border-top: 1px dashed #e2e8f0;
+  color: #94a3b8;
+  font-size: 11.5px;
+  line-height: 1.7;
+  padding-top: 18px;
 }
 
 @media (min-width: 992px) {

@@ -69,6 +69,8 @@ class UserOut(BaseModel):
     id: str
     username: str
     display_name: str
+    phone: str
+    email: str
     status: str
     force_password_change: bool
     last_login_at: str

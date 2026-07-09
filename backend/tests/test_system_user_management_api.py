@@ -169,6 +169,22 @@ def test_non_admin_cannot_use_system_user_management(monkeypatch):
         assert client.get("/api/system/roles").status_code == 403
 
 
+def test_user_list_includes_registration_contact_info(monkeypatch):
+    with make_client(monkeypatch) as client:
+        payload = register_payload("contact-user")
+        payload["phone"] = "13811112222"
+        payload["email"] = "contact@example.com"
+        client.post("/api/auth/register", json=payload)
+
+        login(client, "admin")
+        response = client.get("/api/system/users")
+
+        assert response.status_code == 200
+        contact_user = next(user for user in response.json() if user["username"] == "contact-user")
+        assert contact_user["phone"] == "13811112222"
+        assert contact_user["email"] == "contact@example.com"
+
+
 def test_reject_suspend_restore_and_last_admin_guard(monkeypatch):
     with make_client(monkeypatch) as client:
         ensure_test_user("engineer")

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import {
   Building2,
   BriefcaseBusiness,
+  Check,
   CheckCircle2,
   CircleAlert,
   Clock3,
@@ -30,7 +31,7 @@ import {
   type SystemNotificationResponse,
   type UserResponse,
 } from '@/api/system'
-import { departmentMap, factoryContexts } from '@/data/enterpriseMock'
+import { departmentMap, departments, factoryContexts } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
 import { useRoute } from 'vue-router'
 
@@ -45,10 +46,132 @@ const approvalComments = ref<Record<string, string>>({})
 const rejectComments = ref<Record<string, string>>({})
 const userSearch = ref('')
 const userStatusFilter = ref<'all' | 'active' | 'suspended'>('all')
+const selectedRequestId = ref('')
 const isLoading = ref(false)
 const actionKey = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
+
+type PermissionDefinition = {
+  label: string
+  code: string
+  matchCode?: string
+  locked?: boolean
+}
+
+type PermissionGroupDefinition = {
+  title: string
+  permissions: PermissionDefinition[]
+}
+
+const allFactoryScopeLabel = '全部厂区 ( * )'
+
+const permissionGroupDefinitions: PermissionGroupDefinition[] = [
+  {
+    title: '工程 / 啤办',
+    permissions: [
+      { label: '查看啤办单据', code: 'molding_sample:read' },
+      { label: '新建啤办申请', code: 'molding_sample:create' },
+      { label: '编辑草稿', code: 'molding_sample:edit_draft' },
+      { label: '删除草稿', code: 'molding_sample:delete_draft' },
+      { label: '主管审核', code: 'molding_sample:supervisor_review' },
+      { label: '经理终审', code: 'molding_sample:manager_review' },
+      { label: '改价维护', code: 'molding_sample:price_update' },
+      { label: '敏感审计查看', code: 'molding_sample:audit_read' },
+    ],
+  },
+  {
+    title: '生产 / 仓管',
+    permissions: [
+      { label: '生产任务查看', code: 'molding_sample:production_read' },
+      { label: '开始生产', code: 'molding_sample:production_start' },
+      { label: '生产回填', code: 'molding_sample:production_fillback' },
+      { label: '生产完成', code: 'molding_sample:production_complete' },
+      { label: '领料申请', code: 'molding_sample:warehouse_requisition' },
+      { label: '库存发料', code: 'molding_sample:inventory_issue' },
+    ],
+  },
+  {
+    title: 'QA / 箱唛',
+    permissions: [
+      { label: '查看箱唛', code: 'carton_mark:read' },
+      { label: '维护箱唛模板', code: 'carton_mark:template_upload' },
+      { label: '上传实拍', code: 'carton_mark:photo_upload' },
+      { label: '箱唛复核', code: 'carton_mark:review' },
+    ],
+  },
+  {
+    title: '报价 / 排产',
+    permissions: [
+      { label: '查看报价中心', code: 'customer_price:read' },
+      { label: '导入内部报价', code: 'customer_price:import_internal_quote' },
+      { label: '导出客户报价', code: 'customer_price:export_customer_quote' },
+      { label: '报价差异比较', code: 'customer_price:compare' },
+      { label: '查看注塑排产', code: 'injection_schedule:read' },
+      { label: '导入排产计划', code: 'injection_schedule:import' },
+    ],
+  },
+  {
+    title: '协同 / 通用',
+    permissions: [
+      { label: '接收模块通知', code: 'molding_sample:notification_read' },
+      { label: '账号 / 权限管理', code: 'admin.manage', matchCode: 'system:user_manage', locked: true },
+      { label: '角色权限维护', code: 'system:role_manage', locked: true },
+    ],
+  },
+]
+
+const rolePermissionPresets: Record<string, string[]> = {
+  engineer: [
+    'molding_sample:read',
+    'molding_sample:create',
+    'molding_sample:edit_draft',
+    'molding_sample:delete_draft',
+    'molding_sample:notification_read',
+  ],
+  engineering_supervisor: [
+    'molding_sample:read',
+    'molding_sample:supervisor_review',
+    'molding_sample:notification_read',
+  ],
+  manager: [
+    'molding_sample:read',
+    'molding_sample:edit_draft',
+    'molding_sample:delete_draft',
+    'molding_sample:manager_review',
+    'molding_sample:price_update',
+    'molding_sample:audit_read',
+    'molding_sample:notification_read',
+  ],
+  carton_warehouse_keeper: [
+    'carton_mark:read',
+    'carton_mark:template_upload',
+  ],
+  qa_inspector: [
+    'carton_mark:read',
+    'carton_mark:photo_upload',
+    'carton_mark:review',
+  ],
+  molding_clerk: [
+    'molding_sample:read',
+    'molding_sample:production_read',
+    'molding_sample:production_start',
+    'molding_sample:production_fillback',
+    'molding_sample:production_complete',
+    'molding_sample:notification_read',
+    'injection_schedule:read',
+    'injection_schedule:import',
+  ],
+  sales_customer_owner: [
+    'customer_price:read',
+    'customer_price:import_internal_quote',
+    'customer_price:export_customer_quote',
+    'customer_price:compare',
+  ],
+  admin: permissionGroupDefinitions.flatMap((group) =>
+    group.permissions.map((permission) => permission.matchCode ?? permission.code),
+  ),
+}
 
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active'))
 const pendingUsers = computed(() => users.value.filter((user) => user.status === 'pending'))
@@ -56,6 +179,29 @@ const suspendedUsers = computed(() => users.value.filter((user) => user.status =
 const passwordResetRequests = computed(() =>
   systemNotifications.value.filter((notification) => notification.type === 'password_reset' && notification.status !== 'handled'),
 )
+const selectedRequest = computed(() =>
+  requests.value.find((request) => request.id === selectedRequestId.value) ?? requests.value[0] ?? null,
+)
+const factoryScopesForSelectedRequest = computed(() => {
+  const request = selectedRequest.value
+  return factoryContexts
+    .filter((factory) => factory.id !== 'group')
+    .map((factory) => ({
+      id: factory.id,
+      label: factory.shortName,
+      active: factory.id === request?.factory_id,
+    }))
+})
+const departmentScopesForSelectedRequest = computed(() => {
+  const request = selectedRequest.value
+  return departments
+    .filter((department) => department.id !== 'overview')
+    .map((department) => ({
+      id: department.id,
+      label: department.name,
+      active: department.id === request?.department,
+    }))
+})
 const filteredUsers = computed(() => {
   const keyword = userSearch.value.trim().toLowerCase()
   return users.value.filter((user) => {
@@ -66,6 +212,8 @@ const filteredUsers = computed(() => {
     return [
       user.username,
       user.display_name,
+      user.phone,
+      user.email,
       user.roles.map((role) => role.role_name).join(' '),
       user.roles.map((role) => role.department).join(' '),
     ].some((value) => value.toLowerCase().includes(keyword))
@@ -142,6 +290,35 @@ function statusToneClass(status: string) {
   return 'pill-blue'
 }
 
+function inferPermissionCodesForRole(role: RoleResponse | undefined, request: RegistrationRequestResponse) {
+  const roleText = `${role?.name ?? ''} ${role?.code ?? ''} ${request.position} ${request.department}`
+  if (/管理员|admin/i.test(roleText)) return rolePermissionPresets.admin
+  if (/QA|检验|品质/i.test(roleText)) return rolePermissionPresets.qa_inspector
+  if (/仓|PMC|物料|carton/i.test(roleText)) return rolePermissionPresets.carton_warehouse_keeper
+  if (/生产|啤机|排产/i.test(roleText)) return rolePermissionPresets.molding_clerk
+  if (/业务|报价|客户|sales/i.test(roleText)) return rolePermissionPresets.sales_customer_owner
+  if (/主管|supervisor/i.test(roleText)) return rolePermissionPresets.engineering_supervisor
+  if (/经理|manager/i.test(roleText)) return rolePermissionPresets.manager
+  return rolePermissionPresets.engineer
+}
+
+function permissionGroupsForSelectedRole(request: RegistrationRequestResponse) {
+  const selectedRoleId = getSelectedRoleId(request)
+  const role = roles.value.find((candidate) => candidate.id === selectedRoleId)
+  const roleKey = role?.code || role?.id || selectedRoleId
+  const permissionCodes = new Set(rolePermissionPresets[roleKey] ?? inferPermissionCodesForRole(role, request))
+
+  return permissionGroupDefinitions
+    .map((group) => ({
+      title: group.title,
+      permissions: group.permissions.map((permission) => ({
+        ...permission,
+        enabled: permissionCodes.has(permission.matchCode ?? permission.code),
+      })),
+    }))
+    .filter((group) => group.permissions.some((permission) => permission.enabled || permission.locked))
+}
+
 function getSelectedRoleId(request: RegistrationRequestResponse) {
   if (!selectedRoles.value[request.id]) {
     selectedRoles.value[request.id] = request.recommended_role_ids[0] ?? roles.value[0]?.id ?? ''
@@ -152,6 +329,27 @@ function getSelectedRoleId(request: RegistrationRequestResponse) {
 
 function setSelectedRoleId(requestId: string, roleId: string) {
   selectedRoles.value = { ...selectedRoles.value, [requestId]: roleId }
+}
+
+function selectRequest(requestId: string) {
+  selectedRequestId.value = requestId
+}
+
+function ensureSelectedRequest() {
+  if (!requests.value.length) {
+    selectedRequestId.value = ''
+    return
+  }
+
+  const requestedId = typeof route.query.request_id === 'string' ? route.query.request_id : ''
+  if (requestedId && requests.value.some((request) => request.id === requestedId)) {
+    selectedRequestId.value = requestedId
+    return
+  }
+
+  if (!requests.value.some((request) => request.id === selectedRequestId.value)) {
+    selectedRequestId.value = requests.value[0].id
+  }
 }
 
 async function loadData() {
@@ -168,6 +366,7 @@ async function loadData() {
     users.value = loadedUsers
     roles.value = loadedRoles
     systemNotifications.value = loadedNotifications
+    ensureSelectedRequest()
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
   } finally {
@@ -208,7 +407,7 @@ async function approveRequest(request: RegistrationRequestResponse) {
 }
 
 async function rejectRequest(request: RegistrationRequestResponse) {
-  const comment = rejectComments.value[request.id]?.trim()
+  const comment = (rejectComments.value[request.id] || approvalComments.value[request.id] || '').trim()
   if (!comment) {
     errorMessage.value = '拒绝申请时需要填写原因'
     return
@@ -285,170 +484,244 @@ async function markPasswordResetHandled(notification: SystemNotificationResponse
 onMounted(() => {
   if (route.query.tab === 'password-reset') {
     activeTab.value = 'password-reset'
+  } else if (route.query.request_id) {
+    activeTab.value = 'pending'
   }
   void loadData()
 })
 </script>
 
 <template>
-  <section class="access-page">
-    <header class="access-head">
-      <div>
-        <div class="eyebrow-row">
-          <span class="eyebrow-mark">
-            <ShieldCheck class="size-5" aria-hidden="true" />
+  <main class="permission-approval-page">
+    <div class="wrap">
+      <div class="topbar">
+        <div class="brand">
+          <span class="logo">
+            <ShieldCheck class="size-6" aria-hidden="true" />
           </span>
-          <span class="eyebrow">System Access</span>
+          <div>
+            <h1>权限 / 角色审批</h1>
+            <p>Royal Regent Nexus · 集团账号开通制</p>
+          </div>
         </div>
-        <h1>账号与权限管理</h1>
-        <p>处理账号申请、授权角色、停用或恢复账号 · 集团数字化中心统一管理</p>
+        <div class="topbar-actions">
+          <nav class="view-tabs" aria-label="账号管理视图">
+            <button type="button" :class="{ active: activeTab === 'pending' }" @click="activeTab = 'pending'">
+              待审批
+              <span>{{ requests.length }}</span>
+            </button>
+            <button type="button" :class="{ active: activeTab === 'password-reset' }" @click="activeTab = 'password-reset'">
+              密码重置
+              <span>{{ passwordResetRequests.length }}</span>
+            </button>
+            <button type="button" :class="{ active: activeTab === 'users' }" @click="activeTab = 'users'">
+              用户列表
+            </button>
+          </nav>
+          <RouterLink class="ghost-link" to="/">返回首页</RouterLink>
+          <button type="button" class="ghost-link" :disabled="isLoading" @click="loadData">
+            <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
+            刷新
+          </button>
+          <div class="admin">
+            <div class="t">系统管理员<small>集团数字化中心 · 超级管理员</small></div>
+            <span class="av">管</span>
+          </div>
+        </div>
       </div>
-      <button type="button" class="btn" :disabled="isLoading" @click="loadData">
-        <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
-        刷新
-      </button>
-    </header>
 
-    <div class="stats-grid">
-      <article class="stat-card stat-amber">
-        <div class="stat-top">
-          <span>待审批申请</span>
-          <span class="stat-icon"><UserPlus class="size-5" aria-hidden="true" /></span>
-        </div>
-        <strong>{{ requests.length }}</strong>
-        <p>{{ pendingFootText }}</p>
-      </article>
-      <article class="stat-card stat-green">
-        <div class="stat-top">
-          <span>正常账号</span>
-          <span class="stat-icon"><Users class="size-5" aria-hidden="true" /></span>
-        </div>
-        <strong>{{ activeUsers.length }}</strong>
-        <p>覆盖华康A/B · 华登 · 华兴四厂区</p>
-      </article>
-      <article class="stat-card stat-slate">
-        <div class="stat-top">
-          <span>已停用</span>
-          <span class="stat-icon"><UserRoundX class="size-5" aria-hidden="true" /></span>
-        </div>
-        <strong>{{ suspendedUsers.length }}</strong>
-        <p>离职或调岗，权限已回收</p>
-      </article>
-      <article class="stat-card stat-blue">
-        <div class="stat-top">
-          <span>密码重置</span>
-          <span class="stat-icon"><KeyRound class="size-5" aria-hidden="true" /></span>
-        </div>
-        <strong>{{ passwordResetRequests.length }}</strong>
-        <p>忘记密码申请，待管理员核验</p>
-      </article>
-    </div>
+      <div class="stats">
+        <article class="stat">
+          <div class="row">
+            <span class="ic amber"><Clock3 class="size-5" aria-hidden="true" /></span>
+            <span class="delta up">{{ requests.length ? '待处理' : '清空' }}</span>
+          </div>
+          <div class="n">{{ requests.length }}</div>
+          <div class="lb">待审批申请</div>
+        </article>
+        <article class="stat">
+          <div class="row">
+            <span class="ic teal"><CheckCircle2 class="size-5" aria-hidden="true" /></span>
+            <span class="delta up">已开通</span>
+          </div>
+          <div class="n">{{ activeUsers.length }}</div>
+          <div class="lb">在用账号</div>
+        </article>
+        <article class="stat">
+          <div class="row">
+            <span class="ic blue"><Users class="size-5" aria-hidden="true" /></span>
+            <span class="delta mut">4 厂区</span>
+          </div>
+          <div class="n">{{ users.length }}</div>
+          <div class="lb">账号总数</div>
+        </article>
+        <article class="stat">
+          <div class="row">
+            <span class="ic slate"><KeyRound class="size-5" aria-hidden="true" /></span>
+            <span class="delta mut">待核验</span>
+          </div>
+          <div class="n">{{ passwordResetRequests.length }}</div>
+          <div class="lb">密码重置</div>
+        </article>
+      </div>
 
-    <div v-if="errorMessage" class="message message-error">
-      <CircleAlert class="size-4 shrink-0" aria-hidden="true" />
-      <span>{{ errorMessage }}</span>
-    </div>
-    <div v-if="successMessage" class="message message-success">
-      <CheckCircle2 class="size-4 shrink-0" aria-hidden="true" />
-      <span>{{ successMessage }}</span>
-    </div>
+      <div v-if="errorMessage" class="message message-error">
+        <CircleAlert class="size-4 shrink-0" aria-hidden="true" />
+        <span>{{ errorMessage }}</span>
+      </div>
+      <div v-if="successMessage" class="message message-success">
+        <CheckCircle2 class="size-4 shrink-0" aria-hidden="true" />
+        <span>{{ successMessage }}</span>
+      </div>
 
-    <nav class="tabs" aria-label="账号管理视图">
-      <button type="button" class="tab" :class="{ active: activeTab === 'pending' }" @click="activeTab = 'pending'">
-        <UserCheck class="size-4" aria-hidden="true" />
-        待审批
-        <span class="tab-count">{{ requests.length }}</span>
-      </button>
-      <button type="button" class="tab" :class="{ active: activeTab === 'password-reset' }" @click="activeTab = 'password-reset'">
-        <KeyRound class="size-4" aria-hidden="true" />
-        密码重置
-        <span class="tab-count">{{ passwordResetRequests.length }}</span>
-      </button>
-      <button type="button" class="tab" :class="{ active: activeTab === 'users' }" @click="activeTab = 'users'">
-        <Users class="size-4" aria-hidden="true" />
-        用户列表
-      </button>
-    </nav>
-
-    <section v-if="activeTab === 'pending'" class="panel">
+    <section v-if="activeTab === 'pending'" class="grid approval-workspace">
       <div v-if="isLoading" class="empty-card">正在加载账号申请...</div>
       <div v-else-if="!requests.length" class="empty-card">当前没有待审批账号。</div>
-      <div v-else class="request-grid">
-        <article v-for="request in requests" :key="request.id" class="request-card">
-          <div class="request-top">
-            <span class="request-avatar">{{ avatarText(request.display_name, request.username) }}</span>
-            <div class="request-person">
-              <h2>{{ request.display_name }}</h2>
-              <p>{{ request.username }}</p>
-            </div>
-            <span class="pill pill-amber"><span></span>{{ statusLabel(request.status) }}</span>
+      <template v-else>
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>待审批账号</h2>
+            <span class="cnt">{{ requests.length }} 待处理</span>
           </div>
-
-          <div class="request-meta">
-            <div>
-              <Factory class="size-4" aria-hidden="true" />
-              <span>厂区</span>
-              <b>{{ factoryLabel(request.factory_id) }}</b>
-            </div>
-            <div>
-              <Building2 class="size-4" aria-hidden="true" />
-              <span>部门</span>
-              <b>{{ departmentLabel(request.department) }}</b>
-            </div>
-            <div>
-              <BriefcaseBusiness class="size-4" aria-hidden="true" />
-              <span>职位</span>
-              <b>{{ request.position }}</b>
-            </div>
-            <div>
-              <Phone v-if="request.phone" class="size-4" aria-hidden="true" />
-              <Mail v-else class="size-4" aria-hidden="true" />
-              <span>联系</span>
-              <b>{{ contactLabel(request) }}</b>
-            </div>
-            <div class="meta-wide">
-              <Clock3 class="size-4" aria-hidden="true" />
-              <span>提交</span>
-              <b>{{ formatDateTime(request.submitted_at) }}</b>
-            </div>
-          </div>
-
-          <div class="recommend-box">
-            <Sparkles class="size-4 shrink-0" aria-hidden="true" />
-            <span>系统推荐角色：</span>
-            <b>{{ roleName(request.recommended_role_ids[0] ?? getSelectedRoleId(request)) }}</b>
-          </div>
-
-          <div class="review-controls">
-            <label>
-              <span>推荐 / 授权角色</span>
-              <select
-                class="field"
-                :value="getSelectedRoleId(request)"
-                @change="setSelectedRoleId(request.id, ($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="role in roles" :key="role.id" :value="role.id">
-                  {{ role.name }}{{ request.recommended_role_ids.includes(role.id) ? '（推荐）' : '' }}
-                </option>
-              </select>
-            </label>
-            <input v-model="approvalComments[request.id]" class="field" placeholder="通过备注，可选" type="text">
-            <input v-model="rejectComments[request.id]" class="field" placeholder="拒绝原因" type="text">
-          </div>
-
-          <div class="request-actions">
-            <button type="button" class="btn btn-primary" :disabled="Boolean(actionKey)" @click="approveRequest(request)">
-              <LoaderCircle v-if="actionKey === `approve:${request.id}`" class="size-4 animate-spin" aria-hidden="true" />
-              <CheckCircle2 v-else class="size-4" aria-hidden="true" />
-              通过并授权
+          <div class="queue">
+            <button
+              v-for="request in requests"
+              :key="request.id"
+              type="button"
+              class="q-item"
+              :class="{ active: selectedRequest?.id === request.id }"
+              @click="selectRequest(request.id)"
+            >
+              <span class="av">{{ avatarText(request.display_name, request.username) }}</span>
+              <span class="info">
+                <span class="nm">
+                  <span class="badge-dot" aria-hidden="true"></span>
+                  <b>{{ request.display_name }}</b>
+                  <span class="uid">{{ request.username }}</span>
+                </span>
+                <span class="meta">{{ factoryLabel(request.factory_id) }} · {{ departmentLabel(request.department) }}</span>
+                <span class="pos">申请职位：{{ request.position }}</span>
+              </span>
+              <span class="time">{{ formatDateTime(request.submitted_at) }}</span>
             </button>
-            <button type="button" class="btn btn-danger" :disabled="Boolean(actionKey)" @click="rejectRequest(request)">
+          </div>
+        </aside>
+
+        <article v-if="selectedRequest" class="panel detail">
+          <div class="applicant">
+            <span class="av">{{ avatarText(selectedRequest.display_name, selectedRequest.username) }}</span>
+            <div class="h">
+              <div><b>{{ selectedRequest.display_name }}</b><span class="uid">{{ selectedRequest.username }}</span></div>
+              <div class="tags">
+                <span class="tag"><Factory class="size-3.5" aria-hidden="true" />{{ factoryLabel(selectedRequest.factory_id) }}</span>
+                <span class="tag"><Building2 class="size-3.5" aria-hidden="true" />{{ departmentLabel(selectedRequest.department) }}</span>
+                <span class="tag"><BriefcaseBusiness class="size-3.5" aria-hidden="true" />{{ selectedRequest.position }}</span>
+                <span class="tag"><Phone v-if="selectedRequest.phone" class="size-3.5" aria-hidden="true" /><Mail v-else class="size-3.5" aria-hidden="true" />{{ contactLabel(selectedRequest) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <section class="section">
+            <div class="sec-title">
+              <span class="st-ic"><Users class="size-4" aria-hidden="true" /></span>
+              <h3>系统角色</h3>
+              <span class="hint">根据申请职位「{{ selectedRequest.position }}」智能推荐</span>
+            </div>
+            <div class="roles">
+              <button
+                v-for="role in roles"
+                :key="role.id"
+                type="button"
+                class="role"
+                :class="{ sel: getSelectedRoleId(selectedRequest) === role.id }"
+                @click="setSelectedRoleId(selectedRequest.id, role.id)"
+              >
+                <span v-if="selectedRequest.recommended_role_ids.includes(role.id)" class="reco">推荐</span>
+                <span class="check"><Check class="size-3" aria-hidden="true" /></span>
+                <div class="rname">{{ role.name }}</div>
+                <div class="rdesc">{{ role.description || role.code }}</div>
+              </button>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="sec-title">
+              <span class="st-ic"><KeyRound class="size-4" aria-hidden="true" /></span>
+              <h3>权限清单</h3>
+              <span class="hint">角色默认已勾选，高危权限锁定</span>
+            </div>
+            <div class="perm-groups">
+              <div v-for="group in permissionGroupsForSelectedRole(selectedRequest)" :key="group.title" class="perm-group">
+                <h4>{{ group.title }}</h4>
+                <label
+                  v-for="permission in group.permissions"
+                  :key="permission.code"
+                  :class="[permission.locked ? 'perm locked' : 'perm', { on: permission.enabled }]"
+                >
+                  <span class="cbx">
+                    <Check v-if="permission.enabled" class="size-3" aria-hidden="true" />
+                  </span>
+                  <span class="pt">{{ permission.label }}</span>
+                  <span class="pc">{{ permission.code }}</span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="sec-title">
+              <span class="st-ic"><ShieldCheck class="size-4" aria-hidden="true" /></span>
+              <h3>数据范围</h3>
+              <span class="hint">限定该账号可访问的厂区与部门</span>
+            </div>
+            <div class="scope-block">
+              <div class="scope-lbl">厂区范围 (factory_scopes)</div>
+              <div class="chips">
+                <span
+                  v-for="factory in factoryScopesForSelectedRequest"
+                  :key="factory.id"
+                  class="chip"
+                  :class="{ on: factory.active }"
+                >
+                  <span class="cd"></span>{{ factory.label }}
+                </span>
+                <span class="chip all"><span class="cd"></span>{{ allFactoryScopeLabel }}</span>
+              </div>
+            </div>
+            <div class="scope-block">
+              <div class="scope-lbl">部门范围 (department_scopes)</div>
+              <div class="chips">
+                <span
+                  v-for="department in departmentScopesForSelectedRequest"
+                  :key="department.id"
+                  class="chip"
+                  :class="{ on: department.active }"
+                >
+                  <span class="cd"></span>{{ department.label }}
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <div class="actions">
+            <input
+              v-model="approvalComments[selectedRequest.id]"
+              class="note-in"
+              placeholder="审批备注（可选，驳回时建议填写原因）"
+              type="text"
+            >
+            <button type="button" class="btn btn-reject" :disabled="Boolean(actionKey)" @click="rejectRequest(selectedRequest)">
               <XCircle class="size-4" aria-hidden="true" />
               驳回
             </button>
+            <button type="button" class="btn btn-approve" :disabled="Boolean(actionKey)" @click="approveRequest(selectedRequest)">
+              <LoaderCircle v-if="actionKey === `approve:${selectedRequest.id}`" class="size-4 animate-spin" aria-hidden="true" />
+              <Check v-else class="size-4" aria-hidden="true" />
+              通过并开通
+            </button>
           </div>
         </article>
-      </div>
+      </template>
     </section>
 
     <section v-else-if="activeTab === 'password-reset'" class="panel">
@@ -529,7 +802,7 @@ onMounted(() => {
       <div class="table-tools">
         <label class="search-box">
           <Search class="size-4" aria-hidden="true" />
-          <input v-model="userSearch" placeholder="搜索姓名、工号、角色..." type="search">
+          <input v-model="userSearch" placeholder="搜索姓名、工号、联系方式、角色..." type="search">
         </label>
         <div class="seg">
           <button type="button" :class="{ on: userStatusFilter === 'all' }" @click="userStatusFilter = 'all'">全部</button>
@@ -543,6 +816,7 @@ onMounted(() => {
           <thead>
             <tr>
               <th>用户</th>
+              <th>联系方式</th>
               <th>厂区 / 部门</th>
               <th>角色</th>
               <th>状态</th>
@@ -552,7 +826,7 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-if="!filteredUsers.length">
-              <td colspan="6" class="empty-row">没有匹配的账号。</td>
+              <td colspan="7" class="empty-row">没有匹配的账号。</td>
             </tr>
             <tr v-for="user in filteredUsers" v-else :key="user.id">
               <td>
@@ -562,6 +836,13 @@ onMounted(() => {
                     <strong>{{ user.display_name || user.username }}</strong>
                     <span>{{ user.username }}</span>
                   </div>
+                </div>
+              </td>
+              <td>
+                <div class="contact-cell">
+                  <span v-if="user.phone"><Phone class="size-3.5" aria-hidden="true" />{{ user.phone }}</span>
+                  <span v-if="user.email"><Mail class="size-3.5" aria-hidden="true" />{{ user.email }}</span>
+                  <span v-if="!user.phone && !user.email" class="muted small">未填写</span>
                 </div>
               </td>
               <td class="muted">
@@ -620,7 +901,8 @@ onMounted(() => {
         </div>
       </div>
     </section>
-  </section>
+    </div>
+  </main>
 </template>
 
 <style scoped>
@@ -628,6 +910,12 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.system-page-shell {
+  min-height: 100vh;
+  background: #f1f5f9;
+  padding: 24px clamp(16px, 3vw, 42px);
 }
 
 .access-head {
@@ -674,6 +962,13 @@ onMounted(() => {
   margin: 8px 0 0;
   color: #475569;
   font-size: 13px;
+}
+
+.head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .stats-grid {
@@ -840,6 +1135,465 @@ onMounted(() => {
 
 .panel {
   margin-top: -2px;
+}
+
+.approval-workspace {
+  margin-top: -2px;
+}
+
+.approval-grid {
+  display: grid;
+  grid-template-columns: 380px minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+
+.approval-queue,
+.approval-detail {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: white;
+  box-shadow: 0 1px 2px rgb(2 6 23 / 4%), 0 12px 32px rgb(2 6 23 / 4%);
+}
+
+.approval-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f1f5f9;
+  padding: 15px 18px;
+}
+
+.approval-panel-head h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.approval-panel-head span {
+  border-radius: 999px;
+  background: #f0fdfa;
+  color: #0f766e;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 9px;
+}
+
+.queue-list {
+  max-height: 640px;
+  overflow-y: auto;
+}
+
+.queue-item {
+  display: flex;
+  width: 100%;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid #f1f5f9;
+  border-left: 3px solid transparent;
+  background: white;
+  cursor: pointer;
+  padding: 14px 18px;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.queue-item:hover {
+  background: #f8fafc;
+}
+
+.queue-item.active {
+  border-left-color: #0f766e;
+  background: #f0fdfa;
+}
+
+.queue-avatar {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #0f766e, #0d9488);
+  color: white;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.queue-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.queue-name,
+.queue-meta,
+.queue-position,
+.queue-time {
+  display: block;
+}
+
+.queue-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.queue-name b {
+  color: #0f172a;
+  font-size: 13.5px;
+  font-weight: 800;
+}
+
+.queue-name small {
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+.queue-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 999px;
+  background: #f59e0b;
+}
+
+.queue-meta {
+  overflow: hidden;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-position {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  border: 1px solid #ccfbf1;
+  border-radius: 7px;
+  background: #f0fdfa;
+  color: #115e59;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+.queue-time {
+  flex: none;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.applicant-block {
+  display: flex;
+  gap: 14px;
+  border-bottom: 1px solid #f1f5f9;
+  background: linear-gradient(180deg, #f8fafc, white);
+  padding: 20px;
+}
+
+.applicant-avatar {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #0f766e, #0d9488);
+  color: white;
+  font-size: 20px;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgb(15 118 110 / 25%);
+}
+
+.applicant-main {
+  min-width: 0;
+}
+
+.applicant-main h2 {
+  margin: 0;
+  color: #020617;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.applicant-main h2 span {
+  margin-left: 8px;
+  color: #94a3b8;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.applicant-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.applicant-tags span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: white;
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+}
+
+.applicant-tags svg {
+  color: #94a3b8;
+}
+
+.approval-section {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 18px 20px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 13px;
+}
+
+.section-title > span {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 8px;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.section-title h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.section-title small {
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+.role-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.approval-role-card {
+  position: relative;
+  min-height: 82px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  background: white;
+  cursor: pointer;
+  padding: 12px 13px;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.approval-role-card:hover {
+  border-color: #99f6e4;
+}
+
+.approval-role-card.selected {
+  border-color: #0f766e;
+  background: #f0fdfa;
+  box-shadow: 0 0 0 3px rgb(15 118 110 / 15%);
+}
+
+.approval-role-card b {
+  display: block;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.approval-role-card small {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.role-reco {
+  position: absolute;
+  top: -8px;
+  right: 10px;
+  border-radius: 999px;
+  background: #0f766e;
+  color: white;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 8px;
+  box-shadow: 0 3px 8px rgb(15 118 110 / 30%);
+}
+
+.role-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: none;
+  color: #0f766e;
+}
+
+.approval-role-card.selected .role-check {
+  display: block;
+}
+
+.perm-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 22px;
+}
+
+.perm-group {
+  min-width: 0;
+}
+
+.perm-group h4 {
+  margin: 0 0 8px;
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.perm {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 6px 0;
+}
+
+.cbx {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  place-items: center;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 5px;
+  color: white;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.perm.on .cbx {
+  border-color: #0f766e;
+  background: #0f766e;
+}
+
+.pt {
+  min-width: 0;
+  color: #475569;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.pc {
+  margin-left: auto;
+  overflow: hidden;
+  color: #94a3b8;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.perm.locked {
+  opacity: 0.58;
+}
+
+.perm.locked .pc {
+  color: #64748b;
+}
+
+.scope-block {
+  margin-bottom: 14px;
+}
+
+.scope-block:last-child {
+  margin-bottom: 0;
+}
+
+.scope-block p {
+  margin: 0 0 8px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scope-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 999px;
+  background: white;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 13px;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.scope-chip.active {
+  border-color: #0f766e;
+  background: #f0fdfa;
+  color: #115e59;
+}
+
+.scope-chip.all {
+  border-style: dashed;
+}
+
+.scope-chip span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.scope-chip.active span {
+  background: #0f766e;
+}
+
+.approval-note-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.approval-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+  padding: 16px 20px;
 }
 
 .request-grid {
@@ -1209,7 +1963,7 @@ onMounted(() => {
 }
 
 .user-table {
-  min-width: 980px;
+  min-width: 1120px;
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
@@ -1269,6 +2023,25 @@ onMounted(() => {
   color: #64748b;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 11px;
+}
+
+.contact-cell {
+  display: grid;
+  gap: 5px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.contact-cell span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.contact-cell svg {
+  flex: none;
+  color: #0f766e;
 }
 
 .role-tags {
@@ -1335,12 +2108,20 @@ onMounted(() => {
     flex-direction: column;
   }
 
+  .head-actions {
+    justify-content: flex-start;
+  }
+
   .stats-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 640px) {
+  .perm-groups {
+    grid-template-columns: 1fr;
+  }
+
   .request-grid {
     grid-template-columns: 1fr;
   }
@@ -1357,6 +2138,868 @@ onMounted(() => {
   .table-foot {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+.permission-approval-page {
+  --teal: #0f766e;
+  --teal-hover: #0d9488;
+  --teal-50: #f0fdfa;
+  --teal-100: #ccfbf1;
+  --teal-200: #99f6e4;
+  --teal-700: #0f766e;
+  --teal-800: #115e59;
+  --ink: #020617;
+  --slate-950: #020617;
+  --slate-900: #0f172a;
+  --slate-800: #1e293b;
+  --slate-700: #334155;
+  --slate-600: #475569;
+  --slate-500: #64748b;
+  --slate-400: #94a3b8;
+  --slate-300: #cbd5e1;
+  --slate-200: #e2e8f0;
+  --slate-100: #f1f5f9;
+  --slate-50: #f8fafc;
+  --ring: rgb(15 118 110 / 15%);
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 10px;
+
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgb(14 165 233 / 6%), transparent 32%),
+    linear-gradient(180deg, #f8fafc, #eef4f8);
+  color: var(--ink);
+  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.permission-approval-page svg {
+  display: block;
+}
+
+.wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 26px 24px 48px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand .logo {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--slate-950);
+  color: white;
+  box-shadow: 0 8px 20px rgb(2 6 23 / 24%);
+}
+
+.brand h1 {
+  margin: 0;
+  color: var(--slate-950);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.brand p {
+  margin: 2px 0 0;
+  color: var(--slate-500);
+  font-size: 12px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.admin {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--slate-200);
+  border-radius: 999px;
+  background: white;
+  padding: 5px 6px 5px 14px;
+  box-shadow: 0 2px 8px rgb(2 6 23 / 4%);
+}
+
+.admin .t {
+  color: var(--slate-700);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.admin .t small {
+  display: block;
+  color: var(--slate-400);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.admin .av {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--teal);
+  color: white;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.view-tabs {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--slate-200);
+  border-radius: 999px;
+  background: white;
+  padding: 4px;
+  box-shadow: 0 2px 8px rgb(2 6 23 / 4%);
+}
+
+.view-tabs button,
+.ghost-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--slate-600);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 12px;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.view-tabs button.active {
+  background: var(--teal);
+  color: white;
+}
+
+.view-tabs span {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 20%);
+  color: currentColor;
+  font-size: 10px;
+}
+
+.ghost-link {
+  border: 1px solid var(--slate-200);
+  background: white;
+  box-shadow: 0 2px 8px rgb(2 6 23 / 4%);
+}
+
+.ghost-link:hover,
+.view-tabs button:hover {
+  background: var(--slate-50);
+  color: var(--slate-900);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.stat {
+  border: 1px solid var(--slate-200);
+  border-radius: var(--radius-md);
+  background: white;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgb(2 6 23 / 4%), 0 8px 24px rgb(2 6 23 / 3%);
+}
+
+.stat .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stat .ic {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+}
+
+.stat .ic.amber {
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.stat .ic.teal {
+  background: var(--teal-50);
+  color: var(--teal-700);
+}
+
+.stat .ic.blue {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.stat .ic.slate {
+  background: var(--slate-100);
+  color: var(--slate-600);
+}
+
+.stat .n {
+  margin-top: 12px;
+  color: var(--slate-950);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.stat .lb {
+  margin-top: 5px;
+  color: var(--slate-500);
+  font-size: 12px;
+}
+
+.stat .delta {
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+}
+
+.delta.up {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.delta.mut {
+  background: var(--slate-100);
+  color: var(--slate-500);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  align-items: start;
+  gap: 18px;
+}
+
+.grid > .empty-card {
+  grid-column: 1 / -1;
+}
+
+.panel {
+  overflow: hidden;
+  border: 1px solid var(--slate-200);
+  border-radius: var(--radius-lg);
+  background: white;
+  box-shadow: 0 1px 2px rgb(2 6 23 / 4%), 0 12px 32px rgb(2 6 23 / 4%);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--slate-100);
+  padding: 15px 18px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  color: var(--slate-900);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.panel-head .cnt {
+  border-radius: 999px;
+  background: var(--teal-50);
+  color: var(--teal-700);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 9px;
+}
+
+.queue {
+  max-height: 640px;
+  overflow-y: auto;
+}
+
+.q-item {
+  display: flex;
+  width: 100%;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--slate-100);
+  border-left: 3px solid transparent;
+  background: white;
+  cursor: pointer;
+  padding: 14px 18px;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.q-item:hover {
+  background: var(--slate-50);
+}
+
+.q-item.active {
+  border-left-color: var(--teal);
+  background: var(--teal-50);
+}
+
+.q-item .av {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #0f766e, #0d9488);
+  color: white;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.q-item .info {
+  min-width: 0;
+  flex: 1;
+}
+
+.q-item .nm {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.q-item .nm b {
+  color: var(--slate-900);
+  font-size: 13.5px;
+  font-weight: 800;
+}
+
+.q-item .nm .uid {
+  color: var(--slate-400);
+  font-size: 11.5px;
+}
+
+.q-item .meta {
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--slate-500);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.q-item .pos {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  border: 1px solid var(--teal-100);
+  border-radius: 7px;
+  background: var(--teal-50);
+  color: var(--teal-800);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+.q-item .time {
+  flex: none;
+  color: var(--slate-400);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.badge-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 999px;
+  background: #f59e0b;
+}
+
+.detail {
+  min-width: 0;
+}
+
+.applicant {
+  display: flex;
+  gap: 14px;
+  border-bottom: 1px solid var(--slate-100);
+  background: linear-gradient(180deg, #f8fafc, white);
+  padding: 20px;
+}
+
+.applicant .av {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #0f766e, #0d9488);
+  color: white;
+  font-size: 20px;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgb(15 118 110 / 25%);
+}
+
+.applicant .h {
+  min-width: 0;
+}
+
+.applicant .h b {
+  color: var(--slate-950);
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.applicant .h .uid {
+  margin-left: 8px;
+  color: var(--slate-400);
+  font-size: 12.5px;
+}
+
+.applicant .tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--slate-200);
+  border-radius: 7px;
+  background: white;
+  color: var(--slate-600);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+}
+
+.tag svg {
+  width: 13px;
+  height: 13px;
+  color: var(--slate-400);
+}
+
+.section {
+  border-bottom: 1px solid var(--slate-100);
+  padding: 18px 20px;
+}
+
+.section:last-child {
+  border-bottom: none;
+}
+
+.sec-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 13px;
+}
+
+.sec-title .st-ic {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--teal-50);
+  color: var(--teal-700);
+}
+
+.sec-title h3 {
+  margin: 0;
+  color: var(--slate-900);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.sec-title .hint {
+  color: var(--slate-400);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.roles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.role {
+  position: relative;
+  min-height: auto;
+  border: 1.5px solid var(--slate-200);
+  border-radius: var(--radius-md);
+  background: white;
+  cursor: pointer;
+  padding: 12px 13px;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.role:hover {
+  border-color: var(--teal-200);
+}
+
+.role.sel {
+  border-color: var(--teal);
+  background: var(--teal-50);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.role .rname {
+  color: var(--slate-900);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.role .rdesc {
+  margin-top: 4px;
+  color: var(--slate-500);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.role .reco {
+  position: absolute;
+  top: -8px;
+  right: 10px;
+  border-radius: 999px;
+  background: var(--teal);
+  color: white;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 8px;
+  box-shadow: 0 3px 8px rgb(15 118 110 / 30%);
+}
+
+.role .check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: none;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--teal);
+  color: white;
+}
+
+.role.sel .check {
+  display: grid;
+}
+
+.perm-groups {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 22px;
+}
+
+.perm-group h4 {
+  margin: 0 0 8px;
+  color: var(--slate-400);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.perm {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 0;
+}
+
+.cbx {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  place-items: center;
+  border: 1.5px solid var(--slate-300);
+  border-radius: 5px;
+  color: white;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.perm.on .cbx {
+  border-color: var(--teal);
+  background: var(--teal);
+}
+
+.perm .pt {
+  color: var(--slate-700);
+  font-size: 12.5px;
+}
+
+.perm .pc {
+  margin-left: auto;
+  color: var(--slate-400);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.perm.locked {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.scope-block {
+  margin-bottom: 14px;
+}
+
+.scope-block:last-child {
+  margin-bottom: 0;
+}
+
+.scope-lbl {
+  margin-bottom: 8px;
+  color: var(--slate-600);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1.5px solid var(--slate-200);
+  border-radius: 999px;
+  background: white;
+  color: var(--slate-600);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 13px;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.chip.on {
+  border-color: var(--teal);
+  background: var(--teal-50);
+  color: var(--teal-800);
+}
+
+.chip .cd {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--slate-300);
+}
+
+.chip.on .cd {
+  background: var(--teal);
+}
+
+.chip.all {
+  border-style: dashed;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--slate-100);
+  background: var(--slate-50);
+  padding: 16px 20px;
+}
+
+.note-in {
+  flex: 1;
+  height: 40px;
+  border: 1px solid var(--slate-200);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--slate-800);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  padding: 0 13px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.note-in:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.note-in::placeholder {
+  color: var(--slate-400);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 40px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 18px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+}
+
+.btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-reject,
+.btn-danger {
+  border-color: var(--slate-200);
+  background: white;
+  color: var(--slate-600);
+}
+
+.btn-reject:hover,
+.btn-danger:hover {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.btn-approve,
+.btn-primary {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: white;
+  box-shadow: 0 6px 16px rgb(15 118 110 / 26%);
+}
+
+.btn-approve:hover,
+.btn-primary:hover {
+  border-color: var(--teal-hover);
+  background: var(--teal-hover);
+}
+
+.btn-sm {
+  height: 32px;
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 0 10px;
+  box-shadow: none;
+}
+
+.btn:disabled,
+.ghost-link:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.message-error {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.message-success {
+  border: 1px solid #a7f3d0;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+@media (max-width: 1080px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .roles {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .perm-groups {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 18px 14px 32px;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
+  }
+
+  .stats,
+  .roles {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .note-in,
+  .actions .btn {
+    width: 100%;
   }
 }
 </style>

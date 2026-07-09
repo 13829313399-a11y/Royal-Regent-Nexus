@@ -411,10 +411,13 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
         role.id: role
         for role in db.scalars(select(AuthRole).where(AuthRole.id.in_([item.role_id for item in user_roles]))).all()
     } if user_roles else {}
+    phone, email = latest_registration_contact(db, user.id)
     return UserOut(
         id=user.id,
         username=user.username,
         display_name=user.display_name,
+        phone=phone,
+        email=email,
         status=user.status,
         force_password_change=bool(user.force_password_change),
         last_login_at=user.last_login_at,
@@ -432,6 +435,17 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
             for user_role in user_roles
         ],
     )
+
+
+def latest_registration_contact(db: Session, user_id: str) -> tuple[str, str]:
+    registration_request = db.scalar(
+        select(AuthRegistrationRequest)
+        .where(AuthRegistrationRequest.user_id == user_id)
+        .order_by(AuthRegistrationRequest.updated_at.desc(), AuthRegistrationRequest.created_at.desc())
+    )
+    if registration_request is None:
+        return "", ""
+    return registration_request.phone, registration_request.email
 
 
 def notification_to_out(notification: SystemNotification) -> SystemNotificationOut:
