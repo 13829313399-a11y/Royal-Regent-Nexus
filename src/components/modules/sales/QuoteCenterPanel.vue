@@ -8,6 +8,13 @@ import {
   createBuzzBeeCustomerQuoteWorkbook,
   type BuzzBeeConversionResult,
 } from '@/lib/customerPriceConverters/buzzbee'
+import {
+  DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL,
+  buildDisneyCustomerQuoteFileName,
+  convertDisneyInternalQuote,
+  createDisneyCustomerQuoteWorkbook,
+  type DisneyConversionResult,
+} from '@/lib/customerPriceConverters/disney'
 import { useAuthStore } from '@/stores/auth'
 
 type ConversionStatus = '待转换' | '待复核' | '已生成'
@@ -86,8 +93,8 @@ const customerOptions: CustomerOption[] = [
     activeQuoteCount: 1,
   },
   {
-    id: 'target',
-    name: 'Target',
+    id: 'disney',
+    name: '迪士尼',
     workshop: '啤机车间 A',
     account: 'huaxing_molding_a_sales',
     owner: '李业务',
@@ -107,6 +114,9 @@ const selectedExportVersionId = ref('')
 const importedWorkbookSheets = ref<ImportedWorkbookSheet[]>([])
 const exportedQuoteVersions = ref<ExportedQuoteVersion[]>([])
 const buzzBeeConversionResult = ref<BuzzBeeConversionResult | null>(null)
+const disneyConversionResult = ref<DisneyConversionResult | null>(null)
+const isImportDragActive = ref(false)
+let importDragDepth = 0
 
 const conversionRows = ref<CustomerPriceConversionRow[]>([
   {
@@ -125,16 +135,16 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
   },
   {
     id: 'QTC-HKA-260707-022',
-    customerId: 'target',
-    customer: 'Target',
+    customerId: 'disney',
+    customer: '迪士尼',
     workshop: '啤机车间 A',
     account: 'huaxing_molding_a_sales',
     internalPriceHkd: 8.42,
     customerPriceHkd: 10.2,
     marginBand: '21.1%',
-    status: '待复核',
-    quoteNo: 'CQ-HKA-260707-006',
-    sourceFileName: 'Target-内部报价-260707.xlsx',
+    status: '待转换',
+    quoteNo: '待生成',
+    sourceFileName: '待导入',
     updatedAt: '今天 10:15',
   },
   {
@@ -205,6 +215,10 @@ const visibleConversionRows = computed(() => {
 })
 
 const existingSelectedSourceFileName = computed(() => {
+  if (selectedCustomer.value.id === 'buzzbee' || selectedCustomer.value.id === 'disney') {
+    return ''
+  }
+
   return visibleConversionRows.value.find((row) => row.sourceFileName !== '待导入')?.sourceFileName ?? ''
 })
 
@@ -267,6 +281,12 @@ const hasActiveBuzzBeeConversion = computed(() => {
     && Boolean(buzzBeeConversionResult.value)
 })
 
+const hasActiveDisneyConversion = computed(() => {
+  return selectedCustomer.value.id === 'disney'
+    && importedCustomerId.value === selectedCustomer.value.id
+    && Boolean(disneyConversionResult.value)
+})
+
 const comparisonMetrics = computed(() => {
   const totalInternal = activeWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0)
   const totalCustomer = activeWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0)
@@ -283,6 +303,10 @@ const comparisonMetrics = computed(() => {
 const canExportCustomerQuote = computed(() => {
   if (selectedCustomer.value.id === 'buzzbee') {
     return hasActiveBuzzBeeConversion.value
+  }
+
+  if (selectedCustomer.value.id === 'disney') {
+    return hasActiveDisneyConversion.value
   }
 
   return visibleConversionRows.value.length > 0 && Boolean(selectedImportFileName.value)
@@ -343,7 +367,7 @@ function buildMarginBand(internalPriceHkd: number, customerPriceHkd: number) {
 }
 
 function createMockWorkbookSheets(customer: CustomerOption, sourceFileName: string): ImportedWorkbookSheet[] {
-  const customerPrefix = customer.id === 'target' ? 'TGT' : 'BB'
+  const customerPrefix = customer.id === 'disney' ? 'DSN' : 'BB'
   const sheetSpecs = [
     {
       id: `${customer.id}-injection`,
@@ -445,18 +469,16 @@ function generateCustomerQuote(rowId: string) {
   row.updatedAt = '刚刚'
 }
 
-async function handleInternalQuoteImport(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-
-  if (!file || !selectedCustomer.value) {
+async function importInternalQuoteFile(file: File | undefined) {
+  const customer = selectedCustomer.value
+  if (!file || !customer) {
     return
   }
 
   importErrorMessage.value = ''
 
   try {
-    if (selectedCustomer.value.id === 'buzzbee') {
+    if (customer.id === 'buzzbee') {
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
         throw new Error('BuzzBee 当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
       }
@@ -466,16 +488,31 @@ async function handleInternalQuoteImport(event: Event) {
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = conversionResult
+      disneyConversionResult.value = null
+      importedWorkbookSheets.value = conversionResult.sheets
+      importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
+    } else if (customer.id === 'disney') {
+      if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        throw new Error('迪士尼当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
+      }
+
+      const buffer = await readFileAsArrayBuffer(file)
+      const conversionResult = convertDisneyInternalQuote(buffer, file.name)
+      const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+
+      buzzBeeConversionResult.value = null
+      disneyConversionResult.value = conversionResult
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else {
       buzzBeeConversionResult.value = null
-      importedWorkbookSheets.value = createMockWorkbookSheets(selectedCustomer.value, file.name)
+      disneyConversionResult.value = null
+      importedWorkbookSheets.value = createMockWorkbookSheets(customer, file.name)
       importedFileSize.value = formatFileSize(file.size)
     }
 
     importedFileName.value = file.name
-    importedCustomerId.value = selectedCustomer.value.id
+    importedCustomerId.value = customer.id
     importedAt.value = '刚刚'
     selectedSheetId.value = 'all'
     selectedExportVersionId.value = ''
@@ -484,7 +521,7 @@ async function handleInternalQuoteImport(event: Event) {
     const totalCustomerHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0).toFixed(3))
 
     conversionRows.value = conversionRows.value.map((row) => {
-      if (row.customerId !== selectedCustomer.value.id || !allowedCustomerIds.value.includes(row.customerId)) {
+      if (row.customerId !== customer.id || !allowedCustomerIds.value.includes(row.customerId)) {
         return row
       }
 
@@ -506,10 +543,41 @@ async function handleInternalQuoteImport(event: Event) {
     importedAt.value = ''
     importedWorkbookSheets.value = []
     buzzBeeConversionResult.value = null
+    disneyConversionResult.value = null
     importErrorMessage.value = error instanceof Error ? `导入失败：${error.message}` : '导入失败：内部报价解析失败'
   }
+}
+
+async function handleInternalQuoteImport(event: Event) {
+  const input = event.target as HTMLInputElement
+  await importInternalQuoteFile(input.files?.[0])
 
   input.value = ''
+}
+
+function handleInternalQuoteDragEnter() {
+  importDragDepth += 1
+  isImportDragActive.value = true
+}
+
+function handleInternalQuoteDragOver(event: DragEvent) {
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'copy'
+  }
+  isImportDragActive.value = true
+}
+
+function handleInternalQuoteDragLeave() {
+  importDragDepth = Math.max(0, importDragDepth - 1)
+  if (importDragDepth === 0) {
+    isImportDragActive.value = false
+  }
+}
+
+async function handleInternalQuoteDrop(event: DragEvent) {
+  importDragDepth = 0
+  isImportDragActive.value = false
+  await importInternalQuoteFile(event.dataTransfer?.files?.[0])
 }
 
 function escapeExcelCell(value: string | number) {
@@ -520,7 +588,7 @@ function escapeExcelCell(value: string | number) {
     .replace(/"/g, '&quot;')
 }
 
-function exportCustomerQuoteExcel() {
+async function exportCustomerQuoteExcel() {
   if (!selectedCustomer.value || !canExportCustomerQuote.value) {
     return
   }
@@ -542,6 +610,25 @@ function exportCustomerQuoteExcel() {
     const url = window.URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     fileName = buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value)
+
+    anchor.href = url
+    anchor.download = fileName
+    anchor.click()
+    window.URL.revokeObjectURL(url)
+  } else if (selectedCustomer.value.id === 'disney' && disneyConversionResult.value) {
+    const templateResponse = await fetch(DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL)
+    if (!templateResponse.ok) {
+      throw new Error('迪士尼报客模板读取失败')
+    }
+
+    const workbook = createDisneyCustomerQuoteWorkbook(
+      disneyConversionResult.value,
+      await templateResponse.arrayBuffer(),
+    )
+    const blob = new Blob([workbook], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = window.URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    fileName = buildDisneyCustomerQuoteFileName(disneyConversionResult.value)
 
     anchor.href = url
     anchor.download = fileName
@@ -679,13 +766,21 @@ function exportCustomerQuoteExcel() {
           class="flex min-h-[118px] cursor-pointer flex-col items-center justify-center rounded-lg border px-6 py-5 text-center transition-colors"
           :class="hasSelectedCustomerImport
             ? 'border-emerald-800 bg-emerald-900 text-white shadow-[0_16px_32px_rgba(6,78,59,0.22)] hover:bg-emerald-800'
-            : 'border-dashed border-teal-300 bg-[linear-gradient(135deg,#ffffff,#f0fdfa)] shadow-[0_12px_26px_rgba(13,148,136,0.07)] hover:border-teal-500'"
+            : isImportDragActive
+              ? 'border-dashed border-teal-500 bg-teal-50 shadow-[0_16px_34px_rgba(13,148,136,0.16)]'
+              : 'border-dashed border-teal-300 bg-[linear-gradient(135deg,#ffffff,#f0fdfa)] shadow-[0_12px_26px_rgba(13,148,136,0.07)] hover:border-teal-500'"
+          @dragenter.prevent="handleInternalQuoteDragEnter"
+          @dragover.prevent="handleInternalQuoteDragOver"
+          @dragleave.prevent="handleInternalQuoteDragLeave"
+          @drop.prevent="handleInternalQuoteDrop"
         >
           <span
             class="flex size-11 items-center justify-center rounded-xl shadow-[0_8px_18px_rgba(13,148,136,0.12)] ring-1 transition-colors"
             :class="hasSelectedCustomerImport
               ? 'bg-white/15 text-white ring-white/20'
-              : 'bg-white text-teal-700 ring-teal-100'"
+              : isImportDragActive
+                ? 'bg-teal-600 text-white ring-teal-200'
+                : 'bg-white text-teal-700 ring-teal-100'"
           >
             <CheckCircle2 v-if="hasSelectedCustomerImport" class="size-5" aria-hidden="true" />
             <UploadCloud v-else class="size-5" aria-hidden="true" />
@@ -694,7 +789,7 @@ function exportCustomerQuoteExcel() {
             class="mt-3 text-base font-semibold"
             :class="hasSelectedCustomerImport ? 'text-white' : 'text-slate-950'"
           >
-            {{ hasSelectedCustomerImport ? '已导入内部报价' : '导入内部报价 Excel' }}
+            {{ hasSelectedCustomerImport ? '已导入内部报价' : isImportDragActive ? '松开导入内部报价' : '导入内部报价 Excel' }}
           </span>
           <span
             class="mt-1 text-sm leading-6"
@@ -702,16 +797,20 @@ function exportCustomerQuoteExcel() {
           >
             {{ hasSelectedCustomerImport
               ? `${selectedCustomer.name}：${selectedImportFileName}，点击可替换文件。`
-              : `当前客户：${selectedCustomer.name}。导入后会锁定客户并生成下方明细对比。`
+              : isImportDragActive
+                ? `当前客户：${selectedCustomer.name}。文件会导入到此客户名下。`
+                : `当前客户：${selectedCustomer.name}。导入后会锁定客户并生成下方明细对比。`
             }}
           </span>
           <span
             class="mt-2 rounded-full px-3 py-1 text-xs font-medium ring-1"
             :class="hasSelectedCustomerImport
               ? 'bg-white/15 text-white ring-white/20'
-              : 'bg-white text-slate-500 ring-slate-200'"
+              : isImportDragActive
+                ? 'bg-white text-teal-700 ring-teal-200'
+                : 'bg-white text-slate-500 ring-slate-200'"
           >
-            {{ hasSelectedCustomerImport ? '已就绪，可输出报客价' : '支持 .xls / .xlsx' }}
+            {{ hasSelectedCustomerImport ? '已就绪，可输出报客价' : isImportDragActive ? '松开鼠标导入 Excel' : '支持 .xls / .xlsx' }}
           </span>
             <input
               class="sr-only"

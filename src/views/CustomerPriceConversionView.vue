@@ -100,7 +100,7 @@ const pageHeadCopy = computed(() => {
 })
 
 const overviewMetrics = [
-  { label: '待转换', value: '2', detail: 'BuzzBee / Target' },
+  { label: '待转换', value: '2', detail: 'BuzzBee / 迪士尼' },
   { label: '待复核', value: '1', detail: '主管核价口径' },
   { label: '权限范围', value: '车间', detail: '本人客户可见' },
 ]

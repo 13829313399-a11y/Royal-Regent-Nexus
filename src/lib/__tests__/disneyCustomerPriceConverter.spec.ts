@@ -1,0 +1,322 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { strFromU8, unzipSync } from 'fflate'
+import { describe, expect, it } from 'vitest'
+import {
+  buildDisneyCustomerQuoteFileName,
+  convertDisneyInternalQuote,
+  createDisneyCustomerQuoteWorkbook,
+} from '@/lib/customerPriceConverters/disney'
+import {
+  createXlsxWorkbook,
+  parseXlsxWorkbook,
+  type XlsxCellInput,
+} from '@/lib/customerPriceConverters/xlsxLite'
+
+const samplePath = 'C:/Users/Aalyaan/Desktop/迪士尼报客(2)/迪士尼报客/本厂 -1000142435  印第安纳・琼斯 回力玩具车 Indiana Jones Pul-back Ride Vehicle报价20260603（内部报价）.xlsx'
+const disneyTemplatePath = 'public/templates/disney-customer-quote-template.bin'
+
+function asArrayBuffer(bytes: Uint8Array) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
+function readFileAsArrayBuffer(path: string) {
+  const bytes = readFileSync(path)
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
+function readDisneyTemplate() {
+  return readFileSync(disneyTemplatePath)
+}
+
+function getSheetXml(bytes: Uint8Array) {
+  return strFromU8(unzipSync(bytes)['xl/worksheets/sheet1.xml'])
+}
+
+function getCellStyle(sheetXml: string, ref: string) {
+  const match = sheetXml.match(new RegExp(`<c\\b[^>]*\\br="${ref}"[^>]*`))
+  return match?.[0].match(/\bs="([^"]+)"/)?.[1] ?? ''
+}
+
+function columnName(columnIndex: number) {
+  let index = columnIndex + 1
+  let name = ''
+
+  while (index > 0) {
+    const remainder = (index - 1) % 26
+    name = String.fromCharCode(65 + remainder) + name
+    index = Math.floor((index - 1) / 26)
+  }
+
+  return name
+}
+
+function findStyleMismatches(
+  templateXml: string,
+  outputXml: string,
+  ranges: Array<[number, number, number, number]>,
+) {
+  const mismatches: string[] = []
+
+  ranges.forEach(([startRow, endRow, startColumn, endColumn]) => {
+    for (let row = startRow; row <= endRow; row += 1) {
+      for (let column = startColumn; column <= endColumn; column += 1) {
+        const ref = `${columnName(column)}${row}`
+        const templateStyle = getCellStyle(templateXml, ref)
+        if (!templateStyle) {
+          continue
+        }
+
+        const outputStyle = getCellStyle(outputXml, ref)
+        if (outputStyle !== templateStyle) {
+          mismatches.push(`${ref}:${templateStyle}->${outputStyle || 'none'}`)
+        }
+      }
+    }
+  })
+
+  return mismatches
+}
+
+function getCellBody(sheetXml: string, ref: string) {
+  const cellPattern = /<c\b([^>]*)\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/g
+  for (const match of sheetXml.matchAll(cellPattern)) {
+    const attrs = match[1] ?? match[2] ?? ''
+    if (attrs.match(new RegExp(`\\br="${ref}"`))) {
+      return match[3] ?? ''
+    }
+  }
+
+  return ''
+}
+
+function getCellFormula(sheetXml: string, ref: string) {
+  return getCellBody(sheetXml, ref).match(/<f(?:\s[^>]*)?>([\s\S]*?)<\/f>/)?.[1] ?? ''
+}
+
+function lineNumbers(rows: ReturnType<typeof parseXlsxWorkbook>['sheets'][number]['rows'], startRow: number, count = 10) {
+  return Array.from({ length: count }, (_, index) => rows[startRow - 1 + index]?.[0])
+}
+
+function createMinimalDisneyWorkbook() {
+  const detailRows: XlsxCellInput[][] = Array.from({ length: 66 }, () => [])
+
+  detailRows[0][2] = '料型'
+  detailRows[0][3] = 'ABS料'
+  detailRows[1][2] = '单价/P'
+  detailRows[1][3] = 7.5
+  detailRows[2][3] = 2.16
+  detailRows[6][2] = '机型'
+  detailRows[6][3] = '14A'
+  detailRows[7][2] = '单价/元'
+  detailRows[7][3] = 1490
+  detailRows[8][3] = 8.12
+  detailRows[9][0] = '#1000142435 Indiana Jones Pul-back Ride Vehicle 报价（图纸评估报价）'
+  detailRows[10][2] = '名称'
+  detailRows[10][3] = '料型（Part Material）'
+  detailRows[10][4] = '料重(G)'
+  detailRows[10][6] = '机型(A)'
+  detailRows[10][7] = '1出幾套'
+  detailRows[10][8] = '啤數'
+  detailRows[10][9] = '啤工'
+  detailRows[10][10] = '料金额'
+  detailRows[10][12] = '周期（Cycle Time (s)'
+  detailRows[10][14] = 'Press size (TON)'
+  detailRows[11][1] = 1
+  detailRows[11][2] = '车面'
+  detailRows[11][3] = 'ABS'
+  detailRows[11][4] = 28
+  detailRows[11][5] = 0.01652
+  detailRows[11][6] = '14A'
+  detailRows[11][7] = 1
+  detailRows[11][8] = 2200
+  detailRows[11][9] = 0.677
+  detailRows[11][10] = 0.462
+  detailRows[11][12] = 39
+  detailRows[11][13] = 0.0605
+  detailRows[11][14] = 180
+  detailRows[24][10] = '裝箱尺碼：'
+  detailRows[24][11] = 12.56
+  detailRows[24][12] = 10.2
+  detailRows[24][13] = 3.76
+  detailRows[29][9] = '装箱数'
+  detailRows[29][10] = 6
+  detailRows[30][1] = '五金'
+  detailRows[30][2] = '螺丝M2.6*8PB（6Pcs)'
+  detailRows[30][5] = 0.008
+  detailRows[31][1] = '其他外购'
+  detailRows[31][2] = '回力牙箱（1PCS)'
+  detailRows[31][5] = 0.077
+  detailRows[32][1] = '纸箱'
+  detailRows[32][2] = '外箱 （B=B）'
+  detailRows[32][5] = 0.05
+  detailRows[33][1] = '其他外购'
+  detailRows[33][2] = '贴纸'
+  detailRows[33][5] = 0.026
+  detailRows[34][1] = '装配工'
+  detailRows[34][2] = '半成品（23人/11H/2000)'
+  detailRows[34][5] = 0.12
+  detailRows[35][1] = '装配工'
+  detailRows[35][2] = '包装装配工（22人/11H/3000）'
+  detailRows[35][5] = 0.1
+  detailRows[46][2] = '包含测试费用（US)：'
+  detailRows[47][5] = 0.027
+  detailRows[51][2] = '5K报价：'
+  detailRows[53][2] = '包含测试费用（US)：'
+  detailRows[53][7] = 3.15
+  detailRows[58][2] = '10K报价：'
+  detailRows[60][2] = '包含测试费用（US)：'
+  detailRows[60][7] = 2.93
+  detailRows[62][9] = 'MOQ:'
+  detailRows[62][10] = 3000
+
+  const moldRows: XlsxCellInput[][] = Array.from({ length: 4 }, () => [])
+  moldRows[0][1] = 'Mold #'
+  moldRows[0][2] = 'Parts (膠件)'
+  moldRows[0][5] = 'Resin'
+  moldRows[0][6] = 'Cav.'
+  moldRows[0][7] = 'Up'
+  moldRows[0][10] = 'USD'
+  moldRows[1][1] = 'M01'
+  moldRows[1][2] = '车面'
+  moldRows[1][5] = 'ABS'
+  moldRows[1][6] = 1
+  moldRows[1][7] = 1
+  moldRows[1][10] = 8900
+
+  const sprayRows: XlsxCellInput[][] = Array.from({ length: 30 }, () => [])
+  sprayRows[28][8] = 34
+  sprayRows[28][10] = 0.0171
+
+  const modelRows: XlsxCellInput[][] = Array.from({ length: 16 }, () => [])
+  modelRows[12][3] = '画图'
+  modelRows[12][9] = 1500
+  modelRows[13][3] = '功能色板'
+  modelRows[13][9] = 3800
+  modelRows[14][3] = '开模板'
+  modelRows[14][9] = 2400
+
+  return asArrayBuffer(createXlsxWorkbook([
+    { name: '明细', rows: detailRows },
+    { name: '喷油报价', rows: sprayRows },
+    { name: '模具报价', rows: moldRows },
+    { name: '手办报价', rows: modelRows },
+  ]))
+}
+
+describe('Disney customer price converter', () => {
+  it('converts a Disney-style internal workbook and exports the Disney quote format', () => {
+    const result = convertDisneyInternalQuote(
+      createMinimalDisneyWorkbook(),
+      '本厂 -1000142435 Indiana Jones Pul-back Ride Vehicle报价20260603（内部报价）.xlsx',
+    )
+
+    expect(result.sheets).toHaveLength(1)
+    expect(result.sheets[0].name).toBe('Indiana Jones Pul-back Ride Vehicle')
+    expect(result.sheets[0].details.length).toBeGreaterThan(8)
+    expect(result.sheets[0].totalCustomerHkd).toBeGreaterThan(10000)
+
+    const output = createDisneyCustomerQuoteWorkbook(result, readDisneyTemplate())
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+
+    expect(parsed.sheets.map((sheet) => sheet.name)).toEqual([
+      'Tier 1 MOQ 3K',
+      'PLM Upload format - Tier 1',
+      'Constant Tables',
+    ])
+
+    const tier = parsed.sheets[0]
+    expect(tier.rows[7][2]).toBe('Indiana Jones Pul-back Ride Vehicle')
+    expect(tier.rows[8][2]).toBe('1000142435')
+    expect(tier.rows[18][1]).toBe('1000142435-01')
+    expect(tier.rows[18][2]).toBe(8900)
+    expect(tier.rows[18][3]).toBe('Car Body')
+    expect(tier.rows[18][5]).toBe('ABS')
+    expect(tier.rows[18][7]).toBe(2.16)
+    expect(tier.rows[61][1]).toBe('Screw M2.6 x 8 (6pcs)')
+    expect(tier.rows[118][1]).toBe('Carton Box 0/6 (12.56"x10.2"x3.76")')
+    expect(tier.rows[163][1]).toBe('Assembly vehicle')
+    expect(tier.rows[178][1]).toBe('Whole Item')
+    expect(tier.rows[193][1]).toBe('Transportation')
+    expect(tier.rows[236][1]).toBe(8900)
+    expect(tier.rows[236][5]).toBe(3.15)
+    expect(tier.rows[237][5]).toBe(2.93)
+    expect(tier.rows[239][1]).toBe(6200)
+    expect(tier.rows[240][1]).toBe(1500)
+    expect(lineNumbers(tier.rows, 47)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(lineNumbers(tier.rows, 89)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(lineNumbers(tier.rows, 104)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(lineNumbers(tier.rows, 134)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(lineNumbers(tier.rows, 149)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(buildDisneyCustomerQuoteFileName(result)).toBe('Quotation of 1000142435 Indiana Jones Pul-back Ride Vehicle - Royal Regent (R0) (20260603).xlsx')
+  })
+
+  it('reads the real Disney sample workbook when it is available locally', () => {
+    if (!existsSync(samplePath)) {
+      return
+    }
+
+    const result = convertDisneyInternalQuote(readFileAsArrayBuffer(samplePath), '本厂 -1000142435  印第安纳・琼斯 回力玩具车 Indiana Jones Pul-back Ride Vehicle报价20260603（内部报价）.xlsx')
+
+    expect(result.sheets).toHaveLength(1)
+    expect(result.sheets[0].name).toBe('Indiana Jones Pul-back Ride Vehicle')
+    expect(result.sheets[0].details.length).toBeGreaterThan(20)
+
+    const template = readDisneyTemplate()
+    const output = createDisneyCustomerQuoteWorkbook(result, template)
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+    const tier = parsed.sheets[0]
+
+    expect(tier.rows[18][1]).toBe('1000142435-01')
+    expect(tier.rows[18][2]).toBe(6100)
+    expect(tier.rows[18][5]).toBe('PVC')
+    expect(tier.rows[41][2]).toBe(32400)
+    expect(tier.rows[239][1]).toBe(6200)
+    expect(tier.rows[240][1]).toBe(1500)
+
+    const templateXml = getSheetXml(template)
+    const outputXml = getSheetXml(output)
+    expect(getCellStyle(outputXml, 'B19')).toBe(getCellStyle(templateXml, 'B19'))
+    expect(getCellStyle(outputXml, 'C19')).toBe(getCellStyle(templateXml, 'C19'))
+    expect(getCellStyle(outputXml, 'A47')).toBe(getCellStyle(templateXml, 'A47'))
+    expect(getCellStyle(outputXml, 'A89')).toBe(getCellStyle(templateXml, 'A89'))
+    expect(outputXml).toContain('<mergeCell ref="A235:B235"')
+    expect(outputXml).toContain('<mergeCell ref="A243:B243"')
+    expect(findStyleMismatches(templateXml, outputXml, [
+      [25, 41, 0, 23],
+      [47, 56, 0, 25],
+      [65, 83, 0, 6],
+      [89, 98, 0, 25],
+      [104, 113, 0, 25],
+      [122, 128, 0, 6],
+      [134, 143, 0, 25],
+      [149, 158, 0, 7],
+      [166, 173, 0, 7],
+      [180, 188, 0, 7],
+      [195, 203, 0, 2],
+      [209, 217, 0, 2],
+      [221, 232, 0, 3],
+    ])).toEqual([])
+  })
+
+  it('does not keep circular template formulas in cleared Disney quote cells', () => {
+    if (!existsSync(samplePath)) {
+      return
+    }
+
+    const result = convertDisneyInternalQuote(readFileAsArrayBuffer(samplePath), '本厂 -1000142435  印第安纳・琼斯 回力玩具车 Indiana Jones Pul-back Ride Vehicle报价20260603（内部报价）.xlsx')
+    const outputXml = getSheetXml(createDisneyCustomerQuoteWorkbook(result, readDisneyTemplate()))
+
+    expect(getCellFormula(outputXml, 'G26')).toBe('')
+    expect(getCellFormula(outputXml, 'F188')).toBe('')
+    expect(getCellFormula(outputXml, 'C230')).toBe('')
+    expect(getCellFormula(outputXml, 'D230')).toBe('')
+
+    expect(getCellFormula(outputXml, 'J26')).toBe('G26*I26')
+    expect(getCellFormula(outputXml, 'G188')).toBe('E188*(1+F188)')
+    expect(getCellFormula(outputXml, 'G189')).toBe('SUM(G179:G188)')
+    expect(getCellFormula(outputXml, 'A190')).toBe('IFERROR(G189,0)')
+    expect(getCellFormula(outputXml, 'C214')).toBe('A175+T42+A190')
+    expect(getCellFormula(outputXml, 'C217')).toBe('SUM(C209:C215)')
+    expect(getCellFormula(outputXml, 'B235')).toBe('C217*(1+D232)')
+  })
+})
