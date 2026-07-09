@@ -1,0 +1,348 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { strFromU8, unzipSync } from 'fflate'
+import { describe, expect, it } from 'vitest'
+import {
+  buildCaixingCustomerQuoteFileName,
+  convertCaixingInternalQuote,
+  createCaixingCustomerQuoteWorkbook,
+} from '@/lib/customerPriceConverters/caixing'
+import {
+  createXlsxWorkbook,
+  parseXlsxWorkbook,
+  type XlsxCellInput,
+} from '@/lib/customerPriceConverters/xlsxLite'
+
+const plasticSamplePath = 'C:/Users/Aalyaan/Desktop/彩星/塑胶/68963发声亮灯剑报价（按图报价）－2026-6-27.xlsx'
+const plushSamplePath = 'C:/Users/Aalyaan/Desktop/彩星/毛绒/40636－1款5寸公仔套装报价（按图报价）－2026-6－2（内部）.xlsx'
+
+const plasticTemplatePath = 'public/templates/caixing-plastic-customer-quote-template.bin'
+const plushTemplatePath = 'public/templates/caixing-plush-customer-quote-template.bin'
+
+function asArrayBuffer(bytes: Uint8Array) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
+function createMinimalCaixingWorkbook() {
+  const rows: XlsxCellInput[][] = Array.from({ length: 90 }, () => [])
+
+  rows[9][0] = '68963发声亮灯剑报价（按图报价）'
+  rows[10][2] = '名称'
+  rows[10][3] = '料型'
+  rows[10][4] = '料重(G)'
+  rows[10][6] = '机型(A)'
+  rows[10][7] = '1出几套'
+  rows[10][8] = '1出几件'
+  rows[10][9] = '目标数'
+  rows[10][10] = '啤工'
+  rows[10][11] = '料金额'
+  rows[10][13] = '周期'
+  rows[10][14] = '模价'
+  rows[10][15] = '报客模费'
+  rows[12][1] = '1'
+  rows[12][2] = '剑柄上盖'
+  rows[12][3] = 'ABS'
+  rows[12][4] = 120
+  rows[12][6] = 14
+  rows[12][7] = 2
+  rows[12][8] = 2
+  rows[12][9] = 3600
+  rows[12][10] = 0.2
+  rows[12][11] = 1.94
+  rows[12][13] = 24
+  rows[12][14] = 5000
+  rows[12][15] = 5300
+  rows[13][2] = '剑柄下盖'
+  rows[13][8] = 2
+  rows[14][9] = '合计：'
+  rows[14][10] = 0.2
+  rows[14][11] = 1.94
+  rows[34][1] = '料价'
+  rows[34][2] = '料'
+  rows[34][3] = 1.94
+  rows[35][1] = '啤工'
+  rows[35][2] = '啤工'
+  rows[35][3] = 0.2
+  rows[36][1] = '装配工'
+  rows[36][2] = '装配人工'
+  rows[36][3] = 0.6
+  rows[37][1] = '彩盒/内咭'
+  rows[37][2] = '彩盒'
+  rows[37][3] = 1.2
+  rows[38][1] = '五金'
+  rows[38][2] = '螺丝'
+  rows[38][3] = 0.08
+  rows[39][1] = '车衣'
+  rows[39][2] = '衣服'
+  rows[39][3] = 1.5
+  rows[40][1] = '车发'
+  rows[40][2] = '车发人工'
+  rows[40][3] = 0.4
+  rows[41][12] = '外箱外尺码：'
+  rows[41][13] = 13
+  rows[41][14] = 11
+  rows[41][15] = 9.5
+  rows[42][12] = 'CU.FT：'
+  rows[42][13] = 0.786
+  rows[43][12] = '纸箱价：'
+  rows[43][13] = 3.9
+  rows[43][14] = 4
+
+  return asArrayBuffer(createXlsxWorkbook([{ name: '68963', rows }]))
+}
+
+function readFileAsArrayBuffer(path: string) {
+  const bytes = readFileSync(path)
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
+function readCellStyle(zip: Record<string, Uint8Array>, sheetPath: string, ref: string) {
+  const xml = strFromU8(zip[sheetPath])
+  const cellPattern = /<c\b([^>]*)\/>|<c\b([^>]*)>[\s\S]*?<\/c>/g
+
+  for (const match of xml.matchAll(cellPattern)) {
+    const attrs = match[1] ?? match[2] ?? ''
+    if (attrs.includes(`r="${ref}"`)) {
+      return attrs.match(/\bs="([^"]*)"/)?.[1] ?? ''
+    }
+  }
+
+  return ''
+}
+
+function readXmlAttr(attrs: string, name: string) {
+  return attrs.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? ''
+}
+
+function decodeXmlAttr(value: string) {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
+function normalizeWorksheetTarget(target: string) {
+  const normalized = target.replace(/\\/g, '/').replace(/^\/+/, '')
+  return normalized.startsWith('xl/') ? normalized : `xl/${normalized}`
+}
+
+function resolvePartPath(basePartPath: string, target: string) {
+  if (target.startsWith('/')) {
+    return target.replace(/^\/+/, '')
+  }
+
+  const resolved: string[] = []
+  ;[...basePartPath.split('/').slice(0, -1), ...target.split('/')].forEach((part) => {
+    if (!part || part === '.') {
+      return
+    }
+
+    if (part === '..') {
+      resolved.pop()
+      return
+    }
+
+    resolved.push(part)
+  })
+
+  return resolved.join('/')
+}
+
+function partRelsPath(partPath: string) {
+  const parts = partPath.split('/')
+  const fileName = parts.pop()
+  return `${parts.join('/')}/_rels/${fileName}.rels`
+}
+
+function findSheetPath(zip: Record<string, Uint8Array>, sheetName: string) {
+  const workbookXml = strFromU8(zip['xl/workbook.xml'])
+  const relationsXml = strFromU8(zip['xl/_rels/workbook.xml.rels'])
+  const relationMap = new Map<string, string>()
+
+  for (const match of relationsXml.matchAll(/<Relationship\b([^>]*)\/>/g)) {
+    relationMap.set(readXmlAttr(match[1], 'Id'), readXmlAttr(match[1], 'Target'))
+  }
+
+  for (const match of workbookXml.matchAll(/<sheet\b([^>]*)\/>/g)) {
+    const attrs = match[1]
+    if (decodeXmlAttr(readXmlAttr(attrs, 'name')) === sheetName) {
+      return normalizeWorksheetTarget(relationMap.get(readXmlAttr(attrs, 'r:id')) ?? '')
+    }
+  }
+
+  return ''
+}
+
+function readSheetPictureCount(zip: Record<string, Uint8Array>, sheetName: string) {
+  const sheetPath = findSheetPath(zip, sheetName)
+  const sheetXml = sheetPath && zip[sheetPath] ? strFromU8(zip[sheetPath]) : ''
+  const sheetRelsXml = sheetPath && zip[partRelsPath(sheetPath)] ? strFromU8(zip[partRelsPath(sheetPath)]) : ''
+  let pictureCount = 0
+
+  for (const drawingMatch of sheetXml.matchAll(/<drawing\b([^>]*)\/>/g)) {
+    const drawingRelationId = readXmlAttr(drawingMatch[1], 'r:id')
+
+    for (const relationMatch of sheetRelsXml.matchAll(/<Relationship\b([^>]*)\/>/g)) {
+      const relationAttrs = relationMatch[1]
+      if (readXmlAttr(relationAttrs, 'Id') !== drawingRelationId || !readXmlAttr(relationAttrs, 'Type').includes('/drawing')) {
+        continue
+      }
+
+      const drawingPath = resolvePartPath(sheetPath, readXmlAttr(relationAttrs, 'Target'))
+      const drawingXml = drawingPath && zip[drawingPath] ? strFromU8(zip[drawingPath]) : ''
+      pictureCount += drawingXml.match(/<xdr:pic\b/g)?.length ?? 0
+    }
+  }
+
+  return pictureCount
+}
+
+describe('Caixing customer price converter', () => {
+  it('converts plastic and exports the plastic quote workbook structure', () => {
+    const result = convertCaixingInternalQuote(
+      createMinimalCaixingWorkbook(),
+      '68963发声亮灯剑报价（按图报价）－2026-6-27.xlsx',
+      'plastic',
+    )
+
+    expect(result.productType).toBe('plastic')
+    expect(result.sheets[0].name).toContain('塑胶')
+    expect(result.sheets[0].details.length).toBeGreaterThan(4)
+    expect(result.sheets[0].totalCustomerHkd).toBeGreaterThan(0)
+    expect(buildCaixingCustomerQuoteFileName(result)).toContain('塑胶')
+
+    const output = createCaixingCustomerQuoteWorkbook(result)
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+
+    expect(parsed.sheets.map((sheet) => sheet.name)).toEqual([
+      'Summary',
+      'Tool Plan',
+      'Elect',
+      'Purchase',
+      'Packing',
+      'Fabric',
+    ])
+    expect(parsed.sheets[0].rows[0][0]).toBe('VENDOR QUOTATION')
+    expect(parsed.sheets[0].rows[3][6]).toBe('塑胶')
+  })
+
+  it('fills the plastic customer quote template while preserving template styles', () => {
+    const result = convertCaixingInternalQuote(
+      createMinimalCaixingWorkbook(),
+      '68963 quote 2026-6-27.xlsx',
+      'plastic',
+    )
+    const template = readFileSync(plasticTemplatePath)
+    const output = createCaixingCustomerQuoteWorkbook(result, readFileAsArrayBuffer(plasticTemplatePath))
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+
+    expect(parsed.sheets.slice(0, 7).map((sheet) => sheet.name)).toEqual([
+      'Deco List & Product Image',
+      'Summary',
+      'Tool Plan',
+      'Elect',
+      'purchase',
+      'Packing',
+      'Fabric',
+    ])
+    expect(parsed.sheets.find((sheet) => sheet.name === 'Summary')?.rows[2][1]).toBe('68963')
+    expect(parsed.sheets.find((sheet) => sheet.name === 'Tool Plan')?.rows[14][0]).toBe(1)
+
+    const templateZip = unzipSync(template)
+    const outputZip = unzipSync(output)
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet2.xml', 'A1')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet2.xml', 'A1'))
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet2.xml', 'B3')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet2.xml', 'B3'))
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet3.xml', 'A15')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet3.xml', 'A15'))
+    expect(readSheetPictureCount(templateZip, 'Deco List & Product Image')).toBeGreaterThan(0)
+    expect(readSheetPictureCount(templateZip, 'Summary')).toBeGreaterThan(0)
+    expect(readSheetPictureCount(outputZip, 'Deco List & Product Image')).toBe(0)
+    expect(readSheetPictureCount(outputZip, 'Summary')).toBe(0)
+  })
+
+  it('converts plush and exports the plush-first quote workbook structure', () => {
+    const result = convertCaixingInternalQuote(
+      createMinimalCaixingWorkbook(),
+      '40636－1款5寸公仔套装报价（按图报价）－2026-6－2（内部）.xlsx',
+      'plush',
+    )
+
+    expect(result.productType).toBe('plush')
+    expect(result.sheets[0].name).toContain('毛绒')
+    expect(buildCaixingCustomerQuoteFileName(result)).toContain('毛绒')
+
+    const output = createCaixingCustomerQuoteWorkbook(result)
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+
+    expect(parsed.sheets.map((sheet) => sheet.name)).toEqual([
+      'Summary',
+      'Tool Plan',
+      'Purchase',
+      'Fabric',
+      'Packing',
+      'Elect',
+    ])
+    expect(parsed.sheets[0].rows[3][6]).toBe('毛绒')
+    expect(parsed.sheets[0].rows[23][0]).toBe('Hair Rooting')
+  })
+
+  it('fills the plush customer quote template while preserving template styles', () => {
+    const result = convertCaixingInternalQuote(
+      createMinimalCaixingWorkbook(),
+      '40636 quote 2026-6-2.xlsx',
+      'plush',
+    )
+    const template = readFileSync(plushTemplatePath)
+    const output = createCaixingCustomerQuoteWorkbook(result, readFileAsArrayBuffer(plushTemplatePath))
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+
+    expect(parsed.sheets.slice(0, 7).map((sheet) => sheet.name)).toEqual([
+      'Deco List & Product Image',
+      'Summary',
+      'Tool Plan',
+      'Elect',
+      'Purchase',
+      'Fabric',
+      'Packing',
+    ])
+    expect(parsed.sheets.find((sheet) => sheet.name === 'Summary')?.rows[2][1]).toBe('68963')
+    expect(parsed.sheets.find((sheet) => sheet.name === 'Tool Plan')?.rows[14][0]).toBe(1)
+
+    const templateZip = unzipSync(template)
+    const outputZip = unzipSync(output)
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet2.xml', 'A1')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet2.xml', 'A1'))
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet2.xml', 'B3')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet2.xml', 'B3'))
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet3.xml', 'A15')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet3.xml', 'A15'))
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet6.xml', 'B8')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet6.xml', 'B8'))
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet7.xml', 'A24')).toBe(readCellStyle(templateZip, 'xl/worksheets/sheet7.xml', 'A24'))
+    expect(readSheetPictureCount(templateZip, 'Deco List & Product Image')).toBeGreaterThan(0)
+    expect(readSheetPictureCount(templateZip, 'Summary')).toBeGreaterThan(0)
+    expect(readSheetPictureCount(outputZip, 'Deco List & Product Image')).toBe(0)
+    expect(readSheetPictureCount(outputZip, 'Summary')).toBe(0)
+  })
+
+  it('reads the real Caixing sample workbooks when they are available locally', () => {
+    if (!existsSync(plasticSamplePath) || !existsSync(plushSamplePath)) {
+      return
+    }
+
+    const plastic = convertCaixingInternalQuote(
+      readFileAsArrayBuffer(plasticSamplePath),
+      '68963发声亮灯剑报价（按图报价）－2026-6-27.xlsx',
+      'plastic',
+    )
+    const plush = convertCaixingInternalQuote(
+      readFileAsArrayBuffer(plushSamplePath),
+      '40636－1款5寸公仔套装报价（按图报价）－2026-6－2（内部）.xlsx',
+      'plush',
+    )
+
+    expect(plastic.sheets[0].details.length).toBeGreaterThan(20)
+    expect(plastic.sheets[0].totalCustomerHkd).toBeGreaterThan(10)
+    expect(plush.sheets[0].details.length).toBeGreaterThan(40)
+    expect(plush.sheets[0].totalCustomerHkd).toBeGreaterThan(10)
+
+    expect(parseXlsxWorkbook(asArrayBuffer(createCaixingCustomerQuoteWorkbook(plastic))).sheets[0].rows[3][6]).toBe('塑胶')
+    expect(parseXlsxWorkbook(asArrayBuffer(createCaixingCustomerQuoteWorkbook(plush))).sheets[0].rows[3][6]).toBe('毛绒')
+  }, 60_000)
+})

@@ -15,6 +15,22 @@ import {
   createDisneyCustomerQuoteWorkbook,
   type DisneyConversionResult,
 } from '@/lib/customerPriceConverters/disney'
+import {
+  DICKY_CUSTOMER_QUOTE_TEMPLATE_URL,
+  buildDickyCustomerQuoteFileName,
+  convertDickyInternalQuote,
+  createDickyCustomerQuoteWorkbook,
+  type DickyConversionResult,
+} from '@/lib/customerPriceConverters/dicky'
+import {
+  CAIXING_PLASTIC_CUSTOMER_QUOTE_TEMPLATE_URL,
+  CAIXING_PLUSH_CUSTOMER_QUOTE_TEMPLATE_URL,
+  buildCaixingCustomerQuoteFileName,
+  convertCaixingInternalQuote,
+  createCaixingCustomerQuoteWorkbook,
+  type CaixingConversionResult,
+  type CaixingProductType,
+} from '@/lib/customerPriceConverters/caixing'
 import { useAuthStore } from '@/stores/auth'
 
 type ConversionStatus = '待转换' | '待复核' | '已生成'
@@ -73,6 +89,7 @@ interface ExportedQuoteVersion {
   fileName: string
   customerId: string
   customerName: string
+  productType?: CaixingProductType
   createdAt: string
   sheetCount: number
   detailCount: number
@@ -100,9 +117,31 @@ const customerOptions: CustomerOption[] = [
     owner: '李业务',
     activeQuoteCount: 1,
   },
+  {
+    id: 'dicky',
+    name: 'Dicky',
+    workshop: '啤机车间 A',
+    account: 'huaxing_molding_a_sales',
+    owner: 'Ben / Dicky',
+    activeQuoteCount: 1,
+  },
+  {
+    id: 'caixing',
+    name: '彩星',
+    workshop: '啤机车间 A',
+    account: 'huaxing_molding_a_sales',
+    owner: '陈善杰',
+    activeQuoteCount: 2,
+  },
 ]
 
 const selectedCustomerId = ref(customerOptions[0]?.id ?? '')
+const caixingProductTypeOptions = [
+  { id: 'plastic', label: '塑胶', detail: '塑胶 / 注塑类报客价' },
+  { id: 'plush', label: '毛绒', detail: '毛绒 / 车衣车发类报客价' },
+] satisfies Array<{ id: CaixingProductType, label: string, detail: string }>
+const selectedCaixingProductType = ref<CaixingProductType>('plastic')
+const importedCaixingProductType = ref<CaixingProductType | ''>('')
 const detailSearchQuery = ref('')
 const importedCustomerId = ref('')
 const importedFileName = ref('')
@@ -115,6 +154,8 @@ const importedWorkbookSheets = ref<ImportedWorkbookSheet[]>([])
 const exportedQuoteVersions = ref<ExportedQuoteVersion[]>([])
 const buzzBeeConversionResult = ref<BuzzBeeConversionResult | null>(null)
 const disneyConversionResult = ref<DisneyConversionResult | null>(null)
+const dickyConversionResult = ref<DickyConversionResult | null>(null)
+const caixingConversionResult = ref<CaixingConversionResult | null>(null)
 const isImportDragActive = ref(false)
 let importDragDepth = 0
 
@@ -146,6 +187,34 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     quoteNo: '待生成',
     sourceFileName: '待导入',
     updatedAt: '今天 10:15',
+  },
+  {
+    id: 'QTC-HKA-260709-041',
+    customerId: 'dicky',
+    customer: 'Dicky',
+    workshop: '啤机车间 A',
+    account: 'huaxing_molding_a_sales',
+    internalPriceHkd: 0,
+    customerPriceHkd: 0,
+    marginBand: '-',
+    status: '待转换',
+    quoteNo: '待生成',
+    sourceFileName: '待导入',
+    updatedAt: '今天 14:30',
+  },
+  {
+    id: 'QTC-HKA-260708-031',
+    customerId: 'caixing',
+    customer: '彩星',
+    workshop: '啤机车间 A',
+    account: 'huaxing_molding_a_sales',
+    internalPriceHkd: 0,
+    customerPriceHkd: 0,
+    marginBand: '-',
+    status: '待转换',
+    quoteNo: '待生成',
+    sourceFileName: '待导入',
+    updatedAt: '今天 11:20',
   },
   {
     id: 'QTC-HKB-260707-011',
@@ -203,6 +272,23 @@ const selectedCustomer = computed<CustomerOption>(() => {
     ?? (customerOptions[0] as CustomerOption)
 })
 
+const selectedCaixingProductTypeOption = computed(() => {
+  return caixingProductTypeOptions.find((option) => option.id === selectedCaixingProductType.value)
+    ?? caixingProductTypeOptions[0]
+})
+
+const selectedImportMatchesCurrentChoice = computed(() => {
+  if (importedCustomerId.value !== selectedCustomer.value.id) {
+    return false
+  }
+
+  if (selectedCustomer.value.id !== 'caixing') {
+    return true
+  }
+
+  return importedCaixingProductType.value === selectedCaixingProductType.value
+})
+
 const visibleConversionRows = computed(() => {
   return conversionRows.value.filter((row) => {
     const inScope = row.customerId === selectedCustomer.value.id && allowedCustomerIds.value.includes(row.customerId)
@@ -215,7 +301,7 @@ const visibleConversionRows = computed(() => {
 })
 
 const existingSelectedSourceFileName = computed(() => {
-  if (selectedCustomer.value.id === 'buzzbee' || selectedCustomer.value.id === 'disney') {
+  if (selectedCustomer.value.id === 'buzzbee' || selectedCustomer.value.id === 'disney' || selectedCustomer.value.id === 'dicky' || selectedCustomer.value.id === 'caixing') {
     return ''
   }
 
@@ -223,7 +309,7 @@ const existingSelectedSourceFileName = computed(() => {
 })
 
 const selectedImportFileName = computed(() => {
-  if (importedCustomerId.value === selectedCustomer.value.id && importedFileName.value) {
+  if (selectedImportMatchesCurrentChoice.value && importedFileName.value) {
     return importedFileName.value
   }
 
@@ -239,7 +325,7 @@ const selectedImportFileDetail = computed(() => {
     return '导入后会锁定到当前选择客户'
   }
 
-  if (importedCustomerId.value === selectedCustomer.value.id) {
+  if (selectedImportMatchesCurrentChoice.value) {
     return `${importedFileSize.value} · ${importedAt.value}`
   }
 
@@ -247,7 +333,7 @@ const selectedImportFileDetail = computed(() => {
 })
 
 const activeWorkbookSheets = computed(() => {
-  return importedCustomerId.value === selectedCustomer.value.id ? importedWorkbookSheets.value : []
+  return selectedImportMatchesCurrentChoice.value ? importedWorkbookSheets.value : []
 })
 
 const activeWorkbookDetailRows = computed(() => {
@@ -272,19 +358,41 @@ const selectedSheetRows = computed(() => {
 })
 
 const activeExportedVersions = computed(() => {
-  return exportedQuoteVersions.value.filter((version) => version.customerId === selectedCustomer.value.id)
+  return exportedQuoteVersions.value.filter((version) => {
+    if (version.customerId !== selectedCustomer.value.id) {
+      return false
+    }
+
+    if (selectedCustomer.value.id !== 'caixing') {
+      return true
+    }
+
+    return version.productType === selectedCaixingProductType.value
+  })
 })
 
 const hasActiveBuzzBeeConversion = computed(() => {
   return selectedCustomer.value.id === 'buzzbee'
-    && importedCustomerId.value === selectedCustomer.value.id
+    && selectedImportMatchesCurrentChoice.value
     && Boolean(buzzBeeConversionResult.value)
 })
 
 const hasActiveDisneyConversion = computed(() => {
   return selectedCustomer.value.id === 'disney'
-    && importedCustomerId.value === selectedCustomer.value.id
+    && selectedImportMatchesCurrentChoice.value
     && Boolean(disneyConversionResult.value)
+})
+
+const hasActiveDickyConversion = computed(() => {
+  return selectedCustomer.value.id === 'dicky'
+    && selectedImportMatchesCurrentChoice.value
+    && Boolean(dickyConversionResult.value)
+})
+
+const hasActiveCaixingConversion = computed(() => {
+  return selectedCustomer.value.id === 'caixing'
+    && selectedImportMatchesCurrentChoice.value
+    && caixingConversionResult.value?.productType === selectedCaixingProductType.value
 })
 
 const comparisonMetrics = computed(() => {
@@ -309,13 +417,21 @@ const canExportCustomerQuote = computed(() => {
     return hasActiveDisneyConversion.value
   }
 
+  if (selectedCustomer.value.id === 'dicky') {
+    return hasActiveDickyConversion.value
+  }
+
+  if (selectedCustomer.value.id === 'caixing') {
+    return hasActiveCaixingConversion.value
+  }
+
   return visibleConversionRows.value.length > 0 && Boolean(selectedImportFileName.value)
 })
 
 const hasSelectedCustomerImport = computed(() => Boolean(selectedImportFileName.value))
 
 const importOverviewMetrics = computed(() => [
-  { label: '当前客户', value: selectedCustomer.value.name, detail: `${selectedCustomer.value.workshop} · ${selectedCustomer.value.owner}` },
+  { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? `${selectedCaixingProductTypeOption.value.label} · ${selectedCustomer.value.owner}` : `${selectedCustomer.value.workshop} · ${selectedCustomer.value.owner}` },
   { label: '内部报价', value: selectedImportFileName.value ? '已导入' : '待导入', detail: selectedImportFileName.value || '等待 Excel' },
   { label: '可输出', value: canExportCustomerQuote.value ? '报客价 Excel' : '未就绪', detail: canExportCustomerQuote.value ? '右上角可输出' : '请先导入内部报价' },
 ])
@@ -489,6 +605,8 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       buzzBeeConversionResult.value = conversionResult
       disneyConversionResult.value = null
+      dickyConversionResult.value = null
+      caixingConversionResult.value = null
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'disney') {
@@ -502,17 +620,52 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       buzzBeeConversionResult.value = null
       disneyConversionResult.value = conversionResult
+      dickyConversionResult.value = null
+      caixingConversionResult.value = null
+      importedWorkbookSheets.value = conversionResult.sheets
+      importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
+    } else if (customer.id === 'dicky') {
+      if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        throw new Error('Dicky 当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
+      }
+
+      const buffer = await readFileAsArrayBuffer(file)
+      const conversionResult = convertDickyInternalQuote(buffer, file.name)
+      const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+
+      buzzBeeConversionResult.value = null
+      disneyConversionResult.value = null
+      dickyConversionResult.value = conversionResult
+      caixingConversionResult.value = null
+      importedWorkbookSheets.value = conversionResult.sheets
+      importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
+    } else if (customer.id === 'caixing') {
+      if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        throw new Error('彩星当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
+      }
+
+      const buffer = await readFileAsArrayBuffer(file)
+      const conversionResult = convertCaixingInternalQuote(buffer, file.name, selectedCaixingProductType.value)
+      const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+
+      buzzBeeConversionResult.value = null
+      disneyConversionResult.value = null
+      dickyConversionResult.value = null
+      caixingConversionResult.value = conversionResult
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else {
       buzzBeeConversionResult.value = null
       disneyConversionResult.value = null
+      dickyConversionResult.value = null
+      caixingConversionResult.value = null
       importedWorkbookSheets.value = createMockWorkbookSheets(customer, file.name)
       importedFileSize.value = formatFileSize(file.size)
     }
 
     importedFileName.value = file.name
     importedCustomerId.value = customer.id
+    importedCaixingProductType.value = customer.id === 'caixing' ? selectedCaixingProductType.value : ''
     importedAt.value = '刚刚'
     selectedSheetId.value = 'all'
     selectedExportVersionId.value = ''
@@ -540,10 +693,13 @@ async function importInternalQuoteFile(file: File | undefined) {
     importedFileName.value = ''
     importedFileSize.value = ''
     importedCustomerId.value = ''
+    importedCaixingProductType.value = ''
     importedAt.value = ''
     importedWorkbookSheets.value = []
     buzzBeeConversionResult.value = null
     disneyConversionResult.value = null
+    dickyConversionResult.value = null
+    caixingConversionResult.value = null
     importErrorMessage.value = error instanceof Error ? `导入失败：${error.message}` : '导入失败：内部报价解析失败'
   }
 }
@@ -634,6 +790,47 @@ async function exportCustomerQuoteExcel() {
     anchor.download = fileName
     anchor.click()
     window.URL.revokeObjectURL(url)
+  } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
+    const templateResponse = await fetch(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL)
+    if (!templateResponse.ok) {
+      throw new Error('Dicky 报客模板读取失败')
+    }
+
+    const workbook = createDickyCustomerQuoteWorkbook(
+      dickyConversionResult.value,
+      await templateResponse.arrayBuffer(),
+    )
+    const blob = new Blob([workbook], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = window.URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    fileName = buildDickyCustomerQuoteFileName(dickyConversionResult.value)
+
+    anchor.href = url
+    anchor.download = fileName
+    anchor.click()
+    window.URL.revokeObjectURL(url)
+  } else if (selectedCustomer.value.id === 'caixing' && caixingConversionResult.value) {
+    const productType = caixingConversionResult.value.productType
+    const templateUrl = productType === 'plush'
+      ? CAIXING_PLUSH_CUSTOMER_QUOTE_TEMPLATE_URL
+      : CAIXING_PLASTIC_CUSTOMER_QUOTE_TEMPLATE_URL
+    const templateResponse = await fetch(templateUrl)
+    if (!templateResponse.ok) {
+      throw new Error(`彩星${productType === 'plush' ? '毛绒' : '塑胶'}报客价模板读取失败`)
+    }
+
+    const templateBuffer = await templateResponse.arrayBuffer()
+    const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
+    const workbookBuffer = workbook.buffer.slice(workbook.byteOffset, workbook.byteOffset + workbook.byteLength) as ArrayBuffer
+    const blob = new Blob([workbookBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = window.URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
+
+    anchor.href = url
+    anchor.download = fileName
+    anchor.click()
+    window.URL.revokeObjectURL(url)
   } else {
   const tableRows = detailRows.length > 0
     ? detailRows.map((row) => `
@@ -710,6 +907,7 @@ async function exportCustomerQuoteExcel() {
     fileName,
     customerId: selectedCustomer.value.id,
     customerName: selectedCustomer.value.name,
+    productType: selectedCustomer.value.id === 'caixing' ? selectedCaixingProductType.value : undefined,
     createdAt: '刚刚',
     sheetCount: activeWorkbookSheets.value.length,
     detailCount: detailRows.length || visibleConversionRows.value.length,
@@ -760,6 +958,30 @@ async function exportCustomerQuoteExcel() {
           </button>
         </div>
       </template>
+
+      <div
+        v-if="selectedCustomer.id === 'caixing'"
+        class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-wide text-teal-700">彩星产品类型</p>
+          <p class="mt-1 text-sm text-slate-600">{{ selectedCaixingProductTypeOption.detail }}</p>
+        </div>
+        <div class="inline-flex w-full rounded-lg border border-teal-200 bg-white p-1 sm:w-auto">
+          <button
+            v-for="option in caixingProductTypeOptions"
+            :key="option.id"
+            type="button"
+            class="h-9 flex-1 rounded-md px-4 text-sm font-semibold transition-colors sm:w-24"
+            :class="selectedCaixingProductType === option.id
+              ? 'bg-teal-600 text-white shadow-[0_8px_18px_rgba(13,148,136,0.18)]'
+              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'"
+            @click="selectedCaixingProductType = option.id"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
 
       <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <label
