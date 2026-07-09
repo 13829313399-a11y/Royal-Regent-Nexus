@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     @property
     def effective_session_cookie_secure(self) -> bool:
-        return self.session_cookie_secure or self.app_env.strip().lower() == "production"
+        return self.session_cookie_secure
 
     model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", env_file_encoding="utf-8")
 

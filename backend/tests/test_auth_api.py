@@ -176,7 +176,7 @@ def test_default_trial_accounts_can_be_disabled_without_disabling_roles(monkeypa
             assert db.query(auth_models.AuthPermission).filter_by(code="system:user_manage").count() == 1
 
 
-def test_production_login_cookie_is_secure_without_explicit_cookie_env(monkeypatch):
+def test_production_http_login_cookie_can_disable_secure_flag(monkeypatch):
     with make_client(monkeypatch, APP_ENV="production", SESSION_COOKIE_SECURE="false") as client:
         login_response = client.post(
             "/api/auth/login",
@@ -185,7 +185,7 @@ def test_production_login_cookie_is_secure_without_explicit_cookie_env(monkeypat
 
         assert login_response.status_code == 200
         assert "rr_session=" in login_response.headers["set-cookie"]
-        assert "Secure" in login_response.headers["set-cookie"]
+        assert "Secure" not in login_response.headers["set-cookie"]
 
 
 def test_wrong_password_and_missing_session_are_rejected(monkeypatch):
