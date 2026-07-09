@@ -30,6 +30,7 @@ describe('systemApi', () => {
     await api.rejectRegistrationRequest('registration-2', { review_comment: '资料不完整' })
     await api.listUsers('active')
     await api.updateUserStatus('user-1', { status: 'suspended' })
+    await api.resetUserPassword('user-1', { temporary_password: '123456', notification_id: 'notice-reset-1' })
     await api.listRoles()
 
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
@@ -40,11 +41,13 @@ describe('systemApi', () => {
       'post /system/registration-requests/registration-2/reject',
       'get /system/users?status=active',
       'patch /system/users/user-1/status',
+      'post /system/users/user-1/reset-password',
       'get /system/roles',
     ])
     expect(calls[3].data).toEqual({
       role_assignments: [{ role_id: 'engineer', factory_id: 'huaxing', department: 'engineering' }],
       review_comment: '资料完整',
     })
+    expect(calls[7].data).toEqual({ temporary_password: '123456', notification_id: 'notice-reset-1' })
   })
 })

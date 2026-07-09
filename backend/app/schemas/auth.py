@@ -23,6 +23,18 @@ class RegisterResponse(BaseModel):
     message: str
 
 
+class PasswordResetRequest(BaseModel):
+    username: str
+    display_name: str = ""
+    contact: str
+    note: str = ""
+
+
+class PasswordResetResponse(BaseModel):
+    status: str
+    message: str
+
+
 class AuthGrant(BaseModel):
     role_id: str
     role_name: str

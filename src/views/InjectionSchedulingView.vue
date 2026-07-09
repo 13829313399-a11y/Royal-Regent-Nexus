@@ -30,6 +30,7 @@ import {
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import type { InjectionScheduleImportPreview } from '@/types/injectionSchedule'
 
 type WorkspaceStepId = 'machine-overview' | 'excel-import' | 'order-pool' | 'schedule-board'
@@ -65,6 +66,7 @@ interface MachineCard {
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 const {
   injectionDataSourceStatus,
   injectionOrderImportTasks,
@@ -156,6 +158,18 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
   return isProductionFactoryContextId(appStore.activeProductionFactory.id)
     ? appStore.activeProductionFactory.id
     : 'huaxing'
+})
+
+const canImportDailySchedule = computed(() =>
+  authStore.hasPermission('injection_schedule:import') && authStore.hasFactoryScope(selectedFactoryId.value),
+)
+
+const dailyScheduleImportReadonlyMessage = computed(() => {
+  if (!authStore.hasFactoryScope(selectedFactoryId.value)) {
+    return '当前厂区为只读，仅可查看排产数据'
+  }
+
+  return '当前账号没有导入排产权限，仅可浏览排产数据'
 })
 
 const activeStep = computed<WorkspaceStepId>(() => normalizeWorkspaceStep(route.query.section) ?? 'machine-overview')
@@ -1312,6 +1326,11 @@ function openDailySchedulePicker() {
     return
   }
 
+  if (!canImportDailySchedule.value) {
+    dailyScheduleImportError.value = dailyScheduleImportReadonlyMessage.value
+    return
+  }
+
   dailyScheduleFileInput.value?.click()
 }
 
@@ -1320,6 +1339,12 @@ async function handleDailyScheduleFileChange(event: Event) {
   const file = input.files?.[0]
 
   if (!file) {
+    return
+  }
+
+  if (!canImportDailySchedule.value) {
+    dailyScheduleImportError.value = dailyScheduleImportReadonlyMessage.value
+    input.value = ''
     return
   }
 
@@ -1641,13 +1666,16 @@ async function handleDailyScheduleFileChange(event: Event) {
                 class="sr-only"
                 type="file"
                 accept=".xlsx,.xlsm"
+                :disabled="!canImportDailySchedule"
                 @change="handleDailyScheduleFileChange"
               />
 
               <div
                 class="dropzone"
+                :class="{ 'is-disabled': !canImportDailySchedule }"
                 role="button"
-                tabindex="0"
+                :tabindex="canImportDailySchedule ? 0 : -1"
+                :aria-disabled="!canImportDailySchedule"
                 @click="openDailySchedulePicker"
                 @keydown.enter.prevent="openDailySchedulePicker"
                 @keydown.space.prevent="openDailySchedulePicker"
@@ -1679,6 +1707,13 @@ async function handleDailyScheduleFileChange(event: Event) {
                   <AlertTriangle class="size-[15px]" aria-hidden="true" />
                 </span>
                 <span>{{ dailyScheduleImportError }}</span>
+              </div>
+
+              <div v-if="!canImportDailySchedule" class="hint mt-4 readonly-hint">
+                <span class="hint-ico">
+                  <ShieldAlert class="size-[15px]" aria-hidden="true" />
+                </span>
+                <span>{{ dailyScheduleImportReadonlyMessage }}</span>
               </div>
 
               <div class="hint mt-4">
@@ -1726,7 +1761,7 @@ async function handleDailyScheduleFileChange(event: Event) {
                   确认并进入订单池
                   <ChevronRight class="size-[15px]" aria-hidden="true" />
                 </button>
-                <button type="button" class="btn" :disabled="isImportingDailySchedule" @click="openDailySchedulePicker">重新上传</button>
+                <button type="button" class="btn" :disabled="isImportingDailySchedule || !canImportDailySchedule" @click="openDailySchedulePicker">重新上传</button>
               </div>
             </section>
           </div>
@@ -3123,6 +3158,14 @@ async function handleDailyScheduleFileChange(event: Event) {
   background: var(--teal-bg);
 }
 
+.dropzone.is-disabled,
+.dropzone.is-disabled:hover {
+  border-color: var(--border);
+  background: #f8fafc;
+  cursor: not-allowed;
+  opacity: 0.74;
+}
+
 .dropzone .cloud {
   display: grid;
   width: 64px;
@@ -3215,6 +3258,16 @@ async function handleDailyScheduleFileChange(event: Event) {
 
 .error-hint .hint-ico {
   color: var(--red-solid);
+}
+
+.readonly-hint {
+  border-color: rgba(148, 163, 184, 0.3);
+  background: #f8fafc;
+  color: #475569;
+}
+
+.readonly-hint .hint-ico {
+  color: var(--text-500);
 }
 
 .stat-grid {

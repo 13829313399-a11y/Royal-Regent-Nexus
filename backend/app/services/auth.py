@@ -22,7 +22,7 @@ from app.models.auth import (
     AuthUserRole,
     SystemNotification,
 )
-from app.schemas.auth import AuthMeResponse, RegisterRequest, RegisterResponse
+from app.schemas.auth import AuthMeResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest, RegisterResponse
 
 SESSION_COOKIE_NAME = "rr_session"
 DEFAULT_PASSWORD = "123456"
@@ -158,25 +158,33 @@ ROLE_PERMISSIONS = {
 }
 
 DEFAULT_USERS = [
-    ("user-engineer", "engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
-    ("user-supervisor", "supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),
-    ("user-manager", "manager", "华兴经理", "manager", "huaxing", "management"),
-    ("user-carton-warehouse", "carton_warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
-    ("user-qa-inspector", "qa_inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
-    ("user-molding-clerk", "molding_clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
-    (
-        "user-huaxing-molding-a-sales",
-        "huaxing_molding_a_sales",
-        "华兴啤机车间 A 跟客业务",
-        "sales_customer_owner",
-        "huaxing",
-        "sales-business",
-    ),
     ("user-admin", "admin", "系统管理员", "admin", "*", "system"),
 ]
 
-RETIRED_DEFAULT_USERNAMES = {"molding", "warehouse", "huaxing_buzzbee_sales"}
-RETIRED_DEFAULT_USER_IDS = {"user-molding", "user-warehouse", "user-huaxing-buzzbee-sales"}
+RETIRED_DEFAULT_USERNAMES = {
+    "engineer",
+    "supervisor",
+    "manager",
+    "carton_warehouse",
+    "qa_inspector",
+    "molding_clerk",
+    "huaxing_molding_a_sales",
+    "molding",
+    "warehouse",
+    "huaxing_buzzbee_sales",
+}
+RETIRED_DEFAULT_USER_IDS = {
+    "user-engineer",
+    "user-supervisor",
+    "user-manager",
+    "user-carton-warehouse",
+    "user-qa-inspector",
+    "user-molding-clerk",
+    "user-huaxing-molding-a-sales",
+    "user-molding",
+    "user-warehouse",
+    "user-huaxing-buzzbee-sales",
+}
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
 ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huadeng", "huaxing"}
 ALLOWED_DEPARTMENTS = {
@@ -543,6 +551,59 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
     db.commit()
 
     return RegisterResponse(status="pending", message="账号申请已提交，请等待管理员审批")
+
+
+def submit_password_reset_request(
+    db: Session,
+    payload: PasswordResetRequest,
+    request: Request | None = None,
+) -> PasswordResetResponse:
+    username = payload.username.strip()
+    display_name = payload.display_name.strip()
+    contact = payload.contact.strip()
+    note = payload.note.strip()
+
+    if not username:
+        raise HTTPException(status_code=400, detail="请输入需要重置密码的账号")
+    if not contact:
+        raise HTTPException(status_code=400, detail="请填写联系电话或邮箱")
+
+    now = now_text()
+    matched_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
+    notification_id = f"system-notification-{secrets.token_hex(12)}"
+    payload_json = {
+        "username": username,
+        "display_name": display_name,
+        "contact": contact,
+        "note": note,
+        "matched_user_id": matched_user.id if matched_user else "",
+        "requested_at": now,
+    }
+    applicant_label = display_name or username
+
+    db.add(
+        SystemNotification(
+            id=notification_id,
+            target_permission="system:user_manage",
+            type="password_reset",
+            title="密码重置待处理",
+            message=f"{applicant_label} 提交密码重置申请，账号 {username}，联系方式 {contact}",
+            payload_json=json.dumps(payload_json, ensure_ascii=False),
+            status="unread",
+            created_at=now,
+        )
+    )
+    add_auth_audit(
+        db,
+        "password_reset_requested",
+        username=username,
+        user_id=matched_user.id if matched_user else "",
+        detail=f"密码重置申请：{contact}",
+        request=request,
+    )
+    db.commit()
+
+    return PasswordResetResponse(status="submitted", message="密码重置申请已提交，请等待管理员核验处理")
 
 
 def create_session(db: Session, user: AuthUser, request: Request | None = None) -> str:

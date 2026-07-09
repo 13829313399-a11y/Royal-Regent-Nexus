@@ -221,7 +221,6 @@ def order_statement():
 
 
 def list_orders(db: Session, current_user: AuthContext) -> list[MoldingSampleOrder]:
-    ensure_permission(db, current_user, "molding_sample:read")
     return list(
         db.scalars(
             order_statement()
@@ -382,7 +381,6 @@ def list_notifications(
     order_id: str | None = None,
     status: str | None = None,
 ) -> list[MoldingSampleNotification]:
-    ensure_permission(db, current_user, "molding_sample:notification_read")
     statement = select(MoldingSampleNotification)
     if target_module:
         statement = statement.where(MoldingSampleNotification.target_module == target_module)
@@ -436,7 +434,6 @@ def list_problems(
     order_id: str | None = None,
     status: str | None = None,
 ) -> list[MoldingSampleProblem]:
-    ensure_permission(db, current_user, "molding_sample:read")
     statement = select(MoldingSampleProblem)
 
     if order_id:

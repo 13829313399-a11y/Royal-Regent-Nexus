@@ -3,7 +3,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import get_db
-from app.schemas.auth import AuthMeResponse, LoginRequest, RegisterRequest, RegisterResponse
+from app.schemas.auth import (
+    AuthMeResponse,
+    LoginRequest,
+    PasswordResetRequest,
+    PasswordResetResponse,
+    RegisterRequest,
+    RegisterResponse,
+)
 from app.services.auth import (
     SESSION_COOKIE_NAME,
     AuthContext,
@@ -13,6 +20,7 @@ from app.services.auth import (
     get_current_user,
     register_user,
     revoke_session,
+    submit_password_reset_request,
     to_auth_response,
 )
 
@@ -38,6 +46,11 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
 @router.post("/register", response_model=RegisterResponse)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     return register_user(db, payload, request=request)
+
+
+@router.post("/password-reset-requests", response_model=PasswordResetResponse)
+def request_password_reset(payload: PasswordResetRequest, request: Request, db: Session = Depends(get_db)):
+    return submit_password_reset_request(db, payload, request=request)
 
 
 @router.get("/me", response_model=AuthMeResponse)

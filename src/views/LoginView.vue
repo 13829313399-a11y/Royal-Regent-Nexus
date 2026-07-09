@@ -5,7 +5,6 @@ import {
   Building2,
   CheckCircle2,
   CircleAlert,
-  Copy,
   Eye,
   EyeOff,
   Gauge,
@@ -22,6 +21,7 @@ import {
   X,
 } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
+import { authApi } from '@/api/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -48,6 +48,14 @@ const passwordInput = ref<HTMLInputElement | null>(null)
 const passwordInputMessage = ref('')
 const showPasswordHelp = ref(false)
 const passwordHelpMessage = ref('')
+const passwordResetForm = ref({
+  username: '',
+  display_name: '',
+  contact: '',
+  note: '',
+})
+const isPasswordResetSubmitting = ref(false)
+const passwordResetSubmitted = ref(false)
 
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
@@ -77,18 +85,12 @@ const recentAccountDetail = computed(() => {
     : '密码不会保存在本系统'
 })
 
-const passwordHelpAccount = computed(() => (
-  username.value.trim()
+const passwordHelpAccount = computed(() =>
+  passwordResetForm.value.username.trim()
+  || username.value.trim()
   || recentAccount.value?.username
-  || '请先填写企业账号'
-))
-
-const passwordResetInfo = computed(() => [
-  '密码重置协助',
-  `账号：${passwordHelpAccount.value}`,
-  '系统：Royal Regent Nexus',
-  '说明：本人忘记登录密码，请管理员核验身份后协助处理。',
-].join('\n'))
+  || '',
+)
 
 const passwordModel = computed({
   get: () => password.value,
@@ -199,20 +201,50 @@ function continueWithRecentAccount() {
 
 function openPasswordHelp() {
   passwordHelpMessage.value = ''
+  passwordResetSubmitted.value = false
+  passwordResetForm.value = {
+    ...passwordResetForm.value,
+    username: passwordHelpAccount.value,
+    display_name: recentAccount.value?.displayName ?? '',
+  }
   showPasswordHelp.value = true
 }
 
 function closePasswordHelp() {
   showPasswordHelp.value = false
   passwordHelpMessage.value = ''
+  passwordResetSubmitted.value = false
 }
 
-async function copyPasswordResetInfo() {
+async function submitPasswordResetRequest() {
+  const payload = {
+    username: passwordResetForm.value.username.trim(),
+    display_name: passwordResetForm.value.display_name.trim(),
+    contact: passwordResetForm.value.contact.trim(),
+    note: passwordResetForm.value.note.trim(),
+  }
+
+  passwordHelpMessage.value = ''
+  passwordResetSubmitted.value = false
+
+  if (!payload.username) {
+    passwordHelpMessage.value = '请先填写需要重置密码的企业账号'
+    return
+  }
+  if (!payload.contact) {
+    passwordHelpMessage.value = '请填写联系电话或邮箱，方便管理员核验'
+    return
+  }
+
+  isPasswordResetSubmitting.value = true
   try {
-    await navigator.clipboard.writeText(passwordResetInfo.value)
-    passwordHelpMessage.value = '账号信息已复制，请发给系统管理员核验'
-  } catch {
-    passwordHelpMessage.value = '当前浏览器不允许复制，请手动记录账号信息'
+    const response = await authApi.requestPasswordReset(payload)
+    passwordResetSubmitted.value = true
+    passwordHelpMessage.value = response.message
+  } catch (error) {
+    passwordHelpMessage.value = getApiErrorMessage(error)
+  } finally {
+    isPasswordResetSubmitting.value = false
   }
 }
 
@@ -473,21 +505,21 @@ onMounted(() => {
 
     <div
       v-if="showPasswordHelp"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-4 backdrop-blur-sm sm:py-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="password-help-title"
       @click.self="closePasswordHelp"
     >
-      <section class="w-full max-w-[430px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20">
-        <header class="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
+      <section class="flex max-h-[calc(100vh-32px)] w-full max-w-[430px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20">
+        <header class="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 px-5 py-3.5">
           <span class="flex gap-3">
             <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-teal-700">
               <ShieldQuestion class="size-5" aria-hidden="true" />
             </span>
             <span>
               <span id="password-help-title" class="block text-[16px] font-bold text-slate-950">密码重置协助</span>
-              <span class="mt-1 block text-[12.5px] leading-5 text-slate-500">当前版本未开放短信/邮件自助找回。</span>
+              <span class="mt-1 block text-[12.5px] leading-5 text-slate-500">提交后系统会通知管理员核验处理。</span>
             </span>
           </span>
           <button
@@ -500,46 +532,90 @@ onMounted(() => {
           </button>
         </header>
 
-        <div class="space-y-4 px-5 py-4">
-          <div class="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5 text-[12.5px] leading-5 text-amber-800">
-            为保护内部系统账号安全，密码重置需要管理员先核验员工身份，再协助处理。
+        <div class="password-help-body space-y-3 overflow-y-auto px-5 py-3">
+          <div class="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[12.5px] leading-5 text-amber-800">
+            为保护内部系统账号安全，密码重置需要管理员核验员工身份。处理完成后会提供临时密码，登录后请尽快修改。
           </div>
 
-          <div class="grid gap-2.5">
-            <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+          <div class="grid gap-2">
+            <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <KeyRound class="mt-0.5 size-4 shrink-0 text-teal-700" aria-hidden="true" />
               <span>
                 <span class="block text-[12.5px] font-bold text-slate-900">1. 确认账号</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">当前账号：{{ passwordHelpAccount }}</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">填写需要重置密码的企业账号或工号。</span>
               </span>
             </div>
-            <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+            <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <LifeBuoy class="mt-0.5 size-4 shrink-0 text-sky-700" aria-hidden="true" />
               <span>
-                <span class="block text-[12.5px] font-bold text-slate-900">2. 联系系统管理员</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">提交账号、姓名、厂区部门和联系方式，便于管理员核验。</span>
+                <span class="block text-[12.5px] font-bold text-slate-900">2. 提交内部申请</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">系统会生成铃铛通知，管理员在账号管理页处理。</span>
               </span>
             </div>
-            <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+            <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <CheckCircle2 class="mt-0.5 size-4 shrink-0 text-emerald-700" aria-hidden="true" />
               <span>
                 <span class="block text-[12.5px] font-bold text-slate-900">3. 完成后重新登录</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">管理员处理完成后，请使用新密码登录并按要求更新密码。</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">管理员核验后重置为临时密码，再由员工重新登录。</span>
               </span>
             </div>
           </div>
 
-          <button
-            class="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-teal-100 bg-teal-50 text-[13px] font-bold text-teal-700 transition hover:border-teal-200 hover:bg-teal-100/70"
-            type="button"
-            @click="copyPasswordResetInfo"
-          >
-            <Copy class="size-4" aria-hidden="true" />
-            复制账号信息
-          </button>
+          <form class="grid gap-2.5" novalidate @submit.prevent="submitPasswordResetRequest">
+            <label class="grid gap-1.5">
+              <span class="text-[12px] font-bold text-slate-600">企业账号 / 工号</span>
+              <input
+                v-model="passwordResetForm.username"
+                class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                autocomplete="username"
+                placeholder="请输入需要重置的账号"
+                type="text"
+              >
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-[12px] font-bold text-slate-600">姓名</span>
+              <input
+                v-model="passwordResetForm.display_name"
+                class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                autocomplete="name"
+                placeholder="便于管理员核验身份"
+                type="text"
+              >
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-[12px] font-bold text-slate-600">联系电话或邮箱</span>
+              <input
+                v-model="passwordResetForm.contact"
+                class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                autocomplete="email"
+                placeholder="例如手机号或企业邮箱"
+                type="text"
+              >
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-[12px] font-bold text-slate-600">补充说明</span>
+              <textarea
+                v-model="passwordResetForm.note"
+                class="min-h-16 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                placeholder="可填写厂区、部门或其他核验说明"
+              ></textarea>
+            </label>
+
+            <button
+              class="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-teal-700 text-[13px] font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              type="submit"
+              :disabled="isPasswordResetSubmitting"
+            >
+              <LoaderCircle v-if="isPasswordResetSubmitting" class="size-4 animate-spin" aria-hidden="true" />
+              <CheckCircle2 v-else-if="passwordResetSubmitted" class="size-4" aria-hidden="true" />
+              <LifeBuoy v-else class="size-4" aria-hidden="true" />
+              {{ isPasswordResetSubmitting ? '提交中...' : passwordResetSubmitted ? '申请已提交' : '提交重置申请' }}
+            </button>
+          </form>
           <p
             v-if="passwordHelpMessage"
-            class="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[12px] font-medium text-slate-600"
+            class="rounded-lg border px-3 py-2 text-[12px] font-medium"
+            :class="passwordResetSubmitted ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-600'"
           >
             {{ passwordHelpMessage }}
           </p>
@@ -586,6 +662,17 @@ onMounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .fade-in {
     animation: none;
+  }
+}
+
+@media (max-height: 720px) {
+  .password-help-body {
+    padding-bottom: 0.625rem;
+    padding-top: 0.625rem;
+  }
+
+  .password-help-body :deep(label) {
+    gap: 0.25rem;
   }
 }
 </style>

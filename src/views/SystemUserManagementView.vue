@@ -7,6 +7,8 @@ import {
   CircleAlert,
   Clock3,
   Factory,
+  KeyRound,
+  LifeBuoy,
   LoaderCircle,
   Mail,
   Phone,
@@ -25,15 +27,19 @@ import {
   systemApi,
   type RegistrationRequestResponse,
   type RoleResponse,
+  type SystemNotificationResponse,
   type UserResponse,
 } from '@/api/system'
 import { departmentMap, factoryContexts } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
+import { useRoute } from 'vue-router'
 
-const activeTab = ref<'pending' | 'users'>('pending')
+const route = useRoute()
+const activeTab = ref<'pending' | 'password-reset' | 'users'>('pending')
 const requests = ref<RegistrationRequestResponse[]>([])
 const users = ref<UserResponse[]>([])
 const roles = ref<RoleResponse[]>([])
+const systemNotifications = ref<SystemNotificationResponse[]>([])
 const selectedRoles = ref<Record<string, string>>({})
 const approvalComments = ref<Record<string, string>>({})
 const rejectComments = ref<Record<string, string>>({})
@@ -47,6 +53,9 @@ const successMessage = ref('')
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active'))
 const pendingUsers = computed(() => users.value.filter((user) => user.status === 'pending'))
 const suspendedUsers = computed(() => users.value.filter((user) => user.status === 'suspended'))
+const passwordResetRequests = computed(() =>
+  systemNotifications.value.filter((notification) => notification.type === 'password_reset' && notification.status !== 'handled'),
+)
 const filteredUsers = computed(() => {
   const keyword = userSearch.value.trim().toLowerCase()
   return users.value.filter((user) => {
@@ -108,6 +117,16 @@ function contactLabel(request: RegistrationRequestResponse) {
   return request.phone || request.email || '未填写'
 }
 
+function payloadText(notification: SystemNotificationResponse, key: string) {
+  const value = notification.payload[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function resetRequestUser(notification: SystemNotificationResponse) {
+  const userId = payloadText(notification, 'matched_user_id')
+  return users.value.find((user) => user.id === userId) ?? null
+}
+
 function roleToneClass(name: string) {
   if (/管理员|经理|主管/.test(name)) return 'pill-violet'
   if (/QA|检验|品质/.test(name)) return 'pill-blue'
@@ -139,14 +158,16 @@ async function loadData() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [pendingRequests, loadedUsers, loadedRoles] = await Promise.all([
+    const [pendingRequests, loadedUsers, loadedRoles, loadedNotifications] = await Promise.all([
       systemApi.listRegistrationRequests('pending'),
       systemApi.listUsers(''),
       systemApi.listRoles(),
+      systemApi.listNotifications(),
     ])
     requests.value = pendingRequests
     users.value = loadedUsers
     roles.value = loadedRoles
+    systemNotifications.value = loadedNotifications
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
   } finally {
@@ -222,7 +243,49 @@ async function updateStatus(user: UserResponse, status: 'active' | 'suspended') 
   }
 }
 
+async function resetPasswordFromNotification(notification: SystemNotificationResponse) {
+  const user = resetRequestUser(notification)
+  if (!user) {
+    errorMessage.value = '未匹配到系统账号，请人工核验后再处理'
+    return
+  }
+
+  actionKey.value = `reset-password:${notification.id}`
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    await systemApi.resetUserPassword(user.id, {
+      temporary_password: '123456',
+      notification_id: notification.id,
+    })
+    successMessage.value = `${user.display_name || user.username} 已重置为临时密码 123456`
+    await loadData()
+  } catch (error) {
+    errorMessage.value = getApiErrorMessage(error)
+  } finally {
+    actionKey.value = ''
+  }
+}
+
+async function markPasswordResetHandled(notification: SystemNotificationResponse) {
+  actionKey.value = `reset-handled:${notification.id}`
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    await systemApi.updateNotification(notification.id, { status: 'handled' })
+    successMessage.value = `已标记 ${payloadText(notification, 'username') || notification.title} 的密码重置申请为已处理`
+    await loadData()
+  } catch (error) {
+    errorMessage.value = getApiErrorMessage(error)
+  } finally {
+    actionKey.value = ''
+  }
+}
+
 onMounted(() => {
+  if (route.query.tab === 'password-reset') {
+    activeTab.value = 'password-reset'
+  }
   void loadData()
 })
 </script>
@@ -271,6 +334,14 @@ onMounted(() => {
         <strong>{{ suspendedUsers.length }}</strong>
         <p>离职或调岗，权限已回收</p>
       </article>
+      <article class="stat-card stat-blue">
+        <div class="stat-top">
+          <span>密码重置</span>
+          <span class="stat-icon"><KeyRound class="size-5" aria-hidden="true" /></span>
+        </div>
+        <strong>{{ passwordResetRequests.length }}</strong>
+        <p>忘记密码申请，待管理员核验</p>
+      </article>
     </div>
 
     <div v-if="errorMessage" class="message message-error">
@@ -287,6 +358,11 @@ onMounted(() => {
         <UserCheck class="size-4" aria-hidden="true" />
         待审批
         <span class="tab-count">{{ requests.length }}</span>
+      </button>
+      <button type="button" class="tab" :class="{ active: activeTab === 'password-reset' }" @click="activeTab = 'password-reset'">
+        <KeyRound class="size-4" aria-hidden="true" />
+        密码重置
+        <span class="tab-count">{{ passwordResetRequests.length }}</span>
       </button>
       <button type="button" class="tab" :class="{ active: activeTab === 'users' }" @click="activeTab = 'users'">
         <Users class="size-4" aria-hidden="true" />
@@ -369,6 +445,80 @@ onMounted(() => {
             <button type="button" class="btn btn-danger" :disabled="Boolean(actionKey)" @click="rejectRequest(request)">
               <XCircle class="size-4" aria-hidden="true" />
               驳回
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section v-else-if="activeTab === 'password-reset'" class="panel">
+      <div v-if="isLoading" class="empty-card">正在加载密码重置申请...</div>
+      <div v-else-if="!passwordResetRequests.length" class="empty-card">当前没有待处理密码重置申请。</div>
+      <div v-else class="request-grid">
+        <article v-for="notification in passwordResetRequests" :key="notification.id" class="request-card">
+          <div class="request-top">
+            <span class="request-avatar">{{ avatarText(payloadText(notification, 'display_name'), payloadText(notification, 'username')) }}</span>
+            <div class="request-person">
+              <h2>{{ payloadText(notification, 'display_name') || payloadText(notification, 'username') }}</h2>
+              <p>{{ payloadText(notification, 'username') }}</p>
+            </div>
+            <span class="pill" :class="notification.status === 'read' ? 'pill-blue' : 'pill-amber'">
+              <span></span>{{ notification.status === 'read' ? '已读' : '未读' }}
+            </span>
+          </div>
+
+          <div class="request-meta">
+            <div>
+              <KeyRound class="size-4" aria-hidden="true" />
+              <span>账号</span>
+              <b>{{ payloadText(notification, 'username') || '-' }}</b>
+            </div>
+            <div>
+              <Phone class="size-4" aria-hidden="true" />
+              <span>联系</span>
+              <b>{{ payloadText(notification, 'contact') || '-' }}</b>
+            </div>
+            <div class="meta-wide">
+              <Clock3 class="size-4" aria-hidden="true" />
+              <span>提交</span>
+              <b>{{ formatDateTime(notification.created_at) }}</b>
+            </div>
+            <div class="meta-wide">
+              <LifeBuoy class="size-4" aria-hidden="true" />
+              <span>说明</span>
+              <b>{{ payloadText(notification, 'note') || notification.message }}</b>
+            </div>
+          </div>
+
+          <div class="recommend-box">
+            <Sparkles class="size-4 shrink-0" aria-hidden="true" />
+            <span>处理方式：</span>
+            <b v-if="resetRequestUser(notification)">重置为临时密码 123456，并要求用户重新登录</b>
+            <b v-else>未匹配系统账号，请人工核验后标记处理</b>
+          </div>
+
+          <div class="request-actions">
+            <button
+              v-if="resetRequestUser(notification)"
+              type="button"
+              class="btn btn-primary"
+              :disabled="Boolean(actionKey)"
+              @click="resetPasswordFromNotification(notification)"
+            >
+              <LoaderCircle v-if="actionKey === `reset-password:${notification.id}`" class="size-4 animate-spin" aria-hidden="true" />
+              <KeyRound v-else class="size-4" aria-hidden="true" />
+              重置为临时密码
+            </button>
+            <button
+              type="button"
+              class="btn"
+              :class="resetRequestUser(notification) ? '' : 'btn-primary'"
+              :disabled="Boolean(actionKey)"
+              @click="markPasswordResetHandled(notification)"
+            >
+              <LoaderCircle v-if="actionKey === `reset-handled:${notification.id}`" class="size-4 animate-spin" aria-hidden="true" />
+              <CheckCircle2 v-else class="size-4" aria-hidden="true" />
+              标记已处理
             </button>
           </div>
         </article>
@@ -528,7 +678,7 @@ onMounted(() => {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -607,6 +757,15 @@ onMounted(() => {
 .stat-slate .stat-icon {
   background: #f8fafc;
   color: #475569;
+}
+
+.stat-blue::before {
+  background: #2563eb;
+}
+
+.stat-blue .stat-icon {
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 
 .message {

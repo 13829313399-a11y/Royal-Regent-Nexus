@@ -27,6 +27,18 @@ export interface RegisterResponse {
   message: string
 }
 
+export interface PasswordResetRequest {
+  username: string
+  display_name: string
+  contact: string
+  note: string
+}
+
+export interface PasswordResetResponse {
+  status: string
+  message: string
+}
+
 export interface AuthGrant {
   role_id: string
   role_name: string
@@ -56,6 +68,10 @@ export function createAuthApi(client: AuthHttpClient = http) {
     },
     async register(payload: RegisterRequest) {
       const response = await client.post<RegisterResponse>('/auth/register', payload)
+      return response.data
+    },
+    async requestPasswordReset(payload: PasswordResetRequest) {
+      const response = await client.post<PasswordResetResponse>('/auth/password-reset-requests', payload)
       return response.data
     },
     async getMe() {

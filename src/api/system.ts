@@ -25,6 +25,11 @@ export interface UserStatusUpdateRequest {
   status: 'active' | 'suspended'
 }
 
+export interface UserPasswordResetRequest {
+  temporary_password: string
+  notification_id?: string
+}
+
 export interface SystemNotificationUpdateRequest {
   status: 'read' | 'handled'
 }
@@ -121,6 +126,10 @@ export function createSystemApi(client: SystemHttpClient = http) {
     },
     async updateUserStatus(userId: string, payload: UserStatusUpdateRequest) {
       const response = await client.patch<UserResponse>(`/system/users/${userId}/status`, payload)
+      return response.data
+    },
+    async resetUserPassword(userId: string, payload: UserPasswordResetRequest) {
+      const response = await client.post<UserResponse>(`/system/users/${userId}/reset-password`, payload)
       return response.data
     },
     async listRoles() {

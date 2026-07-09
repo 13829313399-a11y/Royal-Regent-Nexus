@@ -41,6 +41,7 @@ def register_payload(username: str = "zhangsan"):
 
 
 def login(client: TestClient, username: str, password: str = "123456"):
+    ensure_test_user(username)
     response = client.post("/api/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
     return response.json()
@@ -48,6 +49,56 @@ def login(client: TestClient, username: str, password: str = "123456"):
 
 def logout(client: TestClient):
     client.post("/api/auth/logout")
+
+
+TEST_USER_SPECS = {
+    "engineer": ("user-engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
+}
+
+
+def ensure_test_user(username: str) -> None:
+    if username == "admin" or username not in TEST_USER_SPECS:
+        return
+
+    user_id, display_name, role_id, factory_id, department = TEST_USER_SPECS[username]
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    with db_module.SessionLocal() as db:
+        user = db.get(auth_models.AuthUser, user_id)
+        if user is None:
+            salt, password_hash = auth_service.make_password_hash("123456")
+            db.add(
+                auth_models.AuthUser(
+                    id=user_id,
+                    username=username,
+                    display_name=display_name,
+                    password_salt=salt,
+                    password_hash=password_hash,
+                    status="active",
+                    force_password_change=0,
+                    created_at=auth_service.now_text(),
+                    updated_at=auth_service.now_text(),
+                )
+            )
+        else:
+            user.username = username
+            user.display_name = display_name
+            user.status = "active"
+            user.updated_at = auth_service.now_text()
+
+        user_role_id = f"{user_id}:{role_id}:{factory_id}:{department}"
+        if db.get(auth_models.AuthUserRole, user_role_id) is None:
+            db.add(
+                auth_models.AuthUserRole(
+                    id=user_role_id,
+                    user_id=user_id,
+                    role_id=role_id,
+                    factory_id=factory_id,
+                    department=department,
+                )
+            )
+        db.commit()
 
 
 def test_registration_approval_notification_and_login_flow(monkeypatch):
@@ -120,6 +171,7 @@ def test_non_admin_cannot_use_system_user_management(monkeypatch):
 
 def test_reject_suspend_restore_and_last_admin_guard(monkeypatch):
     with make_client(monkeypatch) as client:
+        ensure_test_user("engineer")
         client.post("/api/auth/register", json=register_payload("lisi"))
         login(client, "admin")
 
@@ -237,3 +289,60 @@ def test_system_notification_access_is_limited_to_targeted_accounts(monkeypatch)
             json={"status": "handled"},
         )
         assert update_response.status_code == 403
+
+
+def test_admin_can_reset_user_password_from_password_reset_notification(monkeypatch):
+    with make_client(monkeypatch) as client:
+        ensure_test_user("engineer")
+
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            engineer = db.get(auth_models.AuthUser, "user-engineer")
+            salt, password_hash = auth_service.make_password_hash("OldStrong123")
+            engineer.password_salt = salt
+            engineer.password_hash = password_hash
+            engineer.force_password_change = 0
+            db.commit()
+
+        request_response = client.post(
+            "/api/auth/password-reset-requests",
+            json={
+                "username": "engineer",
+                "display_name": "华兴工程师",
+                "contact": "13800000000",
+                "note": "忘记密码",
+            },
+        )
+        assert request_response.status_code == 200
+
+        login(client, "admin")
+        password_reset_notification = next(
+            notification
+            for notification in client.get("/api/system/notifications").json()
+            if notification["type"] == "password_reset"
+        )
+
+        reset_response = client.post(
+            "/api/system/users/user-engineer/reset-password",
+            json={"temporary_password": "123456", "notification_id": password_reset_notification["id"]},
+        )
+        assert reset_response.status_code == 200
+        assert reset_response.json()["force_password_change"] is True
+
+        handled_notification = next(
+            notification
+            for notification in client.get("/api/system/notifications").json()
+            if notification["id"] == password_reset_notification["id"]
+        )
+        assert handled_notification["status"] == "handled"
+        assert handled_notification["handled_at"]
+
+        logout(client)
+        old_password_login = client.post("/api/auth/login", json={"username": "engineer", "password": "OldStrong123"})
+        assert old_password_login.status_code == 401
+
+        temporary_password_login = client.post("/api/auth/login", json={"username": "engineer", "password": "123456"})
+        assert temporary_password_login.status_code == 200
+        assert temporary_password_login.json()["force_password_change"] is True
