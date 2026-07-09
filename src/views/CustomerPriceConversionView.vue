@@ -12,6 +12,7 @@ import {
 } from '@lucide/vue'
 import { computed } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
 import { useAppStore } from '@/stores/app'
@@ -66,6 +67,7 @@ const activeDeskId = computed<QuoteDeskId>(() => {
 
 const activeDesk = computed(() => quoteDeskTabs.find((tab) => tab.id === activeDeskId.value) ?? quoteDeskTabs[0])
 const activeDeskIndex = computed(() => quoteDeskTabs.findIndex((tab) => tab.id === activeDeskId.value) + 1)
+const activeFactory = computed(() => appStore.activeProductionFactory)
 
 const pageHeadCopy = computed(() => {
   if (activeDeskId.value === 'quote-pool') {
@@ -100,7 +102,7 @@ const pageHeadCopy = computed(() => {
 })
 
 const overviewMetrics = [
-  { label: '待转换', value: '2', detail: 'BuzzBee / 迪士尼' },
+  { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dicky / 彩星' },
   { label: '待复核', value: '1', detail: '主管核价口径' },
   { label: '权限范围', value: '车间', detail: '本人客户可见' },
 ]
@@ -144,10 +146,11 @@ function selectDesk(deskId: QuoteDeskId) {
         </label>
 
         <div class="quote-topbar-right">
-          <span class="quote-scope">
+          <span class="quote-factory-pill">
             <Building2 class="size-4" aria-hidden="true" />
-            业务部
+            {{ activeFactory.shortName }}
           </span>
+          <AccountMenu />
         </div>
       </div>
     </header>
@@ -356,19 +359,22 @@ function selectDesk(deskId: QuoteDeskId) {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  gap: 12px;
 }
 
-.quote-scope {
+.quote-factory-pill {
   display: inline-flex;
+  height: 32px;
   align-items: center;
-  gap: 7px;
-  border: 1px solid #ccfbf1;
-  border-radius: 999px;
-  background: #f0fdfa;
-  color: #0f766e;
-  padding: 7px 12px;
+  gap: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #475569;
+  padding: 0 10px;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .quote-page {
