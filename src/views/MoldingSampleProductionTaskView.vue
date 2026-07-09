@@ -55,6 +55,7 @@ import type {
 import StatusPill from '@/components/common/StatusPill.vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 interface ItemFillbackDraft {
   actual_weight_kg: string
@@ -81,6 +82,7 @@ interface PaginationState<T> {
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const today = '2026-07-03'
 const PRODUCTION_NOTIFICATION_MODULE = 'production_molding_sample_task'
@@ -189,6 +191,13 @@ const selectedNotification = computed(() =>
   selectedTask.value ? getLatestNotification(selectedTask.value.order.id) : null,
 )
 
+const canManageSelectedFactory = computed(() => authStore.hasFactoryScope(selectedFactoryId.value))
+const canManageSelectedTaskFactory = computed(() => {
+  const factoryId = selectedTask.value?.order.factory_id || selectedFactoryId.value
+  return authStore.hasFactoryScope(factoryId)
+})
+const isSelectedFactoryReadOnly = computed(() => !canManageSelectedFactory.value)
+
 const activeItems = computed<MoldingSampleItem[]>(() => {
   if (!selectedTask.value) {
     return []
@@ -285,16 +294,16 @@ const selectedMissingItems = computed(() => {
   return activeItems.value.filter((item) => missingIds.has(item.id))
 })
 
-const canStartSelectedTask = computed(() => selectedTask.value?.order.status === '待生产')
-const canFillbackSelectedTask = computed(() => selectedTask.value?.order.status === '生产中')
+const canStartSelectedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '待生产')
+const canFillbackSelectedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '生产中')
 const canCompleteSelectedTask = computed(() => canFillbackSelectedTask.value && completionGate.value.can_complete)
-const canRollbackStartedTask = computed(() => selectedTask.value?.order.status === '生产中')
-const canRollbackCompletedTask = computed(() => selectedTask.value?.order.status === '已完成')
+const canRollbackStartedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '生产中')
+const canRollbackCompletedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '已完成')
 const canMarkSelectedNotificationRead = computed(() =>
-  selectedNotification.value?.status === '未读',
+  canManageSelectedTaskFactory.value && selectedNotification.value?.status === '未读',
 )
 const canMarkSelectedNotificationHandled = computed(() =>
-  Boolean(selectedNotification.value && selectedNotification.value.status !== '已处理'),
+  Boolean(canManageSelectedTaskFactory.value && selectedNotification.value && selectedNotification.value.status !== '已处理'),
 )
 
 function readQueryString(value: unknown) {
@@ -648,6 +657,10 @@ async function updateSelectedNotificationStatus(status: NotificationStatus) {
     actionMessage.value = '当前通知已读，无需重复标记。'
     return
   }
+  if (!canManageSelectedTaskFactory.value) {
+    actionMessage.value = '当前厂区为只读，仅可查看数据。'
+    return
+  }
 
   notificationUpdating.value = true
 
@@ -669,6 +682,10 @@ async function updateSelectedNotificationStatus(status: NotificationStatus) {
 async function saveProductionFillback() {
   if (!selectedTask.value) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
+    return
+  }
+  if (!canManageSelectedTaskFactory.value) {
+    actionMessage.value = '当前厂区为只读，仅可查看数据。'
     return
   }
 
@@ -707,6 +724,10 @@ function getProductionTransitionReason(action: ProductionTransitionAction) {
 async function runProductionTransition(action: ProductionTransitionAction) {
   if (!selectedTask.value) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
+    return
+  }
+  if (!canManageSelectedTaskFactory.value) {
+    actionMessage.value = '当前厂区为只读，仅可查看数据。'
     return
   }
   if (action === '开始处理' && !canStartSelectedTask.value) {
@@ -770,6 +791,10 @@ async function runProductionTransition(action: ProductionTransitionAction) {
 async function reportProductionProblem() {
   const problem = productionProblem.value.trim()
   if (!problem || !selectedTask.value) {
+    return
+  }
+  if (!canManageSelectedTaskFactory.value) {
+    actionMessage.value = '当前厂区为只读，仅可查看数据。'
     return
   }
 
@@ -847,6 +872,14 @@ watchEffect(() => {
           <AccountMenu />
         </div>
       </div>
+
+      <section
+        v-if="isSelectedFactoryReadOnly"
+        class="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] font-semibold text-amber-800"
+      >
+        <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600" aria-hidden="true" />
+        <span>当前厂区为只读，仅可查看数据</span>
+      </section>
 
       <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div class="flex flex-wrap items-start justify-between gap-4">
@@ -1398,13 +1431,13 @@ watchEffect(() => {
               <div class="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_112px]">
                 <input
                   v-model="productionProblem"
-                  :disabled="problemSubmitting"
+                  :disabled="problemSubmitting || !canManageSelectedTaskFactory"
                   class="h-8 rounded-lg border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
                   placeholder="生产问题反馈，可回到工程啤办单跟进"
                 >
                 <button
                   type="button"
-                  :disabled="problemSubmitting || !productionProblem.trim()"
+                  :disabled="problemSubmitting || !canManageSelectedTaskFactory || !productionProblem.trim()"
                   class="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-slate-200 text-[11px] font-medium text-slate-500 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                   @click="reportProductionProblem"
                 >

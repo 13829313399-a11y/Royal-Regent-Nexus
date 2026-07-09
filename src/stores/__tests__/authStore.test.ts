@@ -10,6 +10,7 @@ for (const requiredImplementation of [
   'currentUser',
   'roles',
   'permissions',
+  'grants',
   'factoryScopes',
   'isAuthenticated',
   'authApi.login',

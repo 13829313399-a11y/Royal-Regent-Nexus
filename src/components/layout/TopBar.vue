@@ -206,17 +206,17 @@ async function markNotificationHandled(notification: MoldingSampleNotificationRe
   }
 }
 
-async function markSystemNotificationHandled(notification: SystemNotificationResponse) {
+async function markSystemNotificationRead(notification: SystemNotificationResponse) {
   closeNotificationToast()
   isNotificationPanelOpen.value = false
   systemNotifications.value = systemNotifications.value.map((item) =>
     item.id === notification.id
-      ? { ...item, status: 'handled', handled_at: item.handled_at || new Date().toISOString() }
+      ? { ...item, status: 'read', read_at: item.read_at || new Date().toISOString() }
       : item,
   )
 
   try {
-    await systemApi.updateNotification(notification.id, { status: 'handled' })
+    await systemApi.updateNotification(notification.id, { status: 'read' })
   }
   catch (error) {
     notificationError.value = getApiErrorMessage(error)
@@ -382,7 +382,7 @@ onUnmounted(() => {
                   :key="notification.id"
                   :to="getSystemNotificationRoute(notification)"
                   class="block rounded-lg border border-teal-100 bg-teal-50/60 px-3 py-2.5 text-left transition hover:border-teal-200 hover:bg-teal-50"
-                  @click="markSystemNotificationHandled(notification)"
+                  @click="markSystemNotificationRead(notification)"
                 >
                   <div class="flex items-start justify-between gap-2">
                     <span class="min-w-0 truncate text-[13px] font-bold text-slate-950">{{ notification.title }}</span>

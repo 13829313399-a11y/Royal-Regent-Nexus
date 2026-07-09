@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db import get_db
 from app.schemas.auth import AuthMeResponse, LoginRequest, RegisterRequest, RegisterResponse
 from app.services.auth import (
@@ -26,7 +27,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
         SESSION_COOKIE_NAME,
         token,
         httponly=True,
-        secure=False,
+        secure=settings.session_cookie_secure,
         samesite="lax",
         max_age=12 * 60 * 60,
         path="/",
@@ -47,5 +48,11 @@ def me(current_user: AuthContext = Depends(get_current_user)):
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     revoke_session(db, request.cookies.get(SESSION_COOKIE_NAME), request=request)
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(
+        SESSION_COOKIE_NAME,
+        path="/",
+        secure=settings.session_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
     return None

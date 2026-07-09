@@ -12,17 +12,19 @@ for (const requiredCopy of [
   '欢迎回来',
   '企业账号',
   '登录密码',
-  '7 天内免登录',
-  '企业身份登录',
-  '企业微信',
-  '扫码登录',
-  '华兴试点账号',
-  'carton_warehouse',
-  'qa_inspector',
-  'molding_clerk',
-  '华兴跟客',
-  'huaxing_molding_a_sales',
-  'admin',
+  '继续使用上次账号',
+  '记住账号',
+  '切换账号',
+  '主动退出后需要重新验证密码',
+  '密码不会保存在本系统',
+  '密码不能包含中文，请使用英文、数字或符号',
+  '密码重置协助',
+  '当前版本未开放短信/邮件自助找回',
+  '联系系统管理员',
+  '复制账号信息',
+  '没有企业账号？',
+  '提交账号申请',
+  '审批通过后即可登录系统',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -32,6 +34,16 @@ for (const requiredImplementation of [
   'authStore.login',
   'router.replace',
   'redirect',
+  'LAST_LOGIN_ACCOUNT_STORAGE_KEY',
+  'readRecentAccount',
+  'saveRecentAccount',
+  'localStorage',
+  'passwordModel',
+  'chinesePasswordPattern',
+  'showPasswordHelp',
+  'openPasswordHelp',
+  'copyPasswordResetInfo',
+  'navigator.clipboard.writeText',
   'showPassword',
   'brand-grid',
   'brand-glow',
@@ -44,3 +56,7 @@ for (const requiredImplementation of [
 assert.match(source, /text-\[21px\] font-semibold leading-tight/)
 assert.match(source, /text-\[13px\] text-slate-400/)
 assert.doesNotMatch(source, /size-14 shrink-0/)
+assert.doesNotMatch(source, /华兴试点账号/)
+assert.doesNotMatch(source, /默认密码 123456/)
+assert.doesNotMatch(source, /trialAccounts/)
+assert.doesNotMatch(source, /7 天内免登录/)

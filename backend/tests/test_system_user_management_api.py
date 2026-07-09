@@ -134,7 +134,7 @@ def test_reject_suspend_restore_and_last_admin_guard(monkeypatch):
         logout(client)
         rejected_login = client.post("/api/auth/login", json={"username": "lisi", "password": "Strong123"})
         assert rejected_login.status_code == 401
-        assert rejected_login.json()["detail"] == "账号申请未通过，请联系管理员"
+        assert rejected_login.json()["detail"] == "账号申请未通过，原因：资料不完整"
 
         login(client, "admin")
         users = client.get("/api/system/users?status=active").json()
@@ -167,6 +167,61 @@ def test_reject_suspend_restore_and_last_admin_guard(monkeypatch):
         )
         assert last_admin_response.status_code == 400
         assert last_admin_response.json()["detail"] == "不能停用最后一个系统管理员"
+
+
+def test_rejected_registration_can_be_resubmitted_with_same_username(monkeypatch):
+    with make_client(monkeypatch) as client:
+        client.post("/api/auth/register", json=register_payload("resubmit-user"))
+        login(client, "admin")
+
+        first_request_id = client.get("/api/system/registration-requests?status=pending").json()[0]["id"]
+        reject_response = client.post(
+            f"/api/system/registration-requests/{first_request_id}/reject",
+            json={"review_comment": "补充手机号"},
+        )
+        assert reject_response.status_code == 200
+        assert reject_response.json()["status"] == "rejected"
+        logout(client)
+
+        resubmitted_payload = register_payload("resubmit-user")
+        resubmitted_payload.update(
+            {
+                "display_name": "张三二次提交",
+                "password": "NewStrong123",
+                "confirm_password": "NewStrong123",
+                "phone": "13900000000",
+                "position": "高级工程师",
+            }
+        )
+        resubmit_response = client.post("/api/auth/register", json=resubmitted_payload)
+        assert resubmit_response.status_code == 200
+        assert resubmit_response.json()["status"] == "pending"
+
+        pending_login_response = client.post(
+            "/api/auth/login",
+            json={"username": "resubmit-user", "password": "NewStrong123"},
+        )
+        assert pending_login_response.status_code == 401
+        assert pending_login_response.json()["detail"] == "账号申请正在审批中，请等待管理员开通"
+
+        login(client, "admin")
+        pending_requests = client.get("/api/system/registration-requests?status=pending").json()
+        resubmitted_request = next(item for item in pending_requests if item["username"] == "resubmit-user")
+        assert resubmitted_request["id"] != first_request_id
+        assert resubmitted_request["display_name"] == "张三二次提交"
+        assert resubmitted_request["phone"] == "13900000000"
+        assert resubmitted_request["position"] == "高级工程师"
+
+        rejected_requests = client.get("/api/system/registration-requests?status=rejected").json()
+        assert any(item["id"] == first_request_id for item in rejected_requests)
+
+        notifications = client.get("/api/system/notifications").json()
+        assert any(
+            notification["type"] == "user_registration"
+            and notification["status"] == "unread"
+            and notification["payload"]["registration_request_id"] == resubmitted_request["id"]
+            for notification in notifications
+        )
 
 
 def test_system_notification_access_is_limited_to_targeted_accounts(monkeypatch):

@@ -82,6 +82,7 @@ function seedAccount(options: {
     display_name: '华兴工程师',
     roles: options.roles,
     permissions: options.permissions ?? ['molding_sample:notification_read'],
+    grants: [],
     factory_scopes: options.factoryScopes ?? ['huaxing'],
     department_scopes: ['engineering'],
     force_password_change: false,
@@ -369,7 +370,7 @@ describe('TopBar notifications', () => {
     }
   })
 
-  it('shows system registration notifications for user management admins', async () => {
+  it('marks a clicked system registration notification read until approval handles it', async () => {
     seedAccount({
       roles: ['系统管理员'],
       permissions: ['system:user_manage'],
@@ -402,6 +403,7 @@ describe('TopBar notifications', () => {
     await notificationLink?.trigger('click')
     await flushPromises()
 
-    expect(systemApi.updateNotification).toHaveBeenCalledWith('SYS-REG-1', { status: 'handled' })
+    expect(systemApi.updateNotification).toHaveBeenCalledWith('SYS-REG-1', { status: 'read' })
+    expect(wrapper.get('button[aria-label="未处理项通知"]').text()).toContain('1')
   })
 })

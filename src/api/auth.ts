@@ -27,6 +27,15 @@ export interface RegisterResponse {
   message: string
 }
 
+export interface AuthGrant {
+  role_id: string
+  role_name: string
+  factory_id: string
+  department: string
+  permissions: string[]
+  data_scope: string
+}
+
 export interface AuthMeResponse {
   id: string
   username: string
@@ -35,6 +44,7 @@ export interface AuthMeResponse {
   permissions: string[]
   factory_scopes: string[]
   department_scopes: string[]
+  grants: AuthGrant[]
   force_password_change: boolean
 }
 

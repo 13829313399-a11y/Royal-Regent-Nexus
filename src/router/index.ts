@@ -64,6 +64,7 @@ const routes: RouteRecordRaw[] = [
       title: '注塑生产中枢',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['injection_schedule:read'],
     },
   },
   {
@@ -74,6 +75,7 @@ const routes: RouteRecordRaw[] = [
       title: '啤办生产任务单',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['molding_sample:production_read'],
     },
   },
   {
@@ -84,6 +86,7 @@ const routes: RouteRecordRaw[] = [
       title: '原料管理模块',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['molding_sample:warehouse_requisition'],
     },
   },
   {
@@ -94,6 +97,7 @@ const routes: RouteRecordRaw[] = [
       title: '报价与成本中心',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['customer_price:read'],
     },
   },
   {
@@ -131,6 +135,7 @@ const routes: RouteRecordRaw[] = [
       title: '啤办进度追踪',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['molding_sample:read'],
     },
   },
   {
