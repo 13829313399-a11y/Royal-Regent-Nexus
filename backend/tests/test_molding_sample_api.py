@@ -434,6 +434,22 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert notifications[0]["target_role"] == "啤机部"
 
 
+def test_create_order_ignores_client_supplied_status_and_starts_review(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-STATUS-BYPASS-001")
+    payload["order"]["status"] = "已完成"
+
+    response = client.post("/api/injection", json=payload)
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["order"]["status"] == "待审核"
+    assert created["audit_logs"][0]["from_status"] == "待审核"
+    assert created["audit_logs"][0]["to_status"] == "待审核"
+    assert created["notifications"][0]["target_role"] == "工程主管"
+    assert created["notifications"][0]["event_type"] == "待主管审核"
+
+
 def test_factory_scope_limits_molding_sample_reads_and_writes(client):
     login_as(client, "admin")
     huadeng_payload = sample_order_payload("BP-HD-SCOPE-001")

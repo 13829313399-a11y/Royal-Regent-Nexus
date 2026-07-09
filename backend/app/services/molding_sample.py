@@ -59,6 +59,7 @@ MANAGER_TARGET_ROLE = "经理"
 NOTIFICATION_STATUSES = {"未读", "已读", "已处理"}
 PROBLEM_STATUSES = {"待处理", "已解决"}
 
+INITIAL_ORDER_STATUS = "待审核"
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
 ALLOWED_ITEM_PATCH_FIELDS = {
     "receipt_no",
@@ -572,7 +573,7 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
     if db.get(MoldingSampleOrder, payload.order.id):
         raise HTTPException(status_code=409, detail="啤办单编号已存在")
 
-    status = payload.order.status or "待审核"
+    status = INITIAL_ORDER_STATUS
     order = MoldingSampleOrder(
         **payload.order.model_dump(exclude={"status", "created_at", "updated_at"}),
         status=status,
