@@ -35,7 +35,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
         SESSION_COOKIE_NAME,
         token,
         httponly=True,
-        secure=settings.session_cookie_secure,
+        secure=settings.effective_session_cookie_secure,
         samesite="lax",
         max_age=12 * 60 * 60,
         path="/",
@@ -64,7 +64,7 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     response.delete_cookie(
         SESSION_COOKIE_NAME,
         path="/",
-        secure=settings.session_cookie_secure,
+        secure=settings.effective_session_cookie_secure,
         httponly=True,
         samesite="lax",
     )
