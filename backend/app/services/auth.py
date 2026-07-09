@@ -500,6 +500,7 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
                 updated_at=now,
             )
         )
+        db.flush()
     else:
         existing_user.display_name = display_name
         existing_user.password_salt = salt

@@ -1223,6 +1223,14 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: TDD red check first failed because the component lacked the reference skeleton classes such as `permission-approval-page`, `wrap`, `topbar`, `stats`, `grid`, `q-item`, `applicant`, `section`, `sec-title`, `roles`, `actions`, and `note-in`. After implementation, `npm.cmd run test:unit -- src/views/__tests__/systemUserManagementView.spec.ts` passed; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; full `npm.cmd run test:unit` passed 14 files / 54 tests.
 - Decisions: this is a visual/layout alignment for the approval module, not a backend permission-model change. Existing password reset and user-management tabs are intentionally retained because they are part of the current closed-loop account module.
 
+### 2026-07-09
+
+- Requirement: investigate and fix the production server 500 error when submitting a new registration account request.
+- Implementation: confirmed the live server returns 500 for valid `/api/auth/register` submissions while invalid factory validation returns 400, existing `admin` registration returns 409, failed login writes audit normally, and password reset notification creation succeeds. The isolated root cause is SQLAlchemy flushing `AuthRegistrationRequest` before the newly added `AuthUser`; PostgreSQL enforces the registration request `user_id` foreign key, so new registrations fail. Added an explicit `db.flush()` immediately after adding a new `AuthUser` and before creating the registration request.
+- Files changed: `backend/app/services/auth.py`, `backend/tests/test_auth_api.py`, and `PROJECT_MEMORY.md`.
+- Verification: reproduced production `500 Internal Server Error` against `http://47.115.217.27/api/auth/register`; local SQLAlchemy echo showed `INSERT INTO auth_registration_requests` could be emitted before `INSERT INTO auth_users`; added a regression test that records the first flush as `{"AuthUser"}`; `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_auth_api.py backend/tests/test_system_user_management_api.py -q` passed 18 tests.
+- Follow-up: deploy this fix to the server and retest registration on production; the server password shared in chat should be rotated because it was exposed in the conversation.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.
