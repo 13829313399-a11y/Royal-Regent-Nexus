@@ -74,6 +74,8 @@ export interface UserResponse {
   id: string
   username: string
   display_name: string
+  phone: string
+  email: string
   status: string
   force_password_change: boolean
   last_login_at: string

@@ -153,6 +153,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SystemUserManagementView.vue'),
     meta: {
       title: '账号与权限管理',
+      fullPage: true,
       requiresAuth: true,
       permissions: ['system:user_manage'],
       enforcePermissions: true,
