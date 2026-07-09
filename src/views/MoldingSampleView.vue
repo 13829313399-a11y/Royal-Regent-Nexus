@@ -601,9 +601,15 @@ function getRawMaterialUnitPriceLabel(material: string) {
 }
 
 const isSelectedOrderDataExpanded = ref(false)
-const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create'))
-const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft'))
-const canDeleteDraftOrder = computed(() => authStore.hasPermission('molding_sample:delete_draft'))
+const canManageSelectedFactory = computed(() => authStore.hasFactoryScope(selectedFactoryId.value))
+const canManageSelectedOrderFactory = computed(() => {
+  const factoryId = selectedRecord.value?.order.factory_id || selectedFactoryId.value
+  return authStore.hasFactoryScope(factoryId)
+})
+const isSelectedFactoryReadOnly = computed(() => !canManageSelectedFactory.value)
+const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create') && canManageSelectedFactory.value)
+const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft') && canManageSelectedOrderFactory.value)
+const canDeleteDraftOrder = computed(() => authStore.hasPermission('molding_sample:delete_draft') && canManageSelectedOrderFactory.value)
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
@@ -631,6 +637,7 @@ const canDeleteSelectedWithdrawnOrder = computed(() =>
 )
 const canDeleteSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
+  && canManageSelectedOrderFactory.value
   && (
     authStore.hasPermission('system:user_manage')
     || canDeleteSelectedWithdrawnOrder.value
@@ -638,7 +645,7 @@ const canDeleteSelectedOrder = computed(() =>
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
-  return Boolean(actor && authStore.hasPermission(actor.permission))
+  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.hasPermission(actor.permission))
 })
 
 function normalizeBoardStatus(status: MoldingSampleStatus): MoldingSampleStatus {
@@ -929,6 +936,11 @@ function splitColorPms(value: string) {
 }
 
 function startCreateOrder() {
+  if (!canManageSelectedFactory.value) {
+    actionMessage.value = '当前厂区为只读，仅可查看数据。'
+    return
+  }
+
   editingRejectedOrderId.value = ''
   restoreSavedCreateDraft()
   activeView.value = 'create'
@@ -1276,7 +1288,9 @@ function showCreateSuccessToast(orderId: string) {
 
 async function submitManualCreate() {
   if (!canSubmitCreateForm.value) {
-    actionMessage.value = isEditingRejectedOrder.value
+    actionMessage.value = isSelectedFactoryReadOnly.value
+      ? '当前厂区为只读，仅可查看数据。'
+      : isEditingRejectedOrder.value
       ? '当前账号没有编辑驳回单权限。'
       : '当前账号没有新建啤办单权限。'
     return
@@ -1371,6 +1385,11 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
     return
   }
 
+  if (!canManageSelectedOrderFactory.value) {
+    actionMessage.value = '当前厂区为只读，仅可查看数据。'
+    return
+  }
+
   const reason = approvalNote.value.trim()
   if (decision === '驳回' && !reason) {
     actionMessage.value = '驳回必须填写审核意见。'
@@ -1408,7 +1427,9 @@ async function withdrawSelectedOrder() {
   }
 
   if (!canWithdrawSelectedOrder.value) {
-    actionMessage.value = '只有开单工程师可以撤回待审核单。'
+    actionMessage.value = !canManageSelectedOrderFactory.value
+      ? '当前厂区为只读，仅可查看数据。'
+      : '只有开单工程师可以撤回待审核单。'
     return
   }
 
@@ -1441,7 +1462,9 @@ async function deleteSelectedOrder() {
   }
 
   if (!canDeleteSelectedOrder.value) {
-    actionMessage.value = '只有管理员或可删草稿的工程账号可以删除当前啤办单。'
+    actionMessage.value = !canManageSelectedOrderFactory.value
+      ? '当前厂区为只读，仅可查看数据。'
+      : '只有管理员或可删草稿的工程账号可以删除当前啤办单。'
     return
   }
 
@@ -2167,6 +2190,7 @@ onUnmounted(() => {
           type="button"
           class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
           :class="activeView === 'create' ? 'bg-slate-900 text-white' : 'text-slate-500'"
+          :disabled="!canManageSelectedFactory"
           @click="startCreateOrder"
         >
           <FilePlus2 class="size-4" aria-hidden="true" />
@@ -2425,6 +2449,14 @@ onUnmounted(() => {
     </Transition>
 
     <div class="mx-auto max-w-[1720px] px-5 py-4">
+      <section
+        v-if="isSelectedFactoryReadOnly"
+        class="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-800"
+      >
+        <TriangleAlert class="mt-0.5 size-4 shrink-0 text-amber-600" aria-hidden="true" />
+        <span>当前厂区为只读，仅可查看数据</span>
+      </section>
+
       <section
         class="mb-3 flex flex-wrap items-center justify-end gap-2"
         aria-label="啤办业务导出打印操作区"
@@ -3783,8 +3815,9 @@ onUnmounted(() => {
         </p>
         <button
           type="button"
-          class="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white"
-          @click="setView('create')"
+          class="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+          :disabled="!canManageSelectedFactory"
+          @click="startCreateOrder"
         >
           <Plus class="size-4" aria-hidden="true" />
           新建啤办单

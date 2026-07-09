@@ -1079,6 +1079,86 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Decisions: v1 reuses existing seeded roles and does not add role-management UI; registration only collects basic employee information, while administrators choose the final role during approval; system notifications are separate from啤办 business notifications; scoped permission/grants refactor remains a later phase.
 - Assumptions: factory/department values continue to use existing IDs (`huakang-a`, `huakang-b`, `huadeng`, `huaxing`, and current department IDs); position remains a text field used only for role recommendation and human review in this slice.
 
+### 2026-07-09
+
+- Requirement: optimize the login/register/permission module UI using the local reference HTML/CSS in `C:\Users\匡树杰\Desktop\rr项目样式参考\login`.
+- Implementation: refined `LoginView.vue` brand-side feature cards, input focus ring, error alert, and trial-account chips; rebuilt `RegisterView.vue` around the reference two-panel account request card with dark guidance side, approval steps, icon input controls, status banners, and responsive form layout; rebuilt `SystemUserManagementView.vue` into the reference-style account console with header mark, statistic cards, segmented tabs, pending-request approval cards, role recommendation block, user search/status filter, pill statuses, and denser user table. Backend auth/approval APIs and existing permissions logic were not changed.
+- Files changed: `src/views/LoginView.vue`, `src/views/RegisterView.vue`, `src/views/SystemUserManagementView.vue`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit` passed 13 files / 45 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decisions: this pass prioritizes visual fidelity to the provided login/register/system-users reference files while preserving v1 scope: no role management page, no password-reset flow, no SSO implementation, and no backend contract changes.
+
+### 2026-07-09
+
+- Requirement: browser feedback on `/login?logged_out=1` requested clearing the `华兴试点账号 / 默认密码 123456` demo-account panel so users can register instead.
+- Implementation: removed the login page trial-account data/list and the disabled enterprise-WeChat/QR login controls; cleared the default `engineer / 123456` login values; added a prominent `/register` account-application callout under the login button; updated the login view source contract test to require the registration callout and reject the removed demo-account strings.
+- Files changed: `src/views/LoginView.vue`, `src/views/__tests__/loginViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit` passed 13 files / 45 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; source search confirmed `src/views/LoginView.vue` no longer contains `华兴试点账号`, `默认密码 123456`, `trialAccounts`, `企业微信`, or `扫码登录`.
+- Decision: the login page should no longer expose seeded/demo account shortcuts; new users should enter through `/register` and wait for administrator approval.
+
+### 2026-07-09
+
+- Requirement: browser feedback on the top-right logged-in account badge requested showing concrete account details on hover: factory, department, and position.
+- Implementation: enhanced the shared `AccountMenu.vue` with a hover/focus detail card that displays factory scope, department scope, and the current role as the v1 position source; added readable labels for wildcard factory scope and internal departments such as the system administrator department; covered the detail card in the account menu unit tests.
+- Files changed: `src/components/layout/AccountMenu.vue`, `src/components/layout/__tests__/accountMenu.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src/components/layout/__tests__/accountMenu.spec.ts` passed 1 file / 4 tests; `npm.cmd run test:unit` passed 13 files / 47 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decision: until `/auth/me` exposes a dedicated `position` field, the account detail card uses the current assigned role list as the displayed position.
+
+### 2026-07-09
+
+- Requirement: browser feedback on the login form asked for a more professional strategy so users do not have to re-enter the account every time after logging out.
+- Implementation: changed the login flow to remember only the last successful account in `localStorage` under `rr:last-login-account`; the login page now pre-fills that account on return, shows a "continue with last account" card, supports clearing/switching accounts, and keeps password handling with the browser or enterprise password manager. Replaced the misleading unused "7 天内免登录" checkbox with an actual "记住账号" control and added security copy explaining that explicit logout still requires password re-verification.
+- Files changed: `src/views/LoginView.vue`, `src/views/__tests__/loginViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `node src/views/__tests__/loginViewLayout.test.ts` passed; `npm.cmd run test:unit` passed 13 files / 47 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decision: the v1 professional behavior is account recall only; password is not stored in front-end storage, and explicit logout continues to clear the HttpOnly session cookie.
+
+### 2026-07-09
+
+- Requirement: browser feedback on login requested rejected account login errors show the administrator's rejection reason, and password inputs should not allow Chinese characters.
+- Implementation: when a rejected user enters the correct password, backend login now loads the related rejected `auth_registration_requests.review_comment` and returns `账号申请未通过，原因：...`; wrong passwords still return the generic credential error. Added backend password character validation for login and registration so Chinese characters are rejected with `密码不能包含中文，请使用英文、数字或符号`. The login and register password inputs now strip Chinese characters on input/paste, use password-manager-friendly attributes, and display a small inline hint when Chinese is removed.
+- Files changed: `backend/app/services/auth.py`, `backend/tests/test_auth_api.py`, `backend/tests/test_system_user_management_api.py`, `src/views/LoginView.vue`, `src/views/RegisterView.vue`, `src/views/__tests__/loginViewLayout.test.ts`, `src/views/__tests__/registerView.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `backend\.venv\Scripts\python.exe -m pytest backend\tests\test_auth_api.py backend\tests\test_system_user_management_api.py -q` passed 10 tests; `node src/views/__tests__/loginViewLayout.test.ts` passed; `npm.cmd run test:unit` passed 13 files / 47 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decision: rejected login reason is only exposed after password verification succeeds; passwords remain allowed to use English letters, numbers, and symbols, but Chinese characters are blocked in both UI and backend.
+
+### 2026-07-09
+
+- Requirement: browser feedback on the login page noted the "忘记密码？" entry was not implemented and asked for a more formal strategy.
+- Implementation: replaced the inert forgot-password button with a formal "密码重置协助" modal. The modal states that SMS/email self-service reset is not open in v1, explains the secure administrator-assisted process, shows the current account or asks the user to fill it, and provides a copy action for a password reset assistance message. No backend reset workflow, email, SMS, or fake ticket submission was added.
+- Files changed: `src/views/LoginView.vue`, `src/views/__tests__/loginViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `node src/views/__tests__/loginViewLayout.test.ts` passed; `npm.cmd run test:unit` passed 13 files / 47 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decision: v1 keeps password recovery as administrator-assisted guidance only; a real reset request table, system notification, email/SMS delivery, or first-login password-change flow remains future scope.
+
+### 2026-07-09
+
+- Requirement: adjust factory data permissions to the confirmed group-collaboration model: accounts with module read permission can view other factories' data, but write operations are limited to factories in the account's `factoryScopes`; `factoryScopes = ["*"]` remains group-level read/write.
+- Implementation: changed molding-sample order/problem/notification query paths to stop filtering readable data by `factoryScopes`, while create/edit/delete/status/fillback/problem/requisition/notification-update writes still check the target factory before mutating. Injection scheduling import remains factory-scoped as a write operation, while import preview and machine status reads are no longer factory-scope blocked. Added route-level permissions for molding sample progress, production tasks, injection scheduling, raw material management, quote center, and system users. Added readonly banners and disabled write controls on the molding sample and production task pages when the selected factory is outside the current account's writable factory scope.
+- Files changed: `backend/app/services/molding_sample.py`, `backend/app/api/injection_schedule.py`, `backend/tests/test_molding_sample_api.py`, `backend/tests/test_injection_schedule_api.py`, `src/router/index.ts`, `src/router/__tests__/authGuard.test.ts`, `src/router/__tests__/systemPermission.spec.ts`, `src/views/MoldingSampleView.vue`, `src/views/MoldingSampleProductionTaskView.vue`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `backend/.venv/Scripts/python.exe -m pytest backend/tests -q` passed 55 tests; `npm.cmd run test:unit` passed 13 files / 49 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF working-copy warnings.
+- Decisions: this slice does not add a factory-admin role or hide other factory topbar entries; cross-factory visibility is complete readonly for implemented formal data pages, and backend remains the final write guard.
+
+### 2026-07-09
+
+- Requirement: finish the next internal-trial security boundary items for the login/register/permission module: system registration notification clicks should mark notifications only as read, session Cookie `Secure` should be controlled by env/config, and seeded default trial accounts should be disableable for production.
+- Implementation: added `SESSION_COOKIE_SECURE` and `SEED_DEFAULT_ACCOUNTS` settings with development and production env examples; login/logout session cookie secure behavior now follows `settings.session_cookie_secure`; default roles and permissions still seed, but default trial users such as `admin/123456` are only created or self-healed when `seed_default_accounts` is enabled; top-bar system registration notification clicks now send `{ status: "read" }` and keep the item counted as unhandled until approval/rejection marks it handled server-side.
+- Files changed: `backend/app/core/config.py`, `backend/app/api/auth.py`, `backend/app/services/auth.py`, `backend/.env.example`, `.env.production.example`, `backend/tests/test_auth_api.py`, `src/components/layout/TopBar.vue`, `src/components/layout/__tests__/topBarNotifications.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: TDD red checks first failed for missing Secure cookie, disabled default accounts still logging in, and system notifications clicking as `handled`; after implementation, `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_auth_api.py -q` passed 8 tests and `npm.cmd run test:unit -- src/components/layout/__tests__/topBarNotifications.spec.ts` passed 8 tests. Full verification also passed: `backend/.venv/Scripts/python.exe -m pytest backend/tests -q` passed 57 tests; `npm.cmd run test:unit` passed 13 files / 49 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decisions: disabling default accounts is intentionally limited to seeded trial users and does not disable seeded roles or permissions; production example now sets `SESSION_COOKIE_SECURE=true` and `SEED_DEFAULT_ACCOUNTS=false`, while development example keeps `SESSION_COOKIE_SECURE=false` and `SEED_DEFAULT_ACCOUNTS=true`.
+
+### 2026-07-09
+
+- Requirement: allow employees whose account application was rejected to resubmit with the same username/work number, instead of being blocked by the duplicate username check.
+- Implementation: `register_user` now allows an existing `AuthUser` only when its status is `rejected`; the user record is updated back to `pending` with the latest display name, contact details through a new registration request, password hash, and cleared role assignments, while a new pending `auth_registration_requests` row and unread `system_notifications` entry are created. Existing `active`, `pending`, and `suspended` accounts still return `409 账号或工号已存在`.
+- Files changed: `backend/app/services/auth.py`, `backend/tests/test_system_user_management_api.py`, and `PROJECT_MEMORY.md`.
+- Verification: TDD red check first failed because a rejected account resubmission returned `409`; after implementation, `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_system_user_management_api.py -q` passed 5 tests, `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_auth_api.py -q` passed 8 tests, and `backend/.venv/Scripts/python.exe -m pytest backend/tests -q` passed 58 tests.
+- Decisions: a resubmission preserves the old rejected request for audit/history and creates a new pending request for administrator review.
+
+### 2026-07-09
+
+- Requirement: close the multi-role/multi-factory cross-permission gap where merged `permissions` and merged `factory_scopes` could combine unrelated grants, such as using a Huaxing engineer permission in a Huakang A factory scope.
+- Implementation: added structured `grants` to backend `AuthContext` and `/api/auth/me`/login responses, with each grant carrying `role_id`, `role_name`, `factory_id`, `department`, sorted `permissions`, and `data_scope`; added `has_permission_in_scope` and `ensure_permission_in_scope`; migrated factory-context write operations for molding sample orders, notifications, problems, status transitions, production fillback, requisitions, and injection-scheduling imports to scoped permission checks. Legacy `permissions`, `factory_scopes`, and `department_scopes` remain for route/UI compatibility, and read paths still preserve the confirmed cross-factory read model.
+- Files changed: `backend/app/schemas/auth.py`, `backend/app/services/auth.py`, `backend/app/services/molding_sample.py`, `backend/app/api/injection_schedule.py`, `backend/tests/test_auth_api.py`, `backend/tests/test_molding_sample_api.py`, `src/api/auth.ts`, `src/stores/auth.ts`, `src/stores/__tests__/authStore.test.ts`, `src/components/layout/__tests__/accountMenu.spec.ts`, `src/components/layout/__tests__/topBarNotifications.spec.ts`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: TDD red checks first failed because `/auth/me` lacked `grants` and a cross-scope user could create a Huakang A molding sample order using Huaxing engineer permission; after implementation, the targeted tests passed. `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_auth_api.py backend/tests/test_molding_sample_api.py backend/tests/test_injection_schedule_api.py -q` passed 42 tests; `backend/.venv/Scripts/python.exe -m pytest backend/tests -q` passed 59 tests; `npm.cmd run test:unit` passed 13 files / 49 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decisions: scoped enforcement is now required for backend writes with a concrete target factory; non-factory global operations such as material price maintenance and inventory batch setup remain aggregate-permission checks until they gain a factory field.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.

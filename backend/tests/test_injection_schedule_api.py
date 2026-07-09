@@ -34,10 +34,10 @@ def login_as(client, username: str):
     return response.json()
 
 
-def upload_fixture(client):
+def upload_fixture(client, factory_id: str = "huaxing"):
     return client.post(
         "/api/injection-scheduling/imports/daily-schedule",
-        data={"factory_id": "huaxing"},
+        data={"factory_id": factory_id},
         files={
             "file": (
                 "fixture.xlsx",
@@ -83,3 +83,23 @@ def test_daily_schedule_import_persists_preview_and_machine_status(monkeypatch):
         assert machines_response.status_code == 200
         machines = machines_response.json()
         assert [machine["machine_code"] for machine in machines] == ["旧1", "新1"]
+
+
+def test_injection_schedule_factory_scope_limits_import_but_not_read(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        import_response = upload_fixture(client, "huadeng")
+        assert import_response.status_code == 201
+        batch_id = import_response.json()["batch_id"]
+
+        login_as(client, "molding_clerk")
+        blocked_import_response = upload_fixture(client, "huadeng")
+        assert blocked_import_response.status_code == 403
+
+        preview_response = client.get(f"/api/injection-scheduling/imports/{batch_id}/preview")
+        assert preview_response.status_code == 200
+        assert preview_response.json()["factory_id"] == "huadeng"
+
+        machines_response = client.get(f"/api/injection-scheduling/machines/status?batch_id={batch_id}")
+        assert machines_response.status_code == 200
+        assert [machine["machine_code"] for machine in machines_response.json()] == ["旧1", "新1"]

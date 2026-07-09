@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
-import { authApi, type AuthMeResponse, type LoginRequest } from '@/api/auth'
+import { authApi, type AuthGrant, type AuthMeResponse, type LoginRequest } from '@/api/auth'
 
 interface AuthState {
   currentUser: AuthMeResponse | null
   roles: string[]
   permissions: string[]
+  grants: AuthGrant[]
   factoryScopes: string[]
   departmentScopes: string[]
   isAuthenticated: boolean
@@ -16,6 +17,7 @@ export const useAuthStore = defineStore('auth', {
     currentUser: null,
     roles: [],
     permissions: [],
+    grants: [],
     factoryScopes: [],
     departmentScopes: [],
     isAuthenticated: false,
@@ -26,6 +28,7 @@ export const useAuthStore = defineStore('auth', {
       this.currentUser = user
       this.roles = user.roles
       this.permissions = user.permissions
+      this.grants = user.grants
       this.factoryScopes = user.factory_scopes
       this.departmentScopes = user.department_scopes
       this.isAuthenticated = true
@@ -35,6 +38,7 @@ export const useAuthStore = defineStore('auth', {
       this.currentUser = null
       this.roles = []
       this.permissions = []
+      this.grants = []
       this.factoryScopes = []
       this.departmentScopes = []
       this.isAuthenticated = false

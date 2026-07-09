@@ -349,6 +349,93 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert notifications[0]["target_role"] == "啤机部"
 
 
+def test_factory_scope_limits_writes_but_not_molding_sample_reads(client):
+    login_as(client, "admin")
+    huadeng_payload = sample_order_payload("BP-HD-SCOPE-001")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+    create_response = client.post("/api/injection", json=huadeng_payload)
+    assert create_response.status_code == 201
+
+    login_as(client, "engineer")
+    list_response = client.get("/api/injection")
+    assert list_response.status_code == 200
+    assert any(record["order"]["id"] == "BP-HD-SCOPE-001" for record in list_response.json())
+
+    detail_response = client.get("/api/injection/BP-HD-SCOPE-001")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["order"]["factory_id"] == "huadeng"
+
+    edited_payload = sample_order_payload("BP-HD-SCOPE-001")
+    edited_payload["order"]["factory_id"] = "huadeng"
+    edited_payload["order"]["product_name"] = "华登跨厂区误改"
+    edit_response = client.put("/api/injection/BP-HD-SCOPE-001", json=edited_payload)
+    assert edit_response.status_code == 403
+
+    login_as(client, "supervisor")
+    approval_response = client.patch("/api/injection/BP-HD-SCOPE-001/status", json={"action": "主管通过"})
+    assert approval_response.status_code == 403
+
+    login_as(client, "admin")
+    admin_approval_response = client.patch("/api/injection/BP-HD-SCOPE-001/status", json={"action": "主管通过"})
+    assert admin_approval_response.status_code == 200
+    assert admin_approval_response.json()["order"]["status"] == "待生产"
+
+
+def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    salt, password_hash = auth_service.make_password_hash("123456")
+    with db_module.SessionLocal() as db:
+        db.add(
+            auth_models.AuthUser(
+                id="user-cross-scope",
+                username="cross_scope",
+                display_name="跨厂区多角色用户",
+                password_salt=salt,
+                password_hash=password_hash,
+                status="active",
+                force_password_change=0,
+                created_at=auth_service.now_text(),
+                updated_at=auth_service.now_text(),
+            )
+        )
+        db.add(
+            auth_models.AuthUserRole(
+                id="user-cross-scope:engineer:huaxing:engineering",
+                user_id="user-cross-scope",
+                role_id="engineer",
+                factory_id="huaxing",
+                department="engineering",
+            )
+        )
+        db.add(
+            auth_models.AuthUserRole(
+                id="user-cross-scope:qa_inspector:huakang-a:qa",
+                user_id="user-cross-scope",
+                role_id="qa_inspector",
+                factory_id="huakang-a",
+                department="qa",
+            )
+        )
+        db.commit()
+
+    profile = login_as(client, "cross_scope")
+    assert "molding_sample:create" in profile["permissions"]
+    assert profile["factory_scopes"] == ["huakang-a", "huaxing"]
+
+    blocked_payload = sample_order_payload("BP-CROSS-BLOCKED")
+    blocked_payload["order"]["factory_id"] = "huakang-a"
+    blocked_response = client.post("/api/injection", json=blocked_payload)
+    assert blocked_response.status_code == 403
+    assert blocked_response.json()["detail"] == "无授权范围内操作权限"
+
+    allowed_payload = sample_order_payload("BP-CROSS-ALLOWED")
+    allowed_payload["order"]["factory_id"] = "huaxing"
+    allowed_response = client.post("/api/injection", json=allowed_payload)
+    assert allowed_response.status_code == 201
+
+
 def test_engineer_submission_notifies_engineering_supervisor(client):
     login_as(client, "engineer")
     create_response = client.post("/api/injection", json=sample_order_payload("BP-NOTIFY-SUP-001"))
