@@ -29,15 +29,67 @@ def make_client(monkeypatch):
 
 
 def login_as(client, username: str):
+    ensure_test_user(username)
     response = client.post("/api/auth/login", json={"username": username, "password": "123456"})
     assert response.status_code == 200
     return response.json()
 
 
-def upload_fixture(client):
+TEST_USER_SPECS = {
+    "engineer": ("user-engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
+    "molding_clerk": ("user-molding-clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
+}
+
+
+def ensure_test_user(username: str) -> None:
+    if username == "admin" or username not in TEST_USER_SPECS:
+        return
+
+    user_id, display_name, role_id, factory_id, department = TEST_USER_SPECS[username]
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    with db_module.SessionLocal() as db:
+        user = db.get(auth_models.AuthUser, user_id)
+        if user is None:
+            salt, password_hash = auth_service.make_password_hash("123456")
+            db.add(
+                auth_models.AuthUser(
+                    id=user_id,
+                    username=username,
+                    display_name=display_name,
+                    password_salt=salt,
+                    password_hash=password_hash,
+                    status="active",
+                    force_password_change=0,
+                    created_at=auth_service.now_text(),
+                    updated_at=auth_service.now_text(),
+                )
+            )
+        else:
+            user.username = username
+            user.display_name = display_name
+            user.status = "active"
+            user.updated_at = auth_service.now_text()
+
+        user_role_id = f"{user_id}:{role_id}:{factory_id}:{department}"
+        if db.get(auth_models.AuthUserRole, user_role_id) is None:
+            db.add(
+                auth_models.AuthUserRole(
+                    id=user_role_id,
+                    user_id=user_id,
+                    role_id=role_id,
+                    factory_id=factory_id,
+                    department=department,
+                )
+            )
+        db.commit()
+
+
+def upload_fixture(client, factory_id: str = "huaxing"):
     return client.post(
         "/api/injection-scheduling/imports/daily-schedule",
-        data={"factory_id": "huaxing"},
+        data={"factory_id": factory_id},
         files={
             "file": (
                 "fixture.xlsx",
@@ -83,3 +135,42 @@ def test_daily_schedule_import_persists_preview_and_machine_status(monkeypatch):
         assert machines_response.status_code == 200
         machines = machines_response.json()
         assert [machine["machine_code"] for machine in machines] == ["旧1", "新1"]
+
+
+def test_authenticated_user_without_injection_schedule_read_can_browse_schedule_data(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        import_response = upload_fixture(client, "huaxing")
+        assert import_response.status_code == 201
+        batch_id = import_response.json()["batch_id"]
+
+        profile = login_as(client, "engineer")
+        assert "injection_schedule:read" not in profile["permissions"]
+
+        preview_response = client.get(f"/api/injection-scheduling/imports/{batch_id}/preview")
+        assert preview_response.status_code == 200
+        assert preview_response.json()["factory_id"] == "huaxing"
+
+        machines_response = client.get(f"/api/injection-scheduling/machines/status?batch_id={batch_id}")
+        assert machines_response.status_code == 200
+        assert [machine["machine_code"] for machine in machines_response.json()] == ["旧1", "新1"]
+
+
+def test_injection_schedule_factory_scope_limits_import_but_not_read(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        import_response = upload_fixture(client, "huadeng")
+        assert import_response.status_code == 201
+        batch_id = import_response.json()["batch_id"]
+
+        login_as(client, "molding_clerk")
+        blocked_import_response = upload_fixture(client, "huadeng")
+        assert blocked_import_response.status_code == 403
+
+        preview_response = client.get(f"/api/injection-scheduling/imports/{batch_id}/preview")
+        assert preview_response.status_code == 200
+        assert preview_response.json()["factory_id"] == "huadeng"
+
+        machines_response = client.get(f"/api/injection-scheduling/machines/status?batch_id={batch_id}")
+        assert machines_response.status_code == 200
+        assert [machine["machine_code"] for machine in machines_response.json()] == ["旧1", "新1"]

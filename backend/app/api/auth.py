@@ -1,8 +1,16 @@
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db import get_db
-from app.schemas.auth import AuthMeResponse, LoginRequest, RegisterRequest, RegisterResponse
+from app.schemas.auth import (
+    AuthMeResponse,
+    LoginRequest,
+    PasswordResetRequest,
+    PasswordResetResponse,
+    RegisterRequest,
+    RegisterResponse,
+)
 from app.services.auth import (
     SESSION_COOKIE_NAME,
     AuthContext,
@@ -12,6 +20,7 @@ from app.services.auth import (
     get_current_user,
     register_user,
     revoke_session,
+    submit_password_reset_request,
     to_auth_response,
 )
 
@@ -26,7 +35,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
         SESSION_COOKIE_NAME,
         token,
         httponly=True,
-        secure=False,
+        secure=settings.session_cookie_secure,
         samesite="lax",
         max_age=12 * 60 * 60,
         path="/",
@@ -39,6 +48,11 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     return register_user(db, payload, request=request)
 
 
+@router.post("/password-reset-requests", response_model=PasswordResetResponse)
+def request_password_reset(payload: PasswordResetRequest, request: Request, db: Session = Depends(get_db)):
+    return submit_password_reset_request(db, payload, request=request)
+
+
 @router.get("/me", response_model=AuthMeResponse)
 def me(current_user: AuthContext = Depends(get_current_user)):
     return to_auth_response(current_user)
@@ -47,5 +61,11 @@ def me(current_user: AuthContext = Depends(get_current_user)):
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     revoke_session(db, request.cookies.get(SESSION_COOKIE_NAME), request=request)
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(
+        SESSION_COOKIE_NAME,
+        path="/",
+        secure=settings.session_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
     return None

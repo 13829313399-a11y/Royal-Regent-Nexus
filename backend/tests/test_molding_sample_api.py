@@ -138,9 +138,72 @@ def create_legacy_molding_sample_sqlite_database(database_path: Path):
 
 
 def login_as(client, username: str):
+    ensure_test_user(username)
     response = client.post("/api/auth/login", json={"username": username, "password": "123456"})
     assert response.status_code == 200
     return response.json()
+
+
+TEST_USER_SPECS = {
+    "engineer": ("user-engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
+    "supervisor": ("user-supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),
+    "manager": ("user-manager", "华兴经理", "manager", "huaxing", "management"),
+    "carton_warehouse": ("user-carton-warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
+    "qa_inspector": ("user-qa-inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
+    "molding_clerk": ("user-molding-clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
+    "huaxing_molding_a_sales": (
+        "user-huaxing-molding-a-sales",
+        "华兴啤机车间 A 跟客业务",
+        "sales_customer_owner",
+        "huaxing",
+        "sales-business",
+    ),
+}
+
+
+def ensure_test_user(username: str) -> None:
+    if username == "admin" or username not in TEST_USER_SPECS:
+        return
+
+    user_id, display_name, role_id, factory_id, department = TEST_USER_SPECS[username]
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    with db_module.SessionLocal() as db:
+        user = db.get(auth_models.AuthUser, user_id)
+        if user is None:
+            salt, password_hash = auth_service.make_password_hash("123456")
+            db.add(
+                auth_models.AuthUser(
+                    id=user_id,
+                    username=username,
+                    display_name=display_name,
+                    password_salt=salt,
+                    password_hash=password_hash,
+                    status="active",
+                    force_password_change=0,
+                    created_at=auth_service.now_text(),
+                    updated_at=auth_service.now_text(),
+                )
+            )
+        else:
+            user.username = username
+            user.display_name = display_name
+            user.status = "active"
+            user.updated_at = auth_service.now_text()
+
+        user_role_id = f"{user_id}:{role_id}:{factory_id}:{department}"
+        if db.get(auth_models.AuthUserRole, user_role_id) is None:
+            db.add(
+                auth_models.AuthUserRole(
+                    id=user_role_id,
+                    user_id=user_id,
+                    role_id=role_id,
+                    factory_id=factory_id,
+                    department=department,
+                )
+            )
+        db.commit()
 
 
 def sample_order_payload(order_id="BP-API-001", external=False):
@@ -312,6 +375,30 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
 
 
+def test_authenticated_user_without_molding_read_permission_can_browse_molding_sample_data(client):
+    login_as(client, "engineer")
+    create_response = client.post("/api/injection", json=sample_order_payload("BP-BROWSE-001"))
+    assert create_response.status_code == 201
+
+    profile = login_as(client, "qa_inspector")
+    assert "molding_sample:read" not in profile["permissions"]
+
+    list_response = client.get("/api/injection")
+    assert list_response.status_code == 200
+    assert any(record["order"]["id"] == "BP-BROWSE-001" for record in list_response.json())
+
+    detail_response = client.get("/api/injection/BP-BROWSE-001")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["order"]["id"] == "BP-BROWSE-001"
+
+    prices_response = client.get("/api/material-prices")
+    assert prices_response.status_code == 200
+    assert prices_response.json()["prices"]
+
+    problems_response = client.get("/api/problems", params={"order_id": "BP-BROWSE-001"})
+    assert problems_response.status_code == 200
+
+
 def test_engineer_can_create_order_and_production_user_reads_notification_after_supervisor_approval(client):
     login_as(client, "engineer")
     response = client.post("/api/injection", json=sample_order_payload())
@@ -347,6 +434,93 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert len(notifications) == 1
     assert notifications[0]["order_id"] == "BP-API-001"
     assert notifications[0]["target_role"] == "啤机部"
+
+
+def test_factory_scope_limits_writes_but_not_molding_sample_reads(client):
+    login_as(client, "admin")
+    huadeng_payload = sample_order_payload("BP-HD-SCOPE-001")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+    create_response = client.post("/api/injection", json=huadeng_payload)
+    assert create_response.status_code == 201
+
+    login_as(client, "engineer")
+    list_response = client.get("/api/injection")
+    assert list_response.status_code == 200
+    assert any(record["order"]["id"] == "BP-HD-SCOPE-001" for record in list_response.json())
+
+    detail_response = client.get("/api/injection/BP-HD-SCOPE-001")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["order"]["factory_id"] == "huadeng"
+
+    edited_payload = sample_order_payload("BP-HD-SCOPE-001")
+    edited_payload["order"]["factory_id"] = "huadeng"
+    edited_payload["order"]["product_name"] = "华登跨厂区误改"
+    edit_response = client.put("/api/injection/BP-HD-SCOPE-001", json=edited_payload)
+    assert edit_response.status_code == 403
+
+    login_as(client, "supervisor")
+    approval_response = client.patch("/api/injection/BP-HD-SCOPE-001/status", json={"action": "主管通过"})
+    assert approval_response.status_code == 403
+
+    login_as(client, "admin")
+    admin_approval_response = client.patch("/api/injection/BP-HD-SCOPE-001/status", json={"action": "主管通过"})
+    assert admin_approval_response.status_code == 200
+    assert admin_approval_response.json()["order"]["status"] == "待生产"
+
+
+def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    salt, password_hash = auth_service.make_password_hash("123456")
+    with db_module.SessionLocal() as db:
+        db.add(
+            auth_models.AuthUser(
+                id="user-cross-scope",
+                username="cross_scope",
+                display_name="跨厂区多角色用户",
+                password_salt=salt,
+                password_hash=password_hash,
+                status="active",
+                force_password_change=0,
+                created_at=auth_service.now_text(),
+                updated_at=auth_service.now_text(),
+            )
+        )
+        db.add(
+            auth_models.AuthUserRole(
+                id="user-cross-scope:engineer:huaxing:engineering",
+                user_id="user-cross-scope",
+                role_id="engineer",
+                factory_id="huaxing",
+                department="engineering",
+            )
+        )
+        db.add(
+            auth_models.AuthUserRole(
+                id="user-cross-scope:qa_inspector:huakang-a:qa",
+                user_id="user-cross-scope",
+                role_id="qa_inspector",
+                factory_id="huakang-a",
+                department="qa",
+            )
+        )
+        db.commit()
+
+    profile = login_as(client, "cross_scope")
+    assert "molding_sample:create" in profile["permissions"]
+    assert profile["factory_scopes"] == ["huakang-a", "huaxing"]
+
+    blocked_payload = sample_order_payload("BP-CROSS-BLOCKED")
+    blocked_payload["order"]["factory_id"] = "huakang-a"
+    blocked_response = client.post("/api/injection", json=blocked_payload)
+    assert blocked_response.status_code == 403
+    assert blocked_response.json()["detail"] == "无授权范围内操作权限"
+
+    allowed_payload = sample_order_payload("BP-CROSS-ALLOWED")
+    allowed_payload["order"]["factory_id"] = "huaxing"
+    allowed_response = client.post("/api/injection", json=allowed_payload)
+    assert allowed_response.status_code == 201
 
 
 def test_engineer_submission_notifies_engineering_supervisor(client):

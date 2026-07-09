@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db import get_db
 from app.models.auth import (
     AuthAuditLog,
@@ -21,12 +22,18 @@ from app.models.auth import (
     AuthUserRole,
     SystemNotification,
 )
-from app.schemas.auth import AuthMeResponse, RegisterRequest, RegisterResponse
+from app.schemas.auth import AuthMeResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest, RegisterResponse
 
 SESSION_COOKIE_NAME = "rr_session"
 DEFAULT_PASSWORD = "123456"
 PASSWORD_HASH_ITERATIONS = 160_000
 SESSION_HOURS = 12
+PASSWORD_CHINESE_MESSAGE = "密码不能包含中文，请使用英文、数字或符号"
+CHINESE_CHARACTER_RANGES = (
+    ("\u3400", "\u4dbf"),
+    ("\u4e00", "\u9fff"),
+    ("\uf900", "\ufaff"),
+)
 
 MOLDING_SAMPLE_PERMISSIONS = [
     "molding_sample:read",
@@ -151,25 +158,33 @@ ROLE_PERMISSIONS = {
 }
 
 DEFAULT_USERS = [
-    ("user-engineer", "engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
-    ("user-supervisor", "supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),
-    ("user-manager", "manager", "华兴经理", "manager", "huaxing", "management"),
-    ("user-carton-warehouse", "carton_warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
-    ("user-qa-inspector", "qa_inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
-    ("user-molding-clerk", "molding_clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
-    (
-        "user-huaxing-molding-a-sales",
-        "huaxing_molding_a_sales",
-        "华兴啤机车间 A 跟客业务",
-        "sales_customer_owner",
-        "huaxing",
-        "sales-business",
-    ),
     ("user-admin", "admin", "系统管理员", "admin", "*", "system"),
 ]
 
-RETIRED_DEFAULT_USERNAMES = {"molding", "warehouse", "huaxing_buzzbee_sales"}
-RETIRED_DEFAULT_USER_IDS = {"user-molding", "user-warehouse", "user-huaxing-buzzbee-sales"}
+RETIRED_DEFAULT_USERNAMES = {
+    "engineer",
+    "supervisor",
+    "manager",
+    "carton_warehouse",
+    "qa_inspector",
+    "molding_clerk",
+    "huaxing_molding_a_sales",
+    "molding",
+    "warehouse",
+    "huaxing_buzzbee_sales",
+}
+RETIRED_DEFAULT_USER_IDS = {
+    "user-engineer",
+    "user-supervisor",
+    "user-manager",
+    "user-carton-warehouse",
+    "user-qa-inspector",
+    "user-molding-clerk",
+    "user-huaxing-molding-a-sales",
+    "user-molding",
+    "user-warehouse",
+    "user-huaxing-buzzbee-sales",
+}
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
 ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huadeng", "huaxing"}
 ALLOWED_DEPARTMENTS = {
@@ -182,6 +197,16 @@ ALLOWED_DEPARTMENTS = {
 
 
 @dataclass(frozen=True)
+class AuthGrantContext:
+    role_id: str
+    role_name: str
+    factory_id: str
+    department: str
+    permissions: frozenset[str]
+    data_scope: str = "department"
+
+
+@dataclass(frozen=True)
 class AuthContext:
     id: str
     username: str
@@ -191,6 +216,7 @@ class AuthContext:
     permissions: frozenset[str]
     factory_scopes: tuple[str, ...]
     department_scopes: tuple[str, ...]
+    grants: tuple[AuthGrantContext, ...] = ()
     force_password_change: bool = False
 
     @property
@@ -232,6 +258,15 @@ def hash_session_token(token: str) -> str:
 def verify_password(password: str, user: AuthUser) -> bool:
     expected = hash_password(password, user.password_salt)
     return hmac.compare_digest(expected, user.password_hash)
+
+
+def contains_chinese_characters(value: str) -> bool:
+    return any(start <= character <= end for character in value for start, end in CHINESE_CHARACTER_RANGES)
+
+
+def validate_password_characters(password: str) -> None:
+    if contains_chinese_characters(password):
+        raise HTTPException(status_code=400, detail=PASSWORD_CHINESE_MESSAGE)
 
 
 def add_auth_audit(
@@ -306,6 +341,10 @@ def seed_auth_defaults(db: Session) -> None:
                     )
                 )
 
+    if not settings.seed_default_accounts:
+        db.commit()
+        return
+
     retired_users = db.scalars(
         select(AuthUser).where(
             (AuthUser.username.in_(RETIRED_DEFAULT_USERNAMES))
@@ -363,8 +402,10 @@ def seed_auth_defaults(db: Session) -> None:
 
 def authenticate_user(db: Session, username: str, password: str, request: Request | None = None) -> AuthUser:
     normalized_username = username.strip()
+    validate_password_characters(password)
+
     user = db.scalar(select(AuthUser).where(AuthUser.username == normalized_username))
-    if user is None and normalized_username in DEFAULT_USERNAMES:
+    if user is None and normalized_username in DEFAULT_USERNAMES and settings.seed_default_accounts:
         seed_auth_defaults(db)
         user = db.scalar(select(AuthUser).where(AuthUser.username == normalized_username))
 
@@ -381,6 +422,15 @@ def authenticate_user(db: Session, username: str, password: str, request: Reques
             "left": "账号已注销，请联系管理员",
             "locked": "账号已锁定，请联系管理员",
         }.get(user.status, "账号不可用，请联系管理员")
+        if user.status == "rejected":
+            rejected_request = db.scalar(
+                select(AuthRegistrationRequest)
+                .where(AuthRegistrationRequest.user_id == user.id, AuthRegistrationRequest.status == "rejected")
+                .order_by(AuthRegistrationRequest.reviewed_at.desc(), AuthRegistrationRequest.updated_at.desc())
+            )
+            review_comment = rejected_request.review_comment.strip() if rejected_request else ""
+            if review_comment:
+                status_message = f"账号申请未通过，原因：{review_comment}"
         add_auth_audit(
             db,
             "login_denied",
@@ -416,6 +466,8 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
         raise HTTPException(status_code=400, detail="两次输入的密码不一致")
     if len(payload.password) < 6:
         raise HTTPException(status_code=400, detail="密码至少需要 6 位")
+    validate_password_characters(payload.password)
+    validate_password_characters(payload.confirm_password)
     if not phone and not email:
         raise HTTPException(status_code=400, detail="手机或邮箱至少填写一项")
     if factory_id not in ALLOWED_FACTORY_IDS:
@@ -426,27 +478,38 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
         raise HTTPException(status_code=400, detail="请输入职位")
 
     existing_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
-    if existing_user is not None:
+    if existing_user is not None and existing_user.status != "rejected":
         raise HTTPException(status_code=409, detail="账号或工号已存在")
 
     now = now_text()
-    user_id = f"user-{secrets.token_hex(8)}"
+    user_id = existing_user.id if existing_user is not None else f"user-{secrets.token_hex(8)}"
     salt, password_hash = make_password_hash(payload.password)
     registration_request_id = f"registration-{secrets.token_hex(12)}"
 
-    db.add(
-        AuthUser(
-            id=user_id,
-            username=username,
-            display_name=display_name,
-            password_salt=salt,
-            password_hash=password_hash,
-            status="pending",
-            force_password_change=0,
-            created_at=now,
-            updated_at=now,
+    if existing_user is None:
+        db.add(
+            AuthUser(
+                id=user_id,
+                username=username,
+                display_name=display_name,
+                password_salt=salt,
+                password_hash=password_hash,
+                status="pending",
+                force_password_change=0,
+                created_at=now,
+                updated_at=now,
+            )
         )
-    )
+    else:
+        existing_user.display_name = display_name
+        existing_user.password_salt = salt
+        existing_user.password_hash = password_hash
+        existing_user.status = "pending"
+        existing_user.force_password_change = 0
+        existing_user.updated_at = now
+        for user_role in db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == existing_user.id)).all():
+            db.delete(user_role)
+
     db.add(
         AuthRegistrationRequest(
             id=registration_request_id,
@@ -479,7 +542,7 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
     )
     add_auth_audit(
         db,
-        "registration_submitted",
+        "registration_resubmitted" if existing_user is not None else "registration_submitted",
         username=username,
         user_id=user_id,
         detail=f"账号申请提交：{factory_id}/{department}/{position}",
@@ -488,6 +551,59 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
     db.commit()
 
     return RegisterResponse(status="pending", message="账号申请已提交，请等待管理员审批")
+
+
+def submit_password_reset_request(
+    db: Session,
+    payload: PasswordResetRequest,
+    request: Request | None = None,
+) -> PasswordResetResponse:
+    username = payload.username.strip()
+    display_name = payload.display_name.strip()
+    contact = payload.contact.strip()
+    note = payload.note.strip()
+
+    if not username:
+        raise HTTPException(status_code=400, detail="请输入需要重置密码的账号")
+    if not contact:
+        raise HTTPException(status_code=400, detail="请填写联系电话或邮箱")
+
+    now = now_text()
+    matched_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
+    notification_id = f"system-notification-{secrets.token_hex(12)}"
+    payload_json = {
+        "username": username,
+        "display_name": display_name,
+        "contact": contact,
+        "note": note,
+        "matched_user_id": matched_user.id if matched_user else "",
+        "requested_at": now,
+    }
+    applicant_label = display_name or username
+
+    db.add(
+        SystemNotification(
+            id=notification_id,
+            target_permission="system:user_manage",
+            type="password_reset",
+            title="密码重置待处理",
+            message=f"{applicant_label} 提交密码重置申请，账号 {username}，联系方式 {contact}",
+            payload_json=json.dumps(payload_json, ensure_ascii=False),
+            status="unread",
+            created_at=now,
+        )
+    )
+    add_auth_audit(
+        db,
+        "password_reset_requested",
+        username=username,
+        user_id=matched_user.id if matched_user else "",
+        detail=f"密码重置申请：{contact}",
+        request=request,
+    )
+    db.commit()
+
+    return PasswordResetResponse(status="submitted", message="密码重置申请已提交，请等待管理员核验处理")
 
 
 def create_session(db: Session, user: AuthUser, request: Request | None = None) -> str:
@@ -531,7 +647,7 @@ def revoke_session(db: Session, token: str | None, request: Request | None = Non
 
 def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     user_roles = list(
-        db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all()
+        db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id).order_by(AuthUserRole.id)).all()
     )
     role_ids = [user_role.role_id for user_role in user_roles]
     roles = list(db.scalars(select(AuthRole).where(AuthRole.id.in_(role_ids))).all()) if role_ids else []
@@ -539,19 +655,37 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     role_code_by_id = {role.id: role.code for role in roles}
 
     permission_codes: set[str] = set()
+    permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
     if role_ids:
         role_permissions = list(
             db.scalars(select(AuthRolePermission).where(AuthRolePermission.role_id.in_(role_ids))).all()
         )
-        permission_ids = [role_permission.permission_id for role_permission in role_permissions]
+        permission_ids = sorted({role_permission.permission_id for role_permission in role_permissions})
         if permission_ids:
             permissions = db.scalars(select(AuthPermission).where(AuthPermission.id.in_(permission_ids))).all()
-            permission_codes = {permission.code for permission in permissions}
+            permission_code_by_id = {permission.id: permission.code for permission in permissions}
+            for role_permission in role_permissions:
+                permission_code = permission_code_by_id.get(role_permission.permission_id)
+                if not permission_code:
+                    continue
+                permission_codes.add(permission_code)
+                permissions_by_role_id.setdefault(role_permission.role_id, set()).add(permission_code)
 
     role_names = tuple(role_name_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
     role_codes = tuple(role_code_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
     factory_scopes = tuple(sorted({user_role.factory_id for user_role in user_roles if user_role.factory_id}))
     department_scopes = tuple(sorted({user_role.department for user_role in user_roles if user_role.department}))
+    grants = tuple(
+        AuthGrantContext(
+            role_id=user_role.role_id,
+            role_name=role_name_by_id.get(user_role.role_id, user_role.role_id),
+            factory_id=user_role.factory_id,
+            department=user_role.department,
+            permissions=frozenset(permissions_by_role_id.get(user_role.role_id, set())),
+            data_scope="all" if user_role.factory_id == "*" else "department",
+        )
+        for user_role in user_roles
+    )
 
     return AuthContext(
         id=user.id,
@@ -562,6 +696,7 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
         permissions=frozenset(permission_codes),
         factory_scopes=factory_scopes,
         department_scopes=department_scopes,
+        grants=grants,
         force_password_change=bool(user.force_password_change),
     )
 
@@ -598,12 +733,43 @@ def to_auth_response(context: AuthContext) -> AuthMeResponse:
         permissions=sorted(context.permissions),
         factory_scopes=list(context.factory_scopes),
         department_scopes=list(context.department_scopes),
+        grants=[
+            {
+                "role_id": grant.role_id,
+                "role_name": grant.role_name,
+                "factory_id": grant.factory_id,
+                "department": grant.department,
+                "permissions": sorted(grant.permissions),
+                "data_scope": grant.data_scope,
+            }
+            for grant in context.grants
+        ],
         force_password_change=context.force_password_change,
     )
 
 
 def has_factory_scope(user: AuthContext, factory_id: str) -> bool:
     return "*" in user.factory_scopes or factory_id in user.factory_scopes
+
+
+def has_permission_in_scope(
+    user: AuthContext,
+    permission: str,
+    factory_id: str,
+    department: str | None = None,
+) -> bool:
+    for grant in user.grants:
+        if permission not in grant.permissions:
+            continue
+        if grant.factory_id != "*" and grant.factory_id != factory_id:
+            continue
+        if grant.factory_id == "*":
+            return True
+        if department and grant.department not in {"*", department}:
+            continue
+        return True
+
+    return False
 
 
 def ensure_factory_scope(db: Session, user: AuthContext, factory_id: str) -> None:
@@ -634,3 +800,24 @@ def ensure_permission(db: Session, user: AuthContext, permission: str) -> None:
     )
     db.commit()
     raise HTTPException(status_code=403, detail="无操作权限")
+
+
+def ensure_permission_in_scope(
+    db: Session,
+    user: AuthContext,
+    permission: str,
+    factory_id: str,
+    department: str | None = None,
+) -> None:
+    if has_permission_in_scope(user, permission, factory_id, department):
+        return
+
+    add_auth_audit(
+        db,
+        "permission_denied",
+        username=user.username,
+        user_id=user.id,
+        detail=f"缺少授权范围内权限：{permission}@{factory_id}/{department or '*'}",
+    )
+    db.commit()
+    raise HTTPException(status_code=403, detail="无授权范围内操作权限")

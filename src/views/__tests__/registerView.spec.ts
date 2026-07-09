@@ -12,6 +12,9 @@ describe('RegisterView source contract', () => {
       'displayName',
       'password',
       'confirmPassword',
+      'passwordModel',
+      'confirmPasswordModel',
+      '密码不能包含中文，请使用英文、数字或符号',
       'phone',
       'email',
       'factoryId',
@@ -19,6 +22,10 @@ describe('RegisterView source contract', () => {
       'position',
       '账号申请已提交',
       'router.replace',
+      'register-wrap',
+      'register-note',
+      'radial-gradient(circle at 82% 8%',
+      'grid-template-columns: 0.82fr 1fr',
     ]) {
       expect(source).toContain(requiredSource)
     }

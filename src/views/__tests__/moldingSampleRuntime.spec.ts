@@ -84,6 +84,7 @@ async function mountRuntimeView(
   options: {
     roles?: string[]
     permissions?: string[]
+    factoryScopes?: string[]
     displayName?: string
   } = {},
 ) {
@@ -105,7 +106,8 @@ async function mountRuntimeView(
     display_name: options.displayName ?? '测试账号',
     roles: options.roles ?? ['系统管理员'],
     permissions,
-    factory_scopes: ['*'],
+    grants: [],
+    factory_scopes: options.factoryScopes ?? ['*'],
     department_scopes: ['*'],
     force_password_change: false,
   })
@@ -262,6 +264,43 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('keeps out-of-scope factory orders readable while disabling molding sample writes', async () => {
+    routeState.query = { factory: 'huadeng' }
+    const huadengRecord = createMoldingSampleRecord('待审核', 'BP-READONLY-HD-001')
+    huadengRecord.order.factory_id = 'huadeng'
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([huadengRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程主管'],
+      permissions: [
+        'molding_sample:create',
+        'molding_sample:edit_draft',
+        'molding_sample:delete_draft',
+        'molding_sample:supervisor_review',
+      ],
+      factoryScopes: ['huaxing'],
+      displayName: '华兴工程主管',
+    })
+
+    expect(wrapper.text()).toContain('BP-READONLY-HD-001')
+    expect(wrapper.text()).toContain('当前厂区为只读，仅可查看数据')
+    expect(getButtonByText(wrapper, '工程部 · 新建开单').attributes('disabled')).toBeDefined()
+
+    await getButtonByText(wrapper, 'BP-READONLY-HD-001').trigger('click')
+    await nextTick()
+
+    expect(getButtonByText(wrapper, '撤回审核').attributes('disabled')).toBeDefined()
+    expect(getButtonByExactText(wrapper, '通过').attributes('disabled')).toBeDefined()
+    expect(getButtonByExactText(wrapper, '驳回').attributes('disabled')).toBeDefined()
+
+    await getButtonByExactText(wrapper, '通过').trigger('click')
+    await flushPromises()
+
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
   it('exports one combined Excel workbook for multiple checked molding sample orders', async () => {
     const records = [
       createMoldingSampleRecord('待审核', 'BP-BATCH-001', 1),
@@ -393,6 +432,42 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.createProblem).not.toHaveBeenCalled()
+  })
+
+  it('keeps out-of-scope production tasks readable while disabling production writes', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huadeng', order_id: 'BP-PROD-READONLY-HD-001' }
+    const huadengTask = createMoldingSampleRecord('待生产', 'BP-PROD-READONLY-HD-001')
+    huadengTask.order.factory_id = 'huadeng'
+    const huadengNotification = createProductionTaskNotification(huadengTask.order.id)
+    huadengNotification.factory_id = 'huadeng'
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([huadengTask])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([huadengNotification])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['啤机部文员'],
+      permissions: [
+        'molding_sample:production_read',
+        'molding_sample:production_start',
+        'molding_sample:production_fillback',
+        'molding_sample:production_complete',
+        'molding_sample:notification_read',
+      ],
+      factoryScopes: ['huaxing'],
+      displayName: '华兴啤机部文员',
+    })
+
+    expect(wrapper.text()).toContain('BP-PROD-READONLY-HD-001')
+    expect(wrapper.text()).toContain('当前厂区为只读，仅可查看数据')
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
+
+    await getButtonByText(wrapper, '开始生产').trigger('click')
+    await flushPromises()
+
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+
+    wrapper.unmount()
   })
 
   it('paginates the production task board and list at ten tasks per page', async () => {

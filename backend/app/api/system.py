@@ -9,6 +9,7 @@ from app.schemas.system import (
     RoleOut,
     SystemNotificationOut,
     SystemNotificationUpdateRequest,
+    UserPasswordResetRequest,
     UserOut,
     UserStatusUpdateRequest,
 )
@@ -20,6 +21,7 @@ from app.services.system import (
     list_system_notifications,
     list_users,
     reject_registration_request,
+    reset_user_password,
     update_system_notification,
     update_user_status,
 )
@@ -94,6 +96,17 @@ def patch_user_status(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return update_user_status(db, current_user, user_id, payload, request=request)
+
+
+@router.post("/users/{user_id}/reset-password", response_model=UserOut)
+def reset_password(
+    user_id: str,
+    payload: UserPasswordResetRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return reset_user_password(db, current_user, user_id, payload, request=request)
 
 
 @router.get("/roles", response_model=list[RoleOut])

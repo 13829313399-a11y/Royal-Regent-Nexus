@@ -25,8 +25,9 @@ function seedUser() {
     id: 'user-1',
     username: 'engineer',
     display_name: '测试账号',
-    roles: ['工程部'],
+    roles: ['工程师'],
     permissions: [],
+    grants: [],
     factory_scopes: ['huaxing'],
     department_scopes: ['engineering'],
     force_password_change: false,
@@ -75,5 +76,38 @@ describe('AccountMenu', () => {
       name: 'login',
       query: { logged_out: '1' },
     })
+  })
+
+  it('shows factory, department, and position details in the account hover card', () => {
+    seedUser()
+    const wrapper = mount(AccountMenu)
+
+    expect(wrapper.text()).toContain('厂区')
+    expect(wrapper.text()).toContain('华兴')
+    expect(wrapper.text()).toContain('部门')
+    expect(wrapper.text()).toContain('工程部')
+    expect(wrapper.text()).toContain('职位')
+    expect(wrapper.text()).toContain('工程师')
+  })
+
+  it('uses readable labels for the system administrator scope', () => {
+    const authStore = useAuthStore()
+    authStore.applySession({
+      id: 'user-admin',
+      username: 'admin',
+      display_name: '系统管理员',
+      roles: ['系统管理员'],
+      permissions: ['system:user_manage'],
+      grants: [],
+      factory_scopes: ['*'],
+      department_scopes: ['system'],
+      force_password_change: false,
+    })
+
+    const wrapper = mount(AccountMenu)
+
+    expect(wrapper.text()).toContain('全部厂区')
+    expect(wrapper.text()).toContain('系统管理')
+    expect(wrapper.text()).toContain('系统管理员')
   })
 })

@@ -6,12 +6,11 @@ from app.schemas.injection_schedule import (
     InjectionScheduleImportPreviewResponse,
     InjectionScheduleMachineOut,
 )
-from app.services.auth import AuthContext, ensure_factory_scope, ensure_permission, get_current_user
+from app.services.auth import AuthContext, ensure_permission_in_scope, get_current_user
 from app.services.injection_schedule import (
     create_daily_schedule_import,
     get_import_preview,
     get_machine_status,
-    load_batch,
 )
 from app.services.injection_schedule_excel import XLSX_MIME
 
@@ -29,9 +28,8 @@ async def import_daily_schedule(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "injection_schedule:import")
     normalized_factory_id = factory_id.strip() or "huaxing"
-    ensure_factory_scope(db, current_user, normalized_factory_id)
+    ensure_permission_in_scope(db, current_user, "injection_schedule:import", normalized_factory_id)
 
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(status_code=400, detail="请上传 xlsx 日排版表")
@@ -57,9 +55,6 @@ def read_import_preview(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "injection_schedule:read")
-    batch = load_batch(db, batch_id)
-    ensure_factory_scope(db, current_user, batch.factory_id)
     return get_import_preview(db, batch_id)
 
 
@@ -69,7 +64,4 @@ def read_machine_status(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "injection_schedule:read")
-    batch = load_batch(db, batch_id)
-    ensure_factory_scope(db, current_user, batch.factory_id)
     return get_machine_status(db, batch_id)
