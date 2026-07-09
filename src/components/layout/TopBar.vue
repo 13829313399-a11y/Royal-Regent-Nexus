@@ -145,6 +145,10 @@ function getNotificationRoute(notification: MoldingSampleNotificationResponse) {
 }
 
 function getSystemNotificationRoute(notification: SystemNotificationResponse) {
+  if (notification.type === 'password_reset') {
+    return `/system/users?tab=password-reset&notification_id=${encodeURIComponent(notification.id)}`
+  }
+
   const requestId = typeof notification.payload.registration_request_id === 'string'
     ? notification.payload.registration_request_id
     : ''

@@ -11,6 +11,7 @@ const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMateria
 const rawMaterialDatabaseSource = readFileSync(join(process.cwd(), 'src/data/rawMaterialDatabase.ts'), 'utf8')
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
+const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 
 describe('production module entry', () => {
   it('keeps the molding sample production task wired to the real task page', () => {
@@ -167,5 +168,18 @@ describe('production module entry', () => {
 
     expect(quoteCenterPanelSource).not.toContain('{{ currentAccount }}')
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')
+  })
+
+  it('keeps injection scheduling browseable but disables imports without write permission', () => {
+    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'/)
+    expect(injectionSchedulingViewSource).toContain("import { useAuthStore } from '@/stores/auth'")
+    expect(injectionSchedulingViewSource).toContain('const authStore = useAuthStore()')
+    expect(injectionSchedulingViewSource).toContain("authStore.hasPermission('injection_schedule:import')")
+    expect(injectionSchedulingViewSource).toContain('authStore.hasFactoryScope(selectedFactoryId.value)')
+    expect(injectionSchedulingViewSource).toContain('canImportDailySchedule')
+    expect(injectionSchedulingViewSource).toContain('当前账号没有导入排产权限，仅可浏览排产数据')
+    expect(injectionSchedulingViewSource).toContain(':disabled="!canImportDailySchedule"')
+    expect(injectionSchedulingViewSource).toContain(':aria-disabled="!canImportDailySchedule"')
+    expect(injectionSchedulingViewSource).toContain(':disabled="isImportingDailySchedule || !canImportDailySchedule"')
   })
 })

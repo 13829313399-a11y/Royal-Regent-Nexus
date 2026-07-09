@@ -155,6 +155,7 @@ const routes: RouteRecordRaw[] = [
       title: '账号与权限管理',
       requiresAuth: true,
       permissions: ['system:user_manage'],
+      enforcePermissions: true,
     },
   },
   {
@@ -227,7 +228,8 @@ router.beforeEach(async (to) => {
   }
 
   const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []
-  if (permissions.length && !authStore.hasAnyPermission(permissions)) {
+  const shouldEnforcePermissions = to.meta.enforcePermissions === true
+  if (shouldEnforcePermissions && permissions.length && !authStore.hasAnyPermission(permissions)) {
     return {
       name: 'forbidden',
       replace: true,

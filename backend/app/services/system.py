@@ -9,6 +9,7 @@ from app.models.auth import (
     AuthRegistrationRequest,
     AuthRole,
     AuthRolePermission,
+    AuthSession,
     AuthUser,
     AuthUserRole,
     SystemNotification,
@@ -21,11 +22,12 @@ from app.schemas.system import (
     RoleOut,
     SystemNotificationOut,
     SystemNotificationUpdateRequest,
+    UserPasswordResetRequest,
     UserOut,
     UserRoleAssignmentOut,
     UserStatusUpdateRequest,
 )
-from app.services.auth import AuthContext, add_auth_audit, has_factory_scope, now_text
+from app.services.auth import AuthContext, add_auth_audit, has_factory_scope, make_password_hash, now_text, validate_password_characters
 
 
 def ensure_user_manage(db: Session, current_user: AuthContext) -> None:
@@ -215,6 +217,65 @@ def update_user_status(
         username=user.username,
         user_id=user.id,
         detail=f"账号状态改为：{next_status}",
+        request=request,
+    )
+    db.commit()
+    return user_to_out(db, user)
+
+
+def reset_user_password(
+    db: Session,
+    current_user: AuthContext,
+    user_id: str,
+    payload: UserPasswordResetRequest,
+    request: Request | None = None,
+) -> UserOut:
+    ensure_user_manage(db, current_user)
+    temporary_password = payload.temporary_password.strip()
+    if len(temporary_password) < 6:
+        raise HTTPException(status_code=400, detail="临时密码至少需要 6 位")
+    validate_password_characters(temporary_password)
+
+    user = db.get(AuthUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    if user.status not in {"active", "suspended"}:
+        raise HTTPException(status_code=400, detail="仅可重置正常或停用账号密码")
+
+    now = now_text()
+    salt, password_hash = make_password_hash(temporary_password)
+    user.password_salt = salt
+    user.password_hash = password_hash
+    user.force_password_change = 1
+    user.updated_at = now
+
+    active_sessions = db.scalars(
+        select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.status == "active")
+    ).all()
+    for session in active_sessions:
+        session.status = "revoked"
+        session.revoked_at = now
+
+    notification_id = payload.notification_id.strip()
+    if notification_id:
+        notification = db.get(SystemNotification, notification_id)
+        if notification is None:
+            raise HTTPException(status_code=404, detail="通知不存在")
+        if not can_access_notification(current_user, notification):
+            raise HTTPException(status_code=403, detail="无权处理该通知")
+        if notification.type != "password_reset":
+            raise HTTPException(status_code=400, detail="该通知不是密码重置申请")
+        notification.status = "handled"
+        if not notification.read_at:
+            notification.read_at = now
+        notification.handled_at = now
+
+    add_auth_audit(
+        db,
+        "password_reset_completed",
+        username=user.username,
+        user_id=user.id,
+        detail=f"管理员 {current_user.username} 已重置临时密码",
         request=request,
     )
     db.commit()

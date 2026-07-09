@@ -20,6 +20,11 @@ class UserStatusUpdateRequest(BaseModel):
     status: str
 
 
+class UserPasswordResetRequest(BaseModel):
+    temporary_password: str = "123456"
+    notification_id: str = ""
+
+
 class SystemNotificationUpdateRequest(BaseModel):
     status: str
 

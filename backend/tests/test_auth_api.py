@@ -28,11 +28,11 @@ def make_client(monkeypatch, **env_overrides):
     return TestClient(main.app)
 
 
-def test_login_sets_http_only_session_cookie_and_me_returns_rbac_scope(monkeypatch):
+def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(monkeypatch):
     with make_client(monkeypatch) as client:
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "engineer", "password": "123456"},
+            json={"username": "admin", "password": "123456"},
         )
 
         assert login_response.status_code == 200
@@ -43,27 +43,19 @@ def test_login_sets_http_only_session_cookie_and_me_returns_rbac_scope(monkeypat
         me_response = client.get("/api/auth/me")
         assert me_response.status_code == 200
         me = me_response.json()
-        assert me["username"] == "engineer"
-        assert me["display_name"] == "华兴工程师"
-        assert "工程师" in me["roles"]
-        assert "molding_sample:create" in me["permissions"]
-        assert "molding_sample:supervisor_review" not in me["permissions"]
-        assert "molding_sample:manager_review" not in me["permissions"]
-        assert "huaxing" in me["factory_scopes"]
+        assert me["username"] == "admin"
+        assert me["display_name"] == "系统管理员"
+        assert "系统管理员" in me["roles"]
+        assert "system:user_manage" in me["permissions"]
+        assert "*" in me["factory_scopes"]
         assert me["grants"] == [
             {
-                "role_id": "engineer",
-                "role_name": "工程师",
-                "factory_id": "huaxing",
-                "department": "engineering",
-                "permissions": [
-                    "molding_sample:create",
-                    "molding_sample:delete_draft",
-                    "molding_sample:edit_draft",
-                    "molding_sample:notification_read",
-                    "molding_sample:read",
-                ],
-                "data_scope": "department",
+                "role_id": "admin",
+                "role_name": "系统管理员",
+                "factory_id": "*",
+                "department": "system",
+                "permissions": sorted(me["permissions"]),
+                "data_scope": "all",
             }
         ]
 
@@ -72,7 +64,7 @@ def test_login_session_cookie_secure_flag_can_be_enabled_by_env(monkeypatch):
     with make_client(monkeypatch, SESSION_COOKIE_SECURE="true") as client:
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "engineer", "password": "123456"},
+            json={"username": "admin", "password": "123456"},
         )
 
         assert login_response.status_code == 200
@@ -80,40 +72,43 @@ def test_login_session_cookie_secure_flag_can_be_enabled_by_env(monkeypatch):
         assert "Secure" in login_response.headers["set-cookie"]
 
 
-def test_huaxing_trial_accounts_are_seeded_without_legacy_default_users(monkeypatch):
+def test_only_admin_default_account_is_seeded_and_trial_accounts_are_retired(monkeypatch):
     with make_client(monkeypatch) as client:
-        expected_accounts = {
-            "engineer": ("华兴工程师", "工程师", "molding_sample:create", ["huaxing"]),
-            "supervisor": ("华兴工程主管", "工程主管", "molding_sample:supervisor_review", ["huaxing"]),
-            "manager": ("华兴经理", "经理", "molding_sample:manager_review", ["huaxing"]),
-            "carton_warehouse": ("华兴纸箱仓管", "纸箱仓管", "carton_mark:template_upload", ["huaxing"]),
-            "qa_inspector": ("华兴QA检验员", "QA 检验员", "carton_mark:review", ["huaxing"]),
-            "molding_clerk": ("华兴啤机部文员", "啤机部文员", "molding_sample:production_start", ["huaxing"]),
-            "huaxing_molding_a_sales": ("华兴啤机车间 A 跟客业务", "车间业务跟客", "customer_price:export_customer_quote", ["huaxing"]),
-            "admin": ("系统管理员", "系统管理员", "system:user_manage", ["*"]),
-        }
+        admin_response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "123456"},
+        )
+        assert admin_response.status_code == 200
+        admin_profile = admin_response.json()
+        assert admin_profile["display_name"] == "系统管理员"
+        assert "系统管理员" in admin_profile["roles"]
+        assert "system:user_manage" in admin_profile["permissions"]
+        assert admin_profile["factory_scopes"] == ["*"]
 
-        for username, (display_name, role_name, permission, factory_scopes) in expected_accounts.items():
-            login_response = client.post(
-                "/api/auth/login",
-                json={"username": username, "password": "123456"},
-            )
-            assert login_response.status_code == 200
-            profile = login_response.json()
-            assert profile["display_name"] == display_name
-            assert role_name in profile["roles"]
-            assert permission in profile["permissions"]
-            assert profile["factory_scopes"] == factory_scopes
-            if username == "huaxing_molding_a_sales":
-                assert profile["department_scopes"] == ["sales-business"]
-            client.post("/api/auth/logout")
-
-        for retired_username in ["molding", "warehouse", "huaxing_buzzbee_sales"]:
+        retired_usernames = [
+            "engineer",
+            "supervisor",
+            "manager",
+            "carton_warehouse",
+            "qa_inspector",
+            "molding_clerk",
+            "huaxing_molding_a_sales",
+            "molding",
+            "warehouse",
+            "huaxing_buzzbee_sales",
+        ]
+        for retired_username in retired_usernames:
             retired_response = client.post(
                 "/api/auth/login",
                 json={"username": retired_username, "password": "123456"},
             )
             assert retired_response.status_code == 401
+
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            active_users = db.query(auth_models.AuthUser).filter(auth_models.AuthUser.status == "active").all()
+            assert [user.username for user in active_users] == ["admin"]
 
 
 def test_default_trial_login_self_heals_missing_seeded_user(monkeypatch):
@@ -121,19 +116,19 @@ def test_default_trial_login_self_heals_missing_seeded_user(monkeypatch):
         db_module = importlib.import_module("app.db")
         auth_models = importlib.import_module("app.models.auth")
         with db_module.SessionLocal() as db:
-            db.query(auth_models.AuthUserRole).filter(auth_models.AuthUserRole.user_id == "user-carton-warehouse").delete()
-            db.query(auth_models.AuthUser).filter(auth_models.AuthUser.username == "carton_warehouse").delete()
+            db.query(auth_models.AuthUserRole).filter(auth_models.AuthUserRole.user_id == "user-admin").delete()
+            db.query(auth_models.AuthUser).filter(auth_models.AuthUser.username == "admin").delete()
             db.commit()
 
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "carton_warehouse", "password": "123456"},
+            json={"username": "admin", "password": "123456"},
         )
 
         assert login_response.status_code == 200
         profile = login_response.json()
-        assert profile["username"] == "carton_warehouse"
-        assert "carton_mark:template_upload" in profile["permissions"]
+        assert profile["username"] == "admin"
+        assert "system:user_manage" in profile["permissions"]
 
 
 def test_default_trial_accounts_can_be_disabled_without_disabling_roles(monkeypatch):
@@ -159,7 +154,7 @@ def test_wrong_password_and_missing_session_are_rejected(monkeypatch):
     with make_client(monkeypatch) as client:
         wrong_password_response = client.post(
             "/api/auth/login",
-            json={"username": "engineer", "password": "bad-password"},
+            json={"username": "admin", "password": "bad-password"},
         )
         assert wrong_password_response.status_code == 401
 
@@ -171,7 +166,7 @@ def test_login_and_registration_passwords_cannot_contain_chinese_characters(monk
     with make_client(monkeypatch) as client:
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "engineer", "password": "Strong密码123"},
+            json={"username": "admin", "password": "Strong密码123"},
         )
         assert login_response.status_code == 400
         assert login_response.json()["detail"] == "密码不能包含中文，请使用英文、数字或符号"
@@ -194,11 +189,61 @@ def test_login_and_registration_passwords_cannot_contain_chinese_characters(monk
         assert register_response.json()["detail"] == "密码不能包含中文，请使用英文、数字或符号"
 
 
+def test_password_reset_request_creates_admin_system_notification(monkeypatch):
+    with make_client(monkeypatch) as client:
+        reset_response = client.post(
+            "/api/auth/password-reset-requests",
+            json={
+                "username": "admin",
+                "display_name": "系统管理员",
+                "contact": "13800000000",
+                "note": "忘记密码，申请重置",
+            },
+        )
+
+        assert reset_response.status_code == 200
+        assert reset_response.json() == {
+            "status": "submitted",
+            "message": "密码重置申请已提交，请等待管理员核验处理",
+        }
+
+        client.post("/api/auth/login", json={"username": "admin", "password": "123456"})
+        notifications_response = client.get("/api/system/notifications")
+        assert notifications_response.status_code == 200
+        notifications = notifications_response.json()
+        password_reset_notification = next(
+            notification for notification in notifications if notification["type"] == "password_reset"
+        )
+        assert password_reset_notification["title"] == "密码重置待处理"
+        assert password_reset_notification["target_permission"] == "system:user_manage"
+        assert password_reset_notification["status"] == "unread"
+        assert password_reset_notification["payload"]["username"] == "admin"
+        assert password_reset_notification["payload"]["contact"] == "13800000000"
+        assert password_reset_notification["payload"]["matched_user_id"] == "user-admin"
+
+
+def test_password_reset_request_requires_account_and_contact(monkeypatch):
+    with make_client(monkeypatch) as client:
+        missing_username_response = client.post(
+            "/api/auth/password-reset-requests",
+            json={"username": "", "display_name": "张三", "contact": "13800000000", "note": ""},
+        )
+        assert missing_username_response.status_code == 400
+        assert missing_username_response.json()["detail"] == "请输入需要重置密码的账号"
+
+        missing_contact_response = client.post(
+            "/api/auth/password-reset-requests",
+            json={"username": "zhangsan", "display_name": "张三", "contact": "", "note": ""},
+        )
+        assert missing_contact_response.status_code == 400
+        assert missing_contact_response.json()["detail"] == "请填写联系电话或邮箱"
+
+
 def test_logout_clears_session_cookie(monkeypatch):
     with make_client(monkeypatch) as client:
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "manager", "password": "123456"},
+            json={"username": "admin", "password": "123456"},
         )
         assert login_response.status_code == 200
 

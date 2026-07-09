@@ -91,7 +91,6 @@ def export_injection_orders_excel(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     normalized_order_ids = list(dict.fromkeys(order_id for order_id in order_ids if order_id.strip()))
 
     if not normalized_order_ids:
@@ -113,7 +112,6 @@ def get_injection_order(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     return serialize_order(load_order(db, order_id, current_user))
 
 
@@ -132,7 +130,6 @@ def export_injection_order_excel(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     order = load_order(db, order_id, current_user)
     content = export_order_to_excel(order, get_prices(db))
     filename = f"{order.id}-molding-sample.xlsx"
@@ -288,7 +285,6 @@ def get_material_prices(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     return {
         "prices": get_prices(db),
         "rmb_to_hkd_rate": get_exchange_rate(db),
@@ -324,7 +320,6 @@ def get_requisitions(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     return list_requisitions(db, order_id=order_id)
 
 
@@ -334,7 +329,6 @@ def get_inventory_batches(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     return list_inventory_batches(db, material=material)
 
 
@@ -346,7 +340,6 @@ def get_inventory_movements(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     return list_inventory_movements(
         db,
         batch_id=batch_id,
@@ -398,7 +391,6 @@ def get_injection_total_costs(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:read")
     return [
         build_total_cost_summary(order)
         for order in list_orders(db, current_user)

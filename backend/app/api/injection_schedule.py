@@ -6,7 +6,7 @@ from app.schemas.injection_schedule import (
     InjectionScheduleImportPreviewResponse,
     InjectionScheduleMachineOut,
 )
-from app.services.auth import AuthContext, ensure_permission, ensure_permission_in_scope, get_current_user
+from app.services.auth import AuthContext, ensure_permission_in_scope, get_current_user
 from app.services.injection_schedule import (
     create_daily_schedule_import,
     get_import_preview,
@@ -55,7 +55,6 @@ def read_import_preview(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "injection_schedule:read")
     return get_import_preview(db, batch_id)
 
 
@@ -65,5 +64,4 @@ def read_machine_status(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "injection_schedule:read")
     return get_machine_status(db, batch_id)
