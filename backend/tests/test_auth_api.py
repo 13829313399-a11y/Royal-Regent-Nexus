@@ -189,6 +189,38 @@ def test_login_and_registration_passwords_cannot_contain_chinese_characters(monk
         assert register_response.json()["detail"] == "密码不能包含中文，请使用英文、数字或符号"
 
 
+def test_register_flushes_new_user_before_registration_request(monkeypatch):
+    with make_client(monkeypatch) as client:
+        from sqlalchemy.orm import Session as OrmSession
+
+        original_flush = OrmSession.flush
+        flush_new_sets: list[set[str]] = []
+
+        def recording_flush(self, objects=None):
+            flush_new_sets.append({type(item).__name__ for item in self.new})
+            return original_flush(self, objects)
+
+        monkeypatch.setattr(OrmSession, "flush", recording_flush)
+
+        register_response = client.post(
+            "/api/auth/register",
+            json={
+                "username": "postgres-fk-order",
+                "display_name": "Postgres FK Order",
+                "password": "Strong123",
+                "confirm_password": "Strong123",
+                "phone": "13800000000",
+                "email": "",
+                "factory_id": "huaxing",
+                "department": "engineering",
+                "position": "工程师",
+            },
+        )
+
+        assert register_response.status_code == 200
+        assert flush_new_sets[0] == {"AuthUser"}
+
+
 def test_password_reset_request_creates_admin_system_notification(monkeypatch):
     with make_client(monkeypatch) as client:
         reset_response = client.post(
