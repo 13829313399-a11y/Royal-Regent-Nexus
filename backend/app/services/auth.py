@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -28,6 +28,12 @@ SESSION_COOKIE_NAME = "rr_session"
 DEFAULT_PASSWORD = "123456"
 PASSWORD_HASH_ITERATIONS = 160_000
 SESSION_HOURS = 12
+MIN_SEED_ADMIN_PASSWORD_LENGTH = 12
+LOGIN_FAILURE_LIMIT = 10
+LOGIN_FAILURE_WINDOW_MINUTES = 15
+LOGIN_LOCKED_MESSAGE = f"登录失败次数过多，请 {LOGIN_FAILURE_WINDOW_MINUTES} 分钟后再试"
+BAD_CREDENTIALS_MESSAGE = "用户名或密码错误"
+DUMMY_PASSWORD_SALT = "00000000000000000000000000000000"
 PASSWORD_CHINESE_MESSAGE = "密码不能包含中文，请使用英文、数字或符号"
 CHINESE_CHARACTER_RANGES = (
     ("\u3400", "\u4dbf"),
@@ -260,6 +266,14 @@ def verify_password(password: str, user: AuthUser) -> bool:
     return hmac.compare_digest(expected, user.password_hash)
 
 
+DUMMY_PASSWORD_HASH = hash_password("dummy-password", DUMMY_PASSWORD_SALT)
+
+
+def verify_dummy_password(password: str) -> bool:
+    expected = hash_password(password, DUMMY_PASSWORD_SALT)
+    return hmac.compare_digest(expected, DUMMY_PASSWORD_HASH)
+
+
 def contains_chinese_characters(value: str) -> bool:
     return any(start <= character <= end for character in value for start, end in CHINESE_CHARACTER_RANGES)
 
@@ -267,6 +281,17 @@ def contains_chinese_characters(value: str) -> bool:
 def validate_password_characters(password: str) -> None:
     if contains_chinese_characters(password):
         raise HTTPException(status_code=400, detail=PASSWORD_CHINESE_MESSAGE)
+
+
+def get_seed_admin_password() -> str:
+    password = settings.seed_admin_password.strip()
+    if not password:
+        return ""
+    if password == DEFAULT_PASSWORD or len(password) < MIN_SEED_ADMIN_PASSWORD_LENGTH:
+        raise RuntimeError("SEED_ADMIN_PASSWORD must be at least 12 characters and must not be 123456")
+    if contains_chinese_characters(password):
+        raise RuntimeError("SEED_ADMIN_PASSWORD must not contain Chinese characters")
+    return password
 
 
 def add_auth_audit(
@@ -288,6 +313,38 @@ def add_auth_audit(
             created_at=now_text(),
         )
     )
+
+
+def request_ip_address(request: Request | None) -> str:
+    return request.client.host if request and request.client else ""
+
+
+def recent_bad_credential_count(db: Session, username: str, request: Request | None = None) -> int:
+    cutoff = (datetime.now() - timedelta(minutes=LOGIN_FAILURE_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+    return db.scalar(
+        select(func.count(AuthAuditLog.id)).where(
+            AuthAuditLog.username == username,
+            AuthAuditLog.ip_address == request_ip_address(request),
+            AuthAuditLog.action == "login_denied",
+            AuthAuditLog.detail == BAD_CREDENTIALS_MESSAGE,
+            AuthAuditLog.created_at >= cutoff,
+        )
+    ) or 0
+
+
+def ensure_login_not_temporarily_locked(db: Session, username: str, request: Request | None = None) -> None:
+    if recent_bad_credential_count(db, username, request) < LOGIN_FAILURE_LIMIT:
+        return
+
+    add_auth_audit(
+        db,
+        "login_locked",
+        username=username,
+        detail=LOGIN_LOCKED_MESSAGE,
+        request=request,
+    )
+    db.commit()
+    raise HTTPException(status_code=429, detail=LOGIN_LOCKED_MESSAGE)
 
 
 def seed_auth_defaults(db: Session) -> None:
@@ -345,6 +402,17 @@ def seed_auth_defaults(db: Session) -> None:
         db.commit()
         return
 
+    seed_admin_password = get_seed_admin_password()
+    if not seed_admin_password:
+        for user_id, *_ in DEFAULT_USERS:
+            user = db.get(AuthUser, user_id)
+            if user is not None and verify_password(DEFAULT_PASSWORD, user):
+                user.status = "locked"
+                user.force_password_change = 1
+                user.updated_at = now
+        db.commit()
+        return
+
     retired_users = db.scalars(
         select(AuthUser).where(
             (AuthUser.username.in_(RETIRED_DEFAULT_USERNAMES))
@@ -358,7 +426,7 @@ def seed_auth_defaults(db: Session) -> None:
     for user_id, username, display_name, role_id, factory_id, department in DEFAULT_USERS:
         user = db.get(AuthUser, user_id)
         if user is None:
-            salt, password_hash = make_password_hash(DEFAULT_PASSWORD)
+            salt, password_hash = make_password_hash(seed_admin_password)
             db.add(
                 AuthUser(
                     id=user_id,
@@ -367,7 +435,7 @@ def seed_auth_defaults(db: Session) -> None:
                     password_salt=salt,
                     password_hash=password_hash,
                     status="active",
-                    force_password_change=0,
+                    force_password_change=1,
                     created_at=now,
                     updated_at=now,
                 )
@@ -375,6 +443,11 @@ def seed_auth_defaults(db: Session) -> None:
         else:
             user.username = username
             user.display_name = display_name
+            if verify_password(DEFAULT_PASSWORD, user):
+                salt, password_hash = make_password_hash(seed_admin_password)
+                user.password_salt = salt
+                user.password_hash = password_hash
+                user.force_password_change = 1
             user.status = "active"
             user.updated_at = now
 
@@ -403,16 +476,18 @@ def seed_auth_defaults(db: Session) -> None:
 def authenticate_user(db: Session, username: str, password: str, request: Request | None = None) -> AuthUser:
     normalized_username = username.strip()
     validate_password_characters(password)
+    ensure_login_not_temporarily_locked(db, normalized_username, request)
 
     user = db.scalar(select(AuthUser).where(AuthUser.username == normalized_username))
     if user is None and normalized_username in DEFAULT_USERNAMES and settings.seed_default_accounts:
         seed_auth_defaults(db)
         user = db.scalar(select(AuthUser).where(AuthUser.username == normalized_username))
 
-    if not user or not verify_password(password, user):
-        add_auth_audit(db, "login_denied", username=normalized_username, detail="用户名或密码错误", request=request)
+    password_matches = verify_password(password, user) if user else verify_dummy_password(password)
+    if not user or not password_matches:
+        add_auth_audit(db, "login_denied", username=normalized_username, detail=BAD_CREDENTIALS_MESSAGE, request=request)
         db.commit()
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        raise HTTPException(status_code=401, detail=BAD_CREDENTIALS_MESSAGE)
 
     if user.status != "active":
         status_message = {

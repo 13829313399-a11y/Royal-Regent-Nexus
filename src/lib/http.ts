@@ -7,6 +7,14 @@ export interface ApiErrorPayload {
   details?: unknown
 }
 
+export type UnauthorizedHandler = (error: AxiosError<ApiErrorPayload>) => void
+
+let unauthorizedHandler: UnauthorizedHandler | null = null
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
+  unauthorizedHandler = handler
+}
+
 export const http: AxiosInstance = axios.create({
   baseURL: import.meta.env?.VITE_API_BASE_URL ?? '/api',
   timeout: 15000,
@@ -18,7 +26,13 @@ export const http: AxiosInstance = axios.create({
 
 http.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<ApiErrorPayload>) => Promise.reject(error),
+  (error: AxiosError<ApiErrorPayload>) => {
+    if (error.response?.status === 401) {
+      unauthorizedHandler?.(error)
+    }
+
+    return Promise.reject(error)
+  },
 )
 
 export function getApiErrorMessage(error: unknown) {

@@ -194,6 +194,26 @@ def is_external_order(order: MoldingSampleOrder) -> bool:
     return order.send_to in {"发至湖南", "发至模厂"} or order.workshop == "模厂"
 
 
+def permitted_factory_ids_for_permission(
+    db: Session,
+    current_user: AuthContext,
+    permission: str,
+) -> set[str] | None:
+    ensure_permission(db, current_user, permission)
+
+    factory_ids = {
+        grant.factory_id
+        for grant in current_user.grants
+        if permission in grant.permissions and grant.factory_id
+    }
+    if "*" in factory_ids:
+        return None
+    if not factory_ids:
+        raise HTTPException(status_code=403, detail="无操作权限")
+
+    return factory_ids
+
+
 def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
     order = db.scalar(
         select(MoldingSampleOrder)
@@ -208,6 +228,9 @@ def load_order(db: Session, order_id: str, current_user: AuthContext | None = No
     if not order:
         raise HTTPException(status_code=404, detail="啤办单不存在")
 
+    if current_user is not None:
+        ensure_permission_in_scope(db, current_user, "molding_sample:read", order.factory_id)
+
     return order
 
 
@@ -221,10 +244,14 @@ def order_statement():
 
 
 def list_orders(db: Session, current_user: AuthContext) -> list[MoldingSampleOrder]:
+    permitted_factory_ids = permitted_factory_ids_for_permission(db, current_user, "molding_sample:read")
+    statement = order_statement()
+    if permitted_factory_ids is not None:
+        statement = statement.where(MoldingSampleOrder.factory_id.in_(permitted_factory_ids))
+
     return list(
         db.scalars(
-            order_statement()
-            .order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
+            statement.order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
         ).all()
     )
 
@@ -381,7 +408,10 @@ def list_notifications(
     order_id: str | None = None,
     status: str | None = None,
 ) -> list[MoldingSampleNotification]:
+    permitted_factory_ids = permitted_factory_ids_for_permission(db, current_user, "molding_sample:notification_read")
     statement = select(MoldingSampleNotification)
+    if permitted_factory_ids is not None:
+        statement = statement.where(MoldingSampleNotification.factory_id.in_(permitted_factory_ids))
     if target_module:
         statement = statement.where(MoldingSampleNotification.target_module == target_module)
     elif "molding_sample:production_read" not in current_user.permissions and "*" not in current_user.factory_scopes:
@@ -434,7 +464,10 @@ def list_problems(
     order_id: str | None = None,
     status: str | None = None,
 ) -> list[MoldingSampleProblem]:
+    permitted_factory_ids = permitted_factory_ids_for_permission(db, current_user, "molding_sample:read")
     statement = select(MoldingSampleProblem)
+    if permitted_factory_ids is not None:
+        statement = statement.where(MoldingSampleProblem.factory_id.in_(permitted_factory_ids))
 
     if order_id:
         order = load_order(db, order_id, current_user)

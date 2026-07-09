@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+ADMIN_TEST_PASSWORD = "AdminSeed123!"
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -21,6 +22,7 @@ def make_client(monkeypatch):
     TEST_TMP_DIR.mkdir(exist_ok=True)
     database_url = f"sqlite:///{TEST_TMP_DIR / f'molding_sample_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -32,6 +34,7 @@ def make_client(monkeypatch):
 
 def make_client_with_database(monkeypatch, database_path: Path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -139,7 +142,8 @@ def create_legacy_molding_sample_sqlite_database(database_path: Path):
 
 def login_as(client, username: str):
     ensure_test_user(username)
-    response = client.post("/api/auth/login", json={"username": username, "password": "123456"})
+    password = ADMIN_TEST_PASSWORD if username == "admin" else "123456"
+    response = client.post("/api/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200
     return response.json()
 
@@ -375,7 +379,7 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
 
 
-def test_authenticated_user_without_molding_read_permission_can_browse_molding_sample_data(client):
+def test_molding_sample_read_endpoints_require_read_permission(client):
     login_as(client, "engineer")
     create_response = client.post("/api/injection", json=sample_order_payload("BP-BROWSE-001"))
     assert create_response.status_code == 201
@@ -383,20 +387,14 @@ def test_authenticated_user_without_molding_read_permission_can_browse_molding_s
     profile = login_as(client, "qa_inspector")
     assert "molding_sample:read" not in profile["permissions"]
 
-    list_response = client.get("/api/injection")
-    assert list_response.status_code == 200
-    assert any(record["order"]["id"] == "BP-BROWSE-001" for record in list_response.json())
-
-    detail_response = client.get("/api/injection/BP-BROWSE-001")
-    assert detail_response.status_code == 200
-    assert detail_response.json()["order"]["id"] == "BP-BROWSE-001"
-
-    prices_response = client.get("/api/material-prices")
-    assert prices_response.status_code == 200
-    assert prices_response.json()["prices"]
-
-    problems_response = client.get("/api/problems", params={"order_id": "BP-BROWSE-001"})
-    assert problems_response.status_code == 200
+    assert client.get("/api/injection").status_code == 403
+    assert client.get("/api/injection/BP-BROWSE-001").status_code == 403
+    assert client.get("/api/injection/BP-BROWSE-001/export-excel").status_code == 403
+    assert client.get(
+        "/api/injection/export-excel",
+        params=[("order_ids", "BP-BROWSE-001")],
+    ).status_code == 403
+    assert client.get("/api/problems", params={"order_id": "BP-BROWSE-001"}).status_code == 403
 
 
 def test_engineer_can_create_order_and_production_user_reads_notification_after_supervisor_approval(client):
@@ -436,7 +434,7 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert notifications[0]["target_role"] == "啤机部"
 
 
-def test_factory_scope_limits_writes_but_not_molding_sample_reads(client):
+def test_factory_scope_limits_molding_sample_reads_and_writes(client):
     login_as(client, "admin")
     huadeng_payload = sample_order_payload("BP-HD-SCOPE-001")
     huadeng_payload["order"]["factory_id"] = "huadeng"
@@ -446,11 +444,19 @@ def test_factory_scope_limits_writes_but_not_molding_sample_reads(client):
     login_as(client, "engineer")
     list_response = client.get("/api/injection")
     assert list_response.status_code == 200
-    assert any(record["order"]["id"] == "BP-HD-SCOPE-001" for record in list_response.json())
+    assert all(record["order"]["id"] != "BP-HD-SCOPE-001" for record in list_response.json())
 
     detail_response = client.get("/api/injection/BP-HD-SCOPE-001")
-    assert detail_response.status_code == 200
-    assert detail_response.json()["order"]["factory_id"] == "huadeng"
+    assert detail_response.status_code == 403
+
+    single_export_response = client.get("/api/injection/BP-HD-SCOPE-001/export-excel")
+    assert single_export_response.status_code == 403
+
+    batch_export_response = client.get(
+        "/api/injection/export-excel",
+        params=[("order_ids", "BP-HD-SCOPE-001")],
+    )
+    assert batch_export_response.status_code == 403
 
     edited_payload = sample_order_payload("BP-HD-SCOPE-001")
     edited_payload["order"]["factory_id"] = "huadeng"
@@ -510,6 +516,17 @@ def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
     profile = login_as(client, "cross_scope")
     assert "molding_sample:create" in profile["permissions"]
     assert profile["factory_scopes"] == ["huakang-a", "huaxing"]
+
+    login_as(client, "admin")
+    huakang_payload = sample_order_payload("BP-CROSS-READ-BLOCKED")
+    huakang_payload["order"]["factory_id"] = "huakang-a"
+    assert client.post("/api/injection", json=huakang_payload).status_code == 201
+
+    login_as(client, "cross_scope")
+    scoped_list_response = client.get("/api/injection")
+    assert scoped_list_response.status_code == 200
+    assert all(record["order"]["id"] != "BP-CROSS-READ-BLOCKED" for record in scoped_list_response.json())
+    assert client.get("/api/injection/BP-CROSS-READ-BLOCKED").status_code == 403
 
     blocked_payload = sample_order_payload("BP-CROSS-BLOCKED")
     blocked_payload["order"]["factory_id"] = "huakang-a"

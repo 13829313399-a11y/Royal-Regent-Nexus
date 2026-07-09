@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+ADMIN_TEST_PASSWORD = "AdminSeed123!"
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -17,6 +18,7 @@ def make_client(monkeypatch):
     TEST_TMP_DIR.mkdir(exist_ok=True)
     database_url = f"sqlite:///{TEST_TMP_DIR / f'system_auth_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -42,6 +44,8 @@ def register_payload(username: str = "zhangsan"):
 
 def login(client: TestClient, username: str, password: str = "123456"):
     ensure_test_user(username)
+    if username == "admin" and password == "123456":
+        password = ADMIN_TEST_PASSWORD
     response = client.post("/api/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
     return response.json()
