@@ -17,6 +17,7 @@ MIGRATION_REVISION = "20260706_0005"
 INJECTION_SCHEDULE_MIGRATION_REVISION = "20260708_0006"
 AUTH_REGISTRATION_MIGRATION_REVISION = "20260708_0007"
 MOLD_METADATA_MIGRATION_REVISION = "20260710_0008"
+AUTH_AVATAR_MIGRATION_REVISION = "20260710_0009"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -53,7 +54,13 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [MOLD_METADATA_MIGRATION_REVISION]
+    assert script.get_heads() == [AUTH_AVATAR_MIGRATION_REVISION]
+
+    avatar_revision = script.get_revision(AUTH_AVATAR_MIGRATION_REVISION)
+    assert avatar_revision.down_revision == MOLD_METADATA_MIGRATION_REVISION
+    avatar_migration_content = Path(avatar_revision.path).read_text(encoding="utf-8")
+    assert "avatar_png" in avatar_migration_content
+    assert "avatar_version" in avatar_migration_content
 
     mold_metadata_revision = script.get_revision(MOLD_METADATA_MIGRATION_REVISION)
     assert mold_metadata_revision.down_revision == AUTH_REGISTRATION_MIGRATION_REVISION
@@ -145,3 +152,5 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "create unique index ix_molding_sample_requisitions_req_number" in sql
     assert "mold_dimensions" in sql
     assert "mold_presence_status" in sql
+    assert "avatar_png" in sql
+    assert "avatar_version" in sql

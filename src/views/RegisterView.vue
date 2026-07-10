@@ -253,7 +253,7 @@ async function submitRegistration() {
             </label>
             <label class="field-block">
               <span>厂区 <b>*</b></span>
-              <span class="control">
+              <span class="control select-control">
                 <Factory class="control-icon" aria-hidden="true" />
                 <select v-model="factoryId">
                 <option v-for="factory in factoryOptions" :key="factory.id" :value="factory.id">
@@ -265,7 +265,7 @@ async function submitRegistration() {
             </label>
             <label class="field-block">
               <span>部门 <b>*</b></span>
-              <span class="control">
+              <span class="control select-control">
                 <Building2 class="control-icon" aria-hidden="true" />
                 <select v-model="department">
                 <option v-for="item in departmentOptions" :key="item.id" :value="item.id">
@@ -532,12 +532,35 @@ async function submitRegistration() {
   appearance: none;
 }
 
+.select-control select {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  box-sizing: border-box;
+  flex: none;
+  padding: 0 40px;
+}
+
+.select-control .control-icon,
+.select-control .select-icon {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
 .select-icon {
   width: 16px;
   height: 16px;
   flex: none;
   color: #94a3b8;
-  pointer-events: none;
+}
+
+.select-control .select-icon {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
 }
 
 .submit-row {

@@ -1,4 +1,4 @@
-from sqlalchemy import Integer, String, Text
+from sqlalchemy import Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -14,6 +14,8 @@ class AuthUser(Base):
     password_hash: Mapped[str] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     force_password_change: Mapped[int] = mapped_column(Integer, default=0)
+    avatar_png: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    avatar_version: Mapped[str] = mapped_column(String(64), default="")
     last_login_at: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[str] = mapped_column(String(32), default="")
     updated_at: Mapped[str] = mapped_column(String(32), default="")

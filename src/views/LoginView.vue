@@ -195,6 +195,20 @@ function continueWithRecentAccount() {
   requestAnimationFrame(() => passwordInput.value?.focus())
 }
 
+function focusPasswordInput(event: KeyboardEvent) {
+  if (event.isComposing || !username.value.trim()) {
+    return
+  }
+
+  event.preventDefault()
+
+  if (isSubmitting.value) {
+    return
+  }
+
+  passwordInput.value?.focus()
+}
+
 function openPasswordHelp() {
   passwordHelpMessage.value = ''
   passwordResetSubmitted.value = false
@@ -403,6 +417,7 @@ onMounted(() => {
                   v-model="username"
                   class="ml-2.5 h-full w-full bg-transparent text-[14px] outline-none placeholder:text-slate-400"
                   autocomplete="username"
+                  @keydown.enter="focusPasswordInput"
                   :placeholder="recentAccount ? '确认账号或输入新账号' : '工号 / 企业邮箱'"
                   type="text"
                 >

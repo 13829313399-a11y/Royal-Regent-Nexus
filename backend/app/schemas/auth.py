@@ -54,3 +54,4 @@ class AuthMeResponse(BaseModel):
     department_scopes: list[str]
     grants: list[AuthGrant] = Field(default_factory=list)
     force_password_change: bool = False
+    avatar_url: str = ""
