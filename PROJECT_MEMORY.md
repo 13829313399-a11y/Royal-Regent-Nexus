@@ -1285,6 +1285,30 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: reproduced production `500 Internal Server Error` against `http://47.115.217.27/api/auth/register`; local SQLAlchemy echo showed `INSERT INTO auth_registration_requests` could be emitted before `INSERT INTO auth_users`; added a regression test that records the first flush as `{"AuthUser"}`; `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_auth_api.py backend/tests/test_system_user_management_api.py -q` passed 18 tests.
 - Follow-up: deploy this fix to the server and retest registration on production; the server password shared in chat should be rotated because it was exposed in the conversation.
 
+### 2026-07-10
+
+- Requirement: add a new `车间业务主管` identity for the quote/customer-price workflow.
+- Implementation: added backend role `sales_customer_supervisor` with the same customer-price permissions as `sales_customer_owner`; sales-business registration requests whose position contains `主管` now recommend `sales_customer_supervisor`; the system user approval page includes a matching permission preset; the sales quote center treats `车间业务主管` as a supervisor view, while `车间业务跟客` remains restricted to its own customer account scope.
+- Files changed: `backend/app/services/auth.py`, `backend/app/services/system.py`, `backend/tests/test_auth_api.py`, `backend/tests/test_system_user_management_api.py`, `src/views/SystemUserManagementView.vue`, `src/components/modules/sales/QuoteCenterPanel.vue`, `src/data/enterpriseMock.ts`, `src/views/__tests__/systemUserManagementView.spec.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_auth_api.py backend/tests/test_system_user_management_api.py -q` passed 25 tests; `node_modules/.bin/vitest.cmd run src/views/__tests__/systemUserManagementView.spec.ts src/views/__tests__/productionModuleEntry.spec.ts` passed; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with only LF-to-CRLF working-copy warnings.
+- Decision: `车间业务主管` can access quote-center customer-price capabilities at supervisor scope; ordinary `车间业务跟客` accounts still only see customers assigned to their account.
+
+### 2026-07-10
+
+- Requirement: rename customer display spelling from `Dicky` to `Dickie`.
+- Implementation: updated user-facing customer labels, quote-center overview text, import/export error messages, default converter fallback text, generated quote file names, and carton-mark test fixtures to use `Dickie`. The Dickie converter now normalizes copied text patches and generated file names so old source workbooks or uploaded file names containing `Dicky` are corrected to `Dickie` in exported quotation output.
+- Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/CustomerPriceConversionView.vue`, `src/lib/customerPriceConverters/dicky.ts`, `src/lib/__tests__/dickyCustomerPriceConverter.spec.ts`, `src/api/__tests__/cartonMark.test.ts`, `backend/tests/test_carton_mark_service.py`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src/lib/__tests__/dickyCustomerPriceConverter.spec.ts src/api/__tests__/cartonMark.test.ts` passed the Dickie converter suite; `node_modules/.bin/jiti.cmd src/api/__tests__/cartonMark.test.ts` passed; `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_carton_mark_service.py -q` passed 9 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decision: internal module identifiers and file names that already use `dicky` remain unchanged to avoid unnecessary churn; only user-facing spelling and generated customer output are corrected to `Dickie`.
+
+### 2026-07-10
+
+- Requirement: within a workshop, a `车间业务跟客` account can convert internal prices to customer quotes for all customers in that workshop.
+- Implementation: changed `QuoteCenterPanel.vue` customer scope resolution from direct `customer.account === currentUsername` matching to workshop-level access. The current follow-up account first resolves its bound workshop(s), then `allowedCustomerIds`, visible quote rows, and quote-generation eligibility all use `customer.workshop` / `row.workshop`. `车间业务主管` still keeps the existing all-customer supervisor view.
+- Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src/views/__tests__/productionModuleEntry.spec.ts src/lib/__tests__/dickyCustomerPriceConverter.spec.ts` passed 2 files / 10 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decision: workshop-level access is now the front-end permission model for quote conversion until a backend customer/workshop binding table replaces the mock `account` and `workshop` fields.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.
@@ -1308,3 +1332,19 @@ Use this template when updating the memory after future work:
 - Assumptions:
 - Follow-up:
 ```
+
+### 2026-07-10
+
+- Requirement: configure the local development administrator account so the user can log in with the requested password.
+- Implementation: added the Git-ignored local `backend/.env` with default-account seeding enabled and a strong administrator seed password; the existing SQLite bootstrap path is intentionally preserved by omitting `DATABASE_URL`.
+- Files changed: `backend/.env` and `PROJECT_MEMORY.md`.
+- Verification: updated exactly one local SQLite `admin` row with a new salted PBKDF2 password hash, restored the account to `active`, and confirmed a live `POST /api/auth/login` against `127.0.0.1:8000` returned HTTP 200 for `admin` with `force_password_change=false`. `git check-ignore -v backend/.env` confirmed the local secret file is ignored.
+- Decision: this is local development configuration only; production environment settings are unchanged, and the plaintext local password is not duplicated in project memory.
+
+### 2026-07-10
+
+- Requirement: create local branch `baoke1` and make one Git commit without pushing or opening a pull request.
+- Implementation: the existing local `baoke1` reference had no unique commits and was an ancestor of the current `baoke2` baseline, so it was safely fast-forwarded to the current HEAD and checked out. The commit scope contains the existing tracked role/permission, Dickie naming/converter, workshop quote access, related test, and project-memory changes; ignored `backend/.env` and unrelated untracked `outputs/*.json`, `public/templates/disney-customer-quote-template.xlsx`, and `tools/` are excluded.
+- Files changed: the existing 15 tracked worktree files plus `PROJECT_MEMORY.md`; no ignored secret or unrelated untracked artifact is included.
+- Verification: bundled Python `py_compile` passed for the changed backend service/test files; targeted Vitest passed 3 files / 11 tests; the carton-mark API assertion passed through `jiti`; `git diff --check` passed with only Windows LF-to-CRLF warnings.
+- Decision: this turn creates a local commit only. Remote push and pull request creation remain intentionally out of scope.

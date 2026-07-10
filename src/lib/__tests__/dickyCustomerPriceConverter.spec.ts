@@ -227,7 +227,7 @@ function findSelfReferencingFormulaRefs(zip: Record<string, Uint8Array>, sheetPa
   return refs
 }
 
-describe('Dicky customer price converter', () => {
+describe('Dickie customer price converter', () => {
   it('creates an English Quotation sheet from the imported 总表 workbook', () => {
     const result = convertDickyInternalQuote(
       createMinimalDickyWorkbook(),
@@ -243,13 +243,17 @@ describe('Dicky customer price converter', () => {
     const quote = parsed.sheets.find((sheet) => sheet.name === 'Quotation')
 
     expect(parsed.sheets.map((sheet) => sheet.name)).toEqual(['总表', 'Quotation'])
+    expect(quote?.rows[8][2]).toBe('Ben/ Dickie')
     expect(quote?.rows[11][1]).toBe('20 307 3001\nStitch Cable Buggy\n(2xAA-LR6 INCLUDED)')
     expect(quote?.rows[12][1]).toBe('20 307 3000\nMinnie Cable\n(2xAA-LR6 EXCLUDED)')
     expect(quote?.rows[24][1]).toBe('Production following RoHS & Non-Phthalates,Cadmium,ASTM,EN71,EN62115,FCC.')
     expect(quote?.rows[27][1]).toBe('Type')
     expect(quote?.rows[27][2]).toBe('Cost')
     expect(quote?.rows[47][2]).toBe('Car Light')
-    expect(buildDickyCustomerQuoteFileName(result)).toContain('Quotation of Simba Dickie toys')
+    const fileName = buildDickyCustomerQuoteFileName(result)
+    expect(fileName).toContain('Quotation of Simba Dickie toys')
+    expect(fileName).toContain('Dickie Cable internal quote')
+    expect(fileName).not.toContain('Dicky')
 
     const outputXml = strFromU8(unzipSync(output)['xl/worksheets/sheet2.xml'])
     expect(outputXml).toContain("<f>'Stitch史迪仔'!D52</f>")
@@ -263,7 +267,7 @@ describe('Dicky customer price converter', () => {
     const template = readFileSync(dickyTemplatePath)
     const source = createMinimalDickyWorkbook()
     const sourceZip = unzipSync(new Uint8Array(source))
-    const result = convertDickyInternalQuote(source, 'Dicky Cable internal quote.xlsx')
+    const result = convertDickyInternalQuote(source, 'Dickie Cable internal quote.xlsx')
     const output = createDickyCustomerQuoteWorkbook(result, template)
     const parsed = parseXlsxWorkbook(asArrayBuffer(output))
     const quote = parsed.sheets.find((sheet) => sheet.name === 'Quotation')
@@ -286,7 +290,7 @@ describe('Dicky customer price converter', () => {
 
   it('translates mold detail cells that come from linked formula references', () => {
     const source = createFormulaLinkedDickyWorkbook()
-    const result = convertDickyInternalQuote(source, 'Dicky Cable internal quote.xlsx')
+    const result = convertDickyInternalQuote(source, 'Dickie Cable internal quote.xlsx')
     const output = createDickyCustomerQuoteWorkbook(result)
     const parsed = parseXlsxWorkbook(asArrayBuffer(output))
     const quote = parsed.sheets.find((sheet) => sheet.name === 'Quotation')
@@ -314,7 +318,7 @@ describe('Dicky customer price converter', () => {
     ))
 
     const sourceBuffer = zipSync(sourceZip)
-    const result = convertDickyInternalQuote(asArrayBuffer(sourceBuffer), 'Dicky Cable internal quote.xlsx')
+    const result = convertDickyInternalQuote(asArrayBuffer(sourceBuffer), 'Dickie Cable internal quote.xlsx')
     const outputZip = unzipSync(createDickyCustomerQuoteWorkbook(result, template))
     const quotationPath = findSheetPath(outputZip, 'Quotation')
 
@@ -336,7 +340,7 @@ describe('Dicky customer price converter', () => {
     sourceZip[sourceSheetPath] = strToU8(encodedXml)
 
     const sourceBuffer = zipSync(sourceZip)
-    const result = convertDickyInternalQuote(asArrayBuffer(sourceBuffer), 'Dicky Cable internal quote.xlsx')
+    const result = convertDickyInternalQuote(asArrayBuffer(sourceBuffer), 'Dickie Cable internal quote.xlsx')
     const output = createDickyCustomerQuoteWorkbook(result)
     const parsed = parseXlsxWorkbook(asArrayBuffer(output))
     const quote = parsed.sheets.find((sheet) => sheet.name === 'Quotation')

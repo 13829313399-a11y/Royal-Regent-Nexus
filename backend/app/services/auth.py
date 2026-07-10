@@ -84,6 +84,7 @@ DEFAULT_ROLES = [
     ("qa_inspector", "QA 检验员", "QA 箱唛实拍上传与核对"),
     ("molding_clerk", "啤机部文员", "啤机部啤办任务接收、回填和完成"),
     ("sales_customer_owner", "车间业务跟客", "按车间和客户范围转换报客价"),
+    ("sales_customer_supervisor", "车间业务主管", "统筹车间客户报价转换、复核和报客价输出"),
     ("admin", "系统管理员", "系统配置和权限管理"),
 ]
 
@@ -135,6 +136,12 @@ ROLE_PERMISSIONS = {
         "injection_schedule:import",
     },
     "sales_customer_owner": {
+        "customer_price:read",
+        "customer_price:import_internal_quote",
+        "customer_price:export_customer_quote",
+        "customer_price:compare",
+    },
+    "sales_customer_supervisor": {
         "customer_price:read",
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",

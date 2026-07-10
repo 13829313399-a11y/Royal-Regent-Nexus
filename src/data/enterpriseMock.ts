@@ -950,6 +950,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     quickCandidates: ['合同台账', '客户信用门禁', '回款跟进', '交期预警'],
     permissionRows: [
       { role: '业务经理', view: true, edit: true, approve: true },
+      { role: '车间业务主管', view: true, edit: true, approve: true },
       { role: '车间业务员', view: true, edit: true, approve: false },
       { role: '总经理', view: true, edit: false, approve: true },
       { role: 'PMC', view: true, edit: false, approve: true },

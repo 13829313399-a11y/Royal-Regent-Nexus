@@ -22,7 +22,7 @@ def test_carton_mark_auto_check_extracts_template_fields_and_requests_photo_revi
         ),
         front_image_bytes=b"not-an-image",
         side_image_bytes=b"not-an-image",
-        customer_name="Dicky",
+        customer_name="Dickie",
         po="203302017",
         item="700142617",
     )
@@ -30,7 +30,7 @@ def test_carton_mark_auto_check_extracts_template_fields_and_requests_photo_revi
     template_fields = {field.key: field.value for field in response.template_fields}
     front_template_fields = {field.key: field.value for field in response.front_template_fields}
     side_template_fields = {field.key: field.value for field in response.side_template_fields}
-    assert template_fields["customer_name"] == "Dicky"
+    assert template_fields["customer_name"] == "Dickie"
     assert template_fields["po"] == "203302017"
     assert template_fields["item"] == "700142617"
     assert template_fields["barcode"] == "197919619"
@@ -147,7 +147,7 @@ def test_carton_mark_auto_check_matches_photo_raw_values_when_labels_are_noisy(m
         ),
         front_image_bytes=b"front-photo",
         side_image_bytes=b"side-photo",
-        customer_name="Dicky",
+        customer_name="Dickie",
         po="2033",
         item="2017",
     )
@@ -187,7 +187,7 @@ def test_carton_mark_auto_check_backfills_unlabeled_pdf_values_from_photo_fields
         ),
         front_image_bytes=b"front-photo",
         side_image_bytes=b"side-photo",
-        customer_name="Dicky",
+        customer_name="Dickie",
         po="203302017",
         item="2017",
     )
@@ -231,7 +231,7 @@ def test_carton_mark_auto_check_tolerates_extracted_identifier_ocr_confusions(mo
         ),
         front_image_bytes=b"front-photo",
         side_image_bytes=b"side-photo",
-        customer_name="Dicky",
+        customer_name="Dickie",
         po="2033",
         item="2017",
     )

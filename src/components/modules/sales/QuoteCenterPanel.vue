@@ -119,10 +119,10 @@ const customerOptions: CustomerOption[] = [
   },
   {
     id: 'dicky',
-    name: 'Dicky',
+    name: 'Dickie',
     workshop: '啤机车间 A',
     account: 'huaxing_molding_a_sales',
-    owner: 'Ben / Dicky',
+    owner: 'Ben / Dickie',
     activeQuoteCount: 1,
   },
   {
@@ -191,7 +191,7 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
   {
     id: 'QTC-HKA-260709-041',
     customerId: 'dicky',
-    customer: 'Dicky',
+    customer: 'Dickie',
     workshop: '啤机车间 A',
     account: 'huaxing_molding_a_sales',
     internalPriceHkd: 0,
@@ -248,14 +248,40 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
 
 const currentUsername = computed(() => authStore.currentUser?.username ?? currentAccount)
 
-const isWorkshopSalesAccount = computed(() => {
-  return authStore.roles.includes('车间业务跟客')
+const isWorkshopSalesSupervisorAccount = computed(() => {
+  return authStore.roles.includes('车间业务主管')
 })
+
+const isWorkshopSalesAccount = computed(() => {
+  return authStore.roles.includes('车间业务跟客') && !isWorkshopSalesSupervisorAccount.value
+})
+
+const workshopSalesWorkshopNames = computed(() => {
+  const workshops = new Set<string>()
+
+  customerOptions.forEach((customer) => {
+    if (customer.account === currentUsername.value) {
+      workshops.add(customer.workshop)
+    }
+  })
+
+  conversionRows.value.forEach((row) => {
+    if (row.account === currentUsername.value) {
+      workshops.add(row.workshop)
+    }
+  })
+
+  return workshops
+})
+
+function canAccessWorkshop(workshop: string) {
+  return !isWorkshopSalesAccount.value || workshopSalesWorkshopNames.value.has(workshop)
+}
 
 const allowedCustomerIds = computed(() => {
   if (isWorkshopSalesAccount.value) {
     return customerOptions
-      .filter((customer) => customer.account === currentUsername.value)
+      .filter((customer) => workshopSalesWorkshopNames.value.has(customer.workshop))
       .map((customer) => customer.id)
   }
 
@@ -292,11 +318,8 @@ const selectedImportMatchesCurrentChoice = computed(() => {
 const visibleConversionRows = computed(() => {
   return conversionRows.value.filter((row) => {
     const inScope = row.customerId === selectedCustomer.value.id && allowedCustomerIds.value.includes(row.customerId)
-    const canAccessAccount = isWorkshopSalesAccount.value
-      ? row.account === currentUsername.value
-      : true
 
-    return inScope && canAccessAccount
+    return inScope && canAccessWorkshop(row.workshop)
   })
 })
 
@@ -564,11 +587,7 @@ function compareStatusClass(status: DetailCompareStatus) {
 }
 
 function canGenerateQuote(row: CustomerPriceConversionRow) {
-  const canAccessAccount = isWorkshopSalesAccount.value
-    ? row.account === currentUsername.value
-    : true
-
-  return canAccessAccount
+  return canAccessWorkshop(row.workshop)
     && allowedCustomerIds.value.includes(row.customerId)
     && row.customerId === selectedCustomer.value.id
     && row.status !== '已生成'
@@ -626,7 +645,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'dicky') {
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
-        throw new Error('Dicky 当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
+        throw new Error('Dickie 当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
       }
 
       const buffer = await readFileAsArrayBuffer(file)
@@ -793,7 +812,7 @@ async function exportCustomerQuoteExcel() {
   } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
     const templateResponse = await fetch(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL)
     if (!templateResponse.ok) {
-      throw new Error('Dicky 报客模板读取失败')
+      throw new Error('Dickie 报客模板读取失败')
     }
 
     const workbook = createDickyCustomerQuoteWorkbook(
