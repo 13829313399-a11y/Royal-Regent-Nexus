@@ -380,6 +380,28 @@ def test_login_and_registration_passwords_cannot_contain_chinese_characters(monk
         assert register_response.json()["detail"] == "密码不能包含中文，请使用英文、数字或符号"
 
 
+@pytest.mark.parametrize("factory_id", ["huakang-c", "huakang-d"])
+def test_registration_accepts_new_huakang_factory_scopes(monkeypatch, factory_id):
+    with make_client(monkeypatch) as client:
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "username": f"{factory_id}-applicant",
+                "display_name": factory_id.upper(),
+                "password": "Strong123",
+                "confirm_password": "Strong123",
+                "phone": "13800000000",
+                "email": "",
+                "factory_id": factory_id,
+                "department": "engineering",
+                "position": "工程师",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "pending"
+
+
 def test_register_flushes_new_user_before_registration_request(monkeypatch):
     with make_client(monkeypatch) as client:
         from sqlalchemy.orm import Session as OrmSession

@@ -1002,23 +1002,33 @@ function removeApiRecord(orderId: string) {
 }
 
 async function loadApiData() {
+  const requestedFactoryId = selectedFactoryId.value
+  const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
+    ?? requestedFactoryId
   apiState.value = 'checking'
-  actionMessage.value = '正在读取正式啤办单列表...'
+  actionMessage.value = `正在读取${requestedFactoryName}正式啤办单列表...`
 
   try {
-    const records = await moldingSampleApi.listOrders()
+    const records = await moldingSampleApi.listOrders(requestedFactoryId)
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
+
     apiRecords.value = records
     apiState.value = records.length ? 'connected' : 'empty'
     actionMessage.value = records.length
-      ? `已读取正式啤办单 ${records.length} 张。`
-      : '后端暂无正式啤办单，可先新建啤办单。'
+      ? `已读取${requestedFactoryName}正式啤办单 ${records.length} 张。`
+      : `${requestedFactoryName}暂无正式啤办单，可先新建啤办单。`
 
-    const factoryRecord = records.find((record) => record.order.factory_id === selectedFactoryId.value)
-    if (!selectedOrderId.value && factoryRecord) {
-      selectedOrderId.value = factoryRecord.order.id
-    }
+    selectedOrderId.value = records.some((record) => record.order.id === selectedOrderId.value)
+      ? selectedOrderId.value
+      : records[0]?.order.id ?? ''
   }
   catch (error) {
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
+
     apiRecords.value = []
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
@@ -2113,6 +2123,8 @@ watch(createDraft, () => {
 
 watch(selectedFactoryId, () => {
   resetPagination()
+  selectedOrderId.value = ''
+  void loadApiData()
 
   if (!isEditingRejectedOrder.value) {
     restoreSavedCreateDraft()

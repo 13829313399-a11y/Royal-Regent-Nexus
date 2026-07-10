@@ -241,6 +241,20 @@ describe('molding sample runtime error handling', () => {
     expect(text).not.toContain('Prime Kids')
   })
 
+  it('loads only the active factory orders and reports an empty factory accurately', async () => {
+    routeState.query = { factory: 'huadeng' }
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledWith('huadeng')
+    expect(wrapper.text()).toContain('华登暂无正式啤办单')
+    expect(wrapper.text()).toContain('当前厂区单据')
+    expect(wrapper.text()).toContain('华登 · 按状态分列')
+
+    wrapper.unmount()
+  })
+
   it('opens an in-app print preview before printing the current molding sample order', async () => {
     const printSpy = vi.fn()
     vi.stubGlobal('print', printSpy)

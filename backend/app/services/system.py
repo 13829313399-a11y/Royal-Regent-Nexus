@@ -190,6 +190,16 @@ def list_users(db: Session, current_user: AuthContext, status: str = "") -> list
     return [user_to_out(db, user) for user in db.scalars(query).all()]
 
 
+def read_user_avatar(db: Session, current_user: AuthContext, user_id: str) -> bytes:
+    ensure_user_manage(db, current_user)
+    user = db.get(AuthUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if not user.avatar_png:
+        raise HTTPException(status_code=404, detail="该用户尚未设置头像")
+    return bytes(user.avatar_png)
+
+
 def update_user_status(
     db: Session,
     current_user: AuthContext,
@@ -425,6 +435,11 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
         last_login_at=user.last_login_at,
         created_at=user.created_at,
         updated_at=user.updated_at,
+        avatar_url=(
+            f"/api/system/users/{user.id}/avatar?v={user.avatar_version}"
+            if user.avatar_png and user.avatar_version
+            else ""
+        ),
         roles=[
             UserRoleAssignmentOut(
                 id=user_role.id,

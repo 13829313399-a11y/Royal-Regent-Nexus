@@ -82,6 +82,7 @@ export interface UserResponse {
   created_at: string
   updated_at: string
   roles: UserRoleAssignmentResponse[]
+  avatar_url?: string
 }
 
 export interface SystemNotificationResponse {

@@ -205,7 +205,7 @@ RETIRED_DEFAULT_USER_IDS = {
     "user-huaxing-buzzbee-sales",
 }
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
-ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huadeng", "huaxing"}
+ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huakang-c", "huakang-d", "huadeng", "huaxing"}
 ALLOWED_DEPARTMENTS = {
     "engineering",
     "pmc-warehouse",

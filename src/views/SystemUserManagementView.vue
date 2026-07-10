@@ -32,6 +32,7 @@ import {
   type SystemNotificationResponse,
   type UserResponse,
 } from '@/api/system'
+import UserAvatar from '@/components/common/UserAvatar.vue'
 import { departmentMap, departments, factoryContexts } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
 import { useRoute } from 'vue-router'
@@ -266,6 +267,24 @@ function avatarText(name: string | null | undefined, username: string) {
   if (!label) return '用'
   if (/^[A-Za-z0-9_]+$/.test(label)) return label.slice(0, 2).toUpperCase()
   return label.slice(0, 1)
+}
+
+function resolveUserAvatarUrl(value: string | undefined) {
+  const avatarUrl = value?.trim()
+  if (!avatarUrl || /^https?:\/\//i.test(avatarUrl)) {
+    return avatarUrl ?? ''
+  }
+
+  const apiBaseUrl = import.meta.env?.VITE_API_BASE_URL
+  if (!apiBaseUrl || !/^https?:\/\//i.test(apiBaseUrl)) {
+    return avatarUrl
+  }
+
+  try {
+    return new URL(avatarUrl, apiBaseUrl).toString()
+  } catch {
+    return avatarUrl
+  }
 }
 
 function contactLabel(request: RegistrationRequestResponse) {
@@ -563,7 +582,7 @@ onMounted(() => {
         <article class="stat">
           <div class="row">
             <span class="ic blue"><Users class="size-5" aria-hidden="true" /></span>
-            <span class="delta mut">4 厂区</span>
+            <span class="delta mut">6 厂区</span>
           </div>
           <div class="n">{{ users.length }}</div>
           <div class="lb">账号总数</div>
@@ -844,7 +863,13 @@ onMounted(() => {
             <tr v-for="user in filteredUsers" v-else :key="user.id">
               <td>
                 <div class="user-cell">
-                  <span class="user-avatar">{{ avatarText(user.display_name, user.username) }}</span>
+                  <UserAvatar
+                    class="user-avatar"
+                    :src="resolveUserAvatarUrl(user.avatar_url)"
+                    :name="user.display_name || user.username"
+                    :alt="`${user.display_name || user.username}的头像`"
+                    shape="rounded"
+                  />
                   <div>
                     <strong>{{ user.display_name || user.username }}</strong>
                     <span>{{ user.username }}</span>

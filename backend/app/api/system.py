@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -20,6 +20,7 @@ from app.services.system import (
     list_roles,
     list_system_notifications,
     list_users,
+    read_user_avatar,
     reject_registration_request,
     reset_user_password,
     update_system_notification,
@@ -85,6 +86,19 @@ def users(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return list_users(db, current_user, status=status)
+
+
+@router.get("/users/{user_id}/avatar")
+def user_avatar(
+    user_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return Response(
+        content=read_user_avatar(db, current_user, user_id),
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.patch("/users/{user_id}/status", response_model=UserOut)
