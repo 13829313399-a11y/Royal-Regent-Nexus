@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import DashboardView from '@/views/DashboardView.vue'
 import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
+import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
@@ -212,8 +213,7 @@ router.beforeEach(async (to) => {
     }
 
     if (authStore.isAuthenticated || await authStore.ensureSession()) {
-      const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : '/'
-      return { path: redirect, replace: true }
+      return { path: resolvePostLoginRedirect(router, to.query.redirect), replace: true }
     }
 
     return true
