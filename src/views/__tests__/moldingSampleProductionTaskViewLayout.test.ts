@@ -82,6 +82,10 @@ for (const requiredImplementation of [
 
 assert.match(source, /<div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">[\s\S]*<div class="fixed right-4 top-4 z-50 flex items-center gap-2[\s\S]*当前厂区：\{\{ activeFactory\.shortName \}\}[\s\S]*<AccountMenu \/>/)
 assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
+assert.match(source, /total_material_cost/)
+for (const removedFeeCopy of ['啤办费', 'total_injection_cost', 'total_cost']) {
+  assert.equal(source.includes(removedFeeCopy), false, `${removedFeeCopy} should not be part of the production task view`)
+}
 
 for (const excludedWorkbenchCopy of [
   '主管工作台',

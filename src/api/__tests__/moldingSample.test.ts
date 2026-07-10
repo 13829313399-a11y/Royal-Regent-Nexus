@@ -29,6 +29,7 @@ const client = {
 const api = createMoldingSampleApi(client as Parameters<typeof createMoldingSampleApi>[0])
 
 assert.deepEqual(await api.listOrders(), { url: '/injection' })
+assert.deepEqual(await api.listOrders('huadeng'), { url: '/injection?factory_id=huadeng' })
 assert.deepEqual(await api.getOrder('BP-1'), { url: '/injection/BP-1' })
 
 await api.createOrder({
@@ -139,6 +140,7 @@ await api.deleteRequisition('REQ-1')
 
 assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'get /injection',
+  'get /injection?factory_id=huadeng',
   'get /injection/BP-1',
   'post /injection',
   'patch /injection/BP-1/status',

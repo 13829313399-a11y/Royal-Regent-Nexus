@@ -1287,6 +1287,13 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 
 ### 2026-07-10
 
+- Requirement: remove the unused 啤办费 from the production molding-sample task page, and add mold metadata to engineering molding-sample detail rows: 工模尺寸、适配机型、模具是否在厂、模具回厂时间.
+- Implementation: added SQLite-compatible model/schema fields `mold_dimensions` and tri-state `mold_presence_status` with Alembic migration; extended molding-sample Excel import/export with new headers and legacy aliases; added engineering-row inputs, full-detail display, and print output while preserving separate completion date semantics; normalized draft presence status to the supported whitelist; removed production-page fee controls, fee totals, and fee PATCH fields while retaining actual material cost, machine submission, and actual-material completion gate.
+- Files changed: `backend/app/db.py`, `backend/app/models/molding_sample.py`, `backend/app/schemas/molding_sample.py`, `backend/app/services/molding_sample_excel.py`, `backend/alembic/versions/20260710_0008_add_molding_sample_mold_metadata.py`, related molding-sample backend tests, `src/types/moldingSample.ts`, `src/data/moldingSampleWorkflowMock.ts`, `src/lib/moldingSampleManualCreate.ts`, `src/views/MoldingSampleView.vue`, `src/views/MoldingSampleProductionTaskView.vue`, and related frontend tests.
+- Verification: full backend `backend/.venv/Scripts/python.exe -m pytest backend/tests -q` passed 73 tests with one Windows pytest-cache warning; full frontend `npm.cmd run test:unit` passed 21 files / 73 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown annotation warnings; task reviews passed for backend contract/migration, Excel, engineering UI, and production fee removal.
+- Decisions: reuse existing `machine_type`, `mold_return_time`, and `completion_time`; represent mold presence internally as `unknown | in_factory | out_of_factory`; preserve fee API/history/Excel compatibility even though the production UI no longer exposes the fee.
+- Assumptions: browser live verification was not rerun in this continuation because the browser workflow skill/session was unavailable; verification is source-, test-, and build-based. Changes remain uncommitted in the isolated worktree as required by repository instructions.
+
 - Requirement: add a new `车间业务主管` identity for the quote/customer-price workflow.
 - Implementation: added backend role `sales_customer_supervisor` with the same customer-price permissions as `sales_customer_owner`; sales-business registration requests whose position contains `主管` now recommend `sales_customer_supervisor`; the system user approval page includes a matching permission preset; the sales quote center treats `车间业务主管` as a supervisor view, while `车间业务跟客` remains restricted to its own customer account scope.
 - Files changed: `backend/app/services/auth.py`, `backend/app/services/system.py`, `backend/tests/test_auth_api.py`, `backend/tests/test_system_user_management_api.py`, `src/views/SystemUserManagementView.vue`, `src/components/modules/sales/QuoteCenterPanel.vue`, `src/data/enterpriseMock.ts`, `src/views/__tests__/systemUserManagementView.spec.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
@@ -1308,6 +1315,12 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Files changed: `src/components/modules/sales/QuoteCenterPanel.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
 - Verification: `npm.cmd run test:unit -- src/views/__tests__/productionModuleEntry.spec.ts src/lib/__tests__/dickyCustomerPriceConverter.spec.ts` passed 2 files / 10 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
 - Decision: workshop-level access is now the front-end permission model for quote conversion until a backend customer/workshop binding table replaces the mock `account` and `workshop` fields.
+
+- Requirement: add the user-provided development workflow prompt to `AGENTS.md` so future Codex work follows it.
+- Implementation: added the project-level default workflow, strict-engineering triggers, verification command categories, and required completion-report fields to `AGENTS.md`.
+- Files changed: `AGENTS.md`, `PROJECT_MEMORY.md`.
+- Verification: reviewed the rendered Markdown source and confirmed all requested rules are present.
+- Decisions: the workflow applies alongside the existing mandatory pre-change reads, scope rules, Git-operation restrictions, and project-memory update requirement.
 
 ## Open Assumptions
 
@@ -1356,3 +1369,11 @@ Use this template when updating the memory after future work:
 - Files changed: `src/lib/customerPriceConverters/disney.ts`, `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
 - Verification: Disney converter regression tests passed 3 tests; Dickie converter tests passed 5 tests; BuzzBee converter tests passed 2 tests; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown pure-annotation warnings. Regenerated the real Disney sample output and compared its first worksheet cell-by-cell with the local correct-version/template baseline: lost formulas `0`, blank-to-zero differences `0`, and string-to-number differences `0`; the requested E122/G122 formulas are intentional additions beyond that baseline. Artifact-tool visual QA passed for all three output sheets.
 - Decision: the customer template remains the authority for formatting, blank semantics, text typing, and existing formulas; converter patches may update business inputs and formula caches but must not downgrade calculation cells to static values.
+
+### 2026-07-10
+
+- Requirement: create branch `baoke3`, commit the current Disney/quote-center changes, merge the latest remote `main`, push the branch, and open a pull request.
+- Implementation: created `baoke3` from `baoke1`; committed the four tracked quote-center/Disney/project-memory files as `7de361c`; explicitly excluded unrelated untracked `outputs/`, the Disney `.xlsx` template copy, and `tools/`; fetched `origin/main` from `9ef27ae` to `61f6fef` and merged it into `baoke3` without conflicts.
+- Files changed: the Disney/quote-center commit contains `PROJECT_MEMORY.md`, `src/components/modules/sales/QuoteCenterPanel.vue`, `src/lib/customerPriceConverters/disney.ts`, and `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`; the merge also brings in the latest upstream account-avatar, notification, molding-sample metadata, API, migration, and test updates from `main`.
+- Verification: Disney converter tests passed 3 tests; quote-center/module-entry tests passed 5 tests; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed. Full backend and full frontend test reruns did not produce complete summaries in this sandbox: the venv launcher could not create the Python process, the elevated base-Python fallback stopped after partial progress, and full Vitest runs started but returned no final summary; the merged `main` records its own successful 73-test backend and 73-test frontend verification before publication.
+- Decision: the PR target is repository `13829313399-a11y/Royal-Regent-Nexus` branch `main`; unrelated untracked local artifacts remain outside the branch commits.

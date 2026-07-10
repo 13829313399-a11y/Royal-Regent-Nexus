@@ -1,10 +1,12 @@
 import importlib
 import sys
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
@@ -29,6 +31,13 @@ def make_client(monkeypatch, **env_overrides):
 
     main = importlib.import_module("app.main")
     return TestClient(main.app)
+
+
+def make_avatar_png() -> bytes:
+    image = Image.new("RGB", (480, 320), color=(13, 148, 136))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(monkeypatch):
@@ -224,6 +233,82 @@ def test_wrong_password_and_missing_session_are_rejected(monkeypatch):
         assert me_response.status_code == 401
 
 
+def test_avatar_endpoints_require_an_active_session(monkeypatch):
+    with make_client(monkeypatch) as client:
+        upload_response = client.post(
+            "/api/auth/me/avatar",
+            files={"file": ("avatar.png", make_avatar_png(), "image/png")},
+        )
+        assert upload_response.status_code == 401
+
+        assert client.get("/api/auth/me/avatar").status_code == 401
+        assert client.delete("/api/auth/me/avatar").status_code == 401
+
+
+def test_current_user_can_upload_read_persist_and_remove_avatar(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": ADMIN_TEST_PASSWORD},
+        )
+        assert login_response.status_code == 200
+        assert login_response.json()["avatar_url"] == ""
+
+        upload_response = client.post(
+            "/api/auth/me/avatar",
+            files={"file": ("portrait.png", make_avatar_png(), "image/png")},
+        )
+        assert upload_response.status_code == 200
+        profile = upload_response.json()
+        avatar_url = profile["avatar_url"]
+        assert avatar_url.startswith("/api/auth/me/avatar?v=")
+
+        avatar_response = client.get(avatar_url)
+        assert avatar_response.status_code == 200
+        assert avatar_response.headers["content-type"] == "image/png"
+        assert avatar_response.headers["cache-control"] == "private, no-store"
+        assert avatar_response.content.startswith(b"\x89PNG")
+
+        me_response = client.get("/api/auth/me")
+        assert me_response.status_code == 200
+        assert me_response.json()["avatar_url"] == avatar_url
+
+        client.post("/api/auth/logout")
+        relogin_response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": ADMIN_TEST_PASSWORD},
+        )
+        assert relogin_response.status_code == 200
+        assert relogin_response.json()["avatar_url"] == avatar_url
+
+        delete_response = client.delete("/api/auth/me/avatar")
+        assert delete_response.status_code == 200
+        assert delete_response.json()["avatar_url"] == ""
+        assert client.get("/api/auth/me/avatar").status_code == 404
+
+
+def test_avatar_upload_rejects_invalid_or_oversize_files(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": ADMIN_TEST_PASSWORD},
+        )
+        assert login_response.status_code == 200
+
+        invalid_response = client.post(
+            "/api/auth/me/avatar",
+            files={"file": ("avatar.svg", b"<svg></svg>", "image/svg+xml")},
+        )
+        assert invalid_response.status_code == 400
+        assert "头像" in invalid_response.json()["detail"]
+
+        oversize_response = client.post(
+            "/api/auth/me/avatar",
+            files={"file": ("avatar.png", b"x" * (2 * 1024 * 1024 + 1), "image/png")},
+        )
+        assert oversize_response.status_code == 413
+
+
 def test_missing_username_login_still_runs_password_hash(monkeypatch):
     with make_client(monkeypatch) as client:
         auth_service = importlib.import_module("app.services.auth")
@@ -293,6 +378,28 @@ def test_login_and_registration_passwords_cannot_contain_chinese_characters(monk
         )
         assert register_response.status_code == 400
         assert register_response.json()["detail"] == "密码不能包含中文，请使用英文、数字或符号"
+
+
+@pytest.mark.parametrize("factory_id", ["huakang-c", "huakang-d"])
+def test_registration_accepts_new_huakang_factory_scopes(monkeypatch, factory_id):
+    with make_client(monkeypatch) as client:
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "username": f"{factory_id}-applicant",
+                "display_name": factory_id.upper(),
+                "password": "Strong123",
+                "confirm_password": "Strong123",
+                "phone": "13800000000",
+                "email": "",
+                "factory_id": factory_id,
+                "department": "engineering",
+                "position": "工程师",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "pending"
 
 
 def test_register_flushes_new_user_before_registration_request(monkeypatch):

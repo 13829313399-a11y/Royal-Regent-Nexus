@@ -23,6 +23,45 @@ These rules apply to:
 - documentation changes that affect project requirements, technical direction, constraints, or future workflow
 - follow-up fixes caused by browser comments or changed product requirements
 
+## Development Workflow
+
+### Default Workflow
+
+- Read the relevant project files before editing.
+- Keep changes scoped to the requested module.
+- Do not redesign unrelated code.
+- For simple and well-defined tasks, implement directly.
+- For complex, ambiguous, or cross-module tasks, produce an implementation plan first.
+- Never claim completion without running appropriate verification.
+
+### When To Use Strict Engineering Workflow
+
+Use planning, tests, independent review, and completion verification for:
+
+- authentication and authorization
+- database schema changes
+- Excel import and data migration
+- scheduling and calculation algorithms
+- approval workflows and state transitions
+- cross-factory and cross-department data isolation
+
+### Verification Requirements
+
+Before completion, run the relevant commands:
+
+- frontend type check
+- frontend build
+- lint
+- backend tests
+- targeted regression tests
+
+Report:
+
+1. files changed
+2. behavior implemented
+3. verification commands run
+4. remaining risks
+
 ## Git Operations
 
 Do not run `git commit`, create commits, push branches, or open pull requests unless the user explicitly asks for that Git operation in the current turn.

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
+  ArrowLeft,
   Building2,
   BriefcaseBusiness,
   Check,
@@ -31,6 +32,7 @@ import {
   type SystemNotificationResponse,
   type UserResponse,
 } from '@/api/system'
+import UserAvatar from '@/components/common/UserAvatar.vue'
 import { departmentMap, departments, factoryContexts } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
 import { useRoute } from 'vue-router'
@@ -267,6 +269,24 @@ function avatarText(name: string | null | undefined, username: string) {
   return label.slice(0, 1)
 }
 
+function resolveUserAvatarUrl(value: string | undefined) {
+  const avatarUrl = value?.trim()
+  if (!avatarUrl || /^https?:\/\//i.test(avatarUrl)) {
+    return avatarUrl ?? ''
+  }
+
+  const apiBaseUrl = import.meta.env?.VITE_API_BASE_URL
+  if (!apiBaseUrl || !/^https?:\/\//i.test(apiBaseUrl)) {
+    return avatarUrl
+  }
+
+  try {
+    return new URL(avatarUrl, apiBaseUrl).toString()
+  } catch {
+    return avatarUrl
+  }
+}
+
 function contactLabel(request: RegistrationRequestResponse) {
   return request.phone || request.email || '未填写'
 }
@@ -501,14 +521,20 @@ onMounted(() => {
 <template>
   <main class="permission-approval-page">
     <div class="wrap">
-      <div class="topbar">
-        <div class="brand">
-          <span class="logo">
-            <ShieldCheck class="size-6" aria-hidden="true" />
-          </span>
-          <div>
-            <h1>权限 / 角色审批</h1>
-            <p>Royal Regent Nexus · 集团账号开通制</p>
+      <header class="topbar">
+        <div class="topbar-left">
+          <RouterLink class="home-exit-link" to="/">
+            <ArrowLeft class="size-4" aria-hidden="true" />
+            返回首页
+          </RouterLink>
+          <div class="brand">
+            <span class="logo">
+              <ShieldCheck class="size-6" aria-hidden="true" />
+            </span>
+            <div>
+              <h1>权限 / 角色审批</h1>
+              <p>Royal Regent Nexus · 集团账号开通制</p>
+            </div>
           </div>
         </div>
         <div class="topbar-actions">
@@ -525,7 +551,6 @@ onMounted(() => {
               用户列表
             </button>
           </nav>
-          <RouterLink class="ghost-link" to="/">返回首页</RouterLink>
           <button type="button" class="ghost-link" :disabled="isLoading" @click="loadData">
             <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
             刷新
@@ -535,7 +560,7 @@ onMounted(() => {
             <span class="av">管</span>
           </div>
         </div>
-      </div>
+      </header>
 
       <div class="stats">
         <article class="stat">
@@ -557,7 +582,7 @@ onMounted(() => {
         <article class="stat">
           <div class="row">
             <span class="ic blue"><Users class="size-5" aria-hidden="true" /></span>
-            <span class="delta mut">4 厂区</span>
+            <span class="delta mut">6 厂区</span>
           </div>
           <div class="n">{{ users.length }}</div>
           <div class="lb">账号总数</div>
@@ -838,7 +863,13 @@ onMounted(() => {
             <tr v-for="user in filteredUsers" v-else :key="user.id">
               <td>
                 <div class="user-cell">
-                  <span class="user-avatar">{{ avatarText(user.display_name, user.username) }}</span>
+                  <UserAvatar
+                    class="user-avatar"
+                    :src="resolveUserAvatarUrl(user.avatar_url)"
+                    :name="user.display_name || user.username"
+                    :alt="`${user.display_name || user.username}的头像`"
+                    shape="rounded"
+                  />
                   <div>
                     <strong>{{ user.display_name || user.username }}</strong>
                     <span>{{ user.username }}</span>
@@ -2193,12 +2224,61 @@ onMounted(() => {
 }
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  margin-bottom: 22px;
+  margin: 0 -24px 22px;
+  border-bottom: 1px solid rgb(226 232 240 / 86%);
+  background: rgb(248 250 252 / 92%);
+  box-shadow: 0 8px 22px rgb(15 23 42 / 3%);
+  padding: 12px 24px;
+  backdrop-filter: blur(14px);
+}
+
+.topbar-left {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 14px;
+}
+
+.home-exit-link {
+  display: inline-flex;
+  min-height: 38px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--slate-200);
+  border-radius: 10px;
+  background: white;
+  color: var(--slate-700);
+  box-shadow: 0 2px 8px rgb(2 6 23 / 4%);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 800;
+  padding: 0 12px;
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s, color 0.15s, transform 0.15s;
+}
+
+.home-exit-link:hover {
+  border-color: var(--teal-200);
+  background: var(--teal-50);
+  color: var(--teal-800);
+  transform: translateY(-1px);
+}
+
+.home-exit-link:focus-visible,
+.view-tabs button:focus-visible,
+.ghost-link:focus-visible {
+  outline: 3px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .brand {
@@ -2237,6 +2317,7 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  margin-left: auto;
   justify-content: flex-end;
 }
 
@@ -2990,8 +3071,27 @@ onMounted(() => {
     padding: 18px 14px 32px;
   }
 
+  .topbar {
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0 -14px 18px;
+    padding: 10px 14px;
+  }
+
+  .topbar-left {
+    width: 100%;
+    gap: 10px;
+  }
+
   .topbar-actions {
+    width: 100%;
+    margin-left: 0;
     justify-content: flex-start;
+  }
+
+  .view-tabs {
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   .stats,

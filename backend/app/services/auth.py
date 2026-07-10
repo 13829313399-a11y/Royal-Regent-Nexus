@@ -4,8 +4,10 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from io import BytesIO
 
 from fastapi import Depends, HTTPException, Request
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -35,6 +37,10 @@ LOGIN_LOCKED_MESSAGE = f"登录失败次数过多，请 {LOGIN_FAILURE_WINDOW_MI
 BAD_CREDENTIALS_MESSAGE = "用户名或密码错误"
 DUMMY_PASSWORD_SALT = "00000000000000000000000000000000"
 PASSWORD_CHINESE_MESSAGE = "密码不能包含中文，请使用英文、数字或符号"
+AVATAR_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+AVATAR_MAX_PIXELS = 16_000_000
+AVATAR_OUTPUT_SIZE = 256
+AVATAR_ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
 CHINESE_CHARACTER_RANGES = (
     ("\u3400", "\u4dbf"),
     ("\u4e00", "\u9fff"),
@@ -199,7 +205,7 @@ RETIRED_DEFAULT_USER_IDS = {
     "user-huaxing-buzzbee-sales",
 }
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
-ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huadeng", "huaxing"}
+ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huakang-c", "huakang-d", "huadeng", "huaxing"}
 ALLOWED_DEPARTMENTS = {
     "engineering",
     "pmc-warehouse",
@@ -231,6 +237,7 @@ class AuthContext:
     department_scopes: tuple[str, ...]
     grants: tuple[AuthGrantContext, ...] = ()
     force_password_change: bool = False
+    avatar_url: str = ""
 
     @property
     def primary_role(self) -> str:
@@ -239,6 +246,39 @@ class AuthContext:
 
 def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def normalize_avatar_image(image_bytes: bytes) -> bytes:
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="请选择有效的头像图片")
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as source:
+            if source.format not in AVATAR_ALLOWED_FORMATS:
+                raise HTTPException(status_code=400, detail="头像仅支持 JPG、PNG 或 WebP 图片")
+            if getattr(source, "is_animated", False):
+                raise HTTPException(status_code=400, detail="头像不支持动图，请上传静态图片")
+            if source.width * source.height > AVATAR_MAX_PIXELS:
+                raise HTTPException(status_code=413, detail="头像图片尺寸过大，请控制在 1600 万像素以内")
+
+            source.load()
+            normalized = ImageOps.exif_transpose(source)
+            if normalized.mode not in {"RGB", "RGBA"}:
+                normalized = normalized.convert("RGBA")
+
+            avatar = ImageOps.fit(
+                normalized,
+                (AVATAR_OUTPUT_SIZE, AVATAR_OUTPUT_SIZE),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+            output = BytesIO()
+            avatar.save(output, format="PNG", optimize=True)
+            return output.getvalue()
+    except HTTPException:
+        raise
+    except (Image.DecompressionBombError, OSError, UnidentifiedImageError, ValueError):
+        raise HTTPException(status_code=400, detail="无法识别头像图片，请上传有效的 JPG、PNG 或 WebP 文件") from None
 
 
 def parse_time(value: str) -> datetime | None:
@@ -728,6 +768,63 @@ def revoke_session(db: Session, token: str | None, request: Request | None = Non
     db.commit()
 
 
+def get_authenticated_user(db: Session, context: AuthContext) -> AuthUser:
+    user = db.get(AuthUser, context.id)
+    if user is None or user.status != "active":
+        raise HTTPException(status_code=401, detail="账号不可用")
+    return user
+
+
+def save_auth_user_avatar(
+    db: Session,
+    context: AuthContext,
+    image_bytes: bytes,
+    request: Request | None = None,
+) -> AuthMeResponse:
+    user = get_authenticated_user(db, context)
+    user.avatar_png = normalize_avatar_image(image_bytes)
+    user.avatar_version = secrets.token_urlsafe(18)
+    user.updated_at = now_text()
+    add_auth_audit(
+        db,
+        "avatar_updated",
+        username=user.username,
+        user_id=user.id,
+        detail="个人头像已更新",
+        request=request,
+    )
+    db.commit()
+    return to_auth_response(build_auth_context(db, user))
+
+
+def read_auth_user_avatar(db: Session, context: AuthContext) -> bytes:
+    user = get_authenticated_user(db, context)
+    if not user.avatar_png:
+        raise HTTPException(status_code=404, detail="尚未设置个人头像")
+    return bytes(user.avatar_png)
+
+
+def remove_auth_user_avatar(
+    db: Session,
+    context: AuthContext,
+    request: Request | None = None,
+) -> AuthMeResponse:
+    user = get_authenticated_user(db, context)
+    user.avatar_png = None
+    user.avatar_version = ""
+    user.updated_at = now_text()
+    add_auth_audit(
+        db,
+        "avatar_removed",
+        username=user.username,
+        user_id=user.id,
+        detail="个人头像已恢复为默认头像",
+        request=request,
+    )
+    db.commit()
+    return to_auth_response(build_auth_context(db, user))
+
+
 def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     user_roles = list(
         db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id).order_by(AuthUserRole.id)).all()
@@ -781,6 +878,7 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
         department_scopes=department_scopes,
         grants=grants,
         force_password_change=bool(user.force_password_change),
+        avatar_url=f"/api/auth/me/avatar?v={user.avatar_version}" if user.avatar_png and user.avatar_version else "",
     )
 
 
@@ -828,6 +926,7 @@ def to_auth_response(context: AuthContext) -> AuthMeResponse:
             for grant in context.grants
         ],
         force_password_change=context.force_password_change,
+        avatar_url=context.avatar_url,
     )
 
 

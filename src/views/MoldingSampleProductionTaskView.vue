@@ -59,7 +59,6 @@ import { useAuthStore } from '@/stores/auth'
 
 interface ItemFillbackDraft {
   actual_weight_kg: string
-  injection_cost: string
   production_machine: string
 }
 
@@ -213,7 +212,6 @@ const activeItems = computed<MoldingSampleItem[]>(() => {
     return {
       ...item,
       actual_weight_kg: parseOptionalNumber(draft.actual_weight_kg),
-      injection_cost: parseOptionalNumber(draft.injection_cost),
       production_machine: draft.production_machine.trim(),
     }
   })
@@ -485,33 +483,15 @@ function buildItemPatches() {
   return activeItems.value.map((item) => ({
     id: item.id,
     actual_weight_kg: item.actual_weight_kg,
-    injection_cost: item.injection_cost,
     production_machine: item.production_machine,
   }))
-}
-
-function syncItemDrafts() {
-  if (!selectedTask.value) {
-    itemDrafts.value = {}
-    return
-  }
-
-  itemDrafts.value = selectedTask.value.items.reduce<Record<string, ItemFillbackDraft>>((acc, item) => {
-    acc[item.id] = {
-      actual_weight_kg: item.actual_weight_kg === null || item.actual_weight_kg === undefined ? '' : String(item.actual_weight_kg),
-      injection_cost: item.injection_cost === null || item.injection_cost === undefined ? '' : String(item.injection_cost),
-      production_machine: item.production_machine ?? '',
-    }
-
-    return acc
-  }, {})
 }
 
 function updateItemDraft(itemId: string, field: keyof ItemFillbackDraft, value: string) {
   itemDrafts.value = {
     ...itemDrafts.value,
     [itemId]: {
-      ...(itemDrafts.value[itemId] ?? { actual_weight_kg: '', injection_cost: '', production_machine: '' }),
+      ...(itemDrafts.value[itemId] ?? { actual_weight_kg: '', production_machine: '' }),
       [field]: value,
     },
   }
@@ -700,7 +680,7 @@ async function saveProductionFillback() {
   try {
     const updated = await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
     replaceApiRecord(updated)
-    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料、啤机确认机台和啤办费。'
+    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料和啤机确认机台。'
   }
   catch (error) {
     actionMessage.value = `啤机回填保存失败：${getApiErrorMessage(error)}`
@@ -833,7 +813,13 @@ onMounted(() => {
 })
 
 watch(selectedTask, () => {
-  syncItemDrafts()
+  itemDrafts.value = selectedTask.value?.items.reduce<Record<string, ItemFillbackDraft>>((acc, item) => {
+    acc[item.id] = {
+      actual_weight_kg: item.actual_weight_kg === null || item.actual_weight_kg === undefined ? '' : String(item.actual_weight_kg),
+      production_machine: item.production_machine ?? '',
+    }
+    return acc
+  }, {}) ?? {}
   isSelectedTaskDataExpanded.value = false
 }, { immediate: true })
 
@@ -887,7 +873,7 @@ watchEffect(() => {
             <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">MOLDING SAMPLE PRODUCTION TASK</p>
             <h1 class="mt-1 text-2xl font-bold tracking-tight text-slate-950">啤机部生产任务单</h1>
             <p class="mt-1 max-w-4xl text-sm text-slate-600">
-              啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料和啤办费，完成后把状态回传到同一张工程啤办单。
+              啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料，完成后把状态回传到同一张工程啤办单。
             </p>
             <p class="mt-1 text-xs text-slate-500">
               任务通知队列来自独立通知表，主管审核通过后进入通知区；啤机部只处理生产执行字段，工程资料回到工程啤办单维护。
@@ -1099,8 +1085,8 @@ watchEffect(() => {
                 </div>
               </div>
               <div class="rounded-lg bg-slate-900 px-3 py-2 text-right text-white">
-                <div class="text-[10px] text-slate-300">预估费用 (HKD)</div>
-                <div class="text-lg font-bold tabular-nums">{{ formatCurrency(selectedReportSummary?.total_cost, '$ 0.00') }}</div>
+                <div class="text-[11px] text-slate-400">实际料费(HKD)</div>
+                <div class="text-lg font-bold tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</div>
               </div>
             </div>
           </section>
@@ -1122,7 +1108,7 @@ watchEffect(() => {
             <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
               <PencilRuler class="size-4 text-slate-400" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">啤机回填明细 · 实际用料回填</span>
-              <span class="ml-auto text-[11px] text-slate-400">汇率 RMB→HKD {{ moldingSampleRmbToHkdRate }} · 单价按原料表</span>
+              <span class="ml-auto text-[11px] text-slate-400">单价按原料表</span>
               <button
                 type="button"
                 class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
@@ -1140,9 +1126,6 @@ watchEffect(() => {
                     <th class="px-2 py-2 text-right font-medium">实际用料(kg)</th>
                     <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
                     <th class="px-2 py-2 text-right font-medium">料费(HKD)</th>
-                    <th class="px-2 py-2 text-right font-medium">啤办费(RMB)</th>
-                    <th class="px-2 py-2 text-right font-medium">啤办费(HKD)</th>
-                    <th class="px-2 py-2 text-right font-medium">小计</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-50">
@@ -1197,25 +1180,6 @@ watchEffect(() => {
                     <td class="px-2 py-2 text-right font-semibold tabular-nums" :class="getReportRow(item.id)?.actual_amount_hkd ? 'text-slate-900' : 'text-slate-300'">
                       {{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd) }}
                     </td>
-                    <td class="px-2 py-1 text-right">
-                      <input
-                        :value="itemDrafts[item.id]?.injection_cost ?? ''"
-                        :disabled="!canFillbackSelectedTask"
-                        aria-label="啤办费"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="h-8 w-16 rounded-md border border-slate-200 px-2 text-right tabular-nums outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
-                        placeholder="—"
-                        @input="updateItemDraft(item.id, 'injection_cost', readInputValue($event))"
-                      >
-                    </td>
-                    <td class="px-2 py-2 text-right tabular-nums" :class="getReportRow(item.id)?.injection_cost_hkd ? 'text-slate-900' : 'text-slate-300'">
-                      {{ formatCurrency(getReportRow(item.id)?.injection_cost_hkd) }}
-                    </td>
-                    <td class="px-2 py-2 text-right font-bold tabular-nums" :class="getReportRow(item.id)?.total_cost ? 'text-slate-950' : 'text-slate-300'">
-                      {{ formatCurrency(getReportRow(item.id)?.total_cost) }}
-                    </td>
                   </tr>
                 </tbody>
                 <tfoot>
@@ -1227,9 +1191,6 @@ watchEffect(() => {
                     <td />
                     <td />
                     <td class="px-2 py-2 text-right tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</td>
-                    <td />
-                    <td class="px-2 py-2 text-right tabular-nums">{{ formatCurrency(selectedReportSummary?.total_injection_cost, '$ 0.00') }}</td>
-                    <td class="px-2 py-2 text-right tabular-nums">{{ formatCurrency(selectedReportSummary?.total_cost, '$ 0.00') }}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -1324,9 +1285,6 @@ watchEffect(() => {
                       <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                       <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                       <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd ?? item.actual_amount_hkd) }}</div></div>
-                      <div><span class="text-slate-400">啤办费(RMB)</span><div class="font-semibold">{{ formatCurrency(item.injection_cost) }}</div></div>
-                      <div><span class="text-slate-400">啤办费(HKD)</span><div class="font-semibold">{{ formatCurrency(getReportRow(item.id)?.injection_cost_hkd ?? item.injection_cost_hkd) }}</div></div>
-                      <div><span class="text-slate-400">汇率</span><div class="font-semibold">{{ formatBlank(item.exchange_rate_at_save) }}</div></div>
                     </div>
                     <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
                       备注：{{ formatBlank(item.notes) }}

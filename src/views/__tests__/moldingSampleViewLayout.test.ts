@@ -98,6 +98,9 @@ for (const requiredImplementation of [
   'overviewDisplayMode',
   "'error'",
   'loadApiData',
+  'moldingSampleApi.listOrders(requestedFactoryId)',
+  '暂无正式啤办单',
+  'watch(selectedFactoryId',
   'sourceRecords',
   'selectedProblems',
   'MOLDING_SAMPLE_PAGE_SIZE = 10',
@@ -247,7 +250,7 @@ assert.match(source, /role="table"/)
 assert.match(source, /<div class="space-y-4 xl:contents">/)
 assert.match(source, /<aside class="space-y-4 xl:col-start-2 xl:row-start-1">/)
 assert.match(source, /<section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">/)
-assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_150px_112px_110px_138px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
 assert.match(source, /:class="createLineGridClass"/)
 assert.match(source, /role="columnheader">原料价格\(HKD\/磅\)<\/div>/)
 assert.match(source, /role="columnheader">整啤毛重\(g\)<\/div>/)
@@ -259,7 +262,15 @@ assert.match(source, /v-model="line\.required_material_kg"/)
 assert.match(source, /data-testid="create-line-gross-weight"/)
 assert.match(source, /data-testid="create-line-required-material"/)
 assert.match(source, /v-model="line\.notes"/)
-assert.match(source, /min-w-\[1840px\]/)
+assert.match(source, /min-w-\[2240px\]/)
+assert.match(source, /columnheader">工模尺寸/)
+assert.match(source, /columnheader">适配机型/)
+assert.match(source, /columnheader">模具是否在厂/)
+assert.match(source, /columnheader">模具回厂时间/)
+assert.match(source, /v-model="line\.mold_dimensions"/)
+assert.match(source, /v-model="line\.machine_type"/)
+assert.match(source, /v-model="line\.mold_presence_status"/)
+assert.match(source, /v-model="line\.mold_return_time"/)
 assert.match(source, /data-testid="create-line-material"[\s\S]*role="combobox"[\s\S]*aria-label="选择所需用料"/)
 assert.match(source, /placeholder="搜索原料名称\/编号"/)
 assert.match(source, /@focus="openRawMaterialPicker\(index, line\.material, \$event\)"/)

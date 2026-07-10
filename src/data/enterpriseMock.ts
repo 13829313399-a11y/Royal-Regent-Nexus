@@ -18,9 +18,9 @@ import {
 
 export type Tone = 'teal' | 'blue' | 'amber' | 'red' | 'slate' | 'green'
 
-export type FactoryContextId = 'group' | 'huakang-a' | 'huakang-b' | 'huadeng' | 'huaxing'
+export type FactoryContextId = 'group' | 'huakang-a' | 'huakang-b' | 'huakang-c' | 'huakang-d' | 'huadeng' | 'huaxing'
 
-export type ProductionFactoryContextId = Exclude<FactoryContextId, 'group'>
+export type ProductionFactoryContextId = Exclude<FactoryContextId, 'group' | 'huakang-c' | 'huakang-d'>
 
 export type DepartmentId =
   | 'overview'
@@ -242,6 +242,22 @@ export const factoryContexts: FactoryContext[] = [
     description: '材料与产能协同厂区',
     health: 82,
     tone: 'amber',
+  },
+  {
+    id: 'huakang-c',
+    name: '华康C',
+    shortName: '华康C',
+    description: '扩产筹备与产线协同厂区',
+    health: 88,
+    tone: 'blue',
+  },
+  {
+    id: 'huakang-d',
+    name: '华康D',
+    shortName: '华康D',
+    description: '新建产能与质量导入厂区',
+    health: 86,
+    tone: 'teal',
   },
   {
     id: 'huadeng',

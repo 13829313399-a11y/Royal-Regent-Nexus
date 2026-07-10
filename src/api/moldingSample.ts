@@ -211,8 +211,9 @@ export interface InjectionTotalCostSummary {
 
 export function createMoldingSampleApi(client: HttpLikeClient = http) {
   return {
-    async listOrders() {
-      const response = await client.get<MoldingSampleDetailResponse[]>('/injection')
+    async listOrders(factoryId?: string) {
+      const query = factoryId ? `?factory_id=${encodeURIComponent(factoryId)}` : ''
+      const response = await client.get<MoldingSampleDetailResponse[]>(`/injection${query}`)
       return response.data
     },
     async getOrder(orderId: string) {

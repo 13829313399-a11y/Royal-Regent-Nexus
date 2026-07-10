@@ -2,7 +2,12 @@ import { http } from '../lib/http.js'
 
 export interface AuthHttpClient {
   get<T = unknown>(url: string): Promise<{ data: T }>
-  post<T = unknown>(url: string, data?: unknown): Promise<{ data: T }>
+  post<T = unknown>(
+    url: string,
+    data?: unknown,
+    config?: { headers?: Record<string, string> },
+  ): Promise<{ data: T }>
+  delete?<T = unknown>(url: string): Promise<{ data: T }>
 }
 
 export interface LoginRequest {
@@ -58,6 +63,7 @@ export interface AuthMeResponse {
   department_scopes: string[]
   grants: AuthGrant[]
   force_password_change: boolean
+  avatar_url?: string
 }
 
 export function createAuthApi(client: AuthHttpClient = http) {
@@ -76,6 +82,22 @@ export function createAuthApi(client: AuthHttpClient = http) {
     },
     async getMe() {
       const response = await client.get<AuthMeResponse>('/auth/me')
+      return response.data
+    },
+    async uploadAvatar(file: File) {
+      const formData = new FormData()
+      formData.append('file', file)
+      const response = await client.post<AuthMeResponse>('/auth/me/avatar', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      return response.data
+    },
+    async deleteAvatar() {
+      if (!client.delete) {
+        throw new Error('当前认证客户端不支持删除头像')
+      }
+
+      const response = await client.delete<AuthMeResponse>('/auth/me/avatar')
       return response.data
     },
     async logout() {
