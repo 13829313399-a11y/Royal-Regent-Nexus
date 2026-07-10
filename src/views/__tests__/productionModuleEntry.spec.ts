@@ -122,6 +122,7 @@ describe('production module entry', () => {
     expect(enterpriseSource).toMatch(/label: '客价转换台'/)
     expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/quote-center'/)
     expect(enterpriseSource).toMatch(/先选择本人客户，再导入内部报价 Excel 并输出报客价 Excel/)
+    expect(enterpriseSource).toMatch(/role: '车间业务主管'/)
     expect(enterpriseSource).toMatch(/role: '车间业务员'/)
 
     expect(moduleDetailSource).not.toMatch(/报价与成本中心入口/)
@@ -159,12 +160,18 @@ describe('production module entry', () => {
       'selectedSheetRows',
       'useAuthStore',
       'huaxing_molding_a_sales',
+      'isWorkshopSalesSupervisorAccount',
       'isWorkshopSalesAccount',
+      'workshopSalesWorkshopNames',
+      'canAccessWorkshop',
       'handleInternalQuoteImport',
       'exportCustomerQuoteExcel',
     ]) {
       expect(quoteCenterPanelSource).toContain(requiredCopy)
     }
+    expect(quoteCenterPanelSource).toContain('.filter((customer) => workshopSalesWorkshopNames.value.has(customer.workshop))')
+    expect(quoteCenterPanelSource).toContain('return inScope && canAccessWorkshop(row.workshop)')
+    expect(quoteCenterPanelSource).toContain('return canAccessWorkshop(row.workshop)')
 
     expect(quoteCenterPanelSource).not.toContain('{{ currentAccount }}')
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')

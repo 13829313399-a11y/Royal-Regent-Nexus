@@ -168,6 +168,12 @@ const rolePermissionPresets: Record<string, string[]> = {
     'customer_price:export_customer_quote',
     'customer_price:compare',
   ],
+  sales_customer_supervisor: [
+    'customer_price:read',
+    'customer_price:import_internal_quote',
+    'customer_price:export_customer_quote',
+    'customer_price:compare',
+  ],
   admin: permissionGroupDefinitions.flatMap((group) =>
     group.permissions.map((permission) => permission.matchCode ?? permission.code),
   ),
@@ -296,6 +302,7 @@ function inferPermissionCodesForRole(role: RoleResponse | undefined, request: Re
   if (/QA|检验|品质/i.test(roleText)) return rolePermissionPresets.qa_inspector
   if (/仓|PMC|物料|carton/i.test(roleText)) return rolePermissionPresets.carton_warehouse_keeper
   if (/生产|啤机|排产/i.test(roleText)) return rolePermissionPresets.molding_clerk
+  if (/车间业务主管|业务主管/i.test(roleText)) return rolePermissionPresets.sales_customer_supervisor
   if (/业务|报价|客户|sales/i.test(roleText)) return rolePermissionPresets.sales_customer_owner
   if (/主管|supervisor/i.test(roleText)) return rolePermissionPresets.engineering_supervisor
   if (/经理|manager/i.test(roleText)) return rolePermissionPresets.manager

@@ -164,6 +164,48 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         assert approved_profile["factory_scopes"] == ["huaxing"]
 
 
+def test_sales_business_supervisor_registration_recommends_quote_supervisor_role(monkeypatch):
+    with make_client(monkeypatch) as client:
+        payload = register_payload("sales-supervisor")
+        payload.update({
+            "display_name": "张赛英",
+            "department": "sales-business",
+            "position": "车间业务主管",
+        })
+        register_response = client.post("/api/auth/register", json=payload)
+        assert register_response.status_code == 200
+
+        login(client, "admin")
+        roles_response = client.get("/api/system/roles")
+        assert roles_response.status_code == 200
+        sales_supervisor_role = next(
+            role for role in roles_response.json() if role["id"] == "sales_customer_supervisor"
+        )
+        assert sales_supervisor_role["name"] == "车间业务主管"
+
+        requests = client.get("/api/system/registration-requests?status=pending").json()
+        request = next(item for item in requests if item["username"] == "sales-supervisor")
+        assert request["recommended_role_ids"] == ["sales_customer_supervisor"]
+
+        approve_response = client.post(
+            f"/api/system/registration-requests/{request['id']}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "sales_customer_supervisor", "factory_id": "huaxing", "department": "sales-business"}
+                ],
+                "review_comment": "车间业务主管账号",
+            },
+        )
+        assert approve_response.status_code == 200
+
+        logout(client)
+        profile = login(client, "sales-supervisor", "Strong123")
+        assert "车间业务主管" in profile["roles"]
+        assert "customer_price:read" in profile["permissions"]
+        assert "customer_price:export_customer_quote" in profile["permissions"]
+        assert profile["department_scopes"] == ["sales-business"]
+
+
 def test_non_admin_cannot_use_system_user_management(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "engineer")

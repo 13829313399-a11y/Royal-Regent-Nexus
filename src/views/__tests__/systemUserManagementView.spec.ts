@@ -50,6 +50,7 @@ describe('SystemUserManagementView source contract', () => {
       'perm-group',
       'perm locked',
       'admin.manage',
+      'sales_customer_supervisor',
       'factoryScopesForSelectedRequest',
       'departmentScopesForSelectedRequest',
       'allFactoryScopeLabel',
