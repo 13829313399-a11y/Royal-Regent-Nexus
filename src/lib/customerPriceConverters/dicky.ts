@@ -179,6 +179,14 @@ function sanitizeFileNamePart(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim()
 }
 
+function normalizeDickieSpelling(value: string) {
+  return value.replace(/\bDicky\b/g, 'Dickie')
+}
+
+function normalizeDickieCellValue(value: XlsxCellValue): XlsxCellValue {
+  return typeof value === 'string' ? normalizeDickieSpelling(value) : value
+}
+
 function formatFileDate(date = new Date()) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
@@ -290,7 +298,7 @@ function findSummarySheet(workbook: ReturnType<typeof parseXlsxWorkbook>) {
     ?? workbook.sheets.find((item) => item.name.includes(SUMMARY_SHEET_NAME))
 
   if (!sheet) {
-    throw new Error('未找到 Dicky 内部报价工作表：总表')
+    throw new Error('未找到 Dickie 内部报价工作表：总表')
   }
 
   return sheet
@@ -337,7 +345,7 @@ export function convertDickyInternalQuote(buffer: ArrayBuffer, sourceFileName: s
   const sheetId = 'dicky-summary'
   const details = buildDetailRows(summarySheet.rows, sheetId, 'Quotation')
   const totalCustomerHkd = round(details.reduce((sum, row) => sum + row.customerPriceHkd, 0))
-  const clientName = toText(summarySheet.rows[6]?.[2]) || 'Dicky'
+  const clientName = normalizeDickieSpelling(toText(summarySheet.rows[6]?.[2]) || 'Dickie')
   const quoteDate = maybeDate(summarySheet.rows[6]?.[10])
 
   return {
@@ -755,7 +763,7 @@ function findSummarySheetRef(sheets: DickyWorkbookSheetRef[]) {
     ?? sheets.find((item) => item.name.includes(SUMMARY_SHEET_NAME))
 
   if (!sheet) {
-    throw new Error('未找到 Dicky 内部报价工作表：总表')
+    throw new Error('未找到 Dickie 内部报价工作表：总表')
   }
 
   return sheet
@@ -885,7 +893,7 @@ function sourcePatch(
 ): DickyCellPatch {
   return {
     ref,
-    value: readCellValue(sourceCell, sharedStrings),
+    value: normalizeDickieCellValue(readCellValue(sourceCell, sharedStrings)),
     formula: shiftLocalFormulaRows(readCellFormula(sourceCell?.body ?? ''), rowOffset) || undefined,
   }
 }
@@ -905,7 +913,11 @@ function buildQuotationPatches(
       patches.push(sourcePatch(targetRef, sourceCell, sharedStrings, parseCellRef(targetRef).rowNumber - parseCellRef(sourceRef).rowNumber))
     }
   }
-  const patchText = (ref: string, value: XlsxCellValue, styleRef?: string) => patches.push({ ref, value, styleRef })
+  const patchText = (ref: string, value: XlsxCellValue, styleRef?: string) => patches.push({
+    ref,
+    value: normalizeDickieCellValue(value),
+    styleRef,
+  })
   const textAt = (ref: string) => resolveCellText(summaryCells.get(ref), sharedStrings, workbookCells)
   const ref = (columnName: string, rowNumber: number) => `${columnName}${rowNumber}`
 
@@ -989,11 +1001,11 @@ export function createDickyCustomerQuoteWorkbook(
   const quotationXml = getZipText(zip, quotationSheet.path)
 
   if (!summaryXml) {
-    throw new Error('Dicky 内部报价缺少总表内容')
+    throw new Error('Dickie 内部报价缺少总表内容')
   }
 
   if (!quotationXml) {
-    throw new Error('Dicky 报客价工作表创建失败')
+    throw new Error('Dickie 报客价工作表创建失败')
   }
 
   zip[quotationSheet.path] = strToU8(refreshDimension(applyCellPatches(
@@ -1024,6 +1036,7 @@ export function createDickyCustomerQuoteWorkbook(
 
 export function buildDickyCustomerQuoteFileName(result: DickyConversionResult) {
   const sheet = result.sheets[0]
+  const sourceName = normalizeDickieSpelling(sheet?.sourceFileName.replace(/\.[^.]+$/, '') ?? 'Dickie')
 
-  return `Quotation of ${sanitizeFileNamePart(result.clientName)} - Royal Regent (R0) (${formatFileDate(result.quoteDate)})-${sanitizeFileNamePart(sheet?.sourceFileName.replace(/\.[^.]+$/, '') ?? 'Dicky')}.xlsx`
+  return `Quotation of ${sanitizeFileNamePart(result.clientName)} - Royal Regent (R0) (${formatFileDate(result.quoteDate)})-${sanitizeFileNamePart(sourceName)}.xlsx`
 }

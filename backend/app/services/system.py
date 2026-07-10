@@ -54,6 +54,8 @@ def recommend_role_ids(registration_request: AuthRegistrationRequest) -> list[st
     if "主管" in registration_request.position or "supervisor" in position:
         if department == "engineering":
             return ["engineering_supervisor"]
+        if department == "sales-business":
+            return ["sales_customer_supervisor"]
 
     department_defaults = {
         "engineering": "engineer",

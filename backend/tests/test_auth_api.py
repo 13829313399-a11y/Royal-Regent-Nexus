@@ -151,6 +151,30 @@ def test_default_admin_is_not_seeded_without_explicit_password(monkeypatch):
             assert db.query(auth_models.AuthPermission).filter_by(code="system:user_manage").count() == 1
 
 
+def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeypatch):
+    with make_client(monkeypatch, SEED_DEFAULT_ACCOUNTS="false"):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            role = db.get(auth_models.AuthRole, "sales_customer_supervisor")
+            assert role is not None
+            assert role.name == "车间业务主管"
+
+            role_permissions = db.query(auth_models.AuthRolePermission).filter_by(
+                role_id="sales_customer_supervisor",
+            ).all()
+            permission_ids = [item.permission_id for item in role_permissions]
+            permissions = db.query(auth_models.AuthPermission).filter(
+                auth_models.AuthPermission.id.in_(permission_ids),
+            ).all()
+            assert {permission.code for permission in permissions} == {
+                "customer_price:read",
+                "customer_price:import_internal_quote",
+                "customer_price:export_customer_quote",
+                "customer_price:compare",
+            }
+
+
 def test_weak_seed_admin_password_is_rejected(monkeypatch):
     with pytest.raises(RuntimeError, match="SEED_ADMIN_PASSWORD"):
         with make_client(monkeypatch, SEED_ADMIN_PASSWORD="123456"):

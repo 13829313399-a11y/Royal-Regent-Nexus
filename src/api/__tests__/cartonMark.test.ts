@@ -30,7 +30,7 @@ const client = {
 const api = createCartonMarkApi(client as Parameters<typeof createCartonMarkApi>[0])
 
 const result = await api.autoCheck({
-  customerName: 'Dicky',
+  customerName: 'Dickie',
   po: '2033',
   item: '2017',
   pdfTemplate: new Blob(['pdf'], { type: 'application/pdf' }),
@@ -45,7 +45,7 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
 
 const request = calls[0]
 assert.ok(request.data instanceof FormData)
-assert.equal((request.data as FormData).get('customer_name'), 'Dicky')
+assert.equal((request.data as FormData).get('customer_name'), 'Dickie')
 assert.equal((request.data as FormData).get('po'), '2033')
 assert.equal((request.data as FormData).get('item'), '2017')
 assert.deepEqual(request.config, {
