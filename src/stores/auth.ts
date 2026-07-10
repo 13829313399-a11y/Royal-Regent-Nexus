@@ -10,6 +10,7 @@ interface AuthState {
   departmentScopes: string[]
   isAuthenticated: boolean
   hasLoadedSession: boolean
+  sessionVersion: number
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -22,6 +23,7 @@ export const useAuthStore = defineStore('auth', {
     departmentScopes: [],
     isAuthenticated: false,
     hasLoadedSession: false,
+    sessionVersion: 0,
   }),
   actions: {
     applySession(user: AuthMeResponse) {
@@ -33,6 +35,7 @@ export const useAuthStore = defineStore('auth', {
       this.departmentScopes = user.department_scopes
       this.isAuthenticated = true
       this.hasLoadedSession = true
+      this.sessionVersion += 1
     },
     clearSession() {
       this.currentUser = null
@@ -43,6 +46,7 @@ export const useAuthStore = defineStore('auth', {
       this.departmentScopes = []
       this.isAuthenticated = false
       this.hasLoadedSession = true
+      this.sessionVersion += 1
     },
     async login(payload: LoginRequest) {
       const user = await authApi.login(payload)
@@ -54,11 +58,21 @@ export const useAuthStore = defineStore('auth', {
         return true
       }
 
+      const sessionVersionAtRequestStart = this.sessionVersion
+
       try {
         const user = await authApi.getMe()
+        if (this.sessionVersion !== sessionVersionAtRequestStart) {
+          return this.isAuthenticated
+        }
+
         this.applySession(user)
         return true
       } catch {
+        if (this.sessionVersion !== sessionVersionAtRequestStart) {
+          return this.isAuthenticated
+        }
+
         this.clearSession()
         return false
       }
