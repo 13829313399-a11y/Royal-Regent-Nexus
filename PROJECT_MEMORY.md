@@ -1285,6 +1285,15 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: reproduced production `500 Internal Server Error` against `http://47.115.217.27/api/auth/register`; local SQLAlchemy echo showed `INSERT INTO auth_registration_requests` could be emitted before `INSERT INTO auth_users`; added a regression test that records the first flush as `{"AuthUser"}`; `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_auth_api.py backend/tests/test_system_user_management_api.py -q` passed 18 tests.
 - Follow-up: deploy this fix to the server and retest registration on production; the server password shared in chat should be rotated because it was exposed in the conversation.
 
+### 2026-07-10
+
+- Requirement: remove the unused 啤办费 from the production molding-sample task page, and add mold metadata to engineering molding-sample detail rows: 工模尺寸、适配机型、模具是否在厂、模具回厂时间.
+- Implementation: added SQLite-compatible model/schema fields `mold_dimensions` and tri-state `mold_presence_status` with Alembic migration; extended molding-sample Excel import/export with new headers and legacy aliases; added engineering-row inputs, full-detail display, and print output while preserving separate completion date semantics; normalized draft presence status to the supported whitelist; removed production-page fee controls, fee totals, and fee PATCH fields while retaining actual material cost, machine submission, and actual-material completion gate.
+- Files changed: `backend/app/db.py`, `backend/app/models/molding_sample.py`, `backend/app/schemas/molding_sample.py`, `backend/app/services/molding_sample_excel.py`, `backend/alembic/versions/20260710_0008_add_molding_sample_mold_metadata.py`, related molding-sample backend tests, `src/types/moldingSample.ts`, `src/data/moldingSampleWorkflowMock.ts`, `src/lib/moldingSampleManualCreate.ts`, `src/views/MoldingSampleView.vue`, `src/views/MoldingSampleProductionTaskView.vue`, and related frontend tests.
+- Verification: full backend `backend/.venv/Scripts/python.exe -m pytest backend/tests -q` passed 73 tests with one Windows pytest-cache warning; full frontend `npm.cmd run test:unit` passed 21 files / 73 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown annotation warnings; task reviews passed for backend contract/migration, Excel, engineering UI, and production fee removal.
+- Decisions: reuse existing `machine_type`, `mold_return_time`, and `completion_time`; represent mold presence internally as `unknown | in_factory | out_of_factory`; preserve fee API/history/Excel compatibility even though the production UI no longer exposes the fee.
+- Assumptions: browser live verification was not rerun in this continuation because the browser workflow skill/session was unavailable; verification is source-, test-, and build-based. Changes remain uncommitted in the isolated worktree as required by repository instructions.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.

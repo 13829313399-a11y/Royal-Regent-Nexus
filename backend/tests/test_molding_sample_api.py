@@ -234,6 +234,8 @@ def sample_order_payload(order_id="BP-API-001", external=False):
                 "sort_order": 1,
                 "mold_id": "M-001",
                 "mold_name": "左右枪身",
+                "mold_dimensions": "650 × 450 × 380 mm",
+                "mold_presence_status": "in_factory",
                 "machine_type": "160T",
                 "material": "HIPS 425",
                 "color": "深绿色",
@@ -372,11 +374,13 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
             row[1]
             for row in connection.execute("PRAGMA table_info(molding_sample_sensitive_audit_logs)")
         }
+        item_columns = {row[1] for row in connection.execute("PRAGMA table_info(molding_sample_items)")}
     finally:
         connection.close()
 
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= audit_columns
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
+    assert {"mold_dimensions", "mold_presence_status"} <= item_columns
 
 
 def test_molding_sample_read_endpoints_require_read_permission(client):
@@ -408,6 +412,8 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert payload["audit_logs"][0]["actor_role"] == "工程师"
     assert payload["audit_logs"][0]["actor_user_id"] == "user-engineer"
     assert payload["items"][0]["order_id"] == "BP-API-001"
+    assert payload["items"][0]["mold_dimensions"] == "650 × 450 × 380 mm"
+    assert payload["items"][0]["mold_presence_status"] == "in_factory"
 
     login_as(client, "molding_clerk")
     early_notifications_response = client.get(
@@ -1106,6 +1112,8 @@ def test_engineering_edit_delete_permissions_use_login_role(client):
     edit_response = client.put("/api/injection/BP-EDIT-001", json=edited_payload)
     assert edit_response.status_code == 200
     assert edit_response.json()["order"]["product_name"] == "链条枪改版"
+    assert edit_response.json()["items"][0]["mold_dimensions"] == "650 × 450 × 380 mm"
+    assert edit_response.json()["items"][0]["mold_presence_status"] == "in_factory"
 
     delete_response = client.delete("/api/injection/BP-EDIT-001")
     assert delete_response.status_code == 204
@@ -1182,11 +1190,31 @@ def test_trial_accounts_do_not_expose_unused_warehouse_permissions(client):
 
 def test_export_and_import_molding_sample_excel_template(client):
     login_as(client, "engineer")
-    client.post("/api/injection", json=sample_order_payload("BP-XLSX-001"))
+    source_payload = sample_order_payload("BP-XLSX-001")
+    source_payload["items"][0].update(
+        {
+            "mold_dimensions": "650 × 450 × 380 mm",
+            "machine_type": "160T",
+            "mold_presence_status": "out_of_factory",
+            "mold_return_time": "2026-07-18",
+            "completion_time": "2026-07-22",
+        }
+    )
+    create_response = client.post("/api/injection", json=source_payload)
+    assert create_response.status_code == 201
 
     export_response = client.get("/api/injection/BP-XLSX-001/export-excel")
     assert export_response.status_code == 200
     assert export_response.content[:2] == b"PK"
+
+    with ZipFile(BytesIO(export_response.content)) as workbook:
+        sheet_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    assert "工模尺寸" in sheet_xml
+    assert "适配机型" in sheet_xml
+    assert "模具是否在厂" in sheet_xml
+    assert "模具回厂时间" in sheet_xml
+    assert "不在厂" in sheet_xml
 
     import_response = client.post(
         "/api/injection/import-excel",
@@ -1198,6 +1226,31 @@ def test_export_and_import_molding_sample_excel_template(client):
     imported = import_response.json()
     assert imported["order"]["id"] == "BP-XLSX-002"
     assert imported["items"][0]["id"] == "BP-XLSX-002-001"
+    assert imported["items"][0]["mold_dimensions"] == "650 × 450 × 380 mm"
+    assert imported["items"][0]["machine_type"] == "160T"
+    assert imported["items"][0]["mold_presence_status"] == "out_of_factory"
+    assert imported["items"][0]["mold_return_time"] == "2026-07-18"
+    assert imported["items"][0]["completion_time"] == "2026-07-22"
+
+
+def test_parse_molding_sample_excel_accepts_legacy_mold_metadata_headers():
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    legacy_rows = [
+        ["单据ID", "BP-XLSX-LEGACY-001"],
+        ["工厂ID", "huaxing"],
+        ["产品名称", "旧模板兼容测试"],
+        ["日期", "2026-07-01"],
+        ["模具编号", "模具名称", "机型", "模具是否在厂", "回模时间", "需办日期", "原料"],
+        ["M-LEGACY-001", "旧模具", "160T", "在厂", "2026-07-18", "2026-07-22", "HIPS 425"],
+    ]
+
+    parsed = excel_service.parse_order_excel(
+        excel_service._build_workbook(excel_service._sheet_xml(legacy_rows, header_row_index=5))
+    )
+
+    assert parsed.items[0].machine_type == "160T"
+    assert parsed.items[0].mold_return_time == "2026-07-18"
+    assert parsed.items[0].mold_presence_status == "in_factory"
 
 
 def test_export_molding_sample_excel_template_has_report_styling(client):
@@ -1220,10 +1273,10 @@ def test_export_molding_sample_excel_template_has_report_styling(client):
     assert "缺" in sheet_xml
     assert "原料小计" in sheet_xml
     assert "总计" in sheet_xml
-    assert '<mergeCell ref="A1:W1"/>' in sheet_xml
-    assert '<mergeCell ref="F2:W2"/>' in sheet_xml
+    assert '<mergeCell ref="A1:Y1"/>' in sheet_xml
+    assert '<mergeCell ref="F2:Y2"/>' in sheet_xml
     assert '<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>' in sheet_xml
-    assert f'<autoFilter ref="A{detail_header_row}:W{detail_header_row}"/>' in sheet_xml
+    assert f'<autoFilter ref="A{detail_header_row}:Y{detail_header_row}"/>' in sheet_xml
     assert '<cols>' in sheet_xml
     assert 'customWidth="1"' in sheet_xml
     assert '<col min="2" max="2" width="24" customWidth="1"/>' in sheet_xml

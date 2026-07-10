@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -35,6 +37,8 @@ class MoldingSampleItemIn(BaseModel):
     sort_order: int = 1
     mold_id: str = ""
     mold_name: str = ""
+    mold_dimensions: str = ""
+    mold_presence_status: Literal["unknown", "in_factory", "out_of_factory"] = "unknown"
     machine_type: str = ""
     production_machine: str = ""
     material: str = ""

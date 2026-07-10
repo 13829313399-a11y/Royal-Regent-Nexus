@@ -348,6 +348,8 @@ describe('molding sample runtime error handling', () => {
       sort_order: 1,
       mold_id: 'MOLD-A',
       mold_name: '打印模具A',
+      mold_dimensions: '500 × 400 × 300 mm',
+      mold_presence_status: 'in_factory',
       machine_type: '160T',
       production_machine: '啤办机台-08',
       material: 'ABS 750NSW',
@@ -388,7 +390,10 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).toContain('啤机确认机台')
     expect(printArea).toContain('啤办机台-08')
     expect(printArea).toContain('ABS 750NSW')
-    expect(printArea).not.toContain('160T')
+    expect(printArea).toContain('500 × 400 × 300 mm')
+    expect(printArea).toContain('适配机型：160T')
+    expect(printArea).toContain('模具是否在厂：在厂')
+    expect(printArea).toContain('模具回厂时间：2026-07-10')
     expect(printArea).not.toContain('REC-001')
     expect(printArea).toContain('1.42 kg')
     expect(printArea).toContain('预计料费')
@@ -530,6 +535,8 @@ describe('molding sample runtime error handling', () => {
           sort_order: 1,
           mold_id: 'P50002008-01-01',
           mold_name: '头盔',
+          mold_dimensions: '650 × 450 × 380 mm',
+          mold_presence_status: 'in_factory',
           machine_type: '160T',
           production_machine: '啤办机台-08',
           material: 'PP (AV161)',
@@ -597,6 +604,8 @@ describe('molding sample runtime error handling', () => {
           sort_order: 1,
           mold_id: 'P50002008-01-01',
           mold_name: '头盔',
+          mold_dimensions: '650 × 450 × 380 mm',
+          mold_presence_status: 'in_factory',
           machine_type: '160T',
           production_machine: '',
           material: 'PP (AV161)',
@@ -625,7 +634,6 @@ describe('molding sample runtime error handling', () => {
         {
           ...runningRecord.items[0],
           actual_weight_kg: 14.2,
-          injection_cost: 120,
           production_machine: '啤办机台-08',
         },
       ],
@@ -640,7 +648,7 @@ describe('molding sample runtime error handling', () => {
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
 
     await wrapper.get('input[aria-label="实际用料"]').setValue('14.2')
-    await wrapper.get('input[aria-label="啤办费"]').setValue('120')
+    expect(wrapper.find('input[aria-label="啤办费"]').exists()).toBe(false)
     await wrapper.get('input[aria-label="啤机确认机台"]').setValue('啤办机台-08')
     await getButtonByText(wrapper, '保存回填').trigger('click')
     await flushPromises()
@@ -651,12 +659,14 @@ describe('molding sample runtime error handling', () => {
         {
           id: 'BP-PROD-MACHINE-001-001',
           actual_weight_kg: 14.2,
-          injection_cost: 120,
           production_machine: '啤办机台-08',
         },
       ],
     })
     expect(wrapper.text()).toContain('啤机确认机台')
+    expect(wrapper.text()).toContain('实际料费(HKD)')
+    expect(wrapper.text()).not.toContain('啤办费(RMB)')
+    expect(wrapper.text()).not.toContain('啤办费(HKD)')
     expect((wrapper.get('input[aria-label="啤机确认机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
 
     wrapper.unmount()
@@ -898,6 +908,8 @@ describe('molding sample runtime error handling', () => {
           mold_id: 'P50002008-01-01',
           mold_name: '头盔',
           machine_type: '160T',
+          mold_dimensions: '650 × 450 × 380 mm',
+          mold_presence_status: 'in_factory',
           production_machine: '啤办机台-08',
           material: 'PP (AV161)',
           color: '黑色',
@@ -943,10 +955,11 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('整啤毛重(g)')
     expect(text).toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
-    expect(text).not.toContain('160T')
+    expect(text).toContain('650 × 450 × 380 mm')
+    expect(text).toContain('160T')
+    expect(text).toContain('在厂')
     expect(text).not.toContain('RC-20260203-01')
-    expect(text).toContain('啤办费(HKD)')
-    expect(text).toContain('HKD 129.60')
+    expect(text).toContain('实际料费(HKD)')
     expect(text).toContain('啤机确认机台')
     expect(text).toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
@@ -1231,6 +1244,7 @@ describe('molding sample runtime error handling', () => {
           quantity: '2',
           shoot_qty: 30,
           required_material_kg: 15,
+          mold_presence_status: 'legacy_unknown_label',
           mold_return_time: '2026-02-10',
           completion_time: '2026-02-10',
           notes: '报价周期：3天；要求：加急；备注：第一次试模',
@@ -1268,6 +1282,7 @@ describe('molding sample runtime error handling', () => {
     expect((wrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('P50002008-01-01')
     expect((wrapper.get('[data-testid="create-line-color"]').element as HTMLInputElement).value).toBe('黑色')
     expect((wrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('15')
+    expect((wrapper.get('[data-testid="create-line-mold-presence-status"]').element as HTMLSelectElement).value).toBe('')
 
     wrapper.unmount()
   })
