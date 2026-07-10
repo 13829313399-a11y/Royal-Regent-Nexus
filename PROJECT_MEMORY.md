@@ -1316,6 +1316,12 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 - Verification: `npm.cmd run test:unit -- src/views/__tests__/productionModuleEntry.spec.ts src/lib/__tests__/dickyCustomerPriceConverter.spec.ts` passed 2 files / 10 tests; `npm.cmd run build` passed with the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
 - Decision: workshop-level access is now the front-end permission model for quote conversion until a backend customer/workshop binding table replaces the mock `account` and `workshop` fields.
 
+- Requirement: add the user-provided development workflow prompt to `AGENTS.md` so future Codex work follows it.
+- Implementation: added the project-level default workflow, strict-engineering triggers, verification command categories, and required completion-report fields to `AGENTS.md`.
+- Files changed: `AGENTS.md`, `PROJECT_MEMORY.md`.
+- Verification: reviewed the rendered Markdown source and confirmed all requested rules are present.
+- Decisions: the workflow applies alongside the existing mandatory pre-change reads, scope rules, Git-operation restrictions, and project-memory update requirement.
+
 ## Open Assumptions
 
 - Future requirements should preserve the current Vue 3 + Vite + TypeScript + Tailwind CSS v4 + shadcn-vue baseline unless explicitly changed.
