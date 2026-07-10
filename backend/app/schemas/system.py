@@ -77,6 +77,7 @@ class UserOut(BaseModel):
     created_at: str
     updated_at: str
     roles: list[UserRoleAssignmentOut]
+    avatar_url: str = ""
 
 
 class SystemNotificationOut(BaseModel):

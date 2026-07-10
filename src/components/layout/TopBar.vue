@@ -16,6 +16,7 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const brandLogoSrc = '/brand/huadeng_group_dynamic_logo.svg'
 const isNotificationPanelOpen = ref(false)
+const notificationPopoverRef = ref<HTMLElement | null>(null)
 const notificationState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const notifications = ref<MoldingSampleNotificationResponse[]>([])
 const systemNotifications = ref<SystemNotificationResponse[]>([])
@@ -210,6 +211,22 @@ async function markNotificationHandled(notification: MoldingSampleNotificationRe
   }
 }
 
+function closeNotificationPanelOnOutsidePointer(event: PointerEvent) {
+  if (!isNotificationPanelOpen.value || !notificationPopoverRef.value) {
+    return
+  }
+
+  if (!event.composedPath().includes(notificationPopoverRef.value)) {
+    isNotificationPanelOpen.value = false
+  }
+}
+
+function closeNotificationPanelOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    isNotificationPanelOpen.value = false
+  }
+}
+
 async function markSystemNotificationRead(notification: SystemNotificationResponse) {
   closeNotificationToast()
   isNotificationPanelOpen.value = false
@@ -277,12 +294,16 @@ watch(isNotificationPanelOpen, (isOpen) => {
 })
 
 onMounted(() => {
+  document.addEventListener('pointerdown', closeNotificationPanelOnOutsidePointer)
+  document.addEventListener('keydown', closeNotificationPanelOnEscape)
   notificationRefreshTimer = window.setInterval(() => {
     void loadAccountNotifications()
   }, NOTIFICATION_REFRESH_INTERVAL_MS)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('pointerdown', closeNotificationPanelOnOutsidePointer)
+  document.removeEventListener('keydown', closeNotificationPanelOnEscape)
   if (notificationRefreshTimer) {
     window.clearInterval(notificationRefreshTimer)
   }
@@ -292,8 +313,8 @@ onUnmounted(() => {
 
 <template>
   <header class="sticky top-0 z-30 h-auto border-b border-slate-200 bg-white/95 backdrop-blur">
-    <div class="flex min-h-[72px] items-center gap-5 px-6">
-      <RouterLink to="/" class="flex min-w-[236px] items-center gap-3">
+    <div class="flex min-h-[72px] items-center gap-3 px-4 2xl:gap-5 2xl:px-6">
+      <RouterLink to="/" class="flex min-w-[200px] items-center gap-3 2xl:min-w-[236px]">
         <span class="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-lg">
           <img
             :src="brandLogoSrc"
@@ -307,27 +328,31 @@ onUnmounted(() => {
         </span>
       </RouterLink>
 
-      <div class="hidden h-9 min-w-[260px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 lg:flex">
+      <div class="hidden h-9 min-w-[220px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 lg:flex">
         <Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" />
         <span class="truncate text-sm text-slate-500">{{ searchPlaceholder }}</span>
       </div>
 
-      <div class="ml-auto hidden items-center gap-2 xl:flex">
-        <button
-          v-for="factory in topBarFactoryContexts"
-          :key="factory.id"
-          type="button"
-          class="h-9 rounded-lg border px-5 text-sm font-semibold transition-colors"
-          :class="factory.id === appStore.activeFactoryId
-            ? 'border-teal-700 bg-teal-700 text-white'
-            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'"
-          @click="appStore.setActiveFactory(factory.id)"
-        >
-          {{ getTopBarFactoryLabel(factory) }}
-        </button>
+      <div class="ml-auto hidden min-w-0 max-w-[40vw] items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden xl:flex">
+        <div class="flex min-w-max items-center gap-1.5 pr-1">
+          <button
+            v-for="factory in topBarFactoryContexts"
+            :key="factory.id"
+            type="button"
+            class="h-9 shrink-0 rounded-lg border px-3 text-xs font-semibold transition-colors 2xl:px-4 2xl:text-sm"
+            :class="factory.id === appStore.activeFactoryId
+              ? 'border-teal-700 bg-teal-700 text-white'
+              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'"
+            :aria-label="`切换至${getTopBarFactoryLabel(factory)}`"
+            :title="factory.name"
+            @click="appStore.setActiveFactory(factory.id)"
+          >
+            {{ getTopBarFactoryLabel(factory) }}
+          </button>
+        </div>
       </div>
 
-      <div class="relative">
+      <div ref="notificationPopoverRef" class="relative">
         <button
           type="button"
           class="relative flex size-9 items-center justify-center rounded-full border bg-slate-50 transition"

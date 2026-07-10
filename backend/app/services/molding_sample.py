@@ -244,11 +244,17 @@ def order_statement():
     )
 
 
-def list_orders(db: Session, current_user: AuthContext) -> list[MoldingSampleOrder]:
+def list_orders(
+    db: Session,
+    current_user: AuthContext,
+    factory_id: str | None = None,
+) -> list[MoldingSampleOrder]:
     permitted_factory_ids = permitted_factory_ids_for_permission(db, current_user, "molding_sample:read")
     statement = order_statement()
     if permitted_factory_ids is not None:
         statement = statement.where(MoldingSampleOrder.factory_id.in_(permitted_factory_ids))
+    if factory_id:
+        statement = statement.where(MoldingSampleOrder.factory_id == factory_id)
 
     return list(
         db.scalars(

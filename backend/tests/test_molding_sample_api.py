@@ -496,6 +496,24 @@ def test_factory_scope_limits_molding_sample_reads_and_writes(client):
     assert admin_approval_response.json()["order"]["status"] == "待生产"
 
 
+def test_factory_filtered_order_list_returns_only_the_requested_factory_data(client):
+    login_as(client, "admin")
+    huaxing_payload = sample_order_payload("BP-HX-FACTORY-LIST-001")
+    huadeng_payload = sample_order_payload("BP-HD-FACTORY-LIST-001")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+
+    assert client.post("/api/injection", json=huaxing_payload).status_code == 201
+    assert client.post("/api/injection", json=huadeng_payload).status_code == 201
+
+    huadeng_response = client.get("/api/injection", params={"factory_id": "huadeng"})
+    assert huadeng_response.status_code == 200
+    assert [record["order"]["id"] for record in huadeng_response.json()] == ["BP-HD-FACTORY-LIST-001"]
+
+    empty_response = client.get("/api/injection", params={"factory_id": "huakang-b"})
+    assert empty_response.status_code == 200
+    assert empty_response.json() == []
+
+
 def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
     db_module = importlib.import_module("app.db")
     auth_models = importlib.import_module("app.models.auth")

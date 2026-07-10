@@ -272,6 +272,36 @@ describe('TopBar notifications', () => {
     expect(notificationLink?.attributes('href')).toContain('/modules/molding-sample?factory=huaxing')
   })
 
+  it('closes the notification panel when clicking outside or pressing Escape', async () => {
+    seedAccount({ roles: ['工程师'] })
+    moldingSampleApiMock.listNotifications.mockResolvedValue([
+      createNotification({
+        id: 'N-OUTSIDE-CLOSE',
+        order_id: 'BP-OUTSIDE-CLOSE',
+        factory_id: 'huaxing',
+        target_role: '工程部',
+        title: '点击外部关闭',
+      }),
+    ])
+
+    const wrapper = mountTopBar()
+    await flushPromises()
+
+    await wrapper.get('button[aria-label="未处理项通知"]').trigger('click')
+    expect(wrapper.find('[aria-label="未处理项通知面板"]').exists()).toBe(true)
+
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await flushPromises()
+    expect(wrapper.find('[aria-label="未处理项通知面板"]').exists()).toBe(false)
+
+    await wrapper.get('button[aria-label="未处理项通知"]').trigger('click')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    expect(wrapper.find('[aria-label="未处理项通知面板"]').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
   it('pops a routed message when a supervisor receives a new review notification', async () => {
     seedAccount({
       roles: ['工程主管'],

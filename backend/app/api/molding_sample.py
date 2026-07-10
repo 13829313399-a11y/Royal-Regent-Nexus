@@ -79,10 +79,11 @@ def resolve_import_factory_id(current_user: AuthContext, factory_id: str | None)
 
 @router.get("/api/injection", response_model=list[MoldingSampleDetailResponse])
 def get_injection_orders(
+    factory_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return [serialize_order(order) for order in list_orders(db, current_user)]
+    return [serialize_order(order) for order in list_orders(db, current_user, factory_id=factory_id)]
 
 
 @router.get("/api/injection/export-excel")

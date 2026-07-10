@@ -1,9 +1,11 @@
 import importlib
 import sys
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
@@ -40,6 +42,13 @@ def register_payload(username: str = "zhangsan"):
         "department": "engineering",
         "position": "工程师",
     }
+
+
+def make_avatar_png() -> bytes:
+    image = Image.new("RGB", (64, 64), color=(13, 148, 136))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def login(client: TestClient, username: str, password: str = "123456"):
@@ -229,6 +238,34 @@ def test_user_list_includes_registration_contact_info(monkeypatch):
         contact_user = next(user for user in response.json() if user["username"] == "contact-user")
         assert contact_user["phone"] == "13811112222"
         assert contact_user["email"] == "contact@example.com"
+
+
+def test_system_user_list_uses_each_users_current_avatar(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "engineer")
+        upload_response = client.post(
+            "/api/auth/me/avatar",
+            files={"file": ("engineer.png", make_avatar_png(), "image/png")},
+        )
+        assert upload_response.status_code == 200
+        logout(client)
+
+        login(client, "admin")
+        users_response = client.get("/api/system/users")
+        assert users_response.status_code == 200
+        engineer = next(user for user in users_response.json() if user["username"] == "engineer")
+        avatar_url = engineer["avatar_url"]
+        assert avatar_url.startswith(f"/api/system/users/{engineer['id']}/avatar?v=")
+
+        avatar_response = client.get(avatar_url)
+        assert avatar_response.status_code == 200
+        assert avatar_response.headers["content-type"] == "image/png"
+        assert avatar_response.headers["cache-control"] == "private, no-store"
+        assert avatar_response.content.startswith(b"\x89PNG")
+
+        logout(client)
+        login(client, "engineer")
+        assert client.get(avatar_url).status_code == 403
 
 
 def test_reject_suspend_restore_and_last_admin_guard(monkeypatch):

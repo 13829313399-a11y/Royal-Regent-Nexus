@@ -15,7 +15,7 @@ import ModuleHealthPanel from '@/components/dashboard/ModuleHealthPanel.vue'
       <div>
         <h1 class="text-3xl font-semibold tracking-tight text-slate-950">集团运营总览</h1>
         <p class="mt-2 text-sm text-slate-600">
-          4 个厂区 · 5 个核心部门 · 统一模块入口与跨厂区事项
+          6 个厂区 · 5 个核心部门 · 统一模块入口与跨厂区事项
         </p>
       </div>
 

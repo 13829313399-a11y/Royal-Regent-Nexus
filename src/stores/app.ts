@@ -3,9 +3,11 @@ import {
   approvalRows,
   departments,
   factoryContexts,
+  productionFactoryContextIds,
   type DepartmentId,
   type FactoryContextId,
   type ModuleDepartmentId,
+  type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
 
 export const useAppStore = defineStore('app', {
@@ -22,7 +24,10 @@ export const useAppStore = defineStore('app', {
     activeProductionFactory(state) {
       const activeFactory = factoryContexts.find((factory) => factory.id === state.activeFactoryId)
 
-      if (activeFactory && activeFactory.id !== 'group') {
+      if (
+        activeFactory
+        && productionFactoryContextIds.includes(activeFactory.id as ProductionFactoryContextId)
+      ) {
         return activeFactory
       }
 
