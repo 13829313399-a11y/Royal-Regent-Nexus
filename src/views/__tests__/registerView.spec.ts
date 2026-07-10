@@ -26,6 +26,11 @@ describe('RegisterView source contract', () => {
       'register-note',
       'radial-gradient(circle at 82% 8%',
       'grid-template-columns: 0.82fr 1fr',
+      'class="control select-control"',
+      '.select-control select',
+      'inset: 0;',
+      'padding: 0 40px;',
+      'right: 12px;',
     ]) {
       expect(source).toContain(requiredSource)
     }
