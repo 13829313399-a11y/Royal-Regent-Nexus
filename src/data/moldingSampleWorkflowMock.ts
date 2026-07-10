@@ -39,10 +39,12 @@ function createOrder(input: Omit<MoldingSampleOrder, 'order_type' | 'created_at'
   }
 }
 
-function createItem(input: Omit<MoldingSampleItem, 'sort_order' | 'production_machine' | 'gross_weight_g' | 'required_material_kg' | 'mold_return_time' | 'completion_time' | 'notes' | 'receipt_no' | 'collected_weight_kg' | 'actual_weight_kg' | 'actual_amount_hkd' | 'injection_cost' | 'injection_cost_hkd' | 'exchange_rate_at_save'> & Partial<Pick<MoldingSampleItem, 'sort_order' | 'production_machine' | 'gross_weight_g' | 'required_material_kg' | 'mold_return_time' | 'completion_time' | 'notes' | 'receipt_no' | 'collected_weight_kg' | 'actual_weight_kg' | 'actual_amount_hkd' | 'injection_cost' | 'injection_cost_hkd' | 'exchange_rate_at_save'>>): MoldingSampleItem {
+function createItem(input: Omit<MoldingSampleItem, 'sort_order' | 'production_machine' | 'mold_dimensions' | 'mold_presence_status' | 'gross_weight_g' | 'required_material_kg' | 'mold_return_time' | 'completion_time' | 'notes' | 'receipt_no' | 'collected_weight_kg' | 'actual_weight_kg' | 'actual_amount_hkd' | 'injection_cost' | 'injection_cost_hkd' | 'exchange_rate_at_save'> & Partial<Pick<MoldingSampleItem, 'sort_order' | 'production_machine' | 'mold_dimensions' | 'mold_presence_status' | 'gross_weight_g' | 'required_material_kg' | 'mold_return_time' | 'completion_time' | 'notes' | 'receipt_no' | 'collected_weight_kg' | 'actual_weight_kg' | 'actual_amount_hkd' | 'injection_cost' | 'injection_cost_hkd' | 'exchange_rate_at_save'>>): MoldingSampleItem {
   return {
     sort_order: 1,
     production_machine: '',
+    mold_dimensions: '',
+    mold_presence_status: 'unknown',
     gross_weight_g: null,
     required_material_kg: null,
     mold_return_time: '',

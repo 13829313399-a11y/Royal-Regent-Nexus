@@ -31,6 +31,7 @@ export type MoldingSampleRole =
 export type MoldingSampleAuditDecision = '提交' | '通过' | '驳回' | '重提' | '撤回' | '开始处理' | '撤回开始生产' | '完成' | '改价' | '重算'
 
 export type MoldingSampleTone = 'teal' | 'blue' | 'amber' | 'red' | 'slate' | 'green'
+export type MoldPresenceStatus = 'unknown' | 'in_factory' | 'out_of_factory'
 
 export interface MoldingSampleOrder {
   id: string
@@ -60,6 +61,8 @@ export interface MoldingSampleItem {
   sort_order: number
   mold_id: string
   mold_name: string
+  mold_dimensions: string
+  mold_presence_status: MoldPresenceStatus
   machine_type: string
   production_machine: string
   material: string

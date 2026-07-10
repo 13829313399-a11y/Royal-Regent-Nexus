@@ -241,7 +241,7 @@ const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_150px_112px_110px_138px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
@@ -868,7 +868,11 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
         shoot_qty: String(item.shoot_qty || ''),
         gross_weight_g: formatDraftNumber(item.gross_weight_g),
         required_material_kg: formatDraftNumber(item.required_material_kg),
-        required_date: item.mold_return_time || item.completion_time,
+        mold_dimensions: item.mold_dimensions,
+        machine_type: item.machine_type,
+        mold_presence_status: normalizeDraftMoldPresenceStatus(item.mold_presence_status),
+        mold_return_time: item.mold_return_time,
+        required_date: item.completion_time,
         notes: item.notes,
       })
     }),
@@ -892,7 +896,11 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
           shoot_qty: String(item.shoot_qty || ''),
           gross_weight_g: formatDraftNumber(item.gross_weight_g),
           required_material_kg: formatDraftNumber(item.required_material_kg),
-          required_date: item.mold_return_time || item.completion_time || '',
+          mold_dimensions: item.mold_dimensions ?? '',
+          machine_type: item.machine_type ?? '',
+          mold_presence_status: normalizeDraftMoldPresenceStatus(item.mold_presence_status),
+          mold_return_time: item.mold_return_time ?? '',
+          required_date: item.completion_time || '',
           notes: item.notes ?? '',
         })
       })
@@ -919,6 +927,10 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
 
 function formatDraftNumber(value: number | null | undefined) {
   return value === null || value === undefined ? '' : String(value)
+}
+
+function normalizeDraftMoldPresenceStatus(value: unknown): '' | 'in_factory' | 'out_of_factory' {
+  return value === 'in_factory' || value === 'out_of_factory' ? value : ''
 }
 
 function splitColorPms(value: string) {
@@ -1636,6 +1648,10 @@ function setMaterialBalanceDetailPage(page: number) {
 
 function formatBlank(value: string | number | null | undefined, fallback = '待填写') {
   return value === null || value === undefined || value === '' ? fallback : String(value)
+}
+
+function formatMoldPresenceStatus(value: string | undefined) {
+  return value === 'in_factory' ? '在厂' : value === 'out_of_factory' ? '不在厂' : '待确认'
 }
 
 function formatWeight(value: number | null | undefined) {
@@ -3178,7 +3194,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[1840px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[2240px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -3187,6 +3203,10 @@ onUnmounted(() => {
                       <div class="min-w-0 text-center" role="columnheader">#</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">客模具编号</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">适配机型</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">模具是否在厂</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">模具回厂时间</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">原料价格(HKD/磅)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">颜色</div>
@@ -3217,6 +3237,10 @@ onUnmounted(() => {
                         <div class="min-w-0" role="cell">
                           <input v-model="line.mold_name" data-testid="create-line-mold-name" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
+                        <div class="min-w-0" role="cell"><input v-model="line.mold_dimensions" data-testid="create-line-mold-dimensions" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
+                        <div class="min-w-0" role="cell"><input v-model="line.machine_type" data-testid="create-line-machine-type" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
+                        <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
+                        <div class="min-w-0" role="cell"><input v-model="line.mold_return_time" data-testid="create-line-mold-return-time" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div
                           class="relative min-w-0"
                           role="cell"
@@ -3680,6 +3704,10 @@ onUnmounted(() => {
                         </span>
                       </div>
                       <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
+                        <div><span class="text-slate-400">工模尺寸</span><div class="font-semibold">{{ formatBlank(item.mold_dimensions) }}</div></div>
+                        <div><span class="text-slate-400">适配机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
+                        <div><span class="text-slate-400">模具是否在厂</span><div class="font-semibold">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div></div>
+                        <div><span class="text-slate-400">模具回厂时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }}</div></div>
                         <div><span class="text-slate-400">啤机确认机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                         <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                         <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
@@ -3930,6 +3958,10 @@ onUnmounted(() => {
                 <td>
                   <strong>{{ formatBlank(item.mold_id) }}</strong>
                   <span>{{ formatBlank(item.mold_name) }}</span>
+                  <span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span>
+                  <span>适配机型：{{ formatBlank(item.machine_type) }}</span>
+                  <span>模具是否在厂：{{ formatMoldPresenceStatus(item.mold_presence_status) }}</span>
+                  <span>模具回厂时间：{{ formatBlank(item.mold_return_time) }}</span>
                   <em>{{ formatBlank(item.id) }}</em>
                 </td>
                 <td>{{ formatBlank(item.material) }}</td>

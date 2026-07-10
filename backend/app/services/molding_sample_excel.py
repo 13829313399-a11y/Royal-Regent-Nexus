@@ -38,7 +38,9 @@ ITEM_COLUMNS = [
     ("排序", "sort_order"),
     ("模具编号", "mold_id"),
     ("模具名称", "mold_name"),
-    ("机型", "machine_type"),
+    ("工模尺寸", "mold_dimensions"),
+    ("适配机型", "machine_type"),
+    ("模具是否在厂", "mold_presence_status"),
     ("原料", "material"),
     ("颜色", "color"),
     ("色粉编号", "pigment_no"),
@@ -47,7 +49,7 @@ ITEM_COLUMNS = [
     ("毛重g", "gross_weight_g"),
     ("需料kg", "required_material_kg"),
     ("预计料费HKD", "expected_amount_hkd"),
-    ("回模时间", "mold_return_time"),
+    ("模具回厂时间", "mold_return_time"),
     ("完成时间", "completion_time"),
     ("备注", "notes"),
     ("领料单号", "receipt_no"),
@@ -123,7 +125,10 @@ ITEM_ALIASES.update(
         "id": "id",
         "模号": "mold_id",
         "模具": "mold_name",
+        "机型": "machine_type",
         "机型/吨位": "machine_type",
+        "模具是否在厂": "mold_presence_status",
+        "模具在厂状态": "mold_presence_status",
         "材料": "material",
         "用料": "material",
         "所需颜色": "color",
@@ -141,6 +146,7 @@ ITEM_ALIASES.update(
         "用料重量（KG)": "required_material_kg",
         "用料重量(KG)": "required_material_kg",
         "用料重量kg": "required_material_kg",
+        "回模时间": "mold_return_time",
         "报价周期": "quote_cycle",
         "需办日期": "required_date",
         "要求": "requirement",
@@ -160,6 +166,12 @@ NUMERIC_ITEM_FIELDS = {
     "injection_cost",
     "injection_cost_hkd",
     "exchange_rate_at_save",
+}
+
+MOLD_PRESENCE_STATUS_LABELS = {
+    "unknown": "待确认",
+    "in_factory": "在厂",
+    "out_of_factory": "不在厂",
 }
 
 DETAIL_HEADER_ROW_INDEX = 10
@@ -188,6 +200,8 @@ ITEM_COLUMN_WIDTHS = [
     24,
     20,
     30,
+    20,
+    14,
     14,
     22,
     18,
@@ -232,6 +246,8 @@ BATCH_COLUMN_WIDTHS = [
     10,
     18,
     22,
+    20,
+    14,
     14,
     22,
     18,
@@ -406,6 +422,9 @@ def _format_decimal(value: float | int | None, digits = 2) -> str:
 
 
 def _format_export_item_value(field: str, value: object) -> tuple[object | None, bool]:
+    if field == "mold_presence_status":
+        return MOLD_PRESENCE_STATUS_LABELS[_normalize_mold_presence_status(value)], False
+
     if value is None or str(value).strip() == "":
         if field in FILLBACK_REQUIRED_FIELDS:
             return "缺", True
@@ -423,6 +442,18 @@ def _format_export_item_value(field: str, value: object) -> tuple[object | None,
         return _format_decimal(numeric_value), False
 
     return value, False
+
+
+def _normalize_mold_presence_status(value: object) -> str:
+    return {
+        "": "unknown",
+        "待确认": "unknown",
+        "unknown": "unknown",
+        "在厂": "in_factory",
+        "in_factory": "in_factory",
+        "不在厂": "out_of_factory",
+        "out_of_factory": "out_of_factory",
+    }.get(str(value or "").strip(), "unknown")
 
 
 def _field_column_index(field: str) -> int:
@@ -582,6 +613,8 @@ def parse_order_excel(
                 requirement = str(value or "").strip()
                 if requirement:
                     note_parts.append(f"要求：{requirement}")
+            elif field == "mold_presence_status":
+                item_data[field] = _normalize_mold_presence_status(value)
             elif field in NUMERIC_ITEM_FIELDS:
                 item_data[field] = _parse_optional_float(value)
             elif field in {"sort_order", "shoot_qty"}:
@@ -593,7 +626,7 @@ def parse_order_excel(
         if pms:
             item_data["color"] = _format_color_pms(str(item_data.get("color") or ""), pms)
         if required_date:
-            item_data["mold_return_time"] = required_date
+            item_data["mold_return_time"] = str(item_data.get("mold_return_time") or "") or required_date
             item_data["completion_time"] = str(item_data.get("completion_time") or "") or required_date
         existing_notes = str(item_data.get("notes") or "").strip()
         if existing_notes and note_parts:

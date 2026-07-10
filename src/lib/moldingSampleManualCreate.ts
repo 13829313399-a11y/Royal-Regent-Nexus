@@ -5,6 +5,7 @@ import type {
   MoldingSampleSendTo,
   MoldingSampleStage,
   MoldingSampleWorkshop,
+  MoldPresenceStatus,
 } from '../types/moldingSample.js'
 
 export type ManualMoldingSampleSendTo = '内部' | MoldingSampleSendTo
@@ -12,6 +13,10 @@ export type ManualMoldingSampleSendTo = '内部' | MoldingSampleSendTo
 export interface ManualMoldingSampleLineDraft {
   customer_mold_id: string
   mold_name: string
+  mold_dimensions: string
+  machine_type: string
+  mold_presence_status: '' | MoldPresenceStatus
+  mold_return_time: string
   material: string
   color: string
   pms: string
@@ -68,6 +73,7 @@ export interface ManualMoldingSampleDraftOptions {
 const manualLineKeys: Array<keyof ManualMoldingSampleLineDraft> = [
   'customer_mold_id',
   'mold_name',
+  'mold_dimensions', 'machine_type', 'mold_presence_status', 'mold_return_time',
   'material',
   'color',
   'pms',
@@ -96,6 +102,10 @@ export function createManualMoldingSampleLineDraft(
   return {
     customer_mold_id: input.customer_mold_id ?? '',
     mold_name: input.mold_name ?? '',
+    mold_dimensions: input.mold_dimensions ?? '',
+    machine_type: input.machine_type ?? '',
+    mold_presence_status: input.mold_presence_status ?? '',
+    mold_return_time: input.mold_return_time ?? '',
     material: input.material ?? '',
     color: input.color ?? '',
     pms: input.pms ?? '',
@@ -254,7 +264,9 @@ export function buildManualMoldingSampleCreateRequest(
         sort_order: index + 1,
         mold_id: trimText(line.customer_mold_id),
         mold_name: trimText(line.mold_name),
-        machine_type: '待工程确认',
+        machine_type: trimText(line.machine_type),
+        mold_dimensions: trimText(line.mold_dimensions),
+        mold_presence_status: line.mold_presence_status || 'unknown',
         production_machine: '',
         material: trimText(line.material),
         color: formatManualColorPms(line.color, line.pms),
@@ -263,7 +275,7 @@ export function buildManualMoldingSampleCreateRequest(
         shoot_qty: parseShootQty(line.shoot_qty),
         gross_weight_g: parseOptionalNumber(line.gross_weight_g),
         required_material_kg: parseOptionalNumber(line.required_material_kg),
-        mold_return_time: trimText(line.required_date),
+        mold_return_time: trimText(line.mold_return_time),
         completion_time: trimText(line.required_date),
         notes: trimText(line.notes),
         receipt_no: '',

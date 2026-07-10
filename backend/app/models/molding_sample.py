@@ -62,6 +62,8 @@ class MoldingSampleItem(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=1)
     mold_id: Mapped[str] = mapped_column(String(128), default="")
     mold_name: Mapped[str] = mapped_column(String(255), default="")
+    mold_dimensions: Mapped[str] = mapped_column(String(128), default="")
+    mold_presence_status: Mapped[str] = mapped_column(String(20), default="unknown")
     machine_type: Mapped[str] = mapped_column(String(64), default="")
     production_machine: Mapped[str] = mapped_column(String(128), default="")
     material: Mapped[str] = mapped_column(String(255), default="")
