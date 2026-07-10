@@ -148,6 +148,8 @@ const importedFileName = ref('')
 const importedFileSize = ref('')
 const importedAt = ref('')
 const importErrorMessage = ref('')
+const exportErrorMessage = ref('')
+const isExportingCustomerQuote = ref(false)
 const selectedSheetId = ref('all')
 const selectedExportVersionId = ref('')
 const importedWorkbookSheets = ref<ImportedWorkbookSheet[]>([])
@@ -158,6 +160,8 @@ const dickyConversionResult = ref<DickyConversionResult | null>(null)
 const caixingConversionResult = ref<CaixingConversionResult | null>(null)
 const isImportDragActive = ref(false)
 let importDragDepth = 0
+const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const EXCEL_HTML_MIME_TYPE = 'application/vnd.ms-excel;charset=utf-8'
 
 const conversionRows = ref<CustomerPriceConversionRow[]>([
   {
@@ -574,6 +578,55 @@ function readFileAsArrayBuffer(file: File) {
   return file.arrayBuffer()
 }
 
+function resolvePublicAssetUrl(url: string) {
+  if (/^(?:[a-z][a-z\d+\-.]*:)?\/\//i.test(url) || url.startsWith('blob:') || url.startsWith('data:')) {
+    return url
+  }
+
+  const baseUrl = import.meta.env.BASE_URL || '/'
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
+  const normalizedPath = url.replace(/^\/+/, '')
+
+  return `${normalizedBase}${normalizedPath}`
+}
+
+async function fetchTemplateBuffer(templateUrl: string, label: string) {
+  const templateResponse = await fetch(resolvePublicAssetUrl(templateUrl), { cache: 'no-cache' })
+  if (!templateResponse.ok) {
+    throw new Error(`${label}模板读取失败（${templateResponse.status}）`)
+  }
+
+  const templateBuffer = await templateResponse.arrayBuffer()
+  const signature = new Uint8Array(templateBuffer.slice(0, 4))
+  const isXlsxZip = signature[0] === 0x50 && signature[1] === 0x4b
+  if (!isXlsxZip) {
+    throw new Error(`${label}模板路径返回的不是 Excel 文件`)
+  }
+
+  return templateBuffer
+}
+
+function uint8ArrayToArrayBuffer(bytes: Uint8Array) {
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  return copy.buffer
+}
+
+function downloadGeneratedFile(content: Uint8Array | ArrayBuffer | string, fileName: string, type: string) {
+  const blobPart = content instanceof Uint8Array ? uint8ArrayToArrayBuffer(content) : content
+  const blob = new Blob([blobPart], { type })
+  const url = window.URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+
+  anchor.href = url
+  anchor.download = fileName
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => window.URL.revokeObjectURL(url), 1000)
+}
+
 function compareStatusClass(status: DetailCompareStatus) {
   if (status === '上调') {
     return 'bg-amber-50 text-amber-700 ring-amber-200'
@@ -764,180 +817,135 @@ function escapeExcelCell(value: string | number) {
 }
 
 async function exportCustomerQuoteExcel() {
-  if (!selectedCustomer.value || !canExportCustomerQuote.value) {
+  if (!selectedCustomer.value || !canExportCustomerQuote.value || isExportingCustomerQuote.value) {
     return
   }
 
-  visibleConversionRows.value.forEach((row) => {
-    if (row.status !== '已生成') {
-      generateCustomerQuote(row.id)
+  exportErrorMessage.value = ''
+  isExportingCustomerQuote.value = true
+
+  try {
+    const detailRows = activeWorkbookDetailRows.value
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const versionNumber = activeExportedVersions.value.length + 1
+    let fileName = `${selectedCustomer.value.name}-报客价-V${versionNumber}-${date}.xls`
+
+    if (selectedCustomer.value.id === 'buzzbee' && buzzBeeConversionResult.value) {
+      const workbook = createBuzzBeeCustomerQuoteWorkbook(buzzBeeConversionResult.value)
+      fileName = buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value)
+      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+    } else if (selectedCustomer.value.id === 'disney' && disneyConversionResult.value) {
+      const templateBuffer = await fetchTemplateBuffer(DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL, '迪士尼报客')
+      const workbook = createDisneyCustomerQuoteWorkbook(disneyConversionResult.value, templateBuffer)
+      fileName = buildDisneyCustomerQuoteFileName(disneyConversionResult.value)
+      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+    } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
+      const templateBuffer = await fetchTemplateBuffer(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL, 'Dickie 报客')
+      const workbook = createDickyCustomerQuoteWorkbook(dickyConversionResult.value, templateBuffer)
+      fileName = buildDickyCustomerQuoteFileName(dickyConversionResult.value)
+      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+    } else if (selectedCustomer.value.id === 'caixing' && caixingConversionResult.value) {
+      const productType = caixingConversionResult.value.productType
+      const templateUrl = productType === 'plush'
+        ? CAIXING_PLUSH_CUSTOMER_QUOTE_TEMPLATE_URL
+        : CAIXING_PLASTIC_CUSTOMER_QUOTE_TEMPLATE_URL
+      const templateLabel = productType === 'plush' ? '彩星毛绒报客' : '彩星塑胶报客'
+      const templateBuffer = await fetchTemplateBuffer(templateUrl, templateLabel)
+      const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
+      fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
+      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+    } else {
+      const tableRows = detailRows.length > 0
+        ? detailRows.map((row) => `
+          <tr>
+            <td>${escapeExcelCell(row.sheetName)}</td>
+            <td>${escapeExcelCell(row.itemNo)}</td>
+            <td>${escapeExcelCell(row.description)}</td>
+            <td>${escapeExcelCell(row.internalPriceHkd)}</td>
+            <td>${escapeExcelCell(row.customerPriceHkd)}</td>
+            <td>${escapeExcelCell(row.previousCustomerPriceHkd)}</td>
+            <td>${escapeExcelCell(formatSignedHkd(row.differenceHkd))}</td>
+            <td>${escapeExcelCell(row.marginBand)}</td>
+          </tr>
+        `).join('')
+        : visibleConversionRows.value.map((row) => `
+          <tr>
+            <td>${escapeExcelCell(row.sourceFileName)}</td>
+            <td>${escapeExcelCell(row.id)}</td>
+            <td>${escapeExcelCell(row.customer)}</td>
+            <td>${escapeExcelCell(row.internalPriceHkd)}</td>
+            <td>${escapeExcelCell(row.customerPriceHkd)}</td>
+            <td>${escapeExcelCell(row.customerPriceHkd)}</td>
+            <td>${escapeExcelCell(formatHkd(0))}</td>
+            <td>${escapeExcelCell(row.marginBand)}</td>
+          </tr>
+        `).join('')
+
+      const workbookHtml = `
+        <html>
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              table { border-collapse: collapse; }
+              th, td { border: 1px solid #94a3b8; padding: 6px 10px; }
+              th { background: #e2e8f0; }
+            </style>
+          </head>
+          <body>
+            <table>
+              <thead>
+                <tr>
+                  <th>Sheet</th>
+                  <th>项目编号</th>
+                  <th>项目名称</th>
+                  <th>内部价 HKD</th>
+                  <th>报客价 HKD</th>
+                  <th>上一版报客价 HKD</th>
+                  <th>差异</th>
+                  <th>利润带</th>
+                </tr>
+              </thead>
+              <tbody>${tableRows}</tbody>
+            </table>
+          </body>
+        </html>
+      `
+
+      downloadGeneratedFile(workbookHtml, fileName, EXCEL_HTML_MIME_TYPE)
     }
-  })
 
-  const detailRows = activeWorkbookDetailRows.value
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-  const versionNumber = activeExportedVersions.value.length + 1
-  let fileName = `${selectedCustomer.value.name}-报客价-V${versionNumber}-${date}.xls`
+    visibleConversionRows.value.forEach((row) => {
+      if (row.status !== '已生成') {
+        generateCustomerQuote(row.id)
+      }
+    })
 
-  if (selectedCustomer.value.id === 'buzzbee' && buzzBeeConversionResult.value) {
-    const workbook = createBuzzBeeCustomerQuoteWorkbook(buzzBeeConversionResult.value)
-    const blob = new Blob([workbook], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-    const url = window.URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    fileName = buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value)
-
-    anchor.href = url
-    anchor.download = fileName
-    anchor.click()
-    window.URL.revokeObjectURL(url)
-  } else if (selectedCustomer.value.id === 'disney' && disneyConversionResult.value) {
-    const templateResponse = await fetch(DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL)
-    if (!templateResponse.ok) {
-      throw new Error('迪士尼报客模板读取失败')
+    const totalCustomerHkd = detailRows.length > 0
+      ? Number(detailRows.reduce((sum, row) => sum + row.customerPriceHkd, 0).toFixed(2))
+      : Number(visibleConversionRows.value.reduce((sum, row) => sum + row.customerPriceHkd, 0).toFixed(2))
+    const previousVersion = activeExportedVersions.value[0]
+    const exportedVersion: ExportedQuoteVersion = {
+      id: `EXP-${selectedCustomer.value.id}-${Date.now()}`,
+      fileName,
+      customerId: selectedCustomer.value.id,
+      customerName: selectedCustomer.value.name,
+      productType: selectedCustomer.value.id === 'caixing' ? selectedCaixingProductType.value : undefined,
+      createdAt: '刚刚',
+      sheetCount: activeWorkbookSheets.value.length,
+      detailCount: detailRows.length || visibleConversionRows.value.length,
+      totalCustomerHkd,
+      deltaFromPreviousHkd: previousVersion
+        ? Number((totalCustomerHkd - previousVersion.totalCustomerHkd).toFixed(2))
+        : 0,
     }
 
-    const workbook = createDisneyCustomerQuoteWorkbook(
-      disneyConversionResult.value,
-      await templateResponse.arrayBuffer(),
-    )
-    const blob = new Blob([workbook], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-    const url = window.URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    fileName = buildDisneyCustomerQuoteFileName(disneyConversionResult.value)
-
-    anchor.href = url
-    anchor.download = fileName
-    anchor.click()
-    window.URL.revokeObjectURL(url)
-  } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
-    const templateResponse = await fetch(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL)
-    if (!templateResponse.ok) {
-      throw new Error('Dickie 报客模板读取失败')
-    }
-
-    const workbook = createDickyCustomerQuoteWorkbook(
-      dickyConversionResult.value,
-      await templateResponse.arrayBuffer(),
-    )
-    const blob = new Blob([workbook], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-    const url = window.URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    fileName = buildDickyCustomerQuoteFileName(dickyConversionResult.value)
-
-    anchor.href = url
-    anchor.download = fileName
-    anchor.click()
-    window.URL.revokeObjectURL(url)
-  } else if (selectedCustomer.value.id === 'caixing' && caixingConversionResult.value) {
-    const productType = caixingConversionResult.value.productType
-    const templateUrl = productType === 'plush'
-      ? CAIXING_PLUSH_CUSTOMER_QUOTE_TEMPLATE_URL
-      : CAIXING_PLASTIC_CUSTOMER_QUOTE_TEMPLATE_URL
-    const templateResponse = await fetch(templateUrl)
-    if (!templateResponse.ok) {
-      throw new Error(`彩星${productType === 'plush' ? '毛绒' : '塑胶'}报客价模板读取失败`)
-    }
-
-    const templateBuffer = await templateResponse.arrayBuffer()
-    const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
-    const workbookBuffer = workbook.buffer.slice(workbook.byteOffset, workbook.byteOffset + workbook.byteLength) as ArrayBuffer
-    const blob = new Blob([workbookBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-    const url = window.URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
-
-    anchor.href = url
-    anchor.download = fileName
-    anchor.click()
-    window.URL.revokeObjectURL(url)
-  } else {
-  const tableRows = detailRows.length > 0
-    ? detailRows.map((row) => `
-      <tr>
-        <td>${escapeExcelCell(row.sheetName)}</td>
-        <td>${escapeExcelCell(row.itemNo)}</td>
-        <td>${escapeExcelCell(row.description)}</td>
-        <td>${escapeExcelCell(row.internalPriceHkd)}</td>
-        <td>${escapeExcelCell(row.customerPriceHkd)}</td>
-        <td>${escapeExcelCell(row.previousCustomerPriceHkd)}</td>
-        <td>${escapeExcelCell(formatSignedHkd(row.differenceHkd))}</td>
-        <td>${escapeExcelCell(row.marginBand)}</td>
-      </tr>
-    `).join('')
-    : visibleConversionRows.value.map((row) => `
-      <tr>
-        <td>${escapeExcelCell(row.sourceFileName)}</td>
-        <td>${escapeExcelCell(row.id)}</td>
-        <td>${escapeExcelCell(row.customer)}</td>
-        <td>${escapeExcelCell(row.internalPriceHkd)}</td>
-        <td>${escapeExcelCell(row.customerPriceHkd)}</td>
-        <td>${escapeExcelCell(row.customerPriceHkd)}</td>
-        <td>${escapeExcelCell(formatHkd(0))}</td>
-        <td>${escapeExcelCell(row.marginBand)}</td>
-      </tr>
-    `).join('')
-
-  const workbookHtml = `
-    <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          table { border-collapse: collapse; }
-          th, td { border: 1px solid #94a3b8; padding: 6px 10px; }
-          th { background: #e2e8f0; }
-        </style>
-      </head>
-      <body>
-        <table>
-          <thead>
-            <tr>
-              <th>Sheet</th>
-              <th>项目编号</th>
-              <th>项目名称</th>
-              <th>内部价 HKD</th>
-              <th>报客价 HKD</th>
-              <th>上一版报客价 HKD</th>
-              <th>差异</th>
-              <th>利润带</th>
-            </tr>
-          </thead>
-          <tbody>${tableRows}</tbody>
-        </table>
-      </body>
-    </html>
-  `
-
-  const blob = new Blob([workbookHtml], { type: 'application/vnd.ms-excel;charset=utf-8' })
-  const url = window.URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-
-  anchor.href = url
-  anchor.download = fileName
-  anchor.click()
-  window.URL.revokeObjectURL(url)
+    exportedQuoteVersions.value = [exportedVersion, ...exportedQuoteVersions.value]
+    selectedExportVersionId.value = exportedVersion.id
+  } catch (error) {
+    exportErrorMessage.value = error instanceof Error ? `导出失败：${error.message}` : '导出失败：报客价 Excel 生成失败'
+  } finally {
+    isExportingCustomerQuote.value = false
   }
-
-  const totalCustomerHkd = detailRows.length > 0
-    ? Number(detailRows.reduce((sum, row) => sum + row.customerPriceHkd, 0).toFixed(2))
-    : Number(visibleConversionRows.value.reduce((sum, row) => sum + row.customerPriceHkd, 0).toFixed(2))
-  const previousVersion = activeExportedVersions.value[0]
-  const exportedVersion: ExportedQuoteVersion = {
-    id: `EXP-${selectedCustomer.value.id}-${Date.now()}`,
-    fileName,
-    customerId: selectedCustomer.value.id,
-    customerName: selectedCustomer.value.name,
-    productType: selectedCustomer.value.id === 'caixing' ? selectedCaixingProductType.value : undefined,
-    createdAt: '刚刚',
-    sheetCount: activeWorkbookSheets.value.length,
-    detailCount: detailRows.length || visibleConversionRows.value.length,
-    totalCustomerHkd,
-    deltaFromPreviousHkd: previousVersion
-      ? Number((totalCustomerHkd - previousVersion.totalCustomerHkd).toFixed(2))
-      : 0,
-  }
-
-  exportedQuoteVersions.value = [exportedVersion, ...exportedQuoteVersions.value]
-  selectedExportVersionId.value = exportedVersion.id
 }
 </script>
 
@@ -969,11 +977,12 @@ async function exportCustomerQuoteExcel() {
           <button
             v-if="canExportCustomerQuote"
             type="button"
-            class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-3 text-xs font-semibold text-white shadow-[0_10px_26px_rgba(15,23,42,0.16)] transition-colors hover:bg-slate-800"
+            class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-3 text-xs font-semibold text-white shadow-[0_10px_26px_rgba(15,23,42,0.16)] transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+            :disabled="isExportingCustomerQuote"
             @click="exportCustomerQuoteExcel"
           >
             <Download class="size-4" aria-hidden="true" />
-            输出报客价 Excel
+            {{ isExportingCustomerQuote ? '正在输出...' : '输出报客价 Excel' }}
           </button>
         </div>
       </template>
@@ -1080,6 +1089,13 @@ async function exportCustomerQuoteExcel() {
             <p class="mt-1 truncate text-xs text-slate-500">{{ metric.detail }}</p>
           </article>
         </aside>
+
+        <p
+          v-if="exportErrorMessage"
+          class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 xl:col-span-2"
+        >
+          {{ exportErrorMessage }}
+        </p>
       </div>
     </SectionPanel>
 

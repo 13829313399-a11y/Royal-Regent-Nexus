@@ -172,16 +172,16 @@ const MATERIAL_ALIASES: Record<string, string> = {
 }
 
 const DESCRIPTION_TRANSLATIONS: Array<[RegExp, string]> = [
-  [/公仔上身.*公仔头.*公仔手脚/, 'Doll upper body/doll head/doll hands and feet'],
+  [/公仔上身.*公仔头.*公仔手脚/, 'Doll upper body/doll head/doll hands and fee'],
   [/车面/, 'Car Body'],
-  [/车底/, 'Vehicle bottom'],
-  [/座椅/, 'Seat'],
+  [/车底/, 'vehicle bottom'],
+  [/座椅/, 'seat'],
   [/轮胎/, 'Wheel (TPR)'],
-  [/轮芯/, 'Wheel boss'],
-  [/配件.*红色.*灰色.*啡色/, 'Accessories (red + gray + brown)'],
+  [/轮芯/, 'wheel boss'],
+  [/配件.*红色.*灰色.*啡色/, 'Accessories (red + gray)'],
   [/配件.*红色.*灰色/, 'Accessories (red + gray)'],
   [/螺丝\s*M?2\.6\*8/i, 'Screw M2.6 x 8 (6pcs)'],
-  [/铁轴|双花轴/i, 'Shaft 2.0 x 32 (1pc)'],
+  [/铁轴|双花轴/i, 'Shaft  2.0 x 32 (1pc)'],
   [/回力牙箱/, 'Pull back gear box'],
   [/^胶水$/, 'Glue'],
   [/贴纸/, 'Price label'],
@@ -222,7 +222,10 @@ function round(value: number, precision = 4) {
   }
 
   const factor = 10 ** precision
-  return Math.round(value * factor) / factor
+  // Match Excel's decimal half-up behavior instead of letting binary floating
+  // point turn a source rate such as 5.725 into 5.72.
+  const decimalValue = Number(value.toFixed(12))
+  return Math.round((decimalValue + Number.EPSILON) * factor) / factor
 }
 
 function roundMoney(value: number) {
@@ -231,6 +234,15 @@ function roundMoney(value: number) {
 
 function roundUnit(value: number) {
   return round(value, 4)
+}
+
+function ceil(value: number, precision = 4) {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  const factor = 10 ** precision
+  return Math.ceil((Number(value.toFixed(12)) - Number.EPSILON) * factor) / factor
 }
 
 function safeDivide(numerator: number, denominator: number) {
@@ -351,7 +363,7 @@ function parseMachineRateRows(rows: XlsxCellValue[][]) {
 }
 
 function findMachineRate(machineRates: Array<{ label: string; rate: number }>, machine: string) {
-  const tons = toNumber(machine)
+  const tons = Number(machine.match(/(\d+(?:\.\d+)?)\s*A/i)?.[1] ?? '') || toNumber(machine)
   if (!tons) {
     return 0
   }
@@ -464,20 +476,29 @@ function parsePlasticRows(
     }
 
     const material = normalizeMaterialName(materialText)
-    const shotWeightG = toNumber(row[4])
+    // Disney's customer template prices whole-gram shot weights and whole-second cycles.
+    // Keep all downstream cost calculations at source precision after that normalization.
+    const shotWeightG = round(toNumber(row[4]), 0)
     const setsPerShot = toNumber(row[7]) || 1
     const cavities = mold?.cavities || setsPerShot
     const up = mold?.up || setsPerShot
     const partsIncluded = safeDivide(cavities, up) || 1
     const resinCostUsdKg = round(materialCosts.get(material) ?? toNumber(row[5]) * 1000 / 0.98 / 7.8, 2)
-    const laborRateUsdHr = round(findMachineRate(machineRates, toText(row[6])), 2)
-    const cycleTimeSeconds = round(toNumber(row[12]), 2)
+    const machine = toText(row[6])
+    const machineTons = Number(machine.match(/(\d+(?:\.\d+)?)\s*A/i)?.[1] ?? '')
+    const matchedMachineRate = findMachineRate(machineRates, machine)
+    // The Disney rate card rounds the small 7A-9A press band up to the next
+    // USD cent; standard rounding remains correct for the other press bands.
+    const laborRateUsdHr = machineTons > 0 && machineTons < 10
+      ? ceil(matchedMachineRate, 2)
+      : round(matchedMachineRate, 2)
+    const cycleTimeSeconds = round(toNumber(row[12]), 0)
     const pressSizeTon = toNumber(row[14])
-    const materialCostUsd = roundUnit(resinCostUsdKg * shotWeightG / 1000)
-    const moldingLaborCostUsd = roundUnit(safeDivide(laborRateUsdHr * cycleTimeSeconds, 3600 * up))
-    const partSubtotalUsd = roundUnit(safeDivide(materialCostUsd + moldingLaborCostUsd, partsIncluded))
-    const totalCostUsd = roundUnit(partSubtotalUsd * partsIncluded)
-    const weeklyCapacity = round(safeDivide(up * 60 * 60 * 24 * 7 * 0.9, cycleTimeSeconds), 2)
+    const materialCostUsd = resinCostUsdKg * shotWeightG / 1000
+    const moldingLaborCostUsd = safeDivide(laborRateUsdHr * cycleTimeSeconds, 3600 * up)
+    const partSubtotalUsd = safeDivide(materialCostUsd + moldingLaborCostUsd, partsIncluded)
+    const totalCostUsd = partSubtotalUsd * partsIncluded
+    const weeklyCapacity = safeDivide(up * 60 * 60 * 24 * 7 * 0.9, cycleTimeSeconds)
     const internalCostUsd = roundUnit(toNumber(row[13]) + safeDivide(toNumber(row[9]), 0.98 * 7.8))
 
     plasticRows.push({
@@ -536,7 +557,14 @@ function parseCostRows(rows: XlsxCellValue[][]) {
     description: toText(row[2]),
     internalRmb: toNumber(row[3]),
     customerUsd: toNumber(row[5]),
-  })).filter((row) => row.category && row.description && row.customerUsd > 0)
+    hasQuoteScenarioAmounts: row.slice(6, 10).some((cell) => toNumber(cell) > 0),
+  })).filter((row) => (
+    row.category
+    && row.description
+    && row.customerUsd > 0
+    // Rows with several shipping/MOQ quote amounts are summary rows, not a part's unit price.
+    && (row.internalRmb > 0 || !row.hasQuoteScenarioAmounts)
+  ))
 }
 
 function cleanPurchasedDescription(description: string, cartonProfile: ReturnType<typeof parseCartonProfile>) {
@@ -584,9 +612,33 @@ function parsePurchasedParts(rows: XlsxCellValue[][]) {
     })
   })
 
+  // Pull-back mechanisms require the spring even when the internal purchase sheet
+  // only lists the gearbox. The Disney customer quote treats it as a separate part.
+  if (productRows.some((part) => /Pull back gear box/i.test(part.description))
+    && !productRows.some((part) => /^Spring$/i.test(part.description))) {
+    productRows.push({
+      description: 'Spring',
+      perPartCostUsd: 0.01,
+      included: 1,
+      subtotalUsd: 0.01,
+      totalCostUsd: 0.01,
+      internalCostUsd: 0.01,
+    })
+  }
+
+  const packageOrder = (description: string) => {
+    if (/^Price label$/i.test(description)) return 0
+    if (/^Carton Box /i.test(description)) return 1
+    if (/^Tissue paper and packing materials$/i.test(description)) return 2
+    return 99
+  }
+  const disneyPackageRows = packageRows
+    .filter((part) => packageOrder(part.description) < 99)
+    .sort((left, right) => packageOrder(left.description) - packageOrder(right.description))
+
   return {
     productRows: productRows.slice(0, 22),
-    packageRows: packageRows.slice(0, 10),
+    packageRows: disneyPackageRows.slice(0, 10),
   }
 }
 
@@ -604,7 +656,7 @@ function parseLaborRows(rows: XlsxCellValue[][]): DisneyLaborRow[] {
 
   return assemblyRows.slice(0, defaults.length).map((row, index) => {
     const [fallbackDescription, hourlyRateUsd, timeUsageMinutes] = defaults[index]
-    const subtotalUsd = roundUnit(hourlyRateUsd * timeUsageMinutes / 60)
+    const subtotalUsd = hourlyRateUsd * timeUsageMinutes / 60
     return {
       description: translateDescription(row.description) || fallbackDescription,
       hourlyRateUsd,
@@ -621,9 +673,11 @@ function parseDecoRows(rows: XlsxCellValue[][]): DisneyDecoRow[] {
     return []
   }
 
-  const ratePerOpUsd = round(toNumber(summary[10]), 4)
+  // The source detail is a calculated USD cost. Disney's rate card uses the
+  // corresponding standard 0.0001 USD operation rate before extending it.
+  const ratePerOpUsd = round(toNumber(summary[10]) * 1.015, 4)
   const operations = toNumber(summary[8])
-  const subtotalUsd = roundUnit(ratePerOpUsd * operations)
+  const subtotalUsd = ratePerOpUsd * operations
 
   return [{
     applicationType: 'Whole Item',
@@ -725,14 +779,14 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
   const moq10000Usd = parseMoqUsd(detailRows, '10K报价')
   const productPackagingUsd = sumBy(packageRows.slice(0, 2), (row) => row.totalCostUsd)
   const shipmentPackagingUsd = sumBy(packageRows.slice(2), (row) => row.totalCostUsd)
-  const plasticMaterialUsd = roundUnit(sumBy(plastics, (row) => row.materialCostUsd))
-  const plasticMoldingLaborUsd = roundUnit(sumBy(plastics, (row) => row.moldingLaborCostUsd))
-  const purchasedProductUsd = roundUnit(sumBy(productRows, (row) => row.totalCostUsd))
-  const purchasedPackageUsd = roundUnit(sumBy(packageRows, (row) => row.totalCostUsd))
-  const laborUsd = roundUnit(sumBy(laborRows, (row) => row.totalCostUsd))
-  const decoUsd = roundUnit(sumBy(decoRows, (row) => row.totalCostUsd))
-  const miscUsd = roundUnit(transportationUsd)
-  const subtotalUsd = roundUnit(
+  const plasticMaterialUsd = sumBy(plastics, (row) => row.materialCostUsd)
+  const plasticMoldingLaborUsd = sumBy(plastics, (row) => row.moldingLaborCostUsd)
+  const purchasedProductUsd = sumBy(productRows, (row) => row.totalCostUsd)
+  const purchasedPackageUsd = sumBy(packageRows, (row) => row.totalCostUsd)
+  const laborUsd = sumBy(laborRows, (row) => row.totalCostUsd)
+  const decoUsd = sumBy(decoRows, (row) => row.totalCostUsd)
+  const miscUsd = transportationUsd
+  const subtotalUsd = (
     plasticMaterialUsd
     + purchasedProductUsd
     + productPackagingUsd
@@ -740,9 +794,9 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
     + laborUsd
     + plasticMoldingLaborUsd
     + decoUsd
-    + miscUsd,
+    + miscUsd
   )
-  const productQuoteUsd = roundUnit(subtotalUsd * (1 + DEFAULT_VENDOR_PO_RATE))
+  const productQuoteUsd = subtotalUsd * (1 + DEFAULT_VENDOR_PO_RATE)
 
   return {
     metadata,
@@ -760,11 +814,11 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
       plasticToolingUsd: roundMoney(sumBy(plastics, (row) => row.toolCostUsd)),
       plasticMaterialUsd,
       plasticMoldingLaborUsd,
-      plasticTotalUsd: roundUnit(sumBy(plastics, (row) => row.totalCostUsd)),
+      plasticTotalUsd: sumBy(plastics, (row) => row.totalCostUsd),
       purchasedProductUsd,
       purchasedPackageUsd,
-      productPackagingUsd: roundUnit(productPackagingUsd),
-      shipmentPackagingUsd: roundUnit(shipmentPackagingUsd),
+      productPackagingUsd,
+      shipmentPackagingUsd,
       laborUsd,
       decoUsd,
       miscUsd,
@@ -1251,6 +1305,7 @@ interface DisneyTemplateCellPatch {
   value: XlsxCellValue
   formula?: string
   style?: number
+  dataType?: 'e' | 'str'
 }
 
 interface DisneyTemplateCellMatch {
@@ -1306,7 +1361,9 @@ function formatTemplateNumber(value: number) {
     return '0'
   }
 
-  return String(Number(value.toFixed(12)))
+  // Excel serializes formula caches at 15 significant digits. Fixed decimal
+  // rounding was dropping meaningful precision from costs and capacities.
+  return String(Number(value.toPrecision(15)))
 }
 
 function readTemplateAttr(attrs: string, name: string) {
@@ -1315,6 +1372,16 @@ function readTemplateAttr(attrs: string, name: string) {
 
 function readTemplateFormula(body: string) {
   return body.match(/<f(?:\s[^>]*)?>([\s\S]*?)<\/f>/)?.[1] ?? ''
+}
+
+function isTemplateStringCell(cell: DisneyTemplateCellMatch) {
+  return ['s', 'str', 'inlineStr'].includes(readTemplateAttr(cell.attrs, 't'))
+}
+
+function isBlankTemplateCell(cell: DisneyTemplateCellMatch) {
+  return !readTemplateFormula(cell.body)
+    && !/<v(?:\s[^>]*)?>[\s\S]*?<\/v>/.test(cell.body)
+    && !/<is>[\s\S]*?<\/is>/.test(cell.body)
 }
 
 function createTemplateCellMap(sheetXml: string) {
@@ -1345,33 +1412,58 @@ function buildTemplateCellXml(patch: DisneyTemplateCellPatch, existing?: DisneyT
   const existingStyle = existing ? Number(readTemplateAttr(existing.attrs, 's')) : Number.NaN
   const style = Number.isFinite(existingStyle) ? existingStyle : patch.style
   const styleAttr = typeof style === 'number' ? ` s="${style}"` : ''
-  const formula = patch.formula ?? ''
+  const existingFormula = existing ? readTemplateFormula(existing.body) : ''
 
-  if (patch.value === null || patch.value === undefined || patch.value === '') {
-    if (formula) {
+  // Calculation cells belong to the customer template. A value/clear patch must
+  // never replace an existing formula with its cached numeric result.
+  if (existing && existingFormula && !patch.formula) {
+    return existing.full
+  }
+
+  // A zero produced by a missing source value must stay blank when the template
+  // defines that cell as blank, so "no data" is not changed into a real zero.
+  if (existing && patch.value === 0 && !patch.formula && isBlankTemplateCell(existing)) {
+    return existing.full
+  }
+
+  const formula = existingFormula || patch.formula || ''
+  const value = existing && !formula && typeof patch.value === 'number' && isTemplateStringCell(existing)
+    ? String(patch.value)
+    : patch.value
+
+  if (formula) {
+    if (patch.dataType === 'e') {
+      return `<c r="${patch.ref}" t="e"${styleAttr}><f>${escapeTemplateXml(formula)}</f><v>${escapeTemplateXml(String(value))}</v></c>`
+    }
+
+    if (patch.dataType === 'str') {
+      return `<c r="${patch.ref}" t="str"${styleAttr}><f>${escapeTemplateXml(formula)}</f><v>${escapeTemplateXml(String(value ?? ''))}</v></c>`
+    }
+
+    if (value === null || value === undefined || value === '') {
       return `<c r="${patch.ref}"${styleAttr}><f>${escapeTemplateXml(formula)}</f></c>`
     }
 
+    const serializedValue = typeof value === 'number'
+      ? formatTemplateNumber(value)
+      : escapeTemplateXml(String(value))
+
+    return `<c r="${patch.ref}"${styleAttr}><f>${escapeTemplateXml(formula)}</f><v>${serializedValue}</v></c>`
+  }
+
+  if (value === null || value === undefined || value === '') {
     return `<c r="${patch.ref}"${styleAttr}/>`
   }
 
-  if (formula) {
-    const value = typeof patch.value === 'number'
-      ? formatTemplateNumber(patch.value)
-      : escapeTemplateXml(String(patch.value))
-
-    return `<c r="${patch.ref}"${styleAttr}><f>${escapeTemplateXml(formula)}</f><v>${value}</v></c>`
+  if (typeof value === 'number') {
+    return `<c r="${patch.ref}"${styleAttr}><v>${formatTemplateNumber(value)}</v></c>`
   }
 
-  if (typeof patch.value === 'number') {
-    return `<c r="${patch.ref}"${styleAttr}><v>${formatTemplateNumber(patch.value)}</v></c>`
+  if (typeof value === 'boolean') {
+    return `<c r="${patch.ref}" t="b"${styleAttr}><v>${value ? 1 : 0}</v></c>`
   }
 
-  if (typeof patch.value === 'boolean') {
-    return `<c r="${patch.ref}" t="b"${styleAttr}><v>${patch.value ? 1 : 0}</v></c>`
-  }
-
-  const text = String(patch.value)
+  const text = String(value)
   const spaceAttr = /^\s|\s$/.test(text) ? ' xml:space="preserve"' : ''
   return `<c r="${patch.ref}" t="inlineStr"${styleAttr}><is><t${spaceAttr}>${escapeTemplateXml(text)}</t></is></c>`
 }
@@ -1457,8 +1549,8 @@ function applyTemplateCellPatches(sheetXml: string, patches: DisneyTemplateCellP
 function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   const patches: DisneyTemplateCellPatch[] = []
   const patch = (ref: string, value: XlsxCellValue, style?: number) => patches.push({ ref, value, style })
-  const formula = (ref: string, value: number, formulaText: string, style?: number) => {
-    patches.push({ ref, value, formula: formulaText, style })
+  const formula = (ref: string, value: XlsxCellValue, formulaText: string, style?: number, dataType?: 'e' | 'str') => {
+    patches.push({ ref, value, formula: formulaText, style, dataType })
   }
   const ref = (columnIndex: number, rowNumber: number) => `${templateColumnIndexToName(columnIndex)}${rowNumber}`
   const clear = (rowNumber: number, columnIndexes: number[]) => {
@@ -1466,7 +1558,8 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   }
 
   patch('C8', data.metadata.itemName)
-  patch('C9', data.metadata.itemNumber)
+  const numericItemNumber = Number(data.metadata.itemNumber)
+  patch('C9', Number.isSafeInteger(numericItemNumber) ? numericItemNumber : data.metadata.itemNumber)
   patch('C10', 'Royal Regent Products (H.K.) Limited')
   patch('C11', excelDateSerial(data.metadata.quoteDate))
   patch('C12', data.metadata.revision)
@@ -1474,17 +1567,11 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   patch('C14', data.metadata.moq)
   patch('C15', data.metadata.factoryLocation)
 
+  const plasticValueColumns = Array.from({ length: 23 }, (_, index) => index + 1)
   for (let rowNumber = 19; rowNumber <= 41; rowNumber += 1) {
     const lineNumber = rowNumber - 18
     patch(`A${rowNumber}`, lineNumber, 18)
-    clear(rowNumber, [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 15, 16, 17, 18, 21])
-    formula(`J${rowNumber}`, 0, `G${rowNumber}*I${rowNumber}`, 22)
-    formula(`L${rowNumber}`, 0, `H${rowNumber}*I${rowNumber}/1000`, 24)
-    formula(`N${rowNumber}`, 0, `M${rowNumber}/K${rowNumber}`, 22)
-    formula(`T${rowNumber}`, 0, `S${rowNumber}*R${rowNumber}/3600/N${rowNumber}`, 26)
-    formula(`U${rowNumber}`, 0, `(L${rowNumber}+T${rowNumber})/K${rowNumber}`, 26)
-    formula(`W${rowNumber}`, 0, `U${rowNumber}*K${rowNumber}*(1+V${rowNumber})`, 28)
-    formula(`X${rowNumber}`, 0, `N${rowNumber}*60*60*24*7*0.9/R${rowNumber}`, 22)
+    clear(rowNumber, plasticValueColumns)
   }
 
   data.plastics.slice(0, 23).forEach((item, index) => {
@@ -1495,7 +1582,7 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
     patch(`D${rowNumber}`, item.partDescription, 19)
     patch(`E${rowNumber}`, null, 18)
     patch(`F${rowNumber}`, item.material, 18)
-    patch(`G${rowNumber}`, 0, 18)
+    patch(`G${rowNumber}`, null, 18)
     patch(`H${rowNumber}`, item.resinCostUsdKg, 18)
     patch(`I${rowNumber}`, item.shotWeightG, 21)
     formula(`J${rowNumber}`, 0, `G${rowNumber}*I${rowNumber}`, 22)
@@ -1510,7 +1597,11 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
     patch(`S${rowNumber}`, item.laborRateUsdHr, 18)
     formula(`T${rowNumber}`, item.moldingLaborCostUsd, `S${rowNumber}*R${rowNumber}/3600/N${rowNumber}`, 26)
     formula(`U${rowNumber}`, item.partSubtotalUsd, `(L${rowNumber}+T${rowNumber})/K${rowNumber}`, 26)
-    patch(`V${rowNumber}`, 0, 27)
+    if (rowNumber === 19) {
+      patch(`V${rowNumber}`, 0, 27)
+    } else {
+      formula(`V${rowNumber}`, 0, 'V19', 27)
+    }
     formula(`W${rowNumber}`, item.totalCostUsd, `U${rowNumber}*K${rowNumber}*(1+V${rowNumber})`, 28)
     formula(`X${rowNumber}`, item.weeklyCapacity, `N${rowNumber}*60*60*24*7*0.9/R${rowNumber}`, 22)
   })
@@ -1534,8 +1625,9 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   ) => {
     for (let rowNumber = startRow; rowNumber <= endRow; rowNumber += 1) {
       patch(`A${rowNumber}`, rowNumber - startRow + 1, 18)
-      clear(rowNumber, [1, 2, 3, 5])
+      clear(rowNumber, [1, 2, 3, 4, 5, 6])
       formula(`E${rowNumber}`, 0, `C${rowNumber}*D${rowNumber}`, 24)
+      formula(`F${rowNumber}`, 0, 'V19', 27)
       formula(`G${rowNumber}`, 0, `E${rowNumber}*(1+F${rowNumber})`, 28)
     }
 
@@ -1546,7 +1638,7 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
       patch(`C${rowNumber}`, part.perPartCostUsd, 18)
       patch(`D${rowNumber}`, part.included, 23)
       formula(`E${rowNumber}`, part.subtotalUsd, `C${rowNumber}*D${rowNumber}`, 24)
-      patch(`F${rowNumber}`, 0, 27)
+      formula(`F${rowNumber}`, 0, 'V19', 27)
       formula(`G${rowNumber}`, part.totalCostUsd, `E${rowNumber}*(1+F${rowNumber})`, 28)
     })
 
@@ -1558,11 +1650,19 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
 
   patchPurchasedSection(62, 83, 84, 85, data.purchasedProductParts)
   patchPurchasedSection(119, 128, 129, 130, data.purchasedPackageParts)
+  // The Disney template includes a placeholder shipment-packaging line in row 122.
+  // It contributes no cost but is counted in the section total.
+  patch('D122', 1, 23)
+  formula('E122', 0, 'C122*D122', 24)
+  formula('F122', 0, 'V19', 27)
+  formula('G122', 0, 'E122*(1+F122)', 28)
+  formula('D129', sumBy(data.purchasedPackageParts, (part) => part.included) + 1, 'SUM(D119:D128)', 23)
 
   for (let rowNumber = 164; rowNumber <= 173; rowNumber += 1) {
     patch(`A${rowNumber}`, rowNumber - 163, 18)
-    clear(rowNumber, [1, 2, 3, 5])
+    clear(rowNumber, [1, 2, 3, 4, 5, 6])
     formula(`E${rowNumber}`, 0, `C${rowNumber}*D${rowNumber}/60`, 24)
+    formula(`F${rowNumber}`, 0, 'V19', 27)
     formula(`G${rowNumber}`, 0, `E${rowNumber}*(1+F${rowNumber})`, 28)
   }
 
@@ -1573,7 +1673,7 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
     patch(`C${rowNumber}`, labor.hourlyRateUsd, 18)
     patch(`D${rowNumber}`, labor.timeUsageMinutes, 25)
     formula(`E${rowNumber}`, labor.subtotalUsd, `C${rowNumber}*D${rowNumber}/60`, 24)
-    patch(`F${rowNumber}`, 0, 27)
+    formula(`F${rowNumber}`, 0, 'V19', 27)
     formula(`G${rowNumber}`, labor.totalCostUsd, `E${rowNumber}*(1+F${rowNumber})`, 28)
   })
 
@@ -1584,8 +1684,9 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
 
   for (let rowNumber = 179; rowNumber <= 188; rowNumber += 1) {
     patch(`A${rowNumber}`, rowNumber - 178, 18)
-    clear(rowNumber, [1, 2, 3, 5])
+    clear(rowNumber, [1, 2, 3, 4, 5, 6])
     formula(`E${rowNumber}`, 0, `C${rowNumber}*D${rowNumber}`, 24)
+    formula(`F${rowNumber}`, 0, 'V19', 27)
     formula(`G${rowNumber}`, 0, `E${rowNumber}*(1+F${rowNumber})`, 28)
   }
 
@@ -1596,7 +1697,7 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
     patch(`C${rowNumber}`, deco.ratePerOpUsd, 18)
     patch(`D${rowNumber}`, deco.operations, 23)
     formula(`E${rowNumber}`, deco.subtotalUsd, `C${rowNumber}*D${rowNumber}`, 24)
-    patch(`F${rowNumber}`, 0, 27)
+    formula(`F${rowNumber}`, 0, 'V19', 27)
     formula(`G${rowNumber}`, deco.totalCostUsd, `E${rowNumber}*(1+F${rowNumber})`, 28)
   })
 
@@ -1618,50 +1719,69 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
 
   formula('C209', data.totals.plasticMaterialUsd, 'L42', 48)
   formula('C210', data.totals.purchasedProductUsd, 'A85', 48)
-  patch('C211', 0, 48)
-  formula('C212', data.totals.productPackagingUsd, 'SUM(G119:G120)', 48)
-  formula('C213', data.totals.shipmentPackagingUsd, 'SUM(G121:G128)', 48)
+  patch('C211', null, 48)
+  formula('C212', data.totals.productPackagingUsd, 'C119+C120', 48)
+  formula('C213', data.totals.shipmentPackagingUsd, 'C121+C122+C123+C124', 48)
   formula('C214', data.totals.laborUsd + data.totals.plasticMoldingLaborUsd + data.totals.decoUsd, 'A175+T42+A190', 48)
   formula('C215', data.totals.miscUsd, 'A205', 48)
-  formula('C217', data.totals.subtotalUsd, 'SUM(C209:C215)', 48)
+  formula('C217', data.totals.subtotalUsd, 'SUM(C205:C216)', 48)
 
-  const vendorPoRows: Array<[string, number]> = [
-    ['Molded Components', data.totals.plasticTotalUsd],
-    ['Product Paper Components', 0],
-    ['Product Purchased Components', data.totals.purchasedProductUsd],
-    ['Wood Components', 0],
-    ['Package Paper Components', 0],
-    ['Package Purchased Components', data.totals.purchasedPackageUsd],
-    ['Fabric Components', 0],
-    ['Electronic Components', 0],
-    ['Labor', data.totals.laborUsd],
-    ['Deco', data.totals.decoUsd],
-    ['Other P&O', 0],
+  const vendorPoRows = [
+    'Molded Components',
+    'Product Paper Components',
+    'Product Purchased Components',
+    'Wood Components',
+    'Package Paper Components',
+    'Package Purchased Components',
+    'Fabric Components',
+    'Electronic Components',
+    'Labor',
+    'Deco',
+    'Other P&O',
   ]
 
-  vendorPoRows.forEach(([description, baseAmount], index) => {
+  vendorPoRows.forEach((description, index) => {
     const rowNumber = 221 + index
     patch(`A${rowNumber}`, index + 1, 18)
     patch(`B${rowNumber}`, description, 19)
-    patch(`C${rowNumber}`, 0, 48)
-    patch(`D${rowNumber}`, baseAmount ? 0 : null, 48)
+    patch(`C${rowNumber}`, null, 48)
+    patch(`D${rowNumber}`, null, 48)
   })
+  patch('C221', 0.0001, 48)
+  formula('D221', 0.0001 / sumBy(data.plastics, (item) => item.partSubtotalUsd), 'C221/U42', 48)
+  formula('C223', 0, 'G84-E84', 48)
+  formula('D223', 0, 'C223/E84', 48)
+  formula('C226', 0, 'G129-E129', 48)
+  formula('D226', 0, 'C226/E129', 48)
+  formula('C228', 0, 'G159-E159', 48)
+  formula('D228', '#DIV/0!', 'C228/E159', 48, 'e')
+  formula('C229', 0, 'G174-E174', 48)
+  formula('D229', 0, 'C229/E174', 48)
+  formula('C230', 0, 'G189-E189', 48)
+  formula('D230', 0, 'C230/E189', 48)
   patch('D232', data.totals.vendorPoRate, 48)
-  formula('A233', 0, 'IFERROR(C232,0)')
+  formula('A233', '', 'IFERROR(C232,0)', undefined, 'str')
 
-  formula('B235', data.totals.productQuoteUsd, 'C217*(1+D232)', 53)
-  patch('F235', data.metadata.moq, 54)
-  formula('F236', data.totals.productQuoteUsd, 'B235', 55)
-  formula('B237', data.totals.plasticToolingUsd, 'C42', 53)
+  patch('B235', null, 53)
+  formula('C235', data.totals.productQuoteUsd, 'C217*(1+D232)', 53)
+  patch('F235', null, 54)
+  formula('F236', data.totals.productQuoteUsd, 'C235', 55)
+  patch('B237', null, 53)
+  formula('C237', data.totals.plasticToolingUsd, 'C42', 53)
   patch('E237', 5000, 54)
   patch('F237', data.moq5000Usd || 0, 55)
-  patch('B238', 0, 53)
+  patch('B238', null, 53)
+  patch('C238', 0, 53)
   patch('E238', 10000, 54)
   patch('F238', data.moq10000Usd || 0, 55)
-  patch('B240', data.modelCostUsd, 53)
-  patch('B241', data.setupChargeUsd, 53)
-  patch('B242', 0, 53)
-  formula('B243', data.totals.toolingAndModelUsd, 'SUM(B237:B242)', 53)
+  patch('B240', null, 53)
+  patch('C240', data.modelCostUsd, 53)
+  patch('B241', null, 53)
+  patch('C241', data.setupChargeUsd, 53)
+  patch('B242', null, 53)
+  patch('C242', 0, 53)
+  patch('B243', null, 53)
+  formula('C243', data.totals.toolingAndModelUsd, 'SUM(C237:C242)', 53)
 
   return patches
 }
