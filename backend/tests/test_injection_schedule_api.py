@@ -16,11 +16,13 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
-def make_client(monkeypatch):
+def make_client(monkeypatch, authz_mode: str = "enforce"):
     TEST_TMP_DIR.mkdir(exist_ok=True)
     database_url = f"sqlite:///{TEST_TMP_DIR / f'injection_schedule_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
+    monkeypatch.setenv("AUTHZ_MODE", authz_mode)
+    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "false")
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -140,7 +142,7 @@ def test_daily_schedule_import_persists_preview_and_machine_status(monkeypatch):
         assert [machine["machine_code"] for machine in machines] == ["旧1", "新1"]
 
 
-def test_authenticated_user_without_injection_schedule_read_can_browse_schedule_data(monkeypatch):
+def test_authenticated_user_without_injection_schedule_read_cannot_browse_schedule_data(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         import_response = upload_fixture(client, "huaxing")
@@ -151,15 +153,13 @@ def test_authenticated_user_without_injection_schedule_read_can_browse_schedule_
         assert "injection_schedule:read" not in profile["permissions"]
 
         preview_response = client.get(f"/api/injection-scheduling/imports/{batch_id}/preview")
-        assert preview_response.status_code == 200
-        assert preview_response.json()["factory_id"] == "huaxing"
+        assert preview_response.status_code == 403
 
         machines_response = client.get(f"/api/injection-scheduling/machines/status?batch_id={batch_id}")
-        assert machines_response.status_code == 200
-        assert [machine["machine_code"] for machine in machines_response.json()] == ["旧1", "新1"]
+        assert machines_response.status_code == 403
 
 
-def test_injection_schedule_factory_scope_limits_import_but_not_read(monkeypatch):
+def test_injection_schedule_factory_scope_limits_import_and_read(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         import_response = upload_fixture(client, "huadeng")
@@ -171,9 +171,19 @@ def test_injection_schedule_factory_scope_limits_import_but_not_read(monkeypatch
         assert blocked_import_response.status_code == 403
 
         preview_response = client.get(f"/api/injection-scheduling/imports/{batch_id}/preview")
-        assert preview_response.status_code == 200
-        assert preview_response.json()["factory_id"] == "huadeng"
+        assert preview_response.status_code == 403
 
         machines_response = client.get(f"/api/injection-scheduling/machines/status?batch_id={batch_id}")
-        assert machines_response.status_code == 200
-        assert [machine["machine_code"] for machine in machines_response.json()] == ["旧1", "新1"]
+        assert machines_response.status_code == 403
+
+
+def test_legacy_rollout_mode_preserves_the_previous_login_only_read(monkeypatch):
+    with make_client(monkeypatch, authz_mode="legacy") as client:
+        login_as(client, "admin")
+        import_response = upload_fixture(client, "huaxing")
+        assert import_response.status_code == 201
+        batch_id = import_response.json()["batch_id"]
+
+        profile = login_as(client, "engineer")
+        assert "injection_schedule:read" not in profile["permissions"]
+        assert client.get(f"/api/injection-scheduling/imports/{batch_id}/preview").status_code == 200

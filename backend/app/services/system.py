@@ -1,17 +1,23 @@
 import json
+import secrets
 
 from fastapi import HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.auth import (
+    AuthAuthorizationEvent,
     AuthPermission,
+    AuthPermissionMetadata,
     AuthRegistrationRequest,
     AuthRole,
+    AuthRoleBindingMetadata,
     AuthRolePermission,
     AuthSession,
     AuthUser,
+    AuthUserAuthorizationRevision,
     AuthUserRole,
+    EmployeeProfile,
     SystemNotification,
 )
 from app.schemas.system import (
@@ -27,11 +33,39 @@ from app.schemas.system import (
     UserRoleAssignmentOut,
     UserStatusUpdateRequest,
 )
-from app.services.auth import AuthContext, add_auth_audit, has_factory_scope, make_password_hash, now_text, validate_password_characters
+from app.services.auth import (
+    AuthContext,
+    add_auth_audit,
+    build_auth_context,
+    can,
+    make_password_hash,
+    now_text,
+    time_window_is_active,
+    validate_password_characters,
+)
 
 
-def ensure_user_manage(db: Session, current_user: AuthContext) -> None:
-    if "system:user_manage" in current_user.permissions:
+def is_superadmin(current_user: AuthContext) -> bool:
+    return any(
+        grant.role_code == "admin"
+        and grant.factory_id == "*"
+        and grant.department in {"*", "system"}
+        for grant in current_user.grants
+    )
+
+
+def ensure_user_manage(
+    db: Session,
+    current_user: AuthContext,
+    factory_id: str | None = None,
+    department: str | None = None,
+) -> None:
+    allowed = (
+        can(current_user, "system:user_manage", factory_id, department)
+        if factory_id
+        else "system:user_manage" in current_user.permissions
+    )
+    if allowed:
         return
 
     add_auth_audit(
@@ -43,6 +77,80 @@ def ensure_user_manage(db: Session, current_user: AuthContext) -> None:
     )
     db.commit()
     raise HTTPException(status_code=403, detail="无系统用户管理权限")
+
+
+def target_user_scopes(db: Session, user_id: str) -> set[tuple[str, str]]:
+    scopes: set[tuple[str, str]] = set()
+    profile = db.get(EmployeeProfile, user_id)
+    if profile and profile.primary_factory_id and profile.primary_department:
+        scopes.add((profile.primary_factory_id, profile.primary_department))
+    bindings = db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user_id)).all()
+    for binding in bindings:
+        metadata = db.get(AuthRoleBindingMetadata, binding.id)
+        if metadata and (
+            metadata.state != "active"
+            or not time_window_is_active(metadata.valid_from, metadata.valid_until)
+        ):
+            continue
+        scopes.add((binding.factory_id, binding.department))
+    return scopes
+
+
+def can_manage_target_user(db: Session, current_user: AuthContext, user_id: str) -> bool:
+    if is_superadmin(current_user):
+        return True
+    scopes = target_user_scopes(db, user_id)
+    return bool(scopes) and all(
+        can(current_user, "system:user_manage", factory_id, department)
+        for factory_id, department in scopes
+    )
+
+
+def ensure_manage_target_user(db: Session, current_user: AuthContext, user_id: str) -> None:
+    ensure_user_manage(db, current_user)
+    if can_manage_target_user(db, current_user, user_id):
+        return
+    raise HTTPException(status_code=403, detail="只能管理授权范围内的用户")
+
+
+def role_is_high_risk(db: Session, role_id: str) -> bool:
+    role = db.get(AuthRole, role_id)
+    if role is None:
+        return True
+    if role.code == "admin":
+        return True
+    permission_ids = {
+        item.permission_id
+        for item in db.scalars(
+            select(AuthRolePermission).where(AuthRolePermission.role_id == role_id)
+        ).all()
+    }
+    if not permission_ids:
+        return False
+    metadata = {
+        item.permission_id: item
+        for item in db.scalars(
+            select(AuthPermissionMetadata).where(AuthPermissionMetadata.permission_id.in_(permission_ids))
+        ).all()
+    }
+    permissions = db.scalars(select(AuthPermission).where(AuthPermission.id.in_(permission_ids))).all()
+    return any(
+        permission.code.startswith("system:")
+        or metadata.get(permission.id) is None
+        or metadata[permission.id].risk_level == "high"
+        for permission in permissions
+    )
+
+
+def increment_authorization_revision(db: Session, user_id: str, now: str) -> int:
+    revision = db.get(AuthUserAuthorizationRevision, user_id)
+    if revision is None:
+        revision = AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now)
+        db.add(revision)
+    else:
+        revision.revision += 1
+        revision.updated_at = now
+    return revision.revision
 
 
 def recommend_role_ids(registration_request: AuthRegistrationRequest) -> list[str]:
@@ -84,7 +192,12 @@ def list_registration_requests(
     if status:
         query = query.where(AuthRegistrationRequest.status == status)
 
-    return [registration_request_to_out(item) for item in db.scalars(query).all()]
+    return [
+        registration_request_to_out(item)
+        for item in db.scalars(query).all()
+        if is_superadmin(current_user)
+        or can(current_user, "system:user_manage", item.factory_id, item.department)
+    ]
 
 
 def approve_registration_request(
@@ -96,6 +209,12 @@ def approve_registration_request(
 ) -> RegistrationRequestOut:
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
+    ensure_user_manage(
+        db,
+        current_user,
+        registration_request.factory_id,
+        registration_request.department,
+    )
     if registration_request.status != "pending":
         raise HTTPException(status_code=400, detail="该申请已处理")
     if not payload.role_assignments:
@@ -104,25 +223,119 @@ def approve_registration_request(
     user = db.get(AuthUser, registration_request.user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="申请账号不存在")
+    now = now_text()
 
     for assignment in payload.role_assignments:
         validate_role_assignment(db, assignment)
+        if not is_superadmin(current_user):
+            if not can(
+                current_user,
+                "system:user_manage",
+                assignment.factory_id.strip(),
+                assignment.department.strip(),
+            ):
+                raise HTTPException(status_code=403, detail="跨范围角色授权请通过权限申请")
+            if role_is_high_risk(db, assignment.role_id.strip()):
+                raise HTTPException(status_code=403, detail="管理员或高风险角色请通过权限申请")
 
-    for existing_user_role in db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all():
-        db.delete(existing_user_role)
+    existing_user_roles = list(
+        db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all()
+    )
+    active_assignment_keys: set[tuple[str, str, str]] = set()
+    for existing_user_role in existing_user_roles:
+        metadata = db.get(AuthRoleBindingMetadata, existing_user_role.id)
+        if metadata is None or metadata.state == "active":
+            active_assignment_keys.add(
+                (
+                    existing_user_role.role_id,
+                    existing_user_role.factory_id,
+                    existing_user_role.department,
+                )
+            )
 
-    for index, assignment in enumerate(payload.role_assignments, start=1):
+    added_binding_ids: list[str] = []
+    for assignment in payload.role_assignments:
+        assignment_key = (
+            assignment.role_id.strip(),
+            assignment.factory_id.strip(),
+            assignment.department.strip(),
+        )
+        if assignment_key in active_assignment_keys:
+            continue
+
+        user_role_id = f"user-role-{secrets.token_hex(16)}"
         db.add(
             AuthUserRole(
-                id=f"{user.id}:{assignment.role_id}:{assignment.factory_id}:{assignment.department}:{index}",
+                id=user_role_id,
                 user_id=user.id,
-                role_id=assignment.role_id,
-                factory_id=assignment.factory_id,
-                department=assignment.department,
+                role_id=assignment_key[0],
+                factory_id=assignment_key[1],
+                department=assignment_key[2],
+            )
+        )
+        db.add(
+            AuthRoleBindingMetadata(
+                user_role_id=user_role_id,
+                state="active",
+                source_type="registration_default",
+                source_id=registration_request.id,
+                valid_from=now,
+                valid_until="",
+                reason=payload.review_comment.strip() or "注册审批默认授权",
+                created_by_user_id=current_user.id,
+                approved_by_user_id=current_user.id,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        added_binding_ids.append(user_role_id)
+        active_assignment_keys.add(assignment_key)
+
+        db.add(
+            AuthAuthorizationEvent(
+                id=f"auth-event-{secrets.token_hex(16)}",
+                actor_user_id=current_user.id,
+                target_user_id=user.id,
+                event_type="role_binding_add",
+                target_type="role_binding",
+                target_id=user_role_id,
+                permission_id="",
+                effect="allow",
+                factory_id=assignment_key[1],
+                department=assignment_key[2],
+                before_json="{}",
+                after_json=json.dumps(
+                    {
+                        "role_id": assignment_key[0],
+                        "factory_id": assignment_key[1],
+                        "department": assignment_key[2],
+                        "source_type": "registration_default",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                reason=payload.review_comment.strip() or "注册审批默认授权",
+                ip_address=request.client.host if request and request.client else "",
+                user_agent=request.headers.get("user-agent", "") if request else "",
+                access_request_id="",
+                created_at=now,
             )
         )
 
-    now = now_text()
+    profile = db.get(EmployeeProfile, user.id)
+    if profile is None:
+        profile = EmployeeProfile(user_id=user.id, created_at=now)
+        db.add(profile)
+    profile.primary_factory_id = registration_request.factory_id
+    profile.primary_department = registration_request.department
+    profile.position = registration_request.position
+    profile.phone = registration_request.phone
+    profile.email = registration_request.email
+    profile.confirmation_status = "confirmed"
+    profile.source_registration_request_id = registration_request.id
+    profile.updated_at = now
+
     user.status = "active"
     user.updated_at = now
     registration_request.status = "approved"
@@ -130,6 +343,8 @@ def approve_registration_request(
     registration_request.review_comment = payload.review_comment.strip()
     registration_request.reviewed_at = now
     registration_request.updated_at = now
+    if added_binding_ids:
+        increment_authorization_revision(db, user.id, now)
     mark_registration_notifications_handled(db, registration_request.id, now)
     add_auth_audit(
         db,
@@ -152,6 +367,12 @@ def reject_registration_request(
 ) -> RegistrationRequestOut:
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
+    ensure_user_manage(
+        db,
+        current_user,
+        registration_request.factory_id,
+        registration_request.department,
+    )
     if registration_request.status != "pending":
         raise HTTPException(status_code=400, detail="该申请已处理")
     if not payload.review_comment.strip():
@@ -187,11 +408,15 @@ def list_users(db: Session, current_user: AuthContext, status: str = "") -> list
     query = select(AuthUser).order_by(AuthUser.created_at.desc(), AuthUser.username.asc())
     if status:
         query = query.where(AuthUser.status == status)
-    return [user_to_out(db, user) for user in db.scalars(query).all()]
+    return [
+        user_to_out(db, user)
+        for user in db.scalars(query).all()
+        if can_manage_target_user(db, current_user, user.id)
+    ]
 
 
 def read_user_avatar(db: Session, current_user: AuthContext, user_id: str) -> bytes:
-    ensure_user_manage(db, current_user)
+    ensure_manage_target_user(db, current_user, user_id)
     user = db.get(AuthUser, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -207,7 +432,7 @@ def update_user_status(
     payload: UserStatusUpdateRequest,
     request: Request | None = None,
 ) -> UserOut:
-    ensure_user_manage(db, current_user)
+    ensure_manage_target_user(db, current_user, user_id)
     next_status = payload.status.strip()
     if next_status not in {"active", "suspended"}:
         raise HTTPException(status_code=400, detail="账号状态只能设置为 active 或 suspended")
@@ -216,10 +441,10 @@ def update_user_status(
     if user is None:
         raise HTTPException(status_code=404, detail="账号不存在")
 
-    if next_status == "suspended" and user.status == "active" and user_has_permission(db, user.id, "system:user_manage"):
-        active_admin_count = count_active_admins(db)
+    if next_status == "suspended" and user.status == "active" and user_is_superadmin(db, user.id):
+        active_admin_count = count_active_superadmins(db)
         if active_admin_count <= 1:
-            raise HTTPException(status_code=400, detail="不能停用最后一个系统管理员")
+            raise HTTPException(status_code=400, detail="不能停用最后一个集团超级管理员")
 
     user.status = next_status
     user.updated_at = now_text()
@@ -242,7 +467,7 @@ def reset_user_password(
     payload: UserPasswordResetRequest,
     request: Request | None = None,
 ) -> UserOut:
-    ensure_user_manage(db, current_user)
+    ensure_manage_target_user(db, current_user, user_id)
     temporary_password = payload.temporary_password.strip()
     if len(temporary_password) < 6:
         raise HTTPException(status_code=400, detail="临时密码至少需要 6 位")
@@ -362,33 +587,38 @@ def mark_registration_notifications_handled(db: Session, registration_request_id
 def can_access_notification(current_user: AuthContext, notification: SystemNotification) -> bool:
     if notification.target_user_id and notification.target_user_id == current_user.id:
         return True
-    if notification.target_permission and notification.target_permission in current_user.permissions:
-        return not notification.target_factory_id or has_factory_scope(current_user, notification.target_factory_id)
+    if notification.target_permission:
+        if notification.target_factory_id:
+            return can(
+                current_user,
+                notification.target_permission,
+                notification.target_factory_id,
+            )
+        return notification.target_permission in current_user.permissions
     return False
 
 
 def user_has_permission(db: Session, user_id: str, permission_code: str) -> bool:
-    user_roles = db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user_id)).all()
-    role_ids = [user_role.role_id for user_role in user_roles]
-    if not role_ids:
+    user = db.get(AuthUser, user_id)
+    if user is None or user.status != "active":
         return False
-
-    permission = db.scalar(select(AuthPermission).where(AuthPermission.code == permission_code))
-    if permission is None:
-        return False
-
-    role_permission = db.scalar(
-        select(AuthRolePermission).where(
-            AuthRolePermission.role_id.in_(role_ids),
-            AuthRolePermission.permission_id == permission.id,
-        )
-    )
-    return role_permission is not None
+    return permission_code in build_auth_context(db, user).permissions
 
 
 def count_active_admins(db: Session) -> int:
+    return count_active_superadmins(db)
+
+
+def user_is_superadmin(db: Session, user_id: str) -> bool:
+    user = db.get(AuthUser, user_id)
+    if user is None or user.status != "active":
+        return False
+    return is_superadmin(build_auth_context(db, user))
+
+
+def count_active_superadmins(db: Session) -> int:
     active_users = db.scalars(select(AuthUser).where(AuthUser.status == "active")).all()
-    return sum(1 for user in active_users if user_has_permission(db, user.id, "system:user_manage"))
+    return sum(1 for user in active_users if user_is_superadmin(db, user.id))
 
 
 def role_to_out(role: AuthRole) -> RoleOut:
@@ -418,7 +648,16 @@ def registration_request_to_out(registration_request: AuthRegistrationRequest) -
 
 
 def user_to_out(db: Session, user: AuthUser) -> UserOut:
-    user_roles = db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all()
+    all_user_roles = db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all()
+    user_roles = []
+    for user_role in all_user_roles:
+        metadata = db.get(AuthRoleBindingMetadata, user_role.id)
+        if metadata and (
+            metadata.state != "active"
+            or not time_window_is_active(metadata.valid_from, metadata.valid_until)
+        ):
+            continue
+        user_roles.append(user_role)
     roles_by_id = {
         role.id: role
         for role in db.scalars(select(AuthRole).where(AuthRole.id.in_([item.role_id for item in user_roles]))).all()

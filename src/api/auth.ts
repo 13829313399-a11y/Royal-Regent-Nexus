@@ -46,12 +46,33 @@ export interface PasswordResetResponse {
 
 export interface AuthGrant {
   role_id: string
+  role_code?: string
   role_name: string
   factory_id: string
   department: string
   permissions: string[]
   data_scope: string
 }
+
+export interface AuthEmployeeProfile {
+  primary_factory_id: string
+  primary_department: string
+  position: string
+  confirmation_status: string
+}
+
+export interface AuthEffectiveAccess {
+  permission_code: string
+  factory_id: string
+  department: string
+  effect: 'allow' | 'deny'
+  allowed: boolean
+  source_type: string
+  source_ids: string[]
+  source_name?: string
+}
+
+export type AuthzMode = 'legacy' | 'shadow' | 'enforce'
 
 export interface AuthMeResponse {
   id: string
@@ -62,6 +83,10 @@ export interface AuthMeResponse {
   factory_scopes: string[]
   department_scopes: string[]
   grants: AuthGrant[]
+  authz_mode?: AuthzMode
+  profile?: AuthEmployeeProfile | null
+  authorization_version?: number
+  effective_access?: AuthEffectiveAccess[]
   force_password_change: boolean
   avatar_url?: string
 }

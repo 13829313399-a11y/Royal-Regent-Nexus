@@ -12,7 +12,7 @@ const authStore = useAuthStore()
 const visibleNavigationGroups = computed(() => navigationGroups
   .map((group) => ({
     ...group,
-    items: group.items.filter((item) => !item.permissions?.length || authStore.hasAnyPermission(item.permissions)),
+    items: group.items.filter((item) => !item.permissions?.length || item.permissions.some((permission) => authStore.can(permission))),
   }))
   .filter((group) => group.items.length))
 

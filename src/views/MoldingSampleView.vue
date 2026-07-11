@@ -47,6 +47,7 @@ import { rawMaterialDatabaseRows } from '@/data/rawMaterialDatabase'
 import {
   buildCompletionGate,
   calculateExpectedMaterialAmountHkd,
+  countMoldingSampleAttentionMetrics,
   isExternalMoldingSampleOrder,
   resolveMaterialPrice,
   roundMoney,
@@ -83,6 +84,7 @@ type ActionToastTone = 'success' | 'error' | 'info'
 type StatusState = 'done' | 'current' | 'pending' | 'rejected'
 
 interface KpiCard {
+  key: string
   label: string
   value: string
   detail: string
@@ -447,15 +449,11 @@ const kpiCards = computed<KpiCard[]>(() => {
   const reviewCount = records.filter((record) => ['待审核', '待经理审核'].includes(record.order.status)).length
   const productionCount = records.filter((record) => ['待生产', '生产中'].includes(record.order.status)).length
   const completedCount = records.filter((record) => record.order.status === '已完成').length
-  const blockedCount = records.filter((record) =>
-    record.order.status === '已驳回'
-    || record.order.status === '已撤回'
-    || record.problems.length > 0
-    || buildCompletionGate(record.order, record.items).missing_item_ids.length > 0,
-  ).length
+  const attentionMetrics = countMoldingSampleAttentionMetrics(records)
 
   return [
     {
+      key: 'factory-orders',
       label: '当前厂区单据',
       value: String(records.length),
       detail: `${activeFactory.value.shortName} · 按状态分列`,
@@ -463,6 +461,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-slate-200 bg-white text-slate-700',
     },
     {
+      key: 'in-review',
       label: '审核中',
       value: String(reviewCount),
       detail: '主管节点',
@@ -470,6 +469,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-amber-200 bg-amber-50 text-amber-700',
     },
     {
+      key: 'production-queue',
       label: '待啤机处理',
       value: String(productionCount),
       detail: '待生产 / 生产中',
@@ -477,6 +477,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-teal-200 bg-teal-50 text-teal-700',
     },
     {
+      key: 'completed',
       label: '已完成',
       value: String(completedCount),
       detail: '完成归档回传',
@@ -484,11 +485,28 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
     },
     {
-      label: '卡点 / 退回',
-      value: String(blockedCount),
-      detail: '需要工程跟进',
+      key: 'returned-withdrawn',
+      label: '退回 / 撤回',
+      value: String(attentionMetrics.rejectedCount + attentionMetrics.withdrawnCount),
+      detail: `已驳回 ${attentionMetrics.rejectedCount} · 已撤回 ${attentionMetrics.withdrawnCount}`,
+      icon: RotateCcw,
+      className: 'border-rose-200 bg-rose-50 text-rose-700',
+    },
+    {
+      key: 'unresolved-problems',
+      label: '未解决异常',
+      value: String(attentionMetrics.unresolvedProblemCount),
+      detail: '存在待处理问题',
       icon: TriangleAlert,
-      className: 'border-red-200 bg-red-50 text-red-700',
+      className: 'border-orange-200 bg-orange-50 text-orange-700',
+    },
+    {
+      key: 'production-data-pending',
+      label: '生产数据待补',
+      value: String(attentionMetrics.productionDataPendingCount),
+      detail: '生产中缺实际用料',
+      icon: ClipboardCheck,
+      className: 'border-sky-200 bg-sky-50 text-sky-700',
     },
   ]
 })
@@ -605,15 +623,18 @@ const canManageSelectedOrderFactory = computed(() => {
   return authStore.hasFactoryScope(factoryId)
 })
 const isSelectedFactoryReadOnly = computed(() => !canManageSelectedFactory.value)
-const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create') && canManageSelectedFactory.value)
-const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft') && canManageSelectedOrderFactory.value)
-const canDeleteDraftOrder = computed(() => authStore.hasPermission('molding_sample:delete_draft') && canManageSelectedOrderFactory.value)
+const canCreateOrder = computed(() => authStore.can('molding_sample:create', selectedFactoryId.value) && canManageSelectedFactory.value)
+const canEditDraftOrder = computed(() => authStore.can('molding_sample:edit_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
+const canDeleteDraftOrder = computed(() => authStore.can('molding_sample:delete_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
 const canExportSelectedOrder = computed(() =>
   batchActionRecords.value.length > 0
   && apiState.value === 'connected'
+  && batchActionRecords.value.every((target) =>
+    authStore.can('molding_sample:export', target.order.factory_id),
+  )
   && batchActionRecords.value.every((target) =>
     apiRecords.value.some((record) => record.order.id === target.order.id),
   ),
@@ -637,13 +658,13 @@ const canDeleteSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
   && canManageSelectedOrderFactory.value
   && (
-    authStore.hasPermission('system:user_manage')
+    authStore.can('system:user_manage', selectedOrder.value.factory_id)
     || canDeleteSelectedWithdrawnOrder.value
   ),
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
-  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.hasPermission(actor.permission))
+  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.can(actor.permission, selectedOrder.value.factory_id))
 })
 
 function normalizeBoardStatus(status: MoldingSampleStatus): MoldingSampleStatus {
@@ -2515,19 +2536,20 @@ onUnmounted(() => {
       </section>
 
       <section v-if="activeView === 'overview'" class="space-y-4">
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        <div data-testid="molding-kpi-grid" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
           <article
             v-for="card in kpiCards"
             :key="card.label"
-            class="min-h-[94px] rounded-lg border p-3"
+            :data-testid="`molding-kpi-${card.key}`"
+            class="min-h-[94px] min-w-0 rounded-lg border p-3"
             :class="card.className"
           >
             <div class="flex items-center justify-between">
-              <span class="text-[11px] font-medium opacity-75">{{ card.label }}</span>
+              <span class="truncate text-[11px] font-medium opacity-75">{{ card.label }}</span>
               <component :is="card.icon" class="size-4 opacity-60" aria-hidden="true" />
             </div>
-            <div class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ card.value }}</div>
-            <div class="text-[11px] opacity-75">{{ card.detail }}</div>
+            <div :data-testid="`molding-kpi-${card.key}-value`" class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ card.value }}</div>
+            <div class="break-words text-[11px] leading-4 opacity-75">{{ card.detail }}</div>
           </article>
         </div>
 

@@ -66,50 +66,47 @@ const pendingSystemNotifications = computed(() =>
 const pendingNotificationCount = computed(() => pendingNotifications.value.length + pendingSystemNotifications.value.length)
 
 function hasNotificationPermission() {
-  return authStore.isAuthenticated && authStore.hasPermission('molding_sample:notification_read')
+  return authStore.isAuthenticated && authStore.can('molding_sample:notification_read')
 }
 
 function hasSystemNotificationPermission() {
-  return authStore.isAuthenticated && authStore.hasPermission('system:user_manage')
+  return authStore.isAuthenticated && authStore.can('system:user_manage')
 }
 
 function isAdminAccount() {
   return authStore.roles.includes('系统管理员')
-    || authStore.permissions.includes('system:user_manage')
-    || authStore.factoryScopes.includes('*')
+    || authStore.can('system:user_manage')
 }
 
 function isNotificationFactoryInScope(notification: MoldingSampleNotificationResponse) {
-  return authStore.factoryScopes.includes('*') || authStore.factoryScopes.includes(notification.factory_id)
+  return authStore.can('molding_sample:notification_read', notification.factory_id)
 }
 
 function getAccountTargetRoles() {
   const targets = new Set(authStore.roles)
   const roleNames = authStore.roles
-  const permissionText = authStore.permissions.join(',')
-
   if (
     roleNames.some((role) => role === '工程部' || role.includes('工程师'))
-    || /molding_sample:create/.test(permissionText)
+    || authStore.can('molding_sample:create')
   ) {
     targets.add('工程部')
   }
   if (
     roleNames.some((role) => role.includes('工程主管'))
-    || /molding_sample:supervisor_review/.test(permissionText)
+    || authStore.can('molding_sample:supervisor_review')
   ) {
     targets.add('工程主管')
   }
   if (
     roleNames.some((role) => role.includes('经理'))
-    || /molding_sample:manager_review/.test(permissionText)
+    || authStore.can('molding_sample:manager_review')
   ) {
     targets.add('经理')
   }
-  if (roleNames.some((role) => role.includes('啤机')) || /molding_sample:production_/.test(permissionText)) {
+  if (roleNames.some((role) => role.includes('啤机')) || authStore.can('molding_sample:production_read')) {
     targets.add('啤机部')
   }
-  if (roleNames.some((role) => /仓|PMC/.test(role)) || /molding_sample:(warehouse_requisition|inventory_issue)/.test(permissionText)) {
+  if (roleNames.some((role) => /仓|PMC/.test(role)) || authStore.can('molding_sample:warehouse_requisition') || authStore.can('molding_sample:inventory_issue')) {
     targets.add('仓库')
   }
 

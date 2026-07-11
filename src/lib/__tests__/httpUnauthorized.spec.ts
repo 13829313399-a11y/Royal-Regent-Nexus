@@ -47,4 +47,22 @@ describe('http unauthorized handling', () => {
     expect(handler).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledWith(error)
   })
+
+  it('calls the registered forbidden handler for 403 responses so authorization can refresh', async () => {
+    const { setForbiddenHandler } = await import('../http')
+    const handler = vi.fn()
+    const error = {
+      isAxiosError: true,
+      response: {
+        status: 403,
+        data: { detail: '权限已变化' },
+      },
+    }
+
+    setForbiddenHandler(handler)
+
+    await expect(axiosMock.state.onRejected?.(error)).rejects.toBe(error)
+    expect(handler).toHaveBeenCalledOnce()
+    expect(handler).toHaveBeenCalledWith(error)
+  })
 })

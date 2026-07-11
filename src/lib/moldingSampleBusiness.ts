@@ -1,6 +1,7 @@
 import type {
   MoldingSampleItem,
   MoldingSampleOrder,
+  MoldingSampleProblemStatus,
   MoldingSampleRole,
   MoldingSampleStatus,
 } from '../types/moldingSample.js'
@@ -57,6 +58,19 @@ export interface MoldingSampleCompletionGate {
   can_complete: boolean
   missing_item_ids: string[]
   message: string
+}
+
+export interface MoldingSampleAttentionRecord {
+  order: Pick<MoldingSampleOrder, 'status' | 'send_to' | 'workshop'>
+  items: Pick<MoldingSampleItem, 'id' | 'mold_id' | 'mold_name' | 'actual_weight_kg'>[]
+  problems: Array<{ status: MoldingSampleProblemStatus }>
+}
+
+export interface MoldingSampleAttentionMetrics {
+  rejectedCount: number
+  withdrawnCount: number
+  unresolvedProblemCount: number
+  productionDataPendingCount: number
 }
 
 export interface MoldingSampleItemCostResult {
@@ -335,6 +349,22 @@ export function buildCompletionGate(
     can_complete: false,
     missing_item_ids: missingItemIds,
     message: `有 ${missingItemIds.length} 条明细未填写实际用料，无法标记完成：${missingItemIds.slice(0, 5).join('、')}${missingItemIds.length > 5 ? '…' : ''}`,
+  }
+}
+
+export function countMoldingSampleAttentionMetrics(
+  records: MoldingSampleAttentionRecord[],
+): MoldingSampleAttentionMetrics {
+  return {
+    rejectedCount: records.filter((record) => record.order.status === '已驳回').length,
+    withdrawnCount: records.filter((record) => record.order.status === '已撤回').length,
+    unresolvedProblemCount: records.filter((record) =>
+      record.problems.some((problem) => problem.status === '待处理'),
+    ).length,
+    productionDataPendingCount: records.filter((record) =>
+      record.order.status === '生产中'
+      && buildCompletionGate(record.order, record.items).missing_item_ids.length > 0,
+    ).length,
   }
 }
 

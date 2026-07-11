@@ -66,6 +66,7 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['injection_schedule:read'],
+      enforcePermissions: true,
     },
   },
   {
@@ -77,6 +78,7 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['molding_sample:production_read'],
+      enforcePermissions: true,
     },
   },
   {
@@ -88,6 +90,7 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['molding_sample:warehouse_requisition'],
+      enforcePermissions: true,
     },
   },
   {
@@ -99,6 +102,7 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['customer_price:read'],
+      enforcePermissions: true,
     },
   },
   {
@@ -137,6 +141,7 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['molding_sample:read'],
+      enforcePermissions: true,
     },
   },
   {
@@ -157,6 +162,66 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['system:user_manage'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/system/users/:userId/access',
+    name: 'system-user-access',
+    component: () => import('@/views/UserAccessManagementView.vue'),
+    meta: {
+      title: '用户权限配置',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['system:access_manage'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/system/iam/roles',
+    name: 'iam-role-templates',
+    component: () => import('@/views/IamRoleTemplatesView.vue'),
+    meta: {
+      title: '角色模板',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['system:permission_catalog_read'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/system/iam/permissions',
+    name: 'iam-permission-catalog',
+    component: () => import('@/views/IamPermissionCatalogView.vue'),
+    meta: {
+      title: '权限目录',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['system:permission_catalog_read'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/system/iam/requests',
+    name: 'iam-access-requests',
+    component: () => import('@/views/IamAccessRequestsView.vue'),
+    meta: {
+      title: '权限申请',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['system:access_request', 'system:access_approve'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/system/iam/audit',
+    name: 'iam-audit-events',
+    component: () => import('@/views/IamAuditView.vue'),
+    meta: {
+      title: '权限操作记录',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['system:audit_read'],
       enforcePermissions: true,
     },
   },
@@ -183,7 +248,75 @@ export const router = createRouter({
 
 let routeLoadingStartedAt = 0
 let routeLoadingTimer: ReturnType<typeof window.setTimeout> | undefined
+let lastAuthorizationRefreshAt = 0
 const browserBackExitGuard = installBrowserBackExitGuard(router)
+
+type AuthorizationRefreshResult = 'refreshed' | 'forbidden' | 'login' | 'unchanged'
+
+interface AuthorizationRefreshStore {
+  isAuthenticated: boolean
+  refreshSession: () => Promise<boolean>
+  canAny: (permissions: string[]) => boolean
+}
+
+interface AuthorizationRefreshRouter {
+  currentRoute: {
+    value: {
+      name?: unknown
+      fullPath?: string
+      meta: Record<string, unknown>
+    }
+  }
+  replace: (location: { name: string; query?: Record<string, string> }) => unknown
+}
+
+export async function refreshAndRevalidateAuthorization(
+  authStore: AuthorizationRefreshStore,
+  activeRouter: AuthorizationRefreshRouter,
+): Promise<AuthorizationRefreshResult> {
+  const refreshSucceeded = await authStore.refreshSession()
+  const currentRoute = activeRouter.currentRoute.value
+  const isPublicRoute = currentRoute.name === 'login' || currentRoute.meta.requiresAuth === false
+
+  if (!refreshSucceeded) {
+    if (!authStore.isAuthenticated && !isPublicRoute) {
+      const redirect = currentRoute.fullPath && currentRoute.fullPath !== '/login'
+        ? currentRoute.fullPath
+        : '/'
+      await activeRouter.replace({ name: 'login', query: { redirect } })
+      return 'login'
+    }
+    return 'unchanged'
+  }
+
+  if (isPublicRoute) return 'refreshed'
+
+  const permissions = Array.isArray(currentRoute.meta.permissions)
+    ? currentRoute.meta.permissions.filter((permission): permission is string => typeof permission === 'string')
+    : []
+  const shouldEnforcePermissions = currentRoute.meta.enforcePermissions === true
+  if (
+    currentRoute.name !== 'forbidden'
+    && shouldEnforcePermissions
+    && permissions.length
+    && !authStore.canAny(permissions)
+  ) {
+    await activeRouter.replace({ name: 'forbidden' })
+    return 'forbidden'
+  }
+
+  return 'refreshed'
+}
+
+const refreshAuthorizationSnapshot = () => {
+  const authStore = useAuthStore()
+  const now = Date.now()
+  if (!authStore.isAuthenticated || now - lastAuthorizationRefreshAt < 15_000) return
+  lastAuthorizationRefreshAt = now
+  void refreshAndRevalidateAuthorization(authStore, router)
+}
+
+window.addEventListener('focus', refreshAuthorizationSnapshot)
 
 const finishRouteLoading = () => {
   if (routeLoadingTimer) {
@@ -230,7 +363,7 @@ router.beforeEach(async (to) => {
 
   const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []
   const shouldEnforcePermissions = to.meta.enforcePermissions === true
-  if (shouldEnforcePermissions && permissions.length && !authStore.hasAnyPermission(permissions)) {
+  if (shouldEnforcePermissions && permissions.length && !authStore.canAny(permissions)) {
     return {
       name: 'forbidden',
       replace: true,
@@ -245,6 +378,7 @@ router.afterEach((to) => {
     browserBackExitGuard.unlock()
   } else {
     browserBackExitGuard.lock(to.fullPath)
+    refreshAuthorizationSnapshot()
   }
 
   const routeTitle = typeof to.meta.title === 'string' ? to.meta.title : 'Workspace'

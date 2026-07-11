@@ -177,12 +177,12 @@ describe('production module entry', () => {
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')
   })
 
-  it('keeps injection scheduling browseable but disables imports without write permission', () => {
+  it('uses scoped can decisions for injection schedule reads and imports', () => {
     expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'/)
+    expect(routerSource).toMatch(/permissions: \['injection_schedule:read'\][\s\S]{0,80}enforcePermissions: true/)
     expect(injectionSchedulingViewSource).toContain("import { useAuthStore } from '@/stores/auth'")
     expect(injectionSchedulingViewSource).toContain('const authStore = useAuthStore()')
-    expect(injectionSchedulingViewSource).toContain("authStore.hasPermission('injection_schedule:import')")
-    expect(injectionSchedulingViewSource).toContain('authStore.hasFactoryScope(selectedFactoryId.value)')
+    expect(injectionSchedulingViewSource).toContain("authStore.can('injection_schedule:import', selectedFactoryId.value)")
     expect(injectionSchedulingViewSource).toContain('canImportDailySchedule')
     expect(injectionSchedulingViewSource).toContain('当前账号没有导入排产权限，仅可浏览排产数据')
     expect(injectionSchedulingViewSource).toContain(':disabled="!canImportDailySchedule"')
