@@ -140,7 +140,9 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toMatch(/返回业务部模块中心/)
     expect(customerPriceConversionViewSource).toMatch(/quoteDeskTabs/)
     expect(customerPriceConversionViewSource).toMatch(/selectDesk/)
-    expect(customerPriceConversionViewSource).toMatch(/报价池/)
+    expect(customerPriceConversionViewSource).toMatch(/内部报价/)
+    expect(customerPriceConversionViewSource).toMatch(/InternalPricingPanel/)
+    expect(customerPriceConversionViewSource).toMatch(/rawValue === 'quote-pool' \? 'internal-pricing'/)
     expect(customerPriceConversionViewSource).toMatch(/核价复核/)
     expect(customerPriceConversionViewSource).toMatch(/利润分析/)
 

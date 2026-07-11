@@ -2,8 +2,8 @@
 import {
   ArrowLeft,
   Building2,
+  Calculator,
   CheckCircle2,
-  ClipboardCheck,
   FileSpreadsheet,
   Layers3,
   LineChart,
@@ -14,10 +14,11 @@ import { computed } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
+import InternalPricingPanel from '@/components/modules/sales/InternalPricingPanel.vue'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
 import { useAppStore } from '@/stores/app'
 
-type QuoteDeskId = 'customer-price-conversion' | 'quote-pool' | 'cost-review' | 'profit-analysis'
+type QuoteDeskId = 'customer-price-conversion' | 'internal-pricing' | 'cost-review' | 'profit-analysis'
 
 const route = useRoute()
 const router = useRouter()
@@ -33,10 +34,10 @@ const quoteDeskTabs = [
     icon: FileSpreadsheet,
   },
   {
-    id: 'quote-pool',
-    label: '报价池',
-    summary: '集中跟踪报价单、客户、状态和版本',
-    icon: ClipboardCheck,
+    id: 'internal-pricing',
+    label: '内部报价',
+    summary: '按客户规则实时测算，并由服务器复算落库',
+    icon: Calculator,
   },
   {
     id: 'cost-review',
@@ -61,7 +62,8 @@ const quoteDeskIds = quoteDeskTabs.map((tab) => tab.id)
 
 const activeDeskId = computed<QuoteDeskId>(() => {
   const rawSection = route.query.section ?? route.query.desk ?? quoteDeskTabs[0].id
-  const section = Array.isArray(rawSection) ? rawSection[0] : rawSection
+  const rawValue = Array.isArray(rawSection) ? rawSection[0] : rawSection
+  const section = rawValue === 'quote-pool' ? 'internal-pricing' : rawValue
   return quoteDeskIds.includes(section as QuoteDeskId) ? section as QuoteDeskId : quoteDeskTabs[0].id
 })
 
@@ -70,11 +72,11 @@ const activeDeskIndex = computed(() => quoteDeskTabs.findIndex((tab) => tab.id =
 const activeFactory = computed(() => appStore.activeProductionFactory)
 
 const pageHeadCopy = computed(() => {
-  if (activeDeskId.value === 'quote-pool') {
+  if (activeDeskId.value === 'internal-pricing') {
     return {
-      title: '报价池',
-      subtitle: '集中跟踪客户报价单、导入来源、输出版本和处理状态。',
-      pill: '报价状态',
+      title: '内部报价',
+      subtitle: '按客户定价上下文填写报价行项，实时测算规则、返点和税费，并由服务器复算保存。',
+      pill: '实时定价',
     }
   }
 
@@ -101,11 +103,17 @@ const pageHeadCopy = computed(() => {
   }
 })
 
-const overviewMetrics = [
-  { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星' },
-  { label: '待复核', value: '1', detail: '主管核价口径' },
-  { label: '权限范围', value: '车间', detail: '本人客户可见' },
-]
+const overviewMetrics = computed(() => activeDeskId.value === 'internal-pricing'
+  ? [
+      { label: '计算方式', value: '实时', detail: '输入变化立即重算' },
+      { label: '保存校验', value: '双端', detail: '服务器独立复算' },
+      { label: '规则来源', value: '客户', detail: '上下文集中下发' },
+    ]
+  : [
+      { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星' },
+      { label: '待复核', value: '1', detail: '主管核价口径' },
+      { label: '权限范围', value: '车间', detail: '本人客户可见' },
+    ])
 
 function selectDesk(deskId: QuoteDeskId) {
   void router.replace({
@@ -190,6 +198,8 @@ function selectDesk(deskId: QuoteDeskId) {
       </header>
 
       <QuoteCenterPanel v-if="activeDeskId === 'customer-price-conversion'" />
+
+      <InternalPricingPanel v-else-if="activeDeskId === 'internal-pricing'" />
 
       <SectionPanel
         v-else

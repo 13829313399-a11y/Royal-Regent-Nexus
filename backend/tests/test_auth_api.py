@@ -181,6 +181,8 @@ def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeyp
                 "customer_price:import_internal_quote",
                 "customer_price:export_customer_quote",
                 "customer_price:compare",
+                "internal_pricing:read",
+                "internal_pricing:create",
             }
 
 

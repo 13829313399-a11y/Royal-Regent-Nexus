@@ -71,6 +71,8 @@ MOLDING_SAMPLE_PERMISSIONS = [
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
     "customer_price:compare",
+    "internal_pricing:read",
+    "internal_pricing:create",
     "system:user_manage",
     "system:role_manage",
 ]
@@ -146,12 +148,16 @@ ROLE_PERMISSIONS = {
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
+        "internal_pricing:read",
+        "internal_pricing:create",
     },
     "sales_customer_supervisor": {
         "customer_price:read",
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
+        "internal_pricing:read",
+        "internal_pricing:create",
     },
     "molding_operator": {
         "molding_sample:read",
