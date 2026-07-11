@@ -92,6 +92,7 @@ async function mountRuntimeView(
   setActivePinia(pinia)
 
   const permissions = options.permissions ?? [
+    'molding_sample:export',
     'molding_sample:create',
     'molding_sample:edit_draft',
     'molding_sample:delete_draft',
@@ -99,6 +100,8 @@ async function mountRuntimeView(
     'molding_sample:manager_review',
     'system:user_manage',
   ]
+  const factoryScopes = options.factoryScopes ?? ['*']
+  const administrator = (options.roles ?? ['系统管理员']).includes('系统管理员')
 
   useAuthStore().applySession({
     id: 'tester',
@@ -106,8 +109,16 @@ async function mountRuntimeView(
     display_name: options.displayName ?? '测试账号',
     roles: options.roles ?? ['系统管理员'],
     permissions,
-    grants: [],
-    factory_scopes: options.factoryScopes ?? ['*'],
+    grants: [{
+      role_id: administrator ? 'admin' : 'test-role',
+      role_code: administrator ? 'admin' : 'test-role',
+      role_name: administrator ? '系统管理员' : '测试角色',
+      factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
+      department: administrator ? 'system' : '*',
+      permissions,
+      data_scope: administrator ? 'all' : 'department',
+    }],
+    factory_scopes: factoryScopes,
     department_scopes: ['*'],
     force_password_change: false,
   })
@@ -183,6 +194,59 @@ function createMoldingSampleRecord(
   }
 }
 
+function createKpiRecord(
+  status: MoldingSampleStatus,
+  id: string,
+  actualWeightKg: number | null,
+  problemStatuses: Array<'待处理' | '已解决'> = [],
+  sendTo: '' | '发至模厂' = '',
+): MoldingSampleDetailResponse {
+  const record = createMoldingSampleRecord(status, id)
+  record.order.send_to = sendTo
+  record.items = [{
+    id: `${id}-ITEM-1`,
+    order_id: id,
+    sort_order: 1,
+    mold_id: 'M-001',
+    mold_name: '测试模具',
+    mold_dimensions: '',
+    mold_presence_status: 'unknown',
+    machine_type: '160T',
+    production_machine: '',
+    material: 'HIPS 425',
+    color: '黑色',
+    pigment_no: '',
+    quantity: '1',
+    shoot_qty: 30,
+    gross_weight_g: 82,
+    required_material_kg: 2.46,
+    mold_return_time: '',
+    completion_time: '',
+    notes: '',
+    receipt_no: '',
+    collected_weight_kg: null,
+    actual_weight_kg: actualWeightKg,
+    actual_amount_hkd: null,
+    injection_cost: null,
+    injection_cost_hkd: null,
+    exchange_rate_at_save: null,
+  }]
+  record.problems = problemStatuses.map((problemStatus, index) => ({
+    id: `${id}-PROBLEM-${index + 1}`,
+    factory_id: 'huaxing',
+    order_type: 'injection',
+    order_id: id,
+    order_number: record.order.order_number,
+    description: `测试问题 ${index + 1}`,
+    reported_by: '啤机部',
+    status: problemStatus,
+    created_at: '2026-07-11 08:00',
+    resolved_at: problemStatus === '已解决' ? '2026-07-11 09:00' : '',
+  }))
+
+  return record
+}
+
 function createProductionTaskNotification(
   orderId: string,
   sequence = 1,
@@ -251,6 +315,37 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).toContain('华登暂无正式啤办单')
     expect(wrapper.text()).toContain('当前厂区单据')
     expect(wrapper.text()).toContain('华登 · 按状态分列')
+
+    wrapper.unmount()
+  })
+
+  it('separates returned orders, unresolved problems, and missing production data', async () => {
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([
+      createKpiRecord('已驳回', 'BP-KPI-REJECTED', null),
+      createKpiRecord('已撤回', 'BP-KPI-WITHDRAWN', null, ['已解决']),
+      createKpiRecord('生产中', 'BP-KPI-PROD-MISSING', null, ['待处理', '待处理']),
+      createKpiRecord('生产中', 'BP-KPI-PROD-COMPLETE', 1.2, ['已解决']),
+      createKpiRecord('待生产', 'BP-KPI-PENDING-PROD', null),
+      createKpiRecord('待审核', 'BP-KPI-PENDING-REVIEW', null),
+      createKpiRecord('生产中', 'BP-KPI-EXTERNAL', null, [], '发至模厂'),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(wrapper.get('[data-testid="molding-kpi-grid"]').findAll('article')).toHaveLength(7)
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn-value"]').text()).toBe('2')
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn"]').text()).toContain('已驳回 1 · 已撤回 1')
+    expect(wrapper.get('[data-testid="molding-kpi-unresolved-problems-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
+    expect(wrapper.text()).not.toContain('卡点 / 退回')
+
+    await wrapper.get('input[placeholder="搜索单号 / 产品 / 客户 / 模具号..."]').setValue('BP-KPI-PROD-MISSING')
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="molding-kpi-factory-orders-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn-value"]').text()).toBe('0')
+    expect(wrapper.get('[data-testid="molding-kpi-unresolved-problems-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
 
     wrapper.unmount()
   })
