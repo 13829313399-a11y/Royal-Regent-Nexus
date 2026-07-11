@@ -33,6 +33,7 @@ from app.services.molding_sample import (
     create_requisition,
     delete_order,
     delete_requisition,
+    ensure_export_permission,
     get_exchange_rate,
     get_prices,
     list_inventory_batches,
@@ -98,6 +99,8 @@ def export_injection_orders_excel(
         raise HTTPException(status_code=400, detail="请选择需要导出的啤办单")
 
     orders = [load_order(db, order_id, current_user) for order_id in normalized_order_ids]
+    for order in orders:
+        ensure_export_permission(db, current_user, order.factory_id)
     content = export_orders_to_excel(orders, get_prices(db))
     filename = f"molding-sample-{len(orders)}-orders.xlsx"
     return Response(
@@ -132,6 +135,7 @@ def export_injection_order_excel(
     current_user: AuthContext = Depends(get_current_user),
 ):
     order = load_order(db, order_id, current_user)
+    ensure_export_permission(db, current_user, order.factory_id)
     content = export_order_to_excel(order, get_prices(db))
     filename = f"{order.id}-molding-sample.xlsx"
     return Response(

@@ -114,6 +114,68 @@ def ensure_test_user(username: str) -> None:
         db.commit()
 
 
+def create_scoped_permission_manager(username: str = "factory-permission-admin") -> None:
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    now = auth_service.now_text()
+    user_id = f"user-{username}"
+    with db_module.SessionLocal() as db:
+        salt, password_hash = auth_service.make_password_hash("123456")
+        db.add(
+            auth_models.AuthUser(
+                id=user_id,
+                username=username,
+                display_name="华兴厂区权限管理员",
+                password_salt=salt,
+                password_hash=password_hash,
+                status="active",
+                force_password_change=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        binding_id = f"{user_id}:factory_permission_admin:huaxing:engineering"
+        db.add(
+            auth_models.AuthUserRole(
+                id=binding_id,
+                user_id=user_id,
+                role_id="factory_permission_admin",
+                factory_id="huaxing",
+                department="engineering",
+            )
+        )
+        db.add(
+            auth_models.AuthRoleBindingMetadata(
+                user_role_id=binding_id,
+                state="active",
+                source_type="test",
+                valid_from=now,
+                valid_until="",
+                reason="范围管理测试",
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            auth_models.EmployeeProfile(
+                user_id=user_id,
+                primary_factory_id="huaxing",
+                primary_department="engineering",
+                position="权限管理员",
+                phone="",
+                email="",
+                confirmation_status="confirmed",
+                source_registration_request_id="",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(auth_models.AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+        db.commit()
+
+
 def test_registration_approval_notification_and_login_flow(monkeypatch):
     with make_client(monkeypatch) as client:
         register_response = client.post("/api/auth/register", json=register_payload())
@@ -317,7 +379,77 @@ def test_reject_suspend_restore_and_last_admin_guard(monkeypatch):
             json={"status": "suspended"},
         )
         assert last_admin_response.status_code == 400
-        assert last_admin_response.json()["detail"] == "不能停用最后一个系统管理员"
+        assert last_admin_response.json()["detail"] == "不能停用最后一个集团超级管理员"
+
+
+def test_scoped_manager_cannot_bypass_iam_with_registration_approval(monkeypatch):
+    with make_client(monkeypatch) as client:
+        huaxing = register_payload("scope-huaxing")
+        huadeng = register_payload("scope-huadeng")
+        huadeng["factory_id"] = "huadeng"
+        high_risk = register_payload("scope-high-risk")
+        assert client.post("/api/auth/register", json=huaxing).status_code == 200
+        assert client.post("/api/auth/register", json=huadeng).status_code == 200
+        assert client.post("/api/auth/register", json=high_risk).status_code == 200
+
+        create_scoped_permission_manager()
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            db.add(auth_models.AuthRole(id="basic_reader", code="basic_reader", name="基础查看", description="普通权限测试"))
+            read_permission = db.query(auth_models.AuthPermission).filter_by(code="molding_sample:read").one()
+            db.add(
+                auth_models.AuthRolePermission(
+                    id=f"basic_reader:{read_permission.id}",
+                    role_id="basic_reader",
+                    permission_id=read_permission.id,
+                )
+            )
+            db.commit()
+        login(client, "factory-permission-admin")
+
+        visible = client.get("/api/system/registration-requests?status=pending")
+        assert visible.status_code == 200
+        visible_by_username = {item["username"]: item for item in visible.json()}
+        assert set(visible_by_username) == {"scope-huaxing", "scope-high-risk"}
+
+        approved = client.post(
+            f"/api/system/registration-requests/{visible_by_username['scope-huaxing']['id']}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "basic_reader", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "本厂工程岗位资料核对完成",
+            },
+        )
+        assert approved.status_code == 200, approved.text
+
+        high_risk_response = client.post(
+            f"/api/system/registration-requests/{visible_by_username['scope-high-risk']['id']}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "admin", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "尝试直接授予管理员",
+            },
+        )
+        assert high_risk_response.status_code == 403
+        assert "权限申请" in high_risk_response.json()["detail"]
+
+        with db_module.SessionLocal() as db:
+            remote_request = db.query(auth_models.AuthRegistrationRequest).filter_by(username="scope-huadeng").one()
+            remote_request_id = remote_request.id
+
+        cross_scope_response = client.post(
+            f"/api/system/registration-requests/{remote_request_id}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "engineer", "factory_id": "huadeng", "department": "engineering"}
+                ],
+                "review_comment": "尝试跨厂审批",
+            },
+        )
+        assert cross_scope_response.status_code == 403
 
 
 def test_rejected_registration_can_be_resubmitted_with_same_username(monkeypatch):

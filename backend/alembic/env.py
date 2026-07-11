@@ -14,6 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models import auth  # noqa: F401,E402
+from app.models import injection_schedule  # noqa: F401,E402
 from app.models import molding_sample  # noqa: F401,E402
 
 config = context.config

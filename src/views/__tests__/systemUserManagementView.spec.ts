@@ -69,6 +69,16 @@ describe('SystemUserManagementView source contract', () => {
       'route.query.request_id',
       '停用',
       '恢复',
+      "userStatusFilter = ref<'all' | 'active' | 'suspended' | 'retired'>('all')",
+      "retired: { label: '已离职', toneClass: 'pill-slate' }",
+      "userStatusPresentation(user.status).label",
+      "userStatusPresentation(user.status).toneClass",
+      "label: '未知状态'",
+      'aria-label="搜索用户"',
+      '配置权限',
+      '/system/users/${encodeURIComponent(user.id)}/access',
+      '高级权限管理',
+      '/system/iam/permissions',
     ]) {
       expect(source).toContain(requiredSource)
     }

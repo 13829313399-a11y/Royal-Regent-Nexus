@@ -605,15 +605,18 @@ const canManageSelectedOrderFactory = computed(() => {
   return authStore.hasFactoryScope(factoryId)
 })
 const isSelectedFactoryReadOnly = computed(() => !canManageSelectedFactory.value)
-const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create') && canManageSelectedFactory.value)
-const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft') && canManageSelectedOrderFactory.value)
-const canDeleteDraftOrder = computed(() => authStore.hasPermission('molding_sample:delete_draft') && canManageSelectedOrderFactory.value)
+const canCreateOrder = computed(() => authStore.can('molding_sample:create', selectedFactoryId.value) && canManageSelectedFactory.value)
+const canEditDraftOrder = computed(() => authStore.can('molding_sample:edit_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
+const canDeleteDraftOrder = computed(() => authStore.can('molding_sample:delete_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
 const canExportSelectedOrder = computed(() =>
   batchActionRecords.value.length > 0
   && apiState.value === 'connected'
+  && batchActionRecords.value.every((target) =>
+    authStore.can('molding_sample:export', target.order.factory_id),
+  )
   && batchActionRecords.value.every((target) =>
     apiRecords.value.some((record) => record.order.id === target.order.id),
   ),
@@ -637,13 +640,13 @@ const canDeleteSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
   && canManageSelectedOrderFactory.value
   && (
-    authStore.hasPermission('system:user_manage')
+    authStore.can('system:user_manage', selectedOrder.value.factory_id)
     || canDeleteSelectedWithdrawnOrder.value
   ),
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
-  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.hasPermission(actor.permission))
+  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.can(actor.permission, selectedOrder.value.factory_id))
 })
 
 function normalizeBoardStatus(status: MoldingSampleStatus): MoldingSampleStatus {
