@@ -56,6 +56,9 @@ for (const requiredCopy of [
   '新建成功',
   '已填写草稿会自动保留',
   '每页 10 条',
+  '退回 / 撤回',
+  '未解决异常',
+  '生产数据待补',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -72,8 +75,8 @@ for (const preservedStatus of [
 }
 
 for (const requiredImplementation of [
-  "type ViewKey = 'overview' \\| 'create' \\| 'detail' \\| 'material-balance'",
-  "type MaterialBalancePeriodMode = 'day' \\| 'week' \\| 'month'",
+  "type ViewKey = 'overview' | 'create' | 'detail' | 'material-balance'",
+  "type MaterialBalancePeriodMode = 'day' | 'week' | 'month'",
   'workflowSteps',
   'normalizeBoardStatus',
   'boardColumns',
@@ -113,6 +116,10 @@ for (const requiredImplementation of [
   'setOverviewListPage',
   'setMaterialBalanceDetailPage',
   'setMaterialBalancePeriodPage',
+  'countMoldingSampleAttentionMetrics',
+  'data-testid="molding-kpi-grid"',
+  'lg:grid-cols-4',
+  'xl:grid-cols-7',
   'moldingSampleApi.listOrders',
   "'huaxing'",
   'createDraft',
@@ -164,7 +171,7 @@ for (const requiredImplementation of [
   'moldingSampleApi.deleteOrder',
   'useAuthStore',
   'authStore.currentUser',
-  'authStore.hasPermission',
+  'authStore.can',
   'buildCompletionGate',
   'isExternalMoldingSampleOrder',
   '/modules/production/molding-sample-tasks',
@@ -195,7 +202,7 @@ for (const requiredImplementation of [
   'clearRawMaterialSelection',
   'handleRawMaterialPickerFocusOut',
 ]) {
-  assert.match(source, new RegExp(requiredImplementation))
+  assert.ok(source.includes(requiredImplementation), `Missing implementation: ${requiredImplementation}`)
 }
 
 assert.match(source, /type OverviewDisplayMode = 'board' \| 'list'/)
@@ -232,6 +239,10 @@ assert.match(source, /window\.print\(\)/)
 assert.match(source, /文件编号/)
 assert.match(source, /啤机确认机台/)
 assert.match(source, /production_machine/)
+assert.doesNotMatch(source, /啤办费\(RMB\)|啤办费\(HKD\)|回填实际用料和啤办费/)
+assert.match(source, /data-testid="molding-sample-detail-table"/)
+assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*工模尺寸[\s\S]*适配机型[\s\S]*模具在厂[\s\S]*回厂时间/)
+assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*v-for="item in selectedItems"/)
 assert.match(source, /展开完整数据/)
 assert.match(source, /收起完整数据/)
 assert.match(source, /填写部/)

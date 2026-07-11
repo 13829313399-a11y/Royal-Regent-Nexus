@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,6 +13,8 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     seed_default_accounts: bool = True
     seed_admin_password: str = ""
+    authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
+    authz_writes_enabled: bool = False
 
     @property
     def effective_session_cookie_secure(self) -> bool:
@@ -21,3 +24,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if settings.authz_writes_enabled and settings.authz_mode != "enforce":
+    raise RuntimeError("AUTHZ_WRITES_ENABLED=true requires AUTHZ_MODE=enforce")

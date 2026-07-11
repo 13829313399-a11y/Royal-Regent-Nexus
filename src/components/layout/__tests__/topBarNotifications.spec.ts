@@ -76,14 +76,25 @@ function seedAccount(options: {
   permissions?: string[]
   factoryScopes?: string[]
 }) {
+  const permissions = options.permissions ?? ['molding_sample:notification_read']
+  const factoryScopes = options.factoryScopes ?? ['huaxing']
+  const administrator = options.roles.includes('系统管理员')
   useAuthStore().applySession({
     id: 'user-test',
     username: 'tester',
     display_name: '华兴工程师',
     roles: options.roles,
-    permissions: options.permissions ?? ['molding_sample:notification_read'],
-    grants: [],
-    factory_scopes: options.factoryScopes ?? ['huaxing'],
+    permissions,
+    grants: [{
+      role_id: administrator ? 'admin' : 'test-role',
+      role_code: administrator ? 'admin' : 'test-role',
+      role_name: options.roles[0] ?? '测试角色',
+      factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
+      department: administrator ? 'system' : 'engineering',
+      permissions,
+      data_scope: administrator ? 'all' : 'department',
+    }],
+    factory_scopes: factoryScopes,
     department_scopes: ['engineering'],
     force_password_change: false,
   })

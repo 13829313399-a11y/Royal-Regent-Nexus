@@ -1,12 +1,16 @@
+import logging
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.core.config import settings
+from app.models.injection_schedule import InjectionScheduleImportBatch
 from app.schemas.injection_schedule import (
     InjectionScheduleImportPreviewResponse,
     InjectionScheduleMachineOut,
 )
-from app.services.auth import AuthContext, ensure_permission_in_scope, get_current_user
+from app.services.auth import AuthContext, can, ensure_permission_in_scope, get_current_user
 from app.services.injection_schedule import (
     create_daily_schedule_import,
     get_import_preview,
@@ -15,6 +19,35 @@ from app.services.injection_schedule import (
 from app.services.injection_schedule_excel import XLSX_MIME
 
 router = APIRouter(prefix="/api/injection-scheduling")
+logger = logging.getLogger(__name__)
+
+
+def ensure_batch_read_access(
+    db: Session,
+    current_user: AuthContext,
+    batch_id: str,
+) -> InjectionScheduleImportBatch:
+    batch = db.get(InjectionScheduleImportBatch, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="排产导入批次不存在")
+    if settings.authz_mode == "enforce":
+        ensure_permission_in_scope(
+            db,
+            current_user,
+            "injection_schedule:read",
+            batch.factory_id,
+        )
+    elif settings.authz_mode == "shadow" and not can(
+        current_user,
+        "injection_schedule:read",
+        batch.factory_id,
+    ):
+        logger.warning(
+            "authz shadow mismatch user=%s permission=injection_schedule:read scope=%s/* legacy=True canonical=False",
+            current_user.id,
+            batch.factory_id,
+        )
+    return batch
 
 
 @router.post(
@@ -55,6 +88,7 @@ def read_import_preview(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    ensure_batch_read_access(db, current_user, batch_id)
     return get_import_preview(db, batch_id)
 
 
@@ -64,4 +98,5 @@ def read_machine_status(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    ensure_batch_read_access(db, current_user, batch_id)
     return get_machine_status(db, batch_id)

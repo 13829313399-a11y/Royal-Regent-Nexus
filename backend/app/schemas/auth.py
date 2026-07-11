@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -44,6 +46,26 @@ class AuthGrant(BaseModel):
     data_scope: str = "department"
 
 
+class AuthProfile(BaseModel):
+    primary_factory_id: str = ""
+    primary_department: str = ""
+    position: str = ""
+    phone: str = ""
+    email: str = ""
+    confirmation_status: str = "needs_review"
+
+
+class AuthEffectiveAccess(BaseModel):
+    permission_code: str
+    factory_id: str
+    department: str
+    effect: str
+    allowed: bool
+    source_type: str
+    source_ids: list[str] = Field(default_factory=list)
+    source_name: str = ""
+
+
 class AuthMeResponse(BaseModel):
     id: str
     username: str
@@ -55,3 +77,7 @@ class AuthMeResponse(BaseModel):
     grants: list[AuthGrant] = Field(default_factory=list)
     force_password_change: bool = False
     avatar_url: str = ""
+    profile: AuthProfile | None = None
+    authorization_version: int = 0
+    effective_access: list[AuthEffectiveAccess] = Field(default_factory=list)
+    authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"

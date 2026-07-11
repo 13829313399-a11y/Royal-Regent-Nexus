@@ -47,6 +47,7 @@ import { rawMaterialDatabaseRows } from '@/data/rawMaterialDatabase'
 import {
   buildCompletionGate,
   calculateExpectedMaterialAmountHkd,
+  countMoldingSampleAttentionMetrics,
   isExternalMoldingSampleOrder,
   resolveMaterialPrice,
   roundMoney,
@@ -83,6 +84,7 @@ type ActionToastTone = 'success' | 'error' | 'info'
 type StatusState = 'done' | 'current' | 'pending' | 'rejected'
 
 interface KpiCard {
+  key: string
   label: string
   value: string
   detail: string
@@ -226,7 +228,6 @@ const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取正式啤办单列表...')
 const actionToastVisible = ref(true)
-const currentRmbToHkdRate = ref<number | null>(null)
 const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
 const createErrors = ref<string[]>([])
 const createSubmitting = ref(false)
@@ -264,7 +265,7 @@ let actionToastTimer: ReturnType<typeof setTimeout> | null = null
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
   { status: '待生产', title: '待生产', detail: '主管通过后流转到啤机部' },
-  { status: '生产中', title: '啤机生产', detail: '回填实际用料和啤办费' },
+  { status: '生产中', title: '啤机生产', detail: '回填实际用料和确认机台' },
   { status: '已完成', title: '完成归档', detail: '生产完成后回传工程单' },
 ]
 
@@ -448,15 +449,11 @@ const kpiCards = computed<KpiCard[]>(() => {
   const reviewCount = records.filter((record) => ['待审核', '待经理审核'].includes(record.order.status)).length
   const productionCount = records.filter((record) => ['待生产', '生产中'].includes(record.order.status)).length
   const completedCount = records.filter((record) => record.order.status === '已完成').length
-  const blockedCount = records.filter((record) =>
-    record.order.status === '已驳回'
-    || record.order.status === '已撤回'
-    || record.problems.length > 0
-    || buildCompletionGate(record.order, record.items).missing_item_ids.length > 0,
-  ).length
+  const attentionMetrics = countMoldingSampleAttentionMetrics(records)
 
   return [
     {
+      key: 'factory-orders',
       label: '当前厂区单据',
       value: String(records.length),
       detail: `${activeFactory.value.shortName} · 按状态分列`,
@@ -464,6 +461,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-slate-200 bg-white text-slate-700',
     },
     {
+      key: 'in-review',
       label: '审核中',
       value: String(reviewCount),
       detail: '主管节点',
@@ -471,6 +469,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-amber-200 bg-amber-50 text-amber-700',
     },
     {
+      key: 'production-queue',
       label: '待啤机处理',
       value: String(productionCount),
       detail: '待生产 / 生产中',
@@ -478,6 +477,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-teal-200 bg-teal-50 text-teal-700',
     },
     {
+      key: 'completed',
       label: '已完成',
       value: String(completedCount),
       detail: '完成归档回传',
@@ -485,11 +485,28 @@ const kpiCards = computed<KpiCard[]>(() => {
       className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
     },
     {
-      label: '卡点 / 退回',
-      value: String(blockedCount),
-      detail: '需要工程跟进',
+      key: 'returned-withdrawn',
+      label: '退回 / 撤回',
+      value: String(attentionMetrics.rejectedCount + attentionMetrics.withdrawnCount),
+      detail: `已驳回 ${attentionMetrics.rejectedCount} · 已撤回 ${attentionMetrics.withdrawnCount}`,
+      icon: RotateCcw,
+      className: 'border-rose-200 bg-rose-50 text-rose-700',
+    },
+    {
+      key: 'unresolved-problems',
+      label: '未解决异常',
+      value: String(attentionMetrics.unresolvedProblemCount),
+      detail: '存在待处理问题',
       icon: TriangleAlert,
-      className: 'border-red-200 bg-red-50 text-red-700',
+      className: 'border-orange-200 bg-orange-50 text-orange-700',
+    },
+    {
+      key: 'production-data-pending',
+      label: '生产数据待补',
+      value: String(attentionMetrics.productionDataPendingCount),
+      detail: '生产中缺实际用料',
+      icon: ClipboardCheck,
+      className: 'border-sky-200 bg-sky-50 text-sky-700',
     },
   ]
 })
@@ -577,7 +594,6 @@ const actionToastIconClass = computed(() => {
   return 'bg-teal-50 text-teal-700'
 })
 
-const detailRows = computed(() => selectedItems.value.slice(0, 8))
 const printPreviewItemCount = computed(() =>
   printableRecords.value.reduce((total, record) => total + record.items.length, 0),
 )
@@ -607,15 +623,18 @@ const canManageSelectedOrderFactory = computed(() => {
   return authStore.hasFactoryScope(factoryId)
 })
 const isSelectedFactoryReadOnly = computed(() => !canManageSelectedFactory.value)
-const canCreateOrder = computed(() => authStore.hasPermission('molding_sample:create') && canManageSelectedFactory.value)
-const canEditDraftOrder = computed(() => authStore.hasPermission('molding_sample:edit_draft') && canManageSelectedOrderFactory.value)
-const canDeleteDraftOrder = computed(() => authStore.hasPermission('molding_sample:delete_draft') && canManageSelectedOrderFactory.value)
+const canCreateOrder = computed(() => authStore.can('molding_sample:create', selectedFactoryId.value) && canManageSelectedFactory.value)
+const canEditDraftOrder = computed(() => authStore.can('molding_sample:edit_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
+const canDeleteDraftOrder = computed(() => authStore.can('molding_sample:delete_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
 const canExportSelectedOrder = computed(() =>
   batchActionRecords.value.length > 0
   && apiState.value === 'connected'
+  && batchActionRecords.value.every((target) =>
+    authStore.can('molding_sample:export', target.order.factory_id),
+  )
   && batchActionRecords.value.every((target) =>
     apiRecords.value.some((record) => record.order.id === target.order.id),
   ),
@@ -639,13 +658,13 @@ const canDeleteSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
   && canManageSelectedOrderFactory.value
   && (
-    authStore.hasPermission('system:user_manage')
+    authStore.can('system:user_manage', selectedOrder.value.factory_id)
     || canDeleteSelectedWithdrawnOrder.value
   ),
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
-  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.hasPermission(actor.permission))
+  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.can(actor.permission, selectedOrder.value.factory_id))
 })
 
 function normalizeBoardStatus(status: MoldingSampleStatus): MoldingSampleStatus {
@@ -1032,16 +1051,6 @@ async function loadApiData() {
     apiRecords.value = []
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
-  }
-}
-
-async function loadMaterialPricing() {
-  try {
-    const pricing = await moldingSampleApi.getMaterialPrices()
-    currentRmbToHkdRate.value = pricing.rmb_to_hkd_rate
-  }
-  catch {
-    currentRmbToHkdRate.value = null
   }
 }
 
@@ -1676,22 +1685,6 @@ function formatMoney(value: number | null | undefined, currency = 'HKD') {
   return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
 
-function formatExchangeRate(value: number | null | undefined) {
-  const rate = value ?? currentRmbToHkdRate.value
-
-  if (rate === null || rate === undefined || !Number.isFinite(rate)) {
-    return '待读取'
-  }
-
-  return rate.toFixed(4).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
-}
-
-function getExchangeRateLabel(item: Pick<MoldingSampleItem, 'exchange_rate_at_save'>) {
-  return item.exchange_rate_at_save === null || item.exchange_rate_at_save === undefined
-    ? '当前汇率(RMB→HKD)'
-    : '保存汇率(RMB→HKD)'
-}
-
 function readMaterialWeight(value: number | null | undefined) {
   const parsed = Number(value)
 
@@ -2154,7 +2147,6 @@ watch(actionMessage, (message) => {
 
 onMounted(() => {
   void loadApiData()
-  void loadMaterialPricing()
 })
 
 onUnmounted(() => {
@@ -2544,19 +2536,20 @@ onUnmounted(() => {
       </section>
 
       <section v-if="activeView === 'overview'" class="space-y-4">
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        <div data-testid="molding-kpi-grid" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
           <article
             v-for="card in kpiCards"
             :key="card.label"
-            class="min-h-[94px] rounded-lg border p-3"
+            :data-testid="`molding-kpi-${card.key}`"
+            class="min-h-[94px] min-w-0 rounded-lg border p-3"
             :class="card.className"
           >
             <div class="flex items-center justify-between">
-              <span class="text-[11px] font-medium opacity-75">{{ card.label }}</span>
+              <span class="truncate text-[11px] font-medium opacity-75">{{ card.label }}</span>
               <component :is="card.icon" class="size-4 opacity-60" aria-hidden="true" />
             </div>
-            <div class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ card.value }}</div>
-            <div class="text-[11px] opacity-75">{{ card.detail }}</div>
+            <div :data-testid="`molding-kpi-${card.key}-value`" class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ card.value }}</div>
+            <div class="break-words text-[11px] leading-4 opacity-75">{{ card.detail }}</div>
           </article>
         </div>
 
@@ -3592,12 +3585,16 @@ onUnmounted(() => {
                 </button>
               </div>
               <div class="overflow-x-auto">
-                <table class="w-full min-w-[1120px] text-[12px]">
+                <table data-testid="molding-sample-detail-table" class="w-full min-w-[1540px] text-[12px]">
                   <thead>
                     <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                       <th class="w-8 px-2 py-2 font-medium">#</th>
                       <th class="px-2 py-2 text-left font-medium">模具号</th>
                       <th class="px-2 py-2 text-left font-medium">名称</th>
+                      <th class="px-2 py-2 text-left font-medium">工模尺寸</th>
+                      <th class="px-2 py-2 text-left font-medium">适配机型</th>
+                      <th class="px-2 py-2 text-left font-medium">模具在厂</th>
+                      <th class="px-2 py-2 text-left font-medium">回厂时间</th>
                       <th class="px-2 py-2 text-left font-medium">原料</th>
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
@@ -3609,10 +3606,14 @@ onUnmounted(() => {
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-50">
-                    <tr v-for="item in detailRows" :key="item.id" class="hover:bg-slate-50/60">
+                    <tr v-for="item in selectedItems" :key="item.id" class="hover:bg-slate-50/60">
                       <td class="px-2 py-1.5 text-center text-slate-400">{{ item.sort_order }}</td>
                       <td class="px-2 py-1.5 font-mono">{{ item.mold_id }}</td>
                       <td class="px-2 py-1.5">{{ item.mold_name }}</td>
+                      <td class="px-2 py-1.5">{{ formatBlank(item.mold_dimensions) }}</td>
+                      <td class="px-2 py-1.5">{{ formatBlank(item.machine_type) }}</td>
+                      <td class="px-2 py-1.5">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</td>
+                      <td class="px-2 py-1.5 whitespace-nowrap">{{ formatBlank(item.mold_return_time) }}</td>
                       <td class="px-2 py-1.5">{{ item.material }}</td>
                       <td class="px-2 py-1.5">
                         <span class="inline-flex items-center gap-1">
@@ -3629,11 +3630,6 @@ onUnmounted(() => {
                         <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
                           {{ getItemState(item) }}
                         </span>
-                      </td>
-                    </tr>
-                    <tr v-if="selectedItems.length > detailRows.length">
-                      <td colspan="10" class="px-2 py-2 text-center text-[11px] font-medium text-slate-400">
-                        还有 {{ selectedItems.length - detailRows.length }} 项明细，滚动后续详情视图继续查看
                       </td>
                     </tr>
                   </tbody>
@@ -3731,9 +3727,6 @@ onUnmounted(() => {
                         <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
-                        <div><span class="text-slate-400">啤办费(RMB)</span><div class="font-semibold">{{ formatMoney(item.injection_cost, 'RMB') }}</div></div>
-                        <div><span class="text-slate-400">啤办费(HKD)</span><div class="font-semibold">{{ formatMoney(item.injection_cost_hkd) }}</div></div>
-                        <div><span class="text-slate-400">{{ getExchangeRateLabel(item) }}</span><div class="font-semibold">{{ formatExchangeRate(item.exchange_rate_at_save) }}</div></div>
                       </div>
                       <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
                         备注：{{ formatBlank(item.notes) }}
@@ -3960,7 +3953,7 @@ onUnmounted(() => {
                 <th>色粉</th>
                 <th>啤数 / 预料</th>
                 <th>回模 / 完成</th>
-                <th>回填 / 费用</th>
+                <th>实际回填</th>
                 <th>备注</th>
               </tr>
             </thead>
@@ -3992,8 +3985,7 @@ onUnmounted(() => {
                 <td>{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</td>
                 <td>
                   <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
-                  <span>{{ formatMoney(item.actual_amount_hkd) }} · {{ formatMoney(item.injection_cost, 'RMB') }}</span>
-                  <em>{{ formatMoney(item.injection_cost_hkd) }} · {{ formatExchangeRate(item.exchange_rate_at_save) }}</em>
+                  <span>实际料费 {{ formatMoney(item.actual_amount_hkd) }}</span>
                 </td>
                 <td>{{ formatBlank(item.notes) }}</td>
               </tr>
@@ -4019,7 +4011,7 @@ onUnmounted(() => {
 
         <div class="molding-sample-print-footwrap">
           <footer class="molding-sample-print-footer">
-            本单据由 Royal Regent Nexus 生成。打印前请核对单据资料、模具明细、用料及费用回填。
+            本单据由 Royal Regent Nexus 生成。打印前请核对单据资料、模具明细、用料及实际回填。
           </footer>
           <div class="molding-sample-print-qr">扫码<br>查看单据</div>
           <div class="molding-sample-print-pageno">第 1 / 1 页</div>

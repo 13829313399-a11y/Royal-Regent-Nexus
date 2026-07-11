@@ -1,7 +1,7 @@
 """create internal pricing quotes
 
-Revision ID: 20260711_0010
-Revises: 20260710_0009
+Revision ID: 20260711_0011
+Revises: 20260711_0010
 Create Date: 2026-07-11 23:30:00
 """
 
@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260711_0010"
-down_revision: Union[str, None] = "20260710_0009"
+revision: str = "20260711_0011"
+down_revision: Union[str, None] = "20260711_0010"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

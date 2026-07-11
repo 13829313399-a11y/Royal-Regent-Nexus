@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -7,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import settings
 from app.models.molding_sample import (
     MoldingSampleAuditLog,
     MoldingSampleInventoryBatch,
@@ -33,11 +35,12 @@ from app.schemas.molding_sample import (
     RequisitionCreateRequest,
     RequisitionStatusRequest,
 )
-from app.services.auth import AuthContext, ensure_permission, ensure_permission_in_scope
+from app.services.auth import AuthContext, can, ensure_permission, ensure_permission_in_scope, has_permission_in_scope
 
 KG_TO_LB = 2.20462
 DEFAULT_RATE = 1.08
 RATE_KEY = "exchange_rate_rmb_to_hkd"
+logger = logging.getLogger(__name__)
 
 DEFAULT_PRICES = [
     ("HIPS 425", 5.5, "经理默认价"),
@@ -195,6 +198,22 @@ def is_external_order(order: MoldingSampleOrder) -> bool:
     return order.send_to in {"发至湖南", "发至模厂"} or order.workshop == "模厂"
 
 
+def ensure_export_permission(db: Session, current_user: AuthContext, factory_id: str) -> None:
+    if settings.authz_mode == "enforce":
+        ensure_permission_in_scope(db, current_user, "molding_sample:export", factory_id)
+        return
+    if settings.authz_mode == "shadow" and not can(
+        current_user,
+        "molding_sample:export",
+        factory_id,
+    ):
+        logger.warning(
+            "authz shadow mismatch user=%s permission=molding_sample:export scope=%s/* legacy=True canonical=False",
+            current_user.id,
+            factory_id,
+        )
+
+
 def permitted_factory_ids_for_permission(
     db: Session,
     current_user: AuthContext,
@@ -203,9 +222,12 @@ def permitted_factory_ids_for_permission(
     ensure_permission(db, current_user, permission)
 
     factory_ids = {
-        grant.factory_id
-        for grant in current_user.grants
-        if permission in grant.permissions and grant.factory_id
+        factory_id
+        for factory_id in {
+            *(grant.factory_id for grant in current_user.grants if grant.factory_id),
+            *(override.factory_id for override in current_user.overrides if override.factory_id),
+        }
+        if factory_id == "*" or has_permission_in_scope(current_user, permission, factory_id)
     }
     if "*" in factory_ids:
         return None
@@ -256,11 +278,15 @@ def list_orders(
     if factory_id:
         statement = statement.where(MoldingSampleOrder.factory_id == factory_id)
 
-    return list(
+    orders = list(
         db.scalars(
             statement.order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
         ).all()
     )
+    return [
+        order for order in orders
+        if has_permission_in_scope(current_user, "molding_sample:read", order.factory_id)
+    ]
 
 
 def append_audit(
@@ -421,8 +447,6 @@ def list_notifications(
         statement = statement.where(MoldingSampleNotification.factory_id.in_(permitted_factory_ids))
     if target_module:
         statement = statement.where(MoldingSampleNotification.target_module == target_module)
-    elif "molding_sample:production_read" not in current_user.permissions and "*" not in current_user.factory_scopes:
-        statement = statement.where(MoldingSampleNotification.target_module != PRODUCTION_TASK_MODULE)
     if target_role:
         statement = statement.where(MoldingSampleNotification.target_role == target_role)
     if factory_id:
@@ -432,11 +456,27 @@ def list_notifications(
     if status:
         statement = statement.where(MoldingSampleNotification.status == status)
 
-    return list(
+    notifications = list(
         db.scalars(
             statement.order_by(MoldingSampleNotification.created_at.desc(), MoldingSampleNotification.id.desc())
         ).all()
     )
+    return [
+        notification for notification in notifications
+        if has_permission_in_scope(
+            current_user,
+            "molding_sample:notification_read",
+            notification.factory_id,
+        )
+        and (
+            notification.target_module != PRODUCTION_TASK_MODULE
+            or has_permission_in_scope(
+                current_user,
+                "molding_sample:production_read",
+                notification.factory_id,
+            )
+        )
+    ]
 
 
 def update_notification(
@@ -482,11 +522,15 @@ def list_problems(
     if status:
         statement = statement.where(MoldingSampleProblem.status == status)
 
-    return list(
+    problems = list(
         db.scalars(
             statement.order_by(MoldingSampleProblem.created_at.desc(), MoldingSampleProblem.id.desc())
         ).all()
     )
+    return [
+        problem for problem in problems
+        if has_permission_in_scope(current_user, "molding_sample:read", problem.factory_id)
+    ]
 
 
 def create_problem(
@@ -616,10 +660,10 @@ def ensure_order_write_allowed(
         ensure_permission_in_scope(db, current_user, permission, order.factory_id)
         return
 
-    if "molding_sample:manager_review" in current_user.permissions and any(
-        "molding_sample:manager_review" in grant.permissions
-        and (grant.factory_id == "*" or grant.factory_id == order.factory_id)
-        for grant in current_user.grants
+    if has_permission_in_scope(
+        current_user,
+        "molding_sample:manager_review",
+        order.factory_id,
     ):
         return
 

@@ -1,8 +1,9 @@
 import hashlib
 import hmac
 import json
+import logging
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -15,18 +16,30 @@ from app.core.config import settings
 from app.db import get_db
 from app.models.auth import (
     AuthAuditLog,
+    AuthIamState,
+    AuthPermissionMetadata,
     AuthPermission,
     AuthRegistrationRequest,
     AuthRole,
+    AuthRoleBindingMetadata,
+    AuthRoleMetadata,
     AuthRolePermission,
     AuthSession,
     AuthUser,
+    AuthUserAuthorizationRevision,
+    AuthUserPermissionOverride,
     AuthUserRole,
+    EmployeeProfile,
     SystemNotification,
 )
 from app.schemas.auth import AuthMeResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest, RegisterResponse
 
 SESSION_COOKIE_NAME = "rr_session"
+logger = logging.getLogger(__name__)
+LEGACY_READ_COMPAT_MARKER = "legacy_read_compat_v1_completed"
+LEGACY_READ_COMPAT_PERMISSION = "injection_schedule:read"
+LEGACY_EXPORT_COMPAT_MARKER = "legacy_export_compat_v1_completed"
+LEGACY_EXPORT_COMPAT_PERMISSION = "molding_sample:export"
 DEFAULT_PASSWORD = "123456"
 PASSWORD_HASH_ITERATIONS = 160_000
 SESSION_HOURS = 12
@@ -49,6 +62,7 @@ CHINESE_CHARACTER_RANGES = (
 
 MOLDING_SAMPLE_PERMISSIONS = [
     "molding_sample:read",
+    "molding_sample:export",
     "molding_sample:create",
     "molding_sample:edit_draft",
     "molding_sample:delete_draft",
@@ -82,7 +96,15 @@ INJECTION_SCHEDULE_PERMISSIONS = [
     "injection_schedule:import",
 ]
 
-APPLICATION_PERMISSIONS = MOLDING_SAMPLE_PERMISSIONS + INJECTION_SCHEDULE_PERMISSIONS
+IAM_PERMISSIONS = [
+    "system:access_manage",
+    "system:access_request",
+    "system:access_approve",
+    "system:audit_read",
+    "system:permission_catalog_read",
+]
+
+APPLICATION_PERMISSIONS = list(dict.fromkeys(MOLDING_SAMPLE_PERMISSIONS + INJECTION_SCHEDULE_PERMISSIONS + IAM_PERMISSIONS))
 
 DEFAULT_ROLES = [
     ("engineer", "工程师", "工程部开单与草稿维护"),
@@ -93,12 +115,15 @@ DEFAULT_ROLES = [
     ("molding_clerk", "啤机部文员", "啤机部啤办任务接收、回填和完成"),
     ("sales_customer_owner", "车间业务跟客", "按车间和客户范围转换报客价"),
     ("sales_customer_supervisor", "车间业务主管", "统筹车间客户报价转换、复核和报客价输出"),
+    ("factory_permission_admin", "厂区权限管理员", "在授权厂区内管理普通用户权限"),
+    ("department_permission_admin", "部门权限管理员", "在授权部门内管理普通用户权限"),
     ("admin", "系统管理员", "系统配置和权限管理"),
 ]
 
 ROLE_PERMISSIONS = {
     "engineer": {
         "molding_sample:read",
+        "molding_sample:export",
         "molding_sample:create",
         "molding_sample:edit_draft",
         "molding_sample:delete_draft",
@@ -106,11 +131,13 @@ ROLE_PERMISSIONS = {
     },
     "engineering_supervisor": {
         "molding_sample:read",
+        "molding_sample:export",
         "molding_sample:supervisor_review",
         "molding_sample:notification_read",
     },
     "manager": {
         "molding_sample:read",
+        "molding_sample:export",
         "molding_sample:edit_draft",
         "molding_sample:delete_draft",
         "molding_sample:manager_review",
@@ -120,6 +147,7 @@ ROLE_PERMISSIONS = {
     },
     "warehouse_keeper": {
         "molding_sample:read",
+        "molding_sample:export",
         "molding_sample:warehouse_requisition",
         "molding_sample:inventory_issue",
         "molding_sample:notification_read",
@@ -135,6 +163,7 @@ ROLE_PERMISSIONS = {
     },
     "molding_clerk": {
         "molding_sample:read",
+        "molding_sample:export",
         "molding_sample:production_read",
         "molding_sample:production_start",
         "molding_sample:production_fillback",
@@ -159,8 +188,21 @@ ROLE_PERMISSIONS = {
         "internal_pricing:read",
         "internal_pricing:create",
     },
+    "factory_permission_admin": {
+        "system:user_manage",
+        "system:access_manage",
+        "system:access_request",
+        "system:permission_catalog_read",
+    },
+    "department_permission_admin": {
+        "system:user_manage",
+        "system:access_manage",
+        "system:access_request",
+        "system:permission_catalog_read",
+    },
     "molding_operator": {
         "molding_sample:read",
+        "molding_sample:export",
         "molding_sample:production_read",
         "molding_sample:production_start",
         "molding_sample:production_fillback",
@@ -170,6 +212,7 @@ ROLE_PERMISSIONS = {
     },
     "molding_supervisor": {
         "molding_sample:read",
+        "molding_sample:export",
         "molding_sample:production_read",
         "molding_sample:production_start",
         "molding_sample:production_fillback",
@@ -229,6 +272,44 @@ class AuthGrantContext:
     department: str
     permissions: frozenset[str]
     data_scope: str = "department"
+    binding_id: str = ""
+    role_code: str = ""
+    valid_from: str = ""
+    valid_until: str = ""
+
+
+@dataclass(frozen=True)
+class AuthOverrideContext:
+    id: str
+    permission_code: str
+    effect: str
+    factory_id: str
+    department: str
+    valid_from: str = ""
+    valid_until: str = ""
+    source_type: str = "manual"
+
+
+@dataclass(frozen=True)
+class AuthProfileContext:
+    primary_factory_id: str = ""
+    primary_department: str = ""
+    position: str = ""
+    phone: str = ""
+    email: str = ""
+    confirmation_status: str = "needs_review"
+
+
+@dataclass(frozen=True)
+class AuthEffectiveAccessContext:
+    permission_code: str
+    factory_id: str
+    department: str
+    effect: str
+    allowed: bool
+    source_type: str
+    source_ids: tuple[str, ...] = ()
+    source_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -244,6 +325,11 @@ class AuthContext:
     grants: tuple[AuthGrantContext, ...] = ()
     force_password_change: bool = False
     avatar_url: str = ""
+    profile: AuthProfileContext | None = None
+    authorization_version: int = 0
+    effective_access: tuple[AuthEffectiveAccessContext, ...] = ()
+    overrides: tuple[AuthOverrideContext, ...] = ()
+    active_permission_codes: frozenset[str] = frozenset()
 
     @property
     def primary_role(self) -> str:
@@ -294,6 +380,34 @@ def parse_time(value: str) -> datetime | None:
         return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
+
+
+def time_window_is_active(
+    valid_from: str,
+    valid_until: str,
+    at: datetime | None = None,
+) -> bool:
+    checked_at = at or datetime.now()
+    starts_at = parse_time(valid_from)
+    ends_at = parse_time(valid_until)
+    if starts_at is not None and checked_at < starts_at:
+        return False
+    if ends_at is not None and checked_at >= ends_at:
+        return False
+    return True
+
+
+def scope_matches(
+    granted_factory_id: str,
+    granted_department: str,
+    target_factory_id: str,
+    target_department: str | None,
+) -> bool:
+    if granted_factory_id not in {"*", target_factory_id}:
+        return False
+    if target_department is None:
+        return True
+    return granted_department in {"*", target_department}
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -400,47 +514,375 @@ def ensure_login_not_temporarily_locked(db: Session, username: str, request: Req
     raise HTTPException(status_code=429, detail=LOGIN_LOCKED_MESSAGE)
 
 
+def permission_catalog_values(code: str, sort_order: int) -> dict[str, str | int]:
+    module_code, _, action = code.partition(":")
+    high_risk_actions = {"delete", "approve", "export", "manage"}
+    normalized_action = action.lower()
+    risk_level = "high" if (
+        module_code == "system"
+        or normalized_action in high_risk_actions
+        or "delete" in normalized_action
+        or "review" in normalized_action
+        or "approve" in normalized_action
+        or "export" in normalized_action
+        or "manage" in normalized_action
+    ) else "normal"
+    return {
+        "module_code": module_code,
+        "action": action,
+        "risk_level": risk_level,
+        "scope_type": "factory_department",
+        "status": "active",
+        "sort_order": sort_order,
+    }
+
+
+def seed_iam_sidecars(db: Session, now: str) -> None:
+    permissions = list(db.scalars(select(AuthPermission).order_by(AuthPermission.code)).all())
+    for sort_order, permission in enumerate(permissions):
+        if db.get(AuthPermissionMetadata, permission.id) is not None:
+            continue
+        values = permission_catalog_values(permission.code, sort_order)
+        db.add(
+            AuthPermissionMetadata(
+                permission_id=permission.id,
+                created_at=now,
+                updated_at=now,
+                **values,
+            )
+        )
+
+    roles = list(db.scalars(select(AuthRole).order_by(AuthRole.id)).all())
+    for role in roles:
+        if db.get(AuthRoleMetadata, role.id) is None:
+            db.add(
+                AuthRoleMetadata(
+                    role_id=role.id,
+                    version=1,
+                    protected=1 if role.code == "admin" else 0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    users = list(db.scalars(select(AuthUser).order_by(AuthUser.id)).all())
+    for user in users:
+        if db.get(AuthUserAuthorizationRevision, user.id) is None:
+            db.add(AuthUserAuthorizationRevision(user_id=user.id, revision=1, updated_at=now))
+
+        if db.get(EmployeeProfile, user.id) is not None:
+            continue
+        approved_request = db.scalar(
+            select(AuthRegistrationRequest)
+            .where(
+                AuthRegistrationRequest.user_id == user.id,
+                AuthRegistrationRequest.status == "approved",
+            )
+            .order_by(
+                AuthRegistrationRequest.reviewed_at.desc(),
+                AuthRegistrationRequest.updated_at.desc(),
+                AuthRegistrationRequest.id.desc(),
+            )
+            .limit(1)
+        )
+        db.add(
+            EmployeeProfile(
+                user_id=user.id,
+                primary_factory_id=approved_request.factory_id if approved_request else "",
+                primary_department=approved_request.department if approved_request else "",
+                position=approved_request.position if approved_request else "",
+                phone=approved_request.phone if approved_request else "",
+                email=approved_request.email if approved_request else "",
+                confirmation_status="confirmed" if approved_request else "needs_review",
+                source_registration_request_id=approved_request.id if approved_request else "",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    user_roles = list(db.scalars(select(AuthUserRole).order_by(AuthUserRole.id)).all())
+    user_created_at = {user.id: user.created_at for user in users}
+    for user_role in user_roles:
+        if db.get(AuthRoleBindingMetadata, user_role.id) is not None:
+            continue
+        db.add(
+            AuthRoleBindingMetadata(
+                user_role_id=user_role.id,
+                state="active",
+                source_type="legacy_import",
+                valid_from=user_created_at.get(user_role.user_id) or now,
+                valid_until="",
+                reason="旧授权兼容迁移",
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+def seed_legacy_read_compat_once(db: Session, now: str) -> int:
+    if db.get(AuthIamState, LEGACY_READ_COMPAT_MARKER) is not None:
+        return 0
+
+    # Flush sidecar backfills so canonical contexts see the same state that will
+    # be committed with the one-time completion marker.
+    db.flush()
+    permission = db.scalar(select(AuthPermission).where(AuthPermission.code == LEGACY_READ_COMPAT_PERMISSION))
+    created_count = 0
+    if permission is not None:
+        users = list(
+            db.scalars(
+                select(AuthUser)
+                .where(AuthUser.status.in_({"active", "suspended"}))
+                .order_by(AuthUser.id)
+            ).all()
+        )
+        for user in users:
+            approved_request = db.scalar(
+                select(AuthRegistrationRequest)
+                .where(
+                    AuthRegistrationRequest.user_id == user.id,
+                    AuthRegistrationRequest.status == "approved",
+                )
+                .order_by(
+                    AuthRegistrationRequest.reviewed_at.desc(),
+                    AuthRegistrationRequest.updated_at.desc(),
+                    AuthRegistrationRequest.id.desc(),
+                )
+                .limit(1)
+            )
+            profile = db.get(EmployeeProfile, user.id)
+            if (
+                approved_request is None
+                or profile is None
+                or not profile.primary_factory_id
+                or not profile.primary_department
+            ):
+                continue
+
+            admin_binding_id = db.scalar(
+                select(AuthUserRole.id)
+                .join(AuthRole, AuthRole.id == AuthUserRole.role_id)
+                .where(AuthUserRole.user_id == user.id, AuthRole.code == "admin")
+                .limit(1)
+            )
+            if admin_binding_id is not None:
+                continue
+
+            context = build_auth_context(db, user)
+            if can(
+                context,
+                LEGACY_READ_COMPAT_PERMISSION,
+                profile.primary_factory_id,
+                profile.primary_department,
+            ):
+                continue
+
+            identity = ":".join(
+                (
+                    user.id,
+                    permission.id,
+                    profile.primary_factory_id,
+                    profile.primary_department,
+                )
+            )
+            override_id = f"legacy-read-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:40]}"
+            if db.get(AuthUserPermissionOverride, override_id) is not None:
+                continue
+            db.add(
+                AuthUserPermissionOverride(
+                    id=override_id,
+                    user_id=user.id,
+                    permission_id=permission.id,
+                    effect="allow",
+                    factory_id=profile.primary_factory_id,
+                    department=profile.primary_department,
+                    status="active",
+                    valid_from=now,
+                    valid_until="",
+                    reason="历史登录可读兼容",
+                    source_type="legacy_read_compat",
+                    source_id=approved_request.id,
+                    created_by_user_id="",
+                    approved_by_user_id="",
+                    revoked_by_user_id="",
+                    revoked_at="",
+                    revoke_reason="",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            created_count += 1
+
+    db.add(
+        AuthIamState(
+            key=LEGACY_READ_COMPAT_MARKER,
+            value_json=json.dumps(
+                {"completed_at": now, "created_override_count": created_count},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    db.flush()
+    return created_count
+
+
+def seed_legacy_export_compat_once(db: Session, now: str) -> int:
+    if db.get(AuthIamState, LEGACY_EXPORT_COMPAT_MARKER) is not None:
+        return 0
+
+    db.flush()
+    permission = db.scalar(select(AuthPermission).where(AuthPermission.code == LEGACY_EXPORT_COMPAT_PERMISSION))
+    created_count = 0
+    if permission is not None:
+        users = list(
+            db.scalars(
+                select(AuthUser)
+                .where(AuthUser.status.in_({"active", "suspended"}))
+                .order_by(AuthUser.id)
+            ).all()
+        )
+        for user in users:
+            approved_request = db.scalar(
+                select(AuthRegistrationRequest)
+                .where(
+                    AuthRegistrationRequest.user_id == user.id,
+                    AuthRegistrationRequest.status == "approved",
+                )
+                .order_by(
+                    AuthRegistrationRequest.reviewed_at.desc(),
+                    AuthRegistrationRequest.updated_at.desc(),
+                    AuthRegistrationRequest.id.desc(),
+                )
+                .limit(1)
+            )
+            if approved_request is None:
+                continue
+
+            context = build_auth_context(db, user)
+            if any(
+                grant.role_code == "admin"
+                and grant.factory_id == "*"
+                and grant.department in {"*", "system"}
+                for grant in context.grants
+            ):
+                continue
+
+            scopes = {
+                (grant.factory_id, grant.department)
+                for grant in context.grants
+                if can(context, "molding_sample:read", grant.factory_id, grant.department)
+            }
+            profile = db.get(EmployeeProfile, user.id)
+            if (
+                profile
+                and profile.primary_factory_id
+                and profile.primary_department
+                and can(
+                    context,
+                    "molding_sample:read",
+                    profile.primary_factory_id,
+                    profile.primary_department,
+                )
+            ):
+                scopes.add((profile.primary_factory_id, profile.primary_department))
+
+            for factory_id, department in sorted(scopes):
+                if can(context, LEGACY_EXPORT_COMPAT_PERMISSION, factory_id, department):
+                    continue
+                identity = ":".join((user.id, permission.id, factory_id, department))
+                override_id = f"legacy-export-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:38]}"
+                if db.get(AuthUserPermissionOverride, override_id) is not None:
+                    continue
+                db.add(
+                    AuthUserPermissionOverride(
+                        id=override_id,
+                        user_id=user.id,
+                        permission_id=permission.id,
+                        effect="allow",
+                        factory_id=factory_id,
+                        department=department,
+                        status="active",
+                        valid_from=now,
+                        valid_until="",
+                        reason="历史导出能力兼容",
+                        source_type="legacy_export_compat",
+                        source_id=approved_request.id,
+                        created_by_user_id="",
+                        approved_by_user_id="",
+                        revoked_by_user_id="",
+                        revoked_at="",
+                        revoke_reason="",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                created_count += 1
+
+    db.add(
+        AuthIamState(
+            key=LEGACY_EXPORT_COMPAT_MARKER,
+            value_json=json.dumps(
+                {"completed_at": now, "created_override_count": created_count},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    db.flush()
+    return created_count
+
+
+def ensure_authz_startup_safety(db: Session) -> None:
+    if settings.authz_writes_enabled and settings.authz_mode != "enforce":
+        raise RuntimeError("AUTHZ_WRITES_ENABLED=true requires AUTHZ_MODE=enforce")
+    if settings.authz_mode == "enforce":
+        return
+
+    active_overrides = list(
+        db.scalars(
+            select(AuthUserPermissionOverride).where(
+                AuthUserPermissionOverride.status == "active",
+                AuthUserPermissionOverride.effect.in_({"allow", "deny"}),
+                AuthUserPermissionOverride.source_type.notin_(
+                    {"legacy_read_compat", "legacy_export_compat"}
+                ),
+            )
+        ).all()
+    )
+    if any(time_window_is_active(item.valid_from, item.valid_until) for item in active_overrides):
+        raise RuntimeError(
+            "AUTHZ_MODE must remain enforce because active configurable authorization overrides exist"
+        )
+
+
 def seed_auth_defaults(db: Session) -> None:
     now = now_text()
-    active_default_user_ids = {user_id for user_id, *_ in DEFAULT_USERS}
-    active_role_ids = {role_id for role_id, *_ in DEFAULT_ROLES}
+    created_role_ids: set[str] = set()
 
     for code in APPLICATION_PERMISSIONS:
         permission_id = f"perm-{code.replace(':', '-')}"
         if db.get(AuthPermission, permission_id) is None:
             db.add(AuthPermission(id=permission_id, code=code, name=code, description=""))
 
-    for role_id, code, description in DEFAULT_ROLES:
-        role = db.get(AuthRole, role_id)
-        if role is None:
-            db.add(AuthRole(id=role_id, code=role_id, name=code, description=description))
-        else:
-            role.name = code
-            role.description = description
+    for role_id, name, description in DEFAULT_ROLES:
+        if db.get(AuthRole, role_id) is None:
+            db.add(AuthRole(id=role_id, code=role_id, name=name, description=description))
+            created_role_ids.add(role_id)
 
     db.flush()
+    permissions_by_code = {permission.code: permission for permission in db.scalars(select(AuthPermission)).all()}
 
-    permissions_by_code = {
-        permission.code: permission
-        for permission in db.scalars(select(AuthPermission)).all()
-    }
-    for role_id, permission_codes in ROLE_PERMISSIONS.items():
-        if role_id not in active_role_ids:
-            continue
-
-        desired_permission_ids = {
-            permissions_by_code[permission_code].id
-            for permission_code in permission_codes
-        }
-        existing_role_permissions = list(
-            db.scalars(select(AuthRolePermission).where(AuthRolePermission.role_id == role_id)).all()
-        )
-        for role_permission in existing_role_permissions:
-            if role_permission.permission_id not in desired_permission_ids:
-                db.delete(role_permission)
-
-        for permission_code in permission_codes:
-            permission = permissions_by_code[permission_code]
+    # Default mappings initialize brand-new roles only. Existing role templates are
+    # administrator-owned data and must never be restored or trimmed on startup.
+    for role_id in created_role_ids:
+        for permission_code in ROLE_PERMISSIONS.get(role_id, set()):
+            permission = permissions_by_code.get(permission_code)
+            if permission is None:
+                continue
             role_permission_id = f"{role_id}:{permission.id}"
             if db.get(AuthRolePermission, role_permission_id) is None:
                 db.add(
@@ -451,78 +893,44 @@ def seed_auth_defaults(db: Session) -> None:
                     )
                 )
 
-    if not settings.seed_default_accounts:
-        db.commit()
-        return
-
-    seed_admin_password = get_seed_admin_password()
-    if not seed_admin_password:
-        for user_id, *_ in DEFAULT_USERS:
-            user = db.get(AuthUser, user_id)
-            if user is not None and verify_password(DEFAULT_PASSWORD, user):
-                user.status = "locked"
-                user.force_password_change = 1
-                user.updated_at = now
-        db.commit()
-        return
-
-    retired_users = db.scalars(
-        select(AuthUser).where(
-            (AuthUser.username.in_(RETIRED_DEFAULT_USERNAMES))
-            | (AuthUser.id.in_(RETIRED_DEFAULT_USER_IDS - active_default_user_ids))
-        )
-    ).all()
-    for user in retired_users:
-        user.status = "retired"
-        user.updated_at = now
-
-    for user_id, username, display_name, role_id, factory_id, department in DEFAULT_USERS:
-        user = db.get(AuthUser, user_id)
-        if user is None:
-            salt, password_hash = make_password_hash(seed_admin_password)
-            db.add(
-                AuthUser(
-                    id=user_id,
-                    username=username,
-                    display_name=display_name,
-                    password_salt=salt,
-                    password_hash=password_hash,
-                    status="active",
-                    force_password_change=1,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-        else:
-            user.username = username
-            user.display_name = display_name
-            if verify_password(DEFAULT_PASSWORD, user):
+    if settings.seed_default_accounts:
+        seed_admin_password = get_seed_admin_password()
+        if seed_admin_password:
+            for user_id, username, display_name, role_id, factory_id, department in DEFAULT_USERS:
+                # Existing accounts, credentials, status and grants are never rewritten.
+                if db.get(AuthUser, user_id) is not None:
+                    continue
                 salt, password_hash = make_password_hash(seed_admin_password)
-                user.password_salt = salt
-                user.password_hash = password_hash
-                user.force_password_change = 1
-            user.status = "active"
-            user.updated_at = now
-
-        user_role_id = f"{user_id}:{role_id}:{factory_id}:{department}"
-        existing_user_roles = list(
-            db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user_id)).all()
-        )
-        for user_role in existing_user_roles:
-            if user_role.id != user_role_id:
-                db.delete(user_role)
-
-        if db.get(AuthUserRole, user_role_id) is None:
-            db.add(
-                AuthUserRole(
-                    id=user_role_id,
-                    user_id=user_id,
-                    role_id=role_id,
-                    factory_id=factory_id,
-                    department=department,
+                db.add(
+                    AuthUser(
+                        id=user_id,
+                        username=username,
+                        display_name=display_name,
+                        password_salt=salt,
+                        password_hash=password_hash,
+                        status="active",
+                        force_password_change=1,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            )
+                db.flush()
+                user_role_id = f"{user_id}:{role_id}:{factory_id}:{department}"
+                db.add(
+                    AuthUserRole(
+                        id=user_role_id,
+                        user_id=user_id,
+                        role_id=role_id,
+                        factory_id=factory_id,
+                        department=department,
+                    )
+                )
 
+    db.flush()
+    seed_iam_sidecars(db, now)
+    seed_legacy_read_compat_once(db, now)
+    seed_legacy_export_compat_once(db, now)
+    ensure_authz_startup_safety(db)
     db.commit()
 
 
@@ -636,8 +1044,24 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
         existing_user.status = "pending"
         existing_user.force_password_change = 0
         existing_user.updated_at = now
-        for user_role in db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == existing_user.id)).all():
-            db.delete(user_role)
+
+    if db.get(AuthUserAuthorizationRevision, user_id) is None:
+        db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+    if db.get(EmployeeProfile, user_id) is None:
+        db.add(
+            EmployeeProfile(
+                user_id=user_id,
+                primary_factory_id=factory_id,
+                primary_department=department,
+                position=position,
+                phone=phone,
+                email=email,
+                confirmation_status="pending",
+                source_registration_request_id=registration_request_id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
 
     db.add(
         AuthRegistrationRequest(
@@ -831,36 +1255,128 @@ def remove_auth_user_avatar(
     return to_auth_response(build_auth_context(db, user))
 
 
+def authorization_decision(
+    user: AuthContext,
+    permission: str,
+    factory_id: str,
+    department: str | None = None,
+    *,
+    at: datetime | None = None,
+) -> tuple[bool, str, tuple[str, ...], str]:
+    if user.active_permission_codes and permission not in user.active_permission_codes:
+        return False, "inactive_permission", (), "权限未启用"
+
+    superadmin_grants = [
+        grant
+        for grant in user.grants
+        if grant.role_code == "admin"
+        and grant.factory_id == "*"
+        and grant.department in {"*", "system"}
+        and time_window_is_active(grant.valid_from, grant.valid_until, at)
+    ]
+    if superadmin_grants:
+        return (
+            True,
+            "superadmin",
+            tuple(sorted(grant.binding_id for grant in superadmin_grants if grant.binding_id)),
+            "集团超级管理员",
+        )
+
+    matching_overrides = [
+        override
+        for override in user.overrides
+        if override.permission_code == permission
+        and scope_matches(override.factory_id, override.department, factory_id, department)
+        and time_window_is_active(override.valid_from, override.valid_until, at)
+    ]
+    denied = [override for override in matching_overrides if override.effect == "deny"]
+    if denied:
+        return False, "user_override", tuple(sorted(override.id for override in denied)), "用户单独禁止"
+
+    allowed = [override for override in matching_overrides if override.effect == "allow"]
+    if allowed:
+        return True, "user_override", tuple(sorted(override.id for override in allowed)), "用户单独允许"
+
+    matching_grants = [
+        grant
+        for grant in user.grants
+        if permission in grant.permissions
+        and scope_matches(grant.factory_id, grant.department, factory_id, department)
+        and time_window_is_active(grant.valid_from, grant.valid_until, at)
+    ]
+    if matching_grants:
+        return (
+            True,
+            "role_binding",
+            tuple(sorted(grant.binding_id for grant in matching_grants if grant.binding_id)),
+            "、".join(sorted({grant.role_name for grant in matching_grants})),
+        )
+
+    return False, "default", (), "默认拒绝"
+
+
+def can(
+    user: AuthContext,
+    permission: str,
+    factory_id: str,
+    department: str | None = None,
+    *,
+    at: datetime | None = None,
+) -> bool:
+    """Evaluate the canonical IAM policy independent of rollout mode."""
+    return authorization_decision(user, permission, factory_id, department, at=at)[0]
+
+
 def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
-    user_roles = list(
+    checked_at = datetime.now()
+    all_permissions = list(db.scalars(select(AuthPermission).order_by(AuthPermission.code)).all())
+    permission_code_by_id = {permission.id: permission.code for permission in all_permissions}
+    permission_metadata = list(db.scalars(select(AuthPermissionMetadata)).all())
+    permission_status_by_id = {item.permission_id: item.status for item in permission_metadata}
+    active_permission_codes = frozenset(
+        permission.code
+        for permission in all_permissions
+        if permission_status_by_id.get(permission.id, "active") == "active"
+    )
+
+    all_user_roles = list(
         db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id).order_by(AuthUserRole.id)).all()
     )
-    role_ids = [user_role.role_id for user_role in user_roles]
+    user_role_ids = [item.id for item in all_user_roles]
+    binding_metadata = (
+        list(
+            db.scalars(
+                select(AuthRoleBindingMetadata).where(AuthRoleBindingMetadata.user_role_id.in_(user_role_ids))
+            ).all()
+        )
+        if user_role_ids
+        else []
+    )
+    binding_metadata_by_id = {item.user_role_id: item for item in binding_metadata}
+    user_roles: list[AuthUserRole] = []
+    for user_role in all_user_roles:
+        metadata = binding_metadata_by_id.get(user_role.id)
+        if metadata is not None and metadata.state != "active":
+            continue
+        if metadata is not None and not time_window_is_active(metadata.valid_from, metadata.valid_until, checked_at):
+            continue
+        user_roles.append(user_role)
+
+    role_ids = sorted({user_role.role_id for user_role in user_roles})
     roles = list(db.scalars(select(AuthRole).where(AuthRole.id.in_(role_ids))).all()) if role_ids else []
     role_name_by_id = {role.id: role.name for role in roles}
     role_code_by_id = {role.id: role.code for role in roles}
 
-    permission_codes: set[str] = set()
     permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
     if role_ids:
         role_permissions = list(
             db.scalars(select(AuthRolePermission).where(AuthRolePermission.role_id.in_(role_ids))).all()
         )
-        permission_ids = sorted({role_permission.permission_id for role_permission in role_permissions})
-        if permission_ids:
-            permissions = db.scalars(select(AuthPermission).where(AuthPermission.id.in_(permission_ids))).all()
-            permission_code_by_id = {permission.id: permission.code for permission in permissions}
-            for role_permission in role_permissions:
-                permission_code = permission_code_by_id.get(role_permission.permission_id)
-                if not permission_code:
-                    continue
-                permission_codes.add(permission_code)
+        for role_permission in role_permissions:
+            permission_code = permission_code_by_id.get(role_permission.permission_id)
+            if permission_code in active_permission_codes:
                 permissions_by_role_id.setdefault(role_permission.role_id, set()).add(permission_code)
 
-    role_names = tuple(role_name_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
-    role_codes = tuple(role_code_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
-    factory_scopes = tuple(sorted({user_role.factory_id for user_role in user_roles if user_role.factory_id}))
-    department_scopes = tuple(sorted({user_role.department for user_role in user_roles if user_role.department}))
     grants = tuple(
         AuthGrantContext(
             role_id=user_role.role_id,
@@ -869,22 +1385,121 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
             department=user_role.department,
             permissions=frozenset(permissions_by_role_id.get(user_role.role_id, set())),
             data_scope="all" if user_role.factory_id == "*" else "department",
+            binding_id=user_role.id,
+            role_code=role_code_by_id.get(user_role.role_id, user_role.role_id),
+            valid_from=(binding_metadata_by_id[user_role.id].valid_from if user_role.id in binding_metadata_by_id else ""),
+            valid_until=(binding_metadata_by_id[user_role.id].valid_until if user_role.id in binding_metadata_by_id else ""),
         )
         for user_role in user_roles
     )
 
-    return AuthContext(
+    override_rows = list(
+        db.scalars(
+            select(AuthUserPermissionOverride)
+            .where(
+                AuthUserPermissionOverride.user_id == user.id,
+                AuthUserPermissionOverride.status == "active",
+            )
+            .order_by(AuthUserPermissionOverride.id)
+        ).all()
+    )
+    overrides = tuple(
+        AuthOverrideContext(
+            id=override.id,
+            permission_code=permission_code_by_id[override.permission_id],
+            effect=override.effect,
+            factory_id=override.factory_id,
+            department=override.department,
+            valid_from=override.valid_from,
+            valid_until=override.valid_until,
+            source_type=override.source_type,
+        )
+        for override in override_rows
+        if override.effect in {"allow", "deny"}
+        and permission_code_by_id.get(override.permission_id) in active_permission_codes
+        and time_window_is_active(override.valid_from, override.valid_until, checked_at)
+    )
+
+    profile_row = db.get(EmployeeProfile, user.id)
+    if profile_row is not None:
+        profile = AuthProfileContext(
+            primary_factory_id=profile_row.primary_factory_id,
+            primary_department=profile_row.primary_department,
+            position=profile_row.position,
+            phone=profile_row.phone,
+            email=profile_row.email,
+            confirmation_status=profile_row.confirmation_status,
+        )
+    else:
+        profile = None
+
+    revision_row = db.get(AuthUserAuthorizationRevision, user.id)
+    role_names = tuple(role_name_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
+    role_codes = tuple(role_code_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
+    factory_scopes = tuple(sorted({user_role.factory_id for user_role in user_roles if user_role.factory_id}))
+    department_scopes = tuple(sorted({user_role.department for user_role in user_roles if user_role.department}))
+
+    context = AuthContext(
         id=user.id,
         username=user.username,
         display_name=user.display_name,
         roles=role_names,
         role_codes=role_codes,
-        permissions=frozenset(permission_codes),
+        permissions=frozenset(),
         factory_scopes=factory_scopes,
         department_scopes=department_scopes,
         grants=grants,
         force_password_change=bool(user.force_password_change),
         avatar_url=f"/api/auth/me/avatar?v={user.avatar_version}" if user.avatar_png and user.avatar_version else "",
+        profile=profile,
+        authorization_version=revision_row.revision if revision_row else 0,
+        overrides=overrides,
+        active_permission_codes=active_permission_codes,
+    )
+
+    scope_candidates = {
+        (grant.factory_id, grant.department)
+        for grant in grants
+    } | {
+        (override.factory_id, override.department)
+        for override in overrides
+    }
+    if any(
+        grant.role_code == "admin" and grant.factory_id == "*" and grant.department in {"*", "system"}
+        for grant in grants
+    ):
+        scope_candidates.add(("*", "*"))
+
+    effective_access: list[AuthEffectiveAccessContext] = []
+    allowed_permission_codes: set[str] = set()
+    for factory_id, department in sorted(scope_candidates):
+        for permission_code in sorted(active_permission_codes):
+            allowed, source_type, source_ids, source_name = authorization_decision(
+                context,
+                permission_code,
+                factory_id,
+                department,
+                at=checked_at,
+            )
+            if allowed:
+                allowed_permission_codes.add(permission_code)
+            effective_access.append(
+                AuthEffectiveAccessContext(
+                    permission_code=permission_code,
+                    factory_id=factory_id,
+                    department=department,
+                    effect="allow" if allowed else "deny",
+                    allowed=allowed,
+                    source_type=source_type,
+                    source_ids=source_ids,
+                    source_name=source_name,
+                )
+            )
+
+    return replace(
+        context,
+        permissions=frozenset(allowed_permission_codes),
+        effective_access=tuple(effective_access),
     )
 
 
@@ -933,6 +1548,33 @@ def to_auth_response(context: AuthContext) -> AuthMeResponse:
         ],
         force_password_change=context.force_password_change,
         avatar_url=context.avatar_url,
+        profile=(
+            {
+                "primary_factory_id": context.profile.primary_factory_id,
+                "primary_department": context.profile.primary_department,
+                "position": context.profile.position,
+                "phone": context.profile.phone,
+                "email": context.profile.email,
+                "confirmation_status": context.profile.confirmation_status,
+            }
+            if context.profile
+            else None
+        ),
+        authorization_version=context.authorization_version,
+        effective_access=[
+            {
+                "permission_code": access.permission_code,
+                "factory_id": access.factory_id,
+                "department": access.department,
+                "effect": access.effect,
+                "allowed": access.allowed,
+                "source_type": access.source_type,
+                "source_ids": list(access.source_ids),
+                "source_name": access.source_name,
+            }
+            for access in context.effective_access
+        ],
+        authz_mode=settings.authz_mode,
     )
 
 
@@ -941,6 +1583,30 @@ def has_factory_scope(user: AuthContext, factory_id: str) -> bool:
 
 
 def has_permission_in_scope(
+    user: AuthContext,
+    permission: str,
+    factory_id: str,
+    department: str | None = None,
+) -> bool:
+    canonical_result = can(user, permission, factory_id, department)
+    if settings.authz_mode == "enforce":
+        return canonical_result
+
+    legacy_result = legacy_has_permission_in_scope(user, permission, factory_id, department)
+    if settings.authz_mode == "shadow" and legacy_result != canonical_result:
+        logger.warning(
+            "authz shadow mismatch user=%s permission=%s scope=%s/%s legacy=%s canonical=%s",
+            user.id,
+            permission,
+            factory_id,
+            department or "*",
+            legacy_result,
+            canonical_result,
+        )
+    return legacy_result
+
+
+def legacy_has_permission_in_scope(
     user: AuthContext,
     permission: str,
     factory_id: str,

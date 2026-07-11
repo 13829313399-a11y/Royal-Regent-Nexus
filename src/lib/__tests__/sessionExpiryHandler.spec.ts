@@ -5,11 +5,15 @@ import { useAuthStore } from '@/stores/auth'
 const httpMock = vi.hoisted(() => {
   const state: {
     unauthorizedHandler?: (error?: unknown) => void
+    forbiddenHandler?: (error?: unknown) => void
   } = {}
   return {
     state,
     setUnauthorizedHandler: vi.fn((handler) => {
       state.unauthorizedHandler = handler
+    }),
+    setForbiddenHandler: vi.fn((handler) => {
+      state.forbiddenHandler = handler
     }),
   }
 })
@@ -17,6 +21,7 @@ const httpMock = vi.hoisted(() => {
 vi.mock('@/lib/http', () => ({
   http: {},
   setUnauthorizedHandler: httpMock.setUnauthorizedHandler,
+  setForbiddenHandler: httpMock.setForbiddenHandler,
 }))
 
 describe('installUnauthorizedSessionHandler', () => {
@@ -102,6 +107,31 @@ describe('installUnauthorizedSessionHandler', () => {
     installUnauthorizedSessionHandler(router as never, pinia)
     httpMock.state.unauthorizedHandler?.({ config: { url: '/auth/me' } })
 
+    expect(authStore.isAuthenticated).toBe(true)
+    expect(router.replace).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the authorization snapshot after a protected API returns 403', async () => {
+    const { installUnauthorizedSessionHandler } = await import('../sessionExpiryHandler')
+    const pinia = createPinia()
+    const authStore = useAuthStore(pinia)
+    const router = {
+      currentRoute: {
+        value: {
+          name: 'system-user-access',
+          fullPath: '/system/users/user-1/access',
+          meta: { requiresAuth: true },
+        },
+      },
+      replace: vi.fn(() => Promise.resolve()),
+    }
+    authStore.applySession(user)
+    const refresh = vi.spyOn(authStore, 'refreshSession').mockResolvedValue(true)
+
+    installUnauthorizedSessionHandler(router as never, pinia)
+    httpMock.state.forbiddenHandler?.({ config: { url: '/iam/users/user-1/access' } })
+
+    expect(refresh).toHaveBeenCalledOnce()
     expect(authStore.isAuthenticated).toBe(true)
     expect(router.replace).not.toHaveBeenCalled()
   })

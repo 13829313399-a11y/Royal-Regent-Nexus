@@ -13,6 +13,7 @@ import {
   normalizeMaterialName,
   resolveMaterialPrice,
   calculateExpectedMaterialAmountHkd,
+  countMoldingSampleAttentionMetrics,
 } from '../moldingSampleBusiness.js'
 import type { MoldingSampleItem, MoldingSampleOrder } from '../../types/moldingSample.js'
 
@@ -233,6 +234,50 @@ const passingGate = buildCompletionGate(baseOrder, [
   { ...baseItem, id: 'BP-TEST-002', actual_weight_kg: 1.2 },
 ])
 assert.equal(passingGate.can_complete, true)
+
+const attentionMetrics = countMoldingSampleAttentionMetrics([
+  {
+    order: { ...baseOrder, status: '已驳回' },
+    items: [{ ...baseItem, actual_weight_kg: null }],
+    problems: [],
+  },
+  {
+    order: { ...baseOrder, status: '已撤回' },
+    items: [{ ...baseItem, actual_weight_kg: null }],
+    problems: [{ status: '已解决' }],
+  },
+  {
+    order: { ...baseOrder, status: '生产中' },
+    items: [{ ...baseItem, actual_weight_kg: null }],
+    problems: [{ status: '待处理' }, { status: '待处理' }],
+  },
+  {
+    order: { ...baseOrder, status: '生产中' },
+    items: [{ ...baseItem, actual_weight_kg: 1.2 }],
+    problems: [{ status: '已解决' }],
+  },
+  {
+    order: { ...baseOrder, status: '待生产' },
+    items: [{ ...baseItem, actual_weight_kg: null }],
+    problems: [],
+  },
+  {
+    order: { ...baseOrder, status: '待审核' },
+    items: [{ ...baseItem, actual_weight_kg: null }],
+    problems: [],
+  },
+  {
+    order: { ...baseOrder, status: '生产中', send_to: '发至模厂' },
+    items: [{ ...baseItem, actual_weight_kg: null }],
+    problems: [],
+  },
+])
+assert.deepEqual(attentionMetrics, {
+  rejectedCount: 1,
+  withdrawnCount: 1,
+  unresolvedProblemCount: 1,
+  productionDataPendingCount: 1,
+})
 
 assert.equal(normalizeMaterialName('PP(EP３３２K)-90度'), 'ppep332k90°')
 assert.equal(resolveMaterialPrice('HIPS-425', prices)?.unit_price, 5.5)

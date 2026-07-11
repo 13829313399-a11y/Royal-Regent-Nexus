@@ -60,6 +60,14 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
         assert "系统管理员" in me["roles"]
         assert "system:user_manage" in me["permissions"]
         assert "*" in me["factory_scopes"]
+        assert me["authorization_version"] == 1
+        assert me["profile"]["confirmation_status"] == "needs_review"
+        assert any(
+            item["permission_code"] == "system:user_manage"
+            and item["effect"] == "allow"
+            and item["source_type"] == "superadmin"
+            for item in me["effective_access"]
+        )
         assert me["grants"] == [
             {
                 "role_id": "admin",
@@ -70,6 +78,41 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                 "data_scope": "all",
             }
         ]
+
+
+@pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
+def test_auth_me_exposes_current_authz_mode_without_removing_existing_fields(monkeypatch, authz_mode):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE=authz_mode,
+        AUTHZ_WRITES_ENABLED="false",
+    ) as client:
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": ADMIN_TEST_PASSWORD},
+        )
+        me_response = client.get("/api/auth/me")
+
+        assert login_response.status_code == 200
+        assert me_response.status_code == 200
+        for response in (login_response, me_response):
+            body = response.json()
+            assert body["authz_mode"] == authz_mode
+            assert {
+                "id",
+                "username",
+                "display_name",
+                "roles",
+                "permissions",
+                "factory_scopes",
+                "department_scopes",
+                "grants",
+                "force_password_change",
+                "avatar_url",
+                "profile",
+                "authorization_version",
+                "effective_access",
+            }.issubset(body)
 
 
 def test_login_session_cookie_secure_flag_can_be_enabled_by_env(monkeypatch):
@@ -184,6 +227,316 @@ def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeyp
                 "internal_pricing:read",
                 "internal_pricing:create",
             }
+
+
+def test_seed_preserves_existing_account_role_template_and_additional_binding(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            admin = db.get(auth_models.AuthUser, "user-admin")
+            admin.status = "suspended"
+            admin_role = db.get(auth_models.AuthRole, "admin")
+            admin_role.name = "自定义管理员模板"
+            removed_mapping_id = "admin:perm-system-user_manage"
+            removed_mapping = db.get(auth_models.AuthRolePermission, removed_mapping_id)
+            assert removed_mapping is not None
+            db.delete(removed_mapping)
+            extra_binding_id = "user-admin:engineer:huaxing:engineering"
+            db.add(
+                auth_models.AuthUserRole(
+                    id=extra_binding_id,
+                    user_id=admin.id,
+                    role_id="engineer",
+                    factory_id="huaxing",
+                    department="engineering",
+                )
+            )
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            assert db.get(auth_models.AuthUser, admin.id).status == "suspended"
+            assert db.get(auth_models.AuthRole, "admin").name == "自定义管理员模板"
+            assert db.get(auth_models.AuthRolePermission, removed_mapping_id) is None
+            assert db.get(auth_models.AuthUserRole, extra_binding_id) is not None
+            binding_metadata = db.get(auth_models.AuthRoleBindingMetadata, extra_binding_id)
+            assert binding_metadata is not None
+            assert binding_metadata.state == "active"
+            assert binding_metadata.source_type == "legacy_import"
+
+
+def test_canonical_can_uses_deny_then_allow_then_role_and_scope(monkeypatch):
+    with make_client(monkeypatch):
+        auth_service = importlib.import_module("app.services.auth")
+        grant = auth_service.AuthGrantContext(
+            role_id="engineer",
+            role_name="工程师",
+            factory_id="huaxing",
+            department="engineering",
+            permissions=frozenset({"module:read"}),
+            binding_id="binding-engineer",
+            role_code="engineer",
+        )
+        allow = auth_service.AuthOverrideContext(
+            id="override-allow",
+            permission_code="module:update",
+            effect="allow",
+            factory_id="huaxing",
+            department="engineering",
+        )
+        deny = auth_service.AuthOverrideContext(
+            id="override-deny",
+            permission_code="module:update",
+            effect="deny",
+            factory_id="huaxing",
+            department="engineering",
+        )
+        context = auth_service.AuthContext(
+            id="user-test",
+            username="test",
+            display_name="测试",
+            roles=("工程师",),
+            role_codes=("engineer",),
+            permissions=frozenset(),
+            factory_scopes=("huaxing",),
+            department_scopes=("engineering",),
+            grants=(grant,),
+            overrides=(allow, deny),
+            active_permission_codes=frozenset({"module:read", "module:update"}),
+        )
+
+        assert auth_service.can(context, "module:update", "huaxing", "engineering") is False
+        assert auth_service.can(
+            auth_service.replace(context, overrides=(allow,)),
+            "module:update",
+            "huaxing",
+            "engineering",
+        ) is True
+        assert auth_service.can(context, "module:read", "huaxing", "engineering") is True
+        assert auth_service.can(context, "module:read", "huadeng", "engineering") is False
+
+
+def test_legacy_read_compat_backfills_only_eligible_existing_users_once(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+
+        def add_historical_user(
+            db,
+            suffix: str,
+            *,
+            user_status: str,
+            role_id: str,
+            request_status: str,
+            factory_id: str = "huaxing",
+            department: str = "engineering",
+            incomplete_profile: bool = False,
+        ) -> str:
+            user_id = f"legacy-user-{suffix}"
+            now = auth_service.now_text()
+            salt, password_hash = auth_service.make_password_hash("Strong123")
+            db.add(
+                auth_models.AuthUser(
+                    id=user_id,
+                    username=f"legacy-{suffix}",
+                    display_name=f"历史用户 {suffix}",
+                    password_salt=salt,
+                    password_hash=password_hash,
+                    status=user_status,
+                    force_password_change=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.flush()
+            db.add(
+                auth_models.AuthRegistrationRequest(
+                    id=f"registration-{suffix}",
+                    user_id=user_id,
+                    username=f"legacy-{suffix}",
+                    display_name=f"历史用户 {suffix}",
+                    phone="13800000000",
+                    email="",
+                    factory_id=factory_id,
+                    department=department,
+                    position="工程师",
+                    status=request_status,
+                    submitted_at=now,
+                    reviewed_at=now if request_status in {"approved", "rejected"} else "",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                auth_models.AuthUserRole(
+                    id=f"{user_id}:{role_id}:{factory_id}:{department}",
+                    user_id=user_id,
+                    role_id=role_id,
+                    factory_id=factory_id,
+                    department=department,
+                )
+            )
+            if incomplete_profile:
+                db.add(
+                    auth_models.EmployeeProfile(
+                        user_id=user_id,
+                        primary_factory_id="",
+                        primary_department="",
+                        position="工程师",
+                        phone="13800000000",
+                        confirmation_status="confirmed",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            return user_id
+
+        with db_module.SessionLocal() as db:
+            marker = db.get(auth_models.AuthIamState, auth_service.LEGACY_READ_COMPAT_MARKER)
+            assert marker is not None
+            db.delete(marker)
+            db.flush()
+
+            eligible_active = add_historical_user(
+                db,
+                "eligible-active",
+                user_status="active",
+                role_id="engineer",
+                request_status="approved",
+            )
+            eligible_suspended = add_historical_user(
+                db,
+                "eligible-suspended",
+                user_status="suspended",
+                role_id="engineer",
+                request_status="approved",
+            )
+            existing_read = add_historical_user(
+                db,
+                "existing-read",
+                user_status="active",
+                role_id="molding_clerk",
+                request_status="approved",
+                department="production",
+            )
+            incomplete = add_historical_user(
+                db,
+                "incomplete",
+                user_status="active",
+                role_id="engineer",
+                request_status="approved",
+                incomplete_profile=True,
+            )
+            pending = add_historical_user(
+                db,
+                "pending",
+                user_status="pending",
+                role_id="engineer",
+                request_status="pending",
+            )
+            rejected = add_historical_user(
+                db,
+                "rejected",
+                user_status="rejected",
+                role_id="engineer",
+                request_status="rejected",
+            )
+            left = add_historical_user(
+                db,
+                "left",
+                user_status="left",
+                role_id="engineer",
+                request_status="approved",
+            )
+            admin_user = add_historical_user(
+                db,
+                "admin",
+                user_status="active",
+                role_id="admin",
+                request_status="approved",
+                factory_id="*",
+                department="system",
+            )
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            compat_overrides = db.query(auth_models.AuthUserPermissionOverride).filter_by(
+                source_type="legacy_read_compat",
+                status="active",
+            ).all()
+            assert {item.user_id for item in compat_overrides} == {eligible_active, eligible_suspended}
+            assert all(item.effect == "allow" for item in compat_overrides)
+            assert all(item.valid_until == "" for item in compat_overrides)
+            assert all(item.reason == "历史登录可读兼容" for item in compat_overrides)
+            assert db.get(auth_models.AuthIamState, auth_service.LEGACY_READ_COMPAT_MARKER) is not None
+            assert {existing_read, incomplete, pending, rejected, left, admin_user}.isdisjoint(
+                {item.user_id for item in compat_overrides}
+            )
+
+            late_user = add_historical_user(
+                db,
+                "late-user",
+                user_status="active",
+                role_id="engineer",
+                request_status="approved",
+            )
+            db.commit()
+            auth_service.seed_auth_defaults(db)
+            assert db.query(auth_models.AuthUserPermissionOverride).filter_by(
+                user_id=late_user,
+                source_type="legacy_read_compat",
+            ).count() == 0
+
+
+def test_authz_writes_require_enforce_mode(monkeypatch):
+    with pytest.raises(RuntimeError, match="AUTHZ_WRITES_ENABLED=true requires AUTHZ_MODE=enforce"):
+        make_client(monkeypatch, AUTHZ_MODE="legacy", AUTHZ_WRITES_ENABLED="true")
+
+
+def test_active_configurable_override_blocks_legacy_and_shadow_but_allows_enforce(monkeypatch):
+    with make_client(monkeypatch, AUTHZ_MODE="legacy", AUTHZ_WRITES_ENABLED="false"):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            permission = db.query(auth_models.AuthPermission).filter_by(code="injection_schedule:read").one()
+            now = auth_service.now_text()
+            db.add(
+                auth_models.AuthUserPermissionOverride(
+                    id="manual-rollout-guard",
+                    user_id="user-admin",
+                    permission_id=permission.id,
+                    effect="deny",
+                    factory_id="*",
+                    department="*",
+                    status="active",
+                    valid_from=now,
+                    valid_until="",
+                    reason="验证回退保护",
+                    source_type="manual",
+                    source_id="",
+                    created_by_user_id="user-admin",
+                    approved_by_user_id="user-admin",
+                    revoked_by_user_id="",
+                    revoked_at="",
+                    revoke_reason="",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.commit()
+
+            with pytest.raises(RuntimeError, match="AUTHZ_MODE must remain enforce"):
+                auth_service.ensure_authz_startup_safety(db)
+            monkeypatch.setattr(auth_service.settings, "authz_mode", "shadow")
+            with pytest.raises(RuntimeError, match="AUTHZ_MODE must remain enforce"):
+                auth_service.ensure_authz_startup_safety(db)
+            monkeypatch.setattr(auth_service.settings, "authz_mode", "enforce")
+            auth_service.ensure_authz_startup_safety(db)
 
 
 def test_weak_seed_admin_password_is_rejected(monkeypatch):

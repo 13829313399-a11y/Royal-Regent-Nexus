@@ -92,6 +92,7 @@ async function mountRuntimeView(
   setActivePinia(pinia)
 
   const permissions = options.permissions ?? [
+    'molding_sample:export',
     'molding_sample:create',
     'molding_sample:edit_draft',
     'molding_sample:delete_draft',
@@ -99,6 +100,8 @@ async function mountRuntimeView(
     'molding_sample:manager_review',
     'system:user_manage',
   ]
+  const factoryScopes = options.factoryScopes ?? ['*']
+  const administrator = (options.roles ?? ['系统管理员']).includes('系统管理员')
 
   useAuthStore().applySession({
     id: 'tester',
@@ -106,8 +109,16 @@ async function mountRuntimeView(
     display_name: options.displayName ?? '测试账号',
     roles: options.roles ?? ['系统管理员'],
     permissions,
-    grants: [],
-    factory_scopes: options.factoryScopes ?? ['*'],
+    grants: [{
+      role_id: administrator ? 'admin' : 'test-role',
+      role_code: administrator ? 'admin' : 'test-role',
+      role_name: administrator ? '系统管理员' : '测试角色',
+      factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
+      department: administrator ? 'system' : '*',
+      permissions,
+      data_scope: administrator ? 'all' : 'department',
+    }],
+    factory_scopes: factoryScopes,
     department_scopes: ['*'],
     force_password_change: false,
   })
@@ -183,6 +194,59 @@ function createMoldingSampleRecord(
   }
 }
 
+function createKpiRecord(
+  status: MoldingSampleStatus,
+  id: string,
+  actualWeightKg: number | null,
+  problemStatuses: Array<'待处理' | '已解决'> = [],
+  sendTo: '' | '发至模厂' = '',
+): MoldingSampleDetailResponse {
+  const record = createMoldingSampleRecord(status, id)
+  record.order.send_to = sendTo
+  record.items = [{
+    id: `${id}-ITEM-1`,
+    order_id: id,
+    sort_order: 1,
+    mold_id: 'M-001',
+    mold_name: '测试模具',
+    mold_dimensions: '',
+    mold_presence_status: 'unknown',
+    machine_type: '160T',
+    production_machine: '',
+    material: 'HIPS 425',
+    color: '黑色',
+    pigment_no: '',
+    quantity: '1',
+    shoot_qty: 30,
+    gross_weight_g: 82,
+    required_material_kg: 2.46,
+    mold_return_time: '',
+    completion_time: '',
+    notes: '',
+    receipt_no: '',
+    collected_weight_kg: null,
+    actual_weight_kg: actualWeightKg,
+    actual_amount_hkd: null,
+    injection_cost: null,
+    injection_cost_hkd: null,
+    exchange_rate_at_save: null,
+  }]
+  record.problems = problemStatuses.map((problemStatus, index) => ({
+    id: `${id}-PROBLEM-${index + 1}`,
+    factory_id: 'huaxing',
+    order_type: 'injection',
+    order_id: id,
+    order_number: record.order.order_number,
+    description: `测试问题 ${index + 1}`,
+    reported_by: '啤机部',
+    status: problemStatus,
+    created_at: '2026-07-11 08:00',
+    resolved_at: problemStatus === '已解决' ? '2026-07-11 09:00' : '',
+  }))
+
+  return record
+}
+
 function createProductionTaskNotification(
   orderId: string,
   sequence = 1,
@@ -251,6 +315,37 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).toContain('华登暂无正式啤办单')
     expect(wrapper.text()).toContain('当前厂区单据')
     expect(wrapper.text()).toContain('华登 · 按状态分列')
+
+    wrapper.unmount()
+  })
+
+  it('separates returned orders, unresolved problems, and missing production data', async () => {
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([
+      createKpiRecord('已驳回', 'BP-KPI-REJECTED', null),
+      createKpiRecord('已撤回', 'BP-KPI-WITHDRAWN', null, ['已解决']),
+      createKpiRecord('生产中', 'BP-KPI-PROD-MISSING', null, ['待处理', '待处理']),
+      createKpiRecord('生产中', 'BP-KPI-PROD-COMPLETE', 1.2, ['已解决']),
+      createKpiRecord('待生产', 'BP-KPI-PENDING-PROD', null),
+      createKpiRecord('待审核', 'BP-KPI-PENDING-REVIEW', null),
+      createKpiRecord('生产中', 'BP-KPI-EXTERNAL', null, [], '发至模厂'),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(wrapper.get('[data-testid="molding-kpi-grid"]').findAll('article')).toHaveLength(7)
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn-value"]').text()).toBe('2')
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn"]').text()).toContain('已驳回 1 · 已撤回 1')
+    expect(wrapper.get('[data-testid="molding-kpi-unresolved-problems-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
+    expect(wrapper.text()).not.toContain('卡点 / 退回')
+
+    await wrapper.get('input[placeholder="搜索单号 / 产品 / 客户 / 模具号..."]').setValue('BP-KPI-PROD-MISSING')
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="molding-kpi-factory-orders-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn-value"]').text()).toBe('0')
+    expect(wrapper.get('[data-testid="molding-kpi-unresolved-problems-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
 
     wrapper.unmount()
   })
@@ -413,8 +508,8 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).toContain('预计料费')
     expect(printArea).toContain('HKD 16.04')
     expect(printArea).toContain('HKD 8.50')
-    expect(printArea).toContain('RMB 120.00')
-    expect(printArea).toContain('1.08')
+    expect(printArea).not.toContain('RMB 120.00')
+    expect(printArea).not.toContain('HKD 111.11')
     expect(printArea).toContain('BP-PRINT-002')
     expect(printArea).toContain('Royal Regent Nexus')
     expect(printArea).toContain('工程啤办通知单')
@@ -953,6 +1048,15 @@ describe('molding sample runtime error handling', () => {
     await getButtonByText(wrapper, 'BP-DETAIL-FULL-001').trigger('click')
     await nextTick()
 
+    const detailTable = wrapper.get('[data-testid="molding-sample-detail-table"]')
+    expect(detailTable.text()).toContain('工模尺寸')
+    expect(detailTable.text()).toContain('650 × 450 × 380 mm')
+    expect(detailTable.text()).toContain('适配机型')
+    expect(detailTable.text()).toContain('160T')
+    expect(detailTable.text()).toContain('模具在厂')
+    expect(detailTable.text()).toContain('在厂')
+    expect(detailTable.text()).toContain('回厂时间')
+    expect(detailTable.text()).toContain('2026-02-03')
     expect(wrapper.text()).not.toContain('完整单据数据')
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
@@ -977,61 +1081,9 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('啤机确认机台')
     expect(text).toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
-
-    wrapper.unmount()
-  })
-
-  it('shows the current RMB to HKD rate when an item has no saved exchange rate', async () => {
-    const detailedRecord = {
-      ...createMoldingSampleRecord('生产中', 'BP-RATE-LIVE-001'),
-      items: [
-        {
-          id: 'BP-RATE-LIVE-001-001',
-          order_id: 'BP-RATE-LIVE-001',
-          sort_order: 1,
-          mold_id: 'P50002008-01-01',
-          mold_name: '头盔',
-          machine_type: '160T',
-          production_machine: '啤办机台-08',
-          material: 'PP (AV161)',
-          color: '黑色',
-          pigment_no: 'PMS 黑色',
-          quantity: '1/1',
-          shoot_qty: 30,
-          gross_weight_g: 82,
-          required_material_kg: 15,
-          mold_return_time: '2026-02-03',
-          completion_time: '2026-02-04',
-          notes: '待保存啤办费。',
-          receipt_no: '',
-          collected_weight_kg: null,
-          actual_weight_kg: 14.2,
-          actual_amount_hkd: null,
-          injection_cost: null,
-          injection_cost_hkd: null,
-          exchange_rate_at_save: null,
-        },
-      ],
-    } satisfies MoldingSampleDetailResponse
-
-    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([detailedRecord])
-    mockedMoldingSampleApi.getMaterialPrices.mockResolvedValueOnce({
-      prices: [],
-      rmb_to_hkd_rate: 1.1234,
-    })
-
-    const wrapper = await mountRuntimeView(MoldingSampleView)
-
-    await getButtonByText(wrapper, 'BP-RATE-LIVE-001').trigger('click')
-    await nextTick()
-    await getButtonByText(wrapper, '展开完整数据').trigger('click')
-    await flushPromises()
-    await nextTick()
-
-    const text = wrapper.text()
-    expect(text).toContain('当前汇率(RMB→HKD)')
-    expect(text).toContain('1.1234')
-    expect(text).not.toContain('汇率待填写')
+    expect(text).not.toContain('啤办费(RMB)')
+    expect(text).not.toContain('啤办费(HKD)')
+    expect(text).not.toContain('当前汇率(RMB→HKD)')
 
     wrapper.unmount()
   })

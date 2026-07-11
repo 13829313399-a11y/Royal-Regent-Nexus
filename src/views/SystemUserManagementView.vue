@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   UserCheck,
   UserCog,
@@ -47,7 +48,7 @@ const selectedRoles = ref<Record<string, string>>({})
 const approvalComments = ref<Record<string, string>>({})
 const rejectComments = ref<Record<string, string>>({})
 const userSearch = ref('')
-const userStatusFilter = ref<'all' | 'active' | 'suspended'>('all')
+const userStatusFilter = ref<'all' | 'active' | 'suspended' | 'retired'>('all')
 const selectedRequestId = ref('')
 const isLoading = ref(false)
 const actionKey = ref('')
@@ -248,15 +249,17 @@ function departmentLabel(departmentId: string) {
   return departmentMap[departmentId as keyof typeof departmentMap]?.name ?? departmentId
 }
 
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    pending: '待审批',
-    approved: '已通过',
-    rejected: '已拒绝',
-    active: '正常',
-    suspended: '已停用',
-  }
-  return labels[status] ?? status
+const userStatusPresentations: Record<string, { label: string; toneClass: string }> = {
+  pending: { label: '待审批', toneClass: 'pill-amber' },
+  approved: { label: '已通过', toneClass: 'pill-blue' },
+  rejected: { label: '已拒绝', toneClass: 'pill-red' },
+  active: { label: '正常', toneClass: 'pill-green' },
+  suspended: { label: '已停用', toneClass: 'pill-slate' },
+  retired: { label: '已离职', toneClass: 'pill-slate' },
+}
+
+function userStatusPresentation(status: string) {
+  return userStatusPresentations[status] ?? { label: '未知状态', toneClass: 'pill-slate' }
 }
 
 function roleName(roleId: string) {
@@ -312,14 +315,6 @@ function roleToneClass(name: string) {
   if (/QA|检验|品质/.test(name)) return 'pill-blue'
   if (/仓|PMC|排产/.test(name)) return 'pill-amber'
   return 'pill-teal'
-}
-
-function statusToneClass(status: string) {
-  if (status === 'active') return 'pill-green'
-  if (status === 'suspended') return 'pill-slate'
-  if (status === 'pending') return 'pill-amber'
-  if (status === 'rejected') return 'pill-red'
-  return 'pill-blue'
 }
 
 function inferPermissionCodesForRole(role: RoleResponse | undefined, request: RegistrationRequestResponse) {
@@ -517,6 +512,8 @@ async function markPasswordResetHandled(notification: SystemNotificationResponse
 onMounted(() => {
   if (route.query.tab === 'password-reset') {
     activeTab.value = 'password-reset'
+  } else if (route.query.tab === 'users') {
+    activeTab.value = 'users'
   } else if (route.query.request_id) {
     activeTab.value = 'pending'
   }
@@ -557,6 +554,10 @@ onMounted(() => {
               用户列表
             </button>
           </nav>
+          <RouterLink class="ghost-link iam-console-entry" to="/system/iam/permissions">
+            <SlidersHorizontal class="size-4" aria-hidden="true" />
+            高级权限管理
+          </RouterLink>
           <button type="button" class="ghost-link" :disabled="isLoading" @click="loadData">
             <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
             刷新
@@ -840,12 +841,13 @@ onMounted(() => {
       <div class="table-tools">
         <label class="search-box">
           <Search class="size-4" aria-hidden="true" />
-          <input v-model="userSearch" placeholder="搜索姓名、工号、联系方式、角色..." type="search">
+          <input v-model="userSearch" aria-label="搜索用户" placeholder="搜索姓名、工号、联系方式、角色..." type="search">
         </label>
         <div class="seg">
           <button type="button" :class="{ on: userStatusFilter === 'all' }" @click="userStatusFilter = 'all'">全部</button>
           <button type="button" :class="{ on: userStatusFilter === 'active' }" @click="userStatusFilter = 'active'">正常</button>
           <button type="button" :class="{ on: userStatusFilter === 'suspended' }" @click="userStatusFilter = 'suspended'">停用</button>
+          <button type="button" :class="{ on: userStatusFilter === 'retired' }" @click="userStatusFilter = 'retired'">已离职</button>
         </div>
       </div>
 
@@ -906,13 +908,21 @@ onMounted(() => {
                 </div>
               </td>
               <td>
-                <span class="pill" :class="statusToneClass(user.status)">
-                  <span></span>{{ statusLabel(user.status) }}
+                <span class="pill" :class="userStatusPresentation(user.status).toneClass">
+                  <span></span>{{ userStatusPresentation(user.status).label }}
                 </span>
               </td>
               <td class="muted">{{ formatDateTime(user.last_login_at) }}</td>
               <td>
                 <div class="row-ops">
+                  <RouterLink
+                    v-if="user.status === 'active' || user.status === 'suspended'"
+                    class="btn btn-sm iam-access-link"
+                    :to="`/system/users/${encodeURIComponent(user.id)}/access`"
+                  >
+                    <SlidersHorizontal class="size-3.5" aria-hidden="true" />
+                    配置权限
+                  </RouterLink>
                   <button
                     v-if="user.status === 'active'"
                     type="button"
@@ -2115,7 +2125,20 @@ onMounted(() => {
 
 .row-ops {
   display: flex;
+  gap: 6px;
   justify-content: flex-end;
+}
+
+.iam-access-link {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #047857;
+  text-decoration: none;
+}
+
+.iam-access-link:hover {
+  border-color: #6ee7b7;
+  background: #d1fae5;
 }
 
 .empty-row {

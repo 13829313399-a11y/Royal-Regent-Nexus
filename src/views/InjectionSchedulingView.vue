@@ -161,7 +161,7 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
 })
 
 const canImportDailySchedule = computed(() =>
-  authStore.hasPermission('injection_schedule:import') && authStore.hasFactoryScope(selectedFactoryId.value),
+  authStore.can('injection_schedule:import', selectedFactoryId.value),
 )
 
 const dailyScheduleImportReadonlyMessage = computed(() => {
