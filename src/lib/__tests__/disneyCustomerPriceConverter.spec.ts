@@ -89,6 +89,18 @@ function getCellBody(sheetXml: string, ref: string) {
   return ''
 }
 
+function getCellXml(sheetXml: string, ref: string) {
+  const cellPattern = /<c\b([^>]*)\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/g
+  for (const match of sheetXml.matchAll(cellPattern)) {
+    const attrs = match[1] ?? match[2] ?? ''
+    if (attrs.match(new RegExp(`\\br="${ref}"`))) {
+      return match[0]
+    }
+  }
+
+  return ''
+}
+
 function getCellFormula(sheetXml: string, ref: string) {
   return getCellBody(sheetXml, ref).match(/<f(?:\s[^>]*)?>([\s\S]*?)<\/f>/)?.[1] ?? ''
 }
@@ -158,6 +170,15 @@ function createMinimalDisneyWorkbook() {
   detailRows[35][1] = '装配工'
   detailRows[35][2] = '包装装配工（22人/11H/3000）'
   detailRows[35][5] = 0.1
+  detailRows[38][1] = '彩盒/内咭'
+  detailRows[38][2] = '吊牌'
+  detailRows[38][5] = 11794.845
+  detailRows[38][6] = 83705.35
+  detailRows[38][7] = 129362.81
+  detailRows[39][1] = '彩盒/内咭'
+  detailRows[39][2] = '吊牌'
+  detailRows[39][3] = 0.08
+  detailRows[39][5] = 0.0105
   detailRows[46][2] = '包含测试费用（US)：'
   detailRows[47][5] = 0.027
   detailRows[51][2] = '5K报价：'
@@ -214,6 +235,10 @@ describe('Disney customer price converter', () => {
     expect(result.sheets[0].name).toBe('Indiana Jones Pul-back Ride Vehicle')
     expect(result.sheets[0].details.length).toBeGreaterThan(8)
     expect(result.sheets[0].totalCustomerHkd).toBeGreaterThan(10000)
+    expect(result.sheets[0].quoteData.plastics[0].laborRateUsdHr).toBe(8.12)
+    expect(result.sheets[0].quoteData.plastics[0].moldingLaborCostUsd).toBeGreaterThan(0)
+    expect(result.sheets[0].quoteData.purchasedPackageParts.map((part) => part.description))
+      .toEqual(['Price label', 'Carton Box 0/6 (12.56"x10.2"x3.76")'])
 
     const output = createDisneyCustomerQuoteWorkbook(result, readDisneyTemplate())
     const parsed = parseXlsxWorkbook(asArrayBuffer(output))
@@ -226,22 +251,25 @@ describe('Disney customer price converter', () => {
 
     const tier = parsed.sheets[0]
     expect(tier.rows[7][2]).toBe('Indiana Jones Pul-back Ride Vehicle')
-    expect(tier.rows[8][2]).toBe('1000142435')
+    expect(tier.rows[8][2]).toBe(1000142435)
     expect(tier.rows[18][1]).toBe('1000142435-01')
     expect(tier.rows[18][2]).toBe(8900)
     expect(tier.rows[18][3]).toBe('Car Body')
     expect(tier.rows[18][5]).toBe('ABS')
     expect(tier.rows[18][7]).toBe(2.16)
+    expect(tier.rows[18][18]).toBeGreaterThan(0)
+    expect(tier.rows[18][19]).toBeGreaterThan(0)
     expect(tier.rows[61][1]).toBe('Screw M2.6 x 8 (6pcs)')
-    expect(tier.rows[118][1]).toBe('Carton Box 0/6 (12.56"x10.2"x3.76")')
+    expect(tier.rows[118][1]).toBe('Price label')
+    expect(tier.rows[119][1]).toBe('Carton Box 0/6 (12.56"x10.2"x3.76")')
     expect(tier.rows[163][1]).toBe('Assembly vehicle')
     expect(tier.rows[178][1]).toBe('Whole Item')
     expect(tier.rows[193][1]).toBe('Transportation')
-    expect(tier.rows[236][1]).toBe(8900)
+    expect(tier.rows[236][2]).toBe(8900)
     expect(tier.rows[236][5]).toBe(3.15)
     expect(tier.rows[237][5]).toBe(2.93)
-    expect(tier.rows[239][1]).toBe(6200)
-    expect(tier.rows[240][1]).toBe(1500)
+    expect(tier.rows[239][2]).toBe(6200)
+    expect(tier.rows[240][2]).toBe(1500)
     expect(lineNumbers(tier.rows, 47)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     expect(lineNumbers(tier.rows, 89)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     expect(lineNumbers(tier.rows, 104)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
@@ -269,9 +297,30 @@ describe('Disney customer price converter', () => {
     expect(tier.rows[18][1]).toBe('1000142435-01')
     expect(tier.rows[18][2]).toBe(6100)
     expect(tier.rows[18][5]).toBe('PVC')
+    expect(tier.rows[8][2]).toBe(1000142435)
+    expect(tier.rows[18][3]).toBe('Doll upper body/doll head/doll hands and fee')
+    expect(tier.rows[18][6]).toBe('')
+    expect(tier.rows[18][18]).toBe(6.32)
+    expect(tier.rows[18][19]).toBe(0.0948)
+    expect(tier.rows[19][17]).toBe(39)
+    expect(tier.rows[20][17]).toBe(25)
+    expect(tier.rows[20][3]).toBe('vehicle bottom')
+    expect(tier.rows[21][3]).toBe('seat')
+    expect(tier.rows[23][3]).toBe('wheel boss')
+    expect(tier.rows[24][3]).toBe('Accessories (red + gray)')
+    expect(result.sheets[0].quoteData.purchasedPackageParts.some((part) => part.description === 'Hang tag')).toBe(false)
     expect(tier.rows[41][2]).toBe(32400)
-    expect(tier.rows[239][1]).toBe(6200)
-    expect(tier.rows[240][1]).toBe(1500)
+    expect(tier.rows[41][11]).toBeCloseTo(0.35876, 12)
+    expect(tier.rows[41][20]).toBeCloseTo(0.353234173280423, 12)
+    expect(tier.rows[41][22]).toBeCloseTo(0.751412777777778, 12)
+    expect(tier.rows[208][2]).toBeCloseTo(0.35876, 12)
+    expect(tier.rows[209][2]).toBeCloseTo(0.138, 12)
+    expect(tier.rows[128][3]).toBe(4)
+    expect(tier.rows[213][2]).toBeCloseTo(2.23405277777778, 12)
+    expect(tier.rows[216][2]).toBeCloseTo(2.85981277777778, 12)
+    expect(tier.rows[234][2]).toBeCloseTo(3.43177533333333, 12)
+    expect(tier.rows[239][2]).toBe(6200)
+    expect(tier.rows[240][2]).toBe(1500)
 
     const templateXml = getSheetXml(template)
     const outputXml = getSheetXml(output)
@@ -298,7 +347,7 @@ describe('Disney customer price converter', () => {
     ])).toEqual([])
   })
 
-  it('does not keep circular template formulas in cleared Disney quote cells', () => {
+  it('preserves template formulas, blanks, and text cell types in Disney cost sections', () => {
     if (!existsSync(samplePath)) {
       return
     }
@@ -307,16 +356,83 @@ describe('Disney customer price converter', () => {
     const outputXml = getSheetXml(createDisneyCustomerQuoteWorkbook(result, readDisneyTemplate()))
 
     expect(getCellFormula(outputXml, 'G26')).toBe('')
-    expect(getCellFormula(outputXml, 'F188')).toBe('')
-    expect(getCellFormula(outputXml, 'C230')).toBe('')
-    expect(getCellFormula(outputXml, 'D230')).toBe('')
+    expect(getCellFormula(outputXml, 'F188')).toBe('V19')
+    expect(getCellFormula(outputXml, 'C230')).toBe('G189-E189')
+    expect(getCellFormula(outputXml, 'D230')).toBe('C230/E189')
+    expect(getCellFormula(outputXml, 'N26')).toBe('')
+    expect(getCellFormula(outputXml, 'T26')).toBe('')
+    expect(getCellFormula(outputXml, 'U26')).toBe('')
+    expect(getCellFormula(outputXml, 'W26')).toBe('')
+    expect(getCellFormula(outputXml, 'X26')).toBe('')
 
-    expect(getCellFormula(outputXml, 'J26')).toBe('G26*I26')
+    expect(getCellFormula(outputXml, 'J19')).toBe('G19*I19')
+    expect(getCellFormula(outputXml, 'J26')).toBe('')
+    expect(getCellFormula(outputXml, 'L41')).toBe('H41*I41*K41/1000')
+    expect(getCellFormula(outputXml, 'V20')).toBe('V19')
+    expect(getCellFormula(outputXml, 'V21')).toBe('V19')
+    expect(getCellFormula(outputXml, 'V22')).toBe('V19')
+    expect(getCellFormula(outputXml, 'V23')).toBe('V19')
+    expect(getCellFormula(outputXml, 'V24')).toBe('V20')
+    expect(getCellFormula(outputXml, 'V25')).toBe('V21')
+
+    for (let rowNumber = 62; rowNumber <= 83; rowNumber += 1) {
+      expect(getCellFormula(outputXml, `E${rowNumber}`)).toBe(`C${rowNumber}*D${rowNumber}`)
+      expect(getCellFormula(outputXml, `F${rowNumber}`)).toBe('V19')
+      expect(getCellFormula(outputXml, `G${rowNumber}`)).toBe(`E${rowNumber}*(1+F${rowNumber})`)
+    }
+
+    for (let rowNumber = 119; rowNumber <= 128; rowNumber += 1) {
+      expect(getCellFormula(outputXml, `E${rowNumber}`)).toBe(`C${rowNumber}*D${rowNumber}`)
+      expect(getCellFormula(outputXml, `F${rowNumber}`)).toBe('V19')
+      expect(getCellFormula(outputXml, `G${rowNumber}`)).toBe(`E${rowNumber}*(1+F${rowNumber})`)
+    }
+
+    for (let rowNumber = 164; rowNumber <= 173; rowNumber += 1) {
+      expect(getCellFormula(outputXml, `E${rowNumber}`)).toBe(`C${rowNumber}*D${rowNumber}/60`)
+      expect(getCellFormula(outputXml, `F${rowNumber}`)).toBe('V19')
+      expect(getCellFormula(outputXml, `G${rowNumber}`)).toBe(`E${rowNumber}*(1+F${rowNumber})`)
+    }
+
+    for (let rowNumber = 179; rowNumber <= 188; rowNumber += 1) {
+      expect(getCellFormula(outputXml, `E${rowNumber}`)).toBe(`C${rowNumber}*D${rowNumber}`)
+      expect(getCellFormula(outputXml, `F${rowNumber}`)).toBe('V19')
+      expect(getCellFormula(outputXml, `G${rowNumber}`)).toBe(`E${rowNumber}*(1+F${rowNumber})`)
+    }
+
+    expect(getCellFormula(outputXml, 'E122')).toBe('C122*D122')
+    expect(getCellFormula(outputXml, 'G122')).toBe('E122*(1+F122)')
     expect(getCellFormula(outputXml, 'G188')).toBe('E188*(1+F188)')
     expect(getCellFormula(outputXml, 'G189')).toBe('SUM(G179:G188)')
     expect(getCellFormula(outputXml, 'A190')).toBe('IFERROR(G189,0)')
     expect(getCellFormula(outputXml, 'C214')).toBe('A175+T42+A190')
-    expect(getCellFormula(outputXml, 'C217')).toBe('SUM(C209:C215)')
-    expect(getCellFormula(outputXml, 'B235')).toBe('C217*(1+D232)')
+    expect(getCellFormula(outputXml, 'C217')).toBe('SUM(C205:C216)')
+    expect(getCellFormula(outputXml, 'C221')).toBe('')
+    expect(getCellFormula(outputXml, 'D221')).toBe('C221/U42')
+    expect(getCellFormula(outputXml, 'C223')).toBe('G84-E84')
+    expect(getCellFormula(outputXml, 'D223')).toBe('C223/E84')
+    expect(getCellFormula(outputXml, 'C226')).toBe('G129-E129')
+    expect(getCellFormula(outputXml, 'D226')).toBe('C226/E129')
+    expect(getCellFormula(outputXml, 'C228')).toBe('G159-E159')
+    expect(getCellFormula(outputXml, 'D228')).toBe('C228/E159')
+    expect(getCellFormula(outputXml, 'C229')).toBe('G174-E174')
+    expect(getCellFormula(outputXml, 'D229')).toBe('C229/E174')
+    expect(getCellFormula(outputXml, 'A233')).toBe('IFERROR(C232,0)')
+    expect(getCellFormula(outputXml, 'C235')).toBe('C217*(1+D232)')
+    expect(getCellFormula(outputXml, 'B235')).toBe('')
+    expect(getCellFormula(outputXml, 'F236')).toBe('C235')
+    expect(getCellFormula(outputXml, 'C243')).toBe('SUM(C237:C242)')
+    expect(getCellBody(outputXml, 'C222')).not.toContain('<v>')
+    expect(getCellBody(outputXml, 'C224')).not.toContain('<v>')
+    expect(getCellBody(outputXml, 'C225')).not.toContain('<v>')
+    expect(getCellBody(outputXml, 'C227')).not.toContain('<v>')
+    expect(getCellBody(outputXml, 'C231')).not.toContain('<v>')
+    expect(getCellBody(outputXml, 'C22')).not.toContain('<v>')
+    expect(getCellBody(outputXml, 'C24')).not.toContain('<v>')
+    for (const ref of ['M19', 'M20', 'M21', 'M22', 'M23', 'M24']) {
+      expect(getCellXml(outputXml, ref)).toContain('t="inlineStr"')
+    }
+    expect(getCellBody(outputXml, 'D228')).toContain('<v>#DIV/0!</v>')
+    expect(outputXml).toMatch(/<c r="D228" t="e"[^>]*>/)
+    expect(outputXml).toMatch(/<c r="A233" t="str"[^>]*><f>IFERROR\(C232,0\)<\/f><v><\/v><\/c>/)
   })
 })
