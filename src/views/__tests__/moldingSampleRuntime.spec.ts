@@ -413,8 +413,8 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).toContain('预计料费')
     expect(printArea).toContain('HKD 16.04')
     expect(printArea).toContain('HKD 8.50')
-    expect(printArea).toContain('RMB 120.00')
-    expect(printArea).toContain('1.08')
+    expect(printArea).not.toContain('RMB 120.00')
+    expect(printArea).not.toContain('HKD 111.11')
     expect(printArea).toContain('BP-PRINT-002')
     expect(printArea).toContain('Royal Regent Nexus')
     expect(printArea).toContain('工程啤办通知单')
@@ -953,6 +953,15 @@ describe('molding sample runtime error handling', () => {
     await getButtonByText(wrapper, 'BP-DETAIL-FULL-001').trigger('click')
     await nextTick()
 
+    const detailTable = wrapper.get('[data-testid="molding-sample-detail-table"]')
+    expect(detailTable.text()).toContain('工模尺寸')
+    expect(detailTable.text()).toContain('650 × 450 × 380 mm')
+    expect(detailTable.text()).toContain('适配机型')
+    expect(detailTable.text()).toContain('160T')
+    expect(detailTable.text()).toContain('模具在厂')
+    expect(detailTable.text()).toContain('在厂')
+    expect(detailTable.text()).toContain('回厂时间')
+    expect(detailTable.text()).toContain('2026-02-03')
     expect(wrapper.text()).not.toContain('完整单据数据')
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
@@ -977,61 +986,9 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('啤机确认机台')
     expect(text).toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
-
-    wrapper.unmount()
-  })
-
-  it('shows the current RMB to HKD rate when an item has no saved exchange rate', async () => {
-    const detailedRecord = {
-      ...createMoldingSampleRecord('生产中', 'BP-RATE-LIVE-001'),
-      items: [
-        {
-          id: 'BP-RATE-LIVE-001-001',
-          order_id: 'BP-RATE-LIVE-001',
-          sort_order: 1,
-          mold_id: 'P50002008-01-01',
-          mold_name: '头盔',
-          machine_type: '160T',
-          production_machine: '啤办机台-08',
-          material: 'PP (AV161)',
-          color: '黑色',
-          pigment_no: 'PMS 黑色',
-          quantity: '1/1',
-          shoot_qty: 30,
-          gross_weight_g: 82,
-          required_material_kg: 15,
-          mold_return_time: '2026-02-03',
-          completion_time: '2026-02-04',
-          notes: '待保存啤办费。',
-          receipt_no: '',
-          collected_weight_kg: null,
-          actual_weight_kg: 14.2,
-          actual_amount_hkd: null,
-          injection_cost: null,
-          injection_cost_hkd: null,
-          exchange_rate_at_save: null,
-        },
-      ],
-    } satisfies MoldingSampleDetailResponse
-
-    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([detailedRecord])
-    mockedMoldingSampleApi.getMaterialPrices.mockResolvedValueOnce({
-      prices: [],
-      rmb_to_hkd_rate: 1.1234,
-    })
-
-    const wrapper = await mountRuntimeView(MoldingSampleView)
-
-    await getButtonByText(wrapper, 'BP-RATE-LIVE-001').trigger('click')
-    await nextTick()
-    await getButtonByText(wrapper, '展开完整数据').trigger('click')
-    await flushPromises()
-    await nextTick()
-
-    const text = wrapper.text()
-    expect(text).toContain('当前汇率(RMB→HKD)')
-    expect(text).toContain('1.1234')
-    expect(text).not.toContain('汇率待填写')
+    expect(text).not.toContain('啤办费(RMB)')
+    expect(text).not.toContain('啤办费(HKD)')
+    expect(text).not.toContain('当前汇率(RMB→HKD)')
 
     wrapper.unmount()
   })

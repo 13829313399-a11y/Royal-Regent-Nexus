@@ -226,7 +226,6 @@ const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取正式啤办单列表...')
 const actionToastVisible = ref(true)
-const currentRmbToHkdRate = ref<number | null>(null)
 const createDraft = ref<ManualMoldingSampleOrderDraft>(createManualMoldingSampleOrderDraft())
 const createErrors = ref<string[]>([])
 const createSubmitting = ref(false)
@@ -264,7 +263,7 @@ let actionToastTimer: ReturnType<typeof setTimeout> | null = null
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
   { status: '待生产', title: '待生产', detail: '主管通过后流转到啤机部' },
-  { status: '生产中', title: '啤机生产', detail: '回填实际用料和啤办费' },
+  { status: '生产中', title: '啤机生产', detail: '回填实际用料和确认机台' },
   { status: '已完成', title: '完成归档', detail: '生产完成后回传工程单' },
 ]
 
@@ -577,7 +576,6 @@ const actionToastIconClass = computed(() => {
   return 'bg-teal-50 text-teal-700'
 })
 
-const detailRows = computed(() => selectedItems.value.slice(0, 8))
 const printPreviewItemCount = computed(() =>
   printableRecords.value.reduce((total, record) => total + record.items.length, 0),
 )
@@ -1032,16 +1030,6 @@ async function loadApiData() {
     apiRecords.value = []
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
-  }
-}
-
-async function loadMaterialPricing() {
-  try {
-    const pricing = await moldingSampleApi.getMaterialPrices()
-    currentRmbToHkdRate.value = pricing.rmb_to_hkd_rate
-  }
-  catch {
-    currentRmbToHkdRate.value = null
   }
 }
 
@@ -1676,22 +1664,6 @@ function formatMoney(value: number | null | undefined, currency = 'HKD') {
   return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
 
-function formatExchangeRate(value: number | null | undefined) {
-  const rate = value ?? currentRmbToHkdRate.value
-
-  if (rate === null || rate === undefined || !Number.isFinite(rate)) {
-    return '待读取'
-  }
-
-  return rate.toFixed(4).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
-}
-
-function getExchangeRateLabel(item: Pick<MoldingSampleItem, 'exchange_rate_at_save'>) {
-  return item.exchange_rate_at_save === null || item.exchange_rate_at_save === undefined
-    ? '当前汇率(RMB→HKD)'
-    : '保存汇率(RMB→HKD)'
-}
-
 function readMaterialWeight(value: number | null | undefined) {
   const parsed = Number(value)
 
@@ -2154,7 +2126,6 @@ watch(actionMessage, (message) => {
 
 onMounted(() => {
   void loadApiData()
-  void loadMaterialPricing()
 })
 
 onUnmounted(() => {
@@ -3592,12 +3563,16 @@ onUnmounted(() => {
                 </button>
               </div>
               <div class="overflow-x-auto">
-                <table class="w-full min-w-[1120px] text-[12px]">
+                <table data-testid="molding-sample-detail-table" class="w-full min-w-[1540px] text-[12px]">
                   <thead>
                     <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                       <th class="w-8 px-2 py-2 font-medium">#</th>
                       <th class="px-2 py-2 text-left font-medium">模具号</th>
                       <th class="px-2 py-2 text-left font-medium">名称</th>
+                      <th class="px-2 py-2 text-left font-medium">工模尺寸</th>
+                      <th class="px-2 py-2 text-left font-medium">适配机型</th>
+                      <th class="px-2 py-2 text-left font-medium">模具在厂</th>
+                      <th class="px-2 py-2 text-left font-medium">回厂时间</th>
                       <th class="px-2 py-2 text-left font-medium">原料</th>
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
@@ -3609,10 +3584,14 @@ onUnmounted(() => {
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-slate-50">
-                    <tr v-for="item in detailRows" :key="item.id" class="hover:bg-slate-50/60">
+                    <tr v-for="item in selectedItems" :key="item.id" class="hover:bg-slate-50/60">
                       <td class="px-2 py-1.5 text-center text-slate-400">{{ item.sort_order }}</td>
                       <td class="px-2 py-1.5 font-mono">{{ item.mold_id }}</td>
                       <td class="px-2 py-1.5">{{ item.mold_name }}</td>
+                      <td class="px-2 py-1.5">{{ formatBlank(item.mold_dimensions) }}</td>
+                      <td class="px-2 py-1.5">{{ formatBlank(item.machine_type) }}</td>
+                      <td class="px-2 py-1.5">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</td>
+                      <td class="px-2 py-1.5 whitespace-nowrap">{{ formatBlank(item.mold_return_time) }}</td>
                       <td class="px-2 py-1.5">{{ item.material }}</td>
                       <td class="px-2 py-1.5">
                         <span class="inline-flex items-center gap-1">
@@ -3629,11 +3608,6 @@ onUnmounted(() => {
                         <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
                           {{ getItemState(item) }}
                         </span>
-                      </td>
-                    </tr>
-                    <tr v-if="selectedItems.length > detailRows.length">
-                      <td colspan="10" class="px-2 py-2 text-center text-[11px] font-medium text-slate-400">
-                        还有 {{ selectedItems.length - detailRows.length }} 项明细，滚动后续详情视图继续查看
                       </td>
                     </tr>
                   </tbody>
@@ -3731,9 +3705,6 @@ onUnmounted(() => {
                         <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
-                        <div><span class="text-slate-400">啤办费(RMB)</span><div class="font-semibold">{{ formatMoney(item.injection_cost, 'RMB') }}</div></div>
-                        <div><span class="text-slate-400">啤办费(HKD)</span><div class="font-semibold">{{ formatMoney(item.injection_cost_hkd) }}</div></div>
-                        <div><span class="text-slate-400">{{ getExchangeRateLabel(item) }}</span><div class="font-semibold">{{ formatExchangeRate(item.exchange_rate_at_save) }}</div></div>
                       </div>
                       <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
                         备注：{{ formatBlank(item.notes) }}
@@ -3960,7 +3931,7 @@ onUnmounted(() => {
                 <th>色粉</th>
                 <th>啤数 / 预料</th>
                 <th>回模 / 完成</th>
-                <th>回填 / 费用</th>
+                <th>实际回填</th>
                 <th>备注</th>
               </tr>
             </thead>
@@ -3992,8 +3963,7 @@ onUnmounted(() => {
                 <td>{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</td>
                 <td>
                   <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
-                  <span>{{ formatMoney(item.actual_amount_hkd) }} · {{ formatMoney(item.injection_cost, 'RMB') }}</span>
-                  <em>{{ formatMoney(item.injection_cost_hkd) }} · {{ formatExchangeRate(item.exchange_rate_at_save) }}</em>
+                  <span>实际料费 {{ formatMoney(item.actual_amount_hkd) }}</span>
                 </td>
                 <td>{{ formatBlank(item.notes) }}</td>
               </tr>
@@ -4019,7 +3989,7 @@ onUnmounted(() => {
 
         <div class="molding-sample-print-footwrap">
           <footer class="molding-sample-print-footer">
-            本单据由 Royal Regent Nexus 生成。打印前请核对单据资料、模具明细、用料及费用回填。
+            本单据由 Royal Regent Nexus 生成。打印前请核对单据资料、模具明细、用料及实际回填。
           </footer>
           <div class="molding-sample-print-qr">扫码<br>查看单据</div>
           <div class="molding-sample-print-pageno">第 1 / 1 页</div>
