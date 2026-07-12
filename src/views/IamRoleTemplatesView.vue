@@ -138,8 +138,8 @@ onMounted(() => void loadData())
 </script>
 
 <template>
-  <main class="min-h-screen overflow-x-hidden bg-slate-100 text-slate-950">
-    <IamNavigation title="角色模板" subtitle="角色用于批量授权；用户级允许或禁止仍在用户权限页单独维护。" />
+  <main class="min-h-screen overflow-x-clip bg-slate-100 text-slate-950">
+    <IamNavigation data-testid="role-templates-sticky-navigation" class="sticky top-0 z-30 shadow-sm" title="角色模板" subtitle="角色用于批量授权；用户级允许或禁止仍在用户权限页单独维护。" />
     <div class="mx-auto grid min-w-0 max-w-[1480px] gap-5 px-4 py-6 sm:px-5 xl:grid-cols-[300px_minmax(0,1fr)] xl:px-8">
       <aside class="min-w-0 h-fit rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
         <h2 class="px-2 py-2 text-sm font-bold text-slate-900">角色列表</h2>

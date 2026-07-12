@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Building2, Factory } from '@lucide/vue'
+import { AlertTriangle, Building2, Factory } from '@lucide/vue'
 import type { ManageableScope } from '@/api/iam'
 
 const props = defineProps<{
@@ -7,6 +7,7 @@ const props = defineProps<{
   factoryId: string
   department: string
   disabled?: boolean
+  hasPendingDraft?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -55,5 +56,9 @@ function selectFactory(value: string) {
         </select>
       </label>
     </div>
+    <p v-if="hasPendingDraft" class="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-sm font-semibold text-amber-700" role="status">
+      <AlertTriangle class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      存在未提交的草稿，切换范围前请先预览或取消草稿。
+    </p>
   </section>
 </template>

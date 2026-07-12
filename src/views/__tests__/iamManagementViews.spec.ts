@@ -24,10 +24,13 @@ describe('IAM management view semantics and accessibility', () => {
       '系统自动拥有',
       'aria-pressed',
       '关闭角色模板影响预览',
-      'overflow-x-hidden',
+      'overflow-x-clip',
+      'data-testid="role-templates-sticky-navigation"',
+      'sticky top-0 z-30',
     ]) {
       expect(source).toContain(required)
     }
+    expect(source).not.toContain('overflow-x-hidden')
     expect(source).not.toContain('sticky bottom-4')
   })
 
@@ -111,9 +114,13 @@ describe('IAM management view semantics and accessibility', () => {
       '按风险级别筛选权限',
       'overflow-x-auto',
       'overscroll-x-contain',
+      'data-testid="permission-catalog-sticky-controls"',
+      'sticky top-0 z-30',
+      'overflow-x-clip',
     ]) {
       expect(source).toContain(required)
     }
+    expect(source).not.toContain('overflow-x-hidden')
 
     const roleSource = readView('IamRoleTemplatesView')
     expect(roleSource).toContain('permissionDisplayLabel(permission)')

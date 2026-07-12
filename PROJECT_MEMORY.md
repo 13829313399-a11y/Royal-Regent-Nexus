@@ -1446,3 +1446,27 @@ Use this template when updating the memory after future work:
 - Verification: full backend Pytest passed 97 tests with only the existing Windows pytest-cache warning; full frontend Vitest passed 30 files / 107 tests; `npx.cmd vue-tsc --noEmit`, production build, and Alembic migration tests passed. Build output contained only the known third-party `@vueuse/core` Rolldown annotation warnings.
 - Decision: no production code deployment, migration, container restart, Git commit, push or IAM write was performed. Production must stay `legacy + writes off` for the first code deployment. Static review found 34 business authorization calls where the resource has no explicit organization department; `legacy` preserves the current factory-level behavior, but switching to `enforce` remains blocked until department-aware business-domain mapping and its matrix tests are implemented. Real IAM writes also permanently require an IAM-compatible backend and must never be rolled back to pre-IAM code.
 - Follow-up: publishing the local working tree requires a separately authorized, narrowly scoped Git commit/push/merge workflow; after publication, deploy backend and frontend together in `legacy + writes off`, verify the recorded production hashes/counts, then use `shadow` before any `enforce` cutover.
+
+### 2026-07-11
+
+- Requirement: optimize the advanced user-permission page against `C:\Users\匡树杰\Desktop\rr项目样式参考\高级权限管理页面.html` while preserving the existing IAM API contracts and authorization rules.
+- Implementation: refined the IAM header home action, kept the identity-summary metric grid stable by showing `未填写` for absent phone/email values, added the reference-style pending-draft scope-lock notice, and disabled preview until a change reason is present. Role-source cards and their count now reflect the currently selected factory/department and correctly include wildcard bindings, preventing unrelated role sources from visually mixing into the chosen scope.
+- Files changed: `src/views/UserAccessManagementView.vue`, `src/components/iam/IamNavigation.vue`, `IamIdentitySummary.vue`, `IamScopeSelector.vue`, `IamRoleBindings.vue`, and the two targeted IAM view/component tests.
+- Verification: targeted Vitest passed 4 files / 6 tests; full `npm.cmd run test:unit` passed 30 files / 108 tests; `npm.cmd run build` passed. The build retains only the known third-party `@vueuse/core` Rolldown pure-annotation warnings; `git diff --check` passed with no whitespace errors.
+- Decision: this slice is a frontend presentation and interaction refinement only. It does not change authorization precedence, user data, backend APIs, access-commit semantics, or Git history.
+
+### 2026-07-11
+
+- Requirement: browser feedback requested that the full control area on `/system/iam/permissions` — title, IAM navigation, and permission filters — remain visible while the registered-permission table scrolls.
+- Implementation: wrapped that control area in a single `sticky top-0 z-30` container with an opaque, blurred background and separator shadow. Replaced the page root's `overflow-x-hidden` with `overflow-x-clip`, because the former created a scroll context that prevented `position: sticky` from taking effect. The table remains a local horizontal scroll container.
+- Files changed: `src/views/IamPermissionCatalogView.vue`, `src/views/__tests__/iamManagementViews.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: first browser check exposed the sticky failure (`controlsTop=-520` after scroll); after the overflow fix, live browser scroll at 700px kept the controls at `top=0`, kept search/module filters visible, had no horizontal page overflow (`1523 <= 1538`), and produced no browser warnings/errors. Targeted Vitest passed 3 tests; full `npm.cmd run test:unit` passed 30 files / 108 tests; `npm.cmd run build` and `git diff --check` passed. Build only reports the known third-party `@vueuse/core` Rolldown pure-annotation warnings.
+- Decision: this is a permission-catalog layout refinement only; filtering behavior, permission data, APIs, and authorization logic are unchanged.
+
+### 2026-07-11
+
+- Requirement: browser feedback requested that the IAM header on `/system/iam/roles` remain visible while the role list and permission groups scroll.
+- Implementation: made the selected `IamNavigation` instance sticky with `top-0`, `z-30`, and a separator shadow. The page root now uses `overflow-x-clip` rather than `overflow-x-hidden`, preserving the intended local overflow protection without preventing sticky positioning.
+- Files changed: `src/views/IamRoleTemplatesView.vue`, `src/views/__tests__/iamManagementViews.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: the new layout test first failed before the sticky container existed; it then passed. Live browser verification at `/system/iam/roles` scrolled 700px while the header remained at `top=0` and the page had no horizontal overflow (`1248 <= 1263`); browser warning/error logs were empty. Full `npm.cmd run test:unit` passed 30 files / 108 tests; `npm.cmd run build` and `git diff --check` passed, with only the known third-party `@vueuse/core` Rolldown pure-annotation warnings during build.
+- Decision: this is a visual scrolling improvement only; it does not change role templates, permission data, authorization behavior, APIs, or persistence.
