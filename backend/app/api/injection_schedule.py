@@ -11,6 +11,7 @@ from app.schemas.injection_schedule import (
     InjectionScheduleMachineOut,
 )
 from app.services.auth import AuthContext, can, ensure_permission_in_scope, get_current_user
+from app.services.business_authz import PRODUCTION_DEPARTMENTS, ensure_permission_for_departments
 from app.services.injection_schedule import (
     create_daily_schedule_import,
     get_import_preview,
@@ -22,6 +23,48 @@ router = APIRouter(prefix="/api/injection-scheduling")
 logger = logging.getLogger(__name__)
 
 
+def has_canonical_schedule_permission(
+    current_user: AuthContext,
+    permission: str,
+    factory_id: str,
+) -> bool:
+    return any(
+        can(current_user, permission, factory_id, department)
+        for department in PRODUCTION_DEPARTMENTS
+    )
+
+
+def ensure_schedule_permission(
+    db: Session,
+    current_user: AuthContext,
+    permission: str,
+    factory_id: str,
+) -> None:
+    if settings.authz_mode == "enforce":
+        ensure_permission_for_departments(
+            db,
+            current_user,
+            permission,
+            factory_id,
+            PRODUCTION_DEPARTMENTS,
+        )
+        return
+
+    ensure_permission_in_scope(db, current_user, permission, factory_id)
+    if settings.authz_mode == "shadow" and not has_canonical_schedule_permission(
+        current_user,
+        permission,
+        factory_id,
+    ):
+        logger.warning(
+            "authz shadow mismatch user=%s permission=%s scope=%s/%s legacy=True canonical=False",
+            current_user.id,
+            permission,
+            factory_id,
+            "|".join(PRODUCTION_DEPARTMENTS),
+        )
+
+
 def ensure_batch_read_access(
     db: Session,
     current_user: AuthContext,
@@ -31,21 +74,21 @@ def ensure_batch_read_access(
     if batch is None:
         raise HTTPException(status_code=404, detail="排产导入批次不存在")
     if settings.authz_mode == "enforce":
-        ensure_permission_in_scope(
+        ensure_permission_for_departments(
             db,
             current_user,
             "injection_schedule:read",
             batch.factory_id,
+            PRODUCTION_DEPARTMENTS,
         )
-    elif settings.authz_mode == "shadow" and not can(
-        current_user,
-        "injection_schedule:read",
-        batch.factory_id,
+    elif settings.authz_mode == "shadow" and not has_canonical_schedule_permission(
+        current_user, "injection_schedule:read", batch.factory_id
     ):
         logger.warning(
-            "authz shadow mismatch user=%s permission=injection_schedule:read scope=%s/* legacy=True canonical=False",
+            "authz shadow mismatch user=%s permission=injection_schedule:read scope=%s/%s legacy=True canonical=False",
             current_user.id,
             batch.factory_id,
+            "|".join(PRODUCTION_DEPARTMENTS),
         )
     return batch
 
@@ -62,7 +105,7 @@ async def import_daily_schedule(
     current_user: AuthContext = Depends(get_current_user),
 ):
     normalized_factory_id = factory_id.strip() or "huaxing"
-    ensure_permission_in_scope(db, current_user, "injection_schedule:import", normalized_factory_id)
+    ensure_schedule_permission(db, current_user, "injection_schedule:import", normalized_factory_id)
 
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(status_code=400, detail="请上传 xlsx 日排版表")

@@ -62,6 +62,8 @@ CHINESE_CHARACTER_RANGES = (
 
 MOLDING_SAMPLE_PERMISSIONS = [
     "molding_sample:read",
+    "molding_sample:cross_factory_read",
+    "molding_sample:cross_factory_cost_read",
     "molding_sample:export",
     "molding_sample:create",
     "molding_sample:edit_draft",
@@ -105,9 +107,11 @@ IAM_PERMISSIONS = [
 APPLICATION_PERMISSIONS = list(dict.fromkeys(MOLDING_SAMPLE_PERMISSIONS + INJECTION_SCHEDULE_PERMISSIONS + IAM_PERMISSIONS))
 
 DEFAULT_ROLES = [
+    ("group_molding_readonly", "集团啤办只读", "跨厂查看啤办单，默认隐藏成本且不可导出或修改"),
     ("engineer", "工程师", "工程部开单与草稿维护"),
     ("engineering_supervisor", "工程主管", "工程主管审核"),
     ("manager", "经理", "经理终审、改价和敏感审计"),
+    ("warehouse_keeper", "PMC / 仓管", "啤办领料、发料与库存管理"),
     ("carton_warehouse_keeper", "纸箱仓管", "纸箱箱唛 PDF 模板维护"),
     ("qa_inspector", "QA 检验员", "QA 箱唛实拍上传与核对"),
     ("molding_clerk", "啤机部文员", "啤机部啤办任务接收、回填和完成"),
@@ -119,6 +123,9 @@ DEFAULT_ROLES = [
 ]
 
 ROLE_PERMISSIONS = {
+    "group_molding_readonly": {
+        "molding_sample:cross_factory_read",
+    },
     "engineer": {
         "molding_sample:read",
         "molding_sample:export",
@@ -514,6 +521,10 @@ def permission_catalog_values(code: str, sort_order: int) -> dict[str, str | int
     normalized_action = action.lower()
     risk_level = "high" if (
         module_code == "system"
+        or code in {
+            "molding_sample:cross_factory_read",
+            "molding_sample:cross_factory_cost_read",
+        }
         or normalized_action in high_risk_actions
         or "delete" in normalized_action
         or "review" in normalized_action
@@ -1079,6 +1090,7 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
             id=f"system-notification-{secrets.token_hex(12)}",
             target_permission="system:user_manage",
             target_factory_id=factory_id,
+            target_department=department,
             type="user_registration",
             title="新用户注册待审批",
             message=f"{display_name}（{username}）提交账号申请，厂区 {factory_id}，部门 {department}",
@@ -1117,6 +1129,27 @@ def submit_password_reset_request(
 
     now = now_text()
     matched_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
+    target_factory_id = "*"
+    target_department = "system"
+    if matched_user is not None:
+        profile = db.get(EmployeeProfile, matched_user.id)
+        if profile is not None and profile.primary_factory_id and profile.primary_department:
+            target_factory_id = profile.primary_factory_id
+            target_department = profile.primary_department
+        else:
+            latest_registration = db.scalar(
+                select(AuthRegistrationRequest)
+                .where(AuthRegistrationRequest.user_id == matched_user.id)
+                .order_by(
+                    AuthRegistrationRequest.updated_at.desc(),
+                    AuthRegistrationRequest.created_at.desc(),
+                    AuthRegistrationRequest.id.desc(),
+                )
+                .limit(1)
+            )
+            if latest_registration is not None and latest_registration.factory_id and latest_registration.department:
+                target_factory_id = latest_registration.factory_id
+                target_department = latest_registration.department
     notification_id = f"system-notification-{secrets.token_hex(12)}"
     payload_json = {
         "username": username,
@@ -1132,6 +1165,8 @@ def submit_password_reset_request(
         SystemNotification(
             id=notification_id,
             target_permission="system:user_manage",
+            target_factory_id=target_factory_id,
+            target_department=target_department,
             type="password_reset",
             title="密码重置待处理",
             message=f"{applicant_label} 提交密码重置申请，账号 {username}，联系方式 {contact}",

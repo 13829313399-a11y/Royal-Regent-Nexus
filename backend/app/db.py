@@ -51,6 +51,9 @@ SQLITE_LEGACY_COLUMNS = {
         ("actor_roles", "actor_roles TEXT NOT NULL DEFAULT ''"),
         ("factory_scope", "factory_scope VARCHAR(255) NOT NULL DEFAULT ''"),
     ],
+    "system_notifications": [
+        ("target_department", "target_department VARCHAR(64) NOT NULL DEFAULT ''"),
+    ],
 }
 
 

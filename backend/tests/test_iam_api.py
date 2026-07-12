@@ -124,6 +124,14 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
         assert any(item["code"] == "molding_sample:create" for item in catalog.json())
         export_permission = next(item for item in catalog.json() if item["code"] == "molding_sample:export")
         assert export_permission["risk_level"] == "high"
+        cross_read_permission = next(
+            item for item in catalog.json() if item["code"] == "molding_sample:cross_factory_read"
+        )
+        cross_cost_permission = next(
+            item for item in catalog.json() if item["code"] == "molding_sample:cross_factory_cost_read"
+        )
+        assert cross_read_permission["risk_level"] == "high"
+        assert cross_cost_permission["risk_level"] == "high"
         assert all({"module_code", "module_name", "action", "risk_level"} <= item.keys() for item in catalog.json())
 
         scopes = client.get("/api/iam/manageable-scopes")
@@ -150,11 +158,16 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
         roles = client.get("/api/iam/roles")
         assert roles.status_code == 200, roles.text
         engineer_role = next(item for item in roles.json() if item["id"] == "engineer")
+        group_readonly_role = next(item for item in roles.json() if item["id"] == "group_molding_readonly")
         assert {"version", "is_protected", "binding_count", "permission_count"} <= engineer_role.keys()
+        assert group_readonly_role["name"] == "集团啤办只读"
         role_access = client.get("/api/iam/roles/engineer/access")
         assert role_access.status_code == 200, role_access.text
         assert role_access.json()["id"] == "engineer"
         assert "molding_sample:create" in role_access.json()["permission_codes"]
+        group_readonly_access = client.get("/api/iam/roles/group_molding_readonly/access")
+        assert group_readonly_access.status_code == 200, group_readonly_access.text
+        assert group_readonly_access.json()["permission_codes"] == ["molding_sample:cross_factory_read"]
 
 
 def test_user_override_preview_commit_is_atomic_and_token_is_one_time(monkeypatch):

@@ -1,5 +1,5 @@
 export const huaxingMoldImportSummary = {
-  "source": "C:\\Users\\Aalyaan\\Desktop\\新建文件夹 (2)\\2026年模具总表1.xlsx",
+  "source": "2026年模具总表1.xlsx",
   "sheet": "模具总表",
   "title": "2026模具总表（1923套）/废模345套",
   "rowCount": 2256,

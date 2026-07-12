@@ -65,6 +65,11 @@ describe('SystemUserManagementView source contract', () => {
       'departmentScopesForSelectedRequest',
       'allFactoryScopeLabel',
       'molding_sample:create',
+      '跨厂查看啤办单据',
+      'molding_sample:cross_factory_read',
+      '跨厂查看啤办成本',
+      'molding_sample:cross_factory_cost_read',
+      'group_molding_readonly',
       'selectedRequest',
       'route.query.request_id',
       '停用',
@@ -82,5 +87,10 @@ describe('SystemUserManagementView source contract', () => {
     ]) {
       expect(source).toContain(requiredSource)
     }
+
+    const readonlyPreset = source.match(/group_molding_readonly:\s*\[([\s\S]*?)\],/)
+    expect(readonlyPreset?.[1]).toContain("'molding_sample:cross_factory_read'")
+    expect(readonlyPreset?.[1]).not.toContain('molding_sample:create')
+    expect(readonlyPreset?.[1]).not.toContain('molding_sample:cross_factory_cost_read')
   })
 })

@@ -79,7 +79,36 @@ function isAdminAccount() {
 }
 
 function isNotificationFactoryInScope(notification: MoldingSampleNotificationResponse) {
-  return authStore.can('molding_sample:notification_read', notification.factory_id)
+  return getNotificationDepartments(notification).some((department) =>
+    authStore.can(
+      'molding_sample:notification_read',
+      notification.factory_id,
+      department,
+    ),
+  )
+}
+
+function getNotificationDepartments(notification: MoldingSampleNotificationResponse) {
+  if (notification.target_department) {
+    if (['production', 'molding'].includes(notification.target_department)) {
+      return ['production', 'molding']
+    }
+    if (['pmc-warehouse', 'warehouse'].includes(notification.target_department)) {
+      return ['pmc-warehouse', 'warehouse']
+    }
+    return [notification.target_department]
+  }
+
+  if (/经理|管理/.test(notification.target_role)) {
+    return ['management']
+  }
+  if (/啤机|生产/.test(notification.target_role)) {
+    return ['production', 'molding']
+  }
+  if (/仓|PMC/.test(notification.target_role)) {
+    return ['pmc-warehouse', 'warehouse']
+  }
+  return ['engineering']
 }
 
 function getAccountTargetRoles() {

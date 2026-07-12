@@ -248,13 +248,7 @@ const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
 const RAW_MATERIAL_PICKER_GAP = 8
 const RAW_MATERIAL_PICKER_VIEWPORT_PADDING = 12
-const rawMaterialPriceList = rawMaterialDatabaseRows.flatMap((row) => {
-  const unitPrice = Number(row.unitPriceHkdPerLb)
-
-  return row.materialName.trim() && Number.isFinite(unitPrice) && unitPrice > 0
-    ? [{ material: row.materialName.trim(), unit_price: unitPrice, notes: '原料资料' }]
-    : []
-})
+const rawMaterialPriceList = ref<Awaited<ReturnType<typeof moldingSampleApi.getMaterialPrices>>['prices']>([])
 const RAW_MATERIAL_PICKER_VISIBLE_LIMIT = 60
 const activeRawMaterialPickerLineIndex = ref<number | null>(null)
 const rawMaterialSearchByLine = ref<Record<number, string>>({})
@@ -599,11 +593,11 @@ const printPreviewItemCount = computed(() =>
 )
 
 function getExpectedMaterialAmountHkd(item: MoldingSampleItem) {
-  return calculateExpectedMaterialAmountHkd(item, rawMaterialPriceList)
+  return calculateExpectedMaterialAmountHkd(item, rawMaterialPriceList.value)
 }
 
 function getRawMaterialUnitPrice(material: string) {
-  return resolveMaterialPrice(material, rawMaterialPriceList)?.unit_price ?? null
+  return resolveMaterialPrice(material, rawMaterialPriceList.value)?.unit_price ?? null
 }
 
 function getRawMaterialUnitPriceLabel(material: string) {
@@ -617,28 +611,154 @@ function getRawMaterialUnitPriceLabel(material: string) {
 }
 
 const isSelectedOrderDataExpanded = ref(false)
-const canManageSelectedFactory = computed(() => authStore.hasFactoryScope(selectedFactoryId.value))
-const canManageSelectedOrderFactory = computed(() => {
-  const factoryId = selectedRecord.value?.order.factory_id || selectedFactoryId.value
-  return authStore.hasFactoryScope(factoryId)
+const ENGINEERING_DEPARTMENT = 'engineering'
+const SHARED_MOLDING_DEPARTMENTS = [
+  'engineering',
+  'production',
+  'molding',
+  'pmc-warehouse',
+  'warehouse',
+  'management',
+] as const
+const MOLDING_SAMPLE_PERMISSION_DEPARTMENTS: Record<string, readonly string[]> = {
+  'molding_sample:read': SHARED_MOLDING_DEPARTMENTS,
+  'molding_sample:production_read': ['production', 'molding'],
+  'molding_sample:create': ['engineering'],
+  'molding_sample:supervisor_review': ['engineering'],
+  'molding_sample:edit_draft': ['engineering', 'management'],
+  'molding_sample:delete_draft': ['engineering', 'management'],
+  'molding_sample:manager_review': ['management'],
+  'molding_sample:price_update': ['management'],
+  'molding_sample:export': [
+    'engineering',
+    'management',
+    'pmc-warehouse',
+    'warehouse',
+    'production',
+    'molding',
+  ],
+  'system:user_manage': ['management'],
+}
+const MOLDING_SAMPLE_WRITE_PERMISSIONS = [
+  'molding_sample:create',
+  'molding_sample:edit_draft',
+  'molding_sample:delete_draft',
+  'molding_sample:supervisor_review',
+  'molding_sample:manager_review',
+  'molding_sample:export',
+]
+
+function isWildcardMoldingAdministrator() {
+  return authStore.grants.some((grant) =>
+    (grant.role_code === 'admin' || grant.role_id === 'admin')
+    && grant.factory_id === '*'
+    && ['*', 'system'].includes(grant.department),
+  )
+}
+
+function isLocalMoldingFactory(factoryId: string) {
+  if (isWildcardMoldingAdministrator() || authStore.authzMode !== 'enforce') {
+    return true
+  }
+
+  const primaryFactoryId = authStore.currentUser?.profile?.primary_factory_id?.trim()
+  if (primaryFactoryId) {
+    return primaryFactoryId === factoryId
+  }
+
+  return authStore.grants.some((grant) => grant.factory_id === factoryId)
+}
+
+function canMoldingSamplePermission(permission: string, factoryId: string) {
+  if (!isLocalMoldingFactory(factoryId)) {
+    return false
+  }
+
+  const departments = MOLDING_SAMPLE_PERMISSION_DEPARTMENTS[permission] ?? [ENGINEERING_DEPARTMENT]
+  return departments.some((department) => authStore.can(permission, factoryId, department))
+}
+
+function canCrossFactoryPermission(permission: string, factoryId: string) {
+  return authStore.can(permission, factoryId)
+}
+
+function isRecordReadOnly(record: MoldingSampleWorkflowRecord) {
+  if (record.access?.read_only || record.access?.read_source === 'cross') {
+    return true
+  }
+
+  return !MOLDING_SAMPLE_WRITE_PERMISSIONS.some((permission) =>
+    canMoldingSamplePermission(permission, record.order.factory_id),
+  )
+}
+
+function canViewRecordCost(record: MoldingSampleWorkflowRecord) {
+  return record.access?.can_view_cost ?? true
+}
+
+const canManageSelectedOrderFactory = computed(() =>
+  selectedRecord.value ? !isRecordReadOnly(selectedRecord.value) : false,
+)
+const isSelectedFactoryReadOnly = computed(() => {
+  if (selectedRecord.value) {
+    return isRecordReadOnly(selectedRecord.value)
+  }
+
+  return !MOLDING_SAMPLE_WRITE_PERMISSIONS.some((permission) =>
+    canMoldingSamplePermission(permission, selectedFactoryId.value),
+  )
 })
-const isSelectedFactoryReadOnly = computed(() => !canManageSelectedFactory.value)
-const canCreateOrder = computed(() => authStore.can('molding_sample:create', selectedFactoryId.value) && canManageSelectedFactory.value)
-const canEditDraftOrder = computed(() => authStore.can('molding_sample:edit_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
-const canDeleteDraftOrder = computed(() => authStore.can('molding_sample:delete_draft', selectedOrder.value.factory_id) && canManageSelectedOrderFactory.value)
+const canManageSelectedFactory = computed(() => !isSelectedFactoryReadOnly.value)
+const canViewSelectedOrderCost = computed(() =>
+  selectedRecord.value ? canViewRecordCost(selectedRecord.value) : true,
+)
+const canViewActiveFactoryCosts = computed(() => {
+  if (factoryRecords.value.length > 0) {
+    return factoryRecords.value.every(canViewRecordCost)
+  }
+
+  if (
+    isLocalMoldingFactory(selectedFactoryId.value)
+    && (
+      canMoldingSamplePermission('molding_sample:read', selectedFactoryId.value)
+      || canMoldingSamplePermission('molding_sample:production_read', selectedFactoryId.value)
+    )
+  ) {
+    return true
+  }
+
+  return canCrossFactoryPermission('molding_sample:cross_factory_cost_read', selectedFactoryId.value)
+})
+const isCrossFactoryReadOnly = computed(() =>
+  selectedRecord.value?.access?.read_source === 'cross',
+)
+const canCreateOrder = computed(() =>
+  canManageSelectedFactory.value
+  && canMoldingSamplePermission('molding_sample:create', selectedFactoryId.value),
+)
+const canEditDraftOrder = computed(() =>
+  canManageSelectedOrderFactory.value
+  && canMoldingSamplePermission('molding_sample:edit_draft', selectedOrder.value.factory_id),
+)
+const canDeleteDraftOrder = computed(() =>
+  canManageSelectedOrderFactory.value
+  && canMoldingSamplePermission('molding_sample:delete_draft', selectedOrder.value.factory_id),
+)
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
-const canExportSelectedOrder = computed(() =>
-  batchActionRecords.value.length > 0
+function canExportRecords(records: MoldingSampleWorkflowRecord[]) {
+  return records.length > 0
   && apiState.value === 'connected'
-  && batchActionRecords.value.every((target) =>
-    authStore.can('molding_sample:export', target.order.factory_id),
+  && records.every((target) =>
+    !isRecordReadOnly(target)
+    && canMoldingSamplePermission('molding_sample:export', target.order.factory_id),
   )
-  && batchActionRecords.value.every((target) =>
+  && records.every((target) =>
     apiRecords.value.some((record) => record.order.id === target.order.id),
-  ),
-)
+  )
+}
+const canExportSelectedOrder = computed(() => canExportRecords(batchActionRecords.value))
 const canEditSelectedRejectedOrder = computed(() =>
   Boolean(selectedRecord.value)
   && ['已驳回', '已撤回'].includes(selectedOrder.value.status)
@@ -658,13 +778,17 @@ const canDeleteSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
   && canManageSelectedOrderFactory.value
   && (
-    authStore.can('system:user_manage', selectedOrder.value.factory_id)
+    canMoldingSamplePermission('system:user_manage', selectedOrder.value.factory_id)
     || canDeleteSelectedWithdrawnOrder.value
   ),
 )
 const canApproveSelectedOrder = computed(() => {
   const actor = getApprovalActor()
-  return Boolean(actor && canManageSelectedOrderFactory.value && authStore.can(actor.permission, selectedOrder.value.factory_id))
+  return Boolean(
+    actor
+    && canManageSelectedOrderFactory.value
+    && canMoldingSamplePermission(actor.permission, selectedOrder.value.factory_id),
+  )
 })
 
 function normalizeBoardStatus(status: MoldingSampleStatus): MoldingSampleStatus {
@@ -675,6 +799,7 @@ function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWor
   const factoryId = isProductionFactoryContextId(record.order.factory_id)
     ? record.order.factory_id
     : selectedFactoryId.value
+  const readSource = record.access?.read_source ?? record.read_source ?? 'local'
 
   return {
     factory_id: factoryId,
@@ -686,6 +811,11 @@ function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWor
     audit_logs: record.audit_logs,
     requisitions: [],
     problems: record.problems ?? [],
+    access: {
+      read_source: readSource,
+      can_view_cost: record.access?.can_view_cost ?? record.can_view_cost ?? true,
+      read_only: record.access?.read_only ?? record.read_only ?? readSource === 'cross',
+    },
   }
 }
 
@@ -1020,6 +1150,23 @@ function removeApiRecord(orderId: string) {
   apiState.value = apiRecords.value.length ? 'connected' : 'empty'
 }
 
+async function loadProtectedMaterialPrices(requestedFactoryId: string) {
+  rawMaterialPriceList.value = []
+
+  try {
+    const response = await moldingSampleApi.getMaterialPrices(requestedFactoryId)
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
+    rawMaterialPriceList.value = response.prices
+  }
+  catch {
+    if (requestedFactoryId === selectedFactoryId.value) {
+      rawMaterialPriceList.value = []
+    }
+  }
+}
+
 async function loadApiData() {
   const requestedFactoryId = selectedFactoryId.value
   const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
@@ -1034,6 +1181,10 @@ async function loadApiData() {
     }
 
     apiRecords.value = records
+    await loadProtectedMaterialPrices(requestedFactoryId)
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
     apiState.value = records.length ? 'connected' : 'empty'
     actionMessage.value = records.length
       ? `已读取${requestedFactoryName}正式啤办单 ${records.length} 张。`
@@ -1049,6 +1200,7 @@ async function loadApiData() {
     }
 
     apiRecords.value = []
+    rawMaterialPriceList.value = []
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
   }
@@ -1162,9 +1314,10 @@ async function downloadOrderExcel() {
 async function printOverview() {
   const records = batchActionRecords.value
 
-  if (!records.length) {
+  if (!canExportSelectedOrder.value) {
     printPreviewVisible.value = false
-    actionMessage.value = '请先勾选或选择已从后端读取到的正式啤办单，再打印。'
+    printableRecords.value = []
+    actionMessage.value = '当前账号没有所选啤办单的导出或打印权限。'
     return
   }
 
@@ -1177,9 +1330,10 @@ async function printOverview() {
 }
 
 async function confirmPrintOverview() {
-  if (!printableRecords.value.length) {
+  if (!canExportRecords(printableRecords.value)) {
     printPreviewVisible.value = false
-    actionMessage.value = '请先勾选或选择已从后端读取到的正式啤办单，再打印。'
+    printableRecords.value = []
+    actionMessage.value = '当前账号没有所选啤办单的导出或打印权限。'
     return
   }
 
@@ -1850,11 +2004,11 @@ function clearRawMaterialSelection(line: ManualMoldingSampleLineDraft, index: nu
   activeRawMaterialPickerLineIndex.value = index
 }
 
-function buildMaterialBalanceItemRow(item: MoldingSampleItem): MaterialBalanceItemRow {
+function buildMaterialBalanceItemRow(item: MoldingSampleItem, canViewCost = true): MaterialBalanceItemRow {
   const expectedWeightKg = readMaterialWeight(item.required_material_kg)
   const actualWeightKg = readMaterialWeight(item.actual_weight_kg)
   const balanceWeightKg = roundMaterialWeight(expectedWeightKg - actualWeightKg)
-  const actualAmountHkd = item.actual_amount_hkd === null || item.actual_amount_hkd === undefined
+  const actualAmountHkd = !canViewCost || item.actual_amount_hkd === null || item.actual_amount_hkd === undefined
     ? null
     : Number(item.actual_amount_hkd)
   const hasActualWeight = actualWeightKg > 0
@@ -1875,7 +2029,7 @@ function buildMaterialBalanceItemRow(item: MoldingSampleItem): MaterialBalanceIt
 }
 
 function buildMaterialBalanceOrderRow(record: MoldingSampleWorkflowRecord): MaterialBalanceOrderRow {
-  const itemRows = record.items.map(buildMaterialBalanceItemRow)
+  const itemRows = record.items.map((item) => buildMaterialBalanceItemRow(item, canViewRecordCost(record)))
   const unknownAmountCount = itemRows.filter((row) => row.balanceAmountHkd === null).length
 
   return {
@@ -2207,10 +2361,10 @@ onUnmounted(() => {
           看板总览
         </button>
         <button
+          v-if="!isSelectedFactoryReadOnly"
           type="button"
           class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
           :class="activeView === 'create' ? 'bg-slate-900 text-white' : 'text-slate-500'"
-          :disabled="!canManageSelectedFactory"
           @click="startCreateOrder"
         >
           <FilePlus2 class="size-4" aria-hidden="true" />
@@ -2417,7 +2571,7 @@ onUnmounted(() => {
                           <th class="px-3 py-2 text-left font-medium">颜色 / PMS</th>
                           <th class="px-3 py-2 text-right font-medium">预计用料</th>
                           <th class="px-3 py-2 text-right font-medium">实际用料</th>
-                          <th class="px-3 py-2 text-right font-medium">费用</th>
+                          <th v-if="canViewRecordCost(record)" class="px-3 py-2 text-right font-medium">费用</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2434,7 +2588,7 @@ onUnmounted(() => {
                           <td class="px-3 py-2 text-slate-700">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</td>
                           <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatWeight(item.required_material_kg) }}</td>
                           <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatWeight(item.actual_weight_kg) }}</td>
-                          <td class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatMoney(item.actual_amount_hkd) }}</td>
+                          <td v-if="canViewRecordCost(record)" class="px-3 py-2 text-right tabular-nums text-slate-700">{{ formatMoney(item.actual_amount_hkd) }}</td>
                         </tr>
                       </tbody>
                     </table>
@@ -2474,7 +2628,10 @@ onUnmounted(() => {
         class="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-800"
       >
         <TriangleAlert class="mt-0.5 size-4 shrink-0 text-amber-600" aria-hidden="true" />
-        <span>当前厂区为只读，仅可查看数据</span>
+        <span v-if="isCrossFactoryReadOnly">
+          跨厂只读：仅可查看啤办单，不能修改、审批、删除或导出；{{ canViewSelectedOrderCost ? '已额外授权查看成本' : '成本信息已隐藏' }}
+        </span>
+        <span v-else>当前厂区为只读，仅可查看数据</span>
       </section>
 
       <section
@@ -2500,6 +2657,7 @@ onUnmounted(() => {
             {{ selectedBatchCount ? `已选 ${selectedBatchCount} 单` : '默认当前单据' }}
           </span>
         <button
+          v-if="canExportSelectedOrder"
           type="button"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50"
           @click="printOverview"
@@ -2508,6 +2666,7 @@ onUnmounted(() => {
           打印
         </button>
         <button
+          v-if="!isSelectedFactoryReadOnly"
           type="button"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="excelImporting || !canCreateOrder"
@@ -2517,6 +2676,7 @@ onUnmounted(() => {
           {{ excelImporting ? '导入中...' : '导入Excel' }}
         </button>
         <button
+          v-if="!isSelectedFactoryReadOnly"
           type="button"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="excelExporting || !canExportSelectedOrder"
@@ -2618,6 +2778,7 @@ onUnmounted(() => {
             物料结余
           </button>
           <button
+            v-if="!isSelectedFactoryReadOnly"
             type="button"
             class="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-slate-700"
             @click="startCreateOrder"
@@ -2862,7 +3023,10 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        <div
+          class="grid grid-cols-2 gap-3 sm:grid-cols-3"
+          :class="canViewActiveFactoryCosts ? 'xl:grid-cols-5' : 'xl:grid-cols-4'"
+        >
           <article class="min-h-[86px] rounded-lg border border-slate-200 bg-white p-3">
             <div class="text-[11px] font-medium text-slate-500">单据数</div>
             <div class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ materialBalanceSummary.orderCount }}</div>
@@ -2885,7 +3049,7 @@ onUnmounted(() => {
             </div>
             <div class="text-[11px] text-teal-500">预计减实际</div>
           </article>
-          <article class="min-h-[86px] rounded-lg border border-emerald-100 bg-emerald-50 p-3">
+          <article v-if="canViewActiveFactoryCosts" class="min-h-[86px] rounded-lg border border-emerald-100 bg-emerald-50 p-3">
             <div class="text-[11px] font-medium text-emerald-700">结余金额</div>
             <div class="mt-1 text-2xl font-bold tabular-nums" :class="getBalanceValueClass(materialBalanceSummary.knownBalanceAmountHkd)">
               {{ formatSignedMoney(materialBalanceSummary.knownBalanceAmountHkd) }}
@@ -2952,8 +3116,8 @@ onUnmounted(() => {
                   <th class="px-3 py-2 text-right font-medium">预计用料</th>
                   <th class="px-3 py-2 text-right font-medium">实际用料</th>
                   <th class="px-3 py-2 text-right font-medium">结余</th>
-                  <th class="px-3 py-2 text-right font-medium">结余金额</th>
-                  <th class="px-3 py-2 text-left font-medium">折算状态</th>
+                  <th v-if="canViewActiveFactoryCosts" class="px-3 py-2 text-right font-medium">结余金额</th>
+                  <th v-if="canViewActiveFactoryCosts" class="px-3 py-2 text-left font-medium">折算状态</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-50">
@@ -2973,10 +3137,10 @@ onUnmounted(() => {
                   <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceWeightKg)">
                     {{ formatSignedWeight(row.balanceWeightKg) }}
                   </td>
-                  <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceAmountHkd)">
+                  <td v-if="canViewActiveFactoryCosts" class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceAmountHkd)">
                     {{ formatSignedMoney(row.balanceAmountHkd) }}
                   </td>
-                  <td class="px-3 py-2.5 align-top">
+                  <td v-if="canViewActiveFactoryCosts" class="px-3 py-2.5 align-top">
                     <span
                       class="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold"
                       :class="row.missingActualCount ? 'border-amber-200 bg-amber-50 text-amber-700' : row.unknownAmountCount ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
@@ -2986,7 +3150,7 @@ onUnmounted(() => {
                   </td>
                 </tr>
                 <tr v-if="!materialBalancePeriodRows.length">
-                  <td colspan="7" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
+                    <td :colspan="canViewActiveFactoryCosts ? 7 : 5" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
                     暂无周期结余
                   </td>
                 </tr>
@@ -3039,8 +3203,8 @@ onUnmounted(() => {
                   <th class="px-3 py-2 text-right font-medium">预计用料</th>
                   <th class="px-3 py-2 text-right font-medium">实际用料</th>
                   <th class="px-3 py-2 text-right font-medium">结余</th>
-                  <th class="px-3 py-2 text-right font-medium">结余金额</th>
-                  <th class="px-3 py-2 text-left font-medium">折算状态</th>
+                  <th v-if="canViewActiveFactoryCosts" class="px-3 py-2 text-right font-medium">结余金额</th>
+                  <th v-if="canViewActiveFactoryCosts" class="px-3 py-2 text-left font-medium">折算状态</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-50">
@@ -3076,10 +3240,10 @@ onUnmounted(() => {
                   <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceWeightKg)">
                     {{ formatSignedWeight(row.balanceWeightKg) }}
                   </td>
-                  <td class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceAmountHkd)">
+                  <td v-if="canViewActiveFactoryCosts" class="px-3 py-2.5 text-right align-top font-bold tabular-nums" :class="getBalanceValueClass(row.balanceAmountHkd)">
                     {{ formatSignedMoney(row.balanceAmountHkd) }}
                   </td>
-                  <td class="px-3 py-2.5 align-top">
+                  <td v-if="canViewActiveFactoryCosts" class="px-3 py-2.5 align-top">
                     <span
                       class="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold"
                       :class="row.missingActualCount ? 'border-amber-200 bg-amber-50 text-amber-700' : row.unknownAmountCount ? 'border-slate-200 bg-slate-50 text-slate-500' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
@@ -3089,7 +3253,7 @@ onUnmounted(() => {
                   </td>
                 </tr>
                 <tr v-if="!materialBalanceRows.length">
-                  <td colspan="9" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
+                  <td :colspan="canViewActiveFactoryCosts ? 9 : 7" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
                     暂无符合条件的啤办单
                   </td>
                 </tr>
@@ -3496,7 +3660,7 @@ onUnmounted(() => {
                 返回看板
               </button>
               <button
-                v-if="selectedOrder.status === '待审核'"
+                v-if="!isSelectedFactoryReadOnly && selectedOrder.status === '待审核'"
                 type="button"
                 :disabled="!canWithdrawSelectedOrder || withdrawSubmitting"
                 class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 text-[12px] font-semibold text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
@@ -3506,7 +3670,7 @@ onUnmounted(() => {
                 {{ withdrawSubmitting ? '撤回中...' : '撤回审核' }}
               </button>
               <button
-                v-if="selectedOrder.status === '已驳回' || selectedOrder.status === '已撤回'"
+                v-if="!isSelectedFactoryReadOnly && (selectedOrder.status === '已驳回' || selectedOrder.status === '已撤回')"
                 type="button"
                 :disabled="!canEditSelectedRejectedOrder"
                 class="inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[12px] font-semibold disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
@@ -3527,6 +3691,7 @@ onUnmounted(() => {
                 {{ deleteSubmitting ? '删除中...' : deleteConfirmingOrderId === selectedOrder.id ? '确认删除' : '删除啤办单' }}
               </button>
               <RouterLink
+                v-if="!isSelectedFactoryReadOnly"
                 :to="productionTaskRoute"
                 class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-slate-900 px-3 text-[12px] font-semibold text-white hover:bg-slate-700"
               >
@@ -3598,10 +3763,10 @@ onUnmounted(() => {
                       <th class="px-2 py-2 text-left font-medium">原料</th>
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
-                      <th class="px-2 py-2 text-right font-medium">预计料费</th>
+                      <th v-if="canViewSelectedOrderCost" class="px-2 py-2 text-right font-medium">预计料费</th>
                       <th class="px-2 py-2 text-right font-medium">实际用料</th>
                       <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
-                      <th class="px-2 py-2 text-right font-medium">实际料费</th>
+                      <th v-if="canViewSelectedOrderCost" class="px-2 py-2 text-right font-medium">实际料费</th>
                       <th class="px-2 py-2 text-left font-medium">状态</th>
                     </tr>
                   </thead>
@@ -3622,10 +3787,10 @@ onUnmounted(() => {
                         </span>
                       </td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td>
-                      <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</td>
+                      <td v-if="canViewSelectedOrderCost" class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</td>
                       <td class="px-2 py-1.5">{{ formatBlank(item.production_machine) }}</td>
-                      <td class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(item.actual_amount_hkd) }}</td>
+                      <td v-if="canViewSelectedOrderCost" class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(item.actual_amount_hkd) }}</td>
                       <td class="px-2 py-1.5">
                         <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
                           {{ getItemState(item) }}
@@ -3722,11 +3887,11 @@ onUnmounted(() => {
                         <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
                         <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
                         <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
-                        <div><span class="text-slate-400">预计料费(HKD)</span><div class="font-semibold">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</div></div>
+                        <div v-if="canViewSelectedOrderCost"><span class="text-slate-400">预计料费(HKD)</span><div class="font-semibold">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</div></div>
                         <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
                         <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
-                        <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
+                        <div v-if="canViewSelectedOrderCost"><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
                       </div>
                       <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
                         备注：{{ formatBlank(item.notes) }}
@@ -3776,6 +3941,7 @@ onUnmounted(() => {
 
           <aside class="space-y-4">
             <section
+              v-if="!isSelectedFactoryReadOnly"
               class="rounded-lg border-2 p-4"
               :class="selectedOrder.status === '待审核' || selectedOrder.status === '待经理审核' ? 'border-amber-200 bg-amber-50/50' : 'border-slate-200 bg-white'"
             >
@@ -3847,6 +4013,7 @@ onUnmounted(() => {
           {{ apiState === 'error' ? '不会显示本地示例单据，请修复登录权限、接口或网络后刷新正式列表。' : '可以先在“工程部 · 新建开单”提交一张新啤办单，提交成功后会进入正式看板。' }}
         </p>
         <button
+          v-if="!isSelectedFactoryReadOnly"
           type="button"
           class="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
           :disabled="!canManageSelectedFactory"
@@ -3979,13 +4146,13 @@ onUnmounted(() => {
                 <td>
                   <strong>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</strong>
                   <span>{{ formatWeight(item.required_material_kg) }}</span>
-                  <span>预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
+                  <span v-if="canViewRecordCost(record)">预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
                   <em>{{ formatGram(item.gross_weight_g) }}</em>
                 </td>
                 <td>{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</td>
                 <td>
                   <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
-                  <span>实际料费 {{ formatMoney(item.actual_amount_hkd) }}</span>
+                  <span v-if="canViewRecordCost(record)">实际料费 {{ formatMoney(item.actual_amount_hkd) }}</span>
                 </td>
                 <td>{{ formatBlank(item.notes) }}</td>
               </tr>

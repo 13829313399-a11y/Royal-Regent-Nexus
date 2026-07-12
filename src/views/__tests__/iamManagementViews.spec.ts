@@ -36,6 +36,8 @@ describe('IAM management view semantics and accessibility', () => {
 
   it('renders business labels while retaining action and scope codes', () => {
     expect(permissionActionLabel('read')).toBe('查看')
+    expect(permissionActionLabel('cross_factory_read')).toBe('跨厂查看')
+    expect(permissionActionLabel('cross_factory_cost_read')).toBe('跨厂查看成本')
     expect(permissionActionLabel('manager_review')).toBe('经理终审')
     expect(permissionActionLabel('unknown_action')).toBe('自定义操作')
     expect(permissionScopeLabel('factory_department')).toBe('指定厂区与部门')
@@ -75,6 +77,8 @@ describe('IAM management view semantics and accessibility', () => {
       'injection_schedule:read': '查看啤机排产',
       'molding_sample:audit_read': '查看啤办审计记录',
       'molding_sample:create': '新建啤办申请',
+      'molding_sample:cross_factory_cost_read': '跨厂查看啤办成本',
+      'molding_sample:cross_factory_read': '跨厂查看啤办单据',
       'molding_sample:delete_draft': '删除啤办草稿',
       'molding_sample:edit_draft': '编辑啤办草稿',
       'molding_sample:export': '导出啤办单',
@@ -97,7 +101,7 @@ describe('IAM management view semantics and accessibility', () => {
       'system:role_manage': '管理角色模板',
       'system:user_manage': '管理用户账号',
     }
-    expect(Object.keys(registeredPermissionLabels)).toHaveLength(33)
+    expect(Object.keys(registeredPermissionLabels)).toHaveLength(35)
     for (const [code, label] of Object.entries(registeredPermissionLabels)) {
       expect(permissionDisplayLabel({ code, name: code })).toBe(label)
     }

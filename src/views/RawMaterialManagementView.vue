@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, watchEffect, type Component } from 'vue'
+import { computed, reactive, ref, watch, watchEffect, type Component } from 'vue'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -28,6 +28,8 @@ import {
   rawMaterialDatabaseSource,
   type RawMaterialDatabaseRow,
 } from '@/data/rawMaterialDatabase'
+import { moldingSampleApi } from '@/api/moldingSample'
+import { resolveMaterialPrice } from '@/lib/moldingSampleBusiness'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
 
@@ -104,8 +106,9 @@ const requisitionStatusFilters: Array<'全部' | RequisitionStatus> = ['全部',
 const movementTypeFilters: Array<'全部' | MovementType> = ['全部', '入库', '出库', '撤回']
 const materialStatusFilters: Array<'全部状态' | MaterialStatus> = ['全部状态', '启用', '停用']
 
-const rawMaterialRows = rawMaterialDatabaseRows.map(mapRawMaterialRow)
+const rawMaterialRows = reactive(rawMaterialDatabaseRows.map(mapRawMaterialRow))
 const rawMaterialPageSize = RAW_MATERIAL_PAGE_SIZE
+const materialPriceState = ref<'loading' | 'ready' | 'unavailable'>('loading')
 
 const requisitionRows: RequisitionRow[] = [
   {
@@ -268,6 +271,39 @@ const activeFactory = computed(() =>
   appStore.activeProductionFactory,
 )
 
+async function loadProtectedMaterialPrices(factoryId: string) {
+  materialPriceState.value = 'loading'
+  rawMaterialRows.forEach((row) => {
+    row.unitPriceHkdPerLb = null
+  })
+
+  try {
+    const response = await moldingSampleApi.getMaterialPrices(factoryId)
+    if (factoryId !== selectedFactoryId.value) {
+      return
+    }
+
+    rawMaterialRows.forEach((row) => {
+      row.unitPriceHkdPerLb = resolveMaterialPrice(row.name, response.prices)?.unit_price ?? null
+    })
+    materialPriceState.value = 'ready'
+  }
+  catch {
+    if (factoryId !== selectedFactoryId.value) {
+      return
+    }
+
+    rawMaterialRows.forEach((row) => {
+      row.unitPriceHkdPerLb = null
+    })
+    materialPriceState.value = 'unavailable'
+  }
+}
+
+watch(selectedFactoryId, (factoryId) => {
+  void loadProtectedMaterialPrices(factoryId)
+}, { immediate: true })
+
 const normalizedSearch = computed(() => globalSearch.value.trim().toLowerCase())
 
 const normalizedMaterialRows = computed(() =>
@@ -283,7 +319,9 @@ const normalizedMaterialRows = computed(() =>
       row.supplier,
       row.status,
       row.notes,
-      ...Object.values(row.source),
+      ...Object.entries(row.source)
+        .filter(([key]) => key !== 'unitPriceHkdPerLb')
+        .map(([, value]) => value),
     ]
       .map((value) => value ?? '')
       .join(' ')
@@ -522,7 +560,7 @@ function mapRawMaterialRow(source: RawMaterialDatabaseRow, index: number): RawMa
     category: source.plasticCategory || inferMaterialCategory(name),
     unit: source.unit || 'KG/包',
     supplier: source.origin || '未填写',
-    unitPriceHkdPerLb: source.unitPriceHkdPerLb,
+    unitPriceHkdPerLb: null,
     safetyStockKg: null,
     currentStockKg: null,
     status: materialCode && name ? '启用' : '停用',
@@ -1187,7 +1225,7 @@ function saveSecondaryModal() {
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价 (HKD/磅)</span>
-              <input type="number" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="5.6382">
+              <input type="number" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="由受保护价格接口维护">
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">供应商</span>
@@ -1265,7 +1303,7 @@ function saveSecondaryModal() {
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价参考 (HKD/磅)</span>
-              <input value="5.6382" disabled class="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-400 outline-none">
+              <input :value="materialPriceState === 'ready' ? '选择原料后显示' : '无价格权限或暂无价格'" disabled class="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-400 outline-none">
             </label>
           </div>
           <div v-else class="grid gap-x-4 gap-y-3.5 sm:grid-cols-2">

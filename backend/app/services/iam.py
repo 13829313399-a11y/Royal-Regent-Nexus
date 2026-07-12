@@ -76,10 +76,13 @@ DEPARTMENT_NAMES = {
     "*": "全部部门",
     "system": "系统管理",
     "engineering": "工程部",
+    "management": "管理层",
+    "molding": "啤机部（历史部门代码）",
     "pmc-warehouse": "PMC / 仓库",
     "production": "生产部",
     "qa": "品质部",
     "sales-business": "营业部",
+    "warehouse": "仓库（历史部门代码）",
 }
 MODULE_NAMES = {
     "molding_sample": "啤办管理",

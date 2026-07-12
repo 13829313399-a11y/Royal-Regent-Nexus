@@ -1,10 +1,12 @@
 import json
+import logging
 import secrets
 
 from fastapi import HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.auth import (
     AuthAuthorizationEvent,
     AuthPermission,
@@ -43,6 +45,9 @@ from app.services.auth import (
     time_window_is_active,
     validate_password_characters,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def is_superadmin(current_user: AuthContext) -> bool:
@@ -498,7 +503,7 @@ def reset_user_password(
         notification = db.get(SystemNotification, notification_id)
         if notification is None:
             raise HTTPException(status_code=404, detail="通知不存在")
-        if not can_access_notification(current_user, notification):
+        if not can_access_notification(db, current_user, notification):
             raise HTTPException(status_code=403, detail="无权处理该通知")
         if notification.type != "password_reset":
             raise HTTPException(status_code=400, detail="该通知不是密码重置申请")
@@ -524,7 +529,7 @@ def list_system_notifications(db: Session, current_user: AuthContext) -> list[Sy
     return [
         notification_to_out(notification)
         for notification in notifications
-        if can_access_notification(current_user, notification)
+        if can_access_notification(db, current_user, notification)
     ]
 
 
@@ -537,7 +542,7 @@ def update_system_notification(
     notification = db.get(SystemNotification, notification_id)
     if notification is None:
         raise HTTPException(status_code=404, detail="通知不存在")
-    if not can_access_notification(current_user, notification):
+    if not can_access_notification(db, current_user, notification):
         raise HTTPException(status_code=403, detail="无权处理该通知")
 
     status = payload.status.strip()
@@ -584,18 +589,94 @@ def mark_registration_notifications_handled(db: Session, registration_request_id
             notification.handled_at = handled_at
 
 
-def can_access_notification(current_user: AuthContext, notification: SystemNotification) -> bool:
+def notification_target_scope(
+    db: Session,
+    notification: SystemNotification,
+) -> tuple[str, str] | None:
+    target_factory_id = notification.target_factory_id.strip()
+    target_department = notification.target_department.strip()
+    payload = parse_payload(notification.payload_json)
+
+    if notification.type == "password_reset":
+        matched_user_id = str(payload.get("matched_user_id") or "").strip()
+        if not matched_user_id:
+            return None
+        profile = db.get(EmployeeProfile, matched_user_id)
+        if profile and profile.primary_factory_id and profile.primary_department:
+            return profile.primary_factory_id, profile.primary_department
+        if target_factory_id and target_department:
+            return target_factory_id, target_department
+        return None
+
+    if target_factory_id and target_department:
+        return target_factory_id, target_department
+
+    if notification.type == "user_registration":
+        registration_request_id = str(payload.get("registration_request_id") or "").strip()
+        registration_request = (
+            db.get(AuthRegistrationRequest, registration_request_id)
+            if registration_request_id
+            else None
+        )
+        if (
+            registration_request
+            and registration_request.factory_id
+            and registration_request.department
+        ):
+            return registration_request.factory_id, registration_request.department
+
+    return None
+
+
+def can_access_notification(
+    db: Session,
+    current_user: AuthContext,
+    notification: SystemNotification,
+) -> bool:
     if notification.target_user_id and notification.target_user_id == current_user.id:
         return True
-    if notification.target_permission:
-        if notification.target_factory_id:
-            return can(
-                current_user,
-                notification.target_permission,
-                notification.target_factory_id,
-            )
-        return notification.target_permission in current_user.permissions
-    return False
+    if not notification.target_permission:
+        return False
+    if is_superadmin(current_user):
+        return True
+
+    target_scope = notification_target_scope(db, notification)
+    payload = parse_payload(notification.payload_json)
+    unmatched_password_reset = False
+    if notification.type == "password_reset":
+        matched_user_id = str(payload.get("matched_user_id") or "").strip()
+        unmatched_password_reset = not matched_user_id or target_scope is None or target_scope[0] == "*"
+
+    canonical_result = bool(target_scope) and not unmatched_password_reset and can(
+        current_user,
+        notification.target_permission,
+        target_scope[0],
+        target_scope[1],
+    )
+    if settings.authz_mode == "enforce":
+        return canonical_result
+
+    legacy_factory_id = notification.target_factory_id.strip()
+    if not legacy_factory_id and target_scope:
+        legacy_factory_id = target_scope[0]
+    legacy_result = (
+        can(current_user, notification.target_permission, legacy_factory_id)
+        if legacy_factory_id and legacy_factory_id != "*"
+        else notification.target_permission in current_user.permissions
+    )
+    if settings.authz_mode == "shadow" and legacy_result != canonical_result:
+        logger.warning(
+            "authz shadow mismatch user=%s permission=%s notification=%s type=%s scope=%s/%s legacy=%s canonical=%s",
+            current_user.id,
+            notification.target_permission,
+            notification.id,
+            notification.type,
+            target_scope[0] if target_scope else (legacy_factory_id or "*"),
+            target_scope[1] if target_scope else "*",
+            legacy_result,
+            canonical_result,
+        )
+    return legacy_result
 
 
 def user_has_permission(db: Session, user_id: str, permission_code: str) -> bool:
@@ -710,6 +791,7 @@ def notification_to_out(notification: SystemNotification) -> SystemNotificationO
         target_user_id=notification.target_user_id,
         target_permission=notification.target_permission,
         target_factory_id=notification.target_factory_id,
+        target_department=notification.target_department,
         type=notification.type,
         title=notification.title,
         message=notification.message,

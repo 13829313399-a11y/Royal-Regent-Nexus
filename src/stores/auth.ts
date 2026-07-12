@@ -201,13 +201,16 @@ export const useAuthStore = defineStore('auth', {
       if (!factoryId && !department) {
         return matchingAccess.some((access) => access.effect === 'allow' && access.allowed !== false)
       }
-      if (matchingAccess.some((access) => access.effect === 'deny' || access.allowed === false)) {
+      if (matchingAccess.some((access) =>
+        (access.effect === 'deny' || access.allowed === false)
+        && ['override', 'user_override', 'inactive_permission', 'inactive_account'].includes(access.source_type),
+      )) {
         return false
       }
       return matchingAccess.some((access) => access.effect === 'allow' && access.allowed !== false)
     },
-    canAny(permissions: string[]) {
-      return permissions.some((permission) => this.can(permission))
+    canAny(permissions: string[], factoryId?: string, department?: string) {
+      return permissions.some((permission) => this.can(permission, factoryId, department))
     },
   },
 })

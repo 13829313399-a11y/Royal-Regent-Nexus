@@ -143,4 +143,9 @@ export interface MoldingSampleWorkflowRecord {
   audit_logs: MoldingSampleAuditLog[]
   requisitions: MoldingSampleRequisition[]
   problems: MoldingSampleProblem[]
+  access?: {
+    read_source: 'local' | 'cross'
+    can_view_cost: boolean
+    read_only: boolean
+  }
 }

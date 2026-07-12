@@ -140,7 +140,7 @@ const routes: RouteRecordRaw[] = [
       title: '啤办进度追踪',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['molding_sample:read'],
+      permissions: ['molding_sample:read', 'molding_sample:cross_factory_read'],
       enforcePermissions: true,
     },
   },
