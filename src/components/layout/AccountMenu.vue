@@ -312,7 +312,7 @@ onBeforeUnmount(() => {
     >
       <section
         v-if="isMenuOpen"
-        class="absolute right-0 top-11 z-50 w-80 overflow-hidden rounded-xl border border-slate-200 bg-white text-left text-slate-700 shadow-xl shadow-slate-900/10"
+        class="fixed left-3 right-3 top-[68px] z-50 w-auto max-w-none overflow-hidden rounded-xl border border-slate-200 bg-white/98 text-left text-slate-700 shadow-2xl shadow-slate-900/12 backdrop-blur-xl sm:absolute sm:left-auto sm:right-0 sm:top-11 sm:w-[calc(100vw-1.5rem)] sm:max-w-80"
         role="menu"
         aria-label="账号菜单"
       >
