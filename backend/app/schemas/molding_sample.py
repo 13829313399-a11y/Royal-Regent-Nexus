@@ -147,6 +147,8 @@ class MoldingSampleDetailResponse(BaseModel):
     audit_logs: list[MoldingSampleAuditLogOut] = Field(default_factory=list)
     notifications: list[MoldingSampleNotificationOut] = Field(default_factory=list)
     problems: list[MoldingSampleProblemOut] = Field(default_factory=list)
+    read_source: Literal["local", "cross"] = "local"
+    can_view_cost: bool = True
 
 
 class MoldingSampleStatusRequest(BaseModel):

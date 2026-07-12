@@ -32,6 +32,8 @@ const ACTION_LABELS: Record<string, string> = {
   access_request: '提交权限申请',
   access_approve: '审批权限申请',
   permission_catalog_read: '查看权限目录',
+  cross_factory_read: '跨厂查看',
+  cross_factory_cost_read: '跨厂查看成本',
 }
 
 const PERMISSION_LABELS: Record<string, string> = {
@@ -47,6 +49,8 @@ const PERMISSION_LABELS: Record<string, string> = {
   'injection_schedule:read': '查看啤机排产',
   'molding_sample:audit_read': '查看啤办审计记录',
   'molding_sample:create': '新建啤办申请',
+  'molding_sample:cross_factory_cost_read': '跨厂查看啤办成本',
+  'molding_sample:cross_factory_read': '跨厂查看啤办单据',
   'molding_sample:delete_draft': '删除啤办草稿',
   'molding_sample:edit_draft': '编辑啤办草稿',
   'molding_sample:export': '导出啤办单',

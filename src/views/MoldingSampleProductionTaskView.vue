@@ -31,13 +31,10 @@ import {
   buildCompletionGate,
   buildMoldingSampleReportSummary,
   isExternalMoldingSampleOrder,
+  type MoldingSampleMaterialPrice,
   type MoldingSampleReportItemRow,
   type MoldingSampleReportSummary,
 } from '@/lib/moldingSampleBusiness'
-import {
-  moldingSampleMaterialPrices,
-  moldingSampleRmbToHkdRate,
-} from '@/data/moldingSampleCostMock'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   moldingSampleApi,
@@ -100,6 +97,8 @@ const notificationUpdating = ref(false)
 const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
 const isSelectedTaskDataExpanded = ref(false)
+const protectedMaterialPrices = ref<MoldingSampleMaterialPrice[]>([])
+const protectedRmbToHkdRate = ref<number | null>(null)
 
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'blue',
@@ -129,6 +128,41 @@ const activeFactory = computed(() =>
     ?? factoryContexts[1],
 )
 
+function isWildcardMoldingAdministrator() {
+  return authStore.grants.some((grant) =>
+    (grant.role_code === 'admin' || grant.role_id === 'admin')
+    && grant.factory_id === '*'
+    && ['*', 'system'].includes(grant.department),
+  )
+}
+
+function isLocalProductionFactory(factoryId: string) {
+  if (isWildcardMoldingAdministrator() || authStore.authzMode !== 'enforce') {
+    return true
+  }
+
+  const primaryFactoryId = authStore.currentUser?.profile?.primary_factory_id?.trim()
+  if (primaryFactoryId) {
+    return primaryFactoryId === factoryId
+  }
+
+  return authStore.grants.some((grant) => grant.factory_id === factoryId)
+}
+
+function canProductionPermission(permission: string, factoryId: string) {
+  return isLocalProductionFactory(factoryId)
+    && ['production', 'molding'].some((department) =>
+      authStore.can(permission, factoryId, department),
+    )
+}
+
+const canReadSelectedFactory = computed(() =>
+  canProductionPermission('molding_sample:production_read', selectedFactoryId.value),
+)
+const canReadSelectedNotifications = computed(() =>
+  canProductionPermission('molding_sample:notification_read', selectedFactoryId.value),
+)
+
 const notificationOrderIds = computed(() =>
   new Set(apiNotifications.value.map((notification) => notification.order_id)),
 )
@@ -143,7 +177,7 @@ const engineeringOrderRoute = computed(() => {
 })
 
 const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
-  if (!apiRecords.value.length || !apiNotifications.value.length) {
+  if (!apiRecords.value.length || !canReadSelectedFactory.value) {
     return []
   }
 
@@ -156,7 +190,9 @@ const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
       requisitions: [],
       problems: record.problems ?? [],
     }))
-    .filter((record) => notificationOrderIds.value.has(record.order.id))
+    .filter((record) =>
+      !canReadSelectedNotifications.value || notificationOrderIds.value.has(record.order.id),
+    )
 })
 
 const taskRecords = computed(() =>
@@ -190,12 +226,25 @@ const selectedNotification = computed(() =>
   selectedTask.value ? getLatestNotification(selectedTask.value.order.id) : null,
 )
 
-const canManageSelectedFactory = computed(() => authStore.hasFactoryScope(selectedFactoryId.value))
-const canManageSelectedTaskFactory = computed(() => {
-  const factoryId = selectedTask.value?.order.factory_id || selectedFactoryId.value
-  return authStore.hasFactoryScope(factoryId)
-})
-const isSelectedFactoryReadOnly = computed(() => !canManageSelectedFactory.value)
+const selectedTaskFactoryId = computed(() => selectedTask.value?.order.factory_id || selectedFactoryId.value)
+const canStartSelectedTaskFactory = computed(() =>
+  canProductionPermission('molding_sample:production_start', selectedTaskFactoryId.value),
+)
+const canFillbackSelectedTaskFactory = computed(() =>
+  canProductionPermission('molding_sample:production_fillback', selectedTaskFactoryId.value),
+)
+const canCompleteSelectedTaskFactory = computed(() =>
+  canProductionPermission('molding_sample:production_complete', selectedTaskFactoryId.value),
+)
+const canUpdateSelectedNotification = computed(() =>
+  canProductionPermission('molding_sample:notification_read', selectedTaskFactoryId.value),
+)
+const isSelectedFactoryReadOnly = computed(() => ![
+  'molding_sample:production_start',
+  'molding_sample:production_fillback',
+  'molding_sample:production_complete',
+  'molding_sample:notification_read',
+].some((permission) => canProductionPermission(permission, selectedFactoryId.value)))
 
 const activeItems = computed<MoldingSampleItem[]>(() => {
   if (!selectedTask.value) {
@@ -263,10 +312,14 @@ const selectedPreviewItems = computed<MoldingSampleItem[]>(() => {
     return []
   }
 
+  if (protectedRmbToHkdRate.value === null) {
+    return activeItems.value
+  }
+
   return applyCostPreviewToItems(
     activeItems.value,
-    moldingSampleMaterialPrices,
-    moldingSampleRmbToHkdRate,
+    protectedMaterialPrices.value,
+    protectedRmbToHkdRate.value,
     isExternalMoldingSampleOrder(selectedTask.value.order),
     true,
   )
@@ -292,16 +345,20 @@ const selectedMissingItems = computed(() => {
   return activeItems.value.filter((item) => missingIds.has(item.id))
 })
 
-const canStartSelectedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '待生产')
-const canFillbackSelectedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '生产中')
-const canCompleteSelectedTask = computed(() => canFillbackSelectedTask.value && completionGate.value.can_complete)
-const canRollbackStartedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '生产中')
-const canRollbackCompletedTask = computed(() => canManageSelectedTaskFactory.value && selectedTask.value?.order.status === '已完成')
+const canStartSelectedTask = computed(() => canStartSelectedTaskFactory.value && selectedTask.value?.order.status === '待生产')
+const canFillbackSelectedTask = computed(() => canFillbackSelectedTaskFactory.value && selectedTask.value?.order.status === '生产中')
+const canCompleteSelectedTask = computed(() =>
+  canCompleteSelectedTaskFactory.value
+  && selectedTask.value?.order.status === '生产中'
+  && completionGate.value.can_complete,
+)
+const canRollbackStartedTask = computed(() => canStartSelectedTaskFactory.value && selectedTask.value?.order.status === '生产中')
+const canRollbackCompletedTask = computed(() => canCompleteSelectedTaskFactory.value && selectedTask.value?.order.status === '已完成')
 const canMarkSelectedNotificationRead = computed(() =>
-  canManageSelectedTaskFactory.value && selectedNotification.value?.status === '未读',
+  canUpdateSelectedNotification.value && selectedNotification.value?.status === '未读',
 )
 const canMarkSelectedNotificationHandled = computed(() =>
-  Boolean(canManageSelectedTaskFactory.value && selectedNotification.value && selectedNotification.value.status !== '已处理'),
+  Boolean(canUpdateSelectedNotification.value && selectedNotification.value && selectedNotification.value.status !== '已处理'),
 )
 
 function readQueryString(value: unknown) {
@@ -578,31 +635,81 @@ function getNotificationStatusClass(status: NotificationStatus) {
   return 'bg-emerald-100 text-emerald-700'
 }
 
+async function loadProtectedMaterialPrices(factoryId: string) {
+  protectedMaterialPrices.value = []
+  protectedRmbToHkdRate.value = null
+
+  try {
+    const response = await moldingSampleApi.getMaterialPrices(factoryId)
+    if (factoryId !== selectedFactoryId.value) {
+      return
+    }
+
+    protectedMaterialPrices.value = response.prices
+    protectedRmbToHkdRate.value = response.rmb_to_hkd_rate
+  }
+  catch {
+    if (factoryId !== selectedFactoryId.value) {
+      return
+    }
+
+    protectedMaterialPrices.value = []
+    protectedRmbToHkdRate.value = null
+  }
+}
+
 async function loadApiData() {
+  const requestedFactoryId = selectedFactoryId.value
   apiState.value = 'checking'
   actionMessage.value = '正在读取啤办生产任务...'
 
+  if (!canProductionPermission('molding_sample:production_read', requestedFactoryId)) {
+    apiRecords.value = []
+    apiNotifications.value = []
+    apiState.value = 'empty'
+    actionMessage.value = '当前账号没有该厂区的啤办生产任务查看权限。'
+    return
+  }
+
   try {
+    const notificationsRequest = canProductionPermission('molding_sample:notification_read', requestedFactoryId)
+      ? moldingSampleApi.listNotifications({
+          target_module: PRODUCTION_NOTIFICATION_MODULE,
+          factory_id: requestedFactoryId,
+        })
+      : Promise.resolve([])
     const [orders, notifications] = await Promise.all([
-      moldingSampleApi.listOrders(),
-      moldingSampleApi.listNotifications({
-        target_module: PRODUCTION_NOTIFICATION_MODULE,
-        factory_id: selectedFactoryId.value,
-      }),
+      moldingSampleApi.listOrders(requestedFactoryId),
+      notificationsRequest,
     ])
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
+
     apiRecords.value = orders
     apiNotifications.value = notifications
     const formalTaskCount = orders.filter((record) =>
-      record.order.factory_id === selectedFactoryId.value
-      && notificationOrderIds.value.has(record.order.id)
+      record.order.factory_id === requestedFactoryId
+      && (
+        !canProductionPermission('molding_sample:notification_read', requestedFactoryId)
+        || notificationOrderIds.value.has(record.order.id)
+      )
       && !isExternalMoldingSampleOrder(record.order),
     ).length
     apiState.value = formalTaskCount ? 'connected' : 'empty'
-    actionMessage.value = formalTaskCount
-      ? `已从独立通知表同步 ${notifications.length} 条生产通知。`
-      : '当前独立通知表没有待生产任务通知。'
+    actionMessage.value = canProductionPermission('molding_sample:notification_read', requestedFactoryId)
+      ? formalTaskCount
+        ? `已从独立通知表同步 ${notifications.length} 条生产通知。`
+        : '当前独立通知表没有待生产任务通知。'
+      : formalTaskCount
+        ? `已读取 ${formalTaskCount} 张正式啤办生产任务；当前账号没有通知处理权限。`
+        : '当前厂区暂无正式啤办生产任务。'
   }
   catch (error) {
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
+
     apiRecords.value = []
     apiNotifications.value = []
     apiState.value = 'error'
@@ -637,8 +744,8 @@ async function updateSelectedNotificationStatus(status: NotificationStatus) {
     actionMessage.value = '当前通知已读，无需重复标记。'
     return
   }
-  if (!canManageSelectedTaskFactory.value) {
-    actionMessage.value = '当前厂区为只读，仅可查看数据。'
+  if (!canUpdateSelectedNotification.value) {
+    actionMessage.value = '当前账号没有处理该厂区生产通知的权限。'
     return
   }
 
@@ -664,8 +771,8 @@ async function saveProductionFillback() {
     actionMessage.value = '请先选择一张啤办生产任务单。'
     return
   }
-  if (!canManageSelectedTaskFactory.value) {
-    actionMessage.value = '当前厂区为只读，仅可查看数据。'
+  if (!canFillbackSelectedTaskFactory.value) {
+    actionMessage.value = '当前账号没有回填该厂区生产数据的权限。'
     return
   }
 
@@ -706,8 +813,12 @@ async function runProductionTransition(action: ProductionTransitionAction) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
     return
   }
-  if (!canManageSelectedTaskFactory.value) {
-    actionMessage.value = '当前厂区为只读，仅可查看数据。'
+  if (['开始处理', '撤回开始生产'].includes(action) && !canStartSelectedTaskFactory.value) {
+    actionMessage.value = '当前账号没有开始或撤回该厂区生产任务的权限。'
+    return
+  }
+  if (['标记完成', '撤回完成'].includes(action) && !canCompleteSelectedTaskFactory.value) {
+    actionMessage.value = '当前账号没有完成或撤回该厂区生产任务的权限。'
     return
   }
   if (action === '开始处理' && !canStartSelectedTask.value) {
@@ -729,7 +840,7 @@ async function runProductionTransition(action: ProductionTransitionAction) {
 
   const orderId = selectedTask.value.order.id
 
-  if (action === '标记完成') {
+  if (action === '标记完成' && canFillbackSelectedTaskFactory.value) {
     applyLocalItemPatches(orderId)
   }
 
@@ -739,7 +850,7 @@ async function runProductionTransition(action: ProductionTransitionAction) {
   }
 
   try {
-    if (action === '标记完成') {
+    if (action === '标记完成' && canFillbackSelectedTaskFactory.value) {
       await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
     }
 
@@ -773,8 +884,8 @@ async function reportProductionProblem() {
   if (!problem || !selectedTask.value) {
     return
   }
-  if (!canManageSelectedTaskFactory.value) {
-    actionMessage.value = '当前厂区为只读，仅可查看数据。'
+  if (!canFillbackSelectedTaskFactory.value) {
+    actionMessage.value = '当前账号没有回填该厂区生产问题的权限。'
     return
   }
 
@@ -810,6 +921,7 @@ function readInputValue(event: Event) {
 
 onMounted(() => {
   void loadApiData()
+  void loadProtectedMaterialPrices(selectedFactoryId.value)
 })
 
 watch(selectedTask, () => {
@@ -825,6 +937,15 @@ watch(selectedTask, () => {
 
 watch([queueFilter, selectedFactoryId], () => {
   queuePage.value = 1
+})
+
+watch(selectedFactoryId, (factoryId, previousFactoryId) => {
+  if (previousFactoryId === undefined || factoryId === previousFactoryId) {
+    return
+  }
+
+  void loadApiData()
+  void loadProtectedMaterialPrices(factoryId)
 })
 
 watchEffect(() => {
@@ -1389,13 +1510,13 @@ watchEffect(() => {
               <div class="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_112px]">
                 <input
                   v-model="productionProblem"
-                  :disabled="problemSubmitting || !canManageSelectedTaskFactory"
+                  :disabled="problemSubmitting || !canFillbackSelectedTaskFactory"
                   class="h-8 rounded-lg border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
                   placeholder="生产问题反馈，可回到工程啤办单跟进"
                 >
                 <button
                   type="button"
-                  :disabled="problemSubmitting || !canManageSelectedTaskFactory || !productionProblem.trim()"
+                  :disabled="problemSubmitting || !canFillbackSelectedTaskFactory || !productionProblem.trim()"
                   class="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-slate-200 text-[11px] font-medium text-slate-500 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                   @click="reportProductionProblem"
                 >

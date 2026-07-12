@@ -8,7 +8,7 @@ function route(overrides: Record<string, unknown> = {}) {
     meta: {
       requiresAuth: true,
       enforcePermissions: true,
-      permissions: ['molding_sample:read'],
+      permissions: ['molding_sample:read', 'molding_sample:cross_factory_read'],
     },
     ...overrides,
   }
@@ -31,7 +31,10 @@ describe('authorization snapshot route revalidation', () => {
     const router = routerFor()
 
     await expect(refreshAndRevalidateAuthorization(authStore, router)).resolves.toBe('forbidden')
-    expect(authStore.canAny).toHaveBeenCalledWith(['molding_sample:read'])
+    expect(authStore.canAny).toHaveBeenCalledWith([
+      'molding_sample:read',
+      'molding_sample:cross_factory_read',
+    ])
     expect(router.replace).toHaveBeenCalledWith({ name: 'forbidden' })
   })
 

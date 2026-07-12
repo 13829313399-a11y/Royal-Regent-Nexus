@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BookOpenCheck, ClipboardCheck, FileClock, ShieldCheck, UsersRound } from '@lucide/vue'
+import { BookOpenCheck, ClipboardCheck, FileClock, Home, ShieldCheck, UsersRound } from '@lucide/vue'
 import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -30,8 +30,8 @@ const items = computed(() => [
           <h1 class="text-2xl font-bold tracking-tight text-slate-950">{{ title }}</h1>
           <p v-if="subtitle" class="mt-1 text-sm text-slate-500">{{ subtitle }}</p>
         </div>
-        <RouterLink class="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50" to="/">
-          返回首页
+        <RouterLink class="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50" to="/">
+          <Home class="size-4" aria-hidden="true" />返回首页
         </RouterLink>
       </div>
 

@@ -39,20 +39,25 @@ onMounted(() => void loadData())
 </script>
 
 <template>
-  <main class="min-h-screen overflow-x-hidden bg-slate-100 text-slate-950">
-    <IamNavigation title="权限目录" subtitle="权限由开发迁移登记；新增模块上线后会在这里自动出现，默认不授予普通用户。" />
-    <div class="mx-auto grid min-w-0 max-w-[1480px] gap-5 px-4 py-6 sm:px-5 xl:px-8">
-      <section class="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="permission-filter-title">
-        <h2 id="permission-filter-title" class="sr-only">筛选权限目录</h2>
-        <div class="grid gap-3 md:grid-cols-[minmax(240px,1fr)_240px_180px]">
-          <label class="grid min-w-0 gap-1.5 text-xs font-semibold text-slate-600"><span>搜索权限</span><span class="flex h-11 min-w-0 items-center gap-2 rounded-xl border border-slate-200 px-3 focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100"><Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" /><input v-model="search" type="search" aria-label="搜索权限目录" class="min-w-0 flex-1 outline-none" placeholder="模块、名称或权限代码"></span></label>
-          <label class="grid min-w-0 gap-1.5 text-xs font-semibold text-slate-600"><span>模块</span><select v-model="moduleFilter" aria-label="按模块筛选权限" class="h-11 min-w-0 rounded-xl border border-slate-200 px-3 outline-none focus:border-emerald-500"><option value="">全部模块</option><option v-for="[code, name] in modules" :key="code" :value="code">{{ name }}</option></select></label>
-          <label class="grid min-w-0 gap-1.5 text-xs font-semibold text-slate-600"><span>风险级别</span><select v-model="riskFilter" aria-label="按风险级别筛选权限" class="h-11 min-w-0 rounded-xl border border-slate-200 px-3 outline-none focus:border-emerald-500"><option value="">全部风险</option><option value="normal">普通</option><option value="high">高风险</option></select></label>
-        </div>
-      </section>
+  <main class="min-h-screen overflow-x-clip bg-slate-100 text-slate-950">
+    <div data-testid="permission-catalog-sticky-controls" class="sticky top-0 z-30 border-b border-slate-200 bg-slate-100/95 shadow-sm backdrop-blur">
+      <IamNavigation title="权限目录" subtitle="权限由开发迁移登记；新增模块上线后会在这里自动出现，默认不授予普通用户。" />
+      <div class="mx-auto w-full max-w-[1480px] px-4 pb-4 pt-4 sm:px-5 xl:px-8">
+        <section class="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="permission-filter-title">
+          <h2 id="permission-filter-title" class="sr-only">筛选权限目录</h2>
+          <div class="grid gap-3 md:grid-cols-[minmax(240px,1fr)_240px_180px]">
+            <label class="grid min-w-0 gap-1.5 text-xs font-semibold text-slate-600"><span>搜索权限</span><span class="flex h-11 min-w-0 items-center gap-2 rounded-xl border border-slate-200 px-3 focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100"><Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" /><input v-model="search" type="search" aria-label="搜索权限目录" class="min-w-0 flex-1 outline-none" placeholder="模块、名称或权限代码"></span></label>
+            <label class="grid min-w-0 gap-1.5 text-xs font-semibold text-slate-600"><span>模块</span><select v-model="moduleFilter" aria-label="按模块筛选权限" class="h-11 min-w-0 rounded-xl border border-slate-200 px-3 outline-none focus:border-emerald-500"><option value="">全部模块</option><option v-for="[code, name] in modules" :key="code" :value="code">{{ name }}</option></select></label>
+            <label class="grid min-w-0 gap-1.5 text-xs font-semibold text-slate-600"><span>风险级别</span><select v-model="riskFilter" aria-label="按风险级别筛选权限" class="h-11 min-w-0 rounded-xl border border-slate-200 px-3 outline-none focus:border-emerald-500"><option value="">全部风险</option><option value="normal">普通</option><option value="high">高风险</option></select></label>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="mx-auto grid min-w-0 max-w-[1480px] gap-5 px-4 pb-6 pt-5 sm:px-5 xl:px-8">
 
       <div v-if="errorMessage" role="alert" class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{{ errorMessage }}</div>
-      <section class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <section data-testid="permission-catalog-results" class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div class="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4"><h2 class="flex items-center gap-2 font-bold"><BookOpenCheck class="size-5 shrink-0 text-emerald-700" aria-hidden="true" />已登记权限</h2><span class="shrink-0 text-sm text-slate-500" aria-live="polite">{{ filteredPermissions.length }} / {{ permissions.length }}</span></div>
         <div v-if="isLoading" class="grid min-h-56 place-items-center" role="status" aria-label="正在加载权限目录"><LoaderCircle class="size-7 animate-spin text-emerald-700" /></div>
         <div v-else class="max-w-full overflow-x-auto overscroll-x-contain">

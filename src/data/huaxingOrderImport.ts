@@ -1,5 +1,5 @@
 export const huaxingOrderImportSummary = {
-  "source": "C:\\Users\\Aalyaan\\Desktop\\新建文件夹 (2)\\68695.xlsx",
+  "source": "68695.xlsx",
   "sheetName": "Sheet1",
   "importedAt": "2026-07-01",
   "pendingOrderCount": 15,

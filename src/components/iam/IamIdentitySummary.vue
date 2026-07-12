@@ -65,13 +65,13 @@ function statusTone(status: string) {
           <dt class="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><IdCard class="size-3.5" />职位</dt>
           <dd class="mt-1 break-words font-semibold text-slate-900 [overflow-wrap:anywhere]">{{ access.profile?.position || '待确认' }}</dd>
         </div>
-        <div v-if="access.user.phone" class="min-w-0 rounded-xl bg-slate-50 px-3 py-2.5 sm:min-w-36">
+        <div class="min-w-0 rounded-xl bg-slate-50 px-3 py-2.5 sm:min-w-36">
           <dt class="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Phone class="size-3.5" />电话</dt>
-          <dd class="mt-1 break-all font-semibold text-slate-900 [overflow-wrap:anywhere]">{{ access.user.phone }}</dd>
+          <dd class="mt-1 break-all font-semibold text-slate-900 [overflow-wrap:anywhere]">{{ access.user.phone || '未填写' }}</dd>
         </div>
-        <div v-if="access.user.email" class="min-w-0 rounded-xl bg-slate-50 px-3 py-2.5 sm:min-w-44">
+        <div class="min-w-0 rounded-xl bg-slate-50 px-3 py-2.5 sm:min-w-44">
           <dt class="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Mail class="size-3.5" />邮箱</dt>
-          <dd class="mt-1 break-all font-semibold text-slate-900 [overflow-wrap:anywhere]">{{ access.user.email }}</dd>
+          <dd class="mt-1 break-all font-semibold text-slate-900 [overflow-wrap:anywhere]">{{ access.user.email || '未填写' }}</dd>
         </div>
       </dl>
     </div>

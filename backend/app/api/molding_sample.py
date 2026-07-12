@@ -11,6 +11,7 @@ from app.schemas.molding_sample import (
     MoldingSampleCreateRequest,
     MoldingSampleDetailResponse,
     MoldingSampleEditRequest,
+    MoldingSampleItemOut,
     MoldingSampleItemsPatchRequest,
     MoldingSampleNotificationOut,
     MoldingSampleNotificationUpdateRequest,
@@ -24,7 +25,13 @@ from app.schemas.molding_sample import (
     SensitiveAuditLogOut,
     TotalCostSummary,
 )
-from app.services.auth import AuthContext, ensure_permission, get_current_user
+from app.services.auth import AuthContext, get_current_user
+from app.services.business_authz import (
+    MANAGEMENT_DEPARTMENTS,
+    WAREHOUSE_DEPARTMENTS,
+    can_view_molding_cost,
+    molding_read_access,
+)
 from app.services.molding_sample import (
     build_total_cost_summary,
     create_inventory_batch,
@@ -33,7 +40,11 @@ from app.services.molding_sample import (
     create_requisition,
     delete_order,
     delete_requisition,
+    ensure_any_local_molding_read,
     ensure_export_permission,
+    ensure_molding_create_access,
+    ensure_molding_cost_read,
+    ensure_permission_in_any_factory,
     get_exchange_rate,
     get_prices,
     list_inventory_batches,
@@ -57,13 +68,30 @@ from app.services.molding_sample_excel import XLSX_MIME, export_order_to_excel, 
 router = APIRouter()
 
 
-def serialize_order(order) -> MoldingSampleDetailResponse:
+def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResponse:
+    read_source = molding_read_access(current_user, order.factory_id) or "local"
+    can_view_cost = can_view_molding_cost(current_user, order.factory_id, read_source)
+    items = [MoldingSampleItemOut.model_validate(item) for item in order.items]
+    if not can_view_cost:
+        items = [
+            item.model_copy(
+                update={
+                    "actual_amount_hkd": None,
+                    "injection_cost": None,
+                    "injection_cost_hkd": None,
+                    "exchange_rate_at_save": None,
+                }
+            )
+            for item in items
+        ]
     return MoldingSampleDetailResponse(
         order=order,
-        items=list(order.items),
+        items=items,
         audit_logs=list(order.audit_logs),
         notifications=list(order.notifications),
         problems=list(order.problems),
+        read_source=read_source,
+        can_view_cost=can_view_cost,
     )
 
 
@@ -84,7 +112,7 @@ def get_injection_orders(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return [serialize_order(order) for order in list_orders(db, current_user, factory_id=factory_id)]
+    return [serialize_order(order, current_user) for order in list_orders(db, current_user, factory_id=factory_id)]
 
 
 @router.get("/api/injection/export-excel")
@@ -116,7 +144,7 @@ def get_injection_order(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return serialize_order(load_order(db, order_id, current_user))
+    return serialize_order(load_order(db, order_id, current_user), current_user)
 
 
 @router.post("/api/injection", response_model=MoldingSampleDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -125,7 +153,7 @@ def post_injection_order(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return serialize_order(create_order(db, payload, current_user))
+    return serialize_order(create_order(db, payload, current_user), current_user)
 
 
 @router.get("/api/injection/{order_id}/export-excel")
@@ -162,7 +190,7 @@ def import_injection_order_excel(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return serialize_order(create_order(db, payload, current_user))
+    return serialize_order(create_order(db, payload, current_user), current_user)
 
 
 @router.post("/api/injection/import-excel-preview", response_model=MoldingSampleCreateRequest)
@@ -173,16 +201,16 @@ def preview_injection_order_excel(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:create")
-
     try:
-        return parse_order_excel(
+        payload = parse_order_excel(
             body,
             order_id_override=order_id,
             factory_id_override=resolve_import_factory_id(current_user, factory_id),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ensure_molding_create_access(db, current_user, payload.order.factory_id)
+    return payload
 
 
 @router.put("/api/injection/{order_id}", response_model=MoldingSampleDetailResponse)
@@ -192,7 +220,7 @@ def put_injection_order(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return serialize_order(update_order(db, order_id, payload, current_user))
+    return serialize_order(update_order(db, order_id, payload, current_user), current_user)
 
 
 @router.delete("/api/injection/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -212,7 +240,7 @@ def patch_injection_status(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return serialize_order(transition_status(db, order_id, payload, current_user))
+    return serialize_order(transition_status(db, order_id, payload, current_user), current_user)
 
 
 @router.patch("/api/injection/{order_id}/items", response_model=MoldingSampleDetailResponse)
@@ -222,7 +250,7 @@ def patch_injection_items(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return serialize_order(update_order_items(db, order_id, payload.items, current_user))
+    return serialize_order(update_order_items(db, order_id, payload.items, current_user), current_user)
 
 
 @router.get("/api/molding-sample-notifications", response_model=list[MoldingSampleNotificationOut])
@@ -287,9 +315,14 @@ def patch_molding_sample_problem(
 
 @router.get("/api/material-prices", response_model=MaterialPricesResponse)
 def get_material_prices(
+    factory_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    if factory_id:
+        ensure_molding_cost_read(db, current_user, factory_id)
+    else:
+        ensure_any_local_molding_read(db, current_user)
     return {
         "prices": get_prices(db),
         "rmb_to_hkd_rate": get_exchange_rate(db),
@@ -315,7 +348,12 @@ def get_sensitive_audit_logs(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission(db, current_user, "molding_sample:audit_read")
+    ensure_permission_in_any_factory(
+        db,
+        current_user,
+        "molding_sample:audit_read",
+        MANAGEMENT_DEPARTMENTS,
+    )
     return list_sensitive_audit_logs(db)
 
 
@@ -325,7 +363,7 @@ def get_requisitions(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return list_requisitions(db, order_id=order_id)
+    return list_requisitions(db, current_user, order_id=order_id)
 
 
 @router.get("/api/inventory-batches", response_model=list[InventoryBatchOut])
@@ -334,6 +372,12 @@ def get_inventory_batches(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    ensure_permission_in_any_factory(
+        db,
+        current_user,
+        "molding_sample:inventory_issue",
+        WAREHOUSE_DEPARTMENTS,
+    )
     return list_inventory_batches(db, material=material)
 
 
@@ -345,6 +389,12 @@ def get_inventory_movements(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    ensure_permission_in_any_factory(
+        db,
+        current_user,
+        "molding_sample:inventory_issue",
+        WAREHOUSE_DEPARTMENTS,
+    )
     return list_inventory_movements(
         db,
         batch_id=batch_id,
@@ -393,11 +443,19 @@ def delete_requisition_route(
 
 @router.get("/api/injection-total-costs", response_model=list[TotalCostSummary])
 def get_injection_total_costs(
+    factory_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    if factory_id:
+        ensure_molding_cost_read(db, current_user, factory_id)
     return [
         build_total_cost_summary(order)
-        for order in list_orders(db, current_user)
+        for order in list_orders(db, current_user, factory_id=factory_id)
         if order.status == "已完成"
+        and can_view_molding_cost(
+            current_user,
+            order.factory_id,
+            molding_read_access(current_user, order.factory_id),
+        )
     ]

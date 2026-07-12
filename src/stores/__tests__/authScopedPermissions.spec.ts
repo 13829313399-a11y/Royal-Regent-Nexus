@@ -169,4 +169,110 @@ describe('authStore scoped permission decisions', () => {
 
     expect(store.can('maintenance:update', 'huaxing', 'engineering')).toBe(false)
   })
+
+  it('passes factory and department scope through canAny decisions', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      authz_mode: 'enforce',
+      effective_access: [{
+        permission_code: 'molding_sample:cross_factory_read',
+        factory_id: '*',
+        department: 'engineering',
+        effect: 'allow',
+        allowed: true,
+        source_type: 'role',
+        source_ids: ['group-molding-sample-viewer'],
+      }],
+    }))
+
+    expect(store.canAny(
+      ['molding_sample:read', 'molding_sample:cross_factory_read'],
+      'huadeng',
+      'engineering',
+    )).toBe(true)
+    expect(store.canAny(
+      ['molding_sample:read', 'molding_sample:cross_factory_read'],
+      'huadeng',
+      'production',
+    )).toBe(false)
+  })
+
+  it('does not let a wildcard default deny hide an exact scoped role allow', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      authz_mode: 'enforce',
+      grants: [
+        {
+          role_id: 'group-molding-readonly',
+          role_code: 'group-molding-readonly',
+          role_name: '集团啤办只读',
+          factory_id: '*',
+          department: '*',
+          permissions: ['molding_sample:cross_factory_read'],
+          data_scope: 'all',
+        },
+        {
+          role_id: 'engineer',
+          role_code: 'engineer',
+          role_name: '工程师',
+          factory_id: 'huaxing',
+          department: 'engineering',
+          permissions: ['molding_sample:create'],
+          data_scope: 'department',
+        },
+      ],
+      effective_access: [
+        {
+          permission_code: 'molding_sample:create',
+          factory_id: '*',
+          department: '*',
+          effect: 'deny',
+          allowed: false,
+          source_type: 'default',
+          source_ids: [],
+        },
+        {
+          permission_code: 'molding_sample:create',
+          factory_id: 'huaxing',
+          department: 'engineering',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'role_binding',
+          source_ids: ['engineer-binding'],
+        },
+      ],
+    }))
+
+    expect(store.can('molding_sample:create', 'huaxing', 'engineering')).toBe(true)
+    expect(store.can('molding_sample:create', 'huadeng', 'engineering')).toBe(false)
+  })
+
+  it('keeps an explicit wildcard user deny above an exact scoped role allow', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      authz_mode: 'enforce',
+      effective_access: [
+        {
+          permission_code: 'molding_sample:create',
+          factory_id: '*',
+          department: '*',
+          effect: 'deny',
+          allowed: false,
+          source_type: 'user_override',
+          source_ids: ['deny-create'],
+        },
+        {
+          permission_code: 'molding_sample:create',
+          factory_id: 'huaxing',
+          department: 'engineering',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'role_binding',
+          source_ids: ['engineer-binding'],
+        },
+      ],
+    }))
+
+    expect(store.can('molding_sample:create', 'huaxing', 'engineering')).toBe(false)
+  })
 })

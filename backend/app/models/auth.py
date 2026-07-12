@@ -112,6 +112,7 @@ class SystemNotification(Base):
     target_user_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     target_permission: Mapped[str] = mapped_column(String(128), default="", index=True)
     target_factory_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    target_department: Mapped[str] = mapped_column(String(64), default="", index=True)
     type: Mapped[str] = mapped_column(String(64), default="", index=True)
     title: Mapped[str] = mapped_column(String(128), default="")
     message: Mapped[str] = mapped_column(Text, default="")

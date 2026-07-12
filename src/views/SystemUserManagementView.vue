@@ -74,6 +74,8 @@ const permissionGroupDefinitions: PermissionGroupDefinition[] = [
     title: '工程 / 啤办',
     permissions: [
       { label: '查看啤办单据', code: 'molding_sample:read' },
+      { label: '跨厂查看啤办单据', code: 'molding_sample:cross_factory_read' },
+      { label: '跨厂查看啤办成本', code: 'molding_sample:cross_factory_cost_read' },
       { label: '新建啤办申请', code: 'molding_sample:create' },
       { label: '编辑草稿', code: 'molding_sample:edit_draft' },
       { label: '删除草稿', code: 'molding_sample:delete_draft' },
@@ -127,6 +129,9 @@ const permissionGroupDefinitions: PermissionGroupDefinition[] = [
 ]
 
 const rolePermissionPresets: Record<string, string[]> = {
+  group_molding_readonly: [
+    'molding_sample:cross_factory_read',
+  ],
   engineer: [
     'molding_sample:read',
     'molding_sample:create',

@@ -85,6 +85,7 @@ class SystemNotificationOut(BaseModel):
     target_user_id: str
     target_permission: str
     target_factory_id: str
+    target_department: str
     type: str
     title: str
     message: str

@@ -43,6 +43,20 @@ def login_as(client, username: str):
 TEST_USER_SPECS = {
     "engineer": ("user-engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
     "molding_clerk": ("user-molding-clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
+    "production_clerk": (
+        "user-production-clerk",
+        "华兴生产部文员",
+        "molding_clerk",
+        "huaxing",
+        "production",
+    ),
+    "engineering_schedule_clerk": (
+        "user-engineering-schedule-clerk",
+        "华兴工程部排产测试员",
+        "molding_clerk",
+        "huaxing",
+        "engineering",
+    ),
 }
 
 
@@ -175,6 +189,23 @@ def test_injection_schedule_factory_scope_limits_import_and_read(monkeypatch):
 
         machines_response = client.get(f"/api/injection-scheduling/machines/status?batch_id={batch_id}")
         assert machines_response.status_code == 403
+
+
+def test_injection_schedule_is_limited_to_production_with_molding_alias_compatibility(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "production_clerk")
+        production_import = upload_fixture(client, "huaxing")
+        assert production_import.status_code == 201
+
+        login_as(client, "molding_clerk")
+        legacy_alias_import = upload_fixture(client, "huaxing")
+        assert legacy_alias_import.status_code == 201
+        batch_id = legacy_alias_import.json()["batch_id"]
+        assert client.get(f"/api/injection-scheduling/imports/{batch_id}/preview").status_code == 200
+
+        login_as(client, "engineering_schedule_clerk")
+        assert upload_fixture(client, "huaxing").status_code == 403
+        assert client.get(f"/api/injection-scheduling/imports/{batch_id}/preview").status_code == 403
 
 
 def test_legacy_rollout_mode_preserves_the_previous_login_only_read(monkeypatch):

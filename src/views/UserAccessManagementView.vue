@@ -344,11 +344,11 @@ onMounted(() => {
         <ArrowLeft class="size-4" />返回用户列表
       </RouterLink>
 
-      <div v-if="errorMessage" class="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+      <div v-if="errorMessage" role="alert" class="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
         <ShieldAlert class="mt-0.5 size-5 shrink-0" />
         <span>{{ errorMessage }}</span>
       </div>
-      <div v-if="successMessage" class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">{{ successMessage }}</div>
+      <div v-if="successMessage" role="status" class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">{{ successMessage }}</div>
 
       <div v-if="isLoading" class="grid min-h-72 place-items-center rounded-2xl border border-slate-200 bg-white">
         <div class="text-center text-slate-500"><LoaderCircle class="mx-auto mb-3 size-7 animate-spin text-emerald-700" /><p>正在读取用户有效权限…</p></div>
@@ -362,7 +362,8 @@ onMounted(() => {
             v-model:factory-id="selectedFactoryId"
             v-model:department="selectedDepartment"
             :scopes="manageableScopes"
-            :disabled="Boolean(changeCount)"
+            :disabled="changeCount > 0"
+            :has-pending-draft="changeCount > 0"
           />
           <IamRoleBindings
             :bindings="access.role_bindings"
@@ -403,7 +404,7 @@ onMounted(() => {
               <button type="button" class="inline-flex h-11 w-full min-w-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto" :disabled="!changeCount || isPreviewing" @click="discardDraft">
                 <RefreshCw class="size-4" />取消草稿
               </button>
-              <button type="button" class="inline-flex h-11 w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto" :disabled="!changeCount || isPreviewing || !manageableScopes.length" @click="previewChanges">
+              <button type="button" class="inline-flex h-11 w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto" :disabled="!changeCount || isPreviewing || !manageableScopes.length || !reason.trim()" @click="previewChanges">
                 <LoaderCircle v-if="isPreviewing" class="size-4 animate-spin" />
                 <Save v-else class="size-4" />预览 {{ changeCount }} 项变更
               </button>

@@ -20,11 +20,12 @@ const emit = defineEmits<{
 }>()
 
 const selectedRoleId = ref('')
-const activeBindingsInScope = computed(() => props.bindings.filter((binding) =>
-  binding.state === 'active'
-  && binding.factory_id === props.factoryId
-  && binding.department === props.department,
-))
+const scopedBindings = computed(() => props.bindings.filter((binding) => {
+  const matchesFactory = !props.factoryId || binding.factory_id === '*' || binding.factory_id === props.factoryId
+  const matchesDepartment = !props.department || binding.department === '*' || binding.department === props.department
+  return matchesFactory && matchesDepartment
+}))
+const activeBindingsInScope = computed(() => scopedBindings.value.filter((binding) => binding.state === 'active'))
 
 function addBinding() {
   if (!selectedRoleId.value) return
@@ -54,10 +55,10 @@ function stateLabel(value: RoleBinding['state']) {
         <h2 class="flex items-center gap-2 font-bold text-slate-950"><Layers3 class="size-4 text-emerald-700" />角色授权来源</h2>
         <p class="mt-1 text-sm text-slate-500">角色是基础模板；下方单项权限可对角色结果进行允许或禁止。</p>
       </div>
-      <span class="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{{ bindings.length }} 条</span>
+      <span class="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{{ scopedBindings.length }} 条</span>
     </div>
-    <div v-if="bindings.length" class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-      <article v-for="binding in bindings" :key="binding.id" class="rounded-xl border border-slate-200 p-3.5">
+    <div v-if="scopedBindings.length" class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <article v-for="binding in scopedBindings" :key="binding.id" class="rounded-xl border border-slate-200 p-3.5">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
             <strong class="block break-words text-sm text-slate-950 [overflow-wrap:anywhere]">{{ binding.role_name }}</strong>
@@ -71,7 +72,7 @@ function stateLabel(value: RoleBinding['state']) {
         </div>
       </article>
     </div>
-    <p v-else class="rounded-xl border border-dashed border-slate-200 p-5 text-center text-sm text-slate-500">该用户还没有角色绑定。</p>
+    <p v-else class="rounded-xl border border-dashed border-slate-200 p-5 text-center text-sm text-slate-500">当前范围还没有角色绑定，可通过下方角色模板加入草稿。</p>
 
     <div v-if="roles?.length" class="mt-4 border-t border-slate-100 pt-4">
       <div class="flex flex-col gap-2 sm:flex-row">
