@@ -1,20 +1,57 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { Progress } from '@/components/ui/progress'
 
 const appStore = useAppStore()
+const progressValue = ref(0)
+const isVisible = ref(false)
+const progressTimers: ReturnType<typeof setTimeout>[] = []
 
-const progressValue = computed(() => appStore.isRouteLoading ? null : 0)
+function clearProgressTimers() {
+  progressTimers.splice(0).forEach((timer) => clearTimeout(timer))
+}
+
+function scheduleProgress(value: number, delay: number) {
+  progressTimers.push(setTimeout(() => {
+    progressValue.value = value
+  }, delay))
+}
+
+watch(() => appStore.isRouteLoading, (isLoading) => {
+  clearProgressTimers()
+
+  if (isLoading) {
+    isVisible.value = true
+    progressValue.value = 14
+    scheduleProgress(46, 90)
+    scheduleProgress(72, 320)
+    scheduleProgress(88, 760)
+    return
+  }
+
+  if (!isVisible.value) {
+    progressValue.value = 0
+    return
+  }
+
+  progressValue.value = 100
+  progressTimers.push(setTimeout(() => {
+    isVisible.value = false
+    progressValue.value = 0
+  }, 220))
+}, { immediate: true })
+
+onBeforeUnmount(clearProgressTimers)
 
 const trackClass = computed(() => [
-  'h-1.5 transition-colors duration-150',
-  appStore.isRouteLoading ? 'bg-emerald-100/80' : 'bg-transparent',
+  'h-[3px] rounded-none transition-colors duration-150',
+  isVisible.value ? 'bg-teal-950/[0.04]' : 'bg-transparent',
 ])
 
 const indicatorClass = computed(() => [
-  'rounded-full bg-gradient-to-r from-emerald-600 via-green-400 to-lime-500 shadow-[0_0_18px_rgba(22,163,74,0.55)]',
-  appStore.isRouteLoading ? 'route-loading-bar opacity-100' : 'opacity-0',
+  'rounded-r-full bg-gradient-to-r from-teal-800 via-teal-500 to-cyan-400 shadow-[0_0_8px_rgba(13,148,136,0.28)] transition-[transform,opacity] duration-300 ease-out',
+  isVisible.value ? 'opacity-100' : 'opacity-0',
 ])
 </script>
 
@@ -26,31 +63,3 @@ const indicatorClass = computed(() => [
     aria-hidden="true"
   />
 </template>
-
-<style scoped>
-.route-loading-bar {
-  transform-origin: left center;
-  animation: route-loading-sweep 820ms cubic-bezier(0.65, 0, 0.35, 1) infinite;
-}
-
-@keyframes route-loading-sweep {
-  0% {
-    transform: translateX(-70%) scaleX(0.28);
-  }
-
-  46% {
-    transform: translateX(-12%) scaleX(0.72);
-  }
-
-  100% {
-    transform: translateX(42%) scaleX(0.9);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .route-loading-bar {
-    animation: none;
-    transform: scaleX(1);
-  }
-}
-</style>

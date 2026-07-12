@@ -18,12 +18,12 @@ const dotClasses: Record<Tone, string> = {
     <div class="space-y-7">
       <div v-for="(item, index) in crossFactoryItems" :key="item.title" class="relative pl-8">
         <span
-          class="absolute left-0 top-1.5 size-3 rounded-full"
+          class="absolute left-0 top-1.5 size-3 rounded-full ring-4 ring-white shadow-sm"
           :class="dotClasses[item.tone]"
         />
         <span
           v-if="index !== crossFactoryItems.length - 1"
-          class="absolute left-[5px] top-5 h-12 w-px bg-slate-200"
+          class="absolute left-[5px] top-5 h-12 w-px bg-gradient-to-b from-slate-300 to-slate-100"
         />
         <h3 class="text-sm font-semibold text-slate-950">{{ item.title }}</h3>
         <p class="mt-1 text-xs text-slate-500">{{ item.meta }}</p>

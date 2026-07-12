@@ -1,23 +1,80 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 
 const route = useRoute()
+const isMobileNavigationOpen = ref(false)
+let bodyOverflowBeforeNavigation = ''
+let desktopMediaQuery: MediaQueryList | null = null
 
 const isFullPage = computed(() => Boolean(route.meta.fullPage))
+
+watch(() => route.path, () => {
+  isMobileNavigationOpen.value = false
+})
+
+watch(isMobileNavigationOpen, (isOpen) => {
+  if (isOpen) {
+    bodyOverflowBeforeNavigation = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return
+  }
+
+  document.body.style.overflow = bodyOverflowBeforeNavigation
+})
+
+function closeNavigationOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape' && isMobileNavigationOpen.value) {
+    isMobileNavigationOpen.value = false
+  }
+}
+
+function closeNavigationAtDesktop(event: MediaQueryListEvent) {
+  if (event.matches) {
+    isMobileNavigationOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', closeNavigationOnEscape)
+  desktopMediaQuery = window.matchMedia('(min-width: 1024px)')
+  desktopMediaQuery.addEventListener('change', closeNavigationAtDesktop)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', closeNavigationOnEscape)
+  desktopMediaQuery?.removeEventListener('change', closeNavigationAtDesktop)
+  document.body.style.overflow = bodyOverflowBeforeNavigation
+})
 </script>
 
 <template>
   <RouterView v-if="isFullPage" />
 
-  <div v-else class="min-h-screen bg-slate-100 text-slate-950">
-    <TopBar />
+  <div v-else class="app-shell">
+    <a
+      href="#app-content"
+      class="fixed left-4 top-3 z-[80] -translate-y-16 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-xl transition-transform focus:translate-y-0"
+    >
+      跳到主要内容
+    </a>
+    <TopBar
+      :navigation-open="isMobileNavigationOpen"
+      @toggle-navigation="isMobileNavigationOpen = !isMobileNavigationOpen"
+    />
     <div class="flex">
-      <SidebarNav />
-      <main class="min-w-0 flex-1 px-4 py-6 sm:px-6 xl:px-10">
-        <RouterView />
+      <SidebarNav
+        :mobile-open="isMobileNavigationOpen"
+        @close="isMobileNavigationOpen = false"
+      />
+      <main id="app-content" class="app-main flex-1 px-4 py-6 sm:px-6 lg:py-7 xl:px-10 xl:py-8">
+        <RouterView v-slot="{ Component }">
+          <Transition name="route-page" mode="out-in">
+            <component :is="Component" />
+          </Transition>
+        </RouterView>
       </main>
     </div>
   </div>

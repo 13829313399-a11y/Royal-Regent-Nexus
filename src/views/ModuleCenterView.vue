@@ -13,8 +13,10 @@ import ModuleCard from '@/components/modules/ModuleCard.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'
 import TodoQueue from '@/components/modules/TodoQueue.vue'
 import ProgressMeter from '@/components/common/ProgressMeter.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
+import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
@@ -84,19 +86,19 @@ watch(currentDepartmentId, (departmentId) => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-      <div>
-        <h1 class="text-3xl font-semibold tracking-tight text-slate-950">{{ title }}</h1>
-        <p class="mt-2 text-sm text-slate-600">
-          {{ departmentEntry.heroSubtitle }}
-        </p>
-      </div>
-      <button type="button" class="inline-flex h-10 items-center gap-2 rounded-lg bg-slate-950 px-6 text-sm font-semibold text-white">
-        <Plus class="size-4" aria-hidden="true" />
-        新增系统模块
-      </button>
-    </div>
+  <div class="app-page space-y-6">
+    <PageHeader
+      eyebrow="Department Workspace"
+      :title="title"
+      :description="departmentEntry.heroSubtitle"
+    >
+      <template #actions>
+        <Button type="button" size="lg">
+          <Plus class="size-4" aria-hidden="true" />
+          新增系统模块
+        </Button>
+      </template>
+    </PageHeader>
 
     <DepartmentTabs />
 
@@ -105,7 +107,7 @@ watch(currentDepartmentId, (departmentId) => {
         :title="departmentEntry.panelTitle"
         :subtitle="departmentEntry.panelSubtitle"
       >
-        <div class="grid gap-5 md:grid-cols-2">
+        <div class="reveal-grid grid gap-5 md:grid-cols-2">
           <ModuleCard
             v-for="module in visibleModules"
             :key="module.id"
@@ -114,7 +116,7 @@ watch(currentDepartmentId, (departmentId) => {
           />
         </div>
 
-        <div class="mt-7 rounded-lg border border-slate-200 bg-white p-5">
+        <div class="surface-subtle mt-7 rounded-xl p-5">
           <h3 class="font-semibold text-slate-950">推荐下一批模块</h3>
           <p class="mt-3 text-sm text-slate-700">
             {{ departmentEntry.quickCandidates.join('、') }}
@@ -145,7 +147,7 @@ watch(currentDepartmentId, (departmentId) => {
               <div
                 v-for="metric in featuredModule.statusMetrics"
                 :key="`${featuredModule.id}-${metric.label}`"
-                class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                class="surface-subtle rounded-lg px-3 py-2"
               >
                 <p class="text-[11px] uppercase tracking-wide text-slate-500">{{ metric.label }}</p>
                 <p class="mt-1 text-sm font-semibold text-slate-900">{{ metric.value }}</p>
@@ -178,7 +180,7 @@ watch(currentDepartmentId, (departmentId) => {
               <RouterLink
                 v-if="featuredModule.href && !isExternalLink(featuredModule.href)"
                 :to="featuredModule.href"
-                class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+                class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
               >
                 打开系统
                 <ArrowUpRight class="size-4" aria-hidden="true" />
@@ -188,7 +190,7 @@ watch(currentDepartmentId, (departmentId) => {
                 :href="featuredModule.href"
                 target="_blank"
                 rel="noreferrer"
-                class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+                class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
               >
                 打开系统
                 <ArrowUpRight class="size-4" aria-hidden="true" />

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { departments, getDepartmentRoute, isModuleDepartmentId, type ModuleDepartmentId } from '@/data/enterpriseMock'
+import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
@@ -21,18 +22,17 @@ function selectDepartment(departmentId: ModuleDepartmentId) {
 </script>
 
 <template>
-  <div class="flex flex-wrap gap-3">
-    <button
+  <div class="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-slate-200/90 bg-white/85 p-1.5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <Button
       v-for="department in departmentTabs"
       :key="department.id"
       type="button"
-      class="h-10 min-w-24 rounded-lg border px-5 text-sm font-semibold transition-colors"
-      :class="department.id === activeDepartmentId
-        ? 'border-teal-700 bg-teal-700 text-white'
-        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'"
+      size="lg"
+      :variant="department.id === activeDepartmentId ? 'default' : 'ghost'"
+      class="min-w-24"
       @click="selectDepartment(department.id as ModuleDepartmentId)"
     >
       {{ department.name }}
-    </button>
+    </Button>
   </div>
 </template>

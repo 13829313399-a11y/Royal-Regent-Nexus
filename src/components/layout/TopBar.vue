@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Bell, RefreshCw, Search, X } from '@lucide/vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Bell, Menu, RefreshCw, Search, X } from '@lucide/vue'
 import { useRoute } from 'vue-router'
 import { factoryContexts } from '@/data/enterpriseMock'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
@@ -14,8 +14,17 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const props = withDefaults(defineProps<{
+  navigationOpen?: boolean
+}>(), {
+  navigationOpen: false,
+})
+const emit = defineEmits<{
+  toggleNavigation: []
+}>()
 const brandLogoSrc = '/brand/huadeng_group_dynamic_logo.svg'
 const isNotificationPanelOpen = ref(false)
+const navigationTriggerRef = ref<HTMLButtonElement | null>(null)
 const notificationPopoverRef = ref<HTMLElement | null>(null)
 const notificationState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const notifications = ref<MoldingSampleNotificationResponse[]>([])
@@ -319,6 +328,12 @@ watch(isNotificationPanelOpen, (isOpen) => {
   }
 })
 
+watch(() => props.navigationOpen, (isOpen, wasOpen) => {
+  if (wasOpen && !isOpen) {
+    void nextTick(() => navigationTriggerRef.value?.focus())
+  }
+})
+
 onMounted(() => {
   document.addEventListener('pointerdown', closeNotificationPanelOnOutsidePointer)
   document.addEventListener('keydown', closeNotificationPanelOnEscape)
@@ -338,9 +353,21 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <header class="sticky top-0 z-30 h-auto border-b border-slate-200 bg-white/95 backdrop-blur">
-    <div class="flex min-h-[72px] items-center gap-3 px-4 2xl:gap-5 2xl:px-6">
-      <RouterLink to="/" class="flex min-w-[200px] items-center gap-3 2xl:min-w-[236px]">
+  <header class="sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+    <div class="flex min-h-[72px] items-center gap-2.5 px-3 sm:gap-3 sm:px-4 2xl:gap-5 2xl:px-6">
+      <button
+        ref="navigationTriggerRef"
+        type="button"
+        class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25 lg:hidden"
+        aria-label="打开全局导航"
+        aria-controls="global-navigation"
+        :aria-expanded="props.navigationOpen"
+        @click="emit('toggleNavigation')"
+      >
+        <Menu class="size-4.5" aria-hidden="true" />
+      </button>
+
+      <RouterLink to="/" class="flex min-w-0 items-center gap-3 sm:min-w-[200px] 2xl:min-w-[236px]">
         <span class="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-lg">
           <img
             :src="brandLogoSrc"
@@ -348,13 +375,13 @@ onUnmounted(() => {
             class="h-full w-full object-contain"
           >
         </span>
-        <span class="min-w-0">
+        <span class="hidden min-w-0 sm:block">
           <span class="block truncate text-base font-semibold text-slate-950">Royal Regent Nexus</span>
           <span class="block truncate text-xs text-slate-500">{{ appStore.activeFactory.description }}</span>
         </span>
       </RouterLink>
 
-      <div class="hidden h-9 min-w-[220px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 lg:flex">
+      <div class="hidden h-9 min-w-[220px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200/90 bg-slate-50/75 px-3 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition-colors hover:border-slate-300 hover:bg-white lg:flex">
         <Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" />
         <span class="truncate text-sm text-slate-500">{{ searchPlaceholder }}</span>
       </div>
@@ -365,10 +392,10 @@ onUnmounted(() => {
             v-for="factory in topBarFactoryContexts"
             :key="factory.id"
             type="button"
-            class="h-9 shrink-0 rounded-lg border px-3 text-xs font-semibold transition-colors 2xl:px-4 2xl:text-sm"
+            class="h-9 shrink-0 rounded-lg border px-3 text-xs font-semibold transition-[color,background-color,border-color,box-shadow,transform] duration-150 active:translate-y-px 2xl:px-4 2xl:text-sm"
             :class="factory.id === appStore.activeFactoryId
-              ? 'border-teal-700 bg-teal-700 text-white'
-              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'"
+              ? 'border-teal-700 bg-teal-700 text-white shadow-[0_5px_14px_-9px_rgba(13,148,136,0.9)]'
+              : 'border-slate-200 bg-white/85 text-slate-600 hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800'"
             :aria-label="`切换至${getTopBarFactoryLabel(factory)}`"
             :title="factory.name"
             @click="appStore.setActiveFactory(factory.id)"
@@ -381,8 +408,8 @@ onUnmounted(() => {
       <div ref="notificationPopoverRef" class="relative">
         <button
           type="button"
-          class="relative flex size-9 items-center justify-center rounded-full border bg-slate-50 transition"
-          :class="pendingNotificationCount ? 'border-blue-300 text-blue-700 hover:bg-blue-50' : 'border-slate-200 text-slate-500 hover:text-slate-950'"
+          class="relative flex size-9 items-center justify-center rounded-lg border bg-white shadow-sm transition"
+          :class="pendingNotificationCount ? 'border-teal-200 text-teal-700 hover:bg-teal-50' : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-950'"
           aria-label="未处理项通知"
           :aria-expanded="isNotificationPanelOpen"
           @click="isNotificationPanelOpen = !isNotificationPanelOpen"
@@ -390,17 +417,18 @@ onUnmounted(() => {
           <Bell class="size-4" aria-hidden="true" />
           <span
             v-if="pendingNotificationCount"
-            class="absolute -right-1 -top-1 flex min-w-5 items-center justify-center rounded-full border-2 border-white bg-blue-600 px-1 text-[10px] font-bold leading-4 text-white"
+            class="absolute -right-1 -top-1 flex min-w-5 items-center justify-center rounded-full border-2 border-white bg-teal-600 px-1 text-[10px] font-bold leading-4 text-white shadow-sm"
           >
             {{ pendingNotificationCount > 99 ? '99+' : pendingNotificationCount }}
           </span>
         </button>
 
-        <section
-          v-if="isNotificationPanelOpen"
-          class="absolute right-0 top-12 z-50 w-[380px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
-          aria-label="未处理项通知面板"
-        >
+        <Transition name="popover">
+          <section
+            v-if="isNotificationPanelOpen"
+            class="fixed left-3 right-3 top-[68px] z-50 w-auto max-w-none origin-top overflow-hidden rounded-xl border border-slate-200 bg-white/98 shadow-2xl shadow-slate-950/12 backdrop-blur-xl sm:absolute sm:left-auto sm:right-0 sm:top-12 sm:w-[calc(100vw-1.5rem)] sm:max-w-[380px] sm:origin-top-right"
+            aria-label="未处理项通知面板"
+          >
           <div class="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
             <div>
               <h2 class="text-sm font-bold text-slate-950">未处理项通知</h2>
@@ -456,7 +484,7 @@ onUnmounted(() => {
                 v-for="notification in pendingNotifications"
                 :key="notification.id"
                 :to="getNotificationRoute(notification)"
-                class="block rounded-lg border border-slate-100 bg-white px-3 py-2.5 text-left transition hover:border-blue-200 hover:bg-blue-50/50"
+                class="block rounded-lg border border-slate-100 bg-white px-3 py-2.5 text-left transition hover:border-teal-200 hover:bg-teal-50/50"
                 @click="markNotificationHandled(notification)"
               >
                 <div class="flex items-start justify-between gap-2">
@@ -472,7 +500,8 @@ onUnmounted(() => {
               </RouterLink>
             </div>
           </div>
-        </section>
+          </section>
+        </Transition>
       </div>
 
       <Transition
@@ -486,12 +515,12 @@ onUnmounted(() => {
         <div
           v-if="notificationToast"
           :key="notificationToast.id"
-          class="fixed right-6 top-20 z-50 w-[360px] overflow-hidden rounded-xl border border-blue-200 bg-white shadow-2xl shadow-blue-950/10"
+          class="fixed right-3 top-20 z-50 w-[calc(100vw-1.5rem)] max-w-[360px] overflow-hidden rounded-xl border border-teal-200 bg-white shadow-2xl shadow-teal-950/10 sm:right-6"
           role="status"
           aria-live="polite"
         >
           <div class="flex items-start gap-3 p-3">
-            <div class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-700">
+            <div class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-teal-50 text-teal-700">
               <Bell class="size-4" aria-hidden="true" />
             </div>
             <RouterLink
@@ -499,7 +528,7 @@ onUnmounted(() => {
               class="min-w-0 flex-1 text-left"
               @click="markNotificationHandled(notificationToast)"
             >
-              <span class="block text-[11px] font-bold text-blue-700">新待办通知</span>
+              <span class="block text-[11px] font-bold text-teal-700">新待办通知</span>
               <span class="mt-0.5 block truncate text-sm font-bold text-slate-950">{{ notificationToast.title }}</span>
               <span class="mt-1 block truncate text-[12px] text-slate-500">
                 {{ notificationToast.order_id }} · {{ notificationToast.target_role }}

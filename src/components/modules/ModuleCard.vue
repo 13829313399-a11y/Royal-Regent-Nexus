@@ -32,11 +32,11 @@ const iconClasses: Record<Tone, string> = {
 
 <template>
   <article
-    class="rounded-lg border p-5 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
+    class="interactive-surface group relative overflow-hidden rounded-xl border p-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
     :class="[
       active
-        ? 'border-teal-300 bg-white shadow-[0_12px_32px_rgba(13,148,136,0.12)]'
-        : 'border-slate-200 bg-slate-50',
+        ? 'border-teal-300 bg-gradient-to-br from-white via-white to-teal-50/35 shadow-[0_12px_32px_-22px_rgba(13,148,136,0.5)]'
+        : 'border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]',
       module.route ? 'cursor-pointer hover:border-teal-300' : '',
     ]"
     :role="module.route ? 'link' : undefined"
@@ -46,9 +46,14 @@ const iconClasses: Record<Tone, string> = {
     @keydown.enter.prevent="openModule(module)"
     @keydown.space.prevent="openModule(module)"
   >
+    <span
+      v-if="active"
+      class="absolute inset-y-5 left-0 w-0.5 rounded-r-full bg-teal-600"
+      aria-hidden="true"
+    />
     <div class="mb-5 flex items-start gap-4">
       <span
-        class="flex size-10 shrink-0 items-center justify-center rounded-xl"
+        class="flex size-10 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ring-white/70 transition-transform duration-200 group-hover:scale-105"
         :class="iconClasses[module.statusTone]"
       >
         <component :is="module.icon" class="size-5" aria-hidden="true" />
@@ -63,7 +68,7 @@ const iconClasses: Record<Tone, string> = {
       <div
         v-for="metric in module.statusMetrics"
         :key="`${module.id}-${metric.label}`"
-        class="rounded-lg border border-slate-200 bg-white px-3 py-2"
+        class="rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]"
       >
         <p class="text-[11px] uppercase tracking-wide text-slate-500">{{ metric.label }}</p>
         <p
@@ -85,7 +90,7 @@ const iconClasses: Record<Tone, string> = {
       <span
         v-for="child in module.children.slice(0, 3)"
         :key="`${module.id}-${child.label}`"
-        class="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600"
+        class="rounded-full bg-slate-100/90 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200/70"
       >
         {{ child.label }}
       </span>
@@ -98,7 +103,7 @@ const iconClasses: Record<Tone, string> = {
       <RouterLink
         v-if="module.route"
         :to="module.route"
-        class="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+        class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
         @click.stop
       >
         查看模块
@@ -107,7 +112,7 @@ const iconClasses: Record<Tone, string> = {
       <RouterLink
         v-if="module.href && !isExternalLink(module.href)"
         :to="module.href"
-        class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+        class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25"
         @click.stop
       >
         打开系统
@@ -118,7 +123,7 @@ const iconClasses: Record<Tone, string> = {
         :href="module.href"
         target="_blank"
         rel="noreferrer"
-        class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+        class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25"
         @click.stop
       >
         打开系统

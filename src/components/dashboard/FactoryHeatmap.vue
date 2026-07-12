@@ -14,7 +14,7 @@ import StatusPill from '@/components/common/StatusPill.vue'
       <article
         v-for="factory in factoryHeatmap"
         :key="factory.factoryId"
-        class="rounded-lg border border-slate-200 bg-slate-50 p-5"
+        class="surface-subtle rounded-xl p-5"
       >
         <div class="mb-4 flex items-start justify-between gap-4">
           <div>
