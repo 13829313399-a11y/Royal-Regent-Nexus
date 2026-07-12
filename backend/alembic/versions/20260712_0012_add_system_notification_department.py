@@ -1,7 +1,7 @@
 """add system notification department scope
 
-Revision ID: 20260712_0011
-Revises: 20260711_0010
+Revision ID: 20260712_0012
+Revises: 20260711_0011
 Create Date: 2026-07-12 00:00:00
 """
 
@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260712_0011"
-down_revision: Union[str, None] = "20260711_0010"
+revision: str = "20260712_0012"
+down_revision: Union[str, None] = "20260711_0011"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
