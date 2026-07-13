@@ -242,7 +242,7 @@ const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_150px_112px_110px_138px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_110px_138px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
@@ -389,7 +389,6 @@ const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
   return factoryRecords.value.filter((record) => [
     record.order.id,
     record.order.order_number,
-    record.order.doc_number,
     record.order.product_name,
     record.order.client_name,
     record.order.supervisor,
@@ -887,7 +886,6 @@ function isBlankCreateDraft(draft: ManualMoldingSampleOrderDraft) {
   const hasHeaderValue = [
     draft.id,
     draft.product_no,
-    draft.doc_number,
     draft.client_name,
     draft.product_name,
     draft.supervisor,
@@ -992,7 +990,6 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
     id: record.order.id,
     factory_id: record.factory_id,
     product_no: record.order.order_number,
-    doc_number: record.order.doc_number,
     client_name: record.order.client_name,
     product_name: record.order.product_name,
     order_date: record.order.date,
@@ -1015,10 +1012,8 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
         pigment_no: item.pigment_no,
         quantity: item.quantity,
         shoot_qty: String(item.shoot_qty || ''),
-        gross_weight_g: formatDraftNumber(item.gross_weight_g),
         required_material_kg: formatDraftNumber(item.required_material_kg),
         mold_dimensions: item.mold_dimensions,
-        machine_type: item.machine_type,
         mold_presence_status: normalizeDraftMoldPresenceStatus(item.mold_presence_status),
         mold_return_time: item.mold_return_time,
         required_date: item.completion_time,
@@ -1043,10 +1038,8 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
           pigment_no: item.pigment_no ?? '',
           quantity: item.quantity ?? '',
           shoot_qty: String(item.shoot_qty || ''),
-          gross_weight_g: formatDraftNumber(item.gross_weight_g),
           required_material_kg: formatDraftNumber(item.required_material_kg),
           mold_dimensions: item.mold_dimensions ?? '',
-          machine_type: item.machine_type ?? '',
           mold_presence_status: normalizeDraftMoldPresenceStatus(item.mold_presence_status),
           mold_return_time: item.mold_return_time ?? '',
           required_date: item.completion_time || '',
@@ -1059,7 +1052,6 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
     id: order.id,
     factory_id: order.factory_id || selectedFactoryId.value,
     product_no: order.order_number || order.id.replace(/^BP-/, ''),
-    doc_number: order.doc_number ?? '',
     client_name: order.client_name,
     product_name: order.product_name,
     order_date: order.date,
@@ -1831,10 +1823,6 @@ function formatWeight(value: number | null | undefined) {
   return value === null || value === undefined ? '待填写' : `${value.toFixed(2)} kg`
 }
 
-function formatGram(value: number | null | undefined) {
-  return value === null || value === undefined ? '待填写' : `${value.toFixed(2)} g`
-}
-
 function formatMoney(value: number | null | undefined, currency = 'HKD') {
   return value === null || value === undefined ? '待计算' : `${currency} ${value.toFixed(2)}`
 }
@@ -2537,8 +2525,8 @@ onUnmounted(() => {
 
                 <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 xl:grid-cols-4">
                   <div class="rounded-md bg-slate-50 px-3 py-2">
-                    <span class="block text-[11px] text-slate-400">订单 / 文件编号</span>
-                    <strong class="font-mono text-slate-800">{{ formatBlank(record.order.order_number) }} / {{ formatBlank(record.order.doc_number) }}</strong>
+                    <span class="block text-[11px] text-slate-400">订单号</span>
+                    <strong class="font-mono text-slate-800">{{ formatBlank(record.order.order_number) }}</strong>
                   </div>
                   <div class="rounded-md bg-slate-50 px-3 py-2">
                     <span class="block text-[11px] text-slate-400">填写部 / 发至</span>
@@ -2952,7 +2940,7 @@ onUnmounted(() => {
                     <button type="button" class="font-mono text-[12px] font-bold text-slate-900">
                       {{ record.order.id }}
                     </button>
-                    <div class="mt-0.5 text-[10px] text-slate-400">{{ record.order.doc_number || record.order.order_number || '未填文件号' }}</div>
+                    <div class="mt-0.5 text-[10px] text-slate-400">{{ record.order.order_number || '未填产品号' }}</div>
                   </td>
                   <td class="px-3 py-2.5 align-top">
                     <div class="max-w-[220px] truncate font-semibold text-slate-950">{{ record.order.product_name }}</div>
@@ -3218,7 +3206,7 @@ onUnmounted(() => {
                     <button type="button" class="font-mono text-[12px] font-bold text-slate-900">
                       {{ row.record.order.id }}
                     </button>
-                    <div class="mt-0.5 text-[10px] text-slate-400">{{ row.record.order.doc_number || row.record.order.order_number || '未填文件号' }}</div>
+                    <div class="mt-0.5 text-[10px] text-slate-400">{{ row.record.order.order_number || '未填产品号' }}</div>
                   </td>
                   <td class="px-3 py-2.5 align-top">
                     <div class="max-w-[220px] truncate font-semibold text-slate-950">{{ row.record.order.product_name }}</div>
@@ -3293,10 +3281,6 @@ onUnmounted(() => {
               </div>
               <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
                 <label class="block">
-                  <span class="mb-1 block text-[11px] font-medium text-slate-500">单据编号</span>
-                  <input v-model="createDraft.id" data-testid="create-order-id" placeholder="BP-产品编号" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
-                </label>
-                <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品编号</span>
                   <input
                     :value="createDraft.product_no"
@@ -3363,7 +3347,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[2240px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[2120px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -3372,8 +3356,6 @@ onUnmounted(() => {
                       <div class="min-w-0 text-center" role="columnheader">#</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">客模具编号</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">适配机型</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具是否在厂</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具回厂时间</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
@@ -3383,9 +3365,9 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">色粉</div>
                       <div class="min-w-0 truncate px-2 text-center" role="columnheader">啤/套</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">啤数</div>
-                      <div class="min-w-0 truncate px-2 text-right" role="columnheader">整啤毛重(g)</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">所需用料(kg)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">备注</div>
                       <div class="min-w-0 truncate text-center" role="columnheader">操作</div>
                     </div>
@@ -3406,8 +3388,6 @@ onUnmounted(() => {
                         <div class="min-w-0" role="cell">
                           <input v-model="line.mold_name" data-testid="create-line-mold-name" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
-                        <div class="min-w-0" role="cell"><input v-model="line.mold_dimensions" data-testid="create-line-mold-dimensions" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
-                        <div class="min-w-0" role="cell"><input v-model="line.machine_type" data-testid="create-line-machine-type" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
                         <div class="min-w-0" role="cell"><input v-model="line.mold_return_time" data-testid="create-line-mold-return-time" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div
@@ -3519,14 +3499,12 @@ onUnmounted(() => {
                           <input v-model="line.shoot_qty" data-testid="create-line-shoot-qty" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
-                          <input v-model="line.gross_weight_g" data-testid="create-line-gross-weight" inputmode="decimal" placeholder="g" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
-                        </div>
-                        <div class="min-w-0" role="cell">
                           <input v-model="line.required_material_kg" data-testid="create-line-required-material" inputmode="decimal" placeholder="kg" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.required_date" data-testid="create-line-required-date" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
+                        <div class="min-w-0" role="cell"><input v-model="line.mold_dimensions" data-testid="create-line-mold-dimensions" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.notes" placeholder="备注提示" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
@@ -3643,7 +3621,6 @@ onUnmounted(() => {
               </div>
               <div class="mt-1 text-[15px] font-bold">{{ selectedOrder.product_name }} · {{ selectedOrder.client_name }}</div>
               <div class="mt-1 flex flex-wrap gap-x-4 text-[11px] text-slate-400">
-                <span>文件 {{ selectedOrder.doc_number }}</span>
                 <span>{{ selectedOrder.workshop }}</span>
                 <span>工程 {{ selectedOrder.eng_name }}</span>
                 <span>主管 {{ selectedOrder.supervisor }}</span>
@@ -3750,14 +3727,13 @@ onUnmounted(() => {
                 </button>
               </div>
               <div class="overflow-x-auto">
-                <table data-testid="molding-sample-detail-table" class="w-full min-w-[1540px] text-[12px]">
+                <table data-testid="molding-sample-detail-table" class="w-full min-w-[1300px] text-[12px]">
                   <thead>
                     <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                       <th class="w-8 px-2 py-2 font-medium">#</th>
                       <th class="px-2 py-2 text-left font-medium">模具号</th>
                       <th class="px-2 py-2 text-left font-medium">名称</th>
                       <th class="px-2 py-2 text-left font-medium">工模尺寸</th>
-                      <th class="px-2 py-2 text-left font-medium">适配机型</th>
                       <th class="px-2 py-2 text-left font-medium">模具在厂</th>
                       <th class="px-2 py-2 text-left font-medium">回厂时间</th>
                       <th class="px-2 py-2 text-left font-medium">原料</th>
@@ -3765,7 +3741,6 @@ onUnmounted(() => {
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
                       <th v-if="canViewSelectedOrderCost" class="px-2 py-2 text-right font-medium">预计料费</th>
                       <th class="px-2 py-2 text-right font-medium">实际用料</th>
-                      <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
                       <th v-if="canViewSelectedOrderCost" class="px-2 py-2 text-right font-medium">实际料费</th>
                       <th class="px-2 py-2 text-left font-medium">状态</th>
                     </tr>
@@ -3776,7 +3751,6 @@ onUnmounted(() => {
                       <td class="px-2 py-1.5 font-mono">{{ item.mold_id }}</td>
                       <td class="px-2 py-1.5">{{ item.mold_name }}</td>
                       <td class="px-2 py-1.5">{{ formatBlank(item.mold_dimensions) }}</td>
-                      <td class="px-2 py-1.5">{{ formatBlank(item.machine_type) }}</td>
                       <td class="px-2 py-1.5">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</td>
                       <td class="px-2 py-1.5 whitespace-nowrap">{{ formatBlank(item.mold_return_time) }}</td>
                       <td class="px-2 py-1.5">{{ item.material }}</td>
@@ -3789,7 +3763,6 @@ onUnmounted(() => {
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td>
                       <td v-if="canViewSelectedOrderCost" class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</td>
                       <td class="px-2 py-1.5 text-right tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</td>
-                      <td class="px-2 py-1.5">{{ formatBlank(item.production_machine) }}</td>
                       <td v-if="canViewSelectedOrderCost" class="px-2 py-1.5 text-right tabular-nums">{{ formatMoney(item.actual_amount_hkd) }}</td>
                       <td class="px-2 py-1.5">
                         <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
@@ -3823,10 +3796,6 @@ onUnmounted(() => {
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                       <div class="text-[10px] font-semibold text-slate-400">产品编号</div>
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.order_number) }}</div>
-                    </div>
-                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                      <div class="text-[10px] font-semibold text-slate-400">文件编号</div>
-                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.doc_number) }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                       <div class="text-[10px] font-semibold text-slate-400">产品 / 客户</div>
@@ -3878,14 +3847,11 @@ onUnmounted(() => {
                       </div>
                       <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
                         <div><span class="text-slate-400">工模尺寸</span><div class="font-semibold">{{ formatBlank(item.mold_dimensions) }}</div></div>
-                        <div><span class="text-slate-400">适配机型</span><div class="font-semibold">{{ formatBlank(item.machine_type) }}</div></div>
                         <div><span class="text-slate-400">模具是否在厂</span><div class="font-semibold">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div></div>
                         <div><span class="text-slate-400">模具回厂时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }}</div></div>
-                        <div><span class="text-slate-400">啤机确认机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                         <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                         <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                         <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
-                        <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
                         <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
                         <div v-if="canViewSelectedOrderCost"><span class="text-slate-400">预计料费(HKD)</span><div class="font-semibold">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</div></div>
                         <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
@@ -4060,26 +4026,24 @@ onUnmounted(() => {
               <tr>
                 <th>订单号</th>
                 <td>{{ formatBlank(record.order.order_number) }}</td>
-                <th>文件编号</th>
-                <td>{{ formatBlank(record.order.doc_number) }}</td>
-              </tr>
-              <tr>
-                <th>产品 / 客户</th>
-                <td>{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</td>
                 <th>状态</th>
                 <td>{{ record.order.status }} · {{ record.order.stage || '待填写' }} · {{ record.order.order_type }}</td>
               </tr>
               <tr>
+                <th>产品 / 客户</th>
+                <td>{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</td>
                 <th>填写部 / 发至</th>
                 <td>{{ formatBlank(record.order.workshop) }} / {{ formatBlank(record.order.send_to, '内部') }}</td>
-                <th>工程 / 主管</th>
-                <td>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</td>
               </tr>
               <tr>
+                <th>工程 / 主管</th>
+                <td>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</td>
                 <th>开单 / 完成</th>
                 <td>{{ formatBlank(record.order.date) }} / {{ formatBlank(record.order.completed_date) }}</td>
+              </tr>
+              <tr>
                 <th>最近更新</th>
-                <td>{{ formatBlank(record.order.updated_at) }}</td>
+                <td colspan="3">{{ formatBlank(record.order.updated_at) }}</td>
               </tr>
             </tbody>
           </table>
@@ -4102,7 +4066,6 @@ onUnmounted(() => {
               <col class="molding-sample-print-col-index">
               <col class="molding-sample-print-col-mold">
               <col class="molding-sample-print-col-material">
-              <col class="molding-sample-print-col-machine">
               <col class="molding-sample-print-col-color">
               <col class="molding-sample-print-col-pigment">
               <col class="molding-sample-print-col-shot">
@@ -4115,7 +4078,6 @@ onUnmounted(() => {
                 <th>#</th>
                 <th>模号 / 名称</th>
                 <th>原料</th>
-                <th>啤机确认机台</th>
                 <th>颜色 / PMS</th>
                 <th>色粉</th>
                 <th>啤数 / 预料</th>
@@ -4131,13 +4093,11 @@ onUnmounted(() => {
                   <strong>{{ formatBlank(item.mold_id) }}</strong>
                   <span>{{ formatBlank(item.mold_name) }}</span>
                   <span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span>
-                  <span>适配机型：{{ formatBlank(item.machine_type) }}</span>
                   <span>模具是否在厂：{{ formatMoldPresenceStatus(item.mold_presence_status) }}</span>
                   <span>模具回厂时间：{{ formatBlank(item.mold_return_time) }}</span>
                   <em>{{ formatBlank(item.id) }}</em>
                 </td>
                 <td>{{ formatBlank(item.material) }}</td>
-                <td>{{ formatBlank(item.production_machine) }}</td>
                 <td>
                   <strong>{{ formatBlank(item.color) }}</strong>
                   <span>PMS {{ formatBlank(item.pigment_no) }}</span>
@@ -4147,7 +4107,6 @@ onUnmounted(() => {
                   <strong>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</strong>
                   <span>{{ formatWeight(item.required_material_kg) }}</span>
                   <span v-if="canViewRecordCost(record)">预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
-                  <em>{{ formatGram(item.gross_weight_g) }}</em>
                 </td>
                 <td>{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</td>
                 <td>
@@ -4390,10 +4349,6 @@ onUnmounted(() => {
   }
 
   .molding-sample-print-col-material {
-    width: 10%;
-  }
-
-  .molding-sample-print-col-machine {
     width: 10%;
   }
 

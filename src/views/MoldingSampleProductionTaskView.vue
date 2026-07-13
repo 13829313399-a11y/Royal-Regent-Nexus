@@ -13,11 +13,13 @@ import {
   PencilRuler,
   Play,
   Plus,
+  Printer,
   RotateCcw,
   Save,
   Send,
   ShieldAlert,
   Table2,
+  X,
 } from '@lucide/vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
@@ -56,7 +58,6 @@ import { useAuthStore } from '@/stores/auth'
 
 interface ItemFillbackDraft {
   actual_weight_kg: string
-  production_machine: string
 }
 
 type ProductionQueueFilter = '全部' | '待接单' | '生产中'
@@ -97,6 +98,7 @@ const notificationUpdating = ref(false)
 const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
 const isSelectedTaskDataExpanded = ref(false)
+const taskPrintPreviewVisible = ref(false)
 const protectedMaterialPrices = ref<MoldingSampleMaterialPrice[]>([])
 const protectedRmbToHkdRate = ref<number | null>(null)
 
@@ -261,7 +263,6 @@ const activeItems = computed<MoldingSampleItem[]>(() => {
     return {
       ...item,
       actual_weight_kg: parseOptionalNumber(draft.actual_weight_kg),
-      production_machine: draft.production_machine.trim(),
     }
   })
 })
@@ -504,14 +505,6 @@ function formatDecimal(value: number | null | undefined, fallback = '—') {
   return Number(value).toFixed(2)
 }
 
-function formatGram(value: number | null | undefined) {
-  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
-    return '待填写'
-  }
-
-  return `${Number(value).toFixed(2)} g`
-}
-
 function formatWeight(value: number | null | undefined) {
   const formatted = formatDecimal(value, '待填写')
   return formatted === '待填写' ? formatted : `${formatted} kg`
@@ -540,7 +533,6 @@ function buildItemPatches() {
   return activeItems.value.map((item) => ({
     id: item.id,
     actual_weight_kg: item.actual_weight_kg,
-    production_machine: item.production_machine,
   }))
 }
 
@@ -548,10 +540,34 @@ function updateItemDraft(itemId: string, field: keyof ItemFillbackDraft, value: 
   itemDrafts.value = {
     ...itemDrafts.value,
     [itemId]: {
-      ...(itemDrafts.value[itemId] ?? { actual_weight_kg: '', production_machine: '' }),
+      ...(itemDrafts.value[itemId] ?? { actual_weight_kg: '' }),
       [field]: value,
     },
   }
+}
+
+function openTaskPrintPreview() {
+  if (!selectedTask.value) {
+    actionMessage.value = '请先选择一张啤办生产任务单。'
+    return
+  }
+
+  taskPrintPreviewVisible.value = true
+}
+
+function closeTaskPrintPreview() {
+  taskPrintPreviewVisible.value = false
+}
+
+function confirmTaskPrint() {
+  if (!selectedTask.value) {
+    taskPrintPreviewVisible.value = false
+    actionMessage.value = '未找到可打印的啤办生产任务单。'
+    return
+  }
+
+  actionMessage.value = `正在打印啤办生产任务单 ${selectedTask.value.order.id}。`
+  window.print()
 }
 
 function applyLocalItemPatches(orderId: string) {
@@ -787,7 +803,7 @@ async function saveProductionFillback() {
   try {
     const updated = await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
     replaceApiRecord(updated)
-    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料和啤机确认机台。'
+    actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料。'
   }
   catch (error) {
     actionMessage.value = `啤机回填保存失败：${getApiErrorMessage(error)}`
@@ -928,7 +944,6 @@ watch(selectedTask, () => {
   itemDrafts.value = selectedTask.value?.items.reduce<Record<string, ItemFillbackDraft>>((acc, item) => {
     acc[item.id] = {
       actual_weight_kg: item.actual_weight_kg === null || item.actual_weight_kg === undefined ? '' : String(item.actual_weight_kg),
-      production_machine: item.production_machine ?? '',
     }
     return acc
   }, {}) ?? {}
@@ -1209,6 +1224,14 @@ watchEffect(() => {
                 <div class="text-[11px] text-slate-400">实际料费(HKD)</div>
                 <div class="text-lg font-bold tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</div>
               </div>
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+                @click="openTaskPrintPreview"
+              >
+                <Printer class="size-3.5" aria-hidden="true" />
+                打印任务单
+              </button>
             </div>
           </section>
 
@@ -1239,13 +1262,12 @@ watchEffect(() => {
               </button>
             </div>
             <div class="overflow-x-auto">
-              <table class="w-full min-w-[1040px] text-[12px]">
+              <table class="w-full min-w-[860px] text-[12px]">
                 <thead>
                   <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                     <th class="px-2 py-2 text-left font-medium">模具 / 原料</th>
                     <th class="px-2 py-2 text-right font-medium">领料(kg)</th>
                     <th class="px-2 py-2 text-right font-medium">实际用料(kg)</th>
-                    <th class="px-2 py-2 text-left font-medium">啤机确认机台</th>
                     <th class="px-2 py-2 text-right font-medium">料费(HKD)</th>
                   </tr>
                 </thead>
@@ -1285,17 +1307,6 @@ watchEffect(() => {
                         :class="Number(item.actual_weight_kg) > 0 ? 'border border-emerald-200 bg-emerald-50 focus:border-emerald-400' : 'border-2 border-red-300 bg-white placeholder:text-red-300 focus:border-red-500'"
                         :placeholder="Number(item.actual_weight_kg) > 0 ? '' : '必填'"
                         @input="updateItemDraft(item.id, 'actual_weight_kg', readInputValue($event))"
-                      >
-                    </td>
-                    <td class="px-2 py-1 text-left">
-                      <input
-                        :value="itemDrafts[item.id]?.production_machine ?? ''"
-                        :disabled="!canFillbackSelectedTask"
-                        aria-label="啤机确认机台"
-                        type="text"
-                        class="h-8 w-28 rounded-md border border-slate-200 px-2 text-left outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
-                        placeholder="机台号"
-                        @input="updateItemDraft(item.id, 'production_machine', readInputValue($event))"
                       >
                     </td>
                     <td class="px-2 py-2 text-right font-semibold tabular-nums" :class="getReportRow(item.id)?.actual_amount_hkd ? 'text-slate-900' : 'text-slate-300'">
@@ -1339,10 +1350,6 @@ watchEffect(() => {
                   <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <div class="text-[10px] font-semibold text-slate-400">产品编号</div>
                     <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.order_number) }}</div>
-                  </div>
-                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                    <div class="text-[10px] font-semibold text-slate-400">文件编号</div>
-                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedTask.order.doc_number) }}</div>
                   </div>
                   <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <div class="text-[10px] font-semibold text-slate-400">产品 / 客户</div>
@@ -1396,11 +1403,9 @@ watchEffect(() => {
                       </span>
                     </div>
                     <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                      <div><span class="text-slate-400">啤机确认机台</span><div class="font-semibold">{{ formatBlank(item.production_machine) }}</div></div>
                       <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                       <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                       <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
-                      <div><span class="text-slate-400">整啤毛重(g)</span><div class="font-semibold">{{ formatGram(item.gross_weight_g) }}</div></div>
                       <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
                       <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
                       <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
@@ -1562,6 +1567,103 @@ watchEffect(() => {
           </p>
         </section>
       </div>
+
+      <Transition
+        enter-active-class="transition duration-150 ease-out"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="opacity-100"
+        leave-to-class="opacity-0"
+      >
+        <section
+          v-if="taskPrintPreviewVisible && selectedTask"
+          class="fixed inset-0 z-[60] bg-slate-950/45 px-4 py-5 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="啤办生产任务单打印预览"
+          data-testid="molding-sample-task-print-preview"
+        >
+          <div class="mx-auto flex h-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl shadow-slate-950/30">
+            <header class="flex shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-3">
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+                <Printer class="size-4" aria-hidden="true" />
+              </span>
+              <div class="min-w-0">
+                <div class="text-[15px] font-bold text-slate-950">啤办生产任务单 · 打印预览</div>
+                <p class="mt-0.5 text-[12px] text-slate-500">{{ selectedTask.order.id }} · {{ activeItems.length }} 条回填明细</p>
+              </div>
+              <button
+                type="button"
+                class="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label="关闭任务单打印预览"
+                @click="closeTaskPrintPreview"
+              >
+                <X class="size-4" aria-hidden="true" />
+              </button>
+            </header>
+            <div class="min-h-0 flex-1 overflow-y-auto bg-slate-100 p-4">
+              <article class="mx-auto max-w-3xl rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                  <div>
+                    <div class="text-lg font-bold text-slate-950">啤办生产任务单</div>
+                    <div class="mt-1 text-[12px] text-slate-500">{{ selectedTask.order.product_name }} · {{ selectedTask.order.client_name }}</div>
+                  </div>
+                  <div class="text-right text-[12px] text-slate-500">
+                    <div class="font-mono font-bold text-slate-900">{{ selectedTask.order.id }}</div>
+                    <div>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</div>
+                  </div>
+                </div>
+                <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-3">
+                  <div><span class="text-slate-400">产品编号</span><div class="font-semibold">{{ formatBlank(selectedTask.order.order_number) }}</div></div>
+                  <div><span class="text-slate-400">工程 / 主管</span><div class="font-semibold">{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</div></div>
+                  <div><span class="text-slate-400">开单日期</span><div class="font-semibold">{{ formatBlank(selectedTask.order.date) }}</div></div>
+                </div>
+                <table class="mt-4 w-full border-collapse text-left text-[12px]">
+                  <thead><tr class="border-y border-slate-200 bg-slate-50 text-[11px] text-slate-500"><th class="px-2 py-2">#</th><th class="px-2 py-2">模具 / 原料</th><th class="px-2 py-2">颜色 / PMS</th><th class="px-2 py-2 text-right">预计用料</th><th class="px-2 py-2 text-right">实际用料</th><th class="px-2 py-2">需办日期</th></tr></thead>
+                  <tbody class="divide-y divide-slate-100"><tr v-for="item in activeItems" :key="`preview-${item.id}`"><td class="px-2 py-2 text-slate-400">{{ item.sort_order }}</td><td class="px-2 py-2"><div class="font-semibold">{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</div><div class="text-[11px] text-slate-400">{{ formatBlank(item.material) }}</div></td><td class="px-2 py-2">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</td><td class="px-2 py-2 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td><td class="px-2 py-2 text-right tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</td><td class="px-2 py-2">{{ formatBlank(item.completion_time) }}</td></tr></tbody>
+                </table>
+              </article>
+            </div>
+            <footer class="flex shrink-0 justify-end gap-2 border-t border-slate-200 px-4 py-3">
+              <button type="button" class="h-8 rounded-md border border-slate-200 px-3 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300" @click="closeTaskPrintPreview">关闭</button>
+              <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md bg-slate-900 px-3 text-[12px] font-semibold text-white transition hover:bg-slate-800" @click="confirmTaskPrint"><Printer class="size-3.5" aria-hidden="true" />确认打印</button>
+            </footer>
+          </div>
+        </section>
+      </Transition>
+
+      <section class="molding-sample-task-print-root hidden" data-testid="molding-sample-task-print-area" aria-label="啤办生产任务单打印内容">
+        <article v-if="selectedTask" class="molding-sample-task-print-page">
+          <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-title">啤办生产任务单</div><div class="molding-sample-task-print-subtitle">Molding Sample Production Task</div></div><div><strong>{{ selectedTask.order.id }}</strong><span>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</span></div></header>
+          <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(selectedTask.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</strong></div><div><span>工程 / 主管</span><strong>{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</strong></div><div><span>开单日期</span><strong>{{ formatBlank(selectedTask.order.date) }}</strong></div></section>
+          <table class="molding-sample-task-print-table"><thead><tr><th>#</th><th>模具 / 原料</th><th>颜色 / PMS</th><th>预计用料</th><th>实际用料</th><th>需办日期</th><th>备注</th></tr></thead><tbody><tr v-for="item in activeItems" :key="`print-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong><span>{{ formatBlank(item.material) }}</span></td><td>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</td><td>{{ formatWeight(item.required_material_kg) }}</td><td>{{ formatWeight(item.actual_weight_kg) }}</td><td>{{ formatBlank(item.completion_time) }}</td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
+          <footer class="molding-sample-task-print-footer">本任务单由 Royal Regent Nexus 生成。打印前请核对实际用料和完成状态。</footer>
+        </article>
+      </section>
     </div>
   </main>
 </template>
+
+<style>
+@media print {
+  @page { size: A4 portrait; margin: 12mm 10mm; }
+  html, body { background: #fff !important; }
+  body * { visibility: hidden; }
+  .molding-sample-task-print-root, .molding-sample-task-print-root * { visibility: visible; }
+  .molding-sample-task-print-root { display: block !important; position: absolute; inset: 0; width: 100%; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; }
+  .molding-sample-task-print-page { width: 100%; }
+  .molding-sample-task-print-header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #0f172a; padding-bottom: 12px; }
+  .molding-sample-task-print-header > div:last-child { text-align: right; font-size: 11px; }
+  .molding-sample-task-print-header span, .molding-sample-task-print-table span { display: block; margin-top: 3px; color: #64748b; font-size: 10px; font-weight: 400; }
+  .molding-sample-task-print-title { font-size: 20px; font-weight: 700; }
+  .molding-sample-task-print-subtitle { margin-top: 3px; color: #64748b; font-size: 10px; letter-spacing: .08em; }
+  .molding-sample-task-print-meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 18px; margin: 14px 0; font-size: 11px; }
+  .molding-sample-task-print-meta div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+  .molding-sample-task-print-meta span { color: #64748b; }
+  .molding-sample-task-print-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .molding-sample-task-print-table th, .molding-sample-task-print-table td { border: 1px solid #cbd5e1; padding: 6px; vertical-align: top; }
+  .molding-sample-task-print-table th { background: #f8fafc; color: #475569; text-align: left; }
+  .molding-sample-task-print-footer { margin-top: 12px; color: #64748b; font-size: 9px; }
+}
+</style>
