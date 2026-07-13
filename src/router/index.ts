@@ -94,11 +94,11 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/sales-business/quote-center',
-    name: 'quote-center',
+    path: '/modules/sales-business/customer-price-conversion',
+    name: 'customer-price-conversion',
     component: () => import('@/views/CustomerPriceConversionView.vue'),
     meta: {
-      title: '报价与成本中心',
+      title: '客价转换台',
       fullPage: true,
       requiresAuth: true,
       permissions: ['customer_price:read'],
@@ -106,8 +106,33 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/sales-business/internal-pricing',
+    name: 'internal-pricing',
+    component: () => import('@/views/InternalPricingView.vue'),
+    meta: {
+      title: '内部报价',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['internal_pricing:read'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/modules/sales-business/quote-center',
+    redirect: (to) => {
+      const rawSection = Array.isArray(to.query.section) ? to.query.section[0] : to.query.section
+      return rawSection === 'internal-pricing' || rawSection === 'quote-pool'
+        ? '/modules/sales-business/internal-pricing'
+        : '/modules/sales-business/customer-price-conversion'
+    },
+  },
+  {
     path: '/modules/sales-business/quote-center/customer-price-conversion',
-    redirect: '/modules/sales-business/quote-center',
+    redirect: '/modules/sales-business/customer-price-conversion',
+  },
+  {
+    path: '/modules/sales-business/order-approval',
+    redirect: '/modules/sales-business/internal-pricing',
   },
   {
     path: '/modules/:department/:module',
