@@ -26,4 +26,5 @@ assert.match(source, /path:\s*'\/modules\/molding-sample'[\s\S]{0,360}permission
 assert.match(source, /path:\s*'\/modules\/production\/molding-sample-tasks'[\s\S]{0,360}permissions:\s*\[['"]molding_sample:production_read['"]\]/)
 assert.match(source, /path:\s*'\/modules\/production\/injection-scheduling'[\s\S]{0,360}permissions:\s*\[['"]injection_schedule:read['"]\]/)
 assert.match(source, /path:\s*'\/modules\/pmc-warehouse\/raw-material-management'[\s\S]{0,360}permissions:\s*\[['"]molding_sample:warehouse_requisition['"]\]/)
-assert.match(source, /path:\s*'\/modules\/sales-business\/quote-center'[\s\S]{0,360}permissions:\s*\[['"]customer_price:read['"]\]/)
+assert.match(source, /path:\s*'\/modules\/sales-business\/customer-price-conversion'[\s\S]{0,360}permissions:\s*\[['"]customer_price:read['"]\]/)
+assert.match(source, /path:\s*'\/modules\/sales-business\/internal-pricing'[\s\S]{0,360}permissions:\s*\[['"]internal_pricing:read['"]\]/)
