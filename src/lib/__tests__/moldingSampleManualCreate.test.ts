@@ -15,7 +15,6 @@ const draft = createManualMoldingSampleOrderDraft({
 Object.assign(draft, {
   id: 'BP-62437',
   product_no: '62437',
-  doc_number: 'W-G026-00',
   client_name: 'BuzzBee',
   product_name: '链条枪',
   stage: 'T0',
@@ -28,14 +27,13 @@ draft.items = [
   createManualMoldingSampleLineDraft({
     customer_mold_id: 'BBT62450-A-01',
     mold_name: '左右枪身A款',
-    mold_dimensions: '650 × 450 × 380 mm', machine_type: '160T', mold_presence_status: 'in_factory', mold_return_time: '2026-04-12',
+    mold_dimensions: '650 × 450 × 380 mm', mold_presence_status: 'in_factory', mold_return_time: '2026-04-12',
     material: 'HIPS 425',
     color: '深绿色',
     pms: '2272C',
     pigment_no: '71139',
     quantity: '1/1',
     shoot_qty: '30',
-    gross_weight_g: '82.5',
     required_material_kg: '2.48',
     required_date: '2026-04-13',
   }),
@@ -59,7 +57,7 @@ assert.deepEqual(result.errors, [])
 assert.equal(result.payload?.order.id, 'BP-62437')
 assert.equal(result.payload?.order.factory_id, 'huakang-a')
 assert.equal(result.payload?.order.order_number, '62437')
-assert.equal(result.payload?.order.doc_number, 'W-G026-00')
+assert.equal(result.payload?.order.doc_number, '')
 assert.equal(result.payload?.order.client_name, 'BuzzBee')
 assert.equal(result.payload?.order.product_name, '链条枪')
 assert.equal(result.payload?.order.date, '2026-04-09')
@@ -72,15 +70,6 @@ assert.equal(result.payload?.order.eng_name, '肖科')
 assert.equal(result.payload?.order.reason, '见客样办，枪身不可刮花，颜色要对办，工程订色粉。')
 assert.equal(result.payload?.order.status, '待审核')
 assert.equal(result.payload?.order.created_at, '2026-04-09 09:00')
-
-const noFileNumberDraft = createManualMoldingSampleOrderDraft({
-  ...draft,
-  doc_number: '',
-})
-const noFileNumberResult = buildManualMoldingSampleCreateRequest(noFileNumberDraft, 'huakang-a')
-
-assert.deepEqual(noFileNumberResult.errors, [])
-assert.equal(noFileNumberResult.payload?.order.doc_number, '')
 
 assert.deepEqual(result.payload?.items.map((item) => ({
   id: item.id,
@@ -108,13 +97,13 @@ assert.deepEqual(result.payload?.items.map((item) => ({
     sort_order: 1,
     mold_id: 'BBT62450-A-01',
     mold_name: '左右枪身A款',
-    mold_dimensions: '650 × 450 × 380 mm', mold_presence_status: 'in_factory', machine_type: '160T',
+    mold_dimensions: '650 × 450 × 380 mm', mold_presence_status: 'in_factory', machine_type: '',
     material: 'HIPS 425',
     color: '深绿色 / PMS 2272C',
     pigment_no: '71139',
     quantity: '1/1',
     shoot_qty: 30,
-    gross_weight_g: 82.5,
+    gross_weight_g: null,
     required_material_kg: 2.48,
     mold_return_time: '2026-04-12',
     completion_time: '2026-04-13',
@@ -150,7 +139,6 @@ const invalid = createManualMoldingSampleOrderDraft({
 const invalidResult = buildManualMoldingSampleCreateRequest(invalid, 'huakang-a')
 
 assert.equal(invalidResult.payload, null)
-assert.match(invalidResult.errors.join('；'), /单据编号/)
 assert.match(invalidResult.errors.join('；'), /产品编号/)
 assert.match(invalidResult.errors.join('；'), /客户名称/)
 assert.match(invalidResult.errors.join('；'), /主管/)

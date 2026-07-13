@@ -14,7 +14,6 @@ export interface ManualMoldingSampleLineDraft {
   customer_mold_id: string
   mold_name: string
   mold_dimensions: string
-  machine_type: string
   mold_presence_status: '' | MoldPresenceStatus
   mold_return_time: string
   material: string
@@ -23,7 +22,6 @@ export interface ManualMoldingSampleLineDraft {
   pigment_no: string
   quantity: string
   shoot_qty: string
-  gross_weight_g: string
   required_material_kg: string
   required_date: string
   notes: string
@@ -33,7 +31,6 @@ export interface ManualMoldingSampleOrderDraft {
   id: string
   factory_id: string
   product_no: string
-  doc_number: string
   client_name: string
   product_name: string
   order_date: string
@@ -56,7 +53,6 @@ export interface ManualMoldingSampleDraftOptions {
   id?: string
   factory_id?: string
   product_no?: string
-  doc_number?: string
   client_name?: string
   product_name?: string
   order_date?: string
@@ -73,14 +69,13 @@ export interface ManualMoldingSampleDraftOptions {
 const manualLineKeys: Array<keyof ManualMoldingSampleLineDraft> = [
   'customer_mold_id',
   'mold_name',
-  'mold_dimensions', 'machine_type', 'mold_presence_status', 'mold_return_time',
+  'mold_dimensions', 'mold_presence_status', 'mold_return_time',
   'material',
   'color',
   'pms',
   'pigment_no',
   'quantity',
   'shoot_qty',
-  'gross_weight_g',
   'required_material_kg',
   'required_date',
   'notes',
@@ -103,7 +98,6 @@ export function createManualMoldingSampleLineDraft(
     customer_mold_id: input.customer_mold_id ?? '',
     mold_name: input.mold_name ?? '',
     mold_dimensions: input.mold_dimensions ?? '',
-    machine_type: input.machine_type ?? '',
     mold_presence_status: input.mold_presence_status ?? '',
     mold_return_time: input.mold_return_time ?? '',
     material: input.material ?? '',
@@ -112,7 +106,6 @@ export function createManualMoldingSampleLineDraft(
     pigment_no: input.pigment_no ?? '',
     quantity: input.quantity ?? '',
     shoot_qty: input.shoot_qty ?? '',
-    gross_weight_g: input.gross_weight_g ?? '',
     required_material_kg: input.required_material_kg ?? '',
     required_date: input.required_date ?? '',
     notes: input.notes ?? '',
@@ -126,7 +119,6 @@ export function createManualMoldingSampleOrderDraft(
     id: input.id ?? '',
     factory_id: input.factory_id ?? 'huakang-a',
     product_no: input.product_no ?? '',
-    doc_number: input.doc_number ?? '',
     client_name: input.client_name ?? '',
     product_name: input.product_name ?? '',
     order_date: input.order_date ?? '',
@@ -186,15 +178,14 @@ export function buildManualMoldingSampleCreateRequest(
   factoryId = draft.factory_id,
 ): ManualMoldingSampleBuildResult {
   const errors: string[] = []
-  const orderId = trimText(draft.id)
   const productNo = trimText(draft.product_no)
+  const orderId = trimText(draft.id) || deriveManualMoldingSampleOrderId(productNo)
   const clientName = trimText(draft.client_name)
   const productName = trimText(draft.product_name)
   const orderDate = trimText(draft.order_date)
   const supervisor = trimText(draft.supervisor)
   const engineer = trimText(draft.eng_name)
 
-  requireField(orderId, '单据编号', errors)
   requireField(productNo, '产品编号', errors)
   requireField(clientName, '客户名称', errors)
   requireField(productName, '产品名称', errors)
@@ -221,9 +212,6 @@ export function buildManualMoldingSampleCreateRequest(
     if (parseShootQty(line.shoot_qty) <= 0) {
       errors.push(`请填写第 ${sourceIndex} 行啤数，且必须大于 0`)
     }
-    if (trimText(line.gross_weight_g) && parseOptionalNumber(line.gross_weight_g) === null) {
-      errors.push(`第 ${sourceIndex} 行整啤毛重必须为数字`)
-    }
     if (trimText(line.required_material_kg) && parseOptionalNumber(line.required_material_kg) === null) {
       errors.push(`第 ${sourceIndex} 行所需用量必须为数字`)
     }
@@ -239,7 +227,7 @@ export function buildManualMoldingSampleCreateRequest(
     id: orderId,
     factory_id: factoryId,
     order_number: productNo,
-    doc_number: trimText(draft.doc_number),
+    doc_number: '',
     product_name: productName,
     client_name: clientName,
     date: orderDate,
@@ -264,7 +252,7 @@ export function buildManualMoldingSampleCreateRequest(
         sort_order: index + 1,
         mold_id: trimText(line.customer_mold_id),
         mold_name: trimText(line.mold_name),
-        machine_type: trimText(line.machine_type),
+        machine_type: '',
         mold_dimensions: trimText(line.mold_dimensions),
         mold_presence_status: line.mold_presence_status || 'unknown',
         production_machine: '',
@@ -273,7 +261,7 @@ export function buildManualMoldingSampleCreateRequest(
         pigment_no: trimText(line.pigment_no),
         quantity: trimText(line.quantity),
         shoot_qty: parseShootQty(line.shoot_qty),
-        gross_weight_g: parseOptionalNumber(line.gross_weight_g),
+        gross_weight_g: null,
         required_material_kg: parseOptionalNumber(line.required_material_kg),
         mold_return_time: trimText(line.mold_return_time),
         completion_time: trimText(line.required_date),

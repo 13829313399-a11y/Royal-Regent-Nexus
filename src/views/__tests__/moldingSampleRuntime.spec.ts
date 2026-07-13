@@ -529,11 +529,13 @@ describe('molding sample runtime error handling', () => {
     expect(printPreview).toContain('BP-PRINT-002')
     expect(printArea).toContain('BP-PRINT-001')
     expect(printArea).toContain('打印模具A')
-    expect(printArea).toContain('啤机确认机台')
-    expect(printArea).toContain('啤办机台-08')
+    expect(printArea).not.toContain('啤机确认机台')
+    expect(printArea).not.toContain('啤办机台-08')
     expect(printArea).toContain('ABS 750NSW')
     expect(printArea).toContain('500 × 400 × 300 mm')
-    expect(printArea).toContain('适配机型：160T')
+    expect(printArea).not.toContain('适配机型')
+    expect(printArea).not.toContain('160T')
+    expect(printArea).not.toContain('11.00 g')
     expect(printArea).toContain('模具是否在厂：在厂')
     expect(printArea).toContain('模具回厂时间：2026-07-10')
     expect(printArea).not.toContain('REC-001')
@@ -645,6 +647,52 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('opens and confirms a production-task print preview without file or machine fields', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-PRINT-001' }
+    const record = {
+      ...createMoldingSampleRecord('待生产', 'BP-PROD-PRINT-001'),
+      order: {
+        ...createMoldingSampleRecord('待生产', 'BP-PROD-PRINT-001').order,
+        doc_number: 'W-G026-00',
+        product_name: '30寸黑武士',
+      },
+      items: [{
+        ...createMoldingSampleRecord('待生产', 'BP-PROD-PRINT-001').items[0],
+        production_machine: '啤办机台-08',
+        material: 'PP (AV161)',
+        actual_weight_kg: 14.2,
+      }],
+    } satisfies MoldingSampleDetailResponse
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(record.order.id),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    await getButtonByExactText(wrapper, '打印任务单').trigger('click')
+    await nextTick()
+
+    const preview = wrapper.get('[data-testid="molding-sample-task-print-preview"]').text()
+    const printArea = wrapper.get('[data-testid="molding-sample-task-print-area"]').text()
+    expect(printSpy).not.toHaveBeenCalled()
+    expect(preview).toContain('BP-PROD-PRINT-001')
+    expect(printArea).toContain('PP (AV161)')
+    expect(printArea).toContain('14.20 kg')
+    expect(preview).not.toContain('文件编号')
+    expect(preview).not.toContain('W-G026-00')
+    expect(preview).not.toContain('啤机确认机台')
+    expect(preview).not.toContain('啤办机台-08')
+
+    await getButtonByExactText(wrapper, '确认打印').trigger('click')
+    expect(printSpy).toHaveBeenCalledTimes(1)
+
+    wrapper.unmount()
+  })
+
   it('expands the production task page to show the full molding sample order data', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-FULL-001' }
@@ -709,21 +757,21 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('完整单据数据')
     expect(text).toContain('产品编号')
     expect(text).toContain('P50002008')
-    expect(text).toContain('文件编号')
-    expect(text).toContain('W-G026-00')
-    expect(text).toContain('整啤毛重(g)')
-    expect(text).toContain('82.00 g')
+    expect(text).not.toContain('文件编号')
+    expect(text).not.toContain('W-G026-00')
+    expect(text).not.toContain('整啤毛重(g)')
+    expect(text).not.toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
     expect(text).not.toContain('160T')
     expect(text).not.toContain('RC-20260203-01')
-    expect(text).toContain('啤机确认机台')
-    expect(text).toContain('啤办机台-08')
+    expect(text).not.toContain('啤机确认机台')
+    expect(text).not.toContain('啤办机台-08')
     expect(text).toContain('啤机回填前核对完整资料。')
 
     wrapper.unmount()
   })
 
-  it('saves the production machine from the production fillback page', async () => {
+  it('saves actual material from the production fillback page without a production-machine field', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-MACHINE-001' }
     const runningRecord = {
@@ -765,7 +813,6 @@ describe('molding sample runtime error handling', () => {
         {
           ...runningRecord.items[0],
           actual_weight_kg: 14.2,
-          production_machine: '啤办机台-08',
         },
       ],
     } satisfies MoldingSampleDetailResponse
@@ -780,7 +827,7 @@ describe('molding sample runtime error handling', () => {
 
     await wrapper.get('input[aria-label="实际用料"]').setValue('14.2')
     expect(wrapper.find('input[aria-label="啤办费"]').exists()).toBe(false)
-    await wrapper.get('input[aria-label="啤机确认机台"]').setValue('啤办机台-08')
+    expect(wrapper.find('input[aria-label="啤机确认机台"]').exists()).toBe(false)
     await getButtonByText(wrapper, '保存回填').trigger('click')
     await flushPromises()
     await nextTick()
@@ -790,16 +837,13 @@ describe('molding sample runtime error handling', () => {
         {
           id: 'BP-PROD-MACHINE-001-001',
           actual_weight_kg: 14.2,
-          production_machine: '啤办机台-08',
         },
       ],
     })
-    expect(wrapper.text()).toContain('啤机确认机台')
+    expect(wrapper.text()).not.toContain('啤机确认机台')
     expect(wrapper.text()).toContain('实际料费(HKD)')
     expect(wrapper.text()).not.toContain('啤办费(RMB)')
     expect(wrapper.text()).not.toContain('啤办费(HKD)')
-    expect((wrapper.get('input[aria-label="啤机确认机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
-
     wrapper.unmount()
   })
 
@@ -1073,8 +1117,8 @@ describe('molding sample runtime error handling', () => {
     const detailTable = wrapper.get('[data-testid="molding-sample-detail-table"]')
     expect(detailTable.text()).toContain('工模尺寸')
     expect(detailTable.text()).toContain('650 × 450 × 380 mm')
-    expect(detailTable.text()).toContain('适配机型')
-    expect(detailTable.text()).toContain('160T')
+    expect(detailTable.text()).not.toContain('适配机型')
+    expect(detailTable.text()).not.toContain('160T')
     expect(detailTable.text()).toContain('模具在厂')
     expect(detailTable.text()).toContain('在厂')
     expect(detailTable.text()).toContain('回厂时间')
@@ -1090,18 +1134,18 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('完整单据数据')
     expect(text).toContain('产品编号')
     expect(text).toContain('P50002008')
-    expect(text).toContain('文件编号')
-    expect(text).toContain('W-G026-00')
-    expect(text).toContain('整啤毛重(g)')
-    expect(text).toContain('82.00 g')
+    expect(text).not.toContain('文件编号')
+    expect(text).not.toContain('W-G026-00')
+    expect(text).not.toContain('整啤毛重(g)')
+    expect(text).not.toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
     expect(text).toContain('650 × 450 × 380 mm')
-    expect(text).toContain('160T')
+    expect(text).not.toContain('160T')
     expect(text).toContain('在厂')
     expect(text).not.toContain('RC-20260203-01')
     expect(text).toContain('实际料费(HKD)')
-    expect(text).toContain('啤机确认机台')
-    expect(text).toContain('啤办机台-08')
+    expect(text).not.toContain('啤机确认机台')
+    expect(text).not.toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
     expect(text).not.toContain('啤办费(RMB)')
     expect(text).not.toContain('啤办费(HKD)')
@@ -1585,6 +1629,12 @@ describe('molding sample runtime error handling', () => {
     const wrapper = await mountRuntimeView(MoldingSampleView)
 
     await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    const lineHeaders = wrapper.findAll('[aria-label="模具明细录入表"] [role="columnheader"]').map((node) => node.text())
+    expect(lineHeaders).not.toContain('适配机型')
+    expect(lineHeaders).not.toContain('整啤毛重(g)')
+    expect(lineHeaders.slice(-3)).toEqual(['工模尺寸', '备注', '操作'])
+    expect(wrapper.find('[data-testid="create-line-machine-type"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-line-gross-weight"]').exists()).toBe(false)
     await wrapper.get('[data-testid="create-product-no"]').setValue('260705-01')
     await wrapper.get('[data-testid="create-client-name"]').setValue('Bright Kids')
     await wrapper.get('[data-testid="create-product-name"]').setValue('透明灯罩')
@@ -1600,7 +1650,6 @@ describe('molding sample runtime error handling', () => {
     await wrapper.get('[data-testid="create-line-color"]').setValue('透明蓝')
     await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
     await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')
-    await wrapper.get('[data-testid="create-line-gross-weight"]').setValue('125.5')
     await wrapper.get('[data-testid="create-line-required-material"]').setValue('2.25')
     await wrapper.get('[data-testid="create-line-required-date"]').setValue('2026-07-10')
     await flushPromises()
@@ -1616,7 +1665,6 @@ describe('molding sample runtime error handling', () => {
 
     expect((restoredWrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('透明灯罩')
     expect((restoredWrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('BK-01')
-    expect((restoredWrapper.get('[data-testid="create-line-gross-weight"]').element as HTMLInputElement).value).toBe('125.5')
     expect((restoredWrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('2.25')
 
     mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => ({
@@ -1632,7 +1680,8 @@ describe('molding sample runtime error handling', () => {
 
     expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
     expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].items[0]).toMatchObject({
-      gross_weight_g: 125.5,
+      gross_weight_g: null,
+      machine_type: '',
       required_material_kg: 2.25,
     })
     expect(window.localStorage.getItem('rr:molding-sample:create-draft:huaxing')).toBeNull()
@@ -1702,7 +1751,7 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.createOrder).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('Excel已导入到新建开单草稿')
     expect(wrapper.text()).toContain('提交主管审核')
-    expect((wrapper.get('[data-testid="create-order-id"]').element as HTMLInputElement).value).toBe('BP-XLSX-DRAFT-001')
+    expect(wrapper.find('[data-testid="create-order-id"]').exists()).toBe(false)
     expect((wrapper.get('[data-testid="create-product-no"]').element as HTMLInputElement).value).toBe('P50002008')
     expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('30寸黑武士')
     expect((wrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('P50002008-01-01')
