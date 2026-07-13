@@ -45,6 +45,7 @@ from app.services.auth import (
     time_window_is_active,
     validate_password_characters,
 )
+from app.services.permission_scope_policy import role_scope_policy, scope_is_applicable
 
 
 logger = logging.getLogger(__name__)
@@ -225,12 +226,18 @@ def approve_registration_request(
     if not payload.role_assignments:
         raise HTTPException(status_code=400, detail="请至少分配一个角色")
 
+    role_assignments = expand_registration_role_assignments(
+        db,
+        current_user,
+        payload.role_assignments,
+    )
+
     user = db.get(AuthUser, registration_request.user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="申请账号不存在")
     now = now_text()
 
-    for assignment in payload.role_assignments:
+    for assignment in role_assignments:
         validate_role_assignment(db, assignment)
         if not is_superadmin(current_user):
             if not can(
@@ -242,6 +249,7 @@ def approve_registration_request(
                 raise HTTPException(status_code=403, detail="跨范围角色授权请通过权限申请")
             if role_is_high_risk(db, assignment.role_id.strip()):
                 raise HTTPException(status_code=403, detail="管理员或高风险角色请通过权限申请")
+        validate_role_assignment_scope(db, assignment)
 
     existing_user_roles = list(
         db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all()
@@ -259,7 +267,7 @@ def approve_registration_request(
             )
 
     added_binding_ids: list[str] = []
-    for assignment in payload.role_assignments:
+    for assignment in role_assignments:
         assignment_key = (
             assignment.role_id.strip(),
             assignment.factory_id.strip(),
@@ -360,7 +368,7 @@ def approve_registration_request(
         "registration_approved",
         username=user.username,
         user_id=user.id,
-        detail=f"审批通过；角色：{','.join(item.role_id for item in payload.role_assignments)}",
+        detail=f"审批通过；角色：{','.join(item.role_id for item in role_assignments)}",
         request=request,
     )
     db.commit()
@@ -580,6 +588,83 @@ def validate_role_assignment(db: Session, assignment: RoleAssignmentRequest) -> 
         raise HTTPException(status_code=400, detail="请选择授权部门")
 
 
+def validate_role_assignment_scope(db: Session, assignment: RoleAssignmentRequest) -> None:
+    role = db.get(AuthRole, assignment.role_id.strip())
+    if role is None:
+        return
+    policy = role_scope_policy(role.code)
+    factory_id = assignment.factory_id.strip()
+    department = assignment.department.strip()
+    if scope_is_applicable(policy, factory_id, department):
+        return
+    guidance = policy.guidance or "该角色不适用于所选厂区和部门范围"
+    raise HTTPException(
+        status_code=400,
+        detail=f"角色在当前范围不生效：{role.name}@{factory_id}/{department}；{guidance}",
+    )
+
+
+def expand_registration_role_assignments(
+    db: Session,
+    current_user: AuthContext,
+    assignments: list[RoleAssignmentRequest],
+) -> list[RoleAssignmentRequest]:
+    """Apply the documented default engineer bundle without replacing existing grants."""
+    expanded: list[RoleAssignmentRequest] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def append(assignment: RoleAssignmentRequest) -> None:
+        key = (
+            assignment.role_id.strip(),
+            assignment.factory_id.strip(),
+            assignment.department.strip(),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        expanded.append(
+            RoleAssignmentRequest(
+                role_id=key[0],
+                factory_id=key[1],
+                department=key[2],
+            )
+        )
+
+    for assignment in assignments:
+        append(assignment)
+        role = db.get(AuthRole, assignment.role_id.strip())
+        if role is None or role.code != "engineer":
+            continue
+        if not is_superadmin(current_user):
+            raise HTTPException(
+                status_code=403,
+                detail="工程师默认组合包含集团跨厂只读权限，请由集团超级管理员审批或提交权限申请",
+            )
+        companion_roles = {
+            "molding_production_observer": (
+                assignment.factory_id.strip(),
+                "production",
+            ),
+            "group_molding_readonly": ("*", "*"),
+        }
+        for role_code, (factory_id, department) in companion_roles.items():
+            companion = db.scalar(select(AuthRole).where(AuthRole.code == role_code))
+            if companion is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"工程师默认授权角色尚未初始化：{role_code}",
+                )
+            append(
+                RoleAssignmentRequest(
+                    role_id=companion.id,
+                    factory_id=factory_id,
+                    department=department,
+                )
+            )
+
+    return expanded
+
+
 def mark_registration_notifications_handled(db: Session, registration_request_id: str, handled_at: str) -> None:
     notifications = db.scalars(
         select(SystemNotification).where(SystemNotification.type == "user_registration")
@@ -707,7 +792,16 @@ def count_active_superadmins(db: Session) -> int:
 
 
 def role_to_out(role: AuthRole) -> RoleOut:
-    return RoleOut(id=role.id, code=role.code, name=role.name, description=role.description)
+    policy = role_scope_policy(role.code)
+    return RoleOut(
+        id=role.id,
+        code=role.code,
+        name=role.name,
+        description=role.description,
+        applicable_departments=list(policy.departments),
+        requires_global_factory=policy.requires_global_factory,
+        scope_guidance=policy.guidance,
+    )
 
 
 def registration_request_to_out(registration_request: AuthRegistrationRequest) -> RegistrationRequestOut:

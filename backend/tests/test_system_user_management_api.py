@@ -241,7 +241,55 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         approved_profile = login(client, "zhangsan", "Strong123")
         assert approved_profile["username"] == "zhangsan"
         assert "molding_sample:create" in approved_profile["permissions"]
-        assert approved_profile["factory_scopes"] == ["huaxing"]
+        assert "molding_sample:production_read" in approved_profile["permissions"]
+        assert "molding_sample:cross_factory_read" in approved_profile["permissions"]
+        assert set(approved_profile["factory_scopes"]) == {"*", "huaxing"}
+
+        login(client, "admin")
+        approved_user = next(
+            user
+            for user in client.get("/api/system/users?status=active").json()
+            if user["username"] == "zhangsan"
+        )
+        assert {
+            (role["role_code"], role["factory_id"], role["department"])
+            for role in approved_user["roles"]
+        } == {
+            ("engineer", "huaxing", "engineering"),
+            ("molding_production_observer", "huaxing", "production"),
+            ("group_molding_readonly", "*", "*"),
+        }
+
+
+def test_registration_role_catalog_exposes_scope_guidance_and_rejects_wrong_scope(monkeypatch):
+    with make_client(monkeypatch) as client:
+        assert client.post("/api/auth/register", json=register_payload("wrong-role-scope")).status_code == 200
+        login(client, "admin")
+
+        roles = {role["code"]: role for role in client.get("/api/system/roles").json()}
+        assert roles["engineer"]["applicable_departments"] == ["engineering"]
+        assert roles["engineer"]["requires_global_factory"] is False
+        assert "工程部" in roles["engineer"]["scope_guidance"]
+        assert roles["group_molding_readonly"]["applicable_departments"] == ["*"]
+        assert roles["group_molding_readonly"]["requires_global_factory"] is True
+
+        request_id = next(
+            item["id"]
+            for item in client.get("/api/system/registration-requests?status=pending").json()
+            if item["username"] == "wrong-role-scope"
+        )
+        response = client.post(
+            f"/api/system/registration-requests/{request_id}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "molding_clerk", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "验证错误范围被拒绝",
+            },
+        )
+        assert response.status_code == 400
+        assert "当前范围不生效" in response.json()["detail"]
+        assert client.get("/api/system/registration-requests?status=pending").json()[0]["status"] == "pending"
 
 
 def test_registration_approval_flushes_role_before_binding_metadata(monkeypatch):

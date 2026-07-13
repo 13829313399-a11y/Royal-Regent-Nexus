@@ -26,9 +26,19 @@ const scopedBindings = computed(() => props.bindings.filter((binding) => {
   return matchesFactory && matchesDepartment
 }))
 const activeBindingsInScope = computed(() => scopedBindings.value.filter((binding) => binding.state === 'active'))
+const selectedRole = computed(() => props.roles?.find((role) => role.id === selectedRoleId.value))
+
+function roleScopeIsApplicable(role: RoleSummary) {
+  if (role.requires_global_factory) {
+    return props.factoryId === '*' && props.department === '*'
+  }
+  const applicableDepartments = role.applicable_departments ?? []
+  if (!applicableDepartments.length) return true
+  return props.department === '*' || applicableDepartments.includes(props.department ?? '')
+}
 
 function addBinding() {
-  if (!selectedRoleId.value) return
+  if (!selectedRoleId.value || !selectedRole.value || !roleScopeIsApplicable(selectedRole.value)) return
   emit('add', selectedRoleId.value)
   selectedRoleId.value = ''
 }
@@ -78,10 +88,16 @@ function stateLabel(value: RoleBinding['state']) {
       <div class="flex flex-col gap-2 sm:flex-row">
         <select v-model="selectedRoleId" aria-label="新增角色模板" class="h-10 w-full min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm" :disabled="disabled || !factoryId || !department">
           <option value="">选择要新增的角色模板</option>
-          <option v-for="role in roles" :key="role.id" :value="role.id">{{ role.name }}（{{ role.code }}）</option>
+          <option v-for="role in roles" :key="role.id" :value="role.id" :disabled="!roleScopeIsApplicable(role)">
+            {{ role.name }}（{{ role.code }}）{{ roleScopeIsApplicable(role) ? '' : '— 当前范围不适用' }}
+          </option>
         </select>
-        <button type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 text-sm font-bold text-white disabled:opacity-40" :disabled="disabled || !selectedRoleId" @click="addBinding"><Plus class="size-4" />加入草稿</button>
+        <button type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 text-sm font-bold text-white disabled:opacity-40" :disabled="disabled || !selectedRoleId || !selectedRole || !roleScopeIsApplicable(selectedRole)" @click="addBinding"><Plus class="size-4" />加入草稿</button>
       </div>
+      <p v-if="selectedRole?.scope_guidance" class="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+        适用范围：{{ selectedRole.scope_guidance }}
+      </p>
+      <p v-else class="mt-2 text-xs text-slate-500">不适用于当前厂区 / 部门的角色已在上方选项中禁用。</p>
 
       <div v-if="activeBindingsInScope.length" class="mt-3 flex flex-wrap gap-2">
         <button v-for="binding in activeBindingsInScope" :key="`revoke-${binding.id}`" type="button" class="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-700 disabled:opacity-40" :disabled="disabled" @click="emit('revoke', binding)"><Trash2 class="size-3.5" />撤销 {{ binding.role_name }}</button>

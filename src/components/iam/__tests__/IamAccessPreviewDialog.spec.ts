@@ -17,6 +17,9 @@ describe('IamAccessPreviewDialog', () => {
           scope_type: 'department',
           status: 'active',
           sort_order: 1,
+          applicable_departments: ['qa'],
+          requires_global_factory: false,
+          scope_guidance: '仅 QA 部门可配置。',
         }],
         preview: {
           preview_token: 'preview-token',

@@ -806,15 +806,23 @@ def ensure_order_write_allowed(
     permission: str,
 ) -> None:
     ensure_molding_local_write(db, current_user, order.factory_id)
-    if order.status not in LOCKED_STATUSES:
-        ensure_permission_for_departments(
-            db,
+    if order.status in LOCKED_STATUSES:
+        if has_permission_for_departments(
             current_user,
-            permission,
+            "molding_sample:manager_review",
             order.factory_id,
-            ENGINEERING_EDIT_DEPARTMENTS,
-        )
-        return
+            MANAGEMENT_DEPARTMENTS,
+        ):
+            return
+        raise HTTPException(status_code=403, detail="当前状态不允许普通工程师改删")
+
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        permission,
+        order.factory_id,
+        ENGINEERING_EDIT_DEPARTMENTS,
+    )
 
     if has_permission_for_departments(
         current_user,
@@ -824,7 +832,8 @@ def ensure_order_write_allowed(
     ):
         return
 
-    raise HTTPException(status_code=403, detail="当前状态不允许改删")
+    if not is_opening_engineer(order, current_user):
+        raise HTTPException(status_code=403, detail="普通工程师只能修改本人创建的啤办单")
 
 
 def ensure_order_delete_allowed(db: Session, order: MoldingSampleOrder, current_user: AuthContext) -> None:
@@ -846,6 +855,17 @@ def ensure_order_delete_allowed(db: Session, order: MoldingSampleOrder, current_
         order.factory_id,
         ENGINEERING_EDIT_DEPARTMENTS,
     )
+
+    if has_permission_for_departments(
+        current_user,
+        "molding_sample:manager_review",
+        order.factory_id,
+        MANAGEMENT_DEPARTMENTS,
+    ):
+        return
+
+    if not is_opening_engineer(order, current_user):
+        raise HTTPException(status_code=403, detail="普通工程师只能删除本人创建的啤办单")
 
 
 def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, current_user: AuthContext) -> MoldingSampleOrder:
@@ -1267,27 +1287,24 @@ def is_opening_engineer(order: MoldingSampleOrder, current_user: AuthContext) ->
     def same_text(left: str | None, right: str | None) -> bool:
         return bool(left and right and left.strip() == right.strip())
 
-    if order.eng_name == "" or same_text(order.eng_name, current_user.display_name):
-        return True
-
     submit_actions = ("工程提交", "工程开单")
     submitter_user_ids = {
         audit.actor_user_id
         for audit in order.audit_logs
         if audit.action.startswith(submit_actions) and audit.actor_user_id
     }
-    if current_user.id in submitter_user_ids:
-        return True
+    if submitter_user_ids:
+        return current_user.id in submitter_user_ids
 
     submitter_names = {
         audit.actor_name.strip()
         for audit in order.audit_logs
         if audit.action.startswith(submit_actions) and audit.actor_name and audit.actor_name.strip()
     }
-    if current_user.display_name.strip() in submitter_names:
-        return True
+    if submitter_names:
+        return current_user.display_name.strip() in submitter_names
 
-    return False
+    return same_text(order.eng_name, current_user.display_name)
 
 
 def calculate_item_costs(
@@ -1336,6 +1353,9 @@ def update_order_items(
         order.factory_id,
         PRODUCTION_DEPARTMENTS,
     )
+    if order.status not in {"待生产", "生产中"}:
+        raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以回填生产数据")
+
     items_by_id = {item.id: item for item in order.items}
 
     for patch in items:

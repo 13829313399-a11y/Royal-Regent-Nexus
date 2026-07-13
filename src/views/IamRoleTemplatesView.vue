@@ -188,7 +188,12 @@ onMounted(() => void loadData())
               <div class="grid gap-2 md:grid-cols-2 2xl:grid-cols-3">
                 <label v-for="permission in group.permissions" :key="permission.code" class="flex min-w-0 items-start gap-3 rounded-xl border p-3 transition" :class="isSelected(permission.code) ? 'border-emerald-200 bg-emerald-50/70' : 'border-slate-200 bg-white'">
                   <input type="checkbox" class="mt-0.5 size-4 accent-emerald-700" :aria-label="`${permissionDisplayLabel(permission)}（${permission.code}）`" :checked="isSelected(permission.code)" :disabled="roleAccess.is_protected || !canManageRoleTemplates" @change="togglePermission(permission.code)">
-                  <span class="min-w-0 flex-1"><b class="block text-sm text-slate-900">{{ permissionDisplayLabel(permission) }}</b><code class="block break-all text-xs text-slate-400">{{ permission.code }}</code><span v-if="roleAccess.is_protected" class="mt-1 block text-xs font-semibold" :class="isSelected(permission.code) ? 'text-emerald-700' : 'text-amber-700'">{{ isSelected(permission.code) ? '模板已记录' : '系统自动拥有' }}</span></span>
+                  <span class="min-w-0 flex-1">
+                    <b class="block text-sm text-slate-900">{{ permissionDisplayLabel(permission) }}</b>
+                    <code class="block break-all text-xs text-slate-400">{{ permission.code }}</code>
+                    <span v-if="permission.scope_guidance" class="mt-1.5 block text-xs leading-5 text-slate-500">适用范围：{{ permission.scope_guidance }}</span>
+                    <span v-if="roleAccess.is_protected" class="mt-1 block text-xs font-semibold" :class="isSelected(permission.code) ? 'text-emerald-700' : 'text-amber-700'">{{ isSelected(permission.code) ? '模板已记录' : '系统自动拥有' }}</span>
+                  </span>
                   <AlertTriangle v-if="permission.risk_level === 'high'" class="ml-auto size-4 shrink-0 text-amber-600" />
                 </label>
               </div>

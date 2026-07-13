@@ -56,6 +56,12 @@ from app.schemas.iam import (
     UserSearchOut,
 )
 from app.services.auth import AuthContext, build_auth_context, can, now_text
+from app.services.permission_scope_policy import (
+    ScopePolicy,
+    permission_scope_policy,
+    role_scope_policy,
+    scope_is_applicable,
+)
 
 
 PREVIEW_TTL_MINUTES = 5
@@ -332,6 +338,7 @@ def preview_role_access(
     inactive = [code for code, permission in permissions.items() if _permission_status(db, permission) != "active"]
     if inactive:
         raise HTTPException(status_code=400, detail=f"权限已停用：{','.join(sorted(inactive))}")
+    _ensure_role_permissions_compatible(role, desired_codes)
 
     current_codes = set(_role_permission_codes(db, role.id))
     desired_set = set(desired_codes)
@@ -630,6 +637,7 @@ def _permission_out(permission: AuthPermission, metadata: AuthPermissionMetadata
     module_code, action = _split_permission_code(permission.code)
     module_code = metadata.module_code if metadata else module_code
     action = metadata.action if metadata else action
+    scope_policy = permission_scope_policy(permission.code)
     return PermissionOut(
         code=permission.code,
         name=permission.name,
@@ -645,6 +653,9 @@ def _permission_out(permission: AuthPermission, metadata: AuthPermissionMetadata
         ),
         status=metadata.status if metadata else "active",
         sort_order=metadata.sort_order if metadata else 0,
+        applicable_departments=list(scope_policy.departments),
+        requires_global_factory=scope_policy.requires_global_factory,
+        scope_guidance=scope_policy.guidance,
     )
 
 
@@ -783,6 +794,13 @@ def _normalize_user_operations(
         factory_id = (item.factory_id or default_factory_id or (binding.factory_id if binding else "")).strip()
         department = (item.department or default_department or (binding.department if binding else "")).strip()
         _validate_scope(factory_id, department)
+        if operation != "revoke":
+            _ensure_scope_applicable(
+                role_scope_policy(role.code),
+                factory_id,
+                department,
+                subject=f"角色 {role.name}",
+            )
         valid_until = _validate_valid_until(item.valid_until or "")
         risk_level = "high" if _role_is_high_risk(db, role or _load_role(db, binding.role_id)) else "normal"
         operations.append(
@@ -808,6 +826,13 @@ def _normalize_user_operations(
         factory_id = (item.factory_id or default_factory_id).strip()
         department = (item.department or default_department).strip()
         _validate_scope(factory_id, department)
+        if item.effect in {"allow", "deny"}:
+            _ensure_scope_applicable(
+                permission_scope_policy(code),
+                factory_id,
+                department,
+                subject=f"权限 {permission.name or code}",
+            )
         key = (code, factory_id, department)
         if key in seen_overrides:
             raise HTTPException(status_code=400, detail=f"权限变更重复：{code}@{factory_id}/{department}")
@@ -1603,6 +1628,7 @@ def _role_permission_codes(db: Session, role_id: str) -> list[str]:
 
 def _role_summary(db: Session, role: AuthRole) -> RoleSummaryOut:
     metadata = _get_role_metadata(db, role.id)
+    scope_policy = role_scope_policy(role.code)
     return RoleSummaryOut(
         id=role.id,
         code=role.code,
@@ -1612,6 +1638,9 @@ def _role_summary(db: Session, role: AuthRole) -> RoleSummaryOut:
         is_protected=bool(metadata.protected) if metadata else role.code == "admin",
         binding_count=_active_role_binding_count(db, role.id),
         permission_count=len(_role_permission_codes(db, role.id)),
+        applicable_departments=list(scope_policy.departments),
+        requires_global_factory=scope_policy.requires_global_factory,
+        scope_guidance=scope_policy.guidance,
     )
 
 
@@ -1774,6 +1803,52 @@ def _validate_scope(factory_id: str, department: str) -> None:
         raise HTTPException(status_code=400, detail="请选择授权厂区")
     if not department:
         raise HTTPException(status_code=400, detail="请选择授权部门")
+
+
+def _ensure_scope_applicable(
+    policy: ScopePolicy,
+    factory_id: str,
+    department: str,
+    *,
+    subject: str,
+) -> None:
+    if scope_is_applicable(policy, factory_id, department):
+        return
+    guidance = f"；{policy.guidance}" if policy.guidance else ""
+    raise HTTPException(
+        status_code=400,
+        detail=f"{subject} 在当前范围不生效：{factory_id}/{department}{guidance}",
+    )
+
+
+def _ensure_role_permissions_compatible(role: AuthRole, permission_codes: list[str]) -> None:
+    role_policy = role_scope_policy(role.code)
+    if not role_policy.departments and not role_policy.requires_global_factory:
+        return
+
+    incompatible: list[str] = []
+    for code in permission_codes:
+        permission_policy = permission_scope_policy(code)
+        if not permission_policy.departments and not permission_policy.requires_global_factory:
+            continue
+        if permission_policy.requires_global_factory and not role_policy.requires_global_factory:
+            incompatible.append(code)
+            continue
+        if (
+            role_policy.departments
+            and permission_policy.departments
+            and "*" not in role_policy.departments
+            and "*" not in permission_policy.departments
+            and not set(role_policy.departments).intersection(permission_policy.departments)
+        ):
+            incompatible.append(code)
+
+    if incompatible:
+        guidance = role_policy.guidance or "角色适用范围与权限适用范围不一致"
+        raise HTTPException(
+            status_code=400,
+            detail=f"角色模板包含范围不相容的权限：{','.join(sorted(incompatible))}；{guidance}",
+        )
 
 
 def _validate_valid_until(value: str) -> str:

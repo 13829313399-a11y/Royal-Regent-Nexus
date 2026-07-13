@@ -132,7 +132,24 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
         )
         assert cross_read_permission["risk_level"] == "high"
         assert cross_cost_permission["risk_level"] == "high"
-        assert all({"module_code", "module_name", "action", "risk_level"} <= item.keys() for item in catalog.json())
+        assert cross_read_permission["requires_global_factory"] is True
+        assert cross_read_permission["applicable_departments"] == ["*"]
+        create_permission = next(item for item in catalog.json() if item["code"] == "molding_sample:create")
+        assert create_permission["applicable_departments"] == ["engineering"]
+        assert "工程部" in create_permission["scope_guidance"]
+        assert all(
+            {
+                "module_code",
+                "module_name",
+                "action",
+                "risk_level",
+                "applicable_departments",
+                "requires_global_factory",
+                "scope_guidance",
+            }
+            <= item.keys()
+            for item in catalog.json()
+        )
 
         scopes = client.get("/api/iam/manageable-scopes")
         assert scopes.status_code == 200
@@ -159,15 +176,260 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
         assert roles.status_code == 200, roles.text
         engineer_role = next(item for item in roles.json() if item["id"] == "engineer")
         group_readonly_role = next(item for item in roles.json() if item["id"] == "group_molding_readonly")
-        assert {"version", "is_protected", "binding_count", "permission_count"} <= engineer_role.keys()
+        observer_role = next(item for item in roles.json() if item["id"] == "molding_production_observer")
+        admin_role = next(item for item in roles.json() if item["id"] == "admin")
+        assert {
+            "version",
+            "is_protected",
+            "binding_count",
+            "permission_count",
+            "applicable_departments",
+            "requires_global_factory",
+            "scope_guidance",
+        } <= engineer_role.keys()
+        assert engineer_role["applicable_departments"] == ["engineering"]
         assert group_readonly_role["name"] == "集团啤办只读"
+        assert group_readonly_role["requires_global_factory"] is True
+        assert observer_role["applicable_departments"] == ["production", "molding"]
+        assert admin_role["requires_global_factory"] is True
+        assert admin_role["applicable_departments"] == ["*"]
         role_access = client.get("/api/iam/roles/engineer/access")
         assert role_access.status_code == 200, role_access.text
         assert role_access.json()["id"] == "engineer"
-        assert "molding_sample:create" in role_access.json()["permission_codes"]
+        assert set(role_access.json()["permission_codes"]) == {
+            "molding_sample:read",
+            "molding_sample:export",
+            "molding_sample:create",
+            "molding_sample:edit_draft",
+            "molding_sample:delete_draft",
+            "molding_sample:notification_read",
+        }
         group_readonly_access = client.get("/api/iam/roles/group_molding_readonly/access")
         assert group_readonly_access.status_code == 200, group_readonly_access.text
         assert group_readonly_access.json()["permission_codes"] == ["molding_sample:cross_factory_read"]
+        observer_access = client.get("/api/iam/roles/molding_production_observer/access")
+        assert observer_access.status_code == 200, observer_access.text
+        assert observer_access.json()["permission_codes"] == ["molding_sample:production_read"]
+        molding_clerk_access = client.get("/api/iam/roles/molding_clerk/access")
+        assert molding_clerk_access.status_code == 200, molding_clerk_access.text
+        assert "molding_sample:edit_draft" not in molding_clerk_access.json()["permission_codes"]
+        assert "molding_sample:delete_draft" not in molding_clerk_access.json()["permission_codes"]
+
+
+def test_user_access_preview_rejects_inapplicable_scope_but_allows_cleanup(monkeypatch):
+    with make_client(monkeypatch) as client:
+        engineer_id = create_user("iam-scope-policy", "engineer", "huaxing", "engineering")
+        login(client, "admin")
+
+        for effect in ("allow", "deny"):
+            invalid_override = client.post(
+                f"/api/iam/users/{engineer_id}/access/preview",
+                json={
+                    "base_revision": 1,
+                    "reason": "验证错范围权限被拒绝",
+                    "overrides": [
+                        {
+                            "permission_code": "molding_sample:production_read",
+                            "effect": effect,
+                            "factory_id": "huaxing",
+                            "department": "engineering",
+                        }
+                    ],
+                },
+            )
+            assert invalid_override.status_code == 400, invalid_override.text
+            assert "当前范围不生效" in invalid_override.json()["detail"]
+
+        invalid_role = client.post(
+            f"/api/iam/users/{engineer_id}/access/preview",
+            json={
+                "base_revision": 1,
+                "reason": "验证错范围角色被拒绝",
+                "role_bindings": [
+                    {
+                        "operation": "add",
+                        "role_id": "molding_production_observer",
+                        "factory_id": "huaxing",
+                        "department": "engineering",
+                    }
+                ],
+            },
+        )
+        assert invalid_role.status_code == 400, invalid_role.text
+        assert "当前范围不生效" in invalid_role.json()["detail"]
+
+        invalid_role_update = client.post(
+            f"/api/iam/users/{engineer_id}/access/preview",
+            json={
+                "base_revision": 1,
+                "reason": "验证更新角色时也拒绝错范围",
+                "role_bindings": [
+                    {
+                        "operation": "update",
+                        "binding_id": f"{engineer_id}:engineer:huaxing:engineering",
+                        "role_id": "molding_production_observer",
+                        "factory_id": "huaxing",
+                        "department": "engineering",
+                    }
+                ],
+            },
+        )
+        assert invalid_role_update.status_code == 400, invalid_role_update.text
+        assert "当前范围不生效" in invalid_role_update.json()["detail"]
+
+        invalid_global_role = client.post(
+            f"/api/iam/users/{engineer_id}/access/preview",
+            json={
+                "base_revision": 1,
+                "reason": "验证跨厂角色必须使用全局范围",
+                "role_bindings": [
+                    {
+                        "operation": "add",
+                        "role_id": "group_molding_readonly",
+                        "factory_id": "huaxing",
+                        "department": "engineering",
+                    }
+                ],
+            },
+        )
+        assert invalid_global_role.status_code == 400, invalid_global_role.text
+        assert "全部厂区 / 全部部门" in invalid_global_role.json()["detail"]
+
+        invalid_admin_role = client.post(
+            f"/api/iam/users/{engineer_id}/access/preview",
+            json={
+                "base_revision": 1,
+                "reason": "验证超级管理员不能绑定到局部范围",
+                "role_bindings": [
+                    {
+                        "operation": "add",
+                        "role_id": "admin",
+                        "factory_id": "huaxing",
+                        "department": "engineering",
+                    }
+                ],
+            },
+        )
+        assert invalid_admin_role.status_code == 400, invalid_admin_role.text
+        assert "全部厂区 / 全部部门" in invalid_admin_role.json()["detail"]
+
+        valid_role = client.post(
+            f"/api/iam/users/{engineer_id}/access/preview",
+            json={
+                "base_revision": 1,
+                "reason": "工程师只读查看本厂生产进度",
+                "role_bindings": [
+                    {
+                        "operation": "add",
+                        "role_id": "molding_production_observer",
+                        "factory_id": "huaxing",
+                        "department": "production",
+                    }
+                ],
+            },
+        )
+        assert valid_role.status_code == 200, valid_role.text
+        assert valid_role.json()["diffs"] == [
+            {
+                "permission_code": "molding_sample:production_read",
+                "factory_id": "huaxing",
+                "department": "production",
+                "before": "none",
+                "after": "allow",
+                "before_source": "default",
+                "after_source": "role",
+                "risk_level": "normal",
+            }
+        ]
+
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            permission = db.query(models.AuthPermission).filter_by(code="molding_sample:production_read").one()
+            now = auth_service.now_text()
+            db.add(
+                models.AuthUserPermissionOverride(
+                    id="legacy-invalid-production-read",
+                    user_id=engineer_id,
+                    permission_id=permission.id,
+                    effect="allow",
+                    factory_id="huaxing",
+                    department="engineering",
+                    status="active",
+                    valid_from="",
+                    valid_until="",
+                    reason="历史错范围授权",
+                    source_type="legacy_import",
+                    source_id="",
+                    created_by_user_id="user-admin",
+                    approved_by_user_id="user-admin",
+                    revoked_by_user_id="",
+                    revoked_at="",
+                    revoke_reason="",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.commit()
+
+        cleanup = client.post(
+            f"/api/iam/users/{engineer_id}/access/preview",
+            json={
+                "base_revision": 1,
+                "reason": "清理历史错范围授权",
+                "overrides": [
+                    {
+                        "permission_code": "molding_sample:production_read",
+                        "effect": "inherit",
+                        "factory_id": "huaxing",
+                        "department": "engineering",
+                    }
+                ],
+            },
+        )
+        assert cleanup.status_code == 200, cleanup.text
+        cleanup_commit = client.post(
+            f"/api/iam/users/{engineer_id}/access/commit",
+            json={"preview_token": cleanup.json()["preview_token"], "confirm_high_risk": False},
+        )
+        assert cleanup_commit.status_code == 200, cleanup_commit.text
+        assert cleanup_commit.json()["authorization_version"] == 2
+
+        with db_module.SessionLocal() as db:
+            db.add(
+                models.AuthUserRole(
+                    id="legacy-invalid-observer-binding",
+                    user_id=engineer_id,
+                    role_id="molding_production_observer",
+                    factory_id="huaxing",
+                    department="engineering",
+                )
+            )
+            db.commit()
+
+        revoke_cleanup = client.post(
+            f"/api/iam/users/{engineer_id}/access/preview",
+            json={
+                "base_revision": 2,
+                "reason": "撤销历史错范围角色",
+                "role_bindings": [
+                    {
+                        "operation": "revoke",
+                        "binding_id": "legacy-invalid-observer-binding",
+                        "factory_id": "huaxing",
+                        "department": "engineering",
+                    }
+                ],
+            },
+        )
+        assert revoke_cleanup.status_code == 200, revoke_cleanup.text
+        revoke_commit = client.post(
+            f"/api/iam/users/{engineer_id}/access/commit",
+            json={"preview_token": revoke_cleanup.json()["preview_token"], "confirm_high_risk": False},
+        )
+        assert revoke_commit.status_code == 200, revoke_commit.text
+        assert revoke_commit.json()["authorization_version"] == 3
 
 
 def test_user_override_preview_commit_is_atomic_and_token_is_one_time(monkeypatch):
@@ -352,6 +614,19 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         engineer_id = create_user("role-template-user", "engineer", "huaxing", "engineering")
         login(client, "admin")
         role_access = client.get("/api/iam/roles/engineer/access").json()
+        invalid_preview = client.post(
+            "/api/iam/roles/engineer/access/preview",
+            json={
+                "base_version": role_access["version"],
+                "reason": "验证不能把生产写权限混入工程师模板",
+                "permission_codes": sorted(
+                    set(role_access["permission_codes"]) | {"molding_sample:production_start"}
+                ),
+            },
+        )
+        assert invalid_preview.status_code == 400
+        assert "范围不相容" in invalid_preview.json()["detail"]
+
         desired_codes = sorted(set(role_access["permission_codes"]) | {"injection_schedule:read"})
 
         preview = client.post(

@@ -152,6 +152,7 @@ def login_as(client, username: str):
 
 TEST_USER_SPECS = {
     "engineer": ("user-engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
+    "engineer_peer": ("user-engineer-peer", "华兴工程同事", "engineer", "huaxing", "engineering"),
     "supervisor": ("user-supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),
     "manager": ("user-manager", "华兴经理", "manager", "huaxing", "management"),
     "warehouse_keeper": (
@@ -749,6 +750,62 @@ def test_manager_keeps_existing_draft_edit_and_delete_permissions(enforce_client
     assert client.delete("/api/injection/BP-MANAGER-DRAFT-WRITE-001").status_code == 204
 
 
+def test_engineer_can_only_edit_and_delete_orders_they_created(enforce_client):
+    client = enforce_client
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-ENGINEER-OWNER-001")
+    payload["order"]["eng_name"] = "华兴工程同事"
+    assert client.post("/api/injection", json=payload).status_code == 201
+
+    login_as(client, "engineer_peer")
+    peer_edit_payload = sample_order_payload("BP-ENGINEER-OWNER-001")
+    peer_edit_payload["order"]["eng_name"] = "华兴工程同事"
+    peer_edit_payload["order"]["product_name"] = "非开单工程师误改"
+    peer_edit_response = client.put(
+        "/api/injection/BP-ENGINEER-OWNER-001",
+        json=peer_edit_payload,
+    )
+    assert peer_edit_response.status_code == 403
+    assert "本人创建" in peer_edit_response.json()["detail"]
+
+    peer_delete_response = client.delete("/api/injection/BP-ENGINEER-OWNER-001")
+    assert peer_delete_response.status_code == 403
+    assert "本人创建" in peer_delete_response.json()["detail"]
+
+    login_as(client, "engineer")
+    owner_edit_payload = sample_order_payload("BP-ENGINEER-OWNER-001")
+    owner_edit_payload["order"]["product_name"] = "开单工程师修正"
+    owner_edit_response = client.put(
+        "/api/injection/BP-ENGINEER-OWNER-001",
+        json=owner_edit_payload,
+    )
+    assert owner_edit_response.status_code == 200
+    assert owner_edit_response.json()["order"]["product_name"] == "开单工程师修正"
+    assert client.delete("/api/injection/BP-ENGINEER-OWNER-001").status_code == 204
+
+
+def test_molding_clerk_cannot_edit_or_delete_engineering_draft(enforce_client):
+    client = enforce_client
+    login_as(client, "engineer")
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-MOLDING-DRAFT-BLOCK-001"),
+    ).status_code == 201
+
+    login_as(client, "molding_clerk")
+    edit_payload = sample_order_payload("BP-MOLDING-DRAFT-BLOCK-001")
+    edit_payload["order"]["product_name"] = "啤机部误改"
+    assert client.put(
+        "/api/injection/BP-MOLDING-DRAFT-BLOCK-001",
+        json=edit_payload,
+    ).status_code == 403
+    assert client.delete("/api/injection/BP-MOLDING-DRAFT-BLOCK-001").status_code == 403
+
+    detail_response = client.get("/api/injection/BP-MOLDING-DRAFT-BLOCK-001")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["order"]["product_name"] == "链条枪"
+
+
 def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowed(enforce_client):
     client = enforce_client
     login_as(client, "admin")
@@ -1201,6 +1258,20 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert supervisor_manager_step_response.status_code == 403
 
     login_as(client, "molding_clerk")
+    waiting_fillback_response = client.patch(
+        "/api/injection/BP-WORKFLOW-001/items",
+        json={
+            "items": [
+                {
+                    "id": "BP-WORKFLOW-001-001",
+                    "production_machine": "待生产机台-01",
+                }
+            ]
+        },
+    )
+    assert waiting_fillback_response.status_code == 200
+    assert waiting_fillback_response.json()["items"][0]["production_machine"] == "待生产机台-01"
+
     start_response = client.patch(
         "/api/injection/BP-WORKFLOW-001/status",
         json={"action": "开始处理"},
@@ -1245,6 +1316,24 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert completed_response.status_code == 200
     assert completed_response.json()["order"]["status"] == "已完成"
     assert completed_response.json()["order"]["completed_date"] == "2026-07-01"
+
+    completed_fillback_response = client.patch(
+        "/api/injection/BP-WORKFLOW-001/items",
+        json={
+            "items": [
+                {
+                    "id": "BP-WORKFLOW-001-001",
+                    "actual_weight_kg": 99,
+                }
+            ]
+        },
+    )
+    assert completed_fillback_response.status_code == 403
+    assert "待生产或生产中" in completed_fillback_response.json()["detail"]
+
+    completed_detail_response = client.get("/api/injection/BP-WORKFLOW-001")
+    assert completed_detail_response.status_code == 200
+    assert completed_detail_response.json()["items"][0]["actual_weight_kg"] == 2
 
 
 def test_engineer_can_withdraw_pending_order_and_resubmit(client):
