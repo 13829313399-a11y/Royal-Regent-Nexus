@@ -70,6 +70,11 @@ describe('SystemUserManagementView source contract', () => {
       '跨厂查看啤办成本',
       'molding_sample:cross_factory_cost_read',
       'group_molding_readonly',
+      'molding_production_observer',
+      'buildApprovalRoleAssignments',
+      '工程师默认组合授权',
+      '外厂隐藏成本',
+      '不包含主管审核、啤机生产写入、仓库出入库、敏感审计或跨厂成本',
       'selectedRequest',
       'route.query.request_id',
       '停用',
@@ -92,5 +97,10 @@ describe('SystemUserManagementView source contract', () => {
     expect(readonlyPreset?.[1]).toContain("'molding_sample:cross_factory_read'")
     expect(readonlyPreset?.[1]).not.toContain('molding_sample:create')
     expect(readonlyPreset?.[1]).not.toContain('molding_sample:cross_factory_cost_read')
+
+    const engineerPreset = source.match(/engineer:\s*\[([\s\S]*?)\],/)
+    expect(engineerPreset?.[1]).toContain("'molding_sample:export'")
+    expect(engineerPreset?.[1]).not.toContain('molding_sample:supervisor_review')
+    expect(engineerPreset?.[1]).not.toContain('molding_sample:production_start')
   })
 })

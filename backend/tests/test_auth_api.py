@@ -73,7 +73,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                 "role_id": "admin",
                 "role_name": "系统管理员",
                 "factory_id": "*",
-                "department": "system",
+                "department": "*",
                 "permissions": sorted(me["permissions"]),
                 "data_scope": "all",
             }

@@ -17,6 +17,9 @@ class PermissionOut(BaseModel):
     scope_type: str
     status: str
     sort_order: int = 0
+    applicable_departments: list[str] = Field(default_factory=list)
+    requires_global_factory: bool = False
+    scope_guidance: str = ""
 
 
 class ManageableScopeOut(BaseModel):
@@ -175,6 +178,9 @@ class RoleSummaryOut(BaseModel):
     is_protected: bool
     binding_count: int
     permission_count: int
+    applicable_departments: list[str] = Field(default_factory=list)
+    requires_global_factory: bool = False
+    scope_guidance: str = ""
 
 
 class RoleAccessOut(BaseModel):
@@ -187,6 +193,9 @@ class RoleAccessOut(BaseModel):
     binding_count: int
     permission_count: int
     permission_codes: list[str]
+    applicable_departments: list[str] = Field(default_factory=list)
+    requires_global_factory: bool = False
+    scope_guidance: str = ""
 
 
 class RoleAccessPreviewRequest(BaseModel):

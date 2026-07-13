@@ -47,7 +47,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'customer_price:read': '查看报价中心',
   'injection_schedule:import': '导入啤机排产',
   'injection_schedule:read': '查看啤机排产',
-  'molding_sample:audit_read': '查看啤办审计记录',
+  'molding_sample:audit_read': '查看啤办敏感操作审计',
   'molding_sample:create': '新建啤办申请',
   'molding_sample:cross_factory_cost_read': '跨厂查看啤办成本',
   'molding_sample:cross_factory_read': '跨厂查看啤办单据',

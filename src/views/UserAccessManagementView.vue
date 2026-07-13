@@ -386,6 +386,8 @@ onMounted(() => {
           :permissions="activePermissions"
           :states="draftStates"
           :resolutions="resolutionByPermission"
+          :factory-id="selectedFactoryId"
+          :department="selectedDepartment"
           :disabled="!manageableScopes.length"
           @change="updatePermissionState"
         />

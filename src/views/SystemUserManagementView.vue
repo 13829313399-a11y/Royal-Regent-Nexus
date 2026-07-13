@@ -29,6 +29,7 @@ import {
 import {
   systemApi,
   type RegistrationRequestResponse,
+  type RoleAssignmentRequest,
   type RoleResponse,
   type SystemNotificationResponse,
   type UserResponse,
@@ -74,6 +75,7 @@ const permissionGroupDefinitions: PermissionGroupDefinition[] = [
     title: '工程 / 啤办',
     permissions: [
       { label: '查看啤办单据', code: 'molding_sample:read' },
+      { label: '导出本厂啤办单', code: 'molding_sample:export' },
       { label: '跨厂查看啤办单据', code: 'molding_sample:cross_factory_read' },
       { label: '跨厂查看啤办成本', code: 'molding_sample:cross_factory_cost_read' },
       { label: '新建啤办申请', code: 'molding_sample:create' },
@@ -134,10 +136,14 @@ const rolePermissionPresets: Record<string, string[]> = {
   ],
   engineer: [
     'molding_sample:read',
+    'molding_sample:export',
     'molding_sample:create',
     'molding_sample:edit_draft',
     'molding_sample:delete_draft',
     'molding_sample:notification_read',
+  ],
+  molding_production_observer: [
+    'molding_sample:production_read',
   ],
   engineering_supervisor: [
     'molding_sample:read',
@@ -339,7 +345,12 @@ function permissionGroupsForSelectedRole(request: RegistrationRequestResponse) {
   const selectedRoleId = getSelectedRoleId(request)
   const role = roles.value.find((candidate) => candidate.id === selectedRoleId)
   const roleKey = role?.code || role?.id || selectedRoleId
-  const permissionCodes = new Set(rolePermissionPresets[roleKey] ?? inferPermissionCodesForRole(role, request))
+  const roleKeys = roleKey === 'engineer'
+    ? ['engineer', 'molding_production_observer', 'group_molding_readonly']
+    : [roleKey]
+  const permissionCodes = new Set(
+    roleKeys.flatMap((key) => rolePermissionPresets[key] ?? inferPermissionCodesForRole(role, request)),
+  )
 
   return permissionGroupDefinitions
     .map((group) => ({
@@ -362,6 +373,58 @@ function getSelectedRoleId(request: RegistrationRequestResponse) {
 
 function setSelectedRoleId(requestId: string, roleId: string) {
   selectedRoles.value = { ...selectedRoles.value, [requestId]: roleId }
+}
+
+function roleIsApplicableToRequest(role: RoleResponse, request: RegistrationRequestResponse) {
+  if (role.requires_global_factory) return false
+  return !role.applicable_departments.length
+    || role.applicable_departments.includes('*')
+    || role.applicable_departments.includes(request.department)
+}
+
+function selectedRoleUsesEngineerBundle(request: RegistrationRequestResponse) {
+  const selectedRoleId = getSelectedRoleId(request)
+  return roles.value.find((role) => role.id === selectedRoleId)?.code === 'engineer'
+}
+
+function engineerBundleSummary(request: RegistrationRequestResponse) {
+  return [
+    `工程师 · ${factoryLabel(request.factory_id)} / ${departmentLabel(request.department)}`,
+    `生产任务观察员 · ${factoryLabel(request.factory_id)} / 生产部（只读）`,
+    '集团啤办只读 · 全部厂区 / 全部部门（外厂隐藏成本）',
+  ]
+}
+
+function buildApprovalRoleAssignments(request: RegistrationRequestResponse): RoleAssignmentRequest[] | null {
+  const selectedRoleId = getSelectedRoleId(request)
+  const selectedRole = roles.value.find((role) => role.id === selectedRoleId)
+  if (!selectedRole) return null
+
+  const assignments: RoleAssignmentRequest[] = [
+    {
+      role_id: selectedRole.id,
+      factory_id: request.factory_id,
+      department: request.department,
+    },
+  ]
+  if (selectedRole.code !== 'engineer') return assignments
+
+  const productionObserver = roles.value.find((role) => role.code === 'molding_production_observer')
+  const groupReadonly = roles.value.find((role) => role.code === 'group_molding_readonly')
+  if (!productionObserver || !groupReadonly) return null
+  assignments.push(
+    {
+      role_id: productionObserver.id,
+      factory_id: request.factory_id,
+      department: 'production',
+    },
+    {
+      role_id: groupReadonly.id,
+      factory_id: '*',
+      department: '*',
+    },
+  )
+  return assignments
 }
 
 function selectRequest(requestId: string) {
@@ -414,13 +477,11 @@ async function approveRequest(request: RegistrationRequestResponse) {
     return
   }
 
-  const role_assignments = [
-    {
-      role_id: roleId,
-      factory_id: request.factory_id,
-      department: request.department,
-    },
-  ]
+  const role_assignments = buildApprovalRoleAssignments(request)
+  if (!role_assignments) {
+    errorMessage.value = '工程师默认组合角色尚未初始化，请刷新页面后重试'
+    return
+  }
 
   actionKey.value = `approve:${request.id}`
   errorMessage.value = ''
@@ -678,13 +739,23 @@ onMounted(() => {
                 type="button"
                 class="role"
                 :class="{ sel: getSelectedRoleId(selectedRequest) === role.id }"
+                :disabled="!roleIsApplicableToRequest(role, selectedRequest)"
+                :title="!roleIsApplicableToRequest(role, selectedRequest) ? role.scope_guidance : role.description"
                 @click="setSelectedRoleId(selectedRequest.id, role.id)"
               >
                 <span v-if="selectedRequest.recommended_role_ids.includes(role.id)" class="reco">推荐</span>
                 <span class="check"><Check class="size-3" aria-hidden="true" /></span>
                 <div class="rname">{{ role.name }}</div>
                 <div class="rdesc">{{ role.description || role.code }}</div>
+                <div v-if="!roleIsApplicableToRequest(role, selectedRequest)" class="role-scope-warning">
+                  当前申请范围不适用
+                </div>
               </button>
+            </div>
+            <div v-if="selectedRoleUsesEngineerBundle(selectedRequest)" class="engineer-bundle-note">
+              <strong>工程师默认组合授权</strong>
+              <span v-for="item in engineerBundleSummary(selectedRequest)" :key="item">{{ item }}</span>
+              <small>不包含主管审核、啤机生产写入、仓库出入库、敏感审计或跨厂成本。</small>
             </div>
           </section>
 
@@ -2803,6 +2874,18 @@ onMounted(() => {
   border-color: var(--teal-200);
 }
 
+.role:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.role-scope-warning {
+  margin-top: 5px;
+  color: #b45309;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
 .role.sel {
   border-color: var(--teal);
   background: var(--teal-50);
@@ -2850,6 +2933,27 @@ onMounted(() => {
 
 .role.sel .check {
   display: grid;
+}
+
+.engineer-bundle-note {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  border: 1px solid #99f6e4;
+  border-radius: 10px;
+  background: #f0fdfa;
+  color: #115e59;
+  padding: 11px 13px;
+  font-size: 11.5px;
+}
+
+.engineer-bundle-note strong {
+  font-size: 12.5px;
+}
+
+.engineer-bundle-note small {
+  margin-top: 2px;
+  color: #64748b;
 }
 
 .perm-groups {

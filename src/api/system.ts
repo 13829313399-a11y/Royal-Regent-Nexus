@@ -39,6 +39,9 @@ export interface RoleResponse {
   code: string
   name: string
   description: string
+  applicable_departments: string[]
+  requires_global_factory: boolean
+  scope_guidance: string
 }
 
 export interface UserRoleAssignmentResponse {

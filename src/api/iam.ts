@@ -6,7 +6,7 @@ export interface IamHttpClient {
 }
 
 export type PermissionRiskLevel = 'normal' | 'high'
-export type PermissionScopeType = 'global' | 'factory' | 'department'
+export type PermissionScopeType = 'global' | 'factory' | 'department' | 'factory_department'
 export type PermissionEffect = 'allow' | 'deny'
 export type PermissionDraftEffect = PermissionEffect | 'inherit'
 
@@ -21,6 +21,9 @@ export interface PermissionCatalogItem {
   scope_type: PermissionScopeType
   status: 'active' | 'inactive'
   sort_order: number
+  applicable_departments: string[]
+  requires_global_factory: boolean
+  scope_guidance: string
 }
 
 export interface ManageableScope {
@@ -162,6 +165,9 @@ export interface RoleSummary {
   is_protected: boolean
   binding_count: number
   permission_count: number
+  applicable_departments: string[]
+  requires_global_factory: boolean
+  scope_guidance: string
 }
 
 export interface RoleAccessResponse extends RoleSummary {
