@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -16,11 +17,13 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
-def make_client(monkeypatch):
+def make_client(monkeypatch, authz_mode: str = "enforce"):
     TEST_TMP_DIR.mkdir(exist_ok=True)
     database_url = f"sqlite:///{TEST_TMP_DIR / f'system_auth_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
+    monkeypatch.setenv("AUTHZ_MODE", authz_mode)
+    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "false")
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -114,6 +117,72 @@ def ensure_test_user(username: str) -> None:
         db.commit()
 
 
+def create_scoped_permission_manager(
+    username: str = "factory-permission-admin",
+    factory_id: str = "huaxing",
+    department: str = "engineering",
+) -> None:
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    now = auth_service.now_text()
+    user_id = f"user-{username}"
+    with db_module.SessionLocal() as db:
+        salt, password_hash = auth_service.make_password_hash("123456")
+        db.add(
+            auth_models.AuthUser(
+                id=user_id,
+                username=username,
+                display_name=f"{factory_id}/{department} 权限管理员",
+                password_salt=salt,
+                password_hash=password_hash,
+                status="active",
+                force_password_change=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        binding_id = f"{user_id}:factory_permission_admin:{factory_id}:{department}"
+        db.add(
+            auth_models.AuthUserRole(
+                id=binding_id,
+                user_id=user_id,
+                role_id="factory_permission_admin",
+                factory_id=factory_id,
+                department=department,
+            )
+        )
+        db.add(
+            auth_models.AuthRoleBindingMetadata(
+                user_role_id=binding_id,
+                state="active",
+                source_type="test",
+                valid_from=now,
+                valid_until="",
+                reason="范围管理测试",
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            auth_models.EmployeeProfile(
+                user_id=user_id,
+                primary_factory_id=factory_id,
+                primary_department=department,
+                position="权限管理员",
+                phone="",
+                email="",
+                confirmation_status="confirmed",
+                source_registration_request_id="",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(auth_models.AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+        db.commit()
+
+
 def test_registration_approval_notification_and_login_flow(monkeypatch):
     with make_client(monkeypatch) as client:
         register_response = client.post("/api/auth/register", json=register_payload())
@@ -138,6 +207,8 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         assert len(notifications) == 1
         assert notifications[0]["type"] == "user_registration"
         assert notifications[0]["target_permission"] == "system:user_manage"
+        assert notifications[0]["target_factory_id"] == "huaxing"
+        assert notifications[0]["target_department"] == "engineering"
         assert notifications[0]["status"] == "unread"
         assert "张三" in notifications[0]["message"]
 
@@ -170,7 +241,165 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         approved_profile = login(client, "zhangsan", "Strong123")
         assert approved_profile["username"] == "zhangsan"
         assert "molding_sample:create" in approved_profile["permissions"]
-        assert approved_profile["factory_scopes"] == ["huaxing"]
+        assert "molding_sample:production_read" in approved_profile["permissions"]
+        assert "molding_sample:cross_factory_read" in approved_profile["permissions"]
+        assert set(approved_profile["factory_scopes"]) == {"*", "huaxing"}
+
+        login(client, "admin")
+        approved_user = next(
+            user
+            for user in client.get("/api/system/users?status=active").json()
+            if user["username"] == "zhangsan"
+        )
+        assert {
+            (role["role_code"], role["factory_id"], role["department"])
+            for role in approved_user["roles"]
+        } == {
+            ("engineer", "huaxing", "engineering"),
+            ("molding_production_observer", "huaxing", "production"),
+            ("group_molding_readonly", "*", "*"),
+        }
+
+
+def test_registration_role_catalog_exposes_scope_guidance_and_rejects_wrong_scope(monkeypatch):
+    with make_client(monkeypatch) as client:
+        assert client.post("/api/auth/register", json=register_payload("wrong-role-scope")).status_code == 200
+        login(client, "admin")
+
+        roles = {role["code"]: role for role in client.get("/api/system/roles").json()}
+        assert roles["engineer"]["applicable_departments"] == ["engineering"]
+        assert roles["engineer"]["requires_global_factory"] is False
+        assert "工程部" in roles["engineer"]["scope_guidance"]
+        assert roles["group_molding_readonly"]["applicable_departments"] == ["*"]
+        assert roles["group_molding_readonly"]["requires_global_factory"] is True
+
+        request_id = next(
+            item["id"]
+            for item in client.get("/api/system/registration-requests?status=pending").json()
+            if item["username"] == "wrong-role-scope"
+        )
+        response = client.post(
+            f"/api/system/registration-requests/{request_id}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "molding_clerk", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "验证错误范围被拒绝",
+            },
+        )
+        assert response.status_code == 400
+        assert "当前范围不生效" in response.json()["detail"]
+        assert client.get("/api/system/registration-requests?status=pending").json()[0]["status"] == "pending"
+
+
+def test_registration_approval_flushes_role_before_binding_metadata(monkeypatch):
+    with make_client(monkeypatch) as client:
+        register_response = client.post(
+            "/api/auth/register",
+            json=register_payload("approval-postgres-fk-order"),
+        )
+        assert register_response.status_code == 200
+
+        login(client, "admin")
+        requests = client.get("/api/system/registration-requests?status=pending").json()
+        request = next(item for item in requests if item["username"] == "approval-postgres-fk-order")
+
+        from sqlalchemy.orm import Session as OrmSession
+
+        original_flush = OrmSession.flush
+        relevant_flushes: list[set[str]] = []
+
+        def recording_flush(self, objects=None):
+            pending_types = {type(item).__name__ for item in self.new}
+            if pending_types & {"AuthUserRole", "AuthRoleBindingMetadata"}:
+                relevant_flushes.append(pending_types)
+            return original_flush(self, objects)
+
+        monkeypatch.setattr(OrmSession, "flush", recording_flush)
+
+        approve_response = client.post(
+            f"/api/system/registration-requests/{request['id']}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "验证 PostgreSQL 外键写入顺序",
+            },
+        )
+
+        assert approve_response.status_code == 200
+        assert relevant_flushes
+        assert "AuthUserRole" in relevant_flushes[0]
+        assert "AuthRoleBindingMetadata" not in relevant_flushes[0]
+        assert any(
+            "AuthRoleBindingMetadata" in pending_types
+            and "AuthUserRole" not in pending_types
+            for pending_types in relevant_flushes[1:]
+        )
+
+
+def test_registration_approval_flush_remains_atomic_on_late_failure(monkeypatch):
+    with make_client(monkeypatch) as client:
+        username = "approval-flush-rollback"
+        register_response = client.post(
+            "/api/auth/register",
+            json=register_payload(username),
+        )
+        assert register_response.status_code == 200
+
+        login(client, "admin")
+        requests = client.get("/api/system/registration-requests?status=pending").json()
+        request = next(item for item in requests if item["username"] == username)
+        request_id = request["id"]
+        user_id = request["user_id"]
+
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            metadata_count_before = db.query(auth_models.AuthRoleBindingMetadata).count()
+            profile = db.get(auth_models.EmployeeProfile, user_id)
+            profile_before = (
+                profile.confirmation_status,
+                profile.source_registration_request_id,
+                profile.updated_at,
+            )
+            revision_before = db.get(auth_models.AuthUserAuthorizationRevision, user_id).revision
+
+        system_service = importlib.import_module("app.services.system")
+
+        def fail_before_commit(*args, **kwargs):
+            raise RuntimeError("injected late approval failure")
+
+        monkeypatch.setattr(system_service, "add_auth_audit", fail_before_commit)
+
+        with pytest.raises(RuntimeError, match="injected late approval failure"):
+            client.post(
+                f"/api/system/registration-requests/{request_id}/approve",
+                json={
+                    "role_assignments": [
+                        {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
+                    ],
+                    "review_comment": "验证审批事务整体回滚",
+                },
+            )
+
+        with db_module.SessionLocal() as db:
+            registration = db.get(auth_models.AuthRegistrationRequest, request_id)
+            user = db.get(auth_models.AuthUser, user_id)
+
+            assert registration.status == "pending"
+            assert registration.reviewed_at == ""
+            assert user.status == "pending"
+            assert db.query(auth_models.AuthUserRole).filter_by(user_id=user_id).count() == 0
+            assert db.query(auth_models.AuthRoleBindingMetadata).count() == metadata_count_before
+            assert db.query(auth_models.AuthAuthorizationEvent).filter_by(target_user_id=user_id).count() == 0
+            profile = db.get(auth_models.EmployeeProfile, user_id)
+            assert (
+                profile.confirmation_status,
+                profile.source_registration_request_id,
+                profile.updated_at,
+            ) == profile_before
+            assert db.get(auth_models.AuthUserAuthorizationRevision, user_id).revision == revision_before
 
 
 def test_sales_business_supervisor_registration_recommends_quote_supervisor_role(monkeypatch):
@@ -317,7 +546,77 @@ def test_reject_suspend_restore_and_last_admin_guard(monkeypatch):
             json={"status": "suspended"},
         )
         assert last_admin_response.status_code == 400
-        assert last_admin_response.json()["detail"] == "不能停用最后一个系统管理员"
+        assert last_admin_response.json()["detail"] == "不能停用最后一个集团超级管理员"
+
+
+def test_scoped_manager_cannot_bypass_iam_with_registration_approval(monkeypatch):
+    with make_client(monkeypatch) as client:
+        huaxing = register_payload("scope-huaxing")
+        huadeng = register_payload("scope-huadeng")
+        huadeng["factory_id"] = "huadeng"
+        high_risk = register_payload("scope-high-risk")
+        assert client.post("/api/auth/register", json=huaxing).status_code == 200
+        assert client.post("/api/auth/register", json=huadeng).status_code == 200
+        assert client.post("/api/auth/register", json=high_risk).status_code == 200
+
+        create_scoped_permission_manager()
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            db.add(auth_models.AuthRole(id="basic_reader", code="basic_reader", name="基础查看", description="普通权限测试"))
+            read_permission = db.query(auth_models.AuthPermission).filter_by(code="molding_sample:read").one()
+            db.add(
+                auth_models.AuthRolePermission(
+                    id=f"basic_reader:{read_permission.id}",
+                    role_id="basic_reader",
+                    permission_id=read_permission.id,
+                )
+            )
+            db.commit()
+        login(client, "factory-permission-admin")
+
+        visible = client.get("/api/system/registration-requests?status=pending")
+        assert visible.status_code == 200
+        visible_by_username = {item["username"]: item for item in visible.json()}
+        assert set(visible_by_username) == {"scope-huaxing", "scope-high-risk"}
+
+        approved = client.post(
+            f"/api/system/registration-requests/{visible_by_username['scope-huaxing']['id']}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "basic_reader", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "本厂工程岗位资料核对完成",
+            },
+        )
+        assert approved.status_code == 200, approved.text
+
+        high_risk_response = client.post(
+            f"/api/system/registration-requests/{visible_by_username['scope-high-risk']['id']}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "admin", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "尝试直接授予管理员",
+            },
+        )
+        assert high_risk_response.status_code == 403
+        assert "权限申请" in high_risk_response.json()["detail"]
+
+        with db_module.SessionLocal() as db:
+            remote_request = db.query(auth_models.AuthRegistrationRequest).filter_by(username="scope-huadeng").one()
+            remote_request_id = remote_request.id
+
+        cross_scope_response = client.post(
+            f"/api/system/registration-requests/{remote_request_id}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "engineer", "factory_id": "huadeng", "department": "engineering"}
+                ],
+                "review_comment": "尝试跨厂审批",
+            },
+        )
+        assert cross_scope_response.status_code == 403
 
 
 def test_rejected_registration_can_be_resubmitted_with_same_username(monkeypatch):
@@ -388,6 +687,221 @@ def test_system_notification_access_is_limited_to_targeted_accounts(monkeypatch)
             json={"status": "handled"},
         )
         assert update_response.status_code == 403
+
+
+def test_registration_notifications_are_isolated_by_factory_and_department(monkeypatch):
+    with make_client(monkeypatch) as client:
+        huaxing_engineering = register_payload("registration-hx-engineering")
+        huaxing_production = register_payload("registration-hx-production")
+        huaxing_production["department"] = "production"
+        huaxing_production["position"] = "生产文员"
+        huadeng_engineering = register_payload("registration-hd-engineering")
+        huadeng_engineering["factory_id"] = "huadeng"
+
+        assert client.post("/api/auth/register", json=huaxing_engineering).status_code == 200
+        assert client.post("/api/auth/register", json=huaxing_production).status_code == 200
+        assert client.post("/api/auth/register", json=huadeng_engineering).status_code == 200
+
+        login(client, "admin")
+        notifications = {
+            item["payload"]["registration_request_id"]: item
+            for item in client.get("/api/system/notifications").json()
+            if item["type"] == "user_registration"
+        }
+        requests = {
+            item["username"]: item
+            for item in client.get("/api/system/registration-requests?status=pending").json()
+        }
+        engineering_notification = notifications[requests["registration-hx-engineering"]["id"]]
+        production_notification = notifications[requests["registration-hx-production"]["id"]]
+        huadeng_notification = notifications[requests["registration-hd-engineering"]["id"]]
+        assert engineering_notification["target_department"] == "engineering"
+        assert production_notification["target_department"] == "production"
+        assert huadeng_notification["target_factory_id"] == "huadeng"
+        logout(client)
+
+        create_scoped_permission_manager("notification-hx-engineering", "huaxing", "engineering")
+        create_scoped_permission_manager("notification-hx-production", "huaxing", "production")
+        create_scoped_permission_manager("notification-hd-engineering", "huadeng", "engineering")
+
+        login(client, "notification-hx-engineering")
+        visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
+        assert engineering_notification["id"] in visible_ids
+        assert production_notification["id"] not in visible_ids
+        assert huadeng_notification["id"] not in visible_ids
+        assert client.patch(
+            f"/api/system/notifications/{production_notification['id']}",
+            json={"status": "read"},
+        ).status_code == 403
+        assert client.patch(
+            f"/api/system/notifications/{huadeng_notification['id']}",
+            json={"status": "handled"},
+        ).status_code == 403
+
+
+def test_notification_department_scope_is_observational_in_shadow_and_enforced_only_in_enforce(
+    monkeypatch,
+    caplog,
+):
+    with make_client(monkeypatch, authz_mode="shadow") as client:
+        payload = register_payload("shadow-production-registration")
+        payload["department"] = "production"
+        payload["position"] = "生产文员"
+        assert client.post("/api/auth/register", json=payload).status_code == 200
+
+        login(client, "admin")
+        notification = next(
+            item
+            for item in client.get("/api/system/notifications").json()
+            if item["type"] == "user_registration"
+        )
+        logout(client)
+
+        create_scoped_permission_manager("shadow-hx-engineering", "huaxing", "engineering")
+        login(client, "shadow-hx-engineering")
+        with caplog.at_level("WARNING", logger="app.services.system"):
+            visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
+        assert notification["id"] in visible_ids
+        assert any(
+            "authz shadow mismatch" in record.message
+            and f"notification={notification['id']}" in record.message
+            for record in caplog.records
+        )
+
+    with make_client(monkeypatch, authz_mode="legacy") as client:
+        payload = register_payload("legacy-production-registration")
+        payload["department"] = "production"
+        payload["position"] = "生产文员"
+        assert client.post("/api/auth/register", json=payload).status_code == 200
+
+        login(client, "admin")
+        notification = next(
+            item
+            for item in client.get("/api/system/notifications").json()
+            if item["type"] == "user_registration"
+        )
+        logout(client)
+
+        create_scoped_permission_manager("legacy-hx-engineering", "huaxing", "engineering")
+        login(client, "legacy-hx-engineering")
+        visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
+        assert notification["id"] in visible_ids
+
+
+def test_password_reset_notifications_follow_profile_scope_and_unmatched_are_superadmin_only(monkeypatch):
+    with make_client(monkeypatch) as client:
+        ensure_test_user("engineer")
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            now = auth_service.now_text()
+            profile = db.get(auth_models.EmployeeProfile, "user-engineer")
+            if profile is None:
+                db.add(
+                    auth_models.EmployeeProfile(
+                        user_id="user-engineer",
+                        primary_factory_id="huaxing",
+                        primary_department="engineering",
+                        position="工程师",
+                        phone="",
+                        email="",
+                        confirmation_status="confirmed",
+                        source_registration_request_id="",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                profile.primary_factory_id = "huaxing"
+                profile.primary_department = "engineering"
+                profile.updated_at = now
+            db.commit()
+
+        assert client.post(
+            "/api/auth/password-reset-requests",
+            json={
+                "username": "engineer",
+                "display_name": "华兴工程师",
+                "contact": "13800000000",
+                "note": "忘记密码",
+            },
+        ).status_code == 200
+        assert client.post(
+            "/api/auth/password-reset-requests",
+            json={
+                "username": "unknown-reset-user",
+                "display_name": "未知账号",
+                "contact": "13900000000",
+                "note": "账号无法匹配",
+            },
+        ).status_code == 200
+
+        login(client, "admin")
+        reset_notifications = [
+            item
+            for item in client.get("/api/system/notifications").json()
+            if item["type"] == "password_reset"
+        ]
+        matched_notification = next(
+            item for item in reset_notifications if item["payload"]["username"] == "engineer"
+        )
+        unmatched_notification = next(
+            item for item in reset_notifications if item["payload"]["username"] == "unknown-reset-user"
+        )
+        assert matched_notification["target_factory_id"] == "huaxing"
+        assert matched_notification["target_department"] == "engineering"
+        assert unmatched_notification["target_factory_id"] == "*"
+        assert unmatched_notification["target_department"] == "system"
+        logout(client)
+
+        create_scoped_permission_manager("reset-hx-engineering", "huaxing", "engineering")
+        create_scoped_permission_manager("reset-hx-production", "huaxing", "production")
+
+        login(client, "reset-hx-engineering")
+        visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
+        assert matched_notification["id"] in visible_ids
+        assert unmatched_notification["id"] not in visible_ids
+        logout(client)
+
+        login(client, "reset-hx-production")
+        visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
+        assert matched_notification["id"] not in visible_ids
+        assert unmatched_notification["id"] not in visible_ids
+        assert client.patch(
+            f"/api/system/notifications/{matched_notification['id']}",
+            json={"status": "read"},
+        ).status_code == 403
+        assert client.patch(
+            f"/api/system/notifications/{unmatched_notification['id']}",
+            json={"status": "handled"},
+        ).status_code == 403
+
+
+def test_unmatched_password_reset_keeps_legacy_visibility_until_enforce(monkeypatch):
+    with make_client(monkeypatch, authz_mode="legacy") as client:
+        assert client.post(
+            "/api/auth/password-reset-requests",
+            json={
+                "username": "unknown-legacy-reset-user",
+                "display_name": "历史未知账号",
+                "contact": "13900000001",
+                "note": "验证灰度兼容",
+            },
+        ).status_code == 200
+
+        login(client, "admin")
+        notification = next(
+            item
+            for item in client.get("/api/system/notifications").json()
+            if item["type"] == "password_reset"
+        )
+        logout(client)
+
+        create_scoped_permission_manager("legacy-reset-manager", "huaxing", "engineering")
+        login(client, "legacy-reset-manager")
+        visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
+        assert notification["id"] in visible_ids
 
 
 def test_admin_can_reset_user_password_from_password_reset_notification(monkeypatch):

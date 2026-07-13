@@ -6,19 +6,24 @@ defineProps<{
 </script>
 
 <template>
-  <section class="rounded-lg border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
-    <div v-if="title || subtitle || $slots.action" class="flex items-start justify-between gap-4 px-6 pt-6">
-      <div>
-        <h2 v-if="title" class="text-lg font-semibold tracking-tight text-slate-950">
+  <section class="enterprise-panel rounded-xl">
+    <div
+      v-if="title || subtitle || $slots.action"
+      class="flex flex-col gap-3 border-b border-slate-100/90 px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6 sm:py-5"
+    >
+      <div class="min-w-0">
+        <h2 v-if="title" class="text-[17px] font-semibold tracking-[-0.02em] text-slate-950">
           {{ title }}
         </h2>
-        <p v-if="subtitle" class="mt-1 text-sm text-slate-500">
+        <p v-if="subtitle" class="mt-1.5 text-sm leading-5 text-slate-500">
           {{ subtitle }}
         </p>
       </div>
-      <slot name="action" />
+      <div v-if="$slots.action" class="shrink-0">
+        <slot name="action" />
+      </div>
     </div>
-    <div class="p-6" :class="title || subtitle || $slots.action ? 'pt-5' : ''">
+    <div class="p-4 sm:p-6" :class="title || subtitle || $slots.action ? 'pt-5 sm:pt-5' : ''">
       <slot />
     </div>
   </section>

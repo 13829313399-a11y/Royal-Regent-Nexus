@@ -8,11 +8,17 @@ export interface ApiErrorPayload {
 }
 
 export type UnauthorizedHandler = (error: AxiosError<ApiErrorPayload>) => void
+export type ForbiddenHandler = (error: AxiosError<ApiErrorPayload>) => void
 
 let unauthorizedHandler: UnauthorizedHandler | null = null
+let forbiddenHandler: ForbiddenHandler | null = null
 
 export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
   unauthorizedHandler = handler
+}
+
+export function setForbiddenHandler(handler: ForbiddenHandler | null) {
+  forbiddenHandler = handler
 }
 
 export const http: AxiosInstance = axios.create({
@@ -29,6 +35,9 @@ http.interceptors.response.use(
   (error: AxiosError<ApiErrorPayload>) => {
     if (error.response?.status === 401) {
       unauthorizedHandler?.(error)
+    }
+    if (error.response?.status === 403) {
+      forbiddenHandler?.(error)
     }
 
     return Promise.reject(error)

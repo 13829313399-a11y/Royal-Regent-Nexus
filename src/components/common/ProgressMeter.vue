@@ -14,12 +14,12 @@ const props = withDefaults(defineProps<{
 const width = computed(() => `${Math.max(0, Math.min(100, props.value))}%`)
 
 const toneClasses: Record<Tone, string> = {
-  teal: 'bg-teal-700',
-  blue: 'bg-blue-600',
-  amber: 'bg-amber-600',
-  red: 'bg-red-700',
-  slate: 'bg-slate-600',
-  green: 'bg-emerald-700',
+  teal: 'bg-gradient-to-r from-teal-700 to-teal-500',
+  blue: 'bg-gradient-to-r from-blue-700 to-blue-500',
+  amber: 'bg-gradient-to-r from-amber-600 to-amber-400',
+  red: 'bg-gradient-to-r from-red-700 to-red-500',
+  slate: 'bg-gradient-to-r from-slate-700 to-slate-500',
+  green: 'bg-gradient-to-r from-emerald-700 to-emerald-500',
 }
 </script>
 
@@ -29,8 +29,19 @@ const toneClasses: Record<Tone, string> = {
       <span>{{ label }}</span>
       <span>{{ value }}%</span>
     </div>
-    <div class="h-2 overflow-hidden rounded-full bg-slate-200">
-      <div class="h-full rounded-full transition-all" :class="toneClasses[tone]" :style="{ width }" />
+    <div
+      class="h-1.5 overflow-hidden rounded-full bg-slate-100 ring-1 ring-inset ring-slate-200/70"
+      role="progressbar"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="Math.max(0, Math.min(100, value))"
+      :aria-label="label || '进度'"
+    >
+      <div
+        class="h-full rounded-full shadow-[0_0_8px_rgba(13,148,136,0.15)] transition-[width] duration-500 ease-out"
+        :class="toneClasses[tone]"
+        :style="{ width }"
+      />
     </div>
   </div>
 </template>

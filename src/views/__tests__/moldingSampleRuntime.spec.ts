@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
 import { nextTick } from 'vue'
 import { moldingSampleApi } from '@/api/moldingSample'
+import type { AuthEffectiveAccess, AuthzMode } from '@/api/auth'
 import type {
   MoldingSampleCreateRequest,
   MoldingSampleDetailResponse,
@@ -86,19 +87,33 @@ async function mountRuntimeView(
     permissions?: string[]
     factoryScopes?: string[]
     displayName?: string
+    department?: string
+    authzMode?: AuthzMode
+    effectiveAccess?: AuthEffectiveAccess[]
+    grantPermissions?: string[]
+    primaryFactoryId?: string
   } = {},
 ) {
   const pinia = createPinia()
   setActivePinia(pinia)
 
   const permissions = options.permissions ?? [
+    'molding_sample:read',
+    'molding_sample:export',
     'molding_sample:create',
     'molding_sample:edit_draft',
     'molding_sample:delete_draft',
     'molding_sample:supervisor_review',
     'molding_sample:manager_review',
+    'molding_sample:production_read',
+    'molding_sample:production_start',
+    'molding_sample:production_fillback',
+    'molding_sample:production_complete',
+    'molding_sample:notification_read',
     'system:user_manage',
   ]
+  const factoryScopes = options.factoryScopes ?? ['*']
+  const administrator = (options.roles ?? ['系统管理员']).includes('系统管理员')
 
   useAuthStore().applySession({
     id: 'tester',
@@ -106,9 +121,27 @@ async function mountRuntimeView(
     display_name: options.displayName ?? '测试账号',
     roles: options.roles ?? ['系统管理员'],
     permissions,
-    grants: [],
-    factory_scopes: options.factoryScopes ?? ['*'],
+    grants: [{
+      role_id: administrator ? 'admin' : 'test-role',
+      role_code: administrator ? 'admin' : 'test-role',
+      role_name: administrator ? '系统管理员' : '测试角色',
+      factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
+      department: administrator ? 'system' : options.department ?? '*',
+      permissions: options.grantPermissions ?? permissions,
+      data_scope: administrator ? 'all' : 'department',
+    }],
+    factory_scopes: factoryScopes,
     department_scopes: ['*'],
+    authz_mode: options.authzMode,
+    profile: options.primaryFactoryId
+      ? {
+          primary_factory_id: options.primaryFactoryId,
+          primary_department: options.department ?? 'engineering',
+          position: '测试岗位',
+          confirmation_status: 'confirmed',
+        }
+      : undefined,
+    effective_access: options.effectiveAccess,
     force_password_change: false,
   })
 
@@ -183,6 +216,59 @@ function createMoldingSampleRecord(
   }
 }
 
+function createKpiRecord(
+  status: MoldingSampleStatus,
+  id: string,
+  actualWeightKg: number | null,
+  problemStatuses: Array<'待处理' | '已解决'> = [],
+  sendTo: '' | '发至模厂' = '',
+): MoldingSampleDetailResponse {
+  const record = createMoldingSampleRecord(status, id)
+  record.order.send_to = sendTo
+  record.items = [{
+    id: `${id}-ITEM-1`,
+    order_id: id,
+    sort_order: 1,
+    mold_id: 'M-001',
+    mold_name: '测试模具',
+    mold_dimensions: '',
+    mold_presence_status: 'unknown',
+    machine_type: '160T',
+    production_machine: '',
+    material: 'HIPS 425',
+    color: '黑色',
+    pigment_no: '',
+    quantity: '1',
+    shoot_qty: 30,
+    gross_weight_g: 82,
+    required_material_kg: 2.46,
+    mold_return_time: '',
+    completion_time: '',
+    notes: '',
+    receipt_no: '',
+    collected_weight_kg: null,
+    actual_weight_kg: actualWeightKg,
+    actual_amount_hkd: null,
+    injection_cost: null,
+    injection_cost_hkd: null,
+    exchange_rate_at_save: null,
+  }]
+  record.problems = problemStatuses.map((problemStatus, index) => ({
+    id: `${id}-PROBLEM-${index + 1}`,
+    factory_id: 'huaxing',
+    order_type: 'injection',
+    order_id: id,
+    order_number: record.order.order_number,
+    description: `测试问题 ${index + 1}`,
+    reported_by: '啤机部',
+    status: problemStatus,
+    created_at: '2026-07-11 08:00',
+    resolved_at: problemStatus === '已解决' ? '2026-07-11 09:00' : '',
+  }))
+
+  return record
+}
+
 function createProductionTaskNotification(
   orderId: string,
   sequence = 1,
@@ -218,7 +304,7 @@ describe('molding sample runtime error handling', () => {
     mockedMoldingSampleApi.listOrders.mockResolvedValue([])
     mockedMoldingSampleApi.listNotifications.mockResolvedValue([])
     mockedMoldingSampleApi.getMaterialPrices.mockResolvedValue({
-      prices: [],
+      prices: [{ material: 'ABS 750NSW', unit_price: 4.85 }],
       rmb_to_hkd_rate: 1.08,
     })
   })
@@ -241,6 +327,20 @@ describe('molding sample runtime error handling', () => {
     expect(text).not.toContain('Prime Kids')
   })
 
+  it('keeps order reading usable when protected material prices are forbidden', async () => {
+    const record = createKpiRecord('待审核', 'BP-PRICE-FORBIDDEN-001', null)
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+    mockedMoldingSampleApi.getMaterialPrices.mockRejectedValueOnce(createRuntimeError(403))
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(mockedMoldingSampleApi.getMaterialPrices).toHaveBeenCalledWith('huaxing')
+    expect(wrapper.text()).toContain('BP-PRICE-FORBIDDEN-001')
+    expect(wrapper.text()).not.toContain('正式数据读取失败')
+
+    wrapper.unmount()
+  })
+
   it('loads only the active factory orders and reports an empty factory accurately', async () => {
     routeState.query = { factory: 'huadeng' }
     mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
@@ -251,6 +351,37 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).toContain('华登暂无正式啤办单')
     expect(wrapper.text()).toContain('当前厂区单据')
     expect(wrapper.text()).toContain('华登 · 按状态分列')
+
+    wrapper.unmount()
+  })
+
+  it('separates returned orders, unresolved problems, and missing production data', async () => {
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([
+      createKpiRecord('已驳回', 'BP-KPI-REJECTED', null),
+      createKpiRecord('已撤回', 'BP-KPI-WITHDRAWN', null, ['已解决']),
+      createKpiRecord('生产中', 'BP-KPI-PROD-MISSING', null, ['待处理', '待处理']),
+      createKpiRecord('生产中', 'BP-KPI-PROD-COMPLETE', 1.2, ['已解决']),
+      createKpiRecord('待生产', 'BP-KPI-PENDING-PROD', null),
+      createKpiRecord('待审核', 'BP-KPI-PENDING-REVIEW', null),
+      createKpiRecord('生产中', 'BP-KPI-EXTERNAL', null, [], '发至模厂'),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(wrapper.get('[data-testid="molding-kpi-grid"]').findAll('article')).toHaveLength(7)
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn-value"]').text()).toBe('2')
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn"]').text()).toContain('已驳回 1 · 已撤回 1')
+    expect(wrapper.get('[data-testid="molding-kpi-unresolved-problems-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
+    expect(wrapper.text()).not.toContain('卡点 / 退回')
+
+    await wrapper.get('input[placeholder="搜索单号 / 产品 / 客户 / 模具号..."]').setValue('BP-KPI-PROD-MISSING')
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="molding-kpi-factory-orders-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn-value"]').text()).toBe('0')
+    expect(wrapper.get('[data-testid="molding-kpi-unresolved-problems-value"]').text()).toBe('1')
+    expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
 
     wrapper.unmount()
   })
@@ -298,17 +429,14 @@ describe('molding sample runtime error handling', () => {
 
     expect(wrapper.text()).toContain('BP-READONLY-HD-001')
     expect(wrapper.text()).toContain('当前厂区为只读，仅可查看数据')
-    expect(getButtonByText(wrapper, '工程部 · 新建开单').attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').some((button) => button.text().includes('工程部 · 新建开单'))).toBe(false)
 
     await getButtonByText(wrapper, 'BP-READONLY-HD-001').trigger('click')
     await nextTick()
 
-    expect(getButtonByText(wrapper, '撤回审核').attributes('disabled')).toBeDefined()
-    expect(getButtonByExactText(wrapper, '通过').attributes('disabled')).toBeDefined()
-    expect(getButtonByExactText(wrapper, '驳回').attributes('disabled')).toBeDefined()
-
-    await getButtonByExactText(wrapper, '通过').trigger('click')
-    await flushPromises()
+    expect(wrapper.findAll('button').some((button) => button.text().includes('撤回审核'))).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text().trim() === '通过')).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text().trim() === '驳回')).toBe(false)
 
     expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
 
@@ -401,11 +529,13 @@ describe('molding sample runtime error handling', () => {
     expect(printPreview).toContain('BP-PRINT-002')
     expect(printArea).toContain('BP-PRINT-001')
     expect(printArea).toContain('打印模具A')
-    expect(printArea).toContain('啤机确认机台')
-    expect(printArea).toContain('啤办机台-08')
+    expect(printArea).not.toContain('啤机确认机台')
+    expect(printArea).not.toContain('啤办机台-08')
     expect(printArea).toContain('ABS 750NSW')
     expect(printArea).toContain('500 × 400 × 300 mm')
-    expect(printArea).toContain('适配机型：160T')
+    expect(printArea).not.toContain('适配机型')
+    expect(printArea).not.toContain('160T')
+    expect(printArea).not.toContain('11.00 g')
     expect(printArea).toContain('模具是否在厂：在厂')
     expect(printArea).toContain('模具回厂时间：2026-07-10')
     expect(printArea).not.toContain('REC-001')
@@ -413,8 +543,8 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).toContain('预计料费')
     expect(printArea).toContain('HKD 16.04')
     expect(printArea).toContain('HKD 8.50')
-    expect(printArea).toContain('RMB 120.00')
-    expect(printArea).toContain('1.08')
+    expect(printArea).not.toContain('RMB 120.00')
+    expect(printArea).not.toContain('HKD 111.11')
     expect(printArea).toContain('BP-PRINT-002')
     expect(printArea).toContain('Royal Regent Nexus')
     expect(printArea).toContain('工程啤办通知单')
@@ -453,17 +583,9 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.createProblem).not.toHaveBeenCalled()
   })
 
-  it('keeps out-of-scope production tasks readable while disabling production writes', async () => {
+  it('does not load another factory production queue from flat legacy permissions', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huadeng', order_id: 'BP-PROD-READONLY-HD-001' }
-    const huadengTask = createMoldingSampleRecord('待生产', 'BP-PROD-READONLY-HD-001')
-    huadengTask.order.factory_id = 'huadeng'
-    const huadengNotification = createProductionTaskNotification(huadengTask.order.id)
-    huadengNotification.factory_id = 'huadeng'
-
-    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([huadengTask])
-    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([huadengNotification])
-
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
       roles: ['啤机部文员'],
       permissions: [
@@ -477,13 +599,10 @@ describe('molding sample runtime error handling', () => {
       displayName: '华兴啤机部文员',
     })
 
-    expect(wrapper.text()).toContain('BP-PROD-READONLY-HD-001')
-    expect(wrapper.text()).toContain('当前厂区为只读，仅可查看数据')
-    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
-
-    await getButtonByText(wrapper, '开始生产').trigger('click')
-    await flushPromises()
-
+    expect(wrapper.text()).not.toContain('BP-PROD-READONLY-HD-001')
+    expect(wrapper.text()).toContain('没有该厂区的啤办生产任务查看权限')
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
 
     wrapper.unmount()
@@ -524,6 +643,52 @@ describe('molding sample runtime error handling', () => {
 
     expect(queue().text()).toContain('BP-PROD-010')
     expect(queue().text()).not.toContain('BP-PROD-011')
+
+    wrapper.unmount()
+  })
+
+  it('opens and confirms a production-task print preview without file or machine fields', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-PRINT-001' }
+    const record = {
+      ...createMoldingSampleRecord('待生产', 'BP-PROD-PRINT-001'),
+      order: {
+        ...createMoldingSampleRecord('待生产', 'BP-PROD-PRINT-001').order,
+        doc_number: 'W-G026-00',
+        product_name: '30寸黑武士',
+      },
+      items: [{
+        ...createMoldingSampleRecord('待生产', 'BP-PROD-PRINT-001').items[0],
+        production_machine: '啤办机台-08',
+        material: 'PP (AV161)',
+        actual_weight_kg: 14.2,
+      }],
+    } satisfies MoldingSampleDetailResponse
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(record.order.id),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    await getButtonByExactText(wrapper, '打印任务单').trigger('click')
+    await nextTick()
+
+    const preview = wrapper.get('[data-testid="molding-sample-task-print-preview"]').text()
+    const printArea = wrapper.get('[data-testid="molding-sample-task-print-area"]').text()
+    expect(printSpy).not.toHaveBeenCalled()
+    expect(preview).toContain('BP-PROD-PRINT-001')
+    expect(printArea).toContain('PP (AV161)')
+    expect(printArea).toContain('14.20 kg')
+    expect(preview).not.toContain('文件编号')
+    expect(preview).not.toContain('W-G026-00')
+    expect(preview).not.toContain('啤机确认机台')
+    expect(preview).not.toContain('啤办机台-08')
+
+    await getButtonByExactText(wrapper, '确认打印').trigger('click')
+    expect(printSpy).toHaveBeenCalledTimes(1)
 
     wrapper.unmount()
   })
@@ -592,21 +757,21 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('完整单据数据')
     expect(text).toContain('产品编号')
     expect(text).toContain('P50002008')
-    expect(text).toContain('文件编号')
-    expect(text).toContain('W-G026-00')
-    expect(text).toContain('整啤毛重(g)')
-    expect(text).toContain('82.00 g')
+    expect(text).not.toContain('文件编号')
+    expect(text).not.toContain('W-G026-00')
+    expect(text).not.toContain('整啤毛重(g)')
+    expect(text).not.toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
     expect(text).not.toContain('160T')
     expect(text).not.toContain('RC-20260203-01')
-    expect(text).toContain('啤机确认机台')
-    expect(text).toContain('啤办机台-08')
+    expect(text).not.toContain('啤机确认机台')
+    expect(text).not.toContain('啤办机台-08')
     expect(text).toContain('啤机回填前核对完整资料。')
 
     wrapper.unmount()
   })
 
-  it('saves the production machine from the production fillback page', async () => {
+  it('saves actual material from the production fillback page without a production-machine field', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-MACHINE-001' }
     const runningRecord = {
@@ -648,7 +813,6 @@ describe('molding sample runtime error handling', () => {
         {
           ...runningRecord.items[0],
           actual_weight_kg: 14.2,
-          production_machine: '啤办机台-08',
         },
       ],
     } satisfies MoldingSampleDetailResponse
@@ -663,7 +827,7 @@ describe('molding sample runtime error handling', () => {
 
     await wrapper.get('input[aria-label="实际用料"]').setValue('14.2')
     expect(wrapper.find('input[aria-label="啤办费"]').exists()).toBe(false)
-    await wrapper.get('input[aria-label="啤机确认机台"]').setValue('啤办机台-08')
+    expect(wrapper.find('input[aria-label="啤机确认机台"]').exists()).toBe(false)
     await getButtonByText(wrapper, '保存回填').trigger('click')
     await flushPromises()
     await nextTick()
@@ -673,16 +837,13 @@ describe('molding sample runtime error handling', () => {
         {
           id: 'BP-PROD-MACHINE-001-001',
           actual_weight_kg: 14.2,
-          production_machine: '啤办机台-08',
         },
       ],
     })
-    expect(wrapper.text()).toContain('啤机确认机台')
+    expect(wrapper.text()).not.toContain('啤机确认机台')
     expect(wrapper.text()).toContain('实际料费(HKD)')
     expect(wrapper.text()).not.toContain('啤办费(RMB)')
     expect(wrapper.text()).not.toContain('啤办费(HKD)')
-    expect((wrapper.get('input[aria-label="啤机确认机台"]').element as HTMLInputElement).value).toBe('啤办机台-08')
-
     wrapper.unmount()
   })
 
@@ -953,6 +1114,15 @@ describe('molding sample runtime error handling', () => {
     await getButtonByText(wrapper, 'BP-DETAIL-FULL-001').trigger('click')
     await nextTick()
 
+    const detailTable = wrapper.get('[data-testid="molding-sample-detail-table"]')
+    expect(detailTable.text()).toContain('工模尺寸')
+    expect(detailTable.text()).toContain('650 × 450 × 380 mm')
+    expect(detailTable.text()).not.toContain('适配机型')
+    expect(detailTable.text()).not.toContain('160T')
+    expect(detailTable.text()).toContain('模具在厂')
+    expect(detailTable.text()).toContain('在厂')
+    expect(detailTable.text()).toContain('回厂时间')
+    expect(detailTable.text()).toContain('2026-02-03')
     expect(wrapper.text()).not.toContain('完整单据数据')
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
@@ -964,74 +1134,360 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('完整单据数据')
     expect(text).toContain('产品编号')
     expect(text).toContain('P50002008')
-    expect(text).toContain('文件编号')
-    expect(text).toContain('W-G026-00')
-    expect(text).toContain('整啤毛重(g)')
-    expect(text).toContain('82.00 g')
+    expect(text).not.toContain('文件编号')
+    expect(text).not.toContain('W-G026-00')
+    expect(text).not.toContain('整啤毛重(g)')
+    expect(text).not.toContain('82.00 g')
     expect(text).toContain('PMS 黑色')
     expect(text).toContain('650 × 450 × 380 mm')
-    expect(text).toContain('160T')
+    expect(text).not.toContain('160T')
     expect(text).toContain('在厂')
     expect(text).not.toContain('RC-20260203-01')
     expect(text).toContain('实际料费(HKD)')
-    expect(text).toContain('啤机确认机台')
-    expect(text).toContain('啤办机台-08')
+    expect(text).not.toContain('啤机确认机台')
+    expect(text).not.toContain('啤办机台-08')
     expect(text).toContain('确认披锋与缩水。')
+    expect(text).not.toContain('啤办费(RMB)')
+    expect(text).not.toContain('啤办费(HKD)')
+    expect(text).not.toContain('当前汇率(RMB→HKD)')
 
     wrapper.unmount()
   })
 
-  it('shows the current RMB to HKD rate when an item has no saved exchange rate', async () => {
-    const detailedRecord = {
-      ...createMoldingSampleRecord('生产中', 'BP-RATE-LIVE-001'),
-      items: [
-        {
-          id: 'BP-RATE-LIVE-001-001',
-          order_id: 'BP-RATE-LIVE-001',
-          sort_order: 1,
-          mold_id: 'P50002008-01-01',
-          mold_name: '头盔',
-          machine_type: '160T',
-          production_machine: '啤办机台-08',
-          material: 'PP (AV161)',
-          color: '黑色',
-          pigment_no: 'PMS 黑色',
-          quantity: '1/1',
-          shoot_qty: 30,
-          gross_weight_g: 82,
-          required_material_kg: 15,
-          mold_return_time: '2026-02-03',
-          completion_time: '2026-02-04',
-          notes: '待保存啤办费。',
-          receipt_no: '',
-          collected_weight_kg: null,
-          actual_weight_kg: 14.2,
-          actual_amount_hkd: null,
-          injection_cost: null,
-          injection_cost_hkd: null,
-          exchange_rate_at_save: null,
-        },
-      ],
-    } satisfies MoldingSampleDetailResponse
+  it('shows local production tasks without notification access and keeps every write disabled', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-READONLY-001' }
+    const record = createMoldingSampleRecord('待生产', 'BP-PROD-READONLY-001')
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
 
-    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([detailedRecord])
-    mockedMoldingSampleApi.getMaterialPrices.mockResolvedValueOnce({
-      prices: [],
-      rmb_to_hkd_rate: 1.1234,
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['啤机任务只读'],
+      permissions: ['molding_sample:production_read'],
+      factoryScopes: ['huaxing'],
+      department: 'production',
+      authzMode: 'enforce',
+      primaryFactoryId: 'huaxing',
+      effectiveAccess: [{
+        permission_code: 'molding_sample:production_read',
+        factory_id: 'huaxing',
+        department: 'production',
+        effect: 'allow',
+        allowed: true,
+        source_type: 'role_binding',
+        source_ids: ['production-readonly-binding'],
+      }],
     })
 
-    const wrapper = await mountRuntimeView(MoldingSampleView)
+    expect(wrapper.text()).toContain('BP-PROD-READONLY-001')
+    expect(wrapper.text()).toContain('当前账号没有通知处理权限')
+    expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
 
-    await getButtonByText(wrapper, 'BP-RATE-LIVE-001').trigger('click')
-    await nextTick()
-    await getButtonByText(wrapper, '展开完整数据').trigger('click')
+    wrapper.unmount()
+  })
+
+  it('keeps the production queue usable when protected material prices are forbidden', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-NO-COST-001' }
+    const record = createMoldingSampleRecord('待生产', 'BP-PROD-NO-COST-001')
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(record.order.id),
+    ])
+    mockedMoldingSampleApi.getMaterialPrices.mockRejectedValueOnce(createRuntimeError(403))
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    expect(mockedMoldingSampleApi.getMaterialPrices).toHaveBeenCalledWith('huaxing')
+    expect(wrapper.text()).toContain('BP-PROD-NO-COST-001')
+    expect(wrapper.text()).not.toContain('真实任务读取失败')
+
+    wrapper.unmount()
+  })
+
+  it('honors a local override-only production start permission without unlocking other actions', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-OVERRIDE-001' }
+    const pendingRecord = createMoldingSampleRecord('待生产', 'BP-PROD-OVERRIDE-001')
+    const runningRecord = {
+      ...pendingRecord,
+      order: { ...pendingRecord.order, status: '生产中' },
+    } satisfies MoldingSampleDetailResponse
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([pendingRecord])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(runningRecord)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['基础员工'],
+      permissions: ['molding_sample:production_read', 'molding_sample:production_start'],
+      grantPermissions: [],
+      factoryScopes: ['huaxing'],
+      department: 'production',
+      authzMode: 'enforce',
+      primaryFactoryId: 'huaxing',
+      effectiveAccess: [
+        {
+          permission_code: 'molding_sample:production_read',
+          factory_id: 'huaxing',
+          department: 'production',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'user_override',
+          source_ids: ['override-read'],
+        },
+        {
+          permission_code: 'molding_sample:production_start',
+          factory_id: 'huaxing',
+          department: 'production',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'user_override',
+          source_ids: ['override-start'],
+        },
+      ],
+    })
+
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeUndefined()
+    expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
+    await getButtonByText(wrapper, '开始生产').trigger('click')
     await flushPromises()
+
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-OVERRIDE-001', {
+      action: '开始处理',
+      reason: '啤办生产任务单接收后开始执行。',
+      today: '2026-07-03',
+    })
+    expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('renders cross-factory access as read-only and omits cost content by default', async () => {
+    routeState.query = { factory: 'huadeng' }
+    const crossFactoryRecord = createKpiRecord('待审核', 'BP-CROSS-READONLY-HD-001', 1.25)
+    crossFactoryRecord.order.factory_id = 'huadeng'
+    crossFactoryRecord.items[0]!.actual_amount_hkd = 98.76
+    crossFactoryRecord.items[0]!.injection_cost = 120
+    crossFactoryRecord.items[0]!.injection_cost_hkd = 129.6
+    crossFactoryRecord.items[0]!.exchange_rate_at_save = 1.08
+    Object.assign(crossFactoryRecord, {
+      read_source: 'cross',
+      can_view_cost: false,
+      read_only: true,
+    })
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([crossFactoryRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['集团啤办只读'],
+      permissions: ['molding_sample:cross_factory_read'],
+      factoryScopes: ['*'],
+      displayName: '集团啤办访客',
+    })
+
+    expect(wrapper.text()).toContain('跨厂只读')
+    expect(wrapper.text()).toContain('成本信息已隐藏')
+    for (const hiddenAction of ['工程部 · 新建开单', '打印', '导入Excel', '导出Excel']) {
+      expect(wrapper.findAll('button').some((button) => button.text().includes(hiddenAction))).toBe(false)
+    }
+
+    await getButtonByText(wrapper, '物料结余').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).not.toContain('结余金额')
+    expect(wrapper.text()).not.toContain('折算状态')
+
+    await getButtonByText(wrapper, '看板总览').trigger('click')
+    await getButtonByText(wrapper, 'BP-CROSS-READONLY-HD-001').trigger('click')
     await nextTick()
 
-    const text = wrapper.text()
-    expect(text).toContain('当前汇率(RMB→HKD)')
-    expect(text).toContain('1.1234')
-    expect(text).not.toContain('汇率待填写')
+    for (const hiddenAction of ['撤回审核', '删除啤办单', '通过', '驳回']) {
+      expect(wrapper.findAll('button').some((button) => button.text().trim() === hiddenAction)).toBe(false)
+    }
+    expect(wrapper.text()).not.toContain('预计料费')
+    expect(wrapper.text()).not.toContain('实际料费')
+    expect(wrapper.text()).not.toContain('HKD 98.76')
+
+    wrapper.unmount()
+  })
+
+  it('does not expose printing to a local reader without export permission', async () => {
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([
+      createMoldingSampleRecord('待审核', 'BP-LOCAL-NO-EXPORT-001'),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程只读'],
+      permissions: ['molding_sample:read'],
+      factoryScopes: ['huaxing'],
+    })
+
+    expect(wrapper.text()).toContain('BP-LOCAL-NO-EXPORT-001')
+    expect(wrapper.findAll('button').some((button) => button.text().trim() === '打印')).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('honors a local override-only create permission and blocks the same override outside the primary factory', async () => {
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
+    const access: AuthEffectiveAccess[] = [
+      {
+        permission_code: 'molding_sample:create',
+        factory_id: 'huaxing',
+        department: 'engineering',
+        effect: 'allow',
+        allowed: true,
+        source_type: 'user_override',
+        source_ids: ['override-create-local'],
+      },
+      {
+        permission_code: 'molding_sample:create',
+        factory_id: 'huadeng',
+        department: 'engineering',
+        effect: 'allow',
+        allowed: true,
+        source_type: 'user_override',
+        source_ids: ['override-create-misconfigured'],
+      },
+    ]
+
+    const localWrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['基础员工'],
+      permissions: ['molding_sample:create'],
+      grantPermissions: [],
+      factoryScopes: ['huaxing'],
+      department: 'engineering',
+      authzMode: 'enforce',
+      primaryFactoryId: 'huaxing',
+      effectiveAccess: access,
+    })
+
+    expect(localWrapper.findAll('button').some((button) => button.text().includes('工程部 · 新建开单'))).toBe(true)
+    expect(localWrapper.findAll('button').some((button) => button.text().trim() === '新建啤办单')).toBe(true)
+    localWrapper.unmount()
+
+    routeState.query = { factory: 'huadeng' }
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
+    const externalWrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['基础员工'],
+      permissions: ['molding_sample:create'],
+      grantPermissions: [],
+      factoryScopes: ['huaxing'],
+      department: 'engineering',
+      authzMode: 'enforce',
+      primaryFactoryId: 'huaxing',
+      effectiveAccess: access,
+    })
+
+    expect(externalWrapper.findAll('button').some((button) => button.text().includes('工程部 · 新建开单'))).toBe(false)
+    expect(externalWrapper.findAll('button').some((button) => button.text().trim() === '新建啤办单')).toBe(false)
+    externalWrapper.unmount()
+  })
+
+  it('recognizes QA-scoped cross-factory cost overrides without treating QA as a molding department', async () => {
+    routeState.query = { factory: 'huadeng' }
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['品质部跨厂访客'],
+      permissions: [
+        'molding_sample:cross_factory_read',
+        'molding_sample:cross_factory_cost_read',
+      ],
+      grantPermissions: [],
+      factoryScopes: ['huaxing'],
+      department: 'qa',
+      authzMode: 'enforce',
+      primaryFactoryId: 'huaxing',
+      effectiveAccess: [
+        {
+          permission_code: 'molding_sample:cross_factory_read',
+          factory_id: 'huadeng',
+          department: 'qa',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'user_override',
+          source_ids: ['qa-cross-read'],
+        },
+        {
+          permission_code: 'molding_sample:cross_factory_cost_read',
+          factory_id: 'huadeng',
+          department: 'qa',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'user_override',
+          source_ids: ['qa-cross-cost'],
+        },
+      ],
+    })
+
+    expect(wrapper.text()).toContain('华登暂无正式啤办单')
+    await getButtonByText(wrapper, '物料结余').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('结余金额')
+    expect(wrapper.text()).toContain('折算状态')
+
+    wrapper.unmount()
+  })
+
+  it('lets a manager approve through a management-scoped permission', async () => {
+    const pendingManagerRecord = createMoldingSampleRecord('待经理审核', 'BP-MANAGER-SCOPE-001')
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([pendingManagerRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['经理'],
+      permissions: ['molding_sample:manager_review'],
+      factoryScopes: ['huaxing'],
+      department: 'management',
+      authzMode: 'enforce',
+      effectiveAccess: [{
+        permission_code: 'molding_sample:manager_review',
+        factory_id: 'huaxing',
+        department: 'management',
+        effect: 'allow',
+        allowed: true,
+        source_type: 'role',
+        source_ids: ['manager-role'],
+      }],
+    })
+
+    await getButtonByText(wrapper, 'BP-MANAGER-SCOPE-001').trigger('click')
+    await nextTick()
+
+    expect(getButtonByExactText(wrapper, '通过').attributes('disabled')).toBeUndefined()
+    expect(getButtonByExactText(wrapper, '驳回').attributes('disabled')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('shows cross-factory costs only when the backend grants cost visibility', async () => {
+    routeState.query = { factory: 'huadeng' }
+    const crossFactoryRecord = createKpiRecord('待审核', 'BP-CROSS-COST-HD-001', 1.25)
+    crossFactoryRecord.order.factory_id = 'huadeng'
+    crossFactoryRecord.items[0]!.actual_amount_hkd = 98.76
+    Object.assign(crossFactoryRecord, {
+      read_source: 'cross',
+      can_view_cost: true,
+      read_only: true,
+    })
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([crossFactoryRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['集团啤办成本只读'],
+      permissions: [
+        'molding_sample:cross_factory_read',
+        'molding_sample:cross_factory_cost_read',
+      ],
+      factoryScopes: ['*'],
+    })
+
+    expect(wrapper.text()).toContain('已额外授权查看成本')
+    await getButtonByText(wrapper, 'BP-CROSS-COST-HD-001').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('预计料费')
+    expect(wrapper.text()).toContain('实际料费')
+    expect(wrapper.text()).toContain('HKD 98.76')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('导出Excel'))).toBe(false)
 
     wrapper.unmount()
   })
@@ -1173,6 +1629,12 @@ describe('molding sample runtime error handling', () => {
     const wrapper = await mountRuntimeView(MoldingSampleView)
 
     await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    const lineHeaders = wrapper.findAll('[aria-label="模具明细录入表"] [role="columnheader"]').map((node) => node.text())
+    expect(lineHeaders).not.toContain('适配机型')
+    expect(lineHeaders).not.toContain('整啤毛重(g)')
+    expect(lineHeaders.slice(-3)).toEqual(['工模尺寸', '备注', '操作'])
+    expect(wrapper.find('[data-testid="create-line-machine-type"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-line-gross-weight"]').exists()).toBe(false)
     await wrapper.get('[data-testid="create-product-no"]').setValue('260705-01')
     await wrapper.get('[data-testid="create-client-name"]').setValue('Bright Kids')
     await wrapper.get('[data-testid="create-product-name"]').setValue('透明灯罩')
@@ -1188,7 +1650,6 @@ describe('molding sample runtime error handling', () => {
     await wrapper.get('[data-testid="create-line-color"]').setValue('透明蓝')
     await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
     await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')
-    await wrapper.get('[data-testid="create-line-gross-weight"]').setValue('125.5')
     await wrapper.get('[data-testid="create-line-required-material"]').setValue('2.25')
     await wrapper.get('[data-testid="create-line-required-date"]').setValue('2026-07-10')
     await flushPromises()
@@ -1204,7 +1665,6 @@ describe('molding sample runtime error handling', () => {
 
     expect((restoredWrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('透明灯罩')
     expect((restoredWrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('BK-01')
-    expect((restoredWrapper.get('[data-testid="create-line-gross-weight"]').element as HTMLInputElement).value).toBe('125.5')
     expect((restoredWrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('2.25')
 
     mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => ({
@@ -1220,7 +1680,8 @@ describe('molding sample runtime error handling', () => {
 
     expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
     expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].items[0]).toMatchObject({
-      gross_weight_g: 125.5,
+      gross_weight_g: null,
+      machine_type: '',
       required_material_kg: 2.25,
     })
     expect(window.localStorage.getItem('rr:molding-sample:create-draft:huaxing')).toBeNull()
@@ -1290,7 +1751,7 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.createOrder).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('Excel已导入到新建开单草稿')
     expect(wrapper.text()).toContain('提交主管审核')
-    expect((wrapper.get('[data-testid="create-order-id"]').element as HTMLInputElement).value).toBe('BP-XLSX-DRAFT-001')
+    expect(wrapper.find('[data-testid="create-order-id"]').exists()).toBe(false)
     expect((wrapper.get('[data-testid="create-product-no"]').element as HTMLInputElement).value).toBe('P50002008')
     expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('30寸黑武士')
     expect((wrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('P50002008-01-01')

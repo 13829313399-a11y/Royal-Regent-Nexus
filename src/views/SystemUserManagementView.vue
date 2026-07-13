@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   UserCheck,
   UserCog,
@@ -28,6 +29,7 @@ import {
 import {
   systemApi,
   type RegistrationRequestResponse,
+  type RoleAssignmentRequest,
   type RoleResponse,
   type SystemNotificationResponse,
   type UserResponse,
@@ -47,7 +49,7 @@ const selectedRoles = ref<Record<string, string>>({})
 const approvalComments = ref<Record<string, string>>({})
 const rejectComments = ref<Record<string, string>>({})
 const userSearch = ref('')
-const userStatusFilter = ref<'all' | 'active' | 'suspended'>('all')
+const userStatusFilter = ref<'all' | 'active' | 'suspended' | 'retired'>('all')
 const selectedRequestId = ref('')
 const isLoading = ref(false)
 const actionKey = ref('')
@@ -73,6 +75,9 @@ const permissionGroupDefinitions: PermissionGroupDefinition[] = [
     title: '工程 / 啤办',
     permissions: [
       { label: '查看啤办单据', code: 'molding_sample:read' },
+      { label: '导出本厂啤办单', code: 'molding_sample:export' },
+      { label: '跨厂查看啤办单据', code: 'molding_sample:cross_factory_read' },
+      { label: '跨厂查看啤办成本', code: 'molding_sample:cross_factory_cost_read' },
       { label: '新建啤办申请', code: 'molding_sample:create' },
       { label: '编辑草稿', code: 'molding_sample:edit_draft' },
       { label: '删除草稿', code: 'molding_sample:delete_draft' },
@@ -109,6 +114,8 @@ const permissionGroupDefinitions: PermissionGroupDefinition[] = [
       { label: '导入内部报价', code: 'customer_price:import_internal_quote' },
       { label: '导出客户报价', code: 'customer_price:export_customer_quote' },
       { label: '报价差异比较', code: 'customer_price:compare' },
+      { label: '查看内部报价', code: 'internal_pricing:read' },
+      { label: '创建内部报价', code: 'internal_pricing:create' },
       { label: '查看注塑排产', code: 'injection_schedule:read' },
       { label: '导入排产计划', code: 'injection_schedule:import' },
     ],
@@ -124,12 +131,19 @@ const permissionGroupDefinitions: PermissionGroupDefinition[] = [
 ]
 
 const rolePermissionPresets: Record<string, string[]> = {
+  group_molding_readonly: [
+    'molding_sample:cross_factory_read',
+  ],
   engineer: [
     'molding_sample:read',
+    'molding_sample:export',
     'molding_sample:create',
     'molding_sample:edit_draft',
     'molding_sample:delete_draft',
     'molding_sample:notification_read',
+  ],
+  molding_production_observer: [
+    'molding_sample:production_read',
   ],
   engineering_supervisor: [
     'molding_sample:read',
@@ -169,12 +183,16 @@ const rolePermissionPresets: Record<string, string[]> = {
     'customer_price:import_internal_quote',
     'customer_price:export_customer_quote',
     'customer_price:compare',
+    'internal_pricing:read',
+    'internal_pricing:create',
   ],
   sales_customer_supervisor: [
     'customer_price:read',
     'customer_price:import_internal_quote',
     'customer_price:export_customer_quote',
     'customer_price:compare',
+    'internal_pricing:read',
+    'internal_pricing:create',
   ],
   admin: permissionGroupDefinitions.flatMap((group) =>
     group.permissions.map((permission) => permission.matchCode ?? permission.code),
@@ -242,15 +260,17 @@ function departmentLabel(departmentId: string) {
   return departmentMap[departmentId as keyof typeof departmentMap]?.name ?? departmentId
 }
 
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    pending: '待审批',
-    approved: '已通过',
-    rejected: '已拒绝',
-    active: '正常',
-    suspended: '已停用',
-  }
-  return labels[status] ?? status
+const userStatusPresentations: Record<string, { label: string; toneClass: string }> = {
+  pending: { label: '待审批', toneClass: 'pill-amber' },
+  approved: { label: '已通过', toneClass: 'pill-blue' },
+  rejected: { label: '已拒绝', toneClass: 'pill-red' },
+  active: { label: '正常', toneClass: 'pill-green' },
+  suspended: { label: '已停用', toneClass: 'pill-slate' },
+  retired: { label: '已离职', toneClass: 'pill-slate' },
+}
+
+function userStatusPresentation(status: string) {
+  return userStatusPresentations[status] ?? { label: '未知状态', toneClass: 'pill-slate' }
 }
 
 function roleName(roleId: string) {
@@ -308,14 +328,6 @@ function roleToneClass(name: string) {
   return 'pill-teal'
 }
 
-function statusToneClass(status: string) {
-  if (status === 'active') return 'pill-green'
-  if (status === 'suspended') return 'pill-slate'
-  if (status === 'pending') return 'pill-amber'
-  if (status === 'rejected') return 'pill-red'
-  return 'pill-blue'
-}
-
 function inferPermissionCodesForRole(role: RoleResponse | undefined, request: RegistrationRequestResponse) {
   const roleText = `${role?.name ?? ''} ${role?.code ?? ''} ${request.position} ${request.department}`
   if (/管理员|admin/i.test(roleText)) return rolePermissionPresets.admin
@@ -333,7 +345,12 @@ function permissionGroupsForSelectedRole(request: RegistrationRequestResponse) {
   const selectedRoleId = getSelectedRoleId(request)
   const role = roles.value.find((candidate) => candidate.id === selectedRoleId)
   const roleKey = role?.code || role?.id || selectedRoleId
-  const permissionCodes = new Set(rolePermissionPresets[roleKey] ?? inferPermissionCodesForRole(role, request))
+  const roleKeys = roleKey === 'engineer'
+    ? ['engineer', 'molding_production_observer', 'group_molding_readonly']
+    : [roleKey]
+  const permissionCodes = new Set(
+    roleKeys.flatMap((key) => rolePermissionPresets[key] ?? inferPermissionCodesForRole(role, request)),
+  )
 
   return permissionGroupDefinitions
     .map((group) => ({
@@ -356,6 +373,58 @@ function getSelectedRoleId(request: RegistrationRequestResponse) {
 
 function setSelectedRoleId(requestId: string, roleId: string) {
   selectedRoles.value = { ...selectedRoles.value, [requestId]: roleId }
+}
+
+function roleIsApplicableToRequest(role: RoleResponse, request: RegistrationRequestResponse) {
+  if (role.requires_global_factory) return false
+  return !role.applicable_departments.length
+    || role.applicable_departments.includes('*')
+    || role.applicable_departments.includes(request.department)
+}
+
+function selectedRoleUsesEngineerBundle(request: RegistrationRequestResponse) {
+  const selectedRoleId = getSelectedRoleId(request)
+  return roles.value.find((role) => role.id === selectedRoleId)?.code === 'engineer'
+}
+
+function engineerBundleSummary(request: RegistrationRequestResponse) {
+  return [
+    `工程师 · ${factoryLabel(request.factory_id)} / ${departmentLabel(request.department)}`,
+    `生产任务观察员 · ${factoryLabel(request.factory_id)} / 生产部（只读）`,
+    '集团啤办只读 · 全部厂区 / 全部部门（外厂隐藏成本）',
+  ]
+}
+
+function buildApprovalRoleAssignments(request: RegistrationRequestResponse): RoleAssignmentRequest[] | null {
+  const selectedRoleId = getSelectedRoleId(request)
+  const selectedRole = roles.value.find((role) => role.id === selectedRoleId)
+  if (!selectedRole) return null
+
+  const assignments: RoleAssignmentRequest[] = [
+    {
+      role_id: selectedRole.id,
+      factory_id: request.factory_id,
+      department: request.department,
+    },
+  ]
+  if (selectedRole.code !== 'engineer') return assignments
+
+  const productionObserver = roles.value.find((role) => role.code === 'molding_production_observer')
+  const groupReadonly = roles.value.find((role) => role.code === 'group_molding_readonly')
+  if (!productionObserver || !groupReadonly) return null
+  assignments.push(
+    {
+      role_id: productionObserver.id,
+      factory_id: request.factory_id,
+      department: 'production',
+    },
+    {
+      role_id: groupReadonly.id,
+      factory_id: '*',
+      department: '*',
+    },
+  )
+  return assignments
 }
 
 function selectRequest(requestId: string) {
@@ -408,13 +477,11 @@ async function approveRequest(request: RegistrationRequestResponse) {
     return
   }
 
-  const role_assignments = [
-    {
-      role_id: roleId,
-      factory_id: request.factory_id,
-      department: request.department,
-    },
-  ]
+  const role_assignments = buildApprovalRoleAssignments(request)
+  if (!role_assignments) {
+    errorMessage.value = '工程师默认组合角色尚未初始化，请刷新页面后重试'
+    return
+  }
 
   actionKey.value = `approve:${request.id}`
   errorMessage.value = ''
@@ -511,6 +578,8 @@ async function markPasswordResetHandled(notification: SystemNotificationResponse
 onMounted(() => {
   if (route.query.tab === 'password-reset') {
     activeTab.value = 'password-reset'
+  } else if (route.query.tab === 'users') {
+    activeTab.value = 'users'
   } else if (route.query.request_id) {
     activeTab.value = 'pending'
   }
@@ -551,6 +620,10 @@ onMounted(() => {
               用户列表
             </button>
           </nav>
+          <RouterLink class="ghost-link iam-console-entry" to="/system/iam/permissions">
+            <SlidersHorizontal class="size-4" aria-hidden="true" />
+            高级权限管理
+          </RouterLink>
           <button type="button" class="ghost-link" :disabled="isLoading" @click="loadData">
             <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
             刷新
@@ -666,13 +739,23 @@ onMounted(() => {
                 type="button"
                 class="role"
                 :class="{ sel: getSelectedRoleId(selectedRequest) === role.id }"
+                :disabled="!roleIsApplicableToRequest(role, selectedRequest)"
+                :title="!roleIsApplicableToRequest(role, selectedRequest) ? role.scope_guidance : role.description"
                 @click="setSelectedRoleId(selectedRequest.id, role.id)"
               >
                 <span v-if="selectedRequest.recommended_role_ids.includes(role.id)" class="reco">推荐</span>
                 <span class="check"><Check class="size-3" aria-hidden="true" /></span>
                 <div class="rname">{{ role.name }}</div>
                 <div class="rdesc">{{ role.description || role.code }}</div>
+                <div v-if="!roleIsApplicableToRequest(role, selectedRequest)" class="role-scope-warning">
+                  当前申请范围不适用
+                </div>
               </button>
+            </div>
+            <div v-if="selectedRoleUsesEngineerBundle(selectedRequest)" class="engineer-bundle-note">
+              <strong>工程师默认组合授权</strong>
+              <span v-for="item in engineerBundleSummary(selectedRequest)" :key="item">{{ item }}</span>
+              <small>不包含主管审核、啤机生产写入、仓库出入库、敏感审计或跨厂成本。</small>
             </div>
           </section>
 
@@ -834,12 +917,13 @@ onMounted(() => {
       <div class="table-tools">
         <label class="search-box">
           <Search class="size-4" aria-hidden="true" />
-          <input v-model="userSearch" placeholder="搜索姓名、工号、联系方式、角色..." type="search">
+          <input v-model="userSearch" aria-label="搜索用户" placeholder="搜索姓名、工号、联系方式、角色..." type="search">
         </label>
         <div class="seg">
           <button type="button" :class="{ on: userStatusFilter === 'all' }" @click="userStatusFilter = 'all'">全部</button>
           <button type="button" :class="{ on: userStatusFilter === 'active' }" @click="userStatusFilter = 'active'">正常</button>
           <button type="button" :class="{ on: userStatusFilter === 'suspended' }" @click="userStatusFilter = 'suspended'">停用</button>
+          <button type="button" :class="{ on: userStatusFilter === 'retired' }" @click="userStatusFilter = 'retired'">已离职</button>
         </div>
       </div>
 
@@ -900,13 +984,21 @@ onMounted(() => {
                 </div>
               </td>
               <td>
-                <span class="pill" :class="statusToneClass(user.status)">
-                  <span></span>{{ statusLabel(user.status) }}
+                <span class="pill" :class="userStatusPresentation(user.status).toneClass">
+                  <span></span>{{ userStatusPresentation(user.status).label }}
                 </span>
               </td>
               <td class="muted">{{ formatDateTime(user.last_login_at) }}</td>
               <td>
                 <div class="row-ops">
+                  <RouterLink
+                    v-if="user.status === 'active' || user.status === 'suspended'"
+                    class="btn btn-sm iam-access-link"
+                    :to="`/system/users/${encodeURIComponent(user.id)}/access`"
+                  >
+                    <SlidersHorizontal class="size-3.5" aria-hidden="true" />
+                    配置权限
+                  </RouterLink>
                   <button
                     v-if="user.status === 'active'"
                     type="button"
@@ -2109,7 +2201,20 @@ onMounted(() => {
 
 .row-ops {
   display: flex;
+  gap: 6px;
   justify-content: flex-end;
+}
+
+.iam-access-link {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #047857;
+  text-decoration: none;
+}
+
+.iam-access-link:hover {
+  border-color: #6ee7b7;
+  background: #d1fae5;
 }
 
 .empty-row {
@@ -2769,6 +2874,18 @@ onMounted(() => {
   border-color: var(--teal-200);
 }
 
+.role:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.role-scope-warning {
+  margin-top: 5px;
+  color: #b45309;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
 .role.sel {
   border-color: var(--teal);
   background: var(--teal-50);
@@ -2816,6 +2933,27 @@ onMounted(() => {
 
 .role.sel .check {
   display: grid;
+}
+
+.engineer-bundle-note {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  border: 1px solid #99f6e4;
+  border-radius: 10px;
+  background: #f0fdfa;
+  color: #115e59;
+  padding: 11px 13px;
+  font-size: 11.5px;
+}
+
+.engineer-bundle-note strong {
+  font-size: 12.5px;
+}
+
+.engineer-bundle-note small {
+  margin-top: 2px;
+  color: #64748b;
 }
 
 .perm-groups {

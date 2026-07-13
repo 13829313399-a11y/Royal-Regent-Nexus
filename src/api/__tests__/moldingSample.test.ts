@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict'
-import { createMoldingSampleApi } from '../moldingSample.js'
+import { createMoldingSampleApi, resolveMoldingSampleAccess } from '../moldingSample.js'
+
+assert.deepEqual(resolveMoldingSampleAccess({
+  read_source: 'cross',
+  can_view_cost: false,
+}), {
+  read_source: 'cross',
+  can_view_cost: false,
+  read_only: true,
+})
 
 const calls: Array<{ method: string, url: string, data?: unknown, config?: unknown }> = []
 
@@ -106,6 +115,8 @@ await api.updateItems('BP-1', {
   ],
 })
 
+await api.getMaterialPrices('huadeng')
+
 await api.updateMaterialPrices({
   prices: [{ material: 'HIPS 425', unit_price: 6, notes: '新经理价' }],
   rmb_to_hkd_rate: 1.1,
@@ -157,6 +168,7 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'post /problems',
   'patch /problems/P-BP-1',
   'patch /injection/BP-1/items',
+  'get /material-prices?factory_id=huadeng',
   'post /manager-update-prices',
   'get /requisitions?order_id=BP-1',
   'get /inventory-batches?material=HIPS+425',

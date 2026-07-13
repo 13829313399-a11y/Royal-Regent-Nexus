@@ -1,5 +1,7 @@
+import json
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -33,11 +35,29 @@ from app.schemas.molding_sample import (
     RequisitionCreateRequest,
     RequisitionStatusRequest,
 )
-from app.services.auth import AuthContext, ensure_permission, ensure_permission_in_scope
+from app.services.auth import AuthContext, ensure_permission
+from app.services.business_authz import (
+    CROSS_FACTORY_DEPARTMENTS,
+    ENGINEERING_DEPARTMENTS,
+    MANAGEMENT_DEPARTMENTS,
+    MOLDING_CROSS_FACTORY_COST_PERMISSION,
+    MOLDING_CROSS_FACTORY_READ_PERMISSION,
+    PRODUCTION_DEPARTMENTS,
+    SHARED_MOLDING_DEPARTMENTS,
+    WAREHOUSE_DEPARTMENTS,
+    can_view_molding_cost,
+    ensure_molding_local_write,
+    ensure_molding_read,
+    ensure_permission_for_departments,
+    has_permission_for_departments,
+    molding_read_access,
+)
 
 KG_TO_LB = 2.20462
 DEFAULT_RATE = 1.08
 RATE_KEY = "exchange_rate_rmb_to_hkd"
+RAW_MATERIAL_PRICES_MARKER_KEY = "raw_material_prices_server_v1"
+RAW_MATERIAL_PRICES_PATH = Path(__file__).resolve().parents[1] / "data" / "raw_material_prices.json"
 
 DEFAULT_PRICES = [
     ("HIPS 425", 5.5, "经理默认价"),
@@ -69,6 +89,7 @@ ALLOWED_ITEM_PATCH_FIELDS = {
     "injection_cost",
     "production_machine",
 }
+ENGINEERING_EDIT_DEPARTMENTS = (*ENGINEERING_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS)
 
 
 def now_text() -> str:
@@ -98,14 +119,59 @@ def normalize_material_name(value: str) -> str:
     return normalized
 
 
+def load_seed_material_prices() -> list[tuple[str, float, str]]:
+    try:
+        source_rows = json.loads(RAW_MATERIAL_PRICES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("无法加载服务端原料价格种子数据") from exc
+
+    prices: list[tuple[str, float, str]] = []
+    seen_materials: set[str] = set()
+    for row in source_rows:
+        material = str(row.get("material", "")).strip()
+        try:
+            unit_price = float(row.get("unit_price", 0))
+        except (TypeError, ValueError):
+            continue
+        normalized_material = normalize_material_name(material)
+        if not normalized_material or unit_price <= 0 or normalized_material in seen_materials:
+            continue
+        prices.append((material, unit_price, "服务端原料数据库导入"))
+        seen_materials.add(normalized_material)
+
+    for material, unit_price, notes in DEFAULT_PRICES:
+        normalized_material = normalize_material_name(material)
+        if normalized_material in seen_materials:
+            continue
+        prices.append((material, unit_price, notes))
+        seen_materials.add(normalized_material)
+    return prices
+
+
 def seed_molding_sample_defaults(db: Session) -> None:
     if db.scalar(select(MoldingSampleSetting).where(MoldingSampleSetting.key == RATE_KEY)) is None:
         db.add(MoldingSampleSetting(key=RATE_KEY, value=str(DEFAULT_RATE)))
 
-    existing_count = len(db.scalars(select(MoldingSampleMaterialPrice)).all())
-    if existing_count == 0:
-        for material, unit_price, notes in DEFAULT_PRICES:
+    if db.get(MoldingSampleSetting, RAW_MATERIAL_PRICES_MARKER_KEY) is None:
+        existing_materials = {
+            normalize_material_name(price.material)
+            for price in db.scalars(select(MoldingSampleMaterialPrice)).all()
+            if normalize_material_name(price.material)
+        }
+        inserted_count = 0
+        for material, unit_price, notes in load_seed_material_prices():
+            normalized_material = normalize_material_name(material)
+            if normalized_material in existing_materials:
+                continue
             db.add(MoldingSampleMaterialPrice(material=material, unit_price=unit_price, notes=notes))
+            existing_materials.add(normalized_material)
+            inserted_count += 1
+        db.add(
+            MoldingSampleSetting(
+                key=RAW_MATERIAL_PRICES_MARKER_KEY,
+                value=f"completed:{inserted_count}",
+            )
+        )
 
     db.commit()
 
@@ -195,24 +261,90 @@ def is_external_order(order: MoldingSampleOrder) -> bool:
     return order.send_to in {"发至湖南", "发至模厂"} or order.workshop == "模厂"
 
 
-def permitted_factory_ids_for_permission(
+def ensure_export_permission(db: Session, current_user: AuthContext, factory_id: str) -> None:
+    if ensure_molding_read(db, current_user, factory_id) != "local":
+        raise HTTPException(status_code=403, detail="跨厂只读权限不允许导出啤办单")
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:export",
+        factory_id,
+        SHARED_MOLDING_DEPARTMENTS,
+    )
+
+
+def ensure_molding_cost_read(db: Session, current_user: AuthContext, factory_id: str) -> str:
+    read_source = ensure_molding_read(db, current_user, factory_id)
+    if can_view_molding_cost(current_user, factory_id, read_source):
+        return read_source
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        MOLDING_CROSS_FACTORY_COST_PERMISSION,
+        factory_id,
+        CROSS_FACTORY_DEPARTMENTS,
+    )
+    raise AssertionError("unreachable")
+
+
+def ensure_molding_create_access(db: Session, current_user: AuthContext, factory_id: str) -> None:
+    ensure_molding_read(db, current_user, factory_id)
+    ensure_molding_local_write(db, current_user, factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:create",
+        factory_id,
+        ENGINEERING_DEPARTMENTS,
+    )
+
+
+def user_factory_candidates(current_user: AuthContext) -> tuple[str, ...]:
+    candidates = tuple(
+        dict.fromkeys(
+            (
+                *(scope for scope in current_user.factory_scopes if scope),
+                *(grant.factory_id for grant in current_user.grants if grant.factory_id),
+                *(override.factory_id for override in current_user.overrides if override.factory_id),
+            )
+        )
+    )
+    return candidates or ("*",)
+
+
+def ensure_permission_in_any_factory(
     db: Session,
     current_user: AuthContext,
     permission: str,
-) -> set[str] | None:
-    ensure_permission(db, current_user, permission)
+    departments: tuple[str, ...],
+) -> None:
+    factory_candidates = user_factory_candidates(current_user)
+    for factory_id in factory_candidates:
+        if has_permission_for_departments(current_user, permission, factory_id, departments):
+            return
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        permission,
+        factory_candidates[0],
+        departments,
+    )
+    raise AssertionError("unreachable")
 
-    factory_ids = {
-        grant.factory_id
-        for grant in current_user.grants
-        if permission in grant.permissions and grant.factory_id
-    }
-    if "*" in factory_ids:
-        return None
-    if not factory_ids:
-        raise HTTPException(status_code=403, detail="无操作权限")
 
-    return factory_ids
+def ensure_any_local_molding_read(db: Session, current_user: AuthContext) -> None:
+    factory_candidates = user_factory_candidates(current_user)
+    for factory_id in factory_candidates:
+        if molding_read_access(current_user, factory_id) == "local":
+            return
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:read",
+        factory_candidates[0],
+        SHARED_MOLDING_DEPARTMENTS,
+    )
+    raise AssertionError("unreachable")
 
 
 def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
@@ -230,7 +362,7 @@ def load_order(db: Session, order_id: str, current_user: AuthContext | None = No
         raise HTTPException(status_code=404, detail="啤办单不存在")
 
     if current_user is not None:
-        ensure_permission_in_scope(db, current_user, "molding_sample:read", order.factory_id)
+        ensure_molding_read(db, current_user, order.factory_id)
 
     return order
 
@@ -249,18 +381,28 @@ def list_orders(
     current_user: AuthContext,
     factory_id: str | None = None,
 ) -> list[MoldingSampleOrder]:
-    permitted_factory_ids = permitted_factory_ids_for_permission(db, current_user, "molding_sample:read")
+    if (
+        "molding_sample:read" not in current_user.permissions
+        and "molding_sample:production_read" not in current_user.permissions
+        and MOLDING_CROSS_FACTORY_READ_PERMISSION not in current_user.permissions
+    ):
+        ensure_permission(db, current_user, "molding_sample:read")
+    if factory_id:
+        ensure_molding_read(db, current_user, factory_id)
+
     statement = order_statement()
-    if permitted_factory_ids is not None:
-        statement = statement.where(MoldingSampleOrder.factory_id.in_(permitted_factory_ids))
     if factory_id:
         statement = statement.where(MoldingSampleOrder.factory_id == factory_id)
 
-    return list(
+    orders = list(
         db.scalars(
             statement.order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
         ).all()
     )
+    return [
+        order for order in orders
+        if molding_read_access(current_user, order.factory_id) is not None
+    ]
 
 
 def append_audit(
@@ -406,6 +548,14 @@ def append_engineering_rework_notification(
     )
 
 
+def notification_departments(target_module: str, target_role: str) -> tuple[str, ...]:
+    if target_module == PRODUCTION_TASK_MODULE:
+        return PRODUCTION_DEPARTMENTS
+    if target_role == MANAGER_TARGET_ROLE:
+        return MANAGEMENT_DEPARTMENTS
+    return ENGINEERING_DEPARTMENTS
+
+
 def list_notifications(
     db: Session,
     current_user: AuthContext,
@@ -415,14 +565,10 @@ def list_notifications(
     order_id: str | None = None,
     status: str | None = None,
 ) -> list[MoldingSampleNotification]:
-    permitted_factory_ids = permitted_factory_ids_for_permission(db, current_user, "molding_sample:notification_read")
+    ensure_permission(db, current_user, "molding_sample:notification_read")
     statement = select(MoldingSampleNotification)
-    if permitted_factory_ids is not None:
-        statement = statement.where(MoldingSampleNotification.factory_id.in_(permitted_factory_ids))
     if target_module:
         statement = statement.where(MoldingSampleNotification.target_module == target_module)
-    elif "molding_sample:production_read" not in current_user.permissions and "*" not in current_user.factory_scopes:
-        statement = statement.where(MoldingSampleNotification.target_module != PRODUCTION_TASK_MODULE)
     if target_role:
         statement = statement.where(MoldingSampleNotification.target_role == target_role)
     if factory_id:
@@ -432,11 +578,29 @@ def list_notifications(
     if status:
         statement = statement.where(MoldingSampleNotification.status == status)
 
-    return list(
+    notifications = list(
         db.scalars(
             statement.order_by(MoldingSampleNotification.created_at.desc(), MoldingSampleNotification.id.desc())
         ).all()
     )
+    return [
+        notification for notification in notifications
+        if has_permission_for_departments(
+            current_user,
+            "molding_sample:notification_read",
+            notification.factory_id,
+            notification_departments(notification.target_module, notification.target_role),
+        )
+        and (
+            notification.target_module != PRODUCTION_TASK_MODULE
+            or has_permission_for_departments(
+                current_user,
+                "molding_sample:production_read",
+                notification.factory_id,
+                PRODUCTION_DEPARTMENTS,
+            )
+        )
+    ]
 
 
 def update_notification(
@@ -448,7 +612,14 @@ def update_notification(
     notification = db.get(MoldingSampleNotification, notification_id)
     if notification is None:
         raise HTTPException(status_code=404, detail="啤办通知不存在")
-    ensure_permission_in_scope(db, current_user, "molding_sample:notification_read", notification.factory_id)
+    ensure_molding_local_write(db, current_user, notification.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:notification_read",
+        notification.factory_id,
+        notification_departments(notification.target_module, notification.target_role),
+    )
     if payload.status not in NOTIFICATION_STATUSES:
         raise HTTPException(status_code=400, detail="通知状态无效")
 
@@ -471,10 +642,13 @@ def list_problems(
     order_id: str | None = None,
     status: str | None = None,
 ) -> list[MoldingSampleProblem]:
-    permitted_factory_ids = permitted_factory_ids_for_permission(db, current_user, "molding_sample:read")
+    if (
+        "molding_sample:read" not in current_user.permissions
+        and "molding_sample:production_read" not in current_user.permissions
+        and MOLDING_CROSS_FACTORY_READ_PERMISSION not in current_user.permissions
+    ):
+        ensure_permission(db, current_user, "molding_sample:read")
     statement = select(MoldingSampleProblem)
-    if permitted_factory_ids is not None:
-        statement = statement.where(MoldingSampleProblem.factory_id.in_(permitted_factory_ids))
 
     if order_id:
         order = load_order(db, order_id, current_user)
@@ -482,11 +656,15 @@ def list_problems(
     if status:
         statement = statement.where(MoldingSampleProblem.status == status)
 
-    return list(
+    problems = list(
         db.scalars(
             statement.order_by(MoldingSampleProblem.created_at.desc(), MoldingSampleProblem.id.desc())
         ).all()
     )
+    return [
+        problem for problem in problems
+        if molding_read_access(current_user, problem.factory_id) is not None
+    ]
 
 
 def create_problem(
@@ -495,7 +673,14 @@ def create_problem(
     current_user: AuthContext,
 ) -> MoldingSampleProblem:
     order = load_order(db, payload.order_id, current_user)
-    ensure_permission_in_scope(db, current_user, "molding_sample:production_fillback", order.factory_id)
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:production_fillback",
+        order.factory_id,
+        PRODUCTION_DEPARTMENTS,
+    )
     if order.status not in {"待生产", "生产中"}:
         raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以反馈生产问题")
 
@@ -555,11 +740,19 @@ def update_problem_status(
     if problem is None:
         raise HTTPException(status_code=404, detail="问题反馈不存在")
 
-    ensure_permission_in_scope(db, current_user, "molding_sample:edit_draft", problem.factory_id)
+    ensure_molding_local_write(db, current_user, problem.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:edit_draft",
+        problem.factory_id,
+        ENGINEERING_EDIT_DEPARTMENTS,
+    )
+    order = load_order(db, problem.order_id, current_user)
+
     problem.status = payload.status
     problem.resolved_at = now_text() if payload.status == "已解决" else ""
 
-    order = load_order(db, problem.order_id, current_user)
     append_audit(
         db,
         order,
@@ -575,7 +768,7 @@ def update_problem_status(
 
 
 def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user: AuthContext) -> MoldingSampleOrder:
-    ensure_permission_in_scope(db, current_user, "molding_sample:create", payload.order.factory_id)
+    ensure_molding_create_access(db, current_user, payload.order.factory_id)
     if db.get(MoldingSampleOrder, payload.order.id):
         raise HTTPException(status_code=409, detail="啤办单编号已存在")
 
@@ -612,26 +805,67 @@ def ensure_order_write_allowed(
     current_user: AuthContext,
     permission: str,
 ) -> None:
-    if order.status not in LOCKED_STATUSES:
-        ensure_permission_in_scope(db, current_user, permission, order.factory_id)
-        return
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    if order.status in LOCKED_STATUSES:
+        if has_permission_for_departments(
+            current_user,
+            "molding_sample:manager_review",
+            order.factory_id,
+            MANAGEMENT_DEPARTMENTS,
+        ):
+            return
+        raise HTTPException(status_code=403, detail="当前状态不允许普通工程师改删")
 
-    if "molding_sample:manager_review" in current_user.permissions and any(
-        "molding_sample:manager_review" in grant.permissions
-        and (grant.factory_id == "*" or grant.factory_id == order.factory_id)
-        for grant in current_user.grants
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        permission,
+        order.factory_id,
+        ENGINEERING_EDIT_DEPARTMENTS,
+    )
+
+    if has_permission_for_departments(
+        current_user,
+        "molding_sample:manager_review",
+        order.factory_id,
+        MANAGEMENT_DEPARTMENTS,
     ):
         return
 
-    raise HTTPException(status_code=403, detail="当前状态不允许改删")
+    if not is_opening_engineer(order, current_user):
+        raise HTTPException(status_code=403, detail="普通工程师只能修改本人创建的啤办单")
 
 
 def ensure_order_delete_allowed(db: Session, order: MoldingSampleOrder, current_user: AuthContext) -> None:
+    ensure_molding_local_write(db, current_user, order.factory_id)
     if order.status in LOCKED_STATUSES:
-        ensure_permission_in_scope(db, current_user, "system:user_manage", order.factory_id)
+        ensure_permission_for_departments(
+            db,
+            current_user,
+            "system:user_manage",
+            order.factory_id,
+            MANAGEMENT_DEPARTMENTS,
+        )
         return
 
-    ensure_permission_in_scope(db, current_user, "molding_sample:delete_draft", order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:delete_draft",
+        order.factory_id,
+        ENGINEERING_EDIT_DEPARTMENTS,
+    )
+
+    if has_permission_for_departments(
+        current_user,
+        "molding_sample:manager_review",
+        order.factory_id,
+        MANAGEMENT_DEPARTMENTS,
+    ):
+        return
+
+    if not is_opening_engineer(order, current_user):
+        raise HTTPException(status_code=403, detail="普通工程师只能删除本人创建的啤办单")
 
 
 def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, current_user: AuthContext) -> MoldingSampleOrder:
@@ -640,10 +874,12 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
         raise HTTPException(status_code=400, detail="啤办单 ID 不一致")
 
     ensure_order_write_allowed(db, order, current_user, "molding_sample:edit_draft")
+    if payload.order.factory_id != order.factory_id:
+        raise HTTPException(status_code=400, detail="啤办单厂区归属不可通过编辑接口变更")
     current_status = order.status
     current_created_at = order.created_at
 
-    order_data = payload.order.model_dump(exclude={"id", "status", "created_at", "updated_at"})
+    order_data = payload.order.model_dump(exclude={"id", "factory_id", "status", "created_at", "updated_at"})
     for field, value in order_data.items():
         setattr(order, field, value)
 
@@ -706,7 +942,12 @@ def create_inventory_batch(
     payload: InventoryBatchCreateRequest,
     current_user: AuthContext,
 ) -> MoldingSampleInventoryBatch:
-    ensure_permission(db, current_user, "molding_sample:inventory_issue")
+    ensure_permission_in_any_factory(
+        db,
+        current_user,
+        "molding_sample:inventory_issue",
+        WAREHOUSE_DEPARTMENTS,
+    )
     if payload.initial_weight_kg <= 0:
         raise HTTPException(status_code=400, detail="批次初始重量必须大于 0")
 
@@ -811,15 +1052,51 @@ def next_requisition_number(db: Session, date: str) -> str:
     return f"{prefix}{max_sequence + 1:03d}"
 
 
-def list_requisitions(db: Session, order_id: str | None = None) -> list[MoldingSampleRequisition]:
+def list_requisitions(
+    db: Session,
+    current_user: AuthContext,
+    order_id: str | None = None,
+) -> list[MoldingSampleRequisition]:
+    ensure_permission_in_any_factory(
+        db,
+        current_user,
+        "molding_sample:warehouse_requisition",
+        WAREHOUSE_DEPARTMENTS,
+    )
     statement = select(MoldingSampleRequisition).order_by(
         MoldingSampleRequisition.date.desc(),
         MoldingSampleRequisition.req_number.desc(),
     )
     if order_id:
+        order = load_order(db, order_id, current_user)
+        ensure_permission_for_departments(
+            db,
+            current_user,
+            "molding_sample:warehouse_requisition",
+            order.factory_id,
+            WAREHOUSE_DEPARTMENTS,
+        )
         statement = statement.where(MoldingSampleRequisition.order_id == order_id)
 
-    return list(db.scalars(statement).all())
+    requisitions = list(db.scalars(statement).all())
+    order_factory_ids = {
+        order.id: order.factory_id
+        for order in db.scalars(
+            select(MoldingSampleOrder).where(
+                MoldingSampleOrder.id.in_({item.order_id for item in requisitions})
+            )
+        ).all()
+    }
+    return [
+        requisition
+        for requisition in requisitions
+        if has_permission_for_departments(
+            current_user,
+            "molding_sample:warehouse_requisition",
+            order_factory_ids.get(requisition.order_id, ""),
+            WAREHOUSE_DEPARTMENTS,
+        )
+    ]
 
 
 def create_requisition(
@@ -831,7 +1108,14 @@ def create_requisition(
         raise HTTPException(status_code=400, detail="申请重量必须大于 0")
 
     order = load_order(db, payload.order_id, current_user)
-    ensure_permission_in_scope(db, current_user, "molding_sample:warehouse_requisition", order.factory_id)
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:warehouse_requisition",
+        order.factory_id,
+        WAREHOUSE_DEPARTMENTS,
+    )
     material = payload.material.strip()
     notes = payload.notes.strip()
     if notes:
@@ -880,7 +1164,14 @@ def update_requisition_status(
     if payload.status not in {"待出库", "已出库"}:
         raise HTTPException(status_code=400, detail="领料单状态无效")
     order = load_order(db, requisition.order_id, current_user)
-    ensure_permission_in_scope(db, current_user, "molding_sample:inventory_issue", order.factory_id)
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:inventory_issue",
+        order.factory_id,
+        WAREHOUSE_DEPARTMENTS,
+    )
 
     previous_status = requisition.status
     if payload.status == "已出库" and payload.inventory_batch_id:
@@ -949,7 +1240,14 @@ def delete_requisition(db: Session, requisition_id: str, current_user: AuthConte
     if not requisition:
         raise HTTPException(status_code=404, detail="领料单不存在")
     order = load_order(db, requisition.order_id, current_user)
-    ensure_permission_in_scope(db, current_user, "molding_sample:warehouse_requisition", order.factory_id)
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:warehouse_requisition",
+        order.factory_id,
+        WAREHOUSE_DEPARTMENTS,
+    )
 
     if requisition.status == "已出库" and requisition.inventory_batch_id:
         batch = db.get(MoldingSampleInventoryBatch, requisition.inventory_batch_id)
@@ -989,27 +1287,24 @@ def is_opening_engineer(order: MoldingSampleOrder, current_user: AuthContext) ->
     def same_text(left: str | None, right: str | None) -> bool:
         return bool(left and right and left.strip() == right.strip())
 
-    if order.eng_name == "" or same_text(order.eng_name, current_user.display_name):
-        return True
-
     submit_actions = ("工程提交", "工程开单")
     submitter_user_ids = {
         audit.actor_user_id
         for audit in order.audit_logs
         if audit.action.startswith(submit_actions) and audit.actor_user_id
     }
-    if current_user.id in submitter_user_ids:
-        return True
+    if submitter_user_ids:
+        return current_user.id in submitter_user_ids
 
     submitter_names = {
         audit.actor_name.strip()
         for audit in order.audit_logs
         if audit.action.startswith(submit_actions) and audit.actor_name and audit.actor_name.strip()
     }
-    if current_user.display_name.strip() in submitter_names:
-        return True
+    if submitter_names:
+        return current_user.display_name.strip() in submitter_names
 
-    return False
+    return same_text(order.eng_name, current_user.display_name)
 
 
 def calculate_item_costs(
@@ -1050,7 +1345,17 @@ def update_order_items(
     current_user: AuthContext,
 ) -> MoldingSampleOrder:
     order = load_order(db, order_id, current_user)
-    ensure_permission_in_scope(db, current_user, "molding_sample:production_fillback", order.factory_id)
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:production_fillback",
+        order.factory_id,
+        PRODUCTION_DEPARTMENTS,
+    )
+    if order.status not in {"待生产", "生产中"}:
+        raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以回填生产数据")
+
     items_by_id = {item.id: item for item in order.items}
 
     for patch in items:
@@ -1081,12 +1386,15 @@ def transition_status(
     current_user: AuthContext,
 ) -> MoldingSampleOrder:
     order = load_order(db, order_id, current_user)
+    ensure_molding_local_write(db, current_user, order.factory_id)
     from_status = order.status
     action = request.action
     next_status: str | None = None
 
     if action == "主管通过":
-        ensure_permission_in_scope(db, current_user, "molding_sample:supervisor_review", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:supervisor_review", order.factory_id, ENGINEERING_DEPARTMENTS
+        )
         if order.status != "待审核":
             raise HTTPException(status_code=403, detail="只有指定主管可以审核待审核单")
         if is_external_order(order):
@@ -1096,13 +1404,17 @@ def transition_status(
         else:
             next_status = "待生产"
     elif action == "主管驳回":
-        ensure_permission_in_scope(db, current_user, "molding_sample:supervisor_review", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:supervisor_review", order.factory_id, ENGINEERING_DEPARTMENTS
+        )
         if order.status != "待审核":
             raise HTTPException(status_code=403, detail="只有指定主管可以驳回待审核单")
         next_status = "已驳回"
         order.reject_reason = request.reason
     elif action == "经理通过":
-        ensure_permission_in_scope(db, current_user, "molding_sample:manager_review", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:manager_review", order.factory_id, MANAGEMENT_DEPARTMENTS
+        )
         if order.status != "待经理审核":
             raise HTTPException(status_code=403, detail="只有经理可以终审待经理审核单")
         if is_external_order(order):
@@ -1112,37 +1424,49 @@ def transition_status(
         else:
             next_status = "待生产"
     elif action == "经理驳回":
-        ensure_permission_in_scope(db, current_user, "molding_sample:manager_review", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:manager_review", order.factory_id, MANAGEMENT_DEPARTMENTS
+        )
         if order.status != "待经理审核":
             raise HTTPException(status_code=403, detail="只有经理可以驳回待经理审核单")
         next_status = "已驳回"
         order.reject_reason = request.reason
     elif action == "工程重提":
-        ensure_permission_in_scope(db, current_user, "molding_sample:edit_draft", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:edit_draft", order.factory_id, ENGINEERING_EDIT_DEPARTMENTS
+        )
         if order.status not in {"已驳回", "已撤回"}:
             raise HTTPException(status_code=403, detail="只有工程部可以重提已驳回或已撤回单")
         next_status = "待审核"
         order.reject_reason = ""
     elif action == "工程撤回":
-        ensure_permission_in_scope(db, current_user, "molding_sample:edit_draft", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:edit_draft", order.factory_id, ENGINEERING_EDIT_DEPARTMENTS
+        )
         if order.status != "待审核":
             raise HTTPException(status_code=403, detail="只有开单工程师可以撤回待审核单")
         if not is_opening_engineer(order, current_user):
             raise HTTPException(status_code=403, detail="只有开单工程师可以撤回本人提交的待审核单")
         next_status = "已撤回"
     elif action == "开始处理":
-        ensure_permission_in_scope(db, current_user, "molding_sample:production_start", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:production_start", order.factory_id, PRODUCTION_DEPARTMENTS
+        )
         if order.status != "待生产":
             raise HTTPException(status_code=403, detail="只有啤机部可以开始处理待生产单")
         next_status = "生产中"
     elif action == "撤回开始生产":
-        ensure_permission_in_scope(db, current_user, "molding_sample:production_start", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:production_start", order.factory_id, PRODUCTION_DEPARTMENTS
+        )
         if order.status != "生产中":
             raise HTTPException(status_code=403, detail="只有啤机部可以撤回生产中单")
         next_status = "待生产"
         order.completed_date = ""
     elif action == "标记完成":
-        ensure_permission_in_scope(db, current_user, "molding_sample:production_complete", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:production_complete", order.factory_id, PRODUCTION_DEPARTMENTS
+        )
         if order.status != "生产中":
             raise HTTPException(status_code=403, detail="只有啤机部可以完成生产中单")
 
@@ -1154,7 +1478,9 @@ def transition_status(
         order.completed_date = request.today or order.date
         recalculate_order_costs(db, order, force_material_amount=True)
     elif action == "撤回完成":
-        ensure_permission_in_scope(db, current_user, "molding_sample:production_complete", order.factory_id)
+        ensure_permission_for_departments(
+            db, current_user, "molding_sample:production_complete", order.factory_id, PRODUCTION_DEPARTMENTS
+        )
         if order.status != "已完成":
             raise HTTPException(status_code=403, detail="只有啤机部可以撤回已完成单")
 
@@ -1295,7 +1621,12 @@ def replace_material_prices(
 ) -> dict[str, Any]:
     if rmb_to_hkd_rate <= 0:
         raise HTTPException(status_code=400, detail="汇率必须大于 0")
-    ensure_permission(db, current_user, "molding_sample:price_update")
+    ensure_permission_in_any_factory(
+        db,
+        current_user,
+        "molding_sample:price_update",
+        MANAGEMENT_DEPARTMENTS,
+    )
 
     db.query(MoldingSampleMaterialPrice).delete()
     for price in prices:

@@ -1,6 +1,6 @@
 import type { Pinia } from 'pinia'
 import type { Router } from 'vue-router'
-import { setUnauthorizedHandler } from '@/lib/http'
+import { setForbiddenHandler, setUnauthorizedHandler } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
 function isSessionProbeRequest(error: { config?: { url?: unknown } }) {
@@ -41,5 +41,13 @@ export function installUnauthorizedSessionHandler(router: Router, pinia: Pinia) 
       .finally(() => {
         redirectingToLogin = false
       })
+  })
+
+  setForbiddenHandler((error) => {
+    if (isSessionProbeRequest(error)) return
+    const authStore = useAuthStore(pinia)
+    if (authStore.isAuthenticated) {
+      void authStore.refreshSession()
+    }
   })
 }

@@ -17,15 +17,16 @@ const toneClasses: Record<Tone, { iconBg: string; iconText: string }> = {
 </script>
 
 <template>
-  <article class="rounded-lg border border-slate-200 bg-white p-6 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
+  <article class="enterprise-panel interactive-surface group relative overflow-hidden rounded-xl p-5 sm:p-6">
+    <span class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-teal-500/55 to-transparent" aria-hidden="true" />
     <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="text-sm text-slate-600">{{ metric.label }}</p>
-        <p class="mt-4 text-3xl font-semibold tracking-tight text-slate-950">{{ metric.value }}</p>
-        <p class="mt-2 text-xs text-slate-500">{{ metric.detail }}</p>
+        <p class="text-sm font-medium text-slate-600">{{ metric.label }}</p>
+        <p class="mt-3 text-3xl font-semibold tabular-nums tracking-[-0.035em] text-slate-950">{{ metric.value }}</p>
+        <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
       </div>
       <span
-        class="flex size-10 items-center justify-center rounded-xl"
+        class="flex size-10 items-center justify-center rounded-xl ring-1 ring-inset ring-white/75 transition-transform duration-200 group-hover:scale-105"
         :class="toneClasses[metric.tone].iconBg"
       >
         <Circle

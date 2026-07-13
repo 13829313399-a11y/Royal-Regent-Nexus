@@ -56,6 +56,9 @@ for (const requiredCopy of [
   '新建成功',
   '已填写草稿会自动保留',
   '每页 10 条',
+  '退回 / 撤回',
+  '未解决异常',
+  '生产数据待补',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -72,8 +75,8 @@ for (const preservedStatus of [
 }
 
 for (const requiredImplementation of [
-  "type ViewKey = 'overview' \\| 'create' \\| 'detail' \\| 'material-balance'",
-  "type MaterialBalancePeriodMode = 'day' \\| 'week' \\| 'month'",
+  "type ViewKey = 'overview' | 'create' | 'detail' | 'material-balance'",
+  "type MaterialBalancePeriodMode = 'day' | 'week' | 'month'",
   'workflowSteps',
   'normalizeBoardStatus',
   'boardColumns',
@@ -113,6 +116,10 @@ for (const requiredImplementation of [
   'setOverviewListPage',
   'setMaterialBalanceDetailPage',
   'setMaterialBalancePeriodPage',
+  'countMoldingSampleAttentionMetrics',
+  'data-testid="molding-kpi-grid"',
+  'lg:grid-cols-4',
+  'xl:grid-cols-7',
   'moldingSampleApi.listOrders',
   "'huaxing'",
   'createDraft',
@@ -137,6 +144,7 @@ for (const requiredImplementation of [
   'handleExcelImportFile',
   'downloadOrderExcel',
   'printOverview',
+  'if (!canExportSelectedOrder.value)',
   'confirmPrintOverview',
   'closePrintPreview',
   'printPreviewVisible',
@@ -164,13 +172,16 @@ for (const requiredImplementation of [
   'moldingSampleApi.deleteOrder',
   'useAuthStore',
   'authStore.currentUser',
-  'authStore.hasPermission',
+  'authStore.can',
   'buildCompletionGate',
   'isExternalMoldingSampleOrder',
   '/modules/production/molding-sample-tasks',
   'appStore.setActiveFactory',
   'isProductionFactoryContextId',
   'rawMaterialDatabaseRows',
+  'rawMaterialPriceList',
+  'loadProtectedMaterialPrices',
+  'moldingSampleApi.getMaterialPrices(requestedFactoryId)',
   'RawMaterialSelectOption',
   'rawMaterialOptions',
   'rawMaterialOptionByValue',
@@ -195,7 +206,7 @@ for (const requiredImplementation of [
   'clearRawMaterialSelection',
   'handleRawMaterialPickerFocusOut',
 ]) {
-  assert.match(source, new RegExp(requiredImplementation))
+  assert.ok(source.includes(requiredImplementation), `Missing implementation: ${requiredImplementation}`)
 }
 
 assert.match(source, /type OverviewDisplayMode = 'board' \| 'list'/)
@@ -225,13 +236,18 @@ assert.match(source, /required_material_kg[\s\S]*actual_weight_kg[\s\S]*balanceW
 assert.match(source, /balanceAmountHkd/)
 
 assert.equal(source.includes('v-model="createDraft.doc_number"'), false, 'new-order form should not bind an unused file-number input')
+assert.equal(source.includes('v-model="createDraft.id"'), false, 'new-order form should not expose the generated order identifier as an editable field')
 assert.match(source, /完整单据数据/)
 assert.match(source, /data-testid="molding-sample-print-preview"/)
 assert.match(source, /@click="confirmPrintOverview"/)
 assert.match(source, /window\.print\(\)/)
-assert.match(source, /文件编号/)
-assert.match(source, /啤机确认机台/)
-assert.match(source, /production_machine/)
+assert.doesNotMatch(source, /文件编号/)
+assert.doesNotMatch(source, /啤机确认机台/)
+assert.doesNotMatch(source, /啤办费\(RMB\)|啤办费\(HKD\)|回填实际用料和啤办费/)
+assert.match(source, /data-testid="molding-sample-detail-table"/)
+assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*工模尺寸[\s\S]*模具在厂[\s\S]*回厂时间/)
+assert.doesNotMatch(source, /data-testid="molding-sample-detail-table"[\s\S]*适配机型/)
+assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*v-for="item in selectedItems"/)
 assert.match(source, /展开完整数据/)
 assert.match(source, /收起完整数据/)
 assert.match(source, /填写部/)
@@ -250,25 +266,24 @@ assert.match(source, /role="table"/)
 assert.match(source, /<div class="space-y-4 xl:contents">/)
 assert.match(source, /<aside class="space-y-4 xl:col-start-2 xl:row-start-1">/)
 assert.match(source, /<section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">/)
-assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_150px_112px_110px_138px_190px_112px_124px_74px_96px_82px_92px_112px_118px_138px_160px_72px\]'/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_110px_138px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_160px_72px\]'/)
 assert.match(source, /:class="createLineGridClass"/)
 assert.match(source, /role="columnheader">原料价格\(HKD\/磅\)<\/div>/)
-assert.match(source, /role="columnheader">整啤毛重\(g\)<\/div>/)
+assert.doesNotMatch(source, /role="columnheader">整啤毛重\(g\)<\/div>/)
 assert.match(source, /role="columnheader">所需用料\(kg\)<\/div>/)
 assert.match(source, /data-testid="create-line-material-price"/)
 assert.match(source, /getRawMaterialUnitPrice\(line\.material\)/)
-assert.match(source, /v-model="line\.gross_weight_g"/)
 assert.match(source, /v-model="line\.required_material_kg"/)
-assert.match(source, /data-testid="create-line-gross-weight"/)
+assert.doesNotMatch(source, /data-testid="create-line-gross-weight"/)
 assert.match(source, /data-testid="create-line-required-material"/)
 assert.match(source, /v-model="line\.notes"/)
-assert.match(source, /min-w-\[2240px\]/)
+assert.match(source, /min-w-\[2120px\]/)
 assert.match(source, /columnheader">工模尺寸/)
-assert.match(source, /columnheader">适配机型/)
+assert.doesNotMatch(source, /columnheader">适配机型/)
 assert.match(source, /columnheader">模具是否在厂/)
 assert.match(source, /columnheader">模具回厂时间/)
 assert.match(source, /v-model="line\.mold_dimensions"/)
-assert.match(source, /v-model="line\.machine_type"/)
+assert.doesNotMatch(source, /data-testid="create-line-machine-type"/)
 assert.match(source, /v-model="line\.mold_presence_status"/)
 assert.match(source, /v-model="line\.mold_return_time"/)
 assert.match(source, /data-testid="create-line-material"[\s\S]*role="combobox"[\s\S]*aria-label="选择所需用料"/)
@@ -290,7 +305,7 @@ assert.doesNotMatch(source, /grid-cols-\[44px_132px_144px_132px_184px_96px_88px_
 assert.doesNotMatch(source, /role="columnheader">颜色 \/ PMS<\/div>/)
 assert.match(source, /role="columnheader">颜色<\/div>[\s\S]*role="columnheader">PMS<\/div>/)
 assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
-assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.gross_weight_g"[\s\S]*v-model="line\.required_material_kg"[\s\S]*v-model="line\.required_date"/)
+assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.required_material_kg"[\s\S]*v-model="line\.required_date"[\s\S]*v-model="line\.mold_dimensions"[\s\S]*v-model="line\.notes"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
 assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
 assert.match(source, /moldingSampleApi\.previewOrderExcel\(workbook,\s*\{\s*factory_id:\s*selectedFactoryId\.value,\s*\}\)/)

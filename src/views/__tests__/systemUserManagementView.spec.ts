@@ -65,12 +65,42 @@ describe('SystemUserManagementView source contract', () => {
       'departmentScopesForSelectedRequest',
       'allFactoryScopeLabel',
       'molding_sample:create',
+      '跨厂查看啤办单据',
+      'molding_sample:cross_factory_read',
+      '跨厂查看啤办成本',
+      'molding_sample:cross_factory_cost_read',
+      'group_molding_readonly',
+      'molding_production_observer',
+      'buildApprovalRoleAssignments',
+      '工程师默认组合授权',
+      '外厂隐藏成本',
+      '不包含主管审核、啤机生产写入、仓库出入库、敏感审计或跨厂成本',
       'selectedRequest',
       'route.query.request_id',
       '停用',
       '恢复',
+      "userStatusFilter = ref<'all' | 'active' | 'suspended' | 'retired'>('all')",
+      "retired: { label: '已离职', toneClass: 'pill-slate' }",
+      "userStatusPresentation(user.status).label",
+      "userStatusPresentation(user.status).toneClass",
+      "label: '未知状态'",
+      'aria-label="搜索用户"',
+      '配置权限',
+      '/system/users/${encodeURIComponent(user.id)}/access',
+      '高级权限管理',
+      '/system/iam/permissions',
     ]) {
       expect(source).toContain(requiredSource)
     }
+
+    const readonlyPreset = source.match(/group_molding_readonly:\s*\[([\s\S]*?)\],/)
+    expect(readonlyPreset?.[1]).toContain("'molding_sample:cross_factory_read'")
+    expect(readonlyPreset?.[1]).not.toContain('molding_sample:create')
+    expect(readonlyPreset?.[1]).not.toContain('molding_sample:cross_factory_cost_read')
+
+    const engineerPreset = source.match(/engineer:\s*\[([\s\S]*?)\],/)
+    expect(engineerPreset?.[1]).toContain("'molding_sample:export'")
+    expect(engineerPreset?.[1]).not.toContain('molding_sample:supervisor_review')
+    expect(engineerPreset?.[1]).not.toContain('molding_sample:production_start')
   })
 })

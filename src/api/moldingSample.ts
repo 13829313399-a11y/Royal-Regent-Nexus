@@ -40,6 +40,30 @@ export interface MoldingSampleDetailResponse {
   audit_logs: MoldingSampleAuditLog[]
   notifications: MoldingSampleNotificationResponse[]
   problems: MoldingSampleProblem[]
+  read_source?: MoldingSampleReadSource
+  can_view_cost?: boolean
+  read_only?: boolean
+  access?: MoldingSampleAccess
+}
+
+export type MoldingSampleReadSource = 'local' | 'cross'
+
+export interface MoldingSampleAccess {
+  read_source?: MoldingSampleReadSource
+  can_view_cost?: boolean
+  read_only?: boolean
+}
+
+export function resolveMoldingSampleAccess(response: Pick<
+  MoldingSampleDetailResponse,
+  'read_source' | 'can_view_cost' | 'read_only' | 'access'
+>): Required<MoldingSampleAccess> {
+  const readSource = response.access?.read_source ?? response.read_source ?? 'local'
+  return {
+    read_source: readSource,
+    can_view_cost: response.access?.can_view_cost ?? response.can_view_cost ?? true,
+    read_only: response.access?.read_only ?? response.read_only ?? readSource === 'cross',
+  }
 }
 
 export interface MoldingSampleStatusRequest {
@@ -152,6 +176,7 @@ export interface MoldingSampleNotificationResponse {
   factory_id: string
   target_module: string
   target_role: string
+  target_department?: string
   event_type: string
   title: string
   message: string
@@ -296,8 +321,9 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const response = await client.patch<MoldingSampleDetailResponse>(`/injection/${orderId}/items`, payload)
       return response.data
     },
-    async getMaterialPrices() {
-      const response = await client.get<MaterialPricesResponse>('/material-prices')
+    async getMaterialPrices(factoryId?: string) {
+      const query = factoryId ? `?factory_id=${encodeURIComponent(factoryId)}` : ''
+      const response = await client.get<MaterialPricesResponse>(`/material-prices${query}`)
       return response.data
     },
     async updateMaterialPrices(payload: MaterialPricesUpdateRequest) {

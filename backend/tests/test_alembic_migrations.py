@@ -18,6 +18,9 @@ INJECTION_SCHEDULE_MIGRATION_REVISION = "20260708_0006"
 AUTH_REGISTRATION_MIGRATION_REVISION = "20260708_0007"
 MOLD_METADATA_MIGRATION_REVISION = "20260710_0008"
 AUTH_AVATAR_MIGRATION_REVISION = "20260710_0009"
+CONFIGURABLE_IAM_MIGRATION_REVISION = "20260711_0010"
+PRICING_MIGRATION_REVISION = "20260711_0011"
+NOTIFICATION_DEPARTMENT_MIGRATION_REVISION = "20260712_0012"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -42,6 +45,19 @@ AUTH_TABLES = [
     "auth_registration_requests",
     "system_notifications",
 ]
+CONFIGURABLE_IAM_TABLES = [
+    "employee_profiles",
+    "auth_permission_metadata",
+    "auth_role_metadata",
+    "auth_role_binding_metadata",
+    "auth_user_permission_overrides",
+    "auth_user_authorization_revisions",
+    "auth_iam_state",
+    "auth_access_requests",
+    "auth_access_request_items",
+    "auth_authorization_previews",
+    "auth_authorization_events",
+]
 REMOVED_PIN_TABLES = [
     "molding_sample_auth_pins",
     "molding_sample_pin_attempts",
@@ -54,7 +70,24 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [AUTH_AVATAR_MIGRATION_REVISION]
+    assert script.get_heads() == [NOTIFICATION_DEPARTMENT_MIGRATION_REVISION]
+
+    notification_department_revision = script.get_revision(NOTIFICATION_DEPARTMENT_MIGRATION_REVISION)
+    assert notification_department_revision.down_revision == PRICING_MIGRATION_REVISION
+    notification_department_content = Path(notification_department_revision.path).read_text(encoding="utf-8")
+    assert "target_department" in notification_department_content
+
+    pricing_revision = script.get_revision(PRICING_MIGRATION_REVISION)
+    assert pricing_revision.down_revision == CONFIGURABLE_IAM_MIGRATION_REVISION
+    pricing_migration_content = Path(pricing_revision.path).read_text(encoding="utf-8")
+    assert "pricing_quotes" in pricing_migration_content
+
+    iam_revision = script.get_revision(CONFIGURABLE_IAM_MIGRATION_REVISION)
+    assert iam_revision.down_revision == AUTH_AVATAR_MIGRATION_REVISION
+    iam_migration_content = Path(iam_revision.path).read_text(encoding="utf-8")
+    for table_name in CONFIGURABLE_IAM_TABLES:
+        assert table_name in iam_migration_content
+    assert "op.add_column" not in iam_migration_content
 
     avatar_revision = script.get_revision(AUTH_AVATAR_MIGRATION_REVISION)
     assert avatar_revision.down_revision == MOLD_METADATA_MIGRATION_REVISION
@@ -143,6 +176,8 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
         assert f"create table {table_name}" in sql
     for table_name in AUTH_TABLES:
         assert f"create table {table_name}" in sql
+    for table_name in CONFIGURABLE_IAM_TABLES:
+        assert f"create table {table_name}" in sql
     for table_name in REMOVED_PIN_TABLES:
         assert f"drop table {table_name}" in sql
 
@@ -154,3 +189,5 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "mold_presence_status" in sql
     assert "avatar_png" in sql
     assert "avatar_version" in sql
+    assert "target_department" in sql
+    assert "create table pricing_quotes" in sql

@@ -17,7 +17,8 @@ for (const requiredCopy of [
   '开始生产',
   '撤回开始生产',
   '保存回填',
-  '啤机确认机台',
+  '打印任务单',
+  '确认打印',
   '完成并回传',
   '撤回完成',
   '啤机回填明细',
@@ -40,12 +41,27 @@ for (const requiredImplementation of [
   'moldingSampleApi.listOrders',
   'moldingSampleApi.listNotifications',
   'moldingSampleApi.updateItems',
-  'production_machine',
+  'data-testid="molding-sample-task-print-preview"',
+  'data-testid="molding-sample-task-print-area"',
+  'openTaskPrintPreview',
+  'confirmTaskPrint',
+  'window.print()',
   'moldingSampleApi.updateStatus',
   "'撤回开始生产'",
   "'撤回完成'",
   'moldingSampleApi.updateNotification',
   'moldingSampleApi.createProblem',
+  'moldingSampleApi.getMaterialPrices',
+  'loadProtectedMaterialPrices',
+  'protectedMaterialPrices',
+  'protectedRmbToHkdRate',
+  'canProductionPermission',
+  'molding_sample:production_read',
+  'molding_sample:production_start',
+  'molding_sample:production_fillback',
+  'molding_sample:production_complete',
+  'molding_sample:notification_read',
+  'Promise.resolve\\(\\[\\]\\)',
   'apiNotifications',
   "'error'",
   'selectedNotification',
@@ -83,6 +99,9 @@ for (const requiredImplementation of [
 assert.match(source, /<div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">[\s\S]*<div class="fixed right-4 top-4 z-50 flex items-center gap-2[\s\S]*当前厂区：\{\{ activeFactory\.shortName \}\}[\s\S]*<AccountMenu \/>/)
 assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
 assert.match(source, /total_material_cost/)
+assert.doesNotMatch(source, /啤机确认机台/)
+assert.doesNotMatch(source, /文件编号/)
+assert.doesNotMatch(source, /production_machine/)
 for (const removedFeeCopy of ['啤办费', 'total_injection_cost', 'total_cost']) {
   assert.equal(source.includes(removedFeeCopy), false, `${removedFeeCopy} should not be part of the production task view`)
 }
@@ -95,6 +114,8 @@ for (const excludedWorkbenchCopy of [
   '价格口径',
   'PIN',
   'moldingSampleWorkflowMock',
+  'moldingSampleCostMock',
+  'hasFactoryScope',
   'moldingSampleFactoryRecords',
   "apiState.value === 'fallback'",
   "apiState === 'fallback'",

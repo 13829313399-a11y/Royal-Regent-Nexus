@@ -1,4 +1,5 @@
 import importlib
+import json
 import sqlite3
 import sys
 from io import BytesIO
@@ -8,6 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
@@ -150,8 +152,16 @@ def login_as(client, username: str):
 
 TEST_USER_SPECS = {
     "engineer": ("user-engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
+    "engineer_peer": ("user-engineer-peer", "华兴工程同事", "engineer", "huaxing", "engineering"),
     "supervisor": ("user-supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),
     "manager": ("user-manager", "华兴经理", "manager", "huaxing", "management"),
+    "warehouse_keeper": (
+        "user-warehouse-keeper",
+        "华兴PMC仓管",
+        "warehouse_keeper",
+        "huaxing",
+        "pmc-warehouse",
+    ),
     "carton_warehouse": ("user-carton-warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
     "qa_inspector": ("user-qa-inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
     "molding_clerk": ("user-molding-clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
@@ -207,7 +217,75 @@ def ensure_test_user(username: str) -> None:
                     department=department,
                 )
             )
+        profile = db.get(auth_models.EmployeeProfile, user_id)
+        if profile is None:
+            db.add(
+                auth_models.EmployeeProfile(
+                    user_id=user_id,
+                    primary_factory_id=factory_id,
+                    primary_department=department,
+                    position="测试岗位",
+                    phone="",
+                    email="",
+                    confirmation_status="confirmed",
+                    source_registration_request_id="",
+                    created_at=auth_service.now_text(),
+                    updated_at=auth_service.now_text(),
+                )
+            )
+        else:
+            profile.primary_factory_id = factory_id
+            profile.primary_department = department
+            profile.confirmation_status = "confirmed"
+            profile.updated_at = auth_service.now_text()
         db.commit()
+
+
+def grant_permission_override(
+    username: str,
+    permission_code: str,
+    *,
+    factory_id: str = "*",
+    department: str = "*",
+) -> None:
+    ensure_test_user(username)
+    user_id = TEST_USER_SPECS[username][0]
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    with db_module.SessionLocal() as db:
+        permission = db.scalar(
+            select(auth_models.AuthPermission).where(
+                auth_models.AuthPermission.code == permission_code
+            )
+        )
+        assert permission is not None, f"permission is not registered: {permission_code}"
+        override_id = f"test:{user_id}:{permission.id}:{factory_id}:{department}"
+        if db.get(auth_models.AuthUserPermissionOverride, override_id) is None:
+            db.add(
+                auth_models.AuthUserPermissionOverride(
+                    id=override_id,
+                    user_id=user_id,
+                    permission_id=permission.id,
+                    effect="allow",
+                    factory_id=factory_id,
+                    department=department,
+                    status="active",
+                    valid_from="",
+                    valid_until="",
+                    reason="跨厂啤办只读测试",
+                    source_type="test",
+                    source_id="",
+                    created_by_user_id="",
+                    approved_by_user_id="",
+                    revoked_by_user_id="",
+                    revoked_at="",
+                    revoke_reason="",
+                    created_at=auth_service.now_text(),
+                    updated_at=auth_service.now_text(),
+                )
+            )
+            db.commit()
 
 
 def sample_order_payload(order_id="BP-API-001", external=False):
@@ -345,6 +423,14 @@ def client(monkeypatch):
         yield test_client
 
 
+@pytest.fixture()
+def enforce_client(monkeypatch):
+    monkeypatch.setenv("AUTHZ_MODE", "enforce")
+    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "false")
+    with make_client(monkeypatch) as test_client:
+        yield test_client
+
+
 def test_unauthenticated_access_to_molding_sample_api_is_rejected(client):
     response = client.get("/api/injection")
 
@@ -381,6 +467,71 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= audit_columns
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
     assert {"mold_dimensions", "mold_presence_status"} <= item_columns
+
+
+def test_server_side_material_price_seed_is_additive_once_and_never_overwrites_existing_rows(client):
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    molding_service = importlib.import_module("app.services.molding_sample")
+    source_rows = json.loads(molding_service.RAW_MATERIAL_PRICES_PATH.read_text(encoding="utf-8"))
+    assert len(source_rows) == 196
+    assert sum("other_cost_hkd_per_lb" in row for row in source_rows) == 48
+    assert next(row for row in source_rows if row["material"] == "HIPS HI425") == {
+        "material": "HIPS HI425",
+        "unit_price": 6.27,
+        "other_cost_hkd_per_lb": 0.12,
+    }
+    with db_module.SessionLocal() as db:
+        prices = list(db.scalars(select(molding_models.MoldingSampleMaterialPrice)).all())
+        price_by_material = {price.material: price.unit_price for price in prices}
+        assert len(prices) == len(price_by_material)
+        assert len(prices) == 203
+        assert price_by_material["HIPS HI425"] == pytest.approx(6.27)
+        assert price_by_material["ABS SD0150W"] == pytest.approx(7.537445)
+        assert price_by_material["HIPS 425"] == pytest.approx(5.5)
+
+        db.query(molding_models.MoldingSampleMaterialPrice).delete()
+        marker = db.get(
+            molding_models.MoldingSampleSetting,
+            molding_service.RAW_MATERIAL_PRICES_MARKER_KEY,
+        )
+        db.delete(marker)
+        db.add_all(
+            [
+                molding_models.MoldingSampleMaterialPrice(
+                    material="HIPS HI425",
+                    unit_price=99.0,
+                    notes="经理自定义同名价不得覆盖",
+                ),
+                molding_models.MoldingSampleMaterialPrice(
+                    material="经理自定义材料",
+                    unit_price=9.99,
+                    notes="不得删除",
+                ),
+            ]
+        )
+        db.commit()
+
+        molding_service.seed_molding_sample_defaults(db)
+        first_pass = list(db.scalars(select(molding_models.MoldingSampleMaterialPrice)).all())
+        first_pass_by_material = {price.material: price for price in first_pass}
+        assert len(first_pass) == 204
+        assert first_pass_by_material["HIPS HI425"].unit_price == 99.0
+        assert first_pass_by_material["HIPS HI425"].notes == "经理自定义同名价不得覆盖"
+        assert first_pass_by_material["经理自定义材料"].unit_price == 9.99
+        assert db.get(
+            molding_models.MoldingSampleSetting,
+            molding_service.RAW_MATERIAL_PRICES_MARKER_KEY,
+        ) is not None
+
+        db.delete(first_pass_by_material["ABS SD0150W"])
+        db.commit()
+        molding_service.seed_molding_sample_defaults(db)
+        assert db.scalar(
+            select(molding_models.MoldingSampleMaterialPrice).where(
+                molding_models.MoldingSampleMaterialPrice.material == "ABS SD0150W"
+            )
+        ) is None
 
 
 def test_molding_sample_read_endpoints_require_read_permission(client):
@@ -514,6 +665,378 @@ def test_factory_filtered_order_list_returns_only_the_requested_factory_data(cli
     assert empty_response.json() == []
 
 
+def test_same_factory_shared_departments_can_read_molding_samples(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-SHARED-LOCAL-READ-001"),
+    ).status_code == 201
+
+    for username in ("engineer", "supervisor", "manager", "warehouse_keeper", "molding_clerk"):
+        login_as(client, username)
+        response = client.get("/api/injection/BP-SHARED-LOCAL-READ-001")
+        assert response.status_code == 200, username
+        assert response.json()["read_source"] == "local"
+        assert response.json()["can_view_cost"] is True
+
+    login_as(client, "qa_inspector")
+    assert client.get("/api/injection/BP-SHARED-LOCAL-READ-001").status_code == 403
+
+
+def test_production_read_only_allows_same_factory_but_never_foreign_factory(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    huaxing_payload = sample_order_payload("BP-PRODUCTION-READ-HX-001")
+    huadeng_payload = sample_order_payload("BP-PRODUCTION-READ-HD-001")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=huaxing_payload).status_code == 201
+    assert client.post("/api/injection", json=huadeng_payload).status_code == 201
+
+    grant_permission_override(
+        "qa_inspector",
+        "molding_sample:production_read",
+        factory_id="huaxing",
+        department="molding",
+    )
+    grant_permission_override(
+        "qa_inspector",
+        "molding_sample:production_read",
+        factory_id="huadeng",
+        department="molding",
+    )
+    login_as(client, "qa_inspector")
+
+    local_response = client.get("/api/injection/BP-PRODUCTION-READ-HX-001")
+    assert local_response.status_code == 200
+    assert local_response.json()["read_source"] == "local"
+    assert client.get("/api/injection/BP-PRODUCTION-READ-HD-001").status_code == 403
+
+    list_response = client.get("/api/injection")
+    assert list_response.status_code == 200
+    assert [row["order"]["id"] for row in list_response.json()] == ["BP-PRODUCTION-READ-HX-001"]
+
+    grant_permission_override(
+        "qa_inspector",
+        "molding_sample:cross_factory_read",
+        factory_id="huadeng",
+        department="qa",
+    )
+    login_as(client, "qa_inspector")
+    cross_response = client.get("/api/injection/BP-PRODUCTION-READ-HD-001")
+    assert cross_response.status_code == 200
+    assert cross_response.json()["read_source"] == "cross"
+    assert cross_response.json()["can_view_cost"] is False
+
+
+def test_manager_keeps_existing_draft_edit_and_delete_permissions(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-MANAGER-DRAFT-WRITE-001"),
+    ).status_code == 201
+
+    login_as(client, "manager")
+    edited_payload = sample_order_payload("BP-MANAGER-DRAFT-WRITE-001")
+    edited_payload["order"]["product_name"] = "经理修正草稿"
+    edit_response = client.put(
+        "/api/injection/BP-MANAGER-DRAFT-WRITE-001",
+        json=edited_payload,
+    )
+    assert edit_response.status_code == 200
+    assert edit_response.json()["order"]["product_name"] == "经理修正草稿"
+
+    assert client.delete("/api/injection/BP-MANAGER-DRAFT-WRITE-001").status_code == 204
+
+
+def test_engineer_can_only_edit_and_delete_orders_they_created(enforce_client):
+    client = enforce_client
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-ENGINEER-OWNER-001")
+    payload["order"]["eng_name"] = "华兴工程同事"
+    assert client.post("/api/injection", json=payload).status_code == 201
+
+    login_as(client, "engineer_peer")
+    peer_edit_payload = sample_order_payload("BP-ENGINEER-OWNER-001")
+    peer_edit_payload["order"]["eng_name"] = "华兴工程同事"
+    peer_edit_payload["order"]["product_name"] = "非开单工程师误改"
+    peer_edit_response = client.put(
+        "/api/injection/BP-ENGINEER-OWNER-001",
+        json=peer_edit_payload,
+    )
+    assert peer_edit_response.status_code == 403
+    assert "本人创建" in peer_edit_response.json()["detail"]
+
+    peer_delete_response = client.delete("/api/injection/BP-ENGINEER-OWNER-001")
+    assert peer_delete_response.status_code == 403
+    assert "本人创建" in peer_delete_response.json()["detail"]
+
+    login_as(client, "engineer")
+    owner_edit_payload = sample_order_payload("BP-ENGINEER-OWNER-001")
+    owner_edit_payload["order"]["product_name"] = "开单工程师修正"
+    owner_edit_response = client.put(
+        "/api/injection/BP-ENGINEER-OWNER-001",
+        json=owner_edit_payload,
+    )
+    assert owner_edit_response.status_code == 200
+    assert owner_edit_response.json()["order"]["product_name"] == "开单工程师修正"
+    assert client.delete("/api/injection/BP-ENGINEER-OWNER-001").status_code == 204
+
+
+def test_molding_clerk_cannot_edit_or_delete_engineering_draft(enforce_client):
+    client = enforce_client
+    login_as(client, "engineer")
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-MOLDING-DRAFT-BLOCK-001"),
+    ).status_code == 201
+
+    login_as(client, "molding_clerk")
+    edit_payload = sample_order_payload("BP-MOLDING-DRAFT-BLOCK-001")
+    edit_payload["order"]["product_name"] = "啤机部误改"
+    assert client.put(
+        "/api/injection/BP-MOLDING-DRAFT-BLOCK-001",
+        json=edit_payload,
+    ).status_code == 403
+    assert client.delete("/api/injection/BP-MOLDING-DRAFT-BLOCK-001").status_code == 403
+
+    detail_response = client.get("/api/injection/BP-MOLDING-DRAFT-BLOCK-001")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["order"]["product_name"] == "链条枪"
+
+
+def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowed(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    huadeng_payload = sample_order_payload("BP-CROSS-FACTORY-READ-001")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=huadeng_payload).status_code == 201
+
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, "BP-CROSS-FACTORY-READ-001")
+        item = db.get(molding_models.MoldingSampleItem, "BP-CROSS-FACTORY-READ-001-001")
+        order.status = "已完成"
+        order.completed_date = "2026-07-12"
+        item.actual_weight_kg = 2.2
+        item.actual_amount_hkd = 26.4
+        item.injection_cost = 80
+        item.injection_cost_hkd = 86.4
+        item.exchange_rate_at_save = 1.08
+        db.commit()
+
+    login_as(client, "engineer")
+    assert client.get("/api/injection/BP-CROSS-FACTORY-READ-001").status_code == 403
+
+    grant_permission_override(
+        "engineer",
+        "molding_sample:cross_factory_read",
+        factory_id="*",
+        department="*",
+    )
+    login_as(client, "engineer")
+
+    detail_response = client.get("/api/injection/BP-CROSS-FACTORY-READ-001")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["read_source"] == "cross"
+    assert detail["can_view_cost"] is False
+    assert detail["items"][0]["actual_weight_kg"] == 2.2
+    assert detail["items"][0]["actual_amount_hkd"] is None
+    assert detail["items"][0]["injection_cost"] is None
+    assert detail["items"][0]["injection_cost_hkd"] is None
+    assert detail["items"][0]["exchange_rate_at_save"] is None
+
+    listed = client.get("/api/injection", params={"factory_id": "huadeng"})
+    assert listed.status_code == 200
+    assert listed.json()[0]["read_source"] == "cross"
+    assert listed.json()[0]["items"][0]["actual_amount_hkd"] is None
+
+    assert client.get(
+        "/api/injection/BP-CROSS-FACTORY-READ-001/export-excel"
+    ).status_code == 403
+    assert client.get(
+        "/api/injection/export-excel",
+        params=[("order_ids", "BP-CROSS-FACTORY-READ-001")],
+    ).status_code == 403
+    assert client.get(
+        "/api/material-prices",
+        params={"factory_id": "huadeng"},
+    ).status_code == 403
+    assert client.get(
+        "/api/injection-total-costs",
+        params={"factory_id": "huadeng"},
+    ).status_code == 403
+    unscoped_totals = client.get("/api/injection-total-costs")
+    assert unscoped_totals.status_code == 200
+    assert "BP-CROSS-FACTORY-READ-001" not in {
+        row["order_id"] for row in unscoped_totals.json()
+    }
+
+    edited_payload = sample_order_payload("BP-CROSS-FACTORY-READ-001")
+    edited_payload["order"]["factory_id"] = "huadeng"
+    edited_payload["order"]["product_name"] = "跨厂不可修改"
+    assert client.put(
+        "/api/injection/BP-CROSS-FACTORY-READ-001",
+        json=edited_payload,
+    ).status_code == 403
+
+    grant_permission_override(
+        "engineer",
+        "molding_sample:cross_factory_cost_read",
+        factory_id="*",
+        department="*",
+    )
+    login_as(client, "engineer")
+
+    cost_detail_response = client.get("/api/injection/BP-CROSS-FACTORY-READ-001")
+    assert cost_detail_response.status_code == 200
+    cost_detail = cost_detail_response.json()
+    assert cost_detail["read_source"] == "cross"
+    assert cost_detail["can_view_cost"] is True
+    assert cost_detail["items"][0]["actual_amount_hkd"] == 26.4
+    assert cost_detail["items"][0]["injection_cost"] == 80
+    assert cost_detail["items"][0]["injection_cost_hkd"] == 86.4
+    assert cost_detail["items"][0]["exchange_rate_at_save"] == 1.08
+
+    assert client.get(
+        "/api/material-prices",
+        params={"factory_id": "huadeng"},
+    ).status_code == 200
+    total_cost_response = client.get(
+        "/api/injection-total-costs",
+        params={"factory_id": "huadeng"},
+    )
+    assert total_cost_response.status_code == 200
+    assert [row["order_id"] for row in total_cost_response.json()] == ["BP-CROSS-FACTORY-READ-001"]
+    assert "BP-CROSS-FACTORY-READ-001" in {
+        row["order_id"] for row in client.get("/api/injection-total-costs").json()
+    }
+
+    assert client.get(
+        "/api/injection/BP-CROSS-FACTORY-READ-001/export-excel"
+    ).status_code == 403
+
+
+def test_foreign_factory_regular_permissions_cannot_bypass_organization_gate(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    huadeng_payload = sample_order_payload("BP-FOREIGN-HARD-GATE-001")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=huadeng_payload).status_code == 201
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, "BP-FOREIGN-HARD-GATE-001")
+        order.status = "待生产"
+        db.commit()
+
+    for permission_code in (
+        "molding_sample:read",
+        "molding_sample:create",
+        "molding_sample:edit_draft",
+        "molding_sample:export",
+    ):
+        grant_permission_override(
+            "engineer",
+            permission_code,
+            factory_id="huadeng",
+            department="engineering",
+        )
+
+    login_as(client, "engineer")
+    assert client.get("/api/injection/BP-FOREIGN-HARD-GATE-001").status_code == 403
+
+    grant_permission_override(
+        "engineer",
+        "molding_sample:cross_factory_read",
+        factory_id="huadeng",
+        department="*",
+    )
+    grant_permission_override(
+        "engineer",
+        "system:user_manage",
+        factory_id="huadeng",
+        department="management",
+    )
+    login_as(client, "engineer")
+    readable = client.get("/api/injection/BP-FOREIGN-HARD-GATE-001")
+    assert readable.status_code == 200
+    assert readable.json()["read_source"] == "cross"
+    assert readable.json()["can_view_cost"] is False
+
+    forbidden_create = sample_order_payload("BP-FOREIGN-HARD-GATE-CREATE")
+    forbidden_create["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=forbidden_create).status_code == 403
+
+    forbidden_edit = sample_order_payload("BP-FOREIGN-HARD-GATE-001")
+    forbidden_edit["order"]["factory_id"] = "huadeng"
+    forbidden_edit["order"]["product_name"] = "外厂越权修改"
+    assert client.put(
+        "/api/injection/BP-FOREIGN-HARD-GATE-001",
+        json=forbidden_edit,
+    ).status_code == 403
+    assert client.get(
+        "/api/injection/BP-FOREIGN-HARD-GATE-001/export-excel"
+    ).status_code == 403
+    assert client.delete("/api/injection/BP-FOREIGN-HARD-GATE-001").status_code == 403
+
+    login_as(client, "admin")
+    unchanged = client.get("/api/injection/BP-FOREIGN-HARD-GATE-001")
+    assert unchanged.status_code == 200
+    assert unchanged.json()["order"]["product_name"] == "链条枪"
+
+
+def test_update_order_cannot_move_order_to_another_factory(enforce_client):
+    client = enforce_client
+    login_as(client, "engineer")
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-FACTORY-IMMUTABLE-001"),
+    ).status_code == 201
+
+    moved_payload = sample_order_payload("BP-FACTORY-IMMUTABLE-001")
+    moved_payload["order"]["factory_id"] = "huadeng"
+    moved_payload["order"]["product_name"] = "不应提交的跨厂变更"
+    response = client.put(
+        "/api/injection/BP-FACTORY-IMMUTABLE-001",
+        json=moved_payload,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "啤办单厂区归属不可通过编辑接口变更"
+
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, "BP-FACTORY-IMMUTABLE-001")
+        assert order.factory_id == "huaxing"
+        assert order.product_name == "链条枪"
+
+
+def test_create_permission_without_read_is_rejected_before_insert(enforce_client):
+    client = enforce_client
+    grant_permission_override(
+        "qa_inspector",
+        "molding_sample:create",
+        factory_id="huaxing",
+        department="engineering",
+    )
+    login_as(client, "qa_inspector")
+
+    response = client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-CREATE-WITHOUT-READ-001"),
+    )
+    assert response.status_code == 403
+
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        assert db.get(molding_models.MoldingSampleOrder, "BP-CREATE-WITHOUT-READ-001") is None
+
+
 def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
     db_module = importlib.import_module("app.db")
     auth_models = importlib.import_module("app.models.auth")
@@ -572,7 +1095,7 @@ def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
     blocked_payload["order"]["factory_id"] = "huakang-a"
     blocked_response = client.post("/api/injection", json=blocked_payload)
     assert blocked_response.status_code == 403
-    assert blocked_response.json()["detail"] == "无授权范围内操作权限"
+    assert blocked_response.json()["detail"] == "无该厂区啤办单查看权限"
 
     allowed_payload = sample_order_payload("BP-CROSS-ALLOWED")
     allowed_payload["order"]["factory_id"] = "huaxing"
@@ -735,6 +1258,20 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert supervisor_manager_step_response.status_code == 403
 
     login_as(client, "molding_clerk")
+    waiting_fillback_response = client.patch(
+        "/api/injection/BP-WORKFLOW-001/items",
+        json={
+            "items": [
+                {
+                    "id": "BP-WORKFLOW-001-001",
+                    "production_machine": "待生产机台-01",
+                }
+            ]
+        },
+    )
+    assert waiting_fillback_response.status_code == 200
+    assert waiting_fillback_response.json()["items"][0]["production_machine"] == "待生产机台-01"
+
     start_response = client.patch(
         "/api/injection/BP-WORKFLOW-001/status",
         json={"action": "开始处理"},
@@ -779,6 +1316,24 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert completed_response.status_code == 200
     assert completed_response.json()["order"]["status"] == "已完成"
     assert completed_response.json()["order"]["completed_date"] == "2026-07-01"
+
+    completed_fillback_response = client.patch(
+        "/api/injection/BP-WORKFLOW-001/items",
+        json={
+            "items": [
+                {
+                    "id": "BP-WORKFLOW-001-001",
+                    "actual_weight_kg": 99,
+                }
+            ]
+        },
+    )
+    assert completed_fillback_response.status_code == 403
+    assert "待生产或生产中" in completed_fillback_response.json()["detail"]
+
+    completed_detail_response = client.get("/api/injection/BP-WORKFLOW-001")
+    assert completed_detail_response.status_code == 200
+    assert completed_detail_response.json()["items"][0]["actual_weight_kg"] == 2
 
 
 def test_engineer_can_withdraw_pending_order_and_resubmit(client):
@@ -1078,6 +1633,52 @@ def test_production_problem_feedback_is_saved_and_visible_to_engineering(client)
     assert resolved_response.json()["resolved_at"] != ""
 
 
+def test_problem_update_denial_does_not_commit_status_change(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-PROBLEM-ATOMIC-001"),
+    ).status_code == 201
+
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        db.add(
+            molding_models.MoldingSampleProblem(
+                id="problem-atomic-001",
+                factory_id="huaxing",
+                order_type="injection",
+                order_id="BP-PROBLEM-ATOMIC-001",
+                order_number="62437",
+                description="不得被未授权处理",
+                reported_by="测试",
+                status="待处理",
+                created_at="2026-07-12 12:00:00",
+                resolved_at="",
+            )
+        )
+        db.commit()
+
+    grant_permission_override(
+        "qa_inspector",
+        "molding_sample:edit_draft",
+        factory_id="huaxing",
+        department="engineering",
+    )
+    login_as(client, "qa_inspector")
+    response = client.patch(
+        "/api/problems/problem-atomic-001",
+        json={"status": "已解决"},
+    )
+    assert response.status_code == 403
+
+    with db_module.SessionLocal() as db:
+        problem = db.get(molding_models.MoldingSampleProblem, "problem-atomic-001")
+        assert problem.status == "待处理"
+        assert problem.resolved_at == ""
+
+
 def test_manager_price_update_uses_logged_in_user_and_sensitive_audit(client):
     login_as(client, "engineer")
     blocked_response = client.post(
@@ -1204,6 +1805,53 @@ def test_trial_accounts_do_not_expose_unused_warehouse_permissions(client):
         json={"material": "HIPS 425", "batch_no": "HIPS-20260701-A", "location": "A-01", "initial_weight_kg": 3},
     )
     assert clerk_batch_response.status_code == 403
+
+
+def test_warehouse_read_endpoints_enforce_permissions_and_factory_scope(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    huaxing_payload = sample_order_payload("BP-WAREHOUSE-READ-HX-001")
+    huadeng_payload = sample_order_payload("BP-WAREHOUSE-READ-HD-001")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=huaxing_payload).status_code == 201
+    assert client.post("/api/injection", json=huadeng_payload).status_code == 201
+
+    for order_id in ("BP-WAREHOUSE-READ-HX-001", "BP-WAREHOUSE-READ-HD-001"):
+        response = client.post(
+            "/api/requisitions",
+            json={
+                "date": "2026-07-12",
+                "order_id": order_id,
+                "material": "HIPS 425",
+                "requested_weight_kg": 1.5,
+                "applicant": "测试申请人",
+                "notes": order_id,
+            },
+        )
+        assert response.status_code == 201
+
+    assert client.post(
+        "/api/inventory-batches",
+        json={
+            "material": "HIPS 425",
+            "batch_no": "HIPS-20260712-A",
+            "location": "A-01",
+            "initial_weight_kg": 10,
+        },
+    ).status_code == 201
+
+    login_as(client, "qa_inspector")
+    assert client.get("/api/requisitions").status_code == 403
+    assert client.get("/api/inventory-batches").status_code == 403
+    assert client.get("/api/inventory-movements").status_code == 403
+    assert client.get("/api/material-prices").status_code == 403
+
+    login_as(client, "warehouse_keeper")
+    requisitions = client.get("/api/requisitions")
+    assert requisitions.status_code == 200
+    assert [item["order_id"] for item in requisitions.json()] == ["BP-WAREHOUSE-READ-HX-001"]
+    assert client.get("/api/inventory-batches").status_code == 200
+    assert client.get("/api/inventory-movements").status_code == 200
 
 
 def test_export_and_import_molding_sample_excel_template(client):

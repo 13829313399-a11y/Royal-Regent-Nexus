@@ -51,6 +51,9 @@ SQLITE_LEGACY_COLUMNS = {
         ("actor_roles", "actor_roles TEXT NOT NULL DEFAULT ''"),
         ("factory_scope", "factory_scope VARCHAR(255) NOT NULL DEFAULT ''"),
     ],
+    "system_notifications": [
+        ("target_department", "target_department VARCHAR(64) NOT NULL DEFAULT ''"),
+    ],
 }
 
 
@@ -84,6 +87,7 @@ def init_db() -> None:
     from app.models import auth  # noqa: F401
     from app.models import injection_schedule  # noqa: F401
     from app.models import molding_sample  # noqa: F401
+    from app.models import pricing  # noqa: F401
     from app.services.auth import seed_auth_defaults
     from app.services.molding_sample import seed_molding_sample_defaults
 

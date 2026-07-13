@@ -4,13 +4,13 @@ import { describe, expect, it } from 'vitest'
 
 const enterpriseSource = readFileSync(join(process.cwd(), 'src/data/enterpriseMock.ts'), 'utf8')
 const moduleCenterSource = readFileSync(join(process.cwd(), 'src/views/ModuleCenterView.vue'), 'utf8')
-const moduleDetailSource = readFileSync(join(process.cwd(), 'src/views/ModuleDetailView.vue'), 'utf8')
 const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
 const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/modules/ModuleCard.vue'), 'utf8')
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
 const rawMaterialDatabaseSource = readFileSync(join(process.cwd(), 'src/data/rawMaterialDatabase.ts'), 'utf8')
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
+const internalPricingViewSource = readFileSync(join(process.cwd(), 'src/views/InternalPricingView.vue'), 'utf8')
 const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 
 describe('production module entry', () => {
@@ -91,6 +91,9 @@ describe('production module entry', () => {
     expect(rawMaterialSource).toMatch(/function mapRawMaterialRow/)
     expect(rawMaterialSource).toMatch(/supplier: source\.origin \|\| '未填写'/)
     expect(rawMaterialSource).toMatch(/spec: source\.commodityName/)
+    expect(rawMaterialSource).toContain('moldingSampleApi.getMaterialPrices(factoryId)')
+    expect(rawMaterialSource).toContain('loadProtectedMaterialPrices')
+    expect(rawMaterialSource).not.toContain('unitPriceHkdPerLb: source.unitPriceHkdPerLb')
     expect(rawMaterialSource).toMatch(/显示 \{\{ materialStartIndex \}\}-\{\{ materialEndIndex \}\} 条/)
     expect(rawMaterialSource).not.toMatch(/const rawMaterialRows: RawMaterialRow\[\]/)
     expect(rawMaterialSource).not.toMatch(/rawMaterialDatabaseColumns/)
@@ -115,34 +118,56 @@ describe('production module entry', () => {
     expect(moduleCardSource).toMatch(/@click\.stop/)
   })
 
-  it('registers the customer price conversion desk inside the sales quote center', () => {
-    expect(enterpriseSource).toMatch(/id: 'quote-center'/)
+  it('registers customer conversion and internal pricing as two independent sales modules', () => {
+    expect(enterpriseSource).toMatch(/id: 'customer-price-conversion'/)
+    expect(enterpriseSource).toMatch(/title: '客价转换台'/)
     expect(enterpriseSource).toMatch(/选择客户、导入内部报价、输出报客价 Excel/)
-    expect(enterpriseSource).toMatch(/待转换 2 · 待复核 1/)
-    expect(enterpriseSource).toMatch(/label: '客价转换台'/)
-    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/quote-center'/)
-    expect(enterpriseSource).toMatch(/先选择本人客户，再导入内部报价 Excel 并输出报客价 Excel/)
+    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/customer-price-conversion'/)
+    expect(enterpriseSource).toMatch(/id: 'internal-pricing'/)
+    expect(enterpriseSource).toMatch(/title: '内部报价'/)
+    expect(enterpriseSource).toMatch(/按客户规则实时测算，并由服务器复算保存/)
+    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/internal-pricing'/)
+    expect(enterpriseSource).not.toMatch(/id: 'quote-center'/)
+    expect(enterpriseSource).not.toMatch(/title: '报价与成本中心'/)
+    expect(enterpriseSource).not.toMatch(/id: 'order-approval'/)
+    expect(enterpriseSource).not.toMatch(/title: '订单审批工作台'/)
+    expect(enterpriseSource).toMatch(/id: 'indonesia-material-shipment'/)
+    expect(enterpriseSource).toMatch(/title: '送印尼物料'/)
+    expect(enterpriseSource).toMatch(/统筹送往印尼的物料需求、备料、装运、清关和到货跟踪/)
+    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/indonesia-material-shipment'/)
+    expect(enterpriseSource).not.toMatch(/id: 'customer-delivery'/)
+    expect(enterpriseSource).not.toMatch(/title: '客户交付风险'/)
+    expect(enterpriseSource).toMatch(/id: 'po-schedule-intake'/)
+    expect(enterpriseSource).toMatch(/title: 'PO入排期'/)
+    expect(enterpriseSource).toMatch(/接收客户 PO、校验数量与交期，并提交 PMC 和生产计划纳入排期/)
+    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/po-schedule-intake'/)
     expect(enterpriseSource).toMatch(/role: '车间业务主管'/)
     expect(enterpriseSource).toMatch(/role: '车间业务员'/)
 
-    expect(moduleDetailSource).not.toMatch(/报价与成本中心入口/)
-    expect(moduleDetailSource).not.toMatch(/打开客价转换台/)
-
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/customer-price-conversion'/)
+    expect(routerSource).toMatch(/name: 'customer-price-conversion'/)
+    expect(routerSource).toMatch(/title: '客价转换台'/)
+    expect(routerSource).toMatch(/permissions: \['customer_price:read'\]/)
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/internal-pricing'/)
+    expect(routerSource).toMatch(/name: 'internal-pricing'/)
+    expect(routerSource).toMatch(/InternalPricingView\.vue/)
+    expect(routerSource).toMatch(/title: '内部报价'/)
+    expect(routerSource).toMatch(/permissions: \['internal_pricing:read'\]/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center'/)
-    expect(routerSource).toMatch(/name: 'quote-center'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
-    expect(routerSource).toMatch(/redirect: '\/modules\/sales-business\/quote-center'/)
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/order-approval'/)
     expect(routerSource).toMatch(/CustomerPriceConversionView\.vue/)
-    expect(routerSource).toMatch(/title: '报价与成本中心'/)
-    expect(routerSource).toMatch(/title: '报价与成本中心',\s+fullPage: true,/)
 
     expect(customerPriceConversionViewSource).toMatch(/QuoteCenterPanel/)
-    expect(customerPriceConversionViewSource).toMatch(/返回业务部模块中心/)
-    expect(customerPriceConversionViewSource).toMatch(/quoteDeskTabs/)
-    expect(customerPriceConversionViewSource).toMatch(/selectDesk/)
-    expect(customerPriceConversionViewSource).toMatch(/报价池/)
-    expect(customerPriceConversionViewSource).toMatch(/核价复核/)
-    expect(customerPriceConversionViewSource).toMatch(/利润分析/)
+    expect(customerPriceConversionViewSource).toMatch(/SalesModuleWorkbench/)
+    expect(customerPriceConversionViewSource).toMatch(/title="客价转换台"/)
+    expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
+    expect(customerPriceConversionViewSource).not.toMatch(/quoteDeskTabs/)
+
+    expect(internalPricingViewSource).toMatch(/InternalPricingPanel/)
+    expect(internalPricingViewSource).toMatch(/SalesModuleWorkbench/)
+    expect(internalPricingViewSource).toMatch(/title="内部报价"/)
+    expect(internalPricingViewSource).not.toMatch(/QuoteCenterPanel/)
 
     for (const requiredCopy of [
       '导入内部报价',
@@ -159,30 +184,34 @@ describe('production module entry', () => {
       'activeWorkbookSheets',
       'selectedSheetRows',
       'useAuthStore',
-      'huaxing_molding_a_sales',
-      'isWorkshopSalesSupervisorAccount',
-      'isWorkshopSalesAccount',
-      'workshopSalesWorkshopNames',
-      'canAccessWorkshop',
+      'visibleCustomers',
+      'canImportSelectedCustomer',
+      'canExportSelectedCustomer',
+      '全部客户按相同权限操作',
       'handleInternalQuoteImport',
       'exportCustomerQuoteExcel',
     ]) {
       expect(quoteCenterPanelSource).toContain(requiredCopy)
     }
-    expect(quoteCenterPanelSource).toContain('.filter((customer) => workshopSalesWorkshopNames.value.has(customer.workshop))')
-    expect(quoteCenterPanelSource).toContain('return inScope && canAccessWorkshop(row.workshop)')
-    expect(quoteCenterPanelSource).toContain('return canAccessWorkshop(row.workshop)')
+    expect(quoteCenterPanelSource).toContain('v-for="customer in visibleCustomers"')
+    expect(quoteCenterPanelSource).toContain(':disabled="!canImportSelectedCustomer"')
+    expect(quoteCenterPanelSource).toMatch(/authStore\.can\(\s*'customer_price:import_internal_quote'/)
+    expect(quoteCenterPanelSource).toMatch(/authStore\.can\(\s*'customer_price:export_customer_quote'/)
+    expect(quoteCenterPanelSource).not.toContain('v-for="customer in ownCustomers"')
+    expect(quoteCenterPanelSource).not.toContain('writableCustomerIds')
+    expect(quoteCenterPanelSource).not.toContain('workshopSalesWorkshopNames')
 
     expect(quoteCenterPanelSource).not.toContain('{{ currentAccount }}')
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')
   })
 
-  it('keeps injection scheduling browseable but disables imports without write permission', () => {
+  it('uses scoped can decisions for injection schedule reads and imports', () => {
     expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'/)
+    expect(routerSource).toMatch(/permissions: \['injection_schedule:read'\][\s\S]{0,80}enforcePermissions: true/)
     expect(injectionSchedulingViewSource).toContain("import { useAuthStore } from '@/stores/auth'")
     expect(injectionSchedulingViewSource).toContain('const authStore = useAuthStore()')
-    expect(injectionSchedulingViewSource).toContain("authStore.hasPermission('injection_schedule:import')")
-    expect(injectionSchedulingViewSource).toContain('authStore.hasFactoryScope(selectedFactoryId.value)')
+    expect(injectionSchedulingViewSource).toContain("authStore.can('injection_schedule:import', selectedFactoryId.value, 'production')")
+    expect(injectionSchedulingViewSource).toContain("authStore.can('injection_schedule:import', selectedFactoryId.value, 'molding')")
     expect(injectionSchedulingViewSource).toContain('canImportDailySchedule')
     expect(injectionSchedulingViewSource).toContain('当前账号没有导入排产权限，仅可浏览排产数据')
     expect(injectionSchedulingViewSource).toContain(':disabled="!canImportDailySchedule"')

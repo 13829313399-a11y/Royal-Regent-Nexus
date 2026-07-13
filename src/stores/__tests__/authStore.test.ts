@@ -19,6 +19,14 @@ for (const requiredImplementation of [
   'hasPermission',
   'hasAnyPermission',
   'hasFactoryScope',
+  'matchingGrants',
+  'matchingEffectiveAccess',
+  'can',
+  'authorizationVersion',
+  'effectiveAccess',
+  'refreshSession',
+  'authzMode',
+  'canAny',
 ]) {
   assert.match(source, new RegExp(requiredImplementation))
 }
