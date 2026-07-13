@@ -1507,6 +1507,32 @@ Use this template when updating the memory after future work:
 
 ### 2026-07-13
 
+- Requirement: promote “客价转换台” and “内部报价” into two separate top-level business-department modules, replacing the module-center cards “报价与成本中心” and “订单审批工作台”.
+- Implementation: replaced the two sales-business module registrations with standalone `customer-price-conversion` and `internal-pricing` cards, each with its own owner, summary, status metrics, feature children, and direct route. The customer conversion module keeps the existing Excel import/output workflow; the internal pricing module keeps the existing pricing-context, live calculation, server-recalculation, and quote-snapshot workflow.
+- Implementation: added reusable full-page `SalesModuleWorkbench.vue`; reduced `CustomerPriceConversionView.vue` to the standalone customer conversion page and added `InternalPricingView.vue` as the standalone internal-pricing page. Removed the shared “报价与成本中枢” step navigation and the placeholder cost-review/profit-analysis desks.
+- Implementation: added permission-enforced routes `/modules/sales-business/customer-price-conversion` (`customer_price:read`) and `/modules/sales-business/internal-pricing` (`internal_pricing:read`). Legacy `/quote-center`, `/quote-center/customer-price-conversion`, and `/order-approval` URLs redirect to the appropriate new module.
+- Files changed: `src/data/enterpriseMock.ts`, `src/router/index.ts`, router permission tests, `src/components/modules/sales/SalesModuleWorkbench.vue`, `src/views/CustomerPriceConversionView.vue`, new `src/views/InternalPricingView.vue`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: the navigation contract test first failed because the independent internal-pricing view did not exist; after implementation, targeted module-entry and router-permission tests passed 6 tests, the legacy auth-guard source test passed through Jiti, full frontend Vitest passed 33 files / 132 tests, `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings, and `git diff --check` passed with Windows LF-to-CRLF warnings only.
+- Decisions: “客价转换台” and “内部报价” are now peers in the business module center, not steps within a quote hub. The removed “订单审批工作台”, “核价复核”, and “利润分析” placeholders are not migrated into either module. No backend API, pricing calculation, permission definition, database, or customer converter behavior changed in this slice.
+
+### 2026-07-13
+
+- Requirement: replace the business-department “客户交付风险” module with “送印尼物料”.
+- Implementation: replaced module id `customer-delivery` with `indonesia-material-shipment`; changed the card title, ship icon, owner, summary, status, metrics, todos, and child capabilities to cover Indonesia material demand, preparation/packing, shipment/customs, and arrival confirmation. Updated the business-department focus, hero/panel descriptions, quick candidates, and related todo copy to use the same Indonesia-material workflow.
+- Files changed: `src/data/enterpriseMock.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: the updated module-registration test first failed against the old customer-delivery card, then passed 5 tests after implementation; `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings.
+- Decisions: this slice replaces the module registration and its planning/detail metadata only. The route `/modules/sales-business/indonesia-material-shipment` currently uses the generic module-detail page; shipment persistence, forms, APIs, approval states, and role permissions remain future implementation scope.
+
+### 2026-07-13
+
+- Requirement: add a new business-department module named “PO入排期”.
+- Implementation: registered `po-schedule-intake` as the fourth sales-business module with a calendar/schedule icon, Business/PMC/Production Planning ownership, planning status, PO intake metrics, direct route `/modules/sales-business/po-schedule-intake`, and child capabilities for PO registration, information validation, schedule submission, and result feedback. Updated the business-department focus, hero/panel descriptions, quick candidates, and todo list to include PO scheduling.
+- Files changed: `src/data/enterpriseMock.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: the navigation contract test first failed before the module registration existed, then passed 5 tests after implementation; `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings.
+- Decisions: this change adds the module registration and planning/detail metadata only. The module currently uses the generic detail page; PO persistence, Excel import, scheduling integration, APIs, workflow states, and dedicated permissions remain future implementation scope.
+
+### 2026-07-13
+
 - Requirement: diagnose and fix the production `500` returned when a super administrator approves a pending registration after configurable IAM was enabled.
 - Production diagnosis: PostgreSQL rejected `auth_role_binding_metadata.user_role_id` because the new `AuthRoleBindingMetadata` row was flushed before its new `AuthUserRole` parent. Both failed approvals rolled back completely: the two requests remained `pending` with no user-role binding or authorization event created, and the rest of the API stayed healthy.
 - Implementation: `approve_registration_request()` now explicitly flushes each newly added `AuthUserRole` inside the existing approval transaction before adding its binding metadata and authorization event. This establishes the PostgreSQL foreign-key parent first without committing early; any later failure still rolls back the complete approval.
