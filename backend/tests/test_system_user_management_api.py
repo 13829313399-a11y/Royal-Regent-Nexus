@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -241,6 +242,116 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         assert approved_profile["username"] == "zhangsan"
         assert "molding_sample:create" in approved_profile["permissions"]
         assert approved_profile["factory_scopes"] == ["huaxing"]
+
+
+def test_registration_approval_flushes_role_before_binding_metadata(monkeypatch):
+    with make_client(monkeypatch) as client:
+        register_response = client.post(
+            "/api/auth/register",
+            json=register_payload("approval-postgres-fk-order"),
+        )
+        assert register_response.status_code == 200
+
+        login(client, "admin")
+        requests = client.get("/api/system/registration-requests?status=pending").json()
+        request = next(item for item in requests if item["username"] == "approval-postgres-fk-order")
+
+        from sqlalchemy.orm import Session as OrmSession
+
+        original_flush = OrmSession.flush
+        relevant_flushes: list[set[str]] = []
+
+        def recording_flush(self, objects=None):
+            pending_types = {type(item).__name__ for item in self.new}
+            if pending_types & {"AuthUserRole", "AuthRoleBindingMetadata"}:
+                relevant_flushes.append(pending_types)
+            return original_flush(self, objects)
+
+        monkeypatch.setattr(OrmSession, "flush", recording_flush)
+
+        approve_response = client.post(
+            f"/api/system/registration-requests/{request['id']}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "验证 PostgreSQL 外键写入顺序",
+            },
+        )
+
+        assert approve_response.status_code == 200
+        assert relevant_flushes
+        assert "AuthUserRole" in relevant_flushes[0]
+        assert "AuthRoleBindingMetadata" not in relevant_flushes[0]
+        assert any(
+            "AuthRoleBindingMetadata" in pending_types
+            and "AuthUserRole" not in pending_types
+            for pending_types in relevant_flushes[1:]
+        )
+
+
+def test_registration_approval_flush_remains_atomic_on_late_failure(monkeypatch):
+    with make_client(monkeypatch) as client:
+        username = "approval-flush-rollback"
+        register_response = client.post(
+            "/api/auth/register",
+            json=register_payload(username),
+        )
+        assert register_response.status_code == 200
+
+        login(client, "admin")
+        requests = client.get("/api/system/registration-requests?status=pending").json()
+        request = next(item for item in requests if item["username"] == username)
+        request_id = request["id"]
+        user_id = request["user_id"]
+
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            metadata_count_before = db.query(auth_models.AuthRoleBindingMetadata).count()
+            profile = db.get(auth_models.EmployeeProfile, user_id)
+            profile_before = (
+                profile.confirmation_status,
+                profile.source_registration_request_id,
+                profile.updated_at,
+            )
+            revision_before = db.get(auth_models.AuthUserAuthorizationRevision, user_id).revision
+
+        system_service = importlib.import_module("app.services.system")
+
+        def fail_before_commit(*args, **kwargs):
+            raise RuntimeError("injected late approval failure")
+
+        monkeypatch.setattr(system_service, "add_auth_audit", fail_before_commit)
+
+        with pytest.raises(RuntimeError, match="injected late approval failure"):
+            client.post(
+                f"/api/system/registration-requests/{request_id}/approve",
+                json={
+                    "role_assignments": [
+                        {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
+                    ],
+                    "review_comment": "验证审批事务整体回滚",
+                },
+            )
+
+        with db_module.SessionLocal() as db:
+            registration = db.get(auth_models.AuthRegistrationRequest, request_id)
+            user = db.get(auth_models.AuthUser, user_id)
+
+            assert registration.status == "pending"
+            assert registration.reviewed_at == ""
+            assert user.status == "pending"
+            assert db.query(auth_models.AuthUserRole).filter_by(user_id=user_id).count() == 0
+            assert db.query(auth_models.AuthRoleBindingMetadata).count() == metadata_count_before
+            assert db.query(auth_models.AuthAuthorizationEvent).filter_by(target_user_id=user_id).count() == 0
+            profile = db.get(auth_models.EmployeeProfile, user_id)
+            assert (
+                profile.confirmation_status,
+                profile.source_registration_request_id,
+                profile.updated_at,
+            ) == profile_before
+            assert db.get(auth_models.AuthUserAuthorizationRevision, user_id).revision == revision_before
 
 
 def test_sales_business_supervisor_registration_recommends_quote_supervisor_role(monkeypatch):
