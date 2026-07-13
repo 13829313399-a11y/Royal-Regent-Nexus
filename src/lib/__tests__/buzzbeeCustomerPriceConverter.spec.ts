@@ -85,9 +85,12 @@ function createMinimalBuzzBeeWorkbook() {
   rows[17][8] = 'CUFT:'
   rows[17][9] = 1.78924334490741
   rows[20][8] = '报客彩盒'
-  rows[21][8] = 6.7
-  rows[21][9] = 6.901
-  rows[21][10] = 'MOQ3000'
+  rows[21][8] = 3.46
+  rows[21][9] = 14.21
+  rows[21][10] = 'MOQ500'
+  rows[22][8] = 2.48
+  rows[22][9] = 10.24
+  rows[22][10] = 'MOQ1k'
 
   return asArrayBuffer(createXlsxWorkbook([{ name: '明细', rows }]))
 }
@@ -112,8 +115,10 @@ describe('BuzzBee customer price converter', () => {
     expect(sheet.rows[6][1]).toBe('ABS')
     expect(sheet.rows[6][3]).toBe(16.5)
     expect(sheet.rows[6][6]).toBe(0.7763)
-    expect(sheet.rows[54][5]).toBe(3.35)
-    expect(sheet.rows[54][6]).toBe(6.901)
+    expect(sheet.rows[54][5]).toBe(1.73)
+    expect(sheet.rows[54][6]).toBe(1.7819)
+    expect(sheet.rows[55][5]).toBe(1.24)
+    expect(sheet.rows[55][6]).toBe(1.2772)
     expect(sheet.rows[57][1]).toBe(2)
 
     const worksheetXml = readGeneratedXml(output, 'xl/worksheets/sheet1.xml')
@@ -125,7 +130,10 @@ describe('BuzzBee customer price converter', () => {
     expect(getCellStyle(worksheetXml, 'F7')).toBe('11')
     expect(getCellStyle(worksheetXml, 'B28')).toBe('11')
     expect(getCellStyle(worksheetXml, 'B58')).toBe('11')
-    expect(getCellFormula(worksheetXml, 'F55')).toBe('6.7/2')
+    expect(getCellFormula(worksheetXml, 'F55')).toBe('3.46/2')
+    expect(getCellFormula(worksheetXml, 'G55')).toBe('F55*1.03')
+    expect(getCellFormula(worksheetXml, 'F56')).toBe('2.48/2')
+    expect(getCellFormula(worksheetXml, 'G56')).toBe('F56*1.03')
     expect(stylesXml).toContain('formatCode="0"')
     expect(stylesXml).toContain('formatCode="0.0"')
     expect(stylesXml).toContain('horizontal="center" vertical="top"')

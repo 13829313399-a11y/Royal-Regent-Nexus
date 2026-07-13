@@ -113,32 +113,6 @@ const MOLD_REMARK_TRANSLATIONS = new Map<string, string>([
   ['细水/(吹气出模)', 'Pin Gate / (Air Blow Ejection)'],
 ])
 
-const FIXED_REMARK_PATCHES: Array<[string, XlsxCellValue, string?]> = [
-  ['A21', 'Remark（备注）：'],
-  ['A22', 1],
-  ['B22', 'Estimate based on the picture. If there are any changes, the quotation needs to be updated.'],
-  ['A23', 2],
-  ['B23', 'Color Box Material:  250gsm + B9+, 4C Printer, UV.'],
-  ['A24', 3],
-  ['B24', 'The above products include 2xAA alkaline batteries, a by-wire vehicle with lights and no sound, and Try me function.'],
-  ['A25', 4],
-  ['B25', 'Production following RoHS & Non-Phthalates,Cadmium,ASTM,EN71,EN62115,FCC.'],
-  ['A26', 5],
-  ['B26', 'This is not included any CFS and THC Cost.'],
-  ['A27', 6],
-  ['B27', 'Plastic Quotation(HK$/LB):'],
-  ['B28', 'Type'],
-  ['C28', 'Cost'],
-  ['E28', 'Type'],
-  ['F28', 'Cost'],
-  ['B31', 'If the Material cost increased more than 5% and the exchange rate of RMB more than 2%,this quote will be revised.'],
-  ['A32', 7],
-  ['B32', 'Client has their own responsibility about the patent, design concept and legal issue of their products.'],
-  ['A33', 8],
-  ['B33', 'Except client has already paid all the amount of tooling cost, '],
-  ['B34', 'product cost and relevant inventory material cost,we (Royal Regent) has the right of use and own the product.', 'B33'],
-]
-
 function toText(value: XlsxCellValue) {
   return String(value ?? '').trim()
 }
@@ -259,6 +233,76 @@ function normalizeTranslationKey(value: string) {
     .replace(/\s*\+\s*/g, '+')
     .replace(/\s*\*\s*/g, '*')
     .replace(/\s+([（(])/g, '$1')
+}
+
+function translateRemarkText(value: string) {
+  const normalized = normalizeTranslationKey(value)
+  if (!normalized) {
+    return ''
+  }
+
+  if (normalized === '料型') {
+    return 'Type'
+  }
+
+  if (normalized === '料价') {
+    return 'Cost'
+  }
+
+  if (
+    /(?:样办|样板|客样).*(?:报价|核价)|(?:报价|核价).*(?:样办|样板|客样)/.test(normalized)
+  ) {
+    return 'This quotation is based on the sample provided by the customer. The final price will be confirmed by the approved sample. Any changes will require a revised quotation.'
+  }
+
+  if (/图片估价|看图估价/.test(normalized)) {
+    const plasticWeight = normalized.match(/胶件重量(?:预计)?(?:是)?\s*(\d+(?:\.\d+)?)\s*g/i)?.[1]
+    const vinylWeight = normalized.match(/搪胶重量(?:预计)?(?:是)?\s*(\d+(?:\.\d+)?)\s*g/i)?.[1]
+
+    if (plasticWeight && vinylWeight) {
+      return `Picture estimate: plastic parts ${plasticWeight}g; rotocast vinyl ${vinylWeight}g. Requote if changed.`
+    }
+
+    return 'Estimate based on the picture. If there are any changes, the quotation needs to be updated.'
+  }
+
+  if (/公仔头.*手脚.*搪胶.*塑胶件/.test(normalized)) {
+    return 'Head, hands and feet: rotocast vinyl; body and accessories: plastic.'
+  }
+
+  if (/彩盒材质/.test(normalized)) {
+    return 'Color Box Material:  250gsm + B9+, 4C Printer, UV.'
+  }
+
+  if (/以上产品.*2xAA.*Try\s*me/i.test(normalized)) {
+    return 'The above products include 2xAA alkaline batteries, a by-wire vehicle with lights and no sound, and Try me function.'
+  }
+
+  if (/产品可通过.*RoHS/i.test(normalized)) {
+    return 'Production following RoHS & Non-Phthalates,Cadmium,ASTM,EN71,EN62115,FCC.'
+  }
+
+  if (/报价未含吊柜费.*入仓费/.test(normalized)) {
+    return 'This is not included any CFS and THC Cost.'
+  }
+
+  if (/按.*料价报价.*HK\$\/LB/i.test(normalized)) {
+    return 'Plastic Quotation(HK$/LB):'
+  }
+
+  if (/人民币.*汇率.*2%.*原材料.*5%/.test(normalized)) {
+    return 'If the Material cost increased more than 5% and the exchange rate of RMB more than 2%,this quote will be revised.'
+  }
+
+  if (/法律责任.*知识产权/.test(normalized)) {
+    return 'Client has their own responsibility about the patent, design concept and legal issue of their products.'
+  }
+
+  if (/价格全数清还.*拥有权/.test(normalized)) {
+    return 'Except client has already paid all the amount of tooling cost, product cost and relevant inventory material cost,we (Royal Regent) has the right of use and own the product.'
+  }
+
+  return normalizeDickieSpelling(value)
 }
 
 function translateMoldRemark(value: string) {
@@ -920,17 +964,37 @@ function buildQuotationPatches(
   })
   const textAt = (ref: string) => resolveCellText(summaryCells.get(ref), sharedStrings, workbookCells)
   const ref = (columnName: string, rowNumber: number) => `${columnName}${rowNumber}`
+  const remarkRow = findRowByColumnText(summaryCells, sharedStrings, 'A', 12, /Remark|备注/i)
 
   ;['C7', 'K7', 'C8', 'K8', 'C9'].forEach((cellRef) => copy(cellRef))
 
-  for (let rowNumber = 12; rowNumber <= 19; rowNumber += 1) {
+  const productEndRow = remarkRow ? Math.min(19, remarkRow - 1) : 19
+  for (let rowNumber = 12; rowNumber <= productEndRow; rowNumber += 1) {
     ;['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'].forEach((columnName) => copy(ref(columnName, rowNumber)))
     patchText(ref('B', rowNumber), translateProductName(textAt(ref('B', rowNumber))))
   }
 
-  FIXED_REMARK_PATCHES.forEach(([cellRef, value, styleRef]) => patchText(cellRef, value, styleRef))
+  if (remarkRow) {
+    const nextQuotationRow = findRowByColumnText(summaryCells, sharedStrings, 'A', remarkRow + 1, /^Quotation/i)
+    const remarkEndRow = nextQuotationRow ? nextQuotationRow - 1 : maxRowInCells(summaryCells)
+
+    for (let rowNumber = remarkRow + 1; rowNumber <= remarkEndRow; rowNumber += 1) {
+      ;['B', 'C', 'E', 'F'].forEach((columnName) => {
+        const cellRef = ref(columnName, rowNumber)
+        const sourceText = textAt(cellRef)
+        const translatedText = translateRemarkText(sourceText)
+        if (translatedText && translatedText !== sourceText) {
+          patchText(cellRef, translatedText)
+        }
+      })
+    }
+  }
 
   const sourceQuotationRow = findRowByColumnText(summaryCells, sharedStrings, 'A', 35, /^Quotation/i)
+  if (!sourceQuotationRow) {
+    return patches
+  }
+
   const targetQuotationRowByTitle = findRowByColumnText(quotationCells, sharedStrings, 'A', 35, /^Quotation/i)
   const sourceMoldHeaderRow = findRowByColumnText(summaryCells, sharedStrings, 'B', sourceQuotationRow, /^Mold\s*#/i)
   const targetMoldHeaderRow = findRowByColumnText(quotationCells, sharedStrings, 'B', targetQuotationRowByTitle || 35, /^Mold\s*#/i)
