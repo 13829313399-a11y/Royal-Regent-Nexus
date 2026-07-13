@@ -10,7 +10,7 @@ appStore.setActiveDepartment('sales-business')
 const metrics = [
   { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星' },
   { label: '待复核', value: '1', detail: '主管核对输出版本' },
-  { label: '权限范围', value: '车间', detail: '按账号所在车间访问' },
+  { label: '客户范围', value: '全部', detail: '按账号权限导入和输出' },
 ]
 </script>
 

@@ -910,11 +910,11 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         statusMetrics: [
           { label: '待转换', value: '5', tone: 'amber' },
           { label: '待复核', value: '1', tone: 'blue' },
-          { label: '权限', value: '车间', tone: 'teal' },
+          { label: '客户可见', value: '全部', tone: 'teal' },
         ],
-        todos: ['选择本人车间客户', '导入内部报价 Excel', '输出客户报价与版本差异'],
+        todos: ['查看并选择全部客户', '导入任一客户内部报价 Excel', '输出客户报价与版本差异'],
         children: [
-          { label: '客户选择', summary: '按车间权限选择 BuzzBee、迪士尼、Dickie 或彩星' },
+          { label: '客户选择', summary: '全部客户使用同一套账号权限查看和转换' },
           { label: '报价导入', summary: '识别客户内部报价 Excel 与多 Sheet 明细' },
           { label: '报客价输出', summary: '按客户模板生成报客价文件' },
           { label: '版本对比', summary: '对比明细、利润带和历史导出版本' },
