@@ -100,6 +100,53 @@ function createMinimalDickyTemplateWorkbook() {
   return createXlsxWorkbook([{ name: 'Quotation', rows }])
 }
 
+function createBabySitterDickyWorkbook(
+  firstRemark = '按客人提供的图片估价，预计胶件重量218g,搪胶重量预计是69g,如有更改，则需更新报价。',
+) {
+  const rows: XlsxCellInput[][] = Array.from({ length: 27 }, () => [])
+
+  rows[0][0] = '华登制品 (亞洲) 有限公司'
+  rows[5][0] = 'ESTIMATAE QUOTATION (估價)'
+  rows[6][0] = 'Client(客  戶): '
+  rows[6][2] = 'Dickie'
+  rows[6][10] = 46203
+  rows[10][0] = 'NO.'
+  rows[10][1] = 'ITEM'
+  rows[11][0] = 1
+  rows[11][1] = 'Stuffed Body'
+  rows[11][7] = 69.5
+  rows[15][0] = 'Remark（备注）：'
+  rows[16][0] = 1
+  rows[16][1] = firstRemark
+  rows[17][0] = 2
+  rows[17][1] = '公仔头，手脚是搪胶，其他配件及公仔大身是塑胶件.'
+  rows[18][0] = 3
+  rows[18][1] = '产品可通过RoHS,Non Phthalates(6P标准),Cadmium,ASTM,EN71,EN62115,FCC，EMC等测试。'
+  rows[19][0] = 4
+  rows[19][1] = '报价未含吊柜费，入仓费。'
+  rows[20][0] = 5
+  rows[20][1] = '按现如下料价报价(HK$/LB)：'
+  rows[21][1] = '料型'
+  rows[21][2] = '料价'
+  rows[21][4] = '料型'
+  rows[21][5] = '料价'
+  rows[22][1] = 'PP'
+  rows[22][2] = 4.8
+  rows[22][4] = 'C-ABS'
+  rows[22][5] = 8.5
+  rows[23][1] = 'ABS'
+  rows[23][2] = 5.8
+  rows[23][4] = 'HIPS'
+  rows[23][5] = 5.1
+  rows[24][1] = '注*若人民币的汇率升幅超过2%，工人工资加幅和原材料升幅超过5%，本公司將會保留加价的权利.'
+  rows[25][0] = 6
+  rows[25][1] = '客戶负责来板的法律责任，包括知识产权。'
+  rows[26][0] = 7
+  rows[26][1] = '除非产品价格全数清还，本公司仍拥有产品拥有权。'
+
+  return asArrayBuffer(createXlsxWorkbook([{ name: '总表', rows }]))
+}
+
 function createFormulaLinkedDickyWorkbook() {
   const summaryRows: XlsxCellInput[][] = Array.from({ length: 88 }, () => [])
   const moldFeeRows: XlsxCellInput[][] = Array.from({ length: 8 }, () => [])
@@ -228,6 +275,47 @@ function findSelfReferencingFormulaRefs(zip: Record<string, Uint8Array>, sheetPa
 }
 
 describe('Dickie customer price converter', () => {
+  it('translates every remark in a sample-based quotation', () => {
+    const result = convertDickyInternalQuote(
+      createBabySitterDickyWorkbook('按客人提供的样办报价，如有更改，则需重新报价。'),
+      'Estimate Quotation of the Construction Vehicles.xlsx',
+    )
+    const output = createDickyCustomerQuoteWorkbook(result)
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+    const quote = parsed.sheets.find((sheet) => sheet.name === 'Quotation')
+    const remarkText = Array.from({ length: 11 }, (_, index) => quote?.rows[16 + index]?.[1] ?? '')
+
+    expect(quote?.rows[16][1]).toBe('This quotation is based on the sample provided by the customer. The final price will be confirmed by the approved sample. Any changes will require a revised quotation.')
+    expect(remarkText.join(' ')).not.toMatch(/[\u4E00-\u9FFF]/)
+  })
+
+  it('translates a short Baby sitter remark block in place without adding fixed trailing rows', () => {
+    const result = convertDickyInternalQuote(
+      createBabySitterDickyWorkbook(),
+      'Estimate Quotation of the Baby sitter.xlsx',
+    )
+    const output = createDickyCustomerQuoteWorkbook(result)
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+    const quote = parsed.sheets.find((sheet) => sheet.name === 'Quotation')
+
+    expect(quote?.rows[16][1]).toBe('Picture estimate: plastic parts 218g; rotocast vinyl 69g. Requote if changed.')
+    expect(quote?.rows[17][1]).toBe('Head, hands and feet: rotocast vinyl; body and accessories: plastic.')
+    expect(quote?.rows[18][1]).toBe('Production following RoHS & Non-Phthalates,Cadmium,ASTM,EN71,EN62115,FCC.')
+    expect(quote?.rows[19][1]).toBe('This is not included any CFS and THC Cost.')
+    expect(quote?.rows[20][1]).toBe('Plastic Quotation(HK$/LB):')
+    expect(quote?.rows[21][1]).toBe('Type')
+    expect(quote?.rows[21][2]).toBe('Cost')
+    expect(quote?.rows[21][4]).toBe('Type')
+    expect(quote?.rows[21][5]).toBe('Cost')
+    expect(quote?.rows[24][1]).toBe('If the Material cost increased more than 5% and the exchange rate of RMB more than 2%,this quote will be revised.')
+    expect(quote?.rows[25][1]).toBe('Client has their own responsibility about the patent, design concept and legal issue of their products.')
+    expect(quote?.rows[26][1]).toBe('Except client has already paid all the amount of tooling cost, product cost and relevant inventory material cost,we (Royal Regent) has the right of use and own the product.')
+
+    for (let rowIndex = 27; rowIndex <= 33; rowIndex += 1) {
+      expect(quote?.rows[rowIndex]?.[1] ?? '').toBe('')
+    }
+  })
+
   it('creates an English Quotation sheet from the imported 总表 workbook', () => {
     const result = convertDickyInternalQuote(
       createMinimalDickyWorkbook(),

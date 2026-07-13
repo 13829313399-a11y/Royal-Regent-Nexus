@@ -439,17 +439,18 @@ function parseInternalSheet(rows: XlsxCellValue[][], sheetName: string): BuzzBee
     if (columnIndex >= 0) {
       const first = rows[index + 1] ?? []
       const second = rows[index + 2] ?? []
+      const packCount = box.pcsPerCarton || 1
       colorBox = {
         price1: toNumber(first[columnIndex]),
-        fsc1: toNumber(first[columnIndex + 1]),
+        fsc1: 0,
         moq1: toText(first[columnIndex + 2]),
         price2: toNumber(second[columnIndex]),
-        fsc2: toNumber(second[columnIndex + 1]),
+        fsc2: 0,
         moq2: toText(second[columnIndex + 2]),
       }
 
-      if (!colorBox.fsc1 && colorBox.price1) colorBox.fsc1 = round(colorBox.price1 * MARKUPS.carton, 4)
-      if (!colorBox.fsc2 && colorBox.price2) colorBox.fsc2 = round(colorBox.price2 * MARKUPS.carton, 4)
+      colorBox.fsc1 = round(colorBox.price1 / packCount * MARKUPS.carton, 4)
+      colorBox.fsc2 = round(colorBox.price2 / packCount * MARKUPS.carton, 4)
       break
     }
   }
@@ -918,7 +919,14 @@ function buildQuoteOutputSheet(data: BuzzBeeQuoteData, date: Date): XlsxOutputSh
     `${formatFormulaNumber(data.colorBox.price1)}/${formatFormulaNumber(packCount)}`,
     XLSX_STYLE.number2,
   )
-  setNumber(rows, cartonSizeRow, 6, data.colorBox.fsc1, XLSX_STYLE.number2)
+  setFormulaNumber(
+    rows,
+    cartonSizeRow,
+    6,
+    data.colorBox.fsc1,
+    `F${cartonSizeRow}*${formatFormulaNumber(MARKUPS.carton)}`,
+    XLSX_STYLE.number2,
+  )
   setCell(rows, cartonSizeRow, 7, data.colorBox.moq1)
   setFormulaNumber(
     rows,
@@ -928,7 +936,14 @@ function buildQuoteOutputSheet(data: BuzzBeeQuoteData, date: Date): XlsxOutputSh
     `${formatFormulaNumber(data.colorBox.price2)}/${formatFormulaNumber(packCount)}`,
     XLSX_STYLE.number2,
   )
-  setNumber(rows, color2Row, 6, data.colorBox.fsc2, XLSX_STYLE.number2)
+  setFormulaNumber(
+    rows,
+    color2Row,
+    6,
+    data.colorBox.fsc2,
+    `F${color2Row}*${formatFormulaNumber(MARKUPS.carton)}`,
+    XLSX_STYLE.number2,
+  )
   setCell(rows, color2Row, 7, data.colorBox.moq2)
   setCell(rows, packCubeHeaderRow, 1, 'PACK', XLSX_STYLE.boldBorder)
   setCell(rows, packCubeHeaderRow, 2, 'CUBE', XLSX_STYLE.boldBorder)
