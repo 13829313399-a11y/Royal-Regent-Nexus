@@ -1530,3 +1530,12 @@ Use this template when updating the memory after future work:
 - Files changed: `src/data/enterpriseMock.ts`, `src/views/__tests__/productionModuleEntry.spec.ts`, and `PROJECT_MEMORY.md`.
 - Verification: the navigation contract test first failed before the module registration existed, then passed 5 tests after implementation; `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings.
 - Decisions: this change adds the module registration and planning/detail metadata only. The module currently uses the generic detail page; PO persistence, Excel import, scheduling integration, APIs, workflow states, and dedicated permissions remain future implementation scope.
+
+### 2026-07-13
+
+- Requirement: diagnose and fix the production `500` returned when a super administrator approves a pending registration after configurable IAM was enabled.
+- Production diagnosis: PostgreSQL rejected `auth_role_binding_metadata.user_role_id` because the new `AuthRoleBindingMetadata` row was flushed before its new `AuthUserRole` parent. Both failed approvals rolled back completely: the two requests remained `pending` with no user-role binding or authorization event created, and the rest of the API stayed healthy.
+- Implementation: `approve_registration_request()` now explicitly flushes each newly added `AuthUserRole` inside the existing approval transaction before adding its binding metadata and authorization event. This establishes the PostgreSQL foreign-key parent first without committing early; any later failure still rolls back the complete approval.
+- Files changed: `backend/app/services/system.py`, `backend/tests/test_system_user_management_api.py`, and `PROJECT_MEMORY.md`.
+- Verification: the new flush-order regression failed before the fix because the first flush contained `AuthUserRole`, `AuthRoleBindingMetadata`, authorization event, and audit rows together; after the fix it proves the parent binding is flushed first. A second injected late-failure regression proves the request/user status, role binding, metadata, authorization event, employee profile, and authorization revision all return to their pre-approval state. The full backend suite passed `117` tests with only the existing Windows pytest-cache warning.
+- Decision: publish this isolated fix from a dedicated branch based on the latest remote `main`; production deployment occurs only after the PR is merged.

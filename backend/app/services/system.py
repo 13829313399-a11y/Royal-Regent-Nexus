@@ -278,6 +278,10 @@ def approve_registration_request(
                 department=assignment_key[2],
             )
         )
+        # PostgreSQL enforces the metadata foreign key during flush. Persist the
+        # parent binding inside the current transaction before adding sidecar
+        # metadata; a later failure still rolls the whole approval back.
+        db.flush()
         db.add(
             AuthRoleBindingMetadata(
                 user_role_id=user_role_id,
