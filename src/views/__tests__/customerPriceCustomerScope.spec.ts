@@ -1,0 +1,96 @@
+import { mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, expect, it } from 'vitest'
+import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
+import { useAuthStore } from '@/stores/auth'
+
+const customerPricePermissions = [
+  'customer_price:read',
+  'customer_price:import_internal_quote',
+  'customer_price:export_customer_quote',
+  'customer_price:compare',
+]
+
+function mountPanel(username: string, deniedPermissions: string[] = []) {
+  const effectiveAccess = customerPricePermissions.map((permissionCode) => ({
+    permission_code: permissionCode,
+    factory_id: 'huaxing',
+    department: 'sales-business',
+    effect: deniedPermissions.includes(permissionCode) ? 'deny' as const : 'allow' as const,
+    allowed: !deniedPermissions.includes(permissionCode),
+    source_type: deniedPermissions.includes(permissionCode) ? 'override' : 'role',
+    source_ids: deniedPermissions.includes(permissionCode) ? ['override-1'] : ['sales_customer_owner'],
+  }))
+
+  useAuthStore().applySession({
+    id: `user-${username}`,
+    username,
+    display_name: '普通业务',
+    roles: ['车间业务跟客'],
+    permissions: customerPricePermissions,
+    grants: [{
+      role_id: 'sales_customer_owner',
+      role_code: 'sales_customer_owner',
+      role_name: '车间业务跟客',
+      factory_id: 'huaxing',
+      department: 'sales-business',
+      permissions: customerPricePermissions,
+      data_scope: 'department',
+    }],
+    factory_scopes: ['huaxing'],
+    department_scopes: ['sales-business'],
+    authz_mode: 'enforce',
+    effective_access: effectiveAccess,
+    force_password_change: false,
+  })
+
+  return mount(QuoteCenterPanel)
+}
+
+describe('QuoteCenterPanel customer visibility', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('lets an ordinary sales account see and switch every customer', async () => {
+    const wrapper = mountPanel('ordinary-sales-user')
+    const customerButtons = wrapper.findAll('button[aria-pressed]')
+
+    expect(customerButtons.map((button) => button.text())).toEqual([
+      'BuzzBee 1 单',
+      '迪士尼 1 单',
+      'Dickie 1 单',
+      '彩星 2 单',
+    ])
+
+    for (const [selectedIndex, customerButton] of customerButtons.entries()) {
+      await customerButton.trigger('click')
+
+      expect(customerButton.attributes('aria-pressed')).toBe('true')
+      expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
+      customerButtons.forEach((otherButton, otherIndex) => {
+        expect(otherButton.attributes('aria-pressed')).toBe(String(otherIndex === selectedIndex))
+      })
+    }
+  })
+
+  it('lets an ordinary sales account import for every customer without an account binding', () => {
+    const wrapper = mountPanel('ordinary-sales-user')
+
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('全部客户按相同权限操作')
+  })
+
+  it('still honors an explicit user-level import deny', () => {
+    const wrapper = mountPanel('ordinary-sales-user', ['customer_price:import_internal_quote'])
+
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('当前账号没有导入内部报价权限')
+  })
+
+  it('still honors an explicit user-level export deny', () => {
+    const wrapper = mountPanel('ordinary-sales-user', ['customer_price:export_customer_quote'])
+
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('仅可导入')
+    expect(wrapper.text()).toContain('当前账号没有输出权限')
+  })
+})

@@ -184,19 +184,22 @@ describe('production module entry', () => {
       'activeWorkbookSheets',
       'selectedSheetRows',
       'useAuthStore',
-      'huaxing_molding_a_sales',
-      'isWorkshopSalesSupervisorAccount',
-      'isWorkshopSalesAccount',
-      'workshopSalesWorkshopNames',
-      'canAccessWorkshop',
+      'visibleCustomers',
+      'canImportSelectedCustomer',
+      'canExportSelectedCustomer',
+      '全部客户按相同权限操作',
       'handleInternalQuoteImport',
       'exportCustomerQuoteExcel',
     ]) {
       expect(quoteCenterPanelSource).toContain(requiredCopy)
     }
-    expect(quoteCenterPanelSource).toContain('.filter((customer) => workshopSalesWorkshopNames.value.has(customer.workshop))')
-    expect(quoteCenterPanelSource).toContain('return inScope && canAccessWorkshop(row.workshop)')
-    expect(quoteCenterPanelSource).toContain('return canAccessWorkshop(row.workshop)')
+    expect(quoteCenterPanelSource).toContain('v-for="customer in visibleCustomers"')
+    expect(quoteCenterPanelSource).toContain(':disabled="!canImportSelectedCustomer"')
+    expect(quoteCenterPanelSource).toMatch(/authStore\.can\(\s*'customer_price:import_internal_quote'/)
+    expect(quoteCenterPanelSource).toMatch(/authStore\.can\(\s*'customer_price:export_customer_quote'/)
+    expect(quoteCenterPanelSource).not.toContain('v-for="customer in ownCustomers"')
+    expect(quoteCenterPanelSource).not.toContain('writableCustomerIds')
+    expect(quoteCenterPanelSource).not.toContain('workshopSalesWorkshopNames')
 
     expect(quoteCenterPanelSource).not.toContain('{{ currentAccount }}')
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')

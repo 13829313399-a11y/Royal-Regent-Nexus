@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, Download, Search, UploadCloud, Users } from '@lucide/vue'
+import { CheckCircle2, Download, Eye, Search, UploadCloud, Users } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import {
@@ -41,7 +41,6 @@ interface CustomerPriceConversionRow {
   customerId: string
   customer: string
   workshop: string
-  account: string
   internalPriceHkd: number
   customerPriceHkd: number
   marginBand: string
@@ -54,8 +53,9 @@ interface CustomerPriceConversionRow {
 interface CustomerOption {
   id: string
   name: string
+  factoryId: string
+  department: string
   workshop: string
-  account: string
   owner: string
   activeQuoteCount: number
 }
@@ -97,39 +97,42 @@ interface ExportedQuoteVersion {
   deltaFromPreviousHkd: number
 }
 
-const currentAccount = '车间业务-A01'
 const authStore = useAuthStore()
 
 const customerOptions: CustomerOption[] = [
   {
     id: 'buzzbee',
     name: 'BuzzBee',
+    factoryId: 'huaxing',
+    department: 'sales-business',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     owner: '李业务',
     activeQuoteCount: 1,
   },
   {
     id: 'disney',
     name: '迪士尼',
+    factoryId: 'huaxing',
+    department: 'sales-business',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     owner: '李业务',
     activeQuoteCount: 1,
   },
   {
     id: 'dicky',
     name: 'Dickie',
+    factoryId: 'huaxing',
+    department: 'sales-business',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     owner: 'Ben / Dickie',
     activeQuoteCount: 1,
   },
   {
     id: 'caixing',
     name: '彩星',
+    factoryId: 'huaxing',
+    department: 'sales-business',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     owner: '陈善杰',
     activeQuoteCount: 2,
   },
@@ -169,7 +172,6 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     customerId: 'buzzbee',
     customer: 'BuzzBee',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     internalPriceHkd: 12.86,
     customerPriceHkd: 15.4,
     marginBand: '19.8%',
@@ -183,7 +185,6 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     customerId: 'disney',
     customer: '迪士尼',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     internalPriceHkd: 8.42,
     customerPriceHkd: 10.2,
     marginBand: '21.1%',
@@ -197,7 +198,6 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     customerId: 'dicky',
     customer: 'Dickie',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     internalPriceHkd: 0,
     customerPriceHkd: 0,
     marginBand: '-',
@@ -211,7 +211,6 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     customerId: 'caixing',
     customer: '彩星',
     workshop: '啤机车间 A',
-    account: 'huaxing_molding_a_sales',
     internalPriceHkd: 0,
     customerPriceHkd: 0,
     marginBand: '-',
@@ -225,7 +224,6 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     customerId: 'zuru',
     customer: 'Zuru',
     workshop: '啤机车间 B',
-    account: '车间业务-B01',
     internalPriceHkd: 16.08,
     customerPriceHkd: 19.1,
     marginBand: '18.8%',
@@ -239,7 +237,6 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     customerId: 'spin-master',
     customer: 'Spin Master',
     workshop: '喷油车间',
-    account: '车间业务-P01',
     internalPriceHkd: 4.35,
     customerPriceHkd: 5.2,
     marginBand: '19.5%',
@@ -250,56 +247,43 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
   },
 ])
 
-const currentUsername = computed(() => authStore.currentUser?.username ?? currentAccount)
-
-const isWorkshopSalesSupervisorAccount = computed(() => {
-  return authStore.roles.includes('车间业务主管')
-})
-
-const isWorkshopSalesAccount = computed(() => {
-  return authStore.roles.includes('车间业务跟客') && !isWorkshopSalesSupervisorAccount.value
-})
-
-const workshopSalesWorkshopNames = computed(() => {
-  const workshops = new Set<string>()
-
-  customerOptions.forEach((customer) => {
-    if (customer.account === currentUsername.value) {
-      workshops.add(customer.workshop)
-    }
-  })
-
-  conversionRows.value.forEach((row) => {
-    if (row.account === currentUsername.value) {
-      workshops.add(row.workshop)
-    }
-  })
-
-  return workshops
-})
-
-function canAccessWorkshop(workshop: string) {
-  return !isWorkshopSalesAccount.value || workshopSalesWorkshopNames.value.has(workshop)
-}
-
-const allowedCustomerIds = computed(() => {
-  if (isWorkshopSalesAccount.value) {
-    return customerOptions
-      .filter((customer) => workshopSalesWorkshopNames.value.has(customer.workshop))
-      .map((customer) => customer.id)
-  }
-
-  return customerOptions.map((customer) => customer.id)
-})
-
-const ownCustomers = computed(() => {
-  return customerOptions.filter((customer) => allowedCustomerIds.value.includes(customer.id))
-})
+const visibleCustomers = computed(() => customerOptions)
 
 const selectedCustomer = computed<CustomerOption>(() => {
-  return ownCustomers.value.find((customer) => customer.id === selectedCustomerId.value)
-    ?? (ownCustomers.value[0] as CustomerOption)
-    ?? (customerOptions[0] as CustomerOption)
+  return visibleCustomers.value.find((customer) => customer.id === selectedCustomerId.value)
+    ?? (visibleCustomers.value[0] as CustomerOption)
+})
+
+const canImportSelectedCustomer = computed(() => {
+  return authStore.can(
+    'customer_price:import_internal_quote',
+    selectedCustomer.value.factoryId,
+    selectedCustomer.value.department,
+  )
+})
+
+const canExportSelectedCustomer = computed(() => {
+  return authStore.can(
+    'customer_price:export_customer_quote',
+    selectedCustomer.value.factoryId,
+    selectedCustomer.value.department,
+  )
+})
+
+const selectedCustomerOperationSummary = computed(() => {
+  if (canImportSelectedCustomer.value && canExportSelectedCustomer.value) {
+    return { value: '可导入/输出', detail: '全部客户按相同权限操作' }
+  }
+
+  if (canImportSelectedCustomer.value) {
+    return { value: '仅可导入', detail: '当前账号没有输出权限' }
+  }
+
+  if (canExportSelectedCustomer.value) {
+    return { value: '仅可输出', detail: '当前账号没有导入权限' }
+  }
+
+  return { value: '仅查看', detail: '当前账号没有导入和输出权限' }
 })
 
 const selectedCaixingProductTypeOption = computed(() => {
@@ -320,11 +304,7 @@ const selectedImportMatchesCurrentChoice = computed(() => {
 })
 
 const visibleConversionRows = computed(() => {
-  return conversionRows.value.filter((row) => {
-    const inScope = row.customerId === selectedCustomer.value.id && allowedCustomerIds.value.includes(row.customerId)
-
-    return inScope && canAccessWorkshop(row.workshop)
-  })
+  return conversionRows.value.filter((row) => row.customerId === selectedCustomer.value.id)
 })
 
 const existingSelectedSourceFileName = computed(() => {
@@ -436,6 +416,10 @@ const comparisonMetrics = computed(() => {
 })
 
 const canExportCustomerQuote = computed(() => {
+  if (!canExportSelectedCustomer.value) {
+    return false
+  }
+
   if (selectedCustomer.value.id === 'buzzbee') {
     return hasActiveBuzzBeeConversion.value
   }
@@ -460,7 +444,13 @@ const hasSelectedCustomerImport = computed(() => Boolean(selectedImportFileName.
 const importOverviewMetrics = computed(() => [
   { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? `${selectedCaixingProductTypeOption.value.label} · ${selectedCustomer.value.owner}` : `${selectedCustomer.value.workshop} · ${selectedCustomer.value.owner}` },
   { label: '内部报价', value: selectedImportFileName.value ? '已导入' : '待导入', detail: selectedImportFileName.value || '等待 Excel' },
-  { label: '可输出', value: canExportCustomerQuote.value ? '报客价 Excel' : '未就绪', detail: canExportCustomerQuote.value ? '右上角可输出' : '请先导入内部报价' },
+  {
+    label: '操作权限',
+    value: selectedCustomerOperationSummary.value.value,
+    detail: canExportCustomerQuote.value
+      ? '右上角可输出报客价'
+      : selectedCustomerOperationSummary.value.detail,
+  },
 ])
 
 function getCompareStatus(differenceHkd: number): DetailCompareStatus {
@@ -640,8 +630,7 @@ function compareStatusClass(status: DetailCompareStatus) {
 }
 
 function canGenerateQuote(row: CustomerPriceConversionRow) {
-  return canAccessWorkshop(row.workshop)
-    && allowedCustomerIds.value.includes(row.customerId)
+  return canExportSelectedCustomer.value
     && row.customerId === selectedCustomer.value.id
     && row.status !== '已生成'
 }
@@ -659,7 +648,7 @@ function generateCustomerQuote(rowId: string) {
 
 async function importInternalQuoteFile(file: File | undefined) {
   const customer = selectedCustomer.value
-  if (!file || !customer) {
+  if (!file || !customer || !canImportSelectedCustomer.value) {
     return
   }
 
@@ -746,7 +735,7 @@ async function importInternalQuoteFile(file: File | undefined) {
     const totalCustomerHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0).toFixed(3))
 
     conversionRows.value = conversionRows.value.map((row) => {
-      if (row.customerId !== customer.id || !allowedCustomerIds.value.includes(row.customerId)) {
+      if (row.customerId !== customer.id) {
         return row
       }
 
@@ -784,11 +773,22 @@ async function handleInternalQuoteImport(event: Event) {
 }
 
 function handleInternalQuoteDragEnter() {
+  if (!canImportSelectedCustomer.value) {
+    return
+  }
+
   importDragDepth += 1
   isImportDragActive.value = true
 }
 
 function handleInternalQuoteDragOver(event: DragEvent) {
+  if (!canImportSelectedCustomer.value) {
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'none'
+    }
+    return
+  }
+
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = 'copy'
   }
@@ -805,6 +805,10 @@ function handleInternalQuoteDragLeave() {
 async function handleInternalQuoteDrop(event: DragEvent) {
   importDragDepth = 0
   isImportDragActive.value = false
+  if (!canImportSelectedCustomer.value) {
+    return
+  }
+
   await importInternalQuoteFile(event.dataTransfer?.files?.[0])
 }
 
@@ -817,7 +821,7 @@ function escapeExcelCell(value: string | number) {
 }
 
 async function exportCustomerQuoteExcel() {
-  if (!selectedCustomer.value || !canExportCustomerQuote.value || isExportingCustomerQuote.value) {
+  if (!selectedCustomer.value || !canExportSelectedCustomer.value || !canExportCustomerQuote.value || isExportingCustomerQuote.value) {
     return
   }
 
@@ -958,9 +962,11 @@ async function exportCustomerQuoteExcel() {
       <template #action>
         <div class="flex flex-wrap items-center justify-end gap-2">
           <button
-            v-for="customer in ownCustomers"
+            v-for="customer in visibleCustomers"
             :key="customer.id"
             type="button"
+            :data-testid="`customer-tab-${customer.id}`"
+            :aria-pressed="selectedCustomerId === customer.id"
             class="inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition-colors"
             :class="selectedCustomerId === customer.id
               ? 'border-teal-300 bg-teal-50 text-teal-800 shadow-[0_8px_20px_rgba(13,148,136,0.10)]'
@@ -1013,12 +1019,15 @@ async function exportCustomerQuoteExcel() {
 
       <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <label
-          class="flex min-h-[118px] cursor-pointer flex-col items-center justify-center rounded-lg border px-6 py-5 text-center transition-colors"
-          :class="hasSelectedCustomerImport
-            ? 'border-emerald-800 bg-emerald-900 text-white shadow-[0_16px_32px_rgba(6,78,59,0.22)] hover:bg-emerald-800'
-            : isImportDragActive
-              ? 'border-dashed border-teal-500 bg-teal-50 shadow-[0_16px_34px_rgba(13,148,136,0.16)]'
-              : 'border-dashed border-teal-300 bg-[linear-gradient(135deg,#ffffff,#f0fdfa)] shadow-[0_12px_26px_rgba(13,148,136,0.07)] hover:border-teal-500'"
+          class="flex min-h-[118px] flex-col items-center justify-center rounded-lg border px-6 py-5 text-center transition-colors"
+          :class="!canImportSelectedCustomer
+            ? 'cursor-not-allowed border-dashed border-slate-300 bg-slate-50 text-slate-500'
+            : hasSelectedCustomerImport
+              ? 'cursor-pointer border-emerald-800 bg-emerald-900 text-white shadow-[0_16px_32px_rgba(6,78,59,0.22)] hover:bg-emerald-800'
+              : isImportDragActive
+                ? 'cursor-pointer border-dashed border-teal-500 bg-teal-50 shadow-[0_16px_34px_rgba(13,148,136,0.16)]'
+                : 'cursor-pointer border-dashed border-teal-300 bg-[linear-gradient(135deg,#ffffff,#f0fdfa)] shadow-[0_12px_26px_rgba(13,148,136,0.07)] hover:border-teal-500'"
+          :aria-disabled="!canImportSelectedCustomer"
           @dragenter.prevent="handleInternalQuoteDragEnter"
           @dragover.prevent="handleInternalQuoteDragOver"
           @dragleave.prevent="handleInternalQuoteDragLeave"
@@ -1026,26 +1035,31 @@ async function exportCustomerQuoteExcel() {
         >
           <span
             class="flex size-11 items-center justify-center rounded-xl shadow-[0_8px_18px_rgba(13,148,136,0.12)] ring-1 transition-colors"
-            :class="hasSelectedCustomerImport
-              ? 'bg-white/15 text-white ring-white/20'
-              : isImportDragActive
-                ? 'bg-teal-600 text-white ring-teal-200'
-                : 'bg-white text-teal-700 ring-teal-100'"
+            :class="!canImportSelectedCustomer
+              ? 'bg-white text-slate-500 ring-slate-200'
+              : hasSelectedCustomerImport
+                ? 'bg-white/15 text-white ring-white/20'
+                : isImportDragActive
+                  ? 'bg-teal-600 text-white ring-teal-200'
+                  : 'bg-white text-teal-700 ring-teal-100'"
           >
-            <CheckCircle2 v-if="hasSelectedCustomerImport" class="size-5" aria-hidden="true" />
+            <Eye v-if="!canImportSelectedCustomer" class="size-5" aria-hidden="true" />
+            <CheckCircle2 v-else-if="hasSelectedCustomerImport" class="size-5" aria-hidden="true" />
             <UploadCloud v-else class="size-5" aria-hidden="true" />
           </span>
           <span
             class="mt-3 text-base font-semibold"
-            :class="hasSelectedCustomerImport ? 'text-white' : 'text-slate-950'"
+            :class="canImportSelectedCustomer && hasSelectedCustomerImport ? 'text-white' : 'text-slate-950'"
           >
-            {{ hasSelectedCustomerImport ? '已导入内部报价' : isImportDragActive ? '松开导入内部报价' : '导入内部报价 Excel' }}
+            {{ !canImportSelectedCustomer ? '当前账号不可导入' : hasSelectedCustomerImport ? '已导入内部报价' : isImportDragActive ? '松开导入内部报价' : '导入内部报价 Excel' }}
           </span>
           <span
             class="mt-1 text-sm leading-6"
-            :class="hasSelectedCustomerImport ? 'text-emerald-50' : 'text-slate-500'"
+            :class="canImportSelectedCustomer && hasSelectedCustomerImport ? 'text-emerald-50' : 'text-slate-500'"
           >
-            {{ hasSelectedCustomerImport
+            {{ !canImportSelectedCustomer
+              ? '当前账号没有导入内部报价权限。'
+              : hasSelectedCustomerImport
               ? `${selectedCustomer.name}：${selectedImportFileName}，点击可替换文件。`
               : isImportDragActive
                 ? `当前客户：${selectedCustomer.name}。文件会导入到此客户名下。`
@@ -1054,18 +1068,22 @@ async function exportCustomerQuoteExcel() {
           </span>
           <span
             class="mt-2 rounded-full px-3 py-1 text-xs font-medium ring-1"
-            :class="hasSelectedCustomerImport
-              ? 'bg-white/15 text-white ring-white/20'
-              : isImportDragActive
-                ? 'bg-white text-teal-700 ring-teal-200'
-                : 'bg-white text-slate-500 ring-slate-200'"
+            :class="!canImportSelectedCustomer
+              ? 'bg-white text-slate-500 ring-slate-200'
+              : hasSelectedCustomerImport
+                ? 'bg-white/15 text-white ring-white/20'
+                : isImportDragActive
+                  ? 'bg-white text-teal-700 ring-teal-200'
+                  : 'bg-white text-slate-500 ring-slate-200'"
           >
-            {{ hasSelectedCustomerImport ? '已就绪，可输出报客价' : isImportDragActive ? '松开鼠标导入 Excel' : '支持 .xls / .xlsx' }}
+            {{ !canImportSelectedCustomer ? '权限限制：不可导入或替换' : hasSelectedCustomerImport ? '已就绪，可输出报客价' : isImportDragActive ? '松开鼠标导入 Excel' : '支持 .xls / .xlsx' }}
           </span>
             <input
+              data-testid="quote-import-input"
               class="sr-only"
               type="file"
               accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              :disabled="!canImportSelectedCustomer"
               @change="handleInternalQuoteImport"
             >
         </label>
