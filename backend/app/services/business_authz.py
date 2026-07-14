@@ -5,7 +5,13 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.services.auth import AuthContext, add_auth_audit, can, legacy_has_permission_in_scope
+from app.services.auth import (
+    AuthContext,
+    add_auth_audit,
+    authorization_decision,
+    can,
+    legacy_has_permission_in_scope,
+)
 
 
 ENGINEERING_DEPARTMENTS = ("engineering",)
@@ -50,25 +56,23 @@ def is_local_factory(user: AuthContext, factory_id: str) -> bool:
 
 
 def ensure_molding_local_write(db: Session, user: AuthContext, factory_id: str) -> None:
-    canonical_result = is_local_factory(user, factory_id)
-    if settings.authz_mode == "shadow" and not canonical_result:
-        logger.warning(
-            "authz shadow mismatch user=%s resource=molding_sample_write scope=%s legacy=True canonical=False",
-            user.id,
-            factory_id,
-        )
-    if settings.authz_mode != "enforce" or canonical_result:
+    if local_molding_read_access(user, factory_id):
         return
 
+    reason = (
+        f"本厂啤办单未获本地读取授权，禁止写入：{factory_id}"
+        if is_local_factory(user, factory_id)
+        else f"外厂啤办单只允许查看，禁止写入：{factory_id}"
+    )
     add_auth_audit(
         db,
         "permission_denied",
         username=user.username,
         user_id=user.id,
-        detail=f"外厂啤办单只允许查看，禁止写入：{factory_id}",
+        detail=reason,
     )
     db.commit()
-    raise HTTPException(status_code=403, detail="其他厂区啤办单仅允许查看")
+    raise HTTPException(status_code=403, detail="啤办单仅允许查看，不能写入")
 
 
 def canonical_permission_for_departments(
@@ -150,19 +154,8 @@ def ensure_permission_for_departments(
 
 
 def canonical_molding_read_access(user: AuthContext, factory_id: str) -> str | None:
-    if is_local_factory(user, factory_id):
-        if canonical_permission_for_departments(
-            user,
-            "molding_sample:read",
-            factory_id,
-            SHARED_MOLDING_DEPARTMENTS,
-        ) or canonical_permission_for_departments(
-            user,
-            "molding_sample:production_read",
-            factory_id,
-            PRODUCTION_DEPARTMENTS,
-        ):
-            return "local"
+    if canonical_local_molding_read_access(user, factory_id):
+        return "local"
     if canonical_permission_for_departments(
         user,
         MOLDING_CROSS_FACTORY_READ_PERMISSION,
@@ -170,15 +163,75 @@ def canonical_molding_read_access(user: AuthContext, factory_id: str) -> str | N
         CROSS_FACTORY_DEPARTMENTS,
     ):
         return "cross"
-    return None
+    return default_cross_factory_molding_read_access(user, factory_id)
 
 
 def legacy_molding_read_access(user: AuthContext, factory_id: str) -> str | None:
-    if legacy_has_permission_in_scope(user, "molding_sample:read", factory_id, None):
+    if legacy_local_molding_read_access(user, factory_id):
         return "local"
     if legacy_has_permission_in_scope(user, MOLDING_CROSS_FACTORY_READ_PERMISSION, factory_id, None):
         return "cross"
-    return None
+    return default_cross_factory_molding_read_access(user, factory_id)
+
+
+def default_cross_factory_molding_read_access(user: AuthContext, factory_id: str) -> str | None:
+    """Give every authenticated account cross-organization molding visibility.
+
+    This is a read-policy default, not a role or permission assignment.  It
+    intentionally leaves user role bindings, overrides, and write checks
+    untouched.  A direct deny of the dedicated cross-factory read permission,
+    or a system-disabled permission, still takes precedence.
+    """
+    allowed, source_type, _, _ = authorization_decision(
+        user,
+        MOLDING_CROSS_FACTORY_READ_PERMISSION,
+        factory_id,
+        None,
+    )
+    if not allowed and source_type in {"user_override", "inactive_permission"}:
+        return None
+    return "cross"
+
+
+def canonical_local_molding_read_access(user: AuthContext, factory_id: str) -> bool:
+    return is_local_factory(user, factory_id) and (
+        canonical_permission_for_departments(
+            user,
+            "molding_sample:read",
+            factory_id,
+            SHARED_MOLDING_DEPARTMENTS,
+        )
+        or canonical_permission_for_departments(
+            user,
+            "molding_sample:production_read",
+            factory_id,
+            PRODUCTION_DEPARTMENTS,
+        )
+    )
+
+
+def legacy_local_molding_read_access(user: AuthContext, factory_id: str) -> bool:
+    return is_local_factory(user, factory_id) and (
+        legacy_has_permission_in_scope(user, "molding_sample:read", factory_id, None)
+        or legacy_has_permission_in_scope(user, "molding_sample:production_read", factory_id, None)
+    )
+
+
+def local_molding_read_access(user: AuthContext, factory_id: str) -> bool:
+    canonical_result = canonical_local_molding_read_access(user, factory_id)
+    if settings.authz_mode == "enforce":
+        return canonical_result
+
+    legacy_result = legacy_local_molding_read_access(user, factory_id)
+    if settings.authz_mode == "shadow" and legacy_result != canonical_result:
+        logger.warning(
+            "authz shadow mismatch user=%s resource=molding_sample_local_read scope=%s legacy=%s canonical=%s",
+            user.id,
+            factory_id,
+            legacy_result,
+            canonical_result,
+        )
+    return legacy_result
 
 
 def molding_read_access(user: AuthContext, factory_id: str) -> str | None:

@@ -1669,6 +1669,14 @@ Use this template when updating the memory after future work:
 
 ### 2026-07-14
 
+- Requirement: authenticated users must be able to view molding-sample data across factories and departments by default, without changing any existing user roles, role bindings, or individual permission overrides. The new access must be view-only.
+- Implementation: `business_authz.py` now supplies a default molding-sample cross-factory read source only when no active explicit deny exists. The molding-sample read policy and route guard accept that source, while all create, edit, workflow, production, delete, cost, and export checks remain protected. The local write gate still requires the caller's original local business-read authorization, so this default read policy cannot activate a pre-existing write override by itself.
+- Files changed: `backend/app/services/business_authz.py`, `backend/app/services/molding_sample.py`, `backend/tests/test_molding_sample_api.py`, `src/router/index.ts`, `src/router/__tests__/authorizationRefresh.spec.ts`, `src/router/__tests__/systemPermission.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused authorization regressions passed 10 tests; the full molding-sample backend suite passed 51 tests; the molding runtime/router Vitest suites passed 40 tests; `npm.cmd run build` and `git diff --check` passed. Build output contains only the existing third-party `@vueuse/core` Rolldown annotation warnings.
+- Scope decision: this extends read-only access for the molding-sample module that produced the reported 403. Other business modules retain their existing independent authorization policies. An explicit individual deny of `molding_sample:cross_factory_read` continues to block the default read access.
+
+### 2026-07-14
+
 - Follow-up requirement: Dickie customer-quote exports must use one consistent English font for the translated first three remark lines, and the Disney Cable-car mold quotation table must translate its parts and mold remarks into English.
 - Root cause: the converter replaced translated remark text while retaining the original Chinese-font style in the first rows. Its parts dictionary looked up normalized text against unnormalized keys (so Chinese-comma variants missed), and formula cells with cached Excel error strings were not followed through their simple `总表 → 出客模费 → 模厂` reference chain.
 - Implementation: translated B-column remark text now adopts the existing later English remark style when available. Parts and mold-remark dictionaries are normalized consistently, include the Disney Cable-car part and common-mold vocabulary, and formula-error cache values now fall through to their referenced source cell. Added regressions for the font normalization, cached-formula resolution, all 26 Disney Cable-car mold parts, and populated mold remarks.

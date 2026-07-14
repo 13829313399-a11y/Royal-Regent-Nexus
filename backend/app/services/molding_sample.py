@@ -385,12 +385,6 @@ def list_orders(
     current_user: AuthContext,
     factory_id: str | None = None,
 ) -> list[MoldingSampleOrder]:
-    if (
-        "molding_sample:read" not in current_user.permissions
-        and "molding_sample:production_read" not in current_user.permissions
-        and MOLDING_CROSS_FACTORY_READ_PERMISSION not in current_user.permissions
-    ):
-        ensure_permission(db, current_user, "molding_sample:read")
     if factory_id:
         ensure_molding_read(db, current_user, factory_id)
 
@@ -646,12 +640,6 @@ def list_problems(
     order_id: str | None = None,
     status: str | None = None,
 ) -> list[MoldingSampleProblem]:
-    if (
-        "molding_sample:read" not in current_user.permissions
-        and "molding_sample:production_read" not in current_user.permissions
-        and MOLDING_CROSS_FACTORY_READ_PERMISSION not in current_user.permissions
-    ):
-        ensure_permission(db, current_user, "molding_sample:read")
     statement = select(MoldingSampleProblem)
 
     if order_id:
