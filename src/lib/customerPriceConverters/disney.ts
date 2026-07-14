@@ -84,6 +84,7 @@ interface DisneyQuoteData {
   laborRows: DisneyLaborRow[]
   decoRows: DisneyDecoRow[]
   transportationUsd: number
+  moq3000Usd: number
   moq5000Usd: number
   moq10000Usd: number
   modelCostUsd: number
@@ -173,9 +174,13 @@ const MATERIAL_ALIASES: Record<string, string> = {
 
 const DESCRIPTION_TRANSLATIONS: Array<[RegExp, string]> = [
   [/公仔上身.*公仔头.*公仔手脚/, 'Doll upper body/doll head/doll hands and fee'],
+  [/车面贴纸/, 'Car Body Sticker'],
   [/车面/, 'Car Body'],
   [/车底/, 'vehicle bottom'],
   [/座椅/, 'seat'],
+  [/[档挡]风玻璃/, 'Windshield'],
+  [/车轮/, 'Wheel'],
+  [/公[仔子].*公[仔子]鼻子/, 'Doll / Doll Nose'],
   [/轮胎/, 'Wheel (TPR)'],
   [/轮芯/, 'wheel boss'],
   [/配件.*红色.*灰色.*啡色/, 'Accessories (red + gray)'],
@@ -194,6 +199,26 @@ const DESCRIPTION_TRANSLATIONS: Array<[RegExp, string]> = [
   [/包装装配工|包装/, 'Packaging'],
   [/喷油/, 'Whole Item'],
 ]
+
+// The machine reference contains multiple physical presses for 5A, 7A, and
+// 14A, while the internal quote stores only the A code. Use the highest listed
+// clamping force for a duplicate code so the customer quote does not understate
+// the required press capacity.
+const CLAMP_FORCE_TONS_BY_MACHINE_A = new Map<number, number>([
+  [5, 90],
+  [7, 120],
+  [10, 170],
+  [12, 150],
+  [14, 180],
+  [18, 200],
+  [24, 260],
+  [32, 320],
+  [34, 320],
+  [50, 400],
+  [60, 500],
+  [80, 800],
+  [105, 1100],
+])
 
 function toText(value: XlsxCellValue) {
   return String(value ?? '').trim()
@@ -258,6 +283,7 @@ function translateDescription(description: string) {
   const clean = description
     .replace(/[（]/g, '(')
     .replace(/[）]/g, ')')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 
@@ -284,8 +310,12 @@ function parseDateFromSource(sourceFileName: string) {
   return new Date(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]))
 }
 
+function findSheet(workbook: ReturnType<typeof parseXlsxWorkbook>, namePart: string) {
+  return workbook.sheets.find((sheet) => sheet.name.includes(namePart))
+}
+
 function findSheetRows(workbook: ReturnType<typeof parseXlsxWorkbook>, namePart: string) {
-  return workbook.sheets.find((sheet) => sheet.name.includes(namePart))?.rows ?? []
+  return findSheet(workbook, namePart)?.rows ?? []
 }
 
 function findTitle(rows: XlsxCellValue[][], sourceFileName: string) {
@@ -381,6 +411,11 @@ function findMachineRate(machineRates: Array<{ label: string; rate: number }>, m
   return matched?.rate ?? 0
 }
 
+function findClampForceTons(machine: string) {
+  const machineA = Number(machine.match(/(\d+(?:\.\d+)?)\s*A/i)?.[1] ?? '')
+  return CLAMP_FORCE_TONS_BY_MACHINE_A.get(machineA) ?? 0
+}
+
 function parseMoldRows(rows: XlsxCellValue[][]): DisneyMoldRow[] {
   const headerIndex = rows.findIndex((row) => row?.some((cell) => /Mold #|模具/.test(toText(cell))))
   if (headerIndex < 0) {
@@ -411,7 +446,7 @@ function parseMoldRows(rows: XlsxCellValue[][]): DisneyMoldRow[] {
       material: normalizeMaterialName(toText(row[5])),
       cavities: toNumber(row[6]) || 1,
       up: toNumber(row[7]) || 1,
-      toolCostUsd: toNumber(row[10]),
+      toolCostUsd: toNumber(row[11]) || toNumber(row[10]),
     })
   }
 
@@ -493,7 +528,7 @@ function parsePlasticRows(
       ? ceil(matchedMachineRate, 2)
       : round(matchedMachineRate, 2)
     const cycleTimeSeconds = round(toNumber(row[12]), 0)
-    const pressSizeTon = toNumber(row[14])
+    const pressSizeTon = findClampForceTons(machine) || toNumber(row[14])
     const materialCostUsd = resinCostUsdKg * shotWeightG / 1000
     const moldingLaborCostUsd = safeDivide(laborRateUsdHr * cycleTimeSeconds, 3600 * up)
     const partSubtotalUsd = safeDivide(materialCostUsd + moldingLaborCostUsd, partsIncluded)
@@ -587,12 +622,9 @@ function parsePurchasedParts(rows: XlsxCellValue[][]) {
   const packageKeywords = /外箱|纸箱|封箱|雪梨|贴纸|彩盒|内咭|吊牌|PDQ|胶膜|包装/
 
   costRows.forEach((row) => {
-    const canUse = row.category.includes('五金')
-      || row.category.includes('其他外购')
-      || row.category.includes('纸箱')
-      || row.category.includes('彩盒')
-
-    if (!canUse) {
+    // These categories already belong to dedicated customer-quote sections.
+    // Every other priced row with a B-column category is a purchased part.
+    if (/料价|啤工|装配工|喷油|油漆|运费/.test(row.category)) {
       return
     }
 
@@ -626,19 +658,9 @@ function parsePurchasedParts(rows: XlsxCellValue[][]) {
     })
   }
 
-  const packageOrder = (description: string) => {
-    if (/^Price label$/i.test(description)) return 0
-    if (/^Carton Box /i.test(description)) return 1
-    if (/^Tissue paper and packing materials$/i.test(description)) return 2
-    return 99
-  }
-  const disneyPackageRows = packageRows
-    .filter((part) => packageOrder(part.description) < 99)
-    .sort((left, right) => packageOrder(left.description) - packageOrder(right.description))
-
   return {
     productRows: productRows.slice(0, 22),
-    packageRows: disneyPackageRows.slice(0, 10),
+    packageRows: packageRows.slice(0, 10),
   }
 }
 
@@ -707,7 +729,33 @@ function parseTransportationUsd(rows: XlsxCellValue[][]) {
   return roundMoney(fallback ?? 0)
 }
 
-function parseMoqUsd(rows: XlsxCellValue[][], label: string) {
+interface DisneyMoqPriceCandidate {
+  value: number
+  fillId: number
+}
+
+function findHighlightedMoqUsd(candidates: DisneyMoqPriceCandidate[]) {
+  if (candidates.length < 2) {
+    return 0
+  }
+
+  const fillCounts = new Map<number, number>()
+  candidates.forEach((candidate) => {
+    fillCounts.set(candidate.fillId, (fillCounts.get(candidate.fillId) ?? 0) + 1)
+  })
+
+  const commonFillId = [...fillCounts.entries()]
+    .sort(([, leftCount], [, rightCount]) => rightCount - leftCount)[0]?.[0]
+
+  if (commonFillId === undefined) {
+    return 0
+  }
+
+  const highlighted = candidates.filter((candidate) => candidate.fillId !== commonFillId)
+  return highlighted.length === 1 ? highlighted[0].value : 0
+}
+
+function parseMoqUsd(rows: XlsxCellValue[][], label: string, cellFillIds: number[][] = []) {
   const labelIndex = rows.findIndex((row) => toText(row?.[2]).includes(label))
   if (labelIndex < 0) {
     return 0
@@ -717,6 +765,15 @@ function parseMoqUsd(rows: XlsxCellValue[][], label: string) {
     const row = rows[rowIndex] ?? []
     if (!toText(row[2]).includes('包含测试费用')) {
       continue
+    }
+
+    const candidates = row.slice(3, 10).map((cell, columnOffset) => ({
+      value: toNumber(cell),
+      fillId: cellFillIds[rowIndex]?.[columnOffset + 3] ?? 0,
+    })).filter((candidate) => candidate.value > 0)
+    const highlighted = findHighlightedMoqUsd(candidates)
+    if (highlighted > 0) {
+      return round(highlighted, 2)
     }
 
     const preferred = toNumber(row[7])
@@ -762,7 +819,8 @@ function sumBy<T>(rows: T[], getter: (row: T) => number) {
 
 function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuoteData {
   const workbook = parseXlsxWorkbook(buffer)
-  const detailRows = findSheetRows(workbook, '明细')
+  const detailSheet = findSheet(workbook, '明细')
+  const detailRows = detailSheet?.rows ?? []
   if (detailRows.length === 0) {
     throw new Error('未找到“明细”工作表')
   }
@@ -775,8 +833,9 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
   const decoRows = parseDecoRows(findSheetRows(workbook, '喷油报价'))
   const { modelCostUsd, setupChargeUsd } = parseModelAndSetupUsd(findSheetRows(workbook, '手办报价'))
   const transportationUsd = parseTransportationUsd(detailRows)
-  const moq5000Usd = parseMoqUsd(detailRows, '5K报价')
-  const moq10000Usd = parseMoqUsd(detailRows, '10K报价')
+  const moq3000Usd = parseMoqUsd(detailRows, '3K报价', detailSheet?.cellFillIds)
+  const moq5000Usd = parseMoqUsd(detailRows, '5K报价', detailSheet?.cellFillIds)
+  const moq10000Usd = parseMoqUsd(detailRows, '10K报价', detailSheet?.cellFillIds)
   const productPackagingUsd = sumBy(packageRows.slice(0, 2), (row) => row.totalCostUsd)
   const shipmentPackagingUsd = sumBy(packageRows.slice(2), (row) => row.totalCostUsd)
   const plasticMaterialUsd = sumBy(plastics, (row) => row.materialCostUsd)
@@ -806,6 +865,7 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
     laborRows,
     decoRows,
     transportationUsd,
+    moq3000Usd: moq3000Usd || round(productQuoteUsd, 2),
     moq5000Usd,
     moq10000Usd,
     modelCostUsd,
@@ -1193,10 +1253,10 @@ function buildSummarySection(rows: XlsxCellInput[][], data: DisneyQuoteData) {
   setFormulaNumber(rows, 233, 0, 0, 'IFERROR(C232,0)')
 
   setCell(rows, 235, 0, 'TOTAL: ', XLSX_STYLE.bold)
-  setFormulaNumber(rows, 235, 2, data.totals.productQuoteUsd, 'C217*(1+D232)', XLSX_STYLE.number3Bold)
+  setFormulaNumber(rows, 235, 2, data.moq3000Usd, 'F236', XLSX_STYLE.number3Bold)
   setCell(rows, 235, 4, 'MOQ', XLSX_STYLE.bold)
   setNumber(rows, 236, 4, data.metadata.moq, XLSX_STYLE.number0)
-  setFormulaNumber(rows, 236, 5, data.totals.productQuoteUsd, 'C235', XLSX_STYLE.number3Bold)
+  setNumber(rows, 236, 5, data.moq3000Usd, XLSX_STYLE.number2)
   setCell(rows, 237, 0, 'TOTAL TOOLING: ', XLSX_STYLE.bold)
   setFormulaNumber(rows, 237, 2, data.totals.plasticToolingUsd, 'C42', XLSX_STYLE.number3Bold)
   setNumber(rows, 237, 4, 5000, XLSX_STYLE.number0)
@@ -1304,6 +1364,7 @@ interface DisneyTemplateCellPatch {
   ref: string
   value: XlsxCellValue
   formula?: string
+  replaceFormula?: boolean
   style?: number
   dataType?: 'e' | 'str'
 }
@@ -1416,7 +1477,7 @@ function buildTemplateCellXml(patch: DisneyTemplateCellPatch, existing?: DisneyT
 
   // Calculation cells belong to the customer template. A value/clear patch must
   // never replace an existing formula with its cached numeric result.
-  if (existing && existingFormula && !patch.formula) {
+  if (existing && existingFormula && !patch.formula && !patch.replaceFormula) {
     return existing.full
   }
 
@@ -1426,7 +1487,7 @@ function buildTemplateCellXml(patch: DisneyTemplateCellPatch, existing?: DisneyT
     return existing.full
   }
 
-  const formula = existingFormula || patch.formula || ''
+  const formula = patch.replaceFormula ? (patch.formula ?? '') : (existingFormula || patch.formula || '')
   const value = existing && !formula && typeof patch.value === 'number' && isTemplateStringCell(existing)
     ? String(patch.value)
     : patch.value
@@ -1548,9 +1609,9 @@ function applyTemplateCellPatches(sheetXml: string, patches: DisneyTemplateCellP
 
 function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   const patches: DisneyTemplateCellPatch[] = []
-  const patch = (ref: string, value: XlsxCellValue, style?: number) => patches.push({ ref, value, style })
-  const formula = (ref: string, value: XlsxCellValue, formulaText: string, style?: number, dataType?: 'e' | 'str') => {
-    patches.push({ ref, value, formula: formulaText, style, dataType })
+  const patch = (ref: string, value: XlsxCellValue, style?: number, replaceFormula = false) => patches.push({ ref, value, style, replaceFormula })
+  const formula = (ref: string, value: XlsxCellValue, formulaText: string, style?: number, dataType?: 'e' | 'str', replaceFormula = false) => {
+    patches.push({ ref, value, formula: formulaText, style, dataType, replaceFormula })
   }
   const ref = (columnIndex: number, rowNumber: number) => `${templateColumnIndexToName(columnIndex)}${rowNumber}`
   const clear = (rowNumber: number, columnIndexes: number[]) => {
@@ -1763,9 +1824,9 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   formula('A233', '', 'IFERROR(C232,0)', undefined, 'str')
 
   patch('B235', null, 53)
-  formula('C235', data.totals.productQuoteUsd, 'C217*(1+D232)', 53)
+  formula('C235', data.moq3000Usd, 'F236', 53, undefined, true)
   patch('F235', null, 54)
-  formula('F236', data.totals.productQuoteUsd, 'C235', 55)
+  patch('F236', data.moq3000Usd, 55, true)
   patch('B237', null, 53)
   formula('C237', data.totals.plasticToolingUsd, 'C42', 53)
   patch('E237', 5000, 54)
