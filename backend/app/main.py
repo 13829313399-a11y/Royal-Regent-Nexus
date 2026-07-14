@@ -8,6 +8,7 @@ from app.api.injection_schedule import router as injection_schedule_router
 from app.api.iam import router as iam_router
 from app.api.molding_sample import router as molding_sample_router
 from app.api.pricing import router as pricing_router
+from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
 from app.core.config import settings
 from app.db import init_db
@@ -26,6 +27,7 @@ app.include_router(injection_schedule_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
+app.include_router(raw_material_router)
 app.include_router(system_router)
 
 

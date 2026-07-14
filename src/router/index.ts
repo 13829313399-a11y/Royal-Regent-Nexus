@@ -89,7 +89,7 @@ const routes: RouteRecordRaw[] = [
       title: '原料管理模块',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['molding_sample:warehouse_requisition'],
+      permissions: ['molding_sample:raw_material_write'],
       enforcePermissions: true,
     },
   },

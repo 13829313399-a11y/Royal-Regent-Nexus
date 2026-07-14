@@ -49,6 +49,10 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         MANAGEMENT_DEPARTMENTS,
         guidance="仅管理层或全部部门范围生效",
     ),
+    "molding_sample:raw_material_write": ScopePolicy(
+        (*ENGINEERING_DEPARTMENTS, *WAREHOUSE_DEPARTMENTS),
+        guidance="仅工程部、PMC/仓库或全部部门范围生效",
+    ),
     "molding_sample:warehouse_requisition": ScopePolicy(
         WAREHOUSE_DEPARTMENTS,
         guidance="仅 PMC/仓库范围生效",
