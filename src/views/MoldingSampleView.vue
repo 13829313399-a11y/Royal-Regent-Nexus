@@ -3786,7 +3786,7 @@ onUnmounted(() => {
                       <th class="px-2 py-2 text-left font-medium">名称</th>
                       <th class="px-2 py-2 text-left font-medium">工模尺寸</th>
                       <th class="px-2 py-2 text-left font-medium">模具在厂</th>
-                      <th class="px-2 py-2 text-left font-medium">回厂时间</th>
+                      <th class="px-2 py-2 text-left font-medium">需办日期</th>
                       <th class="px-2 py-2 text-left font-medium">原料</th>
                       <th class="px-2 py-2 text-left font-medium">颜色 / PMS</th>
                       <th class="px-2 py-2 text-right font-medium">预计用料</th>
@@ -3803,7 +3803,7 @@ onUnmounted(() => {
                       <td class="px-2 py-1.5">{{ item.mold_name }}</td>
                       <td class="px-2 py-1.5">{{ formatBlank(item.mold_dimensions) }}</td>
                       <td class="px-2 py-1.5">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</td>
-                      <td class="px-2 py-1.5 whitespace-nowrap">{{ formatBlank(item.mold_return_time) }}</td>
+                      <td class="px-2 py-1.5 whitespace-nowrap">{{ formatBlank(item.completion_time) }}</td>
                       <td class="px-2 py-1.5">{{ item.material }}</td>
                       <td class="px-2 py-1.5">
                         <span class="inline-flex items-center gap-1">
@@ -3899,13 +3899,12 @@ onUnmounted(() => {
                       <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
                         <div><span class="text-slate-400">工模尺寸</span><div class="font-semibold">{{ formatBlank(item.mold_dimensions) }}</div></div>
                         <div><span class="text-slate-400">模具是否在厂</span><div class="font-semibold">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div></div>
-                        <div><span class="text-slate-400">模具回厂时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }}</div></div>
                         <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
                         <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                         <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
                         <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
                         <div v-if="canViewSelectedOrderCost"><span class="text-slate-400">预计料费(HKD)</span><div class="font-semibold">{{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</div></div>
-                        <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
+                        <div><span class="text-slate-400">需办日期</span><div class="font-semibold">{{ formatBlank(item.completion_time) }}</div></div>
                         <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                         <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
                         <div v-if="canViewSelectedOrderCost"><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatMoney(item.actual_amount_hkd) }}</div></div>
@@ -4132,7 +4131,7 @@ onUnmounted(() => {
                 <th>颜色 / PMS</th>
                 <th>色粉</th>
                 <th>啤数 / 预料</th>
-                <th>回模 / 完成</th>
+                <th>需办日期</th>
                 <th>实际回填</th>
                 <th>备注</th>
               </tr>
@@ -4145,7 +4144,6 @@ onUnmounted(() => {
                   <span>{{ formatBlank(item.mold_name) }}</span>
                   <span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span>
                   <span>模具是否在厂：{{ formatMoldPresenceStatus(item.mold_presence_status) }}</span>
-                  <span>模具回厂时间：{{ formatBlank(item.mold_return_time) }}</span>
                   <em>{{ formatBlank(item.id) }}</em>
                 </td>
                 <td>{{ formatBlank(item.material) }}</td>
@@ -4159,7 +4157,7 @@ onUnmounted(() => {
                   <span>{{ formatWeight(item.required_material_kg) }}</span>
                   <span v-if="canViewRecordCost(record)">预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
                 </td>
-                <td>{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</td>
+                <td>{{ formatBlank(item.completion_time) }}</td>
                 <td>
                   <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
                   <span v-if="canViewRecordCost(record)">实际料费 {{ formatMoney(item.actual_amount_hkd) }}</span>

@@ -373,6 +373,13 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 
 ### 2026-07-14
 
+- Requirement implementation: `需办日期` must be a visible, non-omitted field on the molding-sample detail page.
+- Implementation: `src/views/MoldingSampleView.vue` now shows the persisted `completion_time` as `需办日期` in the detail table, expanded complete data, and print detail. The obsolete current-form presentation of `mold_return_time` / `回厂时间` was removed from those views.
+- Files changed: `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `node_modules\\.bin\\jiti.cmd src/views/__tests__/moldingSampleViewLayout.test.ts` passed; `npm.cmd run test:unit -- src/views/__tests__/moldingSampleRuntime.spec.ts` passed (34 tests); `node_modules\\.bin\\vue-tsc.cmd --noEmit` passed; `npm.cmd run build` passed. Build retains the known non-blocking third-party `@vueuse/core` `INVALID_ANNOTATION` warnings. Browser verification was not run.
+
+### 2026-07-14
+
 - Requirement implementation: the top-right account menu must display the user's registered profile rather than authorization scopes or aggregated role bindings.
 - Implementation: `src/components/layout/AccountMenu.vue` now renders factory, department, and position from `currentUser.profile.primary_factory_id`, `primary_department`, and `position`; global permission scope `*` and multi-role bindings remain available for authorization only and are no longer presented as personal information. Accounts without a registered profile show `未登记`.
 - Files changed: `src/components/layout/AccountMenu.vue`, `src/components/layout/__tests__/accountMenu.spec.ts`, and `PROJECT_MEMORY.md`.
