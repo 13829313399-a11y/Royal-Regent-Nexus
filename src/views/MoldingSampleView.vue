@@ -38,6 +38,7 @@ import {
 } from '@lucide/vue'
 import { RouterLink, useRoute } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
 import {
   factoryContexts,
   isProductionFactoryContextId,
@@ -219,6 +220,8 @@ const selectedOrderId = ref(readQueryString(route.query.order_id))
 const selectedBatchOrderIds = ref<string[]>([])
 const printableRecords = ref<MoldingSampleWorkflowRecord[]>([])
 const printPreviewVisible = ref(false)
+const engineeringTrialReportHistoryVisible = ref(false)
+const engineeringTrialReportItemId = ref('')
 const searchKeyword = ref('')
 const overviewListPage = ref(1)
 const boardPageByStatus = ref<Partial<Record<MoldingSampleStatus, number>>>({})
@@ -433,6 +436,7 @@ const selectedOrder = computed<MoldingSampleOrder>(() => selectedRecord.value?.o
 const selectedItems = computed(() => selectedRecord.value?.items ?? [])
 const selectedProblems = computed(() => selectedRecord.value?.problems ?? [])
 const selectedAuditLogs = computed(() => selectedRecord.value?.audit_logs ?? [])
+const selectedTrialReports = computed(() => selectedRecord.value?.trial_reports ?? [])
 const selectedCompletionGate = computed(() => selectedRecord.value
   ? buildCompletionGate(selectedOrder.value, selectedItems.value)
   : { can_complete: false, missing_item_ids: [], message: '暂无正式单据' },
@@ -812,6 +816,7 @@ function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWor
     audit_logs: record.audit_logs,
     requisitions: [],
     problems: record.problems ?? [],
+    trial_reports: record.trial_reports ?? [],
     access: {
       read_source: readSource,
       can_view_cost: record.access?.can_view_cost ?? record.can_view_cost ?? true,
@@ -1381,6 +1386,21 @@ async function confirmPrintOverview() {
 
 function closePrintPreview() {
   printPreviewVisible.value = false
+}
+
+function openEngineeringTrialReportHistory(itemId: string) {
+  if (!selectedTrialReports.value.some((report) => report.item_id === itemId)) {
+    actionMessage.value = '该模具尚未收到啤机部保存的试模报告。'
+    return
+  }
+
+  engineeringTrialReportItemId.value = itemId
+  engineeringTrialReportHistoryVisible.value = true
+}
+
+function closeEngineeringTrialReportHistory() {
+  engineeringTrialReportHistoryVisible.value = false
+  engineeringTrialReportItemId.value = ''
 }
 
 function saveWorkbookAsExcel(workbook: ArrayBuffer, filename: string) {
@@ -3918,6 +3938,46 @@ onUnmounted(() => {
               </Transition>
             </section>
 
+            <section class="rounded-lg border border-slate-200 bg-white p-4" data-testid="engineering-trial-report-history">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <History class="size-4 text-teal-700" aria-hidden="true" />
+                  <div>
+                    <h2 class="text-[13px] font-bold text-slate-950">试模报告历史</h2>
+                    <p class="mt-0.5 text-[11px] text-slate-500">啤机部保存后自动同步到此单据；工程部可查看原表并再次打印。</p>
+                  </div>
+                </div>
+                <span class="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700">{{ selectedTrialReports.length }} 份已同步</span>
+              </div>
+              <div v-if="selectedTrialReports.length" class="mt-3 space-y-2">
+                <article
+                  v-for="report in selectedTrialReports"
+                  :key="report.id"
+                  class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
+                >
+                  <div class="min-w-0">
+                    <p class="truncate text-[12px] font-semibold text-slate-900">
+                      {{ selectedItems.find((item) => item.id === report.item_id)?.mold_id || '未填模具编号' }}
+                      ·
+                      {{ selectedItems.find((item) => item.id === report.item_id)?.mold_name || '未填模具名称' }}
+                    </p>
+                    <p class="mt-0.5 text-[11px] text-slate-500">啤机部 {{ report.updated_by || report.created_by || '已保存' }} · {{ report.updated_at || report.created_at }}</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-teal-200 bg-white px-2.5 text-[11px] font-semibold text-teal-800 transition hover:bg-teal-50"
+                    @click="openEngineeringTrialReportHistory(report.item_id)"
+                  >
+                    <Printer class="size-3.5" aria-hidden="true" />
+                    查看 / 再次打印
+                  </button>
+                </article>
+              </div>
+              <p v-else class="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                暂未收到啤机部保存的试模报告。保存后会自动在此形成历史记录。
+              </p>
+            </section>
+
             <section class="rounded-lg border border-slate-200 bg-white p-4">
               <div class="mb-1.5 flex items-center gap-2">
                 <MessageSquareText class="size-4 text-slate-400" aria-hidden="true" />
@@ -4040,6 +4100,20 @@ onUnmounted(() => {
         </button>
       </section>
     </div>
+
+    <MoldingSampleTrialReportDialog
+      :visible="engineeringTrialReportHistoryVisible"
+      :order="selectedRecord?.order ?? null"
+      :items="selectedItems"
+      :reports="selectedTrialReports"
+      :factory-short-name="activeFactory.shortName"
+      operator-name=""
+      :can-save="false"
+      :saving="false"
+      read-only
+      :initial-item-id="engineeringTrialReportItemId"
+      @close="closeEngineeringTrialReportHistory"
+    />
 
     <section
       class="molding-sample-print-root hidden"

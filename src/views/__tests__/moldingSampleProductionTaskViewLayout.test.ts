@@ -18,6 +18,10 @@ for (const requiredCopy of [
   '撤回开始生产',
   '保存回填',
   '打印任务单',
+  '试模报告填写 / 打印',
+  '试模报告历史',
+  '查看 / 再次打印',
+  '自动同步到工程部单据详情',
   '确认打印',
   '工程啤办明细',
   '工程部下发 · 啤机部执行',
@@ -49,6 +53,13 @@ for (const requiredImplementation of [
   'moldingSampleApi.listOrders',
   'moldingSampleApi.listNotifications',
   'moldingSampleApi.updateItems',
+  'moldingSampleApi.upsertTrialReport',
+  'MoldingSampleTrialReportDialog',
+  'canSaveSelectedTrialReport',
+  'openTrialReportHistory',
+  'trialReportReadOnly',
+  'trialReportInitialItemId',
+  'molding-sample-trial-report-history',
   'data-testid="molding-sample-task-print-preview"',
   'data-testid="molding-sample-task-print-area"',
   'canPrintSelectedTask',
@@ -110,7 +121,7 @@ assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
 assert.match(source, /total_material_cost/)
 assert.match(source, /<\/main>\s*<section class="molding-sample-task-print-root hidden"/)
 assert.match(source, /#app > main \{ display: none !important; \}/)
-assert.match(source, /#app > \.molding-sample-task-print-root \{ display: block !important; position: static !important;/)
+assert.match(source, /body\.molding-sample-task-printing #app > \.molding-sample-task-print-root \{ display: block !important; position: static !important;/)
 assert.match(source, /@page \{ size: A4 landscape; margin: 7mm; \}/)
 assert.match(source, /min-height: 196mm/)
 assert.match(source, /molding-sample-task-print-page\.is-dense/)
