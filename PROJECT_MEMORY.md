@@ -1644,3 +1644,10 @@ Use this template when updating the memory after future work:
 - Files changed: `src/lib/customerPriceConverters/caixing.ts`, `src/lib/__tests__/caixingCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
 - Verification: focused Color Star Vitest suite and `npm.cmd run build` passed; build retains only the known third-party Rolldown annotation warnings.
 - Decision: changes are limited to the Color Star plastic template; plush remains unchanged.
+
+### 2026-07-14
+
+- Follow-up requirement: remove the green print-only handoff prompt reading `工程单据填写详情` and `工程审核通过后下发至啤机部执行；打印内容仅包含工程部填写资料。` from the production task notice.
+- Implementation: removed the `molding-sample-task-print-handoff` section and its normal/dense print CSS. The notice title, engineering basic data, mold-detail table, and the separate footer remain unchanged.
+- Files changed: `src/views/MoldingSampleProductionTaskView.vue`, `src/views/__tests__/moldingSampleProductionTaskViewLayout.test.ts`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: print-layout source regression passed; focused production-task runtime test passed 34 tests; `npm run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed.

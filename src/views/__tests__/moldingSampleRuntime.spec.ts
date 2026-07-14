@@ -700,7 +700,7 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).toContain('1/1 · 30 啤')
     expect(printArea).toContain('15.00 kg')
     expect(printArea).toContain('工程首件确认')
-    expect(printArea).toContain('工程单据填写详情')
+    expect(printArea).not.toContain('工程审核通过后下发至啤机部执行；打印内容仅包含工程部填写资料。')
     expect(printArea).toContain('工程部下发 · 啤机部执行')
     expect(printArea).not.toContain('14.20 kg')
     expect(printArea).not.toContain('啤机接收')

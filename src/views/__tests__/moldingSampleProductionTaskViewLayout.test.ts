@@ -21,7 +21,6 @@ for (const requiredCopy of [
   '确认打印',
   '工程啤办明细',
   '工程部下发 · 啤机部执行',
-  '工程单据填写详情',
   '工程模具明细',
   '模具信息',
   '工程时点',
@@ -116,6 +115,7 @@ assert.match(source, /@page \{ size: A4 landscape; margin: 7mm; \}/)
 assert.match(source, /min-height: 196mm/)
 assert.match(source, /molding-sample-task-print-page\.is-dense/)
 assert.doesNotMatch(source, /molding-sample-task-print-signatures/)
+assert.doesNotMatch(source, /molding-sample-task-print-handoff/)
 assert.doesNotMatch(source, /本任务单由工程部下发给啤机部执行/)
 assert.doesNotMatch(source, /啤机确认机台/)
 assert.doesNotMatch(source, /文件编号/)
