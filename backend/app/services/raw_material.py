@@ -8,8 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.molding_sample import MoldingSampleMaterialPrice
 from app.models.raw_material import RawMaterial
-from app.schemas.raw_material import RawMaterialCreateRequest
+from app.schemas.raw_material import RawMaterialCreateRequest, RawMaterialOut, RawMaterialUpdateRequest
 from app.services.auth import AuthContext, add_auth_audit
 
 
@@ -94,20 +95,63 @@ def seed_raw_material_defaults(db: Session) -> int:
     return created_count
 
 
-def list_raw_materials(db: Session, factory_id: str) -> list[RawMaterial]:
+def to_raw_material_out(material: RawMaterial, unit_price_hkd_per_lb: float | None = None) -> RawMaterialOut:
+    return RawMaterialOut.model_validate(material).model_copy(
+        update={"unit_price_hkd_per_lb": unit_price_hkd_per_lb},
+    )
+
+
+def list_raw_materials(db: Session, factory_id: str) -> list[RawMaterialOut]:
     statement = (
-        select(RawMaterial)
+        select(RawMaterial, MoldingSampleMaterialPrice.unit_price)
+        .outerjoin(
+            MoldingSampleMaterialPrice,
+            MoldingSampleMaterialPrice.material == RawMaterial.material_name,
+        )
         .where(RawMaterial.factory_id == factory_id)
         .order_by(RawMaterial.material_code, RawMaterial.created_at)
     )
-    return list(db.scalars(statement).all())
+    return [
+        to_raw_material_out(material, unit_price)
+        for material, unit_price in db.execute(statement).all()
+    ]
+
+
+def upsert_material_price(
+    db: Session,
+    material_name: str,
+    unit_price_hkd_per_lb: float | None,
+) -> float | None:
+    if unit_price_hkd_per_lb is None:
+        existing = db.scalar(
+            select(MoldingSampleMaterialPrice).where(
+                MoldingSampleMaterialPrice.material == material_name,
+            ),
+        )
+        return existing.unit_price if existing else None
+
+    price = db.scalar(
+        select(MoldingSampleMaterialPrice).where(
+            MoldingSampleMaterialPrice.material == material_name,
+        ),
+    )
+    if price is None:
+        price = MoldingSampleMaterialPrice(
+            material=material_name,
+            unit_price=unit_price_hkd_per_lb,
+            notes="工程部通过原料主数据维护",
+        )
+        db.add(price)
+    else:
+        price.unit_price = unit_price_hkd_per_lb
+    return unit_price_hkd_per_lb
 
 
 def create_raw_material(
     db: Session,
     payload: RawMaterialCreateRequest,
     current_user: AuthContext,
-) -> RawMaterial:
+) -> RawMaterialOut:
     existing = db.scalar(
         select(RawMaterial.id).where(
             RawMaterial.factory_id == payload.factory_id,
@@ -135,12 +179,20 @@ def create_raw_material(
         updated_at=now,
     )
     db.add(material)
+    unit_price_hkd_per_lb = upsert_material_price(
+        db,
+        material.material_name,
+        payload.unit_price_hkd_per_lb,
+    )
     add_auth_audit(
         db,
         "raw_material_created",
         username=current_user.username,
         user_id=current_user.id,
-        detail=f"厂区={material.factory_id};物料编号={material.material_code};原料={material.material_name}",
+        detail=(
+            f"厂区={material.factory_id};物料编号={material.material_code};原料={material.material_name};"
+            f"单价(HKD/磅)={unit_price_hkd_per_lb if unit_price_hkd_per_lb is not None else '未维护'}"
+        ),
     )
     try:
         db.commit()
@@ -148,4 +200,46 @@ def create_raw_material(
         db.rollback()
         raise HTTPException(status_code=409, detail="当前厂区已存在相同物料编号") from None
     db.refresh(material)
-    return material
+    return to_raw_material_out(material, unit_price_hkd_per_lb)
+
+
+def update_raw_material(
+    db: Session,
+    material_id: str,
+    payload: RawMaterialUpdateRequest,
+    current_user: AuthContext,
+) -> RawMaterialOut:
+    material = db.get(RawMaterial, material_id)
+    if material is None:
+        raise HTTPException(status_code=404, detail="原料不存在或已被删除")
+
+    previous_name = material.material_name
+    material.material_name = payload.material_name
+    material.category = payload.category
+    material.spec = payload.spec
+    material.unit = payload.unit
+    material.supplier = payload.supplier
+    material.safety_stock_kg = payload.safety_stock_kg
+    material.status = payload.status
+    material.notes = payload.notes
+    material.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    unit_price_hkd_per_lb = upsert_material_price(
+        db,
+        material.material_name,
+        payload.unit_price_hkd_per_lb,
+    )
+    add_auth_audit(
+        db,
+        "raw_material_updated",
+        username=current_user.username,
+        user_id=current_user.id,
+        detail=(
+            f"厂区={material.factory_id};物料编号={material.material_code};"
+            f"原料={previous_name}→{material.material_name};"
+            f"单价(HKD/磅)={unit_price_hkd_per_lb if unit_price_hkd_per_lb is not None else '未维护'}"
+        ),
+    )
+    db.commit()
+    db.refresh(material)
+    return to_raw_material_out(material, unit_price_hkd_per_lb)

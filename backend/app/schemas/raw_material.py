@@ -3,21 +3,18 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class RawMaterialCreateRequest(BaseModel):
-    factory_id: str = Field(min_length=1, max_length=64)
-    material_code: str = Field(min_length=1, max_length=128)
+class RawMaterialFields(BaseModel):
     material_name: str = Field(min_length=1, max_length=255)
     category: str = Field(min_length=1, max_length=128)
     spec: str = Field(default="", max_length=255)
     unit: str = Field(min_length=1, max_length=64)
     supplier: str = Field(default="", max_length=255)
     safety_stock_kg: float | None = Field(default=None, ge=0)
+    unit_price_hkd_per_lb: float | None = Field(default=None, gt=0)
     status: Literal["启用", "停用"] = "启用"
     notes: str = Field(default="", max_length=4000)
 
     @field_validator(
-        "factory_id",
-        "material_code",
         "material_name",
         "category",
         "spec",
@@ -30,6 +27,20 @@ class RawMaterialCreateRequest(BaseModel):
         return value.strip()
 
 
+class RawMaterialCreateRequest(RawMaterialFields):
+    factory_id: str = Field(min_length=1, max_length=64)
+    material_code: str = Field(min_length=1, max_length=128)
+
+    @field_validator("factory_id", "material_code")
+    @classmethod
+    def strip_identity_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class RawMaterialUpdateRequest(RawMaterialFields):
+    pass
+
+
 class RawMaterialOut(BaseModel):
     id: str
     factory_id: str
@@ -40,6 +51,7 @@ class RawMaterialOut(BaseModel):
     unit: str
     supplier: str
     safety_stock_kg: float | None
+    unit_price_hkd_per_lb: float | None = None
     status: Literal["启用", "停用"]
     notes: str
     created_by: str

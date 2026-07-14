@@ -22,10 +22,8 @@ import {
   type ProductionFactoryContextId,
   type Tone,
 } from '@/data/enterpriseMock'
-import { moldingSampleApi } from '@/api/moldingSample'
 import { rawMaterialApi, type RawMaterialResponse } from '@/api/rawMaterial'
 import { getApiErrorMessage } from '@/lib/http'
-import { resolveMaterialPrice } from '@/lib/moldingSampleBusiness'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
 
@@ -42,6 +40,7 @@ interface RawMaterialTabItem {
 }
 
 interface RawMaterialRow {
+  id: string
   rowNumber: number
   code: string
   name: string
@@ -103,9 +102,8 @@ const materialStatusFilters: Array<'全部状态' | MaterialStatus> = ['全部�
 
 const rawMaterialRows = reactive<RawMaterialRow[]>([])
 const rawMaterialPageSize = 10
-const materialPriceState = ref<'loading' | 'ready' | 'unavailable'>('loading')
-const rawMaterialPriceList = ref<Awaited<ReturnType<typeof moldingSampleApi.getMaterialPrices>>['prices']>([])
 const isSavingMaterial = ref(false)
+const editingMaterialId = ref<string | null>(null)
 const materialForm = reactive({
   materialCode: '',
   materialName: '',
@@ -114,6 +112,7 @@ const materialForm = reactive({
   unit: 'KG',
   supplier: '',
   safetyStockKg: '',
+  unitPriceHkdPerLb: '',
   notes: '',
   status: '启用' as MaterialStatus,
 })
@@ -279,42 +278,6 @@ const activeFactory = computed(() =>
   appStore.activeProductionFactory,
 )
 
-async function loadProtectedMaterialPrices(factoryId: string) {
-  materialPriceState.value = 'loading'
-  rawMaterialPriceList.value = []
-  rawMaterialRows.forEach((row) => {
-    row.unitPriceHkdPerLb = null
-  })
-
-  try {
-    const response = await moldingSampleApi.getMaterialPrices(factoryId)
-    if (factoryId !== selectedFactoryId.value) {
-      return
-    }
-
-    rawMaterialPriceList.value = response.prices
-    applyProtectedMaterialPrices()
-    materialPriceState.value = 'ready'
-  }
-  catch {
-    if (factoryId !== selectedFactoryId.value) {
-      return
-    }
-
-    rawMaterialRows.forEach((row) => {
-      row.unitPriceHkdPerLb = null
-    })
-    rawMaterialPriceList.value = []
-    materialPriceState.value = 'unavailable'
-  }
-}
-
-function applyProtectedMaterialPrices() {
-  rawMaterialRows.forEach((row) => {
-    row.unitPriceHkdPerLb = resolveMaterialPrice(row.name, rawMaterialPriceList.value)?.unit_price ?? null
-  })
-}
-
 async function loadPersistedRawMaterials(factoryId: string) {
   try {
     const persistedRows = await rawMaterialApi.list(factoryId)
@@ -323,7 +286,6 @@ async function loadPersistedRawMaterials(factoryId: string) {
     }
 
     rawMaterialRows.splice(0, rawMaterialRows.length, ...persistedRows.map(mapPersistedRawMaterialRow))
-    applyProtectedMaterialPrices()
     actionMessage.value = `已从 ${activeFactory.value.name} 原料主数据库读取 ${persistedRows.length} 条资料。`
   }
   catch {
@@ -334,7 +296,6 @@ async function loadPersistedRawMaterials(factoryId: string) {
 }
 
 watch(selectedFactoryId, (factoryId) => {
-  void loadProtectedMaterialPrices(factoryId)
   void loadPersistedRawMaterials(factoryId)
 }, { immediate: true })
 
@@ -458,6 +419,7 @@ const availableInventoryWeight = computed(() => inventoryBatchRows.reduce((total
 const depletedBatchCount = computed(() => inventoryBatchRows.filter((row) => row.availableWeightKg <= 0).length)
 
 const tabTitle = computed(() => rawMaterialTabs.find((tab) => tab.id === activeTab.value)?.label ?? '原料资料')
+const isEditingMaterial = computed(() => editingMaterialId.value !== null)
 
 watch(() => route.query.tab, (tab) => {
   activeTab.value = normalizeTab(tab)
@@ -581,6 +543,7 @@ function movementTone(type: MovementType): Tone {
 
 function mapPersistedRawMaterialRow(material: RawMaterialResponse, index: number): RawMaterialRow {
   return {
+    id: material.id,
     rowNumber: index + 1,
     code: material.material_code,
     name: material.material_name || '未命名原料',
@@ -588,7 +551,7 @@ function mapPersistedRawMaterialRow(material: RawMaterialResponse, index: number
     category: material.category,
     unit: material.unit,
     supplier: material.supplier || '未填写',
-    unitPriceHkdPerLb: null,
+    unitPriceHkdPerLb: material.unit_price_hkd_per_lb,
     safetyStockKg: material.safety_stock_kg,
     currentStockKg: null,
     status: material.status,
@@ -625,6 +588,7 @@ function closeModals() {
   showMaterialModal.value = false
   showRequisitionModal.value = false
   showBatchModal.value = false
+  editingMaterialId.value = null
 }
 
 function resetMaterialForm() {
@@ -635,12 +599,29 @@ function resetMaterialForm() {
   materialForm.unit = 'KG'
   materialForm.supplier = ''
   materialForm.safetyStockKg = ''
+  materialForm.unitPriceHkdPerLb = ''
   materialForm.notes = ''
   materialForm.status = '启用'
+  editingMaterialId.value = null
 }
 
 function openMaterialModal() {
   resetMaterialForm()
+  showMaterialModal.value = true
+}
+
+function openEditMaterialModal(row: RawMaterialRow) {
+  materialForm.materialCode = row.code
+  materialForm.materialName = row.name
+  materialForm.category = row.category
+  materialForm.spec = row.spec === '—' ? '' : row.spec
+  materialForm.unit = row.unit
+  materialForm.supplier = row.supplier === '未填写' ? '' : row.supplier
+  materialForm.safetyStockKg = row.safetyStockKg === null ? '' : String(row.safetyStockKg)
+  materialForm.unitPriceHkdPerLb = row.unitPriceHkdPerLb === null ? '' : String(row.unitPriceHkdPerLb)
+  materialForm.notes = row.notes
+  materialForm.status = row.status
+  editingMaterialId.value = row.id
   showMaterialModal.value = true
 }
 
@@ -649,6 +630,8 @@ async function saveMaterial() {
   const materialName = materialForm.materialName.trim()
   const safetyStockValue = materialForm.safetyStockKg.trim()
   const safetyStockKg = safetyStockValue === '' ? null : Number(safetyStockValue)
+  const unitPriceValue = materialForm.unitPriceHkdPerLb.trim()
+  const unitPriceHkdPerLb = unitPriceValue === '' ? null : Number(unitPriceValue)
 
   if (!materialCode || !materialName) {
     notifyAction('请填写物料编号和原料名称。')
@@ -658,29 +641,48 @@ async function saveMaterial() {
     notifyAction('安全库存必须是大于或等于 0 的数字。')
     return
   }
-  if (rawMaterialRows.some((row) => row.code === materialCode)) {
+  if (!Number.isFinite(unitPriceHkdPerLb ?? 0) || (unitPriceHkdPerLb ?? 0) <= 0) {
+    notifyAction('单价必须是大于 0 的数字，或留空表示暂不维护。')
+    return
+  }
+  if (!editingMaterialId.value && rawMaterialRows.some((row) => row.code === materialCode)) {
     notifyAction('当前列表已存在相同物料编号，请更换编号后再保存。')
     return
   }
 
   isSavingMaterial.value = true
   try {
-    const created = await rawMaterialApi.create({
-      factory_id: selectedFactoryId.value,
-      material_code: materialCode,
+    const payload = {
       material_name: materialName,
       category: materialForm.category,
       spec: materialForm.spec,
       unit: materialForm.unit,
       supplier: materialForm.supplier,
       safety_stock_kg: safetyStockKg,
+      unit_price_hkd_per_lb: unitPriceHkdPerLb,
       status: materialForm.status,
       notes: materialForm.notes,
-    })
-    rawMaterialRows.push(mapPersistedRawMaterialRow(created, rawMaterialRows.length))
-    materialPage.value = materialPageCount.value
-    closeModals()
-    notifyAction(`原料“${created.material_name}”已保存到 ${activeFactory.value.name} 数据库。`)
+    }
+    if (editingMaterialId.value) {
+      const updated = await rawMaterialApi.update(editingMaterialId.value, payload)
+      const rowIndex = rawMaterialRows.findIndex((row) => row.id === updated.id)
+      if (rowIndex >= 0) {
+        rawMaterialRows.splice(rowIndex, 1, mapPersistedRawMaterialRow(updated, rowIndex))
+      }
+      closeModals()
+      notifyAction(`原料“${updated.material_name}”及单价已更新。`)
+    }
+    else {
+      const created = await rawMaterialApi.create({
+        factory_id: selectedFactoryId.value,
+        material_code: materialCode,
+        ...payload,
+      })
+      rawMaterialRows.push(mapPersistedRawMaterialRow(created, rawMaterialRows.length))
+      materialPage.value = materialPageCount.value
+      closeModals()
+      notifyAction(`原料“${created.material_name}”已保存到 ${activeFactory.value.name} 数据库。`)
+    }
   }
   catch (error) {
     notifyAction(`保存原料失败：${getApiErrorMessage(error)}`)
@@ -882,7 +884,7 @@ function saveSecondaryModal() {
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-50 text-slate-700">
-                <tr v-for="row in paginatedMaterialRows" :key="`${row.code}-${row.rowNumber}`" class="hover:bg-slate-50">
+                <tr v-for="row in paginatedMaterialRows" :key="row.id" class="hover:bg-slate-50">
                   <td class="px-3 py-2.5 tabular-nums text-slate-400">{{ row.rowNumber }}</td>
                   <td class="px-3 py-2.5 font-semibold text-slate-950">{{ row.code }}</td>
                   <td class="px-3 py-2.5 font-semibold text-slate-800">{{ row.name }}</td>
@@ -907,7 +909,7 @@ function saveSecondaryModal() {
                     </span>
                   </td>
                   <td class="whitespace-nowrap px-3 py-2.5 text-center">
-                    <button type="button" class="text-[11px] font-semibold text-teal-700 hover:underline" @click="notifyAction('原料编辑接口待后续接入。')">编辑</button>
+                    <button type="button" class="text-[11px] font-semibold text-teal-700 hover:underline" @click="openEditMaterialModal(row)">编辑</button>
                     <span class="mx-1 text-slate-200">|</span>
                     <button type="button" class="text-[11px] font-semibold text-slate-400 hover:text-slate-700" @click="notifyAction(`${materialRowLabel(row)} 状态操作待接入原料主数据接口。`)">
                       {{ row.status === '启用' ? '停用' : '启用' }}
@@ -1236,8 +1238,8 @@ function saveSecondaryModal() {
             <Plus class="size-4" aria-hidden="true" />
           </span>
           <div>
-            <div class="text-[14px] font-bold text-slate-950">新增原料</div>
-            <div class="text-[11px] text-slate-400">Add Raw Material · 物料主数据</div>
+            <div class="text-[14px] font-bold text-slate-950">{{ isEditingMaterial ? '编辑原料' : '新增原料' }}</div>
+            <div class="text-[11px] text-slate-400">{{ isEditingMaterial ? 'Edit Raw Material · 物料主数据与单价' : 'Add Raw Material · 物料主数据' }}</div>
           </div>
           <button type="button" class="ml-auto flex size-7 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100" aria-label="关闭新增原料弹窗" @click="closeModals">
             <X class="size-4" aria-hidden="true" />
@@ -1247,7 +1249,7 @@ function saveSecondaryModal() {
           <div class="grid gap-x-4 gap-y-3.5 sm:grid-cols-2">
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">物料编号 <span class="text-red-500">*</span></span>
-              <input v-model.trim="materialForm.materialCode" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：91000001">
+              <input v-model.trim="materialForm.materialCode" :readonly="isEditingMaterial" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" :class="isEditingMaterial ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''" placeholder="如：91000001">
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">原料名称 / 型号 <span class="text-red-500">*</span></span>
@@ -1279,7 +1281,8 @@ function saveSecondaryModal() {
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价 (HKD/磅)</span>
-              <input disabled class="h-9 w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-400 outline-none" value="由受保护价格接口维护">
+              <input v-model="materialForm.unitPriceHkdPerLb" type="number" min="0" step="0.000001" data-testid="raw-material-unit-price" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：4.85">
+              <span class="mt-1 block text-[10px] text-slate-400">工程部维护后会同步用于啤办成本计算。</span>
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">供应商</span>
@@ -1357,7 +1360,7 @@ function saveSecondaryModal() {
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价参考 (HKD/磅)</span>
-              <input :value="materialPriceState === 'ready' ? '选择原料后显示' : '无价格权限或暂无价格'" disabled class="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-400 outline-none">
+              <input value="选择原料后显示" disabled class="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-400 outline-none">
             </label>
           </div>
           <div v-else class="grid gap-x-4 gap-y-3.5 sm:grid-cols-2">

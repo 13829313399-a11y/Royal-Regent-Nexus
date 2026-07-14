@@ -42,12 +42,36 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
         assert created["created_by"] == "user-engineer"
         assert created["material_code"] == payload["material_code"]
         assert created["safety_stock_kg"] == 50
+        assert created["unit_price_hkd_per_lb"] is None
+
+        update_response = client.patch(f"/api/raw-materials/{created['id']}", json={
+            "material_name": "工程更新 PP 料",
+            "category": "PP",
+            "spec": "高流动共聚 PP",
+            "unit": "KG",
+            "supplier": "华兴材料供应商",
+            "safety_stock_kg": 60,
+            "unit_price_hkd_per_lb": 6.25,
+            "status": "启用",
+            "notes": "工程部编辑并维护单价",
+        })
+        assert update_response.status_code == 200
+        updated = update_response.json()
+        assert updated["material_code"] == "RM-ENG-001"
+        assert updated["material_name"] == "工程更新 PP 料"
+        assert updated["unit_price_hkd_per_lb"] == 6.25
+        assert updated["safety_stock_kg"] == 60
 
         listed_response = client.get("/api/raw-materials?factory_id=huaxing")
         assert listed_response.status_code == 200
         listed = listed_response.json()
         assert len(listed) == 287
-        assert any(row["material_code"] == "RM-ENG-001" for row in listed)
+        assert any(
+            row["material_code"] == "RM-ENG-001"
+            and row["material_name"] == "工程更新 PP 料"
+            and row["unit_price_hkd_per_lb"] == 6.25
+            for row in listed
+        )
 
         duplicate_response = client.post("/api/raw-materials", json=payload)
         assert duplicate_response.status_code == 409
@@ -65,6 +89,24 @@ def test_raw_material_creation_is_scoped_to_engineering_and_warehouse(monkeypatc
             "unit": "KG",
         })
         assert forbidden.status_code == 403
+
+        client.post("/api/auth/logout")
+        login_as(client, "engineer")
+        baseline = client.get("/api/raw-materials?factory_id=huaxing").json()[0]
+        client.post("/api/auth/logout")
+        login_as(client, "qa_inspector")
+        blocked_update = client.patch(f"/api/raw-materials/{baseline['id']}", json={
+            "material_name": baseline["material_name"],
+            "category": baseline["category"],
+            "spec": baseline["spec"],
+            "unit": baseline["unit"],
+            "supplier": baseline["supplier"],
+            "safety_stock_kg": baseline["safety_stock_kg"],
+            "unit_price_hkd_per_lb": 9.99,
+            "status": baseline["status"],
+            "notes": baseline["notes"],
+        })
+        assert blocked_update.status_code == 403
 
         client.post("/api/auth/logout")
         login_as(client, "warehouse_keeper")
