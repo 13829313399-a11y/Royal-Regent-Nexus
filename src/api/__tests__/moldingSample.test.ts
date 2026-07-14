@@ -116,6 +116,70 @@ await api.updateItems('BP-1', {
   ],
 })
 
+await api.upsertTrialReport('BP-1', 'BP-1-001', {
+  data: {
+    mold_supplier: '华兴模具厂',
+    sample_category: '',
+    material_name: 'HIPS 425',
+    material_shots: '30',
+    material_weight: '',
+    color: '深绿色',
+    color_code: '71139',
+    color_shots: '',
+    color_weight: '',
+    virgin_material_shots: '',
+    virgin_material_weight: '',
+    runner_material_shots: '',
+    runner_material_weight: '',
+    water_ratio: '',
+    water_shots: '',
+    water_material_weight: '',
+    water_weight: '',
+    special_requirements: '',
+    front_mold_water: '冻水',
+    rear_mold_water: '热水',
+    other_trial_requirement: '',
+    other_trial_requirement_note: '',
+    baking_time_hours: '',
+    mold_condition: '已在本厂',
+    expected_return_time: '',
+    gross_weight: '',
+    net_weight: '',
+    plastic_model: '160T',
+    machine_model: '海天',
+    machine_no: 'A-08',
+    cooling_time: '',
+    holding_time: '',
+    cycle_time: '',
+    injection_speed: '',
+    ejector_count: '',
+    cushion_pressure: '',
+    clamping_force: '',
+    high_pressure: '',
+    low_pressure: '',
+    pressure_stage_1: '',
+    pressure_stage_2: '',
+    pressure_stage_3: '',
+    pressure_stage_4: '',
+    barrel_temperature_head: '',
+    barrel_temperature_middle: '',
+    barrel_temperature_end: '',
+    molding_mode: '全自动',
+    mold_issues: ['困气'],
+    part_issues: [],
+    issue_notes: '',
+    trial_summary: '首件正常。',
+    trial_round: '1',
+    verdict: '合格试模',
+    tester_name: '啤机部文员',
+    tester_date: '2026-07-14',
+    molding_supervisor_name: '',
+    molding_supervisor_date: '',
+    engineer_name: '',
+    engineer_date: '',
+  },
+})
+
 await api.getMaterialPrices('huadeng')
 
 await api.updateMaterialPrices({
@@ -170,6 +234,7 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'post /problems',
   'patch /problems/P-BP-1',
   'patch /injection/BP-1/items',
+  'put /injection/BP-1/trial-reports/BP-1-001',
   'get /material-prices?factory_id=huadeng',
   'post /manager-update-prices',
   'get /requisitions?order_id=BP-1',
@@ -182,11 +247,9 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
 ])
 
 const allPayloadText = JSON.stringify(calls.map((call) => call.data))
-assert.equal(allPayloadText.includes('pin'), false)
-assert.equal(allPayloadText.includes('reviewer_name'), false)
-assert.equal(allPayloadText.includes('reviewer_role'), false)
-assert.equal(allPayloadText.includes('actor_name'), false)
-assert.equal(allPayloadText.includes('actor_role'), false)
+for (const sensitiveKey of ['pin', 'reviewer_name', 'reviewer_role', 'actor_name', 'actor_role']) {
+  assert.equal(new RegExp(`"${sensitiveKey}"\\s*:`).test(allPayloadText), false)
+}
 
 assert.deepEqual(calls.find((call) => call.url === '/injection/BP-1/status')?.data, {
   action: '主管通过',
@@ -219,3 +282,4 @@ assert.deepEqual(calls.find((call) => call.url === '/problems')?.data, {
 assert.deepEqual(calls.find((call) => call.url === '/problems/P-BP-1')?.data, {
   status: '已解决',
 })
+assert.equal(calls.find((call) => call.url === '/injection/BP-1/trial-reports/BP-1-001')?.data instanceof Object, true)
