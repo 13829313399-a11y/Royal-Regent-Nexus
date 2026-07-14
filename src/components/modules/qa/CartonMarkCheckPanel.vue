@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { CheckCircle2, Crop, Eye, FileText, Image as ImageIcon, Plus, RefreshCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
+import { CheckCircle2, ChevronLeft, ChevronRight, Crop, Eye, FileText, Image as ImageIcon, RefreshCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { cartonMarkApi, type CartonMarkAutoCheckResponse, type CartonMarkComparisonItem } from '@/api/cartonMark'
+import { cartonMarkApi, type CartonMarkAutoCheckResponse, type CartonMarkBatchCheckResponse, type CartonMarkComparisonItem } from '@/api/cartonMark'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
 import {
@@ -23,6 +23,7 @@ interface CartonMarkTemplateRecord {
   customerName: string
   po: string
   item: string
+  contractNumber: string
   fileName: string
   fileSize: number
   uploadedAt: string
@@ -31,7 +32,8 @@ interface CartonMarkTemplateRecord {
   fileBlob?: Blob
 }
 
-interface StoredCartonMarkTemplateRecord extends Omit<CartonMarkTemplateRecord, 'pdfUrl' | 'factoryId' | 'factoryName'> {
+interface StoredCartonMarkTemplateRecord extends Omit<CartonMarkTemplateRecord, 'pdfUrl' | 'factoryId' | 'factoryName' | 'contractNumber'> {
+  contractNumber?: string
   factoryId?: ProductionFactoryContextId
   factoryName?: string
 }
@@ -44,6 +46,7 @@ interface CartonMarkPhotoRecord {
   customerName: string
   po: string
   item: string
+  contractNumber: string
   fileName: string
   fileSize: number
   uploadedAt: string
@@ -66,12 +69,14 @@ interface CartonMarkPhotoRecord {
   sideImageBlob?: Blob
 }
 
-interface StoredCartonMarkPhotoRecord extends Omit<CartonMarkPhotoRecord, 'imageUrl' | 'frontImageUrl' | 'sideImageUrl' | 'factoryId' | 'factoryName'> {
+interface StoredCartonMarkPhotoRecord extends Omit<CartonMarkPhotoRecord, 'imageUrl' | 'frontImageUrl' | 'sideImageUrl' | 'factoryId' | 'factoryName' | 'contractNumber'> {
+  contractNumber?: string
   factoryId?: ProductionFactoryContextId
   factoryName?: string
 }
 
 type CartonMarkPhotoSide = 'front' | 'side'
+type CartonMarkWorkspaceMode = 'warehouse' | 'qa'
 
 interface PhotoCropState {
   enabled: boolean
@@ -82,12 +87,10 @@ interface PhotoCropState {
   errorMessage: string
 }
 
-interface CustomerNameRecord {
-  id: string
-  factoryId: ProductionFactoryContextId
-  factoryName: string
-  name: string
-  createdAt: string
+interface LeftLabelFeedback {
+  total: number
+  passed: number
+  issues: CartonMarkComparisonItem[]
 }
 
 const DB_NAME = 'rr-carton-mark-library'
@@ -96,17 +99,19 @@ const STORE_NAME = 'cartonMarkTemplates'
 const PHOTO_STORE_NAME = 'cartonMarkPhotos'
 const LOCAL_STORAGE_KEY = 'rr-carton-mark-library-records'
 const PHOTO_LOCAL_STORAGE_KEY = 'rr-carton-mark-photo-records'
-const CUSTOMER_STORAGE_KEY = 'rr-carton-mark-customer-library'
 const ALL_CUSTOMERS = '全部'
 
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const route = useRoute()
+const props = defineProps<{
+  workspaceMode?: CartonMarkWorkspaceMode
+}>()
 
 const form = reactive({
   customerName: '',
-  po: '',
   item: '',
+  contractNumber: '',
 })
 
 const photoForm = reactive({
@@ -116,10 +121,17 @@ const photoForm = reactive({
 
 const allRecords = ref<CartonMarkTemplateRecord[]>([])
 const allPhotoRecords = ref<CartonMarkPhotoRecord[]>([])
-const customerLibrary = ref<CustomerNameRecord[]>([])
 const selectedFile = ref<File | null>(null)
 const selectedFrontPhotoFile = ref<File | null>(null)
 const selectedSidePhotoFile = ref<File | null>(null)
+const selectedFrontBatchFiles = ref<File[]>([])
+const selectedSideBatchFiles = ref<File[]>([])
+const activeFrontBatchPhotoIndex = ref(0)
+const activeSideBatchPhotoIndex = ref(0)
+const croppedBatchPhotoIndexes = reactive<Record<CartonMarkPhotoSide, number[]>>({
+  front: [],
+  side: [],
+})
 const selectedFrontPreviewUrl = ref('')
 const selectedSidePreviewUrl = ref('')
 const frontPreviewImage = ref<HTMLImageElement | null>(null)
@@ -128,21 +140,22 @@ const photoPreviewRenderTick = ref(0)
 const fileInput = ref<HTMLInputElement | null>(null)
 const frontPhotoFileInput = ref<HTMLInputElement | null>(null)
 const sidePhotoFileInput = ref<HTMLInputElement | null>(null)
+const frontBatchPhotoFileInput = ref<HTMLInputElement | null>(null)
+const sideBatchPhotoFileInput = ref<HTMLInputElement | null>(null)
 const comparisonRecord = ref<CartonMarkPhotoRecord | null>(null)
 const autoCheckResult = ref<CartonMarkAutoCheckResponse | null>(null)
 const autoCheckErrorMessage = ref('')
 const recheckingPhotoId = ref('')
 const activeCustomer = ref(ALL_CUSTOMERS)
-const newCustomerName = ref('')
 const searchKeyword = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 const photoErrorMessage = ref('')
 const photoSuccessMessage = ref('')
-const customerMessage = ref('')
 const isLoading = ref(false)
 const isSaving = ref(false)
 const isSavingPhoto = ref(false)
+const isSavingBatchPhoto = ref(false)
 const deletingRecordId = ref('')
 const deletingPhotoRecordId = ref('')
 const storageMode = ref<'indexedDb' | 'localStorage'>('indexedDb')
@@ -155,24 +168,20 @@ const photoCropState = reactive<Record<CartonMarkPhotoSide, PhotoCropState>>({
 
 const activeFactory = computed(() => appStore.activeProductionFactory)
 const activeFactoryId = computed(() => activeFactory.value.id as ProductionFactoryContextId)
-const currentDepartmentId = computed(() => String(route.params.department ?? 'qa'))
-const isWarehouseWorkspace = computed(() => currentDepartmentId.value === 'pmc-warehouse')
+const isWarehouseWorkspace = computed(() => {
+  if (props.workspaceMode) return props.workspaceMode === 'warehouse'
+  return String(route.params.department ?? 'qa') === 'pmc-warehouse'
+})
+const currentDepartmentId = computed(() => isWarehouseWorkspace.value ? 'pmc-warehouse' : 'qa')
 const isAdmin = computed(() => authStore.can('system:user_manage', activeFactoryId.value, currentDepartmentId.value))
 const canUploadTemplate = computed(() => isAdmin.value || authStore.can('carton_mark:template_upload', activeFactoryId.value, currentDepartmentId.value))
 const canUploadPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:photo_upload', activeFactoryId.value, currentDepartmentId.value))
 const canReviewPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:review', activeFactoryId.value, currentDepartmentId.value))
 const canDeleteTemplate = computed(() => isWarehouseWorkspace.value && canUploadTemplate.value)
 const currentUserName = computed(() => authStore.currentUser?.display_name ?? '当前账号')
-const workspaceLabel = computed(() => isWarehouseWorkspace.value ? '纸箱部仓管模板库' : 'QA 箱唛实拍核验')
-const templatePermissionHint = computed(() => {
-  if (canUploadTemplate.value) {
-    return isWarehouseWorkspace.value
-      ? '当前账号可维护客名库，并上传客户箱唛 PDF 模板。'
-      : '当前账号具备模板维护权限，也可在这里补录客户箱唛 PDF。'
-  }
-
-  return '当前账号只能查看模板资料；纸箱部仓管账号可维护客名库并上传 PDF。'
-})
+const templatePermissionHint = computed(() => canUploadTemplate.value
+  ? '填写客名、ITEM 号和合同号后，即可导入客户箱唛 PDF。'
+  : '当前账号只能查看模板资料；请使用纸箱部仓管账号导入 PDF。')
 const photoPermissionHint = computed(() => {
   if (canUploadPhoto.value) {
     return '当前账号可上传纸箱到厂后的箱唛实拍图片，并交给 QA 核对。'
@@ -187,12 +196,6 @@ const records = computed(() => {
 
 const photoRecords = computed(() => {
   return sortPhotoRecords(allPhotoRecords.value.filter((record) => record.factoryId === activeFactoryId.value))
-})
-
-const factoryCustomers = computed(() => {
-  return customerLibrary.value
-    .filter((customer) => customer.factoryId === activeFactoryId.value)
-    .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
 })
 
 const selectedFileLabel = computed(() => {
@@ -213,16 +216,20 @@ const selectedSidePhotoFileLabel = computed(() => {
   return `${selectedSidePhotoFile.value.name} · ${formatFileSize(selectedSidePhotoFile.value.size)}`
 })
 
-const hasSelectedCustomer = computed(() => {
-  return factoryCustomers.value.some((customer) => normalizeKey(customer.name) === normalizeKey(form.customerName))
-})
+const selectedFrontBatchFilesLabel = computed(() => selectedFrontBatchFiles.value.length
+  ? `已选择 ${selectedFrontBatchFiles.value.length} 张正唛`
+  : '未选择正唛')
+
+const selectedSideBatchFilesLabel = computed(() => selectedSideBatchFiles.value.length
+  ? `已选择 ${selectedSideBatchFiles.value.length} 张侧唛`
+  : '未选择侧唛')
 
 const canSubmit = computed(() => {
   return Boolean(
     canUploadTemplate.value
-    && hasSelectedCustomer.value
-    && form.po.trim()
+    && form.customerName.trim()
     && form.item.trim()
+    && form.contractNumber.trim()
     && selectedFile.value
     && isPdfFile(selectedFile.value),
   )
@@ -294,9 +301,17 @@ const canSubmitPhoto = computed(() => {
   )
 })
 const hasBothSelectedPhotos = computed(() => Boolean(selectedFrontPhotoFile.value && selectedSidePhotoFile.value))
+const batchPhotoCount = computed(() => selectedFrontBatchFiles.value.length + selectedSideBatchFiles.value.length)
+const canSubmitBatchPhoto = computed(() => Boolean(
+  canUploadPhoto.value
+  && selectedTemplateForPhoto.value?.fileBlob
+  && batchPhotoCount.value,
+))
 const photoSubmitLabel = computed(() => {
-  if (isSavingPhoto.value) return '对比中'
-  return hasBothSelectedPhotos.value ? '开始自动核对' : '上传正唛和侧唛'
+  if (isSavingBatchPhoto.value) return '核对中'
+  if (batchPhotoCount.value === 1) return '开始核对'
+  if (batchPhotoCount.value > 1) return `开始批量核对（${batchPhotoCount.value} 张）`
+  return '上传照片后开始核对'
 })
 const autoCheckComparisons = computed(() => autoCheckResult.value?.comparisons ?? [])
 const frontAutoCheckComparisons = computed(() => {
@@ -305,18 +320,21 @@ const frontAutoCheckComparisons = computed(() => {
 const sideAutoCheckComparisons = computed(() => {
   return autoCheckComparisons.value.filter((item) => item.side === 'side')
 })
+const frontLeftLabelFeedback = computed(() => buildLeftLabelFeedback(frontAutoCheckComparisons.value))
+const sideLeftLabelFeedback = computed(() => buildLeftLabelFeedback(sideAutoCheckComparisons.value))
 const autoCheckExtractionMessages = computed(() => {
   return (autoCheckResult.value?.extraction ?? []).filter((status) => status.message || !status.ok)
 })
 
 const customerGroups = computed(() => {
-  const recordCounts = new Map<string, { count: number, latestAt: string }>()
+  const groups = new Map<string, { name: string, count: number, latestAt: string }>()
 
   for (const record of records.value) {
     const key = normalizeKey(record.customerName)
-    const current = recordCounts.get(key)
+    const current = groups.get(key)
     if (!current) {
-      recordCounts.set(key, {
+      groups.set(key, {
+        name: record.customerName,
         count: 1,
         latestAt: record.uploadedAt,
       })
@@ -329,14 +347,20 @@ const customerGroups = computed(() => {
     }
   }
 
-  return factoryCustomers.value.map((customer) => {
-    const stats = recordCounts.get(normalizeKey(customer.name))
+  return Array.from(groups.values()).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+})
 
-    return {
-      name: customer.name,
-      count: stats?.count ?? 0,
-      latestAt: stats?.latestAt ?? customer.createdAt,
-    }
+const visibleCustomerGroups = computed(() => {
+  const keyword = normalizeKey(searchKeyword.value)
+  if (!keyword) return customerGroups.value
+
+  return customerGroups.value.filter((customer) => {
+    if (normalizeKey(customer.name).includes(keyword)) return true
+
+    return records.value.some((record) => {
+      return normalizeKey(record.customerName) === normalizeKey(customer.name)
+        && [record.item, record.contractNumber, record.fileName].some((value) => normalizeKey(value).includes(keyword))
+    })
   })
 })
 
@@ -350,6 +374,7 @@ const filteredRecords = computed(() => {
       record.customerName,
       record.po,
       record.item,
+      record.contractNumber,
       record.fileName,
     ].some((value) => normalizeKey(value).includes(keyword))
 
@@ -357,11 +382,6 @@ const filteredRecords = computed(() => {
   })
 })
 
-const uniqueCustomerCount = computed(() => {
-  return factoryCustomers.value.length
-})
-
-const latestRecord = computed(() => records.value[0])
 const latestPhotoRecord = computed(() => photoRecords.value[0])
 
 onMounted(async () => {
@@ -380,8 +400,6 @@ onMounted(async () => {
     allRecords.value = sortRecords(readRecordsFromLocalStorage())
     allPhotoRecords.value = sortPhotoRecords(readPhotoRecordsFromLocalStorage())
   } finally {
-    customerLibrary.value = readCustomersFromLocalStorage()
-    syncCustomerLibraryFromRecords()
     isLoading.value = false
   }
 })
@@ -391,24 +409,22 @@ watch(activeFactoryId, () => {
   successMessage.value = ''
   photoErrorMessage.value = ''
   photoSuccessMessage.value = ''
-  customerMessage.value = ''
   activeCustomer.value = ALL_CUSTOMERS
   photoForm.customerName = ALL_CUSTOMERS
   photoForm.templateId = ''
   resetPhotoSelection()
-
-  if (!factoryCustomers.value.some((customer) => customer.name === form.customerName)) {
-    form.customerName = ''
-  }
+  resetBatchPhotoSelection()
 })
 
 watch(() => photoForm.customerName, () => {
   photoForm.templateId = ''
   resetPhotoSelection()
+  resetBatchPhotoSelection()
 })
 
 watch(() => photoForm.templateId, () => {
   resetPhotoSelection()
+  resetBatchPhotoSelection()
 })
 
 onBeforeUnmount(() => {
@@ -511,6 +527,75 @@ function setSelectedPhotoFile(side: CartonMarkPhotoSide, file: File) {
     revokeImageUrl(selectedSidePreviewUrl.value)
   }
   selectedSidePreviewUrl.value = createImageUrl(file)
+}
+
+function getBatchPhotoFiles(side: CartonMarkPhotoSide) {
+  return side === 'front' ? selectedFrontBatchFiles.value : selectedSideBatchFiles.value
+}
+
+function setBatchPhotoFiles(side: CartonMarkPhotoSide, files: File[]) {
+  if (side === 'front') {
+    selectedFrontBatchFiles.value = files
+    return
+  }
+
+  selectedSideBatchFiles.value = files
+}
+
+function getActiveBatchPhotoIndex(side: CartonMarkPhotoSide) {
+  return side === 'front' ? activeFrontBatchPhotoIndex.value : activeSideBatchPhotoIndex.value
+}
+
+function setActiveBatchPhotoIndex(side: CartonMarkPhotoSide, index: number) {
+  if (side === 'front') {
+    activeFrontBatchPhotoIndex.value = index
+    return
+  }
+
+  activeSideBatchPhotoIndex.value = index
+}
+
+function getBatchPhotoPositionLabel(side: CartonMarkPhotoSide) {
+  const files = getBatchPhotoFiles(side)
+  if (!files.length) return '未选择图片'
+
+  return `第 ${getActiveBatchPhotoIndex(side) + 1} / ${files.length} 张`
+}
+
+function canMoveBatchPhoto(side: CartonMarkPhotoSide, direction: -1 | 1) {
+  const nextIndex = getActiveBatchPhotoIndex(side) + direction
+  return nextIndex >= 0 && nextIndex < getBatchPhotoFiles(side).length
+}
+
+function isActiveBatchPhotoCropped(side: CartonMarkPhotoSide) {
+  return croppedBatchPhotoIndexes[side].includes(getActiveBatchPhotoIndex(side))
+}
+
+function resetBatchPhotoCropMarks(side: CartonMarkPhotoSide) {
+  croppedBatchPhotoIndexes[side] = []
+}
+
+function markActiveBatchPhotoCropped(side: CartonMarkPhotoSide) {
+  const index = getActiveBatchPhotoIndex(side)
+  if (!croppedBatchPhotoIndexes[side].includes(index)) {
+    croppedBatchPhotoIndexes[side].push(index)
+  }
+}
+
+function showBatchPhotoAt(side: CartonMarkPhotoSide, index: number) {
+  const files = getBatchPhotoFiles(side)
+  const nextFile = files[index]
+  if (!nextFile) return
+
+  clearPhotoSelection(side, false)
+  setActiveBatchPhotoIndex(side, index)
+  setSelectedPhotoFile(side, nextFile)
+  photoPreviewRenderTick.value += 1
+}
+
+function switchActiveBatchPhoto(side: CartonMarkPhotoSide, direction: -1 | 1) {
+  if (!canMoveBatchPhoto(side, direction)) return
+  showBatchPhotoAt(side, getActiveBatchPhotoIndex(side) + direction)
 }
 
 function enablePhotoCrop(side: CartonMarkPhotoSide) {
@@ -638,6 +723,10 @@ async function applyPhotoCrop(side: CartonMarkPhotoSide) {
   try {
     const croppedFile = await cropImageBlob(file, state.selection as NormalizedCropSelection, buildCroppedPhotoFileName(file.name))
     setSelectedPhotoFile(side, croppedFile)
+    const files = [...getBatchPhotoFiles(side)]
+    files[getActiveBatchPhotoIndex(side)] = croppedFile
+    setBatchPhotoFiles(side, files)
+    markActiveBatchPhotoCropped(side)
     resetPhotoCropState(side)
     photoCropState[side].applied = true
     photoSuccessMessage.value = side === 'front'
@@ -652,6 +741,7 @@ async function applyPhotoCrop(side: CartonMarkPhotoSide) {
 function hydrateRecord(record: StoredCartonMarkTemplateRecord): CartonMarkTemplateRecord {
   return {
     ...record,
+    contractNumber: record.contractNumber ?? '',
     factoryId: record.factoryId ?? activeFactoryId.value,
     factoryName: record.factoryName ?? activeFactory.value.shortName,
     pdfUrl: record.fileBlob ? createPdfUrl(record.fileBlob) : undefined,
@@ -661,6 +751,7 @@ function hydrateRecord(record: StoredCartonMarkTemplateRecord): CartonMarkTempla
 function normalizeStoredRecord(record: StoredCartonMarkTemplateRecord): StoredCartonMarkTemplateRecord {
   return {
     ...record,
+    contractNumber: record.contractNumber ?? '',
     factoryId: record.factoryId ?? activeFactoryId.value,
     factoryName: record.factoryName ?? activeFactory.value.shortName,
   }
@@ -673,6 +764,7 @@ function hydratePhotoRecord(record: StoredCartonMarkPhotoRecord): CartonMarkPhot
 
   return {
     ...record,
+    contractNumber: record.contractNumber ?? '',
     factoryId: record.factoryId ?? activeFactoryId.value,
     factoryName: record.factoryName ?? activeFactory.value.shortName,
     imageUrl: frontImageUrl,
@@ -684,6 +776,7 @@ function hydratePhotoRecord(record: StoredCartonMarkPhotoRecord): CartonMarkPhot
 function normalizeStoredPhotoRecord(record: StoredCartonMarkPhotoRecord): StoredCartonMarkPhotoRecord {
   return {
     ...record,
+    contractNumber: record.contractNumber ?? '',
     factoryId: record.factoryId ?? activeFactoryId.value,
     factoryName: record.factoryName ?? activeFactory.value.shortName,
   }
@@ -705,6 +798,7 @@ function findTemplateForPhoto(photo: CartonMarkPhotoRecord) {
     return normalizeKey(record.customerName) === normalizeKey(photo.customerName)
       && normalizeKey(record.po) === normalizeKey(photo.po)
       && normalizeKey(record.item) === normalizeKey(photo.item)
+      && normalizeKey(record.contractNumber) === normalizeKey(photo.contractNumber)
   })
   if (matchedByPo) return matchedByPo
 
@@ -714,6 +808,7 @@ function findTemplateForPhoto(photo: CartonMarkPhotoRecord) {
     && normalizeKey(selectedTemplate.customerName) === normalizeKey(photo.customerName)
     && normalizeKey(selectedTemplate.po) === normalizeKey(photo.po)
     && normalizeKey(selectedTemplate.item) === normalizeKey(photo.item)
+    && normalizeKey(selectedTemplate.contractNumber) === normalizeKey(photo.contractNumber)
   ) {
     return selectedTemplate
   }
@@ -755,6 +850,21 @@ async function runCartonMarkAutoCheck(
   })
 }
 
+async function runCartonMarkBatchAutoCheck(
+  template: CartonMarkTemplateRecord,
+  frontPhotos: Blob[],
+  sidePhotos: Blob[],
+) {
+  return cartonMarkApi.batchAutoCheck({
+    customerName: template.customerName,
+    po: template.po,
+    item: template.item,
+    pdfTemplate: template.fileBlob as Blob,
+    frontPhotos,
+    sidePhotos,
+  })
+}
+
 async function replaceStoredPhotoRecord(nextPhoto: CartonMarkPhotoRecord) {
   const nextPhotoRecords = sortPhotoRecords(allPhotoRecords.value.map((record) => {
     return record.id === nextPhoto.id ? nextPhoto : record
@@ -778,8 +888,8 @@ async function replaceStoredPhotoRecord(nextPhoto: CartonMarkPhotoRecord) {
 
 function resetForm() {
   form.customerName = ''
-  form.po = ''
   form.item = ''
+  form.contractNumber = ''
   selectedFile.value = null
 
   if (fileInput.value) {
@@ -806,8 +916,8 @@ function clearPhotoSelection(side: CartonMarkPhotoSide, clearComparison = true) 
       selectedFrontPreviewUrl.value = ''
     }
 
-    if (frontPhotoFileInput.value) {
-      frontPhotoFileInput.value.value = ''
+    if (frontBatchPhotoFileInput.value) {
+      frontBatchPhotoFileInput.value.value = ''
     }
 
     return
@@ -821,8 +931,8 @@ function clearPhotoSelection(side: CartonMarkPhotoSide, clearComparison = true) 
     selectedSidePreviewUrl.value = ''
   }
 
-  if (sidePhotoFileInput.value) {
-    sidePhotoFileInput.value.value = ''
+  if (sideBatchPhotoFileInput.value) {
+    sideBatchPhotoFileInput.value.value = ''
   }
 }
 
@@ -831,108 +941,24 @@ function resetPhotoSelection(clearComparison = true) {
   clearPhotoSelection('side', clearComparison)
 }
 
-function readCustomersFromLocalStorage() {
-  if (typeof window === 'undefined') return []
+function clearBatchPhotoSelection(side: CartonMarkPhotoSide) {
+  clearPhotoSelection(side, false)
+  setActiveBatchPhotoIndex(side, 0)
+  resetBatchPhotoCropMarks(side)
 
-  const rawCustomers = window.localStorage.getItem(CUSTOMER_STORAGE_KEY)
-  if (!rawCustomers) return []
-
-  try {
-    return JSON.parse(rawCustomers) as CustomerNameRecord[]
-  } catch {
-    return []
-  }
-}
-
-function writeCustomersToLocalStorage(nextCustomers: CustomerNameRecord[]) {
-  if (typeof window === 'undefined') return
-
-  window.localStorage.setItem(CUSTOMER_STORAGE_KEY, JSON.stringify(nextCustomers))
-}
-
-function syncCustomerLibraryFromRecords() {
-  const nextCustomers = [...customerLibrary.value]
-
-  for (const record of allRecords.value) {
-    const exists = nextCustomers.some((customer) => {
-      return customer.factoryId === record.factoryId
-        && normalizeKey(customer.name) === normalizeKey(record.customerName)
-    })
-
-    if (!exists) {
-      nextCustomers.push({
-        id: `CUST-${record.factoryId}-${Date.now()}-${nextCustomers.length}`,
-        factoryId: record.factoryId,
-        factoryName: record.factoryName,
-        name: record.customerName,
-        createdAt: record.uploadedAt,
-      })
-    }
-  }
-
-  customerLibrary.value = nextCustomers
-  writeCustomersToLocalStorage(nextCustomers)
-}
-
-function addCustomer() {
-  const name = newCustomerName.value.trim()
-  errorMessage.value = ''
-  successMessage.value = ''
-  customerMessage.value = ''
-
-  if (!canUploadTemplate.value) {
-    customerMessage.value = '当前账号无权维护客名库，请使用纸箱仓管账号操作。'
+  if (side === 'front') {
+    selectedFrontBatchFiles.value = []
+    if (frontBatchPhotoFileInput.value) frontBatchPhotoFileInput.value.value = ''
     return
   }
 
-  if (!name) {
-    customerMessage.value = '请输入客名后再新增。'
-    return
-  }
-
-  const exists = factoryCustomers.value.some((customer) => normalizeKey(customer.name) === normalizeKey(name))
-  if (exists) {
-    form.customerName = factoryCustomers.value.find((customer) => normalizeKey(customer.name) === normalizeKey(name))?.name ?? name
-    newCustomerName.value = ''
-    customerMessage.value = `${activeFactory.value.shortName} 已有这个客名。`
-    return
-  }
-
-  const nextCustomer: CustomerNameRecord = {
-    id: `CUST-${activeFactoryId.value}-${Date.now()}`,
-    factoryId: activeFactoryId.value,
-    factoryName: activeFactory.value.shortName,
-    name,
-    createdAt: new Date().toISOString(),
-  }
-
-  customerLibrary.value = [...customerLibrary.value, nextCustomer]
-  writeCustomersToLocalStorage(customerLibrary.value)
-  form.customerName = name
-  newCustomerName.value = ''
-  customerMessage.value = `${activeFactory.value.shortName} 客名库已新增：${name}`
+  selectedSideBatchFiles.value = []
+  if (sideBatchPhotoFileInput.value) sideBatchPhotoFileInput.value.value = ''
 }
 
-function removeCustomer(customer: CustomerNameRecord) {
-  customerMessage.value = ''
-
-  if (!canUploadTemplate.value) {
-    customerMessage.value = '当前账号无权移除客名，请使用纸箱仓管账号操作。'
-    return
-  }
-
-  customerLibrary.value = customerLibrary.value.filter((item) => item.id !== customer.id)
-  writeCustomersToLocalStorage(customerLibrary.value)
-
-  if (form.customerName === customer.name) {
-    form.customerName = ''
-  }
-
-  if (activeCustomer.value === customer.name) {
-    activeCustomer.value = ALL_CUSTOMERS
-  }
-
-  customerMessage.value = `${customer.name} 已从 ${activeFactory.value.shortName} 客名库移除；已上传箱唛资料不会删除。`
+function resetBatchPhotoSelection() {
+  clearBatchPhotoSelection('front')
+  clearBatchPhotoSelection('side')
 }
 
 function openFilePicker() {
@@ -962,6 +988,23 @@ function openPhotoFilePicker(side: CartonMarkPhotoSide) {
   }
 
   sidePhotoFileInput.value?.click()
+}
+
+function openBatchPhotoFilePicker(side: CartonMarkPhotoSide) {
+  photoErrorMessage.value = ''
+  photoSuccessMessage.value = ''
+
+  if (!canUploadPhoto.value) {
+    photoErrorMessage.value = '当前账号无权上传实拍图片，请使用 QA 检验员账号操作。'
+    return
+  }
+
+  if (side === 'front') {
+    frontBatchPhotoFileInput.value?.click()
+    return
+  }
+
+  sideBatchPhotoFileInput.value?.click()
 }
 
 function handleFileChange(event: Event) {
@@ -1029,6 +1072,34 @@ function handlePhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
   setSelectedPhotoFile('side', file)
 }
 
+function handleBatchPhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  photoErrorMessage.value = ''
+  photoSuccessMessage.value = ''
+
+  if (!canUploadPhoto.value) {
+    clearBatchPhotoSelection(side)
+    photoErrorMessage.value = '当前账号无权上传实拍图片，请使用 QA 检验员账号操作。'
+    return
+  }
+
+  const validFiles = files.filter(isImageFile)
+  if (files.length && validFiles.length !== files.length) {
+    photoErrorMessage.value = '已忽略非图片文件；批量核验只接收箱唛实拍图片。'
+  }
+
+  clearPhotoSelection(side, false)
+  setActiveBatchPhotoIndex(side, 0)
+  resetBatchPhotoCropMarks(side)
+  setBatchPhotoFiles(side, validFiles)
+
+  if (validFiles[0]) {
+    setSelectedPhotoFile(side, validFiles[0])
+    photoPreviewRenderTick.value += 1
+  }
+}
+
 async function submitTemplate() {
   errorMessage.value = ''
   successMessage.value = ''
@@ -1044,7 +1115,7 @@ async function submitTemplate() {
   }
 
   if (!canSubmit.value) {
-    errorMessage.value = '请先从当前厂区客名库选择客名，并填写 PO、ITEM 和 PDF 资料。'
+    errorMessage.value = '请填写客名、ITEM、合同号，并选择 PDF 箱唛资料。'
     return
   }
 
@@ -1052,12 +1123,13 @@ async function submitTemplate() {
 
   const currentFile = selectedFile.value
   const customerName = form.customerName.trim()
-  const po = form.po.trim()
+  const po = ''
   const item = form.item.trim()
+  const contractNumber = form.contractNumber.trim()
   const version = records.value.filter((record) => {
     return normalizeKey(record.customerName) === normalizeKey(customerName)
-      && normalizeKey(record.po) === normalizeKey(po)
       && normalizeKey(record.item) === normalizeKey(item)
+      && normalizeKey(record.contractNumber) === normalizeKey(contractNumber)
   }).length + 1
   const record: CartonMarkTemplateRecord = {
     id: `CM-${Date.now()}`,
@@ -1066,6 +1138,7 @@ async function submitTemplate() {
     customerName,
     po,
     item,
+    contractNumber,
     fileName: currentFile.name,
     fileSize: currentFile.size,
     uploadedAt: new Date().toISOString(),
@@ -1082,14 +1155,14 @@ async function submitTemplate() {
 
     allRecords.value = sortRecords([record, ...allRecords.value])
     activeCustomer.value = customerName
-    successMessage.value = `${activeFactory.value.shortName} · ${customerName} / ${po} / ${item} 已入库。`
+    successMessage.value = `${activeFactory.value.shortName} · ${customerName} · ITEM：${item} · 合同：${contractNumber} 已入库。`
     resetForm()
   } catch {
     storageMode.value = 'localStorage'
     allRecords.value = sortRecords([record, ...allRecords.value])
     writeRecordsToLocalStorage(allRecords.value)
     activeCustomer.value = customerName
-    successMessage.value = `${activeFactory.value.shortName} · ${customerName} / ${po} / ${item} 已入库。`
+    successMessage.value = `${activeFactory.value.shortName} · ${customerName} · ITEM：${item} · 合同：${contractNumber} 已入库。`
     resetForm()
   } finally {
     isSaving.value = false
@@ -1106,7 +1179,7 @@ async function deleteTemplateRecord(record: CartonMarkTemplateRecord) {
   }
 
   const shouldDelete = typeof window === 'undefined'
-    || window.confirm(`确定删除 ${record.customerName} / ${record.po} / ${record.item} 的箱唛 PDF 资料吗？`)
+    || window.confirm(`确定删除 ${record.customerName} / ITEM：${record.item} 的箱唛 PDF 资料吗？`)
 
   if (!shouldDelete) return
 
@@ -1145,7 +1218,7 @@ async function deleteTemplateRecord(record: CartonMarkTemplateRecord) {
     activeCustomer.value = ALL_CUSTOMERS
   }
 
-  successMessage.value = `${record.customerName} / ${record.po} / ${record.item} 箱唛资料已删除；QA 实拍记录不会删除。`
+  successMessage.value = `${record.customerName} / ITEM：${record.item} 箱唛资料已删除；QA 实拍记录不会删除。`
   deletingRecordId.value = ''
 }
 
@@ -1192,6 +1265,7 @@ async function submitPhoto() {
     return normalizeKey(record.customerName) === normalizeKey(template.customerName)
       && normalizeKey(record.po) === normalizeKey(template.po)
       && normalizeKey(record.item) === normalizeKey(template.item)
+      && normalizeKey(record.contractNumber) === normalizeKey(template.contractNumber)
   }).length + 1
   const photoRecord: CartonMarkPhotoRecord = {
     id: `CMP-${Date.now()}`,
@@ -1201,6 +1275,7 @@ async function submitPhoto() {
     customerName: template.customerName,
     po: template.po,
     item: template.item,
+    contractNumber: template.contractNumber,
     fileName: `${frontFile.name} / ${sideFile.name}`,
     fileSize: frontFile.size + sideFile.size,
     uploadedAt: new Date().toISOString(),
@@ -1259,6 +1334,120 @@ async function submitPhoto() {
   }
 }
 
+function createBatchPhotoRecords(
+  template: CartonMarkTemplateRecord,
+  batchResult: CartonMarkBatchCheckResponse,
+) {
+  const uploadedAt = new Date().toISOString()
+  const existingCount = photoRecords.value.filter((record) => {
+    return normalizeKey(record.customerName) === normalizeKey(template.customerName)
+      && normalizeKey(record.po) === normalizeKey(template.po)
+      && normalizeKey(record.item) === normalizeKey(template.item)
+      && normalizeKey(record.contractNumber) === normalizeKey(template.contractNumber)
+  }).length
+
+  return batchResult.items.flatMap((batchItem, batchIndex): CartonMarkPhotoRecord[] => {
+    const isFront = batchItem.side === 'front'
+    const sourceFile = (isFront ? selectedFrontBatchFiles.value : selectedSideBatchFiles.value)[batchItem.file_index]
+    if (!sourceFile) return []
+
+    const imageUrl = createImageUrl(sourceFile)
+    const record: CartonMarkPhotoRecord = {
+      id: `CMP-BATCH-${Date.now()}-${batchIndex}`,
+      templateId: template.id,
+      factoryId: activeFactoryId.value,
+      factoryName: activeFactory.value.shortName,
+      customerName: template.customerName,
+      po: template.po,
+      item: template.item,
+      contractNumber: template.contractNumber,
+      fileName: sourceFile.name,
+      fileSize: sourceFile.size,
+      uploadedAt,
+      sequence: existingCount + batchIndex + 1,
+      status: getPhotoStatusFromAutoCheck(batchItem.result.summary.overall_status),
+      autoCheckResult: batchItem.result,
+      autoCheckErrorMessage: '',
+      autoCheckedAt: uploadedAt,
+    }
+
+    if (isFront) {
+      record.imageUrl = imageUrl
+      record.imageBlob = sourceFile
+      record.frontFileName = sourceFile.name
+      record.frontFileSize = sourceFile.size
+      record.frontImageUrl = imageUrl
+      record.frontImageBlob = sourceFile
+    } else {
+      record.sideFileName = sourceFile.name
+      record.sideFileSize = sourceFile.size
+      record.sideImageUrl = imageUrl
+      record.sideImageBlob = sourceFile
+    }
+
+    return [record]
+  })
+}
+
+async function submitBatchPhoto() {
+  photoErrorMessage.value = ''
+  photoSuccessMessage.value = ''
+  autoCheckErrorMessage.value = ''
+
+  if (!canUploadPhoto.value) {
+    photoErrorMessage.value = '当前账号无权上传实拍图片，请使用 QA 检验员账号操作。'
+    return
+  }
+
+  const template = selectedTemplateForPhoto.value
+  if (!template?.fileBlob) {
+    photoErrorMessage.value = '请先选择带有 PDF 原件的箱唛模板。'
+    return
+  }
+
+  if (!canSubmitBatchPhoto.value) {
+    photoErrorMessage.value = '请至少选择一张正唛或侧唛图片。'
+    return
+  }
+
+  isSavingBatchPhoto.value = true
+  try {
+    const batchResult = await runCartonMarkBatchAutoCheck(
+      template,
+      selectedFrontBatchFiles.value,
+      selectedSideBatchFiles.value,
+    )
+    const batchRecords = createBatchPhotoRecords(template, batchResult)
+    if (!batchRecords.length) {
+      throw new Error('批量图片与核对结果不一致，请重新选择图片后再试。')
+    }
+
+    const nextPhotoRecords = sortPhotoRecords([...batchRecords, ...allPhotoRecords.value])
+    try {
+      if (storageMode.value === 'indexedDb') {
+        await Promise.all(batchRecords.map((record) => savePhotoRecordToDb(record)))
+      } else {
+        writePhotoRecordsToLocalStorage(nextPhotoRecords)
+      }
+    } catch {
+      storageMode.value = 'localStorage'
+      writePhotoRecordsToLocalStorage(nextPhotoRecords)
+    }
+
+    allPhotoRecords.value = nextPhotoRecords
+    const latestRecord = batchRecords.at(-1) as CartonMarkPhotoRecord
+    showPhotoAutoCheck(latestRecord)
+    resetBatchPhotoSelection()
+    const summary = batchResult.summary
+    const actionName = batchRecords.length === 1 ? '核对' : '批量核对'
+    photoSuccessMessage.value = `${actionName}完成 ${batchRecords.length} 张：通过 ${summary.pass_count} 项，异常 ${summary.mismatch_count} 项，待复核 ${summary.review_count + summary.missing_count} 项。`
+  } catch (error) {
+    photoErrorMessage.value = `核对未完成：${getApiErrorMessage(error)}`
+  } finally {
+    isSavingBatchPhoto.value = false
+  }
+}
+
 function getPhotoStatusFromAutoCheck(status: string) {
   if (status === '核对通过' || status === '发现异常' || status === '需复核' || status === '未识别') {
     return status
@@ -1285,8 +1474,8 @@ async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) {
 
   const frontPhoto = photo.frontImageBlob ?? photo.imageBlob
   const sidePhoto = photo.sideImageBlob
-  if (!frontPhoto || !sidePhoto) {
-    photoErrorMessage.value = '当前浏览器没有保存完整正唛/侧唛图片原件，请重新上传实拍图片后再自动核对。'
+  if (!frontPhoto && !sidePhoto) {
+    photoErrorMessage.value = '当前浏览器没有保存图片原件，请重新上传实拍图片后再自动核对。'
     showPhotoAutoCheck(photo)
     return
   }
@@ -1294,7 +1483,16 @@ async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) {
   recheckingPhotoId.value = photo.id
 
   try {
-    const result = await runCartonMarkAutoCheck(template, frontPhoto, sidePhoto)
+    const result = frontPhoto && sidePhoto
+      ? await runCartonMarkAutoCheck(template, frontPhoto, sidePhoto)
+      : (await runCartonMarkBatchAutoCheck(
+          template,
+          frontPhoto ? [frontPhoto] : [],
+          sidePhoto ? [sidePhoto] : [],
+        )).items[0]?.result
+    if (!result) {
+      throw new Error('没有生成可用的批量核对结果。')
+    }
     const checkedPhoto: CartonMarkPhotoRecord = {
       ...photo,
       status: getPhotoStatusFromAutoCheck(result.summary.overall_status),
@@ -1364,6 +1562,53 @@ function getComparisonStatusClass(status: CartonMarkComparisonItem['status']) {
   if (status === 'mismatch') return 'bg-red-50 text-red-700'
   if (status === 'missing_expected' || status === 'missing_actual') return 'bg-orange-50 text-orange-700'
   return 'bg-amber-50 text-amber-700'
+}
+
+function getComparisonScopeLabel(scope: CartonMarkComparisonItem['comparison_scope'] | undefined) {
+  return scope === 'left_label' ? '左侧字段名' : '右侧数值'
+}
+
+function isLeftLabelComparison(item: CartonMarkComparisonItem) {
+  return item.comparison_scope === 'left_label' || item.field_key.startsWith('left_label:')
+}
+
+function buildLeftLabelFeedback(comparisons: CartonMarkComparisonItem[]): LeftLabelFeedback {
+  const leftLabelComparisons = comparisons.filter(isLeftLabelComparison)
+  return {
+    total: leftLabelComparisons.length,
+    passed: leftLabelComparisons.filter((item) => item.status === 'pass').length,
+    issues: leftLabelComparisons.filter((item) => item.status !== 'pass'),
+  }
+}
+
+function getLeftLabelFeedbackText(feedback: LeftLabelFeedback) {
+  if (feedback.total === 0) {
+    return '本次结果尚未返回左侧字段名核验记录；请重新自动核对以生成反馈。'
+  }
+
+  if (feedback.issues.length === 0) {
+    return `已核对 ${feedback.total} 个左侧字段名，均与 PDF 模板一致。`
+  }
+
+  return `已核对 ${feedback.total} 个左侧字段名，其中 ${feedback.passed} 个一致，${feedback.issues.length} 个需要处理。`
+}
+
+function getLeftLabelFeedbackBadge(feedback: LeftLabelFeedback) {
+  if (feedback.total === 0) return '待生成反馈'
+  if (feedback.issues.length === 0) return '左侧字段名一致'
+  return `需处理 ${feedback.issues.length} 项`
+}
+
+function getLeftLabelFeedbackClass(feedback: LeftLabelFeedback) {
+  if (feedback.total === 0) return 'border-amber-200 bg-amber-50 text-amber-800'
+  if (feedback.issues.length > 0) return 'border-red-200 bg-red-50 text-red-800'
+  return 'border-green-200 bg-green-50 text-green-800'
+}
+
+function getLeftLabelFeedbackBadgeClass(feedback: LeftLabelFeedback) {
+  if (feedback.total === 0) return 'bg-amber-100 text-amber-800'
+  if (feedback.issues.length > 0) return 'bg-red-100 text-red-800'
+  return 'bg-green-100 text-green-800'
 }
 
 function formatConfidence(confidence: number) {
@@ -1667,51 +1912,11 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
 <template>
   <div class="space-y-6">
-    <section v-if="!isWarehouseWorkspace" class="rounded-lg border border-slate-200 bg-white p-5">
-      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Carton Mark</p>
-          <h2 class="mt-2 text-xl font-semibold tracking-tight text-slate-950">{{ workspaceLabel }}</h2>
-        </div>
-        <div class="flex flex-wrap gap-2 text-xs font-semibold">
-          <span class="rounded-full bg-slate-100 px-3 py-1 text-slate-700">{{ activeFactory.shortName }}</span>
-          <span class="rounded-full bg-teal-50 px-3 py-1 text-teal-700">{{ currentUserName }}</span>
-        </div>
-      </div>
-    </section>
-
-    <div v-if="!isWarehouseWorkspace" class="grid gap-4 md:grid-cols-4">
-      <section class="rounded-lg border border-slate-200 bg-white p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Templates</p>
-        <p class="mt-3 text-3xl font-semibold text-slate-950">{{ records.length }}</p>
-        <p class="mt-1 text-sm text-slate-500">{{ activeFactory.shortName }} 已上传资料</p>
-      </section>
-      <section class="rounded-lg border border-slate-200 bg-white p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Photos</p>
-        <p class="mt-3 text-3xl font-semibold text-slate-950">{{ photoRecords.length }}</p>
-        <p class="mt-1 text-sm text-slate-500">QA 实拍图片</p>
-      </section>
-      <section class="rounded-lg border border-slate-200 bg-white p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Customers</p>
-        <p class="mt-3 text-3xl font-semibold text-slate-950">{{ uniqueCustomerCount }}</p>
-        <p class="mt-1 text-sm text-slate-500">当前厂区客名库</p>
-      </section>
-      <section class="rounded-lg border border-slate-200 bg-white p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Latest</p>
-        <p class="mt-3 truncate text-lg font-semibold text-slate-950">
-          {{ latestRecord?.customerName ?? '暂无资料' }}
-        </p>
-        <p class="mt-1 truncate text-sm text-slate-500">
-          {{ latestRecord ? `${latestRecord.po} / ${latestRecord.item}` : '等待上传' }}
-        </p>
-      </section>
-    </div>
-
-    <div class="grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-      <div class="space-y-6">
+    <div class="grid items-start gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+      <div class="contents">
         <form
           v-if="isWarehouseWorkspace"
-          class="rounded-lg border border-slate-200 bg-white p-6"
+          class="order-1 rounded-lg border border-slate-200 bg-white p-6"
           @submit.prevent="submitTemplate"
         >
         <div class="flex items-start justify-between gap-4">
@@ -1730,85 +1935,25 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           {{ templatePermissionHint }}
         </p>
 
-        <div class="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
-          <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div>
-              <p class="text-sm font-semibold text-slate-950">当前厂区客名库</p>
-              <p class="mt-1 text-xs text-slate-500">{{ activeFactory.shortName }} 独立维护，不与其他厂区共用</p>
-            </div>
-            <div class="flex w-full gap-2 md:w-auto">
-              <input
-                v-model.trim="newCustomerName"
-                type="text"
-                class="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50 md:w-48"
-                placeholder="新增客名"
-                :disabled="!canUploadTemplate"
-                @keydown.enter.prevent="addCustomer"
-              >
-              <button
-                type="button"
-                :disabled="!canUploadTemplate"
-                class="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-                @click="addCustomer"
-              >
-                <Plus class="size-4" aria-hidden="true" />
-                新增
-              </button>
-            </div>
-          </div>
-
-          <p v-if="customerMessage" class="mt-3 text-xs text-slate-600">{{ customerMessage }}</p>
-
-          <div v-if="factoryCustomers.length" class="mt-4 flex flex-wrap gap-2">
-            <span
-              v-for="customer in factoryCustomers"
-              :key="customer.id"
-              class="inline-flex max-w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
-            >
-              <span class="truncate">{{ customer.name }}</span>
-              <button
-                type="button"
-                :disabled="!canUploadTemplate"
-                class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-slate-400"
-                :title="`从${activeFactory.shortName}客名库移除`"
-                @click="removeCustomer(customer)"
-              >
-                <Trash2 class="size-3.5" aria-hidden="true" />
-              </button>
-            </span>
-          </div>
-          <p v-else class="mt-4 rounded-lg border border-dashed border-slate-200 bg-white px-4 py-4 text-sm text-slate-500">
-            当前厂区还没有客名，请先新增后再上传箱唛资料。
-          </p>
-        </div>
-
-        <div class="mt-6 grid gap-4 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+        <div class="mt-6 grid gap-4 md:grid-cols-3">
           <label class="block">
             <span class="text-sm font-medium text-slate-700">客名</span>
-            <select
-              v-model="form.customerName"
-              class="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50"
-              :disabled="!factoryCustomers.length || !canUploadTemplate"
-            >
-              <option value="">请选择客名</option>
-              <option
-                v-for="customer in factoryCustomers"
-                :key="`select-${customer.id}`"
-                :value="customer.name"
-              >
-                {{ customer.name }}
-              </option>
-            </select>
-          </label>
-          <label class="block">
-            <span class="text-sm font-medium text-slate-700">PO</span>
             <input
-              v-model.trim="form.po"
+              v-model="form.customerName"
+              list="carton-mark-customer-suggestions"
               type="text"
               class="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50"
-              placeholder="采购订单号"
+              placeholder="例如：Dickie"
               :disabled="!canUploadTemplate"
             >
+            <datalist id="carton-mark-customer-suggestions">
+              <option
+                v-for="customer in customerGroups"
+                :key="`template-customer-${customer.name}`"
+                :value="customer.name"
+              />
+            </datalist>
+            <p class="mt-1 text-xs text-slate-500">作为右侧客户资料集合的归档名称。</p>
           </label>
           <label class="block">
             <span class="text-sm font-medium text-slate-700">ITEM</span>
@@ -1816,9 +1961,21 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               v-model.trim="form.item"
               type="text"
               class="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50"
-              placeholder="产品 / Item"
+              placeholder="例如：203302017"
               :disabled="!canUploadTemplate"
             >
+            <p class="mt-1 text-xs text-slate-500">用于区分同一客户的不同箱唛资料。</p>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium text-slate-700">合同号</span>
+            <input
+              v-model.trim="form.contractNumber"
+              type="text"
+              class="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50"
+              placeholder="例如：HT-2026-001"
+              :disabled="!canUploadTemplate"
+            >
+            <p class="mt-1 text-xs text-slate-500">用于同一客人、同一 ITEM 的合同归档。</p>
           </label>
         </div>
 
@@ -1875,8 +2032,8 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
         <form
           v-if="!isWarehouseWorkspace"
-          class="rounded-lg border border-slate-200 bg-white p-6"
-          @submit.prevent="submitPhoto"
+          class="order-1 rounded-lg border border-slate-200 bg-white p-6"
+          @submit.prevent="submitBatchPhoto"
         >
           <div class="flex items-start justify-between gap-4">
             <div>
@@ -1893,6 +2050,21 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
         >
           {{ photoPermissionHint }}
         </p>
+
+        <div class="mt-4 grid gap-3 rounded-lg border border-blue-100 bg-sky-50/70 p-4 text-sm text-slate-700 md:grid-cols-3">
+          <div>
+            <p class="font-semibold text-slate-900">1. 正对标签拍摄</p>
+            <p class="mt-1 text-xs leading-5 text-slate-600">镜头尽量与箱唛平行、接近 90°；避免从侧面斜拍造成文字和表格变形。</p>
+          </div>
+          <div>
+            <p class="font-semibold text-slate-900">2. 一张只拍一个唛</p>
+            <p class="mt-1 text-xs leading-5 text-slate-600">让标签占画面约 70% 以上，四边和全部字段完整可见；不要把相邻唛、胶带或杂物拍进来。</p>
+          </div>
+          <div>
+            <p class="font-semibold text-slate-900">3. 清晰、无反光</p>
+            <p class="mt-1 text-xs leading-5 text-slate-600">建议最长边不少于 1600px，先对焦再拍；关闭直射闪光，避开阴影、褶皱和强反光。</p>
+          </div>
+        </div>
 
         <div class="mt-6 space-y-4">
             <div class="grid gap-4 md:grid-cols-[minmax(0,0.38fr)_minmax(0,0.62fr)]">
@@ -1927,7 +2099,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     :key="`photo-template-${record.id}`"
                     :value="record.id"
                   >
-                    {{ record.customerName }} / {{ record.po }} / {{ record.item }} / V{{ record.version }}
+                    {{ record.customerName }} / 合同：{{ record.contractNumber || '未填写' }} / ITEM：{{ record.item }} / V{{ record.version }}
                   </option>
                 </select>
               </label>
@@ -1937,7 +2109,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               v-if="selectedTemplateForPhoto"
               class="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800"
             >
-              {{ selectedTemplateForPhoto.customerName }} · PO：{{ selectedTemplateForPhoto.po }} · ITEM：{{ selectedTemplateForPhoto.item }}
+              {{ selectedTemplateForPhoto.customerName }} · 合同：{{ selectedTemplateForPhoto.contractNumber || '未填写' }} · ITEM：{{ selectedTemplateForPhoto.item }}
             </div>
 
             <div v-else-if="records.length && !filteredTemplateOptions.length" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500">
@@ -1949,15 +2121,20 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             </div>
           </div>
 
-          <div class="mt-5 grid gap-4 md:grid-cols-2">
+          <p class="mt-5 rounded-lg border border-dashed border-blue-200 bg-blue-50/50 px-4 py-3 text-xs leading-5 text-slate-600">
+            正唛和侧唛均可一次选择多张；系统会按你选择的类别分别核对，每张图片独立输出结果，无需文件配对。
+          </p>
+
+          <div class="mt-4 grid gap-4 md:grid-cols-2">
             <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5">
               <input
-                ref="frontPhotoFileInput"
+                ref="frontBatchPhotoFileInput"
                 type="file"
                 accept="image/*"
+                multiple
                 class="hidden"
                 :disabled="!canUploadPhoto"
-                @change="handlePhotoFileChange($event, 'front')"
+                @change="handleBatchPhotoFileChange($event, 'front')"
               >
               <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div class="flex min-w-0 items-center gap-3">
@@ -1965,16 +2142,16 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     <ImageIcon class="size-5" aria-hidden="true" />
                   </div>
                   <div class="min-w-0">
-                    <p class="truncate text-sm font-semibold text-slate-900">{{ selectedFrontPhotoFileLabel }}</p>
-                    <p class="mt-1 text-xs text-slate-500">正唛图片</p>
+                    <p class="truncate text-sm font-semibold text-slate-900">{{ selectedFrontBatchFilesLabel }}</p>
+                    <p class="mt-1 text-xs text-slate-500">正唛图片 · 可一次选择多张；一张只保留一块正唛</p>
                   </div>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
                   <button
-                    v-if="selectedFrontPhotoFile"
+                    v-if="selectedFrontBatchFiles.length"
                     type="button"
                     class="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-red-100 bg-white px-3 text-sm font-semibold text-red-600 transition hover:border-red-200 hover:bg-red-50"
-                    @click="clearPhotoSelection('front')"
+                    @click="clearBatchPhotoSelection('front')"
                   >
                     <Trash2 class="size-4" aria-hidden="true" />
                     删除
@@ -1983,9 +2160,9 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     type="button"
                     :disabled="!canUploadPhoto"
                     class="inline-flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:hover:border-slate-200"
-                    @click="openPhotoFilePicker('front')"
+                    @click="openBatchPhotoFilePicker('front')"
                   >
-                    {{ selectedFrontPhotoFile ? '重选正唛' : '选择正唛' }}
+                    {{ selectedFrontBatchFiles.length ? '重选正唛' : '选择正唛' }}
                   </button>
                 </div>
               </div>
@@ -2018,13 +2195,36 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   </div>
                 </div>
                 <div class="flex flex-wrap items-center justify-between gap-2 border-t border-blue-100 px-3 py-2">
-                  <span
-                    v-if="photoCropState.front.applied"
-                    class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700"
-                  >
-                    已裁剪
-                  </span>
-                  <span v-else class="text-xs font-medium text-slate-500">正唛 OCR 图片</span>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <div class="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                      <button
+                        type="button"
+                        aria-label="上一张正唛"
+                        :disabled="!canMoveBatchPhoto('front', -1)"
+                        class="inline-flex size-7 items-center justify-center rounded-md text-slate-600 transition hover:bg-white hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
+                        @click="switchActiveBatchPhoto('front', -1)"
+                      >
+                        <ChevronLeft class="size-4" aria-hidden="true" />
+                      </button>
+                      <span class="min-w-20 text-center text-xs font-semibold text-slate-700">{{ getBatchPhotoPositionLabel('front') }}</span>
+                      <button
+                        type="button"
+                        aria-label="下一张正唛"
+                        :disabled="!canMoveBatchPhoto('front', 1)"
+                        class="inline-flex size-7 items-center justify-center rounded-md text-slate-600 transition hover:bg-white hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
+                        @click="switchActiveBatchPhoto('front', 1)"
+                      >
+                        <ChevronRight class="size-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                    <span
+                      v-if="photoCropState.front.applied || isActiveBatchPhotoCropped('front')"
+                      class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700"
+                    >
+                      已裁剪
+                    </span>
+                    <span v-else class="text-xs font-medium text-slate-500">当前照片可框选箱唛区域</span>
+                  </div>
                   <div class="flex flex-wrap items-center gap-2">
                     <button
                       v-if="!photoCropState.front.enabled"
@@ -2064,12 +2264,13 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
             <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5">
               <input
-                ref="sidePhotoFileInput"
+                ref="sideBatchPhotoFileInput"
                 type="file"
                 accept="image/*"
+                multiple
                 class="hidden"
                 :disabled="!canUploadPhoto"
-                @change="handlePhotoFileChange($event, 'side')"
+                @change="handleBatchPhotoFileChange($event, 'side')"
               >
               <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div class="flex min-w-0 items-center gap-3">
@@ -2077,16 +2278,16 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     <ImageIcon class="size-5" aria-hidden="true" />
                   </div>
                   <div class="min-w-0">
-                    <p class="truncate text-sm font-semibold text-slate-900">{{ selectedSidePhotoFileLabel }}</p>
-                    <p class="mt-1 text-xs text-slate-500">侧唛图片</p>
+                    <p class="truncate text-sm font-semibold text-slate-900">{{ selectedSideBatchFilesLabel }}</p>
+                    <p class="mt-1 text-xs text-slate-500">侧唛图片 · 可一次选择多张；一张只保留一块侧唛</p>
                   </div>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
                   <button
-                    v-if="selectedSidePhotoFile"
+                    v-if="selectedSideBatchFiles.length"
                     type="button"
                     class="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-red-100 bg-white px-3 text-sm font-semibold text-red-600 transition hover:border-red-200 hover:bg-red-50"
-                    @click="clearPhotoSelection('side')"
+                    @click="clearBatchPhotoSelection('side')"
                   >
                     <Trash2 class="size-4" aria-hidden="true" />
                     删除
@@ -2095,9 +2296,9 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     type="button"
                     :disabled="!canUploadPhoto"
                     class="inline-flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:hover:border-slate-200"
-                    @click="openPhotoFilePicker('side')"
+                    @click="openBatchPhotoFilePicker('side')"
                   >
-                    {{ selectedSidePhotoFile ? '重选侧唛' : '选择侧唛' }}
+                    {{ selectedSideBatchFiles.length ? '重选侧唛' : '选择侧唛' }}
                   </button>
                 </div>
               </div>
@@ -2130,13 +2331,36 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   </div>
                 </div>
                 <div class="flex flex-wrap items-center justify-between gap-2 border-t border-blue-100 px-3 py-2">
-                  <span
-                    v-if="photoCropState.side.applied"
-                    class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700"
-                  >
-                    已裁剪
-                  </span>
-                  <span v-else class="text-xs font-medium text-slate-500">侧唛 OCR 图片</span>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <div class="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                      <button
+                        type="button"
+                        aria-label="上一张侧唛"
+                        :disabled="!canMoveBatchPhoto('side', -1)"
+                        class="inline-flex size-7 items-center justify-center rounded-md text-slate-600 transition hover:bg-white hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
+                        @click="switchActiveBatchPhoto('side', -1)"
+                      >
+                        <ChevronLeft class="size-4" aria-hidden="true" />
+                      </button>
+                      <span class="min-w-20 text-center text-xs font-semibold text-slate-700">{{ getBatchPhotoPositionLabel('side') }}</span>
+                      <button
+                        type="button"
+                        aria-label="下一张侧唛"
+                        :disabled="!canMoveBatchPhoto('side', 1)"
+                        class="inline-flex size-7 items-center justify-center rounded-md text-slate-600 transition hover:bg-white hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-30"
+                        @click="switchActiveBatchPhoto('side', 1)"
+                      >
+                        <ChevronRight class="size-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                    <span
+                      v-if="photoCropState.side.applied || isActiveBatchPhotoCropped('side')"
+                      class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700"
+                    >
+                      已裁剪
+                    </span>
+                    <span v-else class="text-xs font-medium text-slate-500">当前照片可框选箱唛区域</span>
+                  </div>
                   <div class="flex flex-wrap items-center gap-2">
                     <button
                       v-if="!photoCropState.side.enabled"
@@ -2187,14 +2411,29 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
           <button
             type="submit"
-            :disabled="!canSubmitPhoto || isSavingPhoto"
+            :disabled="!canSubmitBatchPhoto || isSavingBatchPhoto"
             class="mt-5 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <UploadCloud class="size-4" aria-hidden="true" />
             {{ photoSubmitLabel }}
           </button>
 
-          <div v-if="photoRecords.length" class="mt-6 space-y-3">
+        </form>
+
+        <section
+          v-if="!isWarehouseWorkspace"
+          class="order-3 rounded-lg border border-slate-200 bg-white p-6 xl:col-span-2"
+        >
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">QA Results</p>
+              <h2 class="mt-2 text-xl font-semibold tracking-tight text-slate-950">核验结果</h2>
+              <p class="mt-1 text-sm text-slate-500">实拍上传记录、自动核对和证据对照集中显示在此区域。</p>
+            </div>
+            <span class="w-fit rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">{{ photoRecords.length }} 条实拍</span>
+          </div>
+
+          <div v-if="photoRecords.length" class="mt-5 space-y-3">
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-slate-950">实拍图片记录</h3>
               <span class="text-xs text-slate-500">最新：{{ latestPhotoRecord ? formatDate(latestPhotoRecord.uploadedAt) : '-' }}</span>
@@ -2240,7 +2479,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     {{ photo.status }}
                   </span>
                 </div>
-                <p class="mt-1 text-xs text-slate-600">PO：{{ photo.po }} · ITEM：{{ photo.item }}</p>
+                <p class="mt-1 text-xs text-slate-600">合同：{{ photo.contractNumber || '未填写' }} · ITEM：{{ photo.item }}</p>
                 <p class="mt-1 truncate text-xs text-slate-500">
                   正唛：{{ photo.frontFileName ?? photo.fileName }} · 侧唛：{{ photo.sideFileName ?? '未上传' }}
                 </p>
@@ -2318,7 +2557,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 <p class="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">AUTO CHECK</p>
                 <h3 class="mt-2 text-lg font-semibold tracking-tight text-slate-950">自动核对结果</h3>
                 <p class="mt-1 text-xs text-slate-600">
-                  {{ comparisonRecord.customerName }} · PO：{{ comparisonRecord.po }} · ITEM：{{ comparisonRecord.item }}
+                  {{ comparisonRecord.customerName }} · 合同：{{ comparisonRecord.contractNumber || '未填写' }} · ITEM：{{ comparisonRecord.item }}
                 </p>
                 <p v-if="comparisonRecord.autoCheckedAt" class="mt-1 text-xs text-slate-500">
                   自动核对：{{ formatDate(comparisonRecord.autoCheckedAt) }}
@@ -2404,6 +2643,33 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   <h4 class="text-sm font-semibold text-slate-950">正唛字段核对</h4>
                   <span class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">PDF 长框 vs QA 正唛</span>
                 </div>
+                <div class="border-b px-4 py-3" :class="getLeftLabelFeedbackClass(frontLeftLabelFeedback)">
+                  <div class="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p class="text-xs font-semibold">左侧字段名反馈</p>
+                      <p class="mt-1 text-xs">{{ getLeftLabelFeedbackText(frontLeftLabelFeedback) }}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="getLeftLabelFeedbackBadgeClass(frontLeftLabelFeedback)">
+                        {{ getLeftLabelFeedbackBadge(frontLeftLabelFeedback) }}
+                      </span>
+                      <button
+                        v-if="frontLeftLabelFeedback.total === 0"
+                        type="button"
+                        :disabled="recheckingPhotoId === comparisonRecord.id"
+                        class="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        @click="rerunAutoCheckForPhoto(comparisonRecord)"
+                      >
+                        {{ recheckingPhotoId === comparisonRecord.id ? '核对中' : '重新自动核对' }}
+                      </button>
+                    </div>
+                  </div>
+                  <ul v-if="frontLeftLabelFeedback.issues.length" class="mt-2 space-y-1 text-xs">
+                    <li v-for="item in frontLeftLabelFeedback.issues" :key="`front-left-feedback-${item.field_key}`">
+                      {{ item.label }}：PDF「{{ item.expected || '未识别' }}」；照片「{{ item.actual || '未识别' }}」；{{ getComparisonStatusLabel(item.status) }}。
+                    </li>
+                  </ul>
+                </div>
                 <div
                   v-if="frontAutoCheckComparisons.length"
                   class="overflow-x-auto"
@@ -2412,6 +2678,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                       <tr>
                         <th class="px-4 py-3">字段</th>
+                        <th class="px-4 py-3">内容</th>
                         <th class="px-4 py-3">PDF 模板</th>
                         <th class="px-4 py-3">照片识别</th>
                         <th class="px-4 py-3">结果</th>
@@ -2425,6 +2692,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                         :key="`front-check-${item.field_key}`"
                       >
                         <td class="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">{{ item.label }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-xs font-medium text-slate-600">{{ getComparisonScopeLabel(item.comparison_scope) }}</td>
                         <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.expected || '-' }}</td>
                         <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.actual || '-' }}</td>
                         <td class="whitespace-nowrap px-4 py-3">
@@ -2454,6 +2722,33 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   <h4 class="text-sm font-semibold text-slate-950">侧唛字段核对</h4>
                   <span class="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">PDF 短框 vs QA 侧唛</span>
                 </div>
+                <div class="border-b px-4 py-3" :class="getLeftLabelFeedbackClass(sideLeftLabelFeedback)">
+                  <div class="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p class="text-xs font-semibold">左侧字段名反馈</p>
+                      <p class="mt-1 text-xs">{{ getLeftLabelFeedbackText(sideLeftLabelFeedback) }}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="getLeftLabelFeedbackBadgeClass(sideLeftLabelFeedback)">
+                        {{ getLeftLabelFeedbackBadge(sideLeftLabelFeedback) }}
+                      </span>
+                      <button
+                        v-if="sideLeftLabelFeedback.total === 0"
+                        type="button"
+                        :disabled="recheckingPhotoId === comparisonRecord.id"
+                        class="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        @click="rerunAutoCheckForPhoto(comparisonRecord)"
+                      >
+                        {{ recheckingPhotoId === comparisonRecord.id ? '核对中' : '重新自动核对' }}
+                      </button>
+                    </div>
+                  </div>
+                  <ul v-if="sideLeftLabelFeedback.issues.length" class="mt-2 space-y-1 text-xs">
+                    <li v-for="item in sideLeftLabelFeedback.issues" :key="`side-left-feedback-${item.field_key}`">
+                      {{ item.label }}：PDF「{{ item.expected || '未识别' }}」；照片「{{ item.actual || '未识别' }}」；{{ getComparisonStatusLabel(item.status) }}。
+                    </li>
+                  </ul>
+                </div>
                 <div
                   v-if="sideAutoCheckComparisons.length"
                   class="overflow-x-auto"
@@ -2462,6 +2757,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     <thead class="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                       <tr>
                         <th class="px-4 py-3">字段</th>
+                        <th class="px-4 py-3">内容</th>
                         <th class="px-4 py-3">PDF 模板</th>
                         <th class="px-4 py-3">照片识别</th>
                         <th class="px-4 py-3">结果</th>
@@ -2475,6 +2771,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                         :key="`side-check-${item.field_key}`"
                       >
                         <td class="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">{{ item.label }}</td>
+                        <td class="whitespace-nowrap px-4 py-3 text-xs font-medium text-slate-600">{{ getComparisonScopeLabel(item.comparison_scope) }}</td>
                         <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.expected || '-' }}</td>
                         <td class="min-w-40 px-4 py-3 text-slate-700">{{ item.actual || '-' }}</td>
                         <td class="whitespace-nowrap px-4 py-3">
@@ -2591,24 +2888,49 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               </div>
             </details>
           </section>
-        </form>
+        </section>
       </div>
 
-      <section class="rounded-lg border border-slate-200 bg-white p-6">
+      <section class="order-2 self-start rounded-lg border border-slate-200 bg-white p-6 xl:col-start-2 xl:row-start-1">
         <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <h2 class="text-xl font-semibold tracking-tight text-slate-950">已上传箱唛资料库</h2>
-            <p class="mt-1 text-sm text-slate-500">按客户归档 PO、ITEM 和 PDF 模板</p>
+            <h2 class="text-xl font-semibold tracking-tight text-slate-950">{{ isWarehouseWorkspace ? '客户箱唛集合' : '已上传箱唛资料库' }}</h2>
+            <p class="mt-1 text-sm text-slate-500">
+              {{ isWarehouseWorkspace ? '点击一个客户，查看该客户已上传的全部箱唛 PDF。' : '按客户归档合同号、ITEM 和 PDF 模板' }}
+            </p>
           </div>
           <input
             v-model.trim="searchKeyword"
             type="search"
             class="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50 md:w-56"
-            placeholder="搜索客名 / PO / ITEM"
+            :placeholder="isWarehouseWorkspace ? '搜索客名 / ITEM / 合同号' : '搜索客名 / 合同号 / ITEM'"
           >
         </div>
 
-        <div class="mt-5 flex gap-2 overflow-x-auto pb-1">
+        <div v-if="isWarehouseWorkspace" class="mt-5 grid gap-3 sm:grid-cols-2">
+          <button
+            v-for="customer in visibleCustomerGroups"
+            :key="customer.name"
+            type="button"
+            class="rounded-lg border p-4 text-left transition"
+            :class="activeCustomer === customer.name ? 'border-teal-500 bg-teal-50 shadow-sm' : 'border-slate-200 bg-slate-50 hover:border-teal-200 hover:bg-teal-50/50'"
+            @click="activeCustomer = customer.name"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold text-slate-950">{{ customer.name }}</p>
+                <p class="mt-1 text-xs text-slate-500">{{ customer.count }} 份已上传箱唛</p>
+              </div>
+              <Eye class="size-4 shrink-0 text-teal-700" aria-hidden="true" />
+            </div>
+            <p class="mt-3 text-xs text-slate-500">最近上传：{{ formatDate(customer.latestAt) }}</p>
+          </button>
+          <p v-if="!visibleCustomerGroups.length" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500 sm:col-span-2">
+            没有匹配的客户箱唛资料。
+          </p>
+        </div>
+
+        <div v-else class="mt-5 flex gap-2 overflow-x-auto pb-1">
           <button
             type="button"
             class="shrink-0 rounded-lg border px-3 py-2 text-sm font-semibold transition"
@@ -2629,11 +2951,21 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           </button>
         </div>
 
-        <div v-if="isLoading" class="mt-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-          正在读取资料库
-        </div>
+        <div class="mt-5 max-h-[520px] overflow-y-auto pr-1">
+          <div v-if="isLoading" class="rounded-lg border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+            正在读取资料库
+          </div>
 
-        <div v-else-if="filteredRecords.length" class="mt-5 space-y-3">
+          <div v-else-if="isWarehouseWorkspace && activeCustomer === ALL_CUSTOMERS" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
+            <p class="text-sm font-semibold text-slate-700">请选择一个客户</p>
+            <p class="mt-2 text-sm text-slate-500">右侧会展示该客户全部已上传箱唛，并可直接查看 PDF。</p>
+          </div>
+
+          <div v-else-if="filteredRecords.length" class="space-y-3">
+          <div v-if="isWarehouseWorkspace" class="flex items-center justify-between gap-3">
+            <p class="text-sm font-semibold text-slate-950">{{ activeCustomer }} · 已上传箱唛</p>
+            <span class="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-teal-700">{{ filteredRecords.length }} 份</span>
+          </div>
           <article
             v-for="record in filteredRecords"
             :key="record.id"
@@ -2648,7 +2980,8 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   </span>
                 </div>
                 <p class="mt-2 text-sm text-slate-600">
-                  PO：{{ record.po }} · ITEM：{{ record.item }}
+                  <template v-if="isWarehouseWorkspace">ITEM：{{ record.item }} · 合同：{{ record.contractNumber || '未填写' }}</template>
+                  <template v-else>合同：{{ record.contractNumber || '未填写' }} · ITEM：{{ record.item }}</template>
                 </p>
                 <p class="mt-2 truncate text-sm text-slate-500">
                   {{ record.fileName }} · {{ formatFileSize(record.fileSize) }}
@@ -2679,17 +3012,19 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 </button>
               </div>
             </div>
-            <div class="mt-4 grid gap-3 border-t border-slate-200 pt-4 text-xs text-slate-500 sm:grid-cols-3">
+            <div class="mt-4 grid gap-3 border-t border-slate-200 pt-4 text-xs text-slate-500 sm:grid-cols-4">
               <span>客名：{{ record.customerName }}</span>
-              <span>PO：{{ record.po }}</span>
+              <span>ITEM：{{ record.item }}</span>
+              <span>合同：{{ record.contractNumber || '未填写' }}</span>
               <span>上传：{{ formatDate(record.uploadedAt) }}</span>
             </div>
           </article>
         </div>
 
-        <div v-else class="mt-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-10 text-center">
-          <p class="text-sm font-semibold text-slate-700">暂无箱唛资料</p>
-          <p class="mt-2 text-sm text-slate-500">上传后会按客名进入对应资料库。</p>
+          <div v-else class="rounded-lg border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+            <p class="text-sm font-semibold text-slate-700">暂无箱唛资料</p>
+            <p class="mt-2 text-sm text-slate-500">上传后会按客名进入对应资料库。</p>
+          </div>
         </div>
       </section>
     </div>

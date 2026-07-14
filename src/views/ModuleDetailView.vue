@@ -14,7 +14,6 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import InjectionSchedulingDashboard from '@/components/modules/injection/InjectionSchedulingDashboard.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'
-import CartonMarkCheckPanel from '@/components/modules/qa/CartonMarkCheckPanel.vue'
 import TodoQueue from '@/components/modules/TodoQueue.vue'
 import { useAppStore } from '@/stores/app'
 
@@ -35,7 +34,6 @@ const currentModule = computed(() => {
 })
 
 const isInjectionScheduling = computed(() => currentModule.value.id === 'injection-scheduling')
-const isCartonMarkCheck = computed(() => currentModule.value.id === 'carton-mark-check')
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
 
 watch(currentDepartmentId, (departmentId) => {
@@ -110,7 +108,6 @@ watch(currentDepartmentId, (departmentId) => {
     <div class="grid gap-6 xl:grid-cols-[1fr_360px]">
       <div class="space-y-6">
         <InjectionSchedulingDashboard v-if="isInjectionScheduling" />
-        <CartonMarkCheckPanel v-else-if="isCartonMarkCheck" />
 
         <template v-else>
           <SectionPanel

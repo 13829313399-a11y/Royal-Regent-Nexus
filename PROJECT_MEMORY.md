@@ -1661,6 +1661,110 @@ Use this template when updating the memory after future work:
 
 ### 2026-07-14
 
+- Requirement: Dickie customer-quote exports must retain the imported workbook's original filename without composing a new quotation filename.
+- Implementation: `buildDickyCustomerQuoteFileName()` now returns the recorded `sourceFileName` unchanged (with a `Dickie.xlsx` fallback only when absent); removed the no-longer-used filename sanitization/date helpers and added an exact-name regression.
+- Files changed: `src/lib/customerPriceConverters/dicky.ts`, `src/lib/__tests__/dickyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Dickie Vitest suite passed 7 tests, `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings, and `git diff --check` passed with Windows line-ending notices only.
+- Decision: this preserves the source filename byte-for-byte from the browser upload, including its original spelling and extension; it does not change Dickie workbook content translation or any other customer export naming.
+
+### 2026-07-14
+
+- Requirement: improve carton-mark verification accuracy for both customer PDF templates and QA photos. The provided `203302017-700142617(1)(1).pdf` is a single ultra-wide vector PDF containing repeated `正唛 / 侧唛 / 正唛 / 侧唛` areas; automatic verification must use only the leftmost first front/side pair.
+- Implementation: PDF extraction now first reads original `pypdf` text coordinates on deliberately wide vector pages, groups the horizontal mark regions, identifies front/side by their field content, and selects only the first front mark plus its next side mark. Image OCR remains the fallback for scanned/non-vector PDFs. Field parsing now supports vector cells written as `value + label`, the Spanish `PIEZAS POR BULTO` quantity label, duplicate quantity values such as `24 24`, and prevents `BULTO` inside `PIEZAS POR BULTO` from being misread as the carton number. The QA upload panel now provides concise shooting guidance: camera parallel to the label, one mark per image, label occupying about 70% of the frame, long edge at least 1600px, and no glare; previews explicitly recommend crop selection when background is excessive. Empty-photo OCR feedback gives the same retake/crop advice.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, and `PROJECT_MEMORY.md`.
+- Verification: `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_carton_mark_service.py -q` passed 10 tests; `py_compile` passed for the changed backend service/test; `vue-tsc -b tsconfig.app.json`, `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings. Direct service verification against the supplied PDF selected the first front and side marks through `pypdf-vector-coordinates`; front extraction returned PO `62098330`, ITEM `203302017`, SKU/color/barcode, while side extraction returned PO/ITEM, description, quantity `24`, carton number, G.W./N.W., measurement, and barcode.
+- Decision and limitation: the new coordinate route intentionally applies only to wide, text-based PDF layouts like the supplied file. Scanned PDFs and layouts without usable vector text continue to use the prior OCR/crop fallback. No real carton-photo fixture was supplied in this slice, so the new photo guidance and existing manual crop flow should be validated with live QA photos before considering a stronger OCR engine such as PaddleOCR.
+
+### 2026-07-14
+
+- Follow-up requirement: carton-mark photo recognition still has substantial omissions after image preprocessing, manual crop, and Tesseract retry logic.
+- Implementation: installed and integrated local `rapidocr 3.9.1` with `onnxruntime 1.27.0` (PP-OCRv6 small detector/recognizer) as the preferred photo OCR engine. The backend now converts RapidOCR's detected quadrilateral text boxes into positioned rows/table field candidates before normal field extraction, which preserves left-label/right-value carton tables. It tries whole-image/crop variants in order and stops RapidOCR as soon as at least three carton fields are recovered; only incomplete RapidOCR output falls through to the existing multi-pass Tesseract OCR, with RapidOCR text retained ahead of fallback text. Added the two dependencies to both backend requirement files and a focused RapidOCR table-output regression.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, `backend/requirements.txt`, `backend/requirements.prod.txt`, and `PROJECT_MEMORY.md`.
+- Verification: installed RapidOCR/ONNX Runtime successfully in `backend/.venv`; targeted carton-mark pytest passed 11 tests; `py_compile`, frontend `vue-tsc`, production `vite build`, and `git diff --check` passed. Direct end-to-end test with a generated carton-mark image returned the RapidOCR path and extracted PO `62098330`, ITEM `203302017`, quantity `24`, G.W. `7.3 KGS`, and N.W. `4.3 KGS`. The production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+- Limitation: the PP-OCR model is now available locally and in the declared deployment dependencies, but no failing production carton-photo sample has been supplied for a before/after measurement. Real photos with severe blur, glare, or occlusion can still require QA crop/retake; retain the original image when reporting any remaining misses so model/preprocessing tuning can be targeted.
+
+### 2026-07-14
+
+- Follow-up requirement: carton-mark verification must check both columns of a side-mark table. The existing flow only compared the right-side values; incorrectly printed left-side field names (for example `NUMERO DE PEDIDO`) must also be flagged.
+- Implementation: comparisons now generate two independent scopes: `left_label` verifies each printed field name and `right_value` verifies its extracted value. Added explicit side-mark fields for `CAJA NUMERO` (box sequence), `TALLA` (size), and `SECCION / UNECO` (section), preserved multi-cell values such as `1 DE 1` / `1 DE 63`, and added approximate normalized label matching so OCR spacing/accents do not create false alarms while genuinely different labels are reported as mismatches. The QA result tables now include a `内容` column identifying `左侧字段名` or `右侧数值`.
+- Files changed: `backend/app/services/carton_mark.py`, `backend/app/schemas/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, `src/api/cartonMark.ts`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, and `PROJECT_MEMORY.md`.
+- Verification: `python -m py_compile` passed; carton-mark pytest passed 12 tests; `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Direct service verification against the supplied real side-mark photo extracted both multi-cell sequence values and all 12 expected left labels, including `CAJA NUMERO` and `SECCION/UNECO`.
+- Decision and limitation: left-label checks are OCR-dependent but normalize case, spacing, punctuation, and accents before matching. Ambiguous, severely blurred, or obscured label text remains a review item instead of being silently accepted.
+
+### 2026-07-14
+
+- Follow-up requirement: left-side carton-table checks must provide visible user feedback. A stored result containing only older right-value comparisons must not look like a completed left-label check.
+- Implementation: both the front-mark and side-mark result sections now place a `左侧字段名反馈` panel above the comparison table. It explicitly reports all labels consistent, shows the count requiring action, and lists each non-pass item with its PDF label, OCR label, and status. For legacy results that do not contain left-label comparisons, the panel states that feedback has not been generated and offers a direct `重新自动核对` action.
+- Files changed: `src/components/modules/qa/CartonMarkCheckPanel.vue` and `PROJECT_MEMORY.md`.
+- Verification: `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. The build retains only the existing third-party `@vueuse/core` Rolldown annotation warnings.
+- Decision: left-label feedback is intentionally placed before the horizontally scrollable detail table so its outcome is visible without scrolling through right-value rows.
+
+### 2026-07-14
+
+- Requirement: redesign both `箱唛核验` (QA) and `箱唛资料模板` (PMC/warehouse) as focused standalone business pages, following the independent-page pattern of `啤办进度追踪`. Remove the generic module-description banner, status/summary cards, current to-dos, module path, permission matrix, department to-dos, and the QA-only dashboard statistics shown in the supplied screenshots; retain only operational carton workflows.
+- Implementation: added the shared full-page `CartonMarkWorkspaceView.vue`. The PMC template route and QA verification route now both resolve to it before the generic module-detail route. Its compact header retains only the return route, current business title, template/verification workflow switch, active factory, and account menu. The existing shared carton panel keeps template PDF/customer-library management, QA photo upload/crop/auto-check, results, and records, while its non-workflow QA title/statistics blocks were removed. The generic `ModuleDetailView` no longer imports or renders carton-mark content.
+- Files changed: `src/views/CartonMarkWorkspaceView.vue`, `src/router/index.ts`, `src/views/ModuleDetailView.vue`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: carton-workspace regression passed 3 tests; full frontend Vitest suite completed successfully (with only the existing jsdom `navigation to another Document` notices); `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings. A browser visual check was attempted but the in-app browser runtime could not initialize in the current environment (`Cannot redefine property: process`), so visual review should be repeated in a working browser session after deployment.
+- Decision: template maintenance and QA verification remain separate permission contexts and routes, but now deliberately use the same independent-page shell and the same two workflow navigation tabs so their interaction model stays synchronized.
+
+### 2026-07-14
+
+- Follow-up requirement: the PMC/warehouse `箱唛资料模板` route must contain only template import and customer collections. Import metadata must be `客名` and `ITEM` rather than requiring PO; the right side must show customer collections, and clicking one customer must reveal every uploaded carton-mark PDF for that customer with a view action.
+- Implementation: removed the visible/manual customer-library maintenance flow and the PO input/validation from the PMC template-import form. New records store an empty PO for compatibility with the shared data contract and use customer plus ITEM to version/import the PDF. The right library is now a searchable customer-card collection built from uploaded records; warehouse users select a customer before its documents are displayed, then can open every available PDF. Existing templates, including legacy PO data, remain readable; the QA flow and its PO-aware historical display stay unchanged.
+- Files changed: `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused carton-workspace regression passed 4 tests; `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+
+- Decision: customer collections are derived directly from uploaded template records rather than a separate manually maintained customer master, so every displayed customer card has at least one real carton-mark document.
+
+### 2026-07-14
+
+- Defect follow-up: the PMC static route visually rendered the QA photo-upload workflow instead of the simplified template-import workflow.
+- Root cause and fix: `CartonMarkCheckPanel` inferred its department from `route.params.department`, but the new dedicated static routes do not provide that parameter and therefore fell back to `qa`. `CartonMarkWorkspaceView` now explicitly passes `workspace-mode="warehouse"` or `workspace-mode="qa"`, and the shared panel uses that prop for both its layout branch and permission department context while retaining the dynamic-route fallback for any future embedding.
+- Files changed: `src/views/CartonMarkWorkspaceView.vue`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused carton-workspace regression passed 4 tests; `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+
+### 2026-07-14
+
+- Requirement change: PMC/warehouse `箱唛资料模板` and QA `箱唛核验` must be separate business pages. They must not expose mutual top-level switching; only their visual language should remain consistent.
+- Implementation: replaced the shared route target with dedicated `CartonMarkTemplateView.vue` and `CartonMarkVerificationView.vue` route views. Both compose the same compact `CartonMarkWorkspaceView` shell but pass a fixed mode (`warehouse` or `qa`), so each route has its own explicit page boundary and workflow. Removed the former `箱唛业务切换` navigation and its cross-route links from the shared header. The header now contains only that page's return control, title/subtitle, active factory, and account menu.
+- Files changed: `src/router/index.ts`, `src/views/CartonMarkWorkspaceView.vue`, `src/views/CartonMarkTemplateView.vue`, `src/views/CartonMarkVerificationView.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused carton-workspace regression passed 4 tests; `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+- Supersedes the prior same-shell navigation-tab decision: the shell remains shared solely for visual consistency, while the PMC and QA page routes are now intentionally isolated.
+
+### 2026-07-14
+
+- Follow-up requirement: the PMC template-import form must contain exactly three required write-in fields in this order: customer name, ITEM, and contract number.
+- Implementation: added the required `contractNumber` field to carton-mark template and photo-record snapshots. New PMC imports require and persist all three values; template versions and QA photo sequences now distinguish records by customer, ITEM, and contract number. The customer library, search, QA template selector, and QA photo reference display the stored contract number. Legacy browser-stored records normalize to an empty contract number so they remain readable.
+- Files changed: `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused carton-workspace regression passed 4 tests; `vue-tsc -b tsconfig.app.json` and production `vite build` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+
+### 2026-07-14
+
+- Follow-up requirement: in the QA `箱唛核验` page, keep the upper upload/template-selection workflow unchanged, but prevent `已上传箱唛资料库` from stretching down alongside verification content. Its record list must scroll internally, and the lower full page width must be reserved for the verification results area.
+- Implementation: the top grid now aligns panels to their own content height. The QA template library is a top-right, self-starting panel whose record list has a 520px internal vertical scroll boundary. QA upload remains top-left. Extracted photo-upload history, automatic comparison tables, left-label feedback, and PDF/photo evidence from the upload form into a dedicated `核验结果` panel spanning both desktop columns below the top row. PMC template upload/library behavior remains in its existing two-column layout.
+- Files changed: `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused carton-workspace regression passed 5 tests; `vue-tsc -b tsconfig.app.json` and production `vite build` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+
+### 2026-07-14
+
+- Requirement: add batch QA carton-mark verification for one selected template. Users explicitly choose and separately upload multiple front-mark photos plus multiple side-mark photos; no filename pairing and no automatic front/side classification are wanted. Every difference, including customer-specific changing numbers, must remain visible as an anomaly for manual judgement rather than being suppressed by configurable rules.
+- Implementation: added the `POST /api/carton-mark/batch-auto-check` endpoint and response contracts. It receives one PDF plus two independent image collections, processes every image against only its declared front or side PDF region, and returns per-image comparison results plus an aggregate summary. The QA panel adds two multiple-file selectors, saves each batch image as its own existing photo-result record, displays all results in the shared results panel, and can re-run an individual single-side batch record. Existing paired, single-photo verification remains available unchanged.
+- Files changed: `backend/app/api/carton_mark.py`, `backend/app/schemas/carton_mark.py`, `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, `src/api/cartonMark.ts`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: carton-mark backend pytest passed 13 tests; focused carton-workspace regression passed 6 tests; changed backend modules passed `py_compile`; `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings. Pytest emitted one existing Windows `.pytest_cache` creation warning after all tests passed.
+
+### 2026-07-14
+
+- Follow-up requirement: the QA carton-mark upload UI must not split single-photo and batch-photo workflows into separate panels. Keep one front-mark selector and one side-mark selector; both must allow multiple images. The submit action must read `开始核对` for one selected image and automatically change to `开始批量核对（N 张）` for more than one image.
+- Implementation: merged the former batch controls into the existing front/side upload cards, added a clear multi-select/no-file-pairing hint, and removed the separate `批量核验同一箱唛` section. The unified submit now always uses the independent per-image batch check endpoint, while retaining single-image crop preview support. A crop applied to a single selected photo also replaces the file used for submission. Results preserve all per-image exceptions without automatic suppression.
+- Files changed: `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused carton-workspace regression passed 6 tests; `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+
+### 2026-07-14
+
+- Follow-up requirement: after multiple front-mark or side-mark photos are selected, every selected photo must remain eligible for the same large box-selection/crop area. Users need left/right arrows to change the active photo being cropped instead of separate small crop areas.
+- Implementation: the QA panel now shows the first selected photo in the existing large preview immediately, then provides previous/next controls with a `第 N / M 张` indicator for each front/side queue. Each photo can be boxed and cropped independently; applying a crop replaces only that active file in its original queue position, preserves the other uploads, and marks the photo as cropped when revisited.
+- Files changed: `src/components/modules/qa/CartonMarkCheckPanel.vue`, `src/views/__tests__/cartonMarkWorkspaceLayout.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused carton-workspace regression passed 6 tests; `vue-tsc -b tsconfig.app.json`, production `vite build`, and `git diff --check` passed. Production build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
 - Follow-up requirement: remove the green print-only handoff prompt reading `工程单据填写详情` and `工程审核通过后下发至啤机部执行；打印内容仅包含工程部填写资料。` from the production task notice.
 - Implementation: removed the `molding-sample-task-print-handoff` section and its normal/dense print CSS. The notice title, engineering basic data, mold-detail table, and the separate footer remain unchanged.
 - Files changed: `src/views/MoldingSampleProductionTaskView.vue`, `src/views/__tests__/moldingSampleProductionTaskViewLayout.test.ts`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
@@ -1717,3 +1821,11 @@ Use this template when updating the memory after future work:
 - Static artifact: created `D:/RR/outputs/019f5b59-67a1-7ff2-9b22-82169c70632b/工程部啤办单_基础资料与模具明细导入模板_优化版.xlsx`, with a 30-row input area, status dropdown, and a current field-guide sheet. The original static workbook was open in Excel and therefore was not overwritten.
 - Files changed: `backend/app/services/molding_sample_excel.py`, `backend/tests/test_molding_sample_api.py`, `src/lib/moldingSampleManualCreate.ts`, `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
 - Verification: focused importer regressions passed 3 tests; full `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_molding_sample_api.py -q -p no:cacheprovider` passed 49 tests; manual-create and view-layout contract scripts passed; `npm.cmd run build` passed with only known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed. The optimized workbook was inspected (correct basic-data/detail order), formula-error scan returned zero matches, and both sheets were rendered for visual QA. The local API was restarted and `/health` returned OK.
+
+### 2026-07-14
+
+- Requirement: Dickie customer-quote exports must retain the imported workbook's original filename without composing a new quotation filename.
+- Implementation: `buildDickyCustomerQuoteFileName()` now returns the recorded `sourceFileName` unchanged (with a `Dickie.xlsx` fallback only when absent); removed the no-longer-used filename sanitization/date helpers and added an exact-name regression.
+- Files changed: `src/lib/customerPriceConverters/dicky.ts`, `src/lib/__tests__/dickyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Dickie Vitest suite passed 7 tests, `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings, and `git diff --check` passed with Windows line-ending notices only.
+- Decision: this preserves the source filename byte-for-byte from the browser upload, including its original spelling and extension; it does not change Dickie workbook content translation or any other customer export naming.
