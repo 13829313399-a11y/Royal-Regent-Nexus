@@ -15,6 +15,7 @@ export interface RoleAssignmentRequest {
 export interface RegistrationApproveRequest {
   role_assignments: RoleAssignmentRequest[]
   review_comment?: string
+  position?: string
 }
 
 export interface RegistrationRejectRequest {

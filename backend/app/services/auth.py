@@ -1101,6 +1101,8 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
         raise HTTPException(status_code=400, detail="请选择有效部门")
     if not position:
         raise HTTPException(status_code=400, detail="请输入职位")
+    if len(position) > 128:
+        raise HTTPException(status_code=400, detail="职位不能超过 128 个字符")
 
     existing_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
     if existing_user is not None and existing_user.status != "rejected":

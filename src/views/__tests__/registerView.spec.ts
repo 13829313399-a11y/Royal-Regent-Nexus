@@ -20,6 +20,11 @@ describe('RegisterView source contract', () => {
       'factoryId',
       'department',
       'position',
+      '<span>职位 <b>*</b></span>',
+      'autocomplete="organization-title"',
+      'maxlength="128"',
+      '工程部技术员',
+      '管理员会在审批时核验或修正',
       '账号申请已提交',
       'router.replace',
       'register-wrap',
@@ -36,5 +41,7 @@ describe('RegisterView source contract', () => {
     }
     expect(source).toMatch(/password\.value\s*!==\s*confirmPassword\.value/)
     expect(source).toMatch(/!phone\.value\.trim\(\)\s*&&\s*!email\.value\.trim\(\)/)
+    expect(source).not.toContain('registration-position-suggestions')
+    expect(source).not.toContain('<datalist')
   })
 })

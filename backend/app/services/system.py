@@ -163,13 +163,20 @@ def recommend_role_ids(registration_request: AuthRegistrationRequest) -> list[st
     position = registration_request.position.strip().lower()
     department = registration_request.department
 
-    if "经理" in registration_request.position:
-        return ["manager"]
-    if "主管" in registration_request.position or "supervisor" in position:
-        if department == "engineering":
-            return ["engineering_supervisor"]
-        if department == "sales-business":
-            return ["sales_customer_supervisor"]
+    is_leadership_position = (
+        "主管" in registration_request.position
+        or "经理" in registration_request.position
+        or "supervisor" in position
+        or "manager" in position
+    )
+    if is_leadership_position:
+        department_leadership_roles = {
+            "engineering": "engineering_supervisor",
+            "sales-business": "sales_customer_supervisor",
+        }
+        leadership_role_id = department_leadership_roles.get(department)
+        if leadership_role_id:
+            return [leadership_role_id]
 
     department_defaults = {
         "engineering": "engineer",
@@ -223,6 +230,12 @@ def approve_registration_request(
     )
     if registration_request.status != "pending":
         raise HTTPException(status_code=400, detail="该申请已处理")
+    original_position = registration_request.position.strip()
+    approved_position = (payload.position if payload.position is not None else original_position).strip()
+    if not approved_position:
+        raise HTTPException(status_code=400, detail="请输入职位")
+    if len(approved_position) > 128:
+        raise HTTPException(status_code=400, detail="职位不能超过 128 个字符")
     if not payload.role_assignments:
         raise HTTPException(status_code=400, detail="请至少分配一个角色")
 
@@ -346,7 +359,8 @@ def approve_registration_request(
         db.add(profile)
     profile.primary_factory_id = registration_request.factory_id
     profile.primary_department = registration_request.department
-    profile.position = registration_request.position
+    registration_request.position = approved_position
+    profile.position = approved_position
     profile.phone = registration_request.phone
     profile.email = registration_request.email
     profile.confirmation_status = "confirmed"
@@ -368,7 +382,12 @@ def approve_registration_request(
         "registration_approved",
         username=user.username,
         user_id=user.id,
-        detail=f"审批通过；角色：{','.join(item.role_id for item in role_assignments)}",
+        detail=(
+            "审批通过；"
+            f"职位：{original_position}"
+            f"{' -> ' + approved_position if approved_position != original_position else ''}；"
+            f"角色：{','.join(item.role_id for item in role_assignments)}"
+        ),
         request=request,
     )
     db.commit()

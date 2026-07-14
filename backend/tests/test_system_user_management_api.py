@@ -185,7 +185,9 @@ def create_scoped_permission_manager(
 
 def test_registration_approval_notification_and_login_flow(monkeypatch):
     with make_client(monkeypatch) as client:
-        register_response = client.post("/api/auth/register", json=register_payload())
+        payload = register_payload()
+        payload["position"] = "工程部技术员"
+        register_response = client.post("/api/auth/register", json=payload)
 
         assert register_response.status_code == 200
         assert register_response.json() == {
@@ -218,8 +220,36 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         assert len(requests) == 1
         assert requests[0]["username"] == "zhangsan"
         assert requests[0]["status"] == "pending"
+        assert requests[0]["position"] == "工程部技术员"
         assert requests[0]["recommended_role_ids"] == ["engineer"]
         request_id = requests[0]["id"]
+
+        blank_position_response = client.post(
+            f"/api/system/registration-requests/{request_id}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "职位不能为空",
+                "position": "   ",
+            },
+        )
+        assert blank_position_response.status_code == 400
+        assert blank_position_response.json()["detail"] == "请输入职位"
+        assert client.get("/api/system/registration-requests?status=pending").json()[0]["position"] == "工程部技术员"
+
+        long_position_response = client.post(
+            f"/api/system/registration-requests/{request_id}/approve",
+            json={
+                "role_assignments": [
+                    {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
+                ],
+                "review_comment": "职位长度校验",
+                "position": "岗" * 129,
+            },
+        )
+        assert long_position_response.status_code == 400
+        assert long_position_response.json()["detail"] == "职位不能超过 128 个字符"
 
         approve_response = client.post(
             f"/api/system/registration-requests/{request_id}/approve",
@@ -228,10 +258,24 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
                     {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
                 ],
                 "review_comment": "资料完整",
+                "position": "高级工程技术员",
             },
         )
         assert approve_response.status_code == 200
         assert approve_response.json()["status"] == "approved"
+        assert approve_response.json()["position"] == "高级工程技术员"
+
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            approval_audit = (
+                db.query(auth_models.AuthAuditLog)
+                .filter_by(action="registration_approved", username="zhangsan")
+                .order_by(auth_models.AuthAuditLog.id.desc())
+                .first()
+            )
+            assert approval_audit is not None
+            assert "职位：工程部技术员 -> 高级工程技术员" in approval_audit.detail
 
         notifications_after_approval = client.get("/api/system/notifications").json()
         assert notifications_after_approval[0]["status"] == "handled"
@@ -240,6 +284,8 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         logout(client)
         approved_profile = login(client, "zhangsan", "Strong123")
         assert approved_profile["username"] == "zhangsan"
+        assert approved_profile["profile"]["position"] == "高级工程技术员"
+        assert "工程师" in approved_profile["roles"]
         assert "molding_sample:create" in approved_profile["permissions"]
         assert "molding_sample:production_read" in approved_profile["permissions"]
         assert "molding_sample:cross_factory_read" in approved_profile["permissions"]
@@ -359,10 +405,15 @@ def test_registration_approval_flush_remains_atomic_on_late_failure(monkeypatch)
             metadata_count_before = db.query(auth_models.AuthRoleBindingMetadata).count()
             profile = db.get(auth_models.EmployeeProfile, user_id)
             profile_before = (
+                profile.position,
                 profile.confirmation_status,
                 profile.source_registration_request_id,
                 profile.updated_at,
             )
+            registration_position_before = db.get(
+                auth_models.AuthRegistrationRequest,
+                request_id,
+            ).position
             revision_before = db.get(auth_models.AuthUserAuthorizationRevision, user_id).revision
 
         system_service = importlib.import_module("app.services.system")
@@ -380,6 +431,7 @@ def test_registration_approval_flush_remains_atomic_on_late_failure(monkeypatch)
                         {"role_id": "engineer", "factory_id": "huaxing", "department": "engineering"}
                     ],
                     "review_comment": "验证审批事务整体回滚",
+                    "position": "高级工程技术员",
                 },
             )
 
@@ -389,12 +441,14 @@ def test_registration_approval_flush_remains_atomic_on_late_failure(monkeypatch)
 
             assert registration.status == "pending"
             assert registration.reviewed_at == ""
+            assert registration.position == registration_position_before
             assert user.status == "pending"
             assert db.query(auth_models.AuthUserRole).filter_by(user_id=user_id).count() == 0
             assert db.query(auth_models.AuthRoleBindingMetadata).count() == metadata_count_before
             assert db.query(auth_models.AuthAuthorizationEvent).filter_by(target_user_id=user_id).count() == 0
             profile = db.get(auth_models.EmployeeProfile, user_id)
             assert (
+                profile.position,
                 profile.confirmation_status,
                 profile.source_registration_request_id,
                 profile.updated_at,
@@ -442,6 +496,41 @@ def test_sales_business_supervisor_registration_recommends_quote_supervisor_role
         assert "customer_price:read" in profile["permissions"]
         assert "customer_price:export_customer_quote" in profile["permissions"]
         assert profile["department_scopes"] == ["sales-business"]
+
+
+def test_manager_position_recommendations_stay_inside_registration_department_scope(monkeypatch):
+    cases = [
+        ("engineering-manager", "engineering", "工程经理", "engineering_supervisor"),
+        ("warehouse-manager", "pmc-warehouse", "仓库经理", "carton_warehouse_keeper"),
+        ("production-manager", "production", "生产经理", "molding_clerk"),
+        ("qa-manager", "qa", "品质经理", "qa_inspector"),
+        ("sales-manager", "sales-business", "销售经理", "sales_customer_supervisor"),
+    ]
+
+    with make_client(monkeypatch) as client:
+        for username, department, position, _ in cases:
+            payload = register_payload(username)
+            payload.update({"department": department, "position": position})
+            response = client.post("/api/auth/register", json=payload)
+            assert response.status_code == 200, response.text
+
+        login(client, "admin")
+        roles = {role["id"]: role for role in client.get("/api/system/roles").json()}
+        requests = {
+            request["username"]: request
+            for request in client.get("/api/system/registration-requests?status=pending").json()
+        }
+
+        for username, department, _, expected_role_id in cases:
+            request = requests[username]
+            assert request["recommended_role_ids"] == [expected_role_id]
+            recommended_role = roles[expected_role_id]
+            assert recommended_role["requires_global_factory"] is False
+            assert (
+                not recommended_role["applicable_departments"]
+                or "*" in recommended_role["applicable_departments"]
+                or department in recommended_role["applicable_departments"]
+            )
 
 
 def test_non_admin_cannot_use_system_user_management(monkeypatch):

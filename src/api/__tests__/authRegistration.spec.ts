@@ -25,7 +25,7 @@ describe('authApi registration', () => {
       email: '',
       factory_id: 'huaxing',
       department: 'engineering',
-      position: '工程师',
+      position: '工程部技术员',
     })
 
     expect(calls).toEqual([
@@ -41,7 +41,7 @@ describe('authApi registration', () => {
           email: '',
           factory_id: 'huaxing',
           department: 'engineering',
-          position: '工程师',
+          position: '工程部技术员',
         },
       },
     ])
