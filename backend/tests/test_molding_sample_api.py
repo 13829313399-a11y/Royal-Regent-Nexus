@@ -247,6 +247,7 @@ def grant_permission_override(
     *,
     factory_id: str = "*",
     department: str = "*",
+    effect: str = "allow",
 ) -> None:
     ensure_test_user(username)
     user_id = TEST_USER_SPECS[username][0]
@@ -260,14 +261,14 @@ def grant_permission_override(
             )
         )
         assert permission is not None, f"permission is not registered: {permission_code}"
-        override_id = f"test:{user_id}:{permission.id}:{factory_id}:{department}"
+        override_id = f"test:{user_id}:{permission.id}:{effect}:{factory_id}:{department}"
         if db.get(auth_models.AuthUserPermissionOverride, override_id) is None:
             db.add(
                 auth_models.AuthUserPermissionOverride(
                     id=override_id,
                     user_id=user_id,
                     permission_id=permission.id,
-                    effect="allow",
+                    effect=effect,
                     factory_id=factory_id,
                     department=department,
                     status="active",
@@ -534,7 +535,7 @@ def test_server_side_material_price_seed_is_additive_once_and_never_overwrites_e
         ) is None
 
 
-def test_molding_sample_read_endpoints_require_read_permission(client):
+def test_authenticated_users_can_read_molding_samples_without_changing_permissions(client):
     login_as(client, "engineer")
     create_response = client.post("/api/injection", json=sample_order_payload("BP-BROWSE-001"))
     assert create_response.status_code == 201
@@ -542,14 +543,20 @@ def test_molding_sample_read_endpoints_require_read_permission(client):
     profile = login_as(client, "qa_inspector")
     assert "molding_sample:read" not in profile["permissions"]
 
-    assert client.get("/api/injection").status_code == 403
-    assert client.get("/api/injection/BP-BROWSE-001").status_code == 403
+    list_response = client.get("/api/injection")
+    assert list_response.status_code == 200
+    assert [row["order"]["id"] for row in list_response.json()] == ["BP-BROWSE-001"]
+
+    detail_response = client.get("/api/injection/BP-BROWSE-001")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["read_source"] == "cross"
+    assert detail_response.json()["can_view_cost"] is False
     assert client.get("/api/injection/BP-BROWSE-001/export-excel").status_code == 403
     assert client.get(
         "/api/injection/export-excel",
         params=[("order_ids", "BP-BROWSE-001")],
     ).status_code == 403
-    assert client.get("/api/problems", params={"order_id": "BP-BROWSE-001"}).status_code == 403
+    assert client.get("/api/problems", params={"order_id": "BP-BROWSE-001"}).status_code == 200
 
 
 def test_engineer_can_create_order_and_production_user_reads_notification_after_supervisor_approval(client):
@@ -617,10 +624,12 @@ def test_factory_scope_limits_molding_sample_reads_and_writes(client):
     login_as(client, "engineer")
     list_response = client.get("/api/injection")
     assert list_response.status_code == 200
-    assert all(record["order"]["id"] != "BP-HD-SCOPE-001" for record in list_response.json())
+    assert any(record["order"]["id"] == "BP-HD-SCOPE-001" for record in list_response.json())
 
     detail_response = client.get("/api/injection/BP-HD-SCOPE-001")
-    assert detail_response.status_code == 403
+    assert detail_response.status_code == 200
+    assert detail_response.json()["read_source"] == "cross"
+    assert detail_response.json()["can_view_cost"] is False
 
     single_export_response = client.get("/api/injection/BP-HD-SCOPE-001/export-excel")
     assert single_export_response.status_code == 403
@@ -681,10 +690,13 @@ def test_same_factory_shared_departments_can_read_molding_samples(enforce_client
         assert response.json()["can_view_cost"] is True
 
     login_as(client, "qa_inspector")
-    assert client.get("/api/injection/BP-SHARED-LOCAL-READ-001").status_code == 403
+    qa_response = client.get("/api/injection/BP-SHARED-LOCAL-READ-001")
+    assert qa_response.status_code == 200
+    assert qa_response.json()["read_source"] == "cross"
+    assert qa_response.json()["can_view_cost"] is False
 
 
-def test_production_read_only_allows_same_factory_but_never_foreign_factory(enforce_client):
+def test_production_read_keeps_local_cost_view_while_foreign_factory_is_default_read_only(enforce_client):
     client = enforce_client
     login_as(client, "admin")
     huaxing_payload = sample_order_payload("BP-PRODUCTION-READ-HX-001")
@@ -710,23 +722,17 @@ def test_production_read_only_allows_same_factory_but_never_foreign_factory(enfo
     local_response = client.get("/api/injection/BP-PRODUCTION-READ-HX-001")
     assert local_response.status_code == 200
     assert local_response.json()["read_source"] == "local"
-    assert client.get("/api/injection/BP-PRODUCTION-READ-HD-001").status_code == 403
+    foreign_response = client.get("/api/injection/BP-PRODUCTION-READ-HD-001")
+    assert foreign_response.status_code == 200
+    assert foreign_response.json()["read_source"] == "cross"
+    assert foreign_response.json()["can_view_cost"] is False
 
     list_response = client.get("/api/injection")
     assert list_response.status_code == 200
-    assert [row["order"]["id"] for row in list_response.json()] == ["BP-PRODUCTION-READ-HX-001"]
-
-    grant_permission_override(
-        "qa_inspector",
-        "molding_sample:cross_factory_read",
-        factory_id="huadeng",
-        department="qa",
-    )
-    login_as(client, "qa_inspector")
-    cross_response = client.get("/api/injection/BP-PRODUCTION-READ-HD-001")
-    assert cross_response.status_code == 200
-    assert cross_response.json()["read_source"] == "cross"
-    assert cross_response.json()["can_view_cost"] is False
+    assert {row["order"]["id"] for row in list_response.json()} == {
+        "BP-PRODUCTION-READ-HX-001",
+        "BP-PRODUCTION-READ-HD-001",
+    }
 
 
 def test_manager_keeps_existing_draft_edit_and_delete_permissions(enforce_client):
@@ -828,15 +834,22 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
         db.commit()
 
     login_as(client, "engineer")
-    assert client.get("/api/injection/BP-CROSS-FACTORY-READ-001").status_code == 403
 
-    grant_permission_override(
-        "engineer",
-        "molding_sample:cross_factory_read",
-        factory_id="*",
-        department="*",
-    )
-    login_as(client, "engineer")
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    with db_module.SessionLocal() as db:
+        role_bindings_before = [
+            (binding.role_id, binding.factory_id, binding.department)
+            for binding in db.query(auth_models.AuthUserRole)
+            .filter_by(user_id="user-engineer")
+            .order_by(auth_models.AuthUserRole.id)
+        ]
+        overrides_before = [
+            (override.permission_id, override.effect, override.factory_id, override.department)
+            for override in db.query(auth_models.AuthUserPermissionOverride)
+            .filter_by(user_id="user-engineer")
+            .order_by(auth_models.AuthUserPermissionOverride.id)
+        ]
 
     detail_response = client.get("/api/injection/BP-CROSS-FACTORY-READ-001")
     assert detail_response.status_code == 200
@@ -883,6 +896,20 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
         json=edited_payload,
     ).status_code == 403
 
+    with db_module.SessionLocal() as db:
+        assert [
+            (binding.role_id, binding.factory_id, binding.department)
+            for binding in db.query(auth_models.AuthUserRole)
+            .filter_by(user_id="user-engineer")
+            .order_by(auth_models.AuthUserRole.id)
+        ] == role_bindings_before
+        assert [
+            (override.permission_id, override.effect, override.factory_id, override.department)
+            for override in db.query(auth_models.AuthUserPermissionOverride)
+            .filter_by(user_id="user-engineer")
+            .order_by(auth_models.AuthUserPermissionOverride.id)
+        ] == overrides_before
+
     grant_permission_override(
         "engineer",
         "molding_sample:cross_factory_cost_read",
@@ -920,6 +947,26 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
     ).status_code == 403
 
 
+def test_default_cross_factory_read_respects_an_existing_explicit_deny(enforce_client):
+    client = enforce_client
+    login_as(client, "admin")
+    payload = sample_order_payload("BP-CROSS-READ-DENY-001")
+    payload["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=payload).status_code == 201
+
+    grant_permission_override(
+        "qa_inspector",
+        "molding_sample:cross_factory_read",
+        factory_id="huadeng",
+        department="*",
+        effect="deny",
+    )
+    login_as(client, "qa_inspector")
+
+    assert client.get("/api/injection/BP-CROSS-READ-DENY-001").status_code == 403
+    assert client.get("/api/injection", params={"factory_id": "huadeng"}).status_code == 403
+
+
 def test_foreign_factory_regular_permissions_cannot_bypass_organization_gate(enforce_client):
     client = enforce_client
     login_as(client, "admin")
@@ -947,7 +994,10 @@ def test_foreign_factory_regular_permissions_cannot_bypass_organization_gate(enf
         )
 
     login_as(client, "engineer")
-    assert client.get("/api/injection/BP-FOREIGN-HARD-GATE-001").status_code == 403
+    default_readable = client.get("/api/injection/BP-FOREIGN-HARD-GATE-001")
+    assert default_readable.status_code == 200
+    assert default_readable.json()["read_source"] == "cross"
+    assert default_readable.json()["can_view_cost"] is False
 
     grant_permission_override(
         "engineer",
@@ -1015,7 +1065,7 @@ def test_update_order_cannot_move_order_to_another_factory(enforce_client):
         assert order.product_name == "链条枪"
 
 
-def test_create_permission_without_read_is_rejected_before_insert(enforce_client):
+def test_default_cross_read_does_not_activate_local_create_permission(enforce_client):
     client = enforce_client
     grant_permission_override(
         "qa_inspector",
@@ -1088,14 +1138,17 @@ def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
     login_as(client, "cross_scope")
     scoped_list_response = client.get("/api/injection")
     assert scoped_list_response.status_code == 200
-    assert all(record["order"]["id"] != "BP-CROSS-READ-BLOCKED" for record in scoped_list_response.json())
-    assert client.get("/api/injection/BP-CROSS-READ-BLOCKED").status_code == 403
+    cross_record = next(
+        record for record in scoped_list_response.json()
+        if record["order"]["id"] == "BP-CROSS-READ-BLOCKED"
+    )
+    assert cross_record["read_source"] == "cross"
+    assert client.get("/api/injection/BP-CROSS-READ-BLOCKED").status_code == 200
 
     blocked_payload = sample_order_payload("BP-CROSS-BLOCKED")
     blocked_payload["order"]["factory_id"] = "huakang-a"
     blocked_response = client.post("/api/injection", json=blocked_payload)
     assert blocked_response.status_code == 403
-    assert blocked_response.json()["detail"] == "无该厂区啤办单查看权限"
 
     allowed_payload = sample_order_payload("BP-CROSS-ALLOWED")
     allowed_payload["order"]["factory_id"] = "huaxing"
