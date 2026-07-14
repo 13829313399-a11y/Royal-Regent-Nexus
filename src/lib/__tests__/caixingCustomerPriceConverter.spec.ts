@@ -90,6 +90,40 @@ function createMinimalCaixingWorkbook() {
   return asArrayBuffer(createXlsxWorkbook([{ name: '68963', rows }]))
 }
 
+function createPlasticWorkbookWithProcessDetails() {
+  const rows = parseXlsxWorkbook(createMinimalCaixingWorkbook()).sheets[0].rows
+    .map((row) => [...row]) as XlsxCellInput[][]
+
+  rows[50] ??= []
+  rows[51] ??= []
+  rows[52] ??= []
+  rows[53] ??= []
+  rows[50][1] = '吹气'
+  rows[50][2] = '剑身'
+  rows[50][3] = 1.4
+  rows[51][1] = '搪胶'
+  rows[51][2] = '软胶把手'
+  rows[51][3] = 0.5
+  rows[52][1] = '油漆'
+  rows[52][2] = '喷油油漆'
+  rows[52][3] = 0.3
+  rows[53][1] = '喷油工'
+  rows[53][2] = '喷油人工'
+  rows[53][3] = 1.38
+
+  return asArrayBuffer(createXlsxWorkbook([
+    { name: '68963', rows },
+    {
+      name: '喷油',
+      rows: [
+        ['图片', '客户', '货号', '位置', '夹模', '边模', '移印', '油漆', '人工', '备注'],
+        [null, '彩星', 68963, '剑身', 1, null, null, 0.3, 1.38, null],
+        [null, null, null, null, null, null, null, 1.7, null, null],
+      ],
+    },
+  ]))
+}
+
 function readFileAsArrayBuffer(path: string) {
   const bytes = readFileSync(path)
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
@@ -258,6 +292,39 @@ describe('Caixing customer price converter', () => {
     expect(readSheetPictureCount(templateZip, 'Summary')).toBeGreaterThan(0)
     expect(readSheetPictureCount(outputZip, 'Deco List & Product Image')).toBe(0)
     expect(readSheetPictureCount(outputZip, 'Summary')).toBe(0)
+  })
+
+  it('uses plastic process detail sheets and applies the required 2% scrap to purchase and packing rows', () => {
+    const result = convertCaixingInternalQuote(
+      createPlasticWorkbookWithProcessDetails(),
+      '68963 quote 2026-6-27.xlsx',
+      'plastic',
+    )
+    const output = createCaixingCustomerQuoteWorkbook(result, readFileAsArrayBuffer(plasticTemplatePath))
+    const workbook = parseXlsxWorkbook(asArrayBuffer(output))
+    const summary = workbook.sheets.find((sheet) => sheet.name === 'Summary')
+    const toolPlan = workbook.sheets.find((sheet) => sheet.name === 'Tool Plan')
+    const purchase = workbook.sheets.find((sheet) => sheet.name === 'purchase')
+    const packing = workbook.sheets.find((sheet) => sheet.name === 'Packing')
+
+    expect(summary?.rows[19][4]).toBeCloseTo(1.7, 6)
+    expect(toolPlan?.rows[15][1]).toBe('BL')
+    expect(toolPlan?.rows[15][5]).toBe('剑身')
+    expect(toolPlan?.rows[15][16]).toBeCloseTo(1.4, 6)
+    expect(toolPlan?.rows[16][1]).toBe('RC')
+    expect(toolPlan?.rows[16][5]).toBe('软胶把手')
+    expect(toolPlan?.rows[16][16]).toBeCloseTo(0.5, 6)
+    expect(toolPlan?.rows[68][16]).toBeCloseTo(2.1, 6)
+    expect(purchase?.rows[7][7]).toBeCloseTo(0.02, 6)
+    expect(purchase?.rows[7][8]).toBeCloseTo(0.0816, 6)
+    expect(packing?.rows[6][1]).toBe('彩盒/内咭')
+    expect(packing?.rows[6][2]).toBe('彩盒')
+    expect(packing?.rows[6][12]).toBeCloseTo(0.02, 6)
+    expect(packing?.rows[6][13]).toBeCloseTo(1.224, 6)
+    expect(packing?.rows[24][12]).toBeCloseTo(0.02, 6)
+    expect(packing?.rows[24][13]).toBeCloseTo(0.9945, 6)
+    expect(summary?.rows[13][4]).toBeCloseTo(0.0816, 6)
+    expect(summary?.rows[14][4]).toBeCloseTo(2.2185, 6)
   })
 
   it('converts plush and exports the plush-first quote workbook structure', () => {

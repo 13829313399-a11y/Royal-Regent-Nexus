@@ -1602,3 +1602,11 @@ Use this template when updating the memory after future work:
 - Requirement: prevent the local browser from silently using a Vite server started from an old Royal Regent Nexus worktree.
 - Implementation: added `scripts/start-latest-main-dev.ps1`. It fetches `origin/main`, rejects a branch that is behind main or has uncommitted changes, detects the process currently listening on port 5173, and refuses to reuse a server whose command line points to another worktree. `-ReplaceStale` is an explicit opt-in to stop that stale process; `-Check` performs the validation without starting a server.
 - Decision: a feature branch based on the latest main may use 5173, including commits ahead of main, but any checkout behind `origin/main` is blocked. Runtime logs are written under the system temp directory, not the worktree.
+
+### 2026-07-14
+
+- Requirement: update the Color Star plastic customer-quote export. The spray amount now comes from the `喷油` detail sheet when present; `吹气` and `搪胶` map to Blow Molding (`BL`) and Roto Casting (`RC`); purchased parts and packaging use 2% scrap; packaging preserves source B-column category as Type and source C-column material name as Spec.
+- Implementation: `caixing.ts` detects the spray-detail total, writes BL/RC Tool Plan rows, applies 2% to plastic purchase/packing rows (including Carton Shipper), and aligns plastic Summary values. Added a focused conversion regression.
+- Files changed: `src/lib/customerPriceConverters/caixing.ts`, `src/lib/__tests__/caixingCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Color Star Vitest suite and `npm.cmd run build` passed; build retains only the known third-party Rolldown annotation warnings.
+- Decision: changes are limited to the Color Star plastic template; plush remains unchanged.
