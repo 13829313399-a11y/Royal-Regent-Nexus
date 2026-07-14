@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
 import { nextTick } from 'vue'
 import { moldingSampleApi } from '@/api/moldingSample'
+import { rawMaterialApi } from '@/api/rawMaterial'
 import type { AuthEffectiveAccess, AuthzMode } from '@/api/auth'
 import type {
   MoldingSampleCreateRequest,
@@ -51,6 +52,10 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   updateMaterialPrices: vi.fn(),
   listInjectionCosts: vi.fn(),
 }))
+const rawMaterialApiMock = vi.hoisted(() => ({
+  list: vi.fn(),
+  create: vi.fn(),
+}))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -74,7 +79,12 @@ vi.mock('@/api/moldingSample', () => ({
   moldingSampleApi: moldingSampleApiMock,
 }))
 
+vi.mock('@/api/rawMaterial', () => ({
+  rawMaterialApi: rawMaterialApiMock,
+}))
+
 const mockedMoldingSampleApi = vi.mocked(moldingSampleApi)
+const mockedRawMaterialApi = vi.mocked(rawMaterialApi)
 
 function createRuntimeError(statusCode: number) {
   return new Error(`Request failed with status code ${statusCode}`)
@@ -307,6 +317,22 @@ describe('molding sample runtime error handling', () => {
       prices: [{ material: 'ABS 750NSW', unit_price: 4.85 }],
       rmb_to_hkd_rate: 1.08,
     })
+    mockedRawMaterialApi.list.mockResolvedValue([{
+      id: 'RM-BASELINE-huaxing-91000001',
+      factory_id: 'huaxing',
+      material_code: '91000001',
+      material_name: 'ABS 750NSW',
+      category: 'ABS',
+      spec: 'ABS塑胶料',
+      unit: 'KG/包',
+      supplier: '韩国锦湖',
+      safety_stock_kg: null,
+      status: '启用',
+      notes: '',
+      created_by: 'system-baseline',
+      created_at: '2026-07-14 12:00:00',
+      updated_at: '2026-07-14 12:00:00',
+    }])
   })
 
   afterEach(() => {

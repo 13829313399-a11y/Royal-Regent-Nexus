@@ -171,6 +171,7 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
         assert body["profile"]["primary_factory_id"] == "huaxing"
         assert body["role_bindings"][0]["role_id"] == "engineer"
         assert any(item["permission_code"] == "molding_sample:create" for item in body["effective_access"])
+        assert any(item["permission_code"] == "molding_sample:raw_material_write" for item in body["effective_access"])
 
         roles = client.get("/api/iam/roles")
         assert roles.status_code == 200, roles.text
@@ -200,6 +201,7 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
             "molding_sample:read",
             "molding_sample:export",
             "molding_sample:create",
+            "molding_sample:raw_material_write",
             "molding_sample:edit_draft",
             "molding_sample:delete_draft",
             "molding_sample:notification_read",

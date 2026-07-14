@@ -88,8 +88,10 @@ def init_db() -> None:
     from app.models import injection_schedule  # noqa: F401
     from app.models import molding_sample  # noqa: F401
     from app.models import pricing  # noqa: F401
+    from app.models import raw_material  # noqa: F401
     from app.services.auth import seed_auth_defaults
     from app.services.molding_sample import seed_molding_sample_defaults
+    from app.services.raw_material import seed_raw_material_defaults
 
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
@@ -97,3 +99,4 @@ def init_db() -> None:
     with SessionLocal() as db:
         seed_auth_defaults(db)
         seed_molding_sample_defaults(db)
+        seed_raw_material_defaults(db)

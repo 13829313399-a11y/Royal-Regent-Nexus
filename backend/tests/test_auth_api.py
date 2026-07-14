@@ -267,6 +267,39 @@ def test_seed_preserves_existing_account_role_template_and_additional_binding(mo
             assert binding_metadata.source_type == "legacy_import"
 
 
+def test_seed_upgrades_existing_engineering_and_warehouse_roles_with_raw_material_write_once(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            permission = db.scalar(
+                auth_service.select(auth_models.AuthPermission).where(
+                    auth_models.AuthPermission.code == "molding_sample:raw_material_write"
+                )
+            )
+            assert permission is not None
+
+            marker = db.get(auth_models.AuthIamState, auth_service.RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER)
+            assert marker is not None
+            db.delete(marker)
+
+            for role_id in auth_service.RAW_MATERIAL_WRITE_DEFAULT_ROLE_IDS:
+                mapping = db.get(
+                    auth_models.AuthRolePermission,
+                    f"{role_id}:{permission.id}",
+                )
+                assert mapping is not None
+                db.delete(mapping)
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            for role_id in auth_service.RAW_MATERIAL_WRITE_DEFAULT_ROLE_IDS:
+                assert db.get(auth_models.AuthRolePermission, f"{role_id}:{permission.id}") is not None
+            assert db.get(auth_models.AuthIamState, auth_service.RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER) is not None
+
+
 def test_canonical_can_uses_deny_then_allow_then_role_and_scope(monkeypatch):
     with make_client(monkeypatch):
         auth_service = importlib.import_module("app.services.auth")

@@ -43,7 +43,6 @@ import {
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
-import { rawMaterialDatabaseRows } from '@/data/rawMaterialDatabase'
 import {
   buildCompletionGate,
   calculateExpectedMaterialAmountHkd,
@@ -60,6 +59,7 @@ import {
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
 } from '@/api/moldingSample'
+import { rawMaterialApi, type RawMaterialResponse } from '@/api/rawMaterial'
 import {
   buildManualMoldingSampleCreateRequest,
   createManualMoldingSampleLineDraft,
@@ -250,6 +250,7 @@ const RAW_MATERIAL_PICKER_HEIGHT = 256
 const RAW_MATERIAL_PICKER_GAP = 8
 const RAW_MATERIAL_PICKER_VIEWPORT_PADDING = 12
 const rawMaterialPriceList = ref<Awaited<ReturnType<typeof moldingSampleApi.getMaterialPrices>>['prices']>([])
+const rawMaterialMasterList = ref<RawMaterialResponse[]>([])
 const RAW_MATERIAL_PICKER_VISIBLE_LIMIT = 60
 const activeRawMaterialPickerLineIndex = ref<number | null>(null)
 const rawMaterialSearchByLine = ref<Record<number, string>>({})
@@ -322,33 +323,33 @@ const activeFactory = computed(() =>
 const rawMaterialOptions = computed<RawMaterialSelectOption[]>(() => {
   const seenValues = new Set<string>()
 
-  return rawMaterialDatabaseRows.flatMap((row) => {
-    const value = row.materialName.trim()
+  return rawMaterialMasterList.value.flatMap((row) => {
+    const value = row.material_name.trim()
 
-    if (!value || seenValues.has(value)) {
+    if (!value || row.status !== '启用' || seenValues.has(value)) {
       return []
     }
 
     seenValues.add(value)
 
-    const sourceParts = [row.materialCode, row.plasticCategory].filter(Boolean)
+    const sourceParts = [row.material_code, row.category].filter(Boolean)
     const label = sourceParts.length ? `${value}（${sourceParts.join(' / ')}）` : value
     const searchText = [
       value,
       label,
-      row.materialCode,
-      row.plasticCategory,
-      row.commodityName,
-      row.origin,
-      row.remarks,
+      row.material_code,
+      row.category,
+      row.spec,
+      row.supplier,
+      row.notes,
     ].join(' ').toLowerCase()
 
     return [{
       value,
       label,
-      code: row.materialCode,
-      category: row.plasticCategory,
-      origin: row.origin,
+      code: row.material_code,
+      category: row.category,
+      origin: row.supplier,
       searchText,
     }]
   })
@@ -1160,6 +1161,21 @@ async function loadProtectedMaterialPrices(requestedFactoryId: string) {
   }
 }
 
+async function loadRawMaterialOptions(requestedFactoryId: string) {
+  try {
+    const rows = await rawMaterialApi.list(requestedFactoryId)
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
+    rawMaterialMasterList.value = rows
+  }
+  catch {
+    if (requestedFactoryId === selectedFactoryId.value) {
+      rawMaterialMasterList.value = []
+    }
+  }
+}
+
 async function loadApiData() {
   const requestedFactoryId = selectedFactoryId.value
   const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
@@ -1174,7 +1190,10 @@ async function loadApiData() {
     }
 
     apiRecords.value = records
-    await loadProtectedMaterialPrices(requestedFactoryId)
+    await Promise.all([
+      loadProtectedMaterialPrices(requestedFactoryId),
+      loadRawMaterialOptions(requestedFactoryId),
+    ])
     if (requestedFactoryId !== selectedFactoryId.value) {
       return
     }
@@ -1194,6 +1213,7 @@ async function loadApiData() {
 
     apiRecords.value = []
     rawMaterialPriceList.value = []
+    rawMaterialMasterList.value = []
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
   }
