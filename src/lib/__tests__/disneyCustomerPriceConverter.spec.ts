@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { strFromU8, unzipSync } from 'fflate'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 import {
   buildDisneyCustomerQuoteFileName,
@@ -105,6 +105,25 @@ function getCellFormula(sheetXml: string, ref: string) {
   return getCellBody(sheetXml, ref).match(/<f(?:\s[^>]*)?>([\s\S]*?)<\/f>/)?.[1] ?? ''
 }
 
+function applyMoqHighlightFills(workbook: ArrayBuffer, refs: string[]) {
+  const zip = unzipSync(new Uint8Array(workbook))
+  const styles = strFromU8(zip['xl/styles.xml'])
+  zip['xl/styles.xml'] = strToU8(styles
+    .replace('<fills count="2">', '<fills count="3">')
+    .replace('</fills><borders', '<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/></patternFill></fill></fills><borders')
+    .replace('<cellXfs count="14">', '<cellXfs count="15">')
+    .replace('</cellXfs><cellStyles', '<xf numFmtId="166" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"/></cellXfs><cellStyles'))
+
+  let sheetXml = strFromU8(zip['xl/worksheets/sheet1.xml'])
+  refs.forEach((ref) => {
+    const cellOpenTag = new RegExp(`<c\\b([^>]*\\br="${ref}"[^>]*)>`)
+    sheetXml = sheetXml.replace(cellOpenTag, (_full, attributes: string) => `<c${attributes.replace(/\s+s="[^"]*"/, '')} s="14">`)
+  })
+  zip['xl/worksheets/sheet1.xml'] = strToU8(sheetXml)
+
+  return asArrayBuffer(zipSync(zip))
+}
+
 function lineNumbers(rows: ReturnType<typeof parseXlsxWorkbook>['sheets'][number]['rows'], startRow: number, count = 10) {
   return Array.from({ length: count }, (_, index) => rows[startRow - 1 + index]?.[0])
 }
@@ -145,7 +164,26 @@ function createMinimalDisneyWorkbook() {
   detailRows[11][10] = 0.462
   detailRows[11][12] = 39
   detailRows[11][13] = 0.0605
-  detailRows[11][14] = 180
+  detailRows[11][14] = 999
+  for (const [rowIndex, lineNo, description, machine] of [
+    [12, 2, '档风玻璃', '18A'],
+    [13, 3, '车轮', '7A'],
+    [14, 4, '公子/公子鼻子', '7A'],
+  ] as const) {
+    detailRows[rowIndex][1] = lineNo
+    detailRows[rowIndex][2] = description
+    detailRows[rowIndex][3] = 'ABS'
+    detailRows[rowIndex][4] = 28
+    detailRows[rowIndex][5] = 0.01652
+    detailRows[rowIndex][6] = machine
+    detailRows[rowIndex][7] = 1
+    detailRows[rowIndex][8] = 2200
+    detailRows[rowIndex][9] = 0.677
+    detailRows[rowIndex][10] = 0.462
+    detailRows[rowIndex][12] = 39
+    detailRows[rowIndex][13] = 0.0605
+    detailRows[rowIndex][14] = 999
+  }
   detailRows[24][10] = '裝箱尺碼：'
   detailRows[24][11] = 12.56
   detailRows[24][12] = 10.2
@@ -162,31 +200,63 @@ function createMinimalDisneyWorkbook() {
   detailRows[32][2] = '外箱 （B=B）'
   detailRows[32][5] = 0.05
   detailRows[33][1] = '其他外购'
-  detailRows[33][2] = '贴纸'
-  detailRows[33][5] = 0.026
+  detailRows[33][2] = '封箱胶纸/胶水/雪梨纸'
+  detailRows[33][5] = 0.013
   detailRows[34][1] = '装配工'
   detailRows[34][2] = '半成品（23人/11H/2000)'
   detailRows[34][5] = 0.12
   detailRows[35][1] = '装配工'
   detailRows[35][2] = '包装装配工（22人/11H/3000）'
   detailRows[35][5] = 0.1
+  detailRows[36][1] = '彩盒/内咭'
+  detailRows[36][2] = 'PDQ'
+  detailRows[36][3] = 0.47
+  detailRows[36][5] = 0.061
+  detailRows[37][1] = '其他外购'
+  detailRows[37][2] = '车面贴纸'
+  detailRows[37][3] = 0.57
+  detailRows[37][5] = 0.075
   detailRows[38][1] = '彩盒/内咭'
   detailRows[38][2] = '吊牌'
-  detailRows[38][5] = 11794.845
-  detailRows[38][6] = 83705.35
-  detailRows[38][7] = 129362.81
-  detailRows[39][1] = '彩盒/内咭'
-  detailRows[39][2] = '吊牌'
-  detailRows[39][3] = 0.08
-  detailRows[39][5] = 0.0105
+  detailRows[38][3] = 0.32
+  detailRows[38][5] = 0.042
+  detailRows[39][1] = '其他外购'
+  detailRows[39][2] = '胶膜（防碰花）'
+  detailRows[39][3] = 0.1
+  detailRows[39][5] = 0.013
+  detailRows[40][1] = '彩盒/内咭'
+  detailRows[40][2] = '吊牌'
+  detailRows[40][5] = 11794.845
+  detailRows[40][6] = 83705.35
+  detailRows[40][7] = 129362.81
+  detailRows[44][2] = '3K报价：'
   detailRows[46][2] = '包含测试费用（US)：'
+  detailRows[46][3] = 3.04
+  detailRows[46][4] = 3.11
+  detailRows[46][5] = 3.08
+  detailRows[46][6] = 3.07
+  detailRows[46][7] = 3.07
+  detailRows[46][8] = 3.06
+  detailRows[46][9] = 3.06
   detailRows[47][5] = 0.027
   detailRows[51][2] = '5K报价：'
   detailRows[53][2] = '包含测试费用（US)：'
-  detailRows[53][7] = 3.15
+  detailRows[53][3] = 2.81
+  detailRows[53][4] = 2.87
+  detailRows[53][5] = 2.84
+  detailRows[53][6] = 2.84
+  detailRows[53][7] = 2.84
+  detailRows[53][8] = 2.83
+  detailRows[53][9] = 2.83
   detailRows[58][2] = '10K报价：'
   detailRows[60][2] = '包含测试费用（US)：'
-  detailRows[60][7] = 2.93
+  detailRows[60][3] = 2.62
+  detailRows[60][4] = 2.69
+  detailRows[60][5] = 2.66
+  detailRows[60][6] = 2.66
+  detailRows[60][7] = 2.65
+  detailRows[60][8] = 2.65
+  detailRows[60][9] = 2.64
   detailRows[62][9] = 'MOQ:'
   detailRows[62][10] = 3000
 
@@ -196,13 +266,14 @@ function createMinimalDisneyWorkbook() {
   moldRows[0][5] = 'Resin'
   moldRows[0][6] = 'Cav.'
   moldRows[0][7] = 'Up'
-  moldRows[0][10] = 'USD'
+  moldRows[0][11] = 'USD'
   moldRows[1][1] = 'M01'
   moldRows[1][2] = '车面'
   moldRows[1][5] = 'ABS'
   moldRows[1][6] = 1
   moldRows[1][7] = 1
-  moldRows[1][10] = 8900
+  moldRows[1][10] = 1111
+  moldRows[1][11] = 8900
 
   const sprayRows: XlsxCellInput[][] = Array.from({ length: 30 }, () => [])
   sprayRows[28][8] = 34
@@ -216,12 +287,12 @@ function createMinimalDisneyWorkbook() {
   modelRows[14][3] = '开模板'
   modelRows[14][9] = 2400
 
-  return asArrayBuffer(createXlsxWorkbook([
+  return applyMoqHighlightFills(asArrayBuffer(createXlsxWorkbook([
     { name: '明细', rows: detailRows },
     { name: '喷油报价', rows: sprayRows },
     { name: '模具报价', rows: moldRows },
     { name: '手办报价', rows: modelRows },
-  ]))
+  ])), ['F47', 'G54', 'J61'])
 }
 
 describe('Disney customer price converter', () => {
@@ -237,8 +308,27 @@ describe('Disney customer price converter', () => {
     expect(result.sheets[0].totalCustomerHkd).toBeGreaterThan(10000)
     expect(result.sheets[0].quoteData.plastics[0].laborRateUsdHr).toBe(8.12)
     expect(result.sheets[0].quoteData.plastics[0].moldingLaborCostUsd).toBeGreaterThan(0)
+    expect(result.sheets[0].quoteData.plastics.map((part) => part.partDescription)).toEqual([
+      'Car Body',
+      'Windshield',
+      'Wheel',
+      'Doll / Doll Nose',
+    ])
+    expect(result.sheets[0].quoteData.plastics.map((part) => part.pressSizeTon)).toEqual([
+      180,
+      200,
+      120,
+      120,
+    ])
     expect(result.sheets[0].quoteData.purchasedPackageParts.map((part) => part.description))
-      .toEqual(['Price label', 'Carton Box 0/6 (12.56"x10.2"x3.76")'])
+      .toEqual([
+        'Carton Box 0/6 (12.56"x10.2"x3.76")',
+        'Tissue paper and packing materials',
+        'PDQ',
+        'Car Body Sticker',
+        'Hang tag',
+        'Protective film',
+      ])
 
     const output = createDisneyCustomerQuoteWorkbook(result, readDisneyTemplate())
     const parsed = parseXlsxWorkbook(asArrayBuffer(output))
@@ -255,19 +345,36 @@ describe('Disney customer price converter', () => {
     expect(tier.rows[18][1]).toBe('1000142435-01')
     expect(tier.rows[18][2]).toBe(8900)
     expect(tier.rows[18][3]).toBe('Car Body')
+    expect(tier.rows[19][3]).toBe('Windshield')
+    expect(tier.rows[20][3]).toBe('Wheel')
+    expect(tier.rows[21][3]).toBe('Doll / Doll Nose')
+    expect([18, 19, 20, 21].map((rowIndex) => tier.rows[rowIndex][15])).toEqual([
+      180,
+      200,
+      120,
+      120,
+    ])
     expect(tier.rows[18][5]).toBe('ABS')
     expect(tier.rows[18][7]).toBe(2.16)
     expect(tier.rows[18][18]).toBeGreaterThan(0)
     expect(tier.rows[18][19]).toBeGreaterThan(0)
     expect(tier.rows[61][1]).toBe('Screw M2.6 x 8 (6pcs)')
-    expect(tier.rows[118][1]).toBe('Price label')
-    expect(tier.rows[119][1]).toBe('Carton Box 0/6 (12.56"x10.2"x3.76")')
+    expect(tier.rows.slice(118, 124).map((row) => row[1])).toEqual([
+      'Carton Box 0/6 (12.56"x10.2"x3.76")',
+      'Tissue paper and packing materials',
+      'PDQ',
+      'Car Body Sticker',
+      'Hang tag',
+      'Protective film',
+    ])
     expect(tier.rows[163][1]).toBe('Assembly vehicle')
     expect(tier.rows[178][1]).toBe('Whole Item')
     expect(tier.rows[193][1]).toBe('Transportation')
+    expect(tier.rows[234][2]).toBe(3.08)
     expect(tier.rows[236][2]).toBe(8900)
-    expect(tier.rows[236][5]).toBe(3.15)
-    expect(tier.rows[237][5]).toBe(2.93)
+    expect(tier.rows[235][5]).toBe(3.08)
+    expect(tier.rows[236][5]).toBe(2.84)
+    expect(tier.rows[237][5]).toBe(2.64)
     expect(tier.rows[239][2]).toBe(6200)
     expect(tier.rows[240][2]).toBe(1500)
     expect(lineNumbers(tier.rows, 47)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
@@ -315,10 +422,10 @@ describe('Disney customer price converter', () => {
     expect(tier.rows[41][22]).toBeCloseTo(0.751412777777778, 12)
     expect(tier.rows[208][2]).toBeCloseTo(0.35876, 12)
     expect(tier.rows[209][2]).toBeCloseTo(0.138, 12)
-    expect(tier.rows[128][3]).toBe(4)
+    expect(tier.rows[128][3]).toBe(6)
     expect(tier.rows[213][2]).toBeCloseTo(2.23405277777778, 12)
-    expect(tier.rows[216][2]).toBeCloseTo(2.85981277777778, 12)
-    expect(tier.rows[234][2]).toBeCloseTo(3.43177533333333, 12)
+    expect(tier.rows[216][2]).toBeCloseTo(2.92081277777778, 12)
+    expect(tier.rows[234][2]).toBe(3.42)
     expect(tier.rows[239][2]).toBe(6200)
     expect(tier.rows[240][2]).toBe(1500)
 
@@ -417,9 +524,9 @@ describe('Disney customer price converter', () => {
     expect(getCellFormula(outputXml, 'C229')).toBe('G174-E174')
     expect(getCellFormula(outputXml, 'D229')).toBe('C229/E174')
     expect(getCellFormula(outputXml, 'A233')).toBe('IFERROR(C232,0)')
-    expect(getCellFormula(outputXml, 'C235')).toBe('C217*(1+D232)')
+    expect(getCellFormula(outputXml, 'C235')).toBe('F236')
     expect(getCellFormula(outputXml, 'B235')).toBe('')
-    expect(getCellFormula(outputXml, 'F236')).toBe('C235')
+    expect(getCellFormula(outputXml, 'F236')).toBe('')
     expect(getCellFormula(outputXml, 'C243')).toBe('SUM(C237:C242)')
     expect(getCellBody(outputXml, 'C222')).not.toContain('<v>')
     expect(getCellBody(outputXml, 'C224')).not.toContain('<v>')

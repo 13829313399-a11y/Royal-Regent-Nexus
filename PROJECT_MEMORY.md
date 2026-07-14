@@ -1662,6 +1662,49 @@ Use this template when updating the memory after future work:
 
 ### 2026-07-14
 
+- Follow-up requirement: Disney customer-quote Plastics rows must translate the remaining Chinese part descriptions visible in the supplied `1000134825` output workbook.
+- Implementation: extended the Disney part-description map with typo-tolerant windshield matching (`档风玻璃` and `挡风玻璃`), plus `车轮` and `公仔/公仔鼻子`, exporting them as `Windshield`, `Wheel`, and `Doll / Doll Nose`. Added end-to-end fixture rows and assertions at both parsed quote-data and exported workbook levels.
+- Files changed: `src/lib/customerPriceConverters/disney.ts`, `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Disney Vitest regression passed 3 tests; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed.
+- Decision: only explicitly identified descriptions are translated; unknown Chinese descriptions remain unchanged rather than receiving guessed English wording.
+
+### 2026-07-14
+
+- Follow-up requirement: Disney Plastics tool costs must come from column L of the internal `模具报价` sheet, and the Q227 row 25 description must export in English.
+- Implementation: mold parsing now treats column L as authoritative and falls back to legacy column K only when L is blank or zero. The doll-description mapping now accepts both `公仔` and the Q227 source typo `公子`, so `公子/公子鼻子` exports as `Doll / Doll Nose`; zero-width characters are also removed during description normalization. The regression fixture deliberately gives K and L different mold prices and asserts that the exported tool cost uses L.
+- Source verification: direct spreadsheet inspection of `1000134825_MM+TEST+TRACK+PLBK_Q227_FMA跑车报价20260105(3).xlsx` confirmed column-L tool costs `10300 / 4600 / 4900 / 4300 / 5500 / 4300` and source description `公子/公子鼻子`.
+- Files changed: `src/lib/customerPriceConverters/disney.ts`, `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Disney Vitest regression passed 3 tests; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed.
+- Compatibility decision: column L wins whenever populated; column K remains a fallback only for older Disney workbooks that do not contain an L-column USD tool price.
+
+### 2026-07-14
+
+- Follow-up requirement: Disney Plastics `Press size (TON)` in customer-column P must be derived from each internal-detail row's machine code in column G using the supplied `安数/A -> 合模力/T` reference table, instead of exporting zero from the unrelated source column O.
+- Implementation: added a machine-A clamping-force map for `5A→90T`, `7A→120T`, `10A→170T`, `12A→150T`, `14A→180T`, `18A→200T`, `24A→260T`, `32A→320T`, `34A→320T`, `50A→400T`, `60A→500T`, `80A→800T`, and `105A→1100T`. Plastic parsing extracts the numeric A code from source column G and uses that value for customer column P; unknown machine codes retain the old source-column-O value as a compatibility fallback.
+- Source verification: direct spreadsheet inspection of the Q227 internal quote confirmed G-column machine sequence `18A / 14A / 14A / 14A / 7A / 7A / 7A`, so its expected customer `P19:P25` values are `200 / 180 / 180 / 180 / 120 / 120 / 120`.
+- Files changed: `src/lib/customerPriceConverters/disney.ts`, `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Disney Vitest regression passed 3 tests, including conflicting legacy O-column values and exported P-column assertions for 14A/18A/7A; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed.
+- Decision: because the source quote contains only the A code and the supplied machine table lists multiple presses for 5A, 7A, and 14A, duplicate A codes use the largest listed clamping force (`90T`, `120T`, and `180T`) to avoid understating required press capacity.
+
+### 2026-07-14
+
+- Clarified requirement: every valid priced internal-detail row with a B-column category must be represented in its corresponding Disney customer-quote section. In particular, the four Q227 rows `PDQ`, `车面贴纸`, `吊牌`, and `胶膜（防碰花）` all belong in `Purchased Parts - Package`; they must not be removed by a package whitelist.
+- Implementation: removed the final three-item package whitelist and its custom reordering, so purchased package rows retain internal-sheet order up to the template's ten-row capacity. Purchased parsing now excludes only categories already represented by dedicated Plastics/Labor/Deco/Transportation sections and treats every other valid priced B-category row as a purchased part. Added the specific translation `车面贴纸 -> Car Body Sticker` before the broader `车面` rule.
+- Result: the Q227 package sequence is `Carton Box`, `Tissue paper and packing materials`, `PDQ`, `Car Body Sticker`, `Hang tag`, and `Protective film`; all six costs contribute to the package total. Multi-scenario summary rows remain excluded by the existing summary-row guard.
+- Files changed: `src/lib/customerPriceConverters/disney.ts`, `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Disney Vitest regression passed 3 tests with parsed-data and exported-sheet assertions for all six package rows; the prior real sample's expected package count and product total were updated for the newly retained package cost; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed.
+- Superseded decision: the earlier restriction to only `Price label`, `Carton Box`, and `Tissue paper and packing materials` is no longer valid.
+
+### 2026-07-14
+
+- Requirement: correct Disney customer-quote MOQ prices from the internal quote's final-price selection. For the supplied quotation, the 3K/5K/10K output prices must be `3.08 / 2.84 / 2.64`; the `TOTAL` value at `C235` must agree with the 3K price.
+- Implementation: `xlsxLite` now retains each parsed cell's fill identifier. The Disney converter examines the final-price row under each `3K报价`/`5K报价`/`10K报价` block and, when exactly one positive price has a different fill from the other candidates, uses that highlighted value. Older internal files with no unique highlighted cell retain the existing fallback to the prior preferred column. The exported `F236:F238` cells now receive the selected 3K/5K/10K values; `C235` uses `=F236` so workbook recalculation continues to retain the selected MOQ price. Template serialization has a narrowly scoped explicit-formula replacement option for these two intentional formula changes only.
+- Files changed: `src/lib/customerPriceConverters/xlsxLite.ts`, `src/lib/customerPriceConverters/disney.ts`, `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: Disney converter regression passed 3 tests, including a workbook fixture whose highlighted final-price cells export `3.08 / 2.84 / 2.64`; `npm.cmd run build` and `git diff --check` passed. The build retains only the known third-party `@vueuse/core` Rolldown annotation warnings.
+- Decision: selected final-price cells in the internal Disney workbook are authoritative for the output MOQ table, superseding the previous calculated `C217*(1+D232)` value for the displayed 3K quote total.
+
+### 2026-07-14
+
 - Requirement: improve carton-mark verification accuracy for both customer PDF templates and QA photos. The provided `203302017-700142617(1)(1).pdf` is a single ultra-wide vector PDF containing repeated `正唛 / 侧唛 / 正唛 / 侧唛` areas; automatic verification must use only the leftmost first front/side pair.
 - Implementation: PDF extraction now first reads original `pypdf` text coordinates on deliberately wide vector pages, groups the horizontal mark regions, identifies front/side by their field content, and selects only the first front mark plus its next side mark. Image OCR remains the fallback for scanned/non-vector PDFs. Field parsing now supports vector cells written as `value + label`, the Spanish `PIEZAS POR BULTO` quantity label, duplicate quantity values such as `24 24`, and prevents `BULTO` inside `PIEZAS POR BULTO` from being misread as the carton number. The QA upload panel now provides concise shooting guidance: camera parallel to the label, one mark per image, label occupying about 70% of the frame, long edge at least 1600px, and no glare; previews explicitly recommend crop selection when background is excessive. Empty-photo OCR feedback gives the same retake/crop advice.
 - Files changed: `backend/app/services/carton_mark.py`, `backend/tests/test_carton_mark_service.py`, `src/components/modules/qa/CartonMarkCheckPanel.vue`, and `PROJECT_MEMORY.md`.
