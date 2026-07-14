@@ -25,6 +25,7 @@ interface DickyCellPatch {
   formula?: string
   style?: number
   styleRef?: string
+  forceStyleRef?: boolean
 }
 
 export interface DickyQuoteDetailRow {
@@ -75,20 +76,25 @@ const PRODUCT_TRANSLATIONS: Array<[RegExp, string]> = [
   [/雪宝/i, 'Olaf Cable Sledge'],
 ]
 
-const PART_TRANSLATIONS = new Map<string, string>([
+const PART_TRANSLATION_ENTRIES: Array<[string, string]> = [
   ['车灯', 'Car Light'],
   ['车底', 'Car Bottom'],
   ['车面', 'Car Body'],
   ['车身', 'Car Body'],
   ['车胎', 'Car Tire'],
   ['车铃', 'Car Bell'],
+  ['后车胎*2/前小轮', 'Rear Tires * 2 / Front Small Wheels'],
+  ['前车胎*2', 'Front Tires * 2'],
+  ['齿轮', 'Gear'],
   ['齿轮*8', 'Gear * 8'],
   ['牙箱盖、齿轮盖，前小轮压盖，配件', 'Gearbox Cover, Gear Cover, Front Small Wheel Cap, Accessories'],
+  ['牙箱盖、前小轮压盖', 'Gearbox Cover / Front Small Wheel Cap'],
   ['公仔头前壳/后壳,身体前壳/后壳', 'Doll Head Front Shell / Rear Shell, Body Front Shell / Rear Shell'],
   ['公仔头前壳/后壳+身体前壳/后壳', 'Doll Head Front Shell / Rear Shell, Body Front Shell / Rear Shell'],
   ['座椅配件/车底压盖/包装扣*2/车尾配件', 'Seat Accessory / Bottom Cover / Packing Buckle * 2 / Car Rear Accessory'],
   ['耳朵/手/遥控器配件', 'Ears / Hand / Remote Control Accessory'],
   ['遥控器面壳/底壳/电池盖', 'Remote Control Front Shell / Bottom Shell / Battery Cover'],
+  ['遥控器面壳/底壳/电池盖/包装扣*2/螺母压件', 'Remote Control Front Shell / Bottom Shell / Battery Cover / Packing Buckle * 2 / Nut Retainer'],
   ['前进按制，后退按制', 'Forward Button, Reverse Button'],
   ['车头配件/座椅配件/车底压盖/包装扣*2/车尾配件', 'Car Front Accessory / Seat Accessory / Bottom Cover / Packing Buckle * 2 / Car Rear Accessory'],
   ['耳朵/遥控器配件+左手/右手', 'Ears / Remote Control Accessory + Left Hand / Right Hand'],
@@ -98,20 +104,52 @@ const PART_TRANSLATIONS = new Map<string, string>([
   ['定风翼', 'Spoiler / Rear Wing'],
   ['黄色侧面装饰件', 'Yellow Side Decoration / Side Trim'],
   ['公仔头前壳/后壳', 'Doll Head Front Shell / Rear Shell'],
-])
+  ['车底/座椅', 'Car Bottom / Seat'],
+  ['座椅', 'Seat'],
+  ['3000米妮车灯/3001史迪仔车灯', '3000 Minnie Car Light / 3001 Stitch Car Light'],
+  ['3000米妮前玻璃/3005胡迪玻璃', '3000 Minnie Front Windshield / 3005 Woody Windshield'],
+  ['米妮公仔头/史迪仔公仔头', 'Minnie Doll Head / Stitch Doll Head'],
+  ['米妮公仔身/蝴蝶结/左右手/遥控器蝴蝶结', 'Minnie Doll Body / Bow / Left Hand / Right Hand / Remote Control Bow'],
+  ['史迪仔耳朵/手/遥控器耳朵', 'Stitch Ears / Hands / Remote Control Ears'],
+  ['左右车身/车底', 'Left and Right Car Bodies / Car Bottom'],
+  ['3002雪宝车灯/3005胡迪车灯', '3002 Olaf Car Light / 3005 Woody Car Light'],
+  ['雪宝公仔前身后身/胡迪公仔身体前壳，身体前壳后壳', 'Olaf Doll Front and Rear Body / Woody Doll Body Front Shell / Rear Shell'],
+  ['雪宝头发/手/鼻子/遥控器配件', 'Olaf Hair / Hands / Nose / Remote Control Accessories'],
+  ['尾翼', 'Rear Wing'],
+  ['帽子/手/天线', 'Hat / Hands / Antenna'],
+]
 
-const MOLD_REMARK_TRANSLATIONS = new Map<string, string>([
+const PART_TRANSLATIONS = new Map<string, string>(
+  PART_TRANSLATION_ENTRIES.map(([source, translation]) => [normalizeTranslationKey(source), translation]),
+)
+
+const MOLD_REMARK_TRANSLATION_ENTRIES: Array<[string, string]> = [
   ['米妮/史迪仔/胡迪/雪宝/(共用模具）', 'Minnie / Stitch / Woody / Olaf (Common Mold)'],
   ['米妮/史迪仔/胡迪/雪宝/(共用模具)', 'Minnie / Stitch / Woody / Olaf (Common Mold)'],
   ['米妮/史迪仔/胡迪/雪宝(共用模具）', 'Minnie / Stitch / Woody / Olaf (Common Mold)'],
   ['米妮/史迪仔/胡迪/雪宝(共用模具)', 'Minnie / Stitch / Woody / Olaf (Common Mold)'],
+  ['米妮/史迪仔/胡迪/雪人(共用模具）', 'Minnie / Stitch / Woody / Olaf (Common Mold)'],
+  ['米妮/史迪仔/胡迪/雪人(共用模具)', 'Minnie / Stitch / Woody / Olaf (Common Mold)'],
+  ['米妮/史迪仔/胡迪(共用模具）', 'Minnie / Stitch / Woody (Common Mold)'],
+  ['米妮/史迪仔/胡迪(共用模具)', 'Minnie / Stitch / Woody (Common Mold)'],
+  ['米妮', 'Minnie'],
+  ['史迪仔', 'Stitch'],
+  ['雪宝', 'Olaf'],
+  ['雪人', 'Olaf'],
+  ['胡迪', 'Woody'],
+  ['行位*1', '1 Side Slider'],
   ['4边行位', '4 Side Sliders'],
   ['转水口', 'Sub Gate'],
+  ['转水口/喷油', 'Sub Gate / Spray Painting'],
   ['大水转潜水', 'Sprue to Sub Gate'],
   ['细水口', 'Pin Gate'],
   ['细水/（吹气出模）', 'Pin Gate / (Air Blow Ejection)'],
   ['细水/(吹气出模)', 'Pin Gate / (Air Blow Ejection)'],
-])
+]
+
+const MOLD_REMARK_TRANSLATIONS = new Map<string, string>(
+  MOLD_REMARK_TRANSLATION_ENTRIES.map(([source, translation]) => [normalizeTranslationKey(source), translation]),
+)
 
 function toText(value: XlsxCellValue) {
   return String(value ?? '').trim()
@@ -609,7 +647,7 @@ function resolveCellText(
   }
 
   const directValue = readCellText(cell, sharedStrings)
-  if (directValue) {
+  if (directValue && !/^#(?:REF!|NAME\?|VALUE!|N\/A|DIV\/0!|NUM!|NULL!)$/i.test(directValue)) {
     return directValue
   }
 
@@ -637,7 +675,9 @@ function formatNumber(value: number) {
 function buildCellXml(patch: DickyCellPatch, existing?: DickyWorksheetCell, styleSource?: DickyWorksheetCell) {
   const existingStyle = existing ? Number(readXmlAttr(existing.attrs, 's')) : Number.NaN
   const sourceStyle = styleSource ? Number(readXmlAttr(styleSource.attrs, 's')) : Number.NaN
-  const style = Number.isFinite(existingStyle) ? existingStyle : Number.isFinite(sourceStyle) ? sourceStyle : patch.style
+  const style = patch.forceStyleRef && Number.isFinite(sourceStyle)
+    ? sourceStyle
+    : Number.isFinite(existingStyle) ? existingStyle : Number.isFinite(sourceStyle) ? sourceStyle : patch.style
   const styleAttr = typeof style === 'number' ? ` s="${style}"` : ''
   const formula = patch.formula ?? ''
 
@@ -786,6 +826,25 @@ function findRowByColumnText(
   }
 
   return 0
+}
+
+function findStandardRemarkTextStyleRef(
+  cellMap: Map<string, DickyWorksheetCell>,
+  sharedStrings: string[],
+  workbookCells: Map<string, Map<string, DickyWorksheetCell>>,
+  remarkRow: number,
+  remarkEndRow: number,
+) {
+  for (let rowNumber = remarkRow + 4; rowNumber <= remarkEndRow; rowNumber += 1) {
+    const itemNumber = resolveCellText(cellMap.get(`A${rowNumber}`), sharedStrings, workbookCells)
+    const text = resolveCellText(cellMap.get(`B${rowNumber}`), sharedStrings, workbookCells)
+
+    if (/^\d+$/.test(itemNumber) && text) {
+      return `B${rowNumber}`
+    }
+  }
+
+  return ''
 }
 
 function findQuotationSheet(sheets: DickyWorkbookSheetRef[]) {
@@ -947,10 +1006,11 @@ function buildQuotationPatches(
       patches.push(sourcePatch(targetRef, sourceCell, sharedStrings, parseCellRef(targetRef).rowNumber - parseCellRef(sourceRef).rowNumber))
     }
   }
-  const patchText = (ref: string, value: XlsxCellValue, styleRef?: string) => patches.push({
+  const patchText = (ref: string, value: XlsxCellValue, styleRef?: string, forceStyleRef = false) => patches.push({
     ref,
     value: normalizeDickieCellValue(value),
     styleRef,
+    forceStyleRef,
   })
   const textAt = (ref: string) => resolveCellText(summaryCells.get(ref), sharedStrings, workbookCells)
   const ref = (columnName: string, rowNumber: number) => `${columnName}${rowNumber}`
@@ -967,6 +1027,13 @@ function buildQuotationPatches(
   if (remarkRow) {
     const nextQuotationRow = findRowByColumnText(summaryCells, sharedStrings, 'A', remarkRow + 1, /^Quotation/i)
     const remarkEndRow = nextQuotationRow ? nextQuotationRow - 1 : maxRowInCells(summaryCells)
+    const standardRemarkTextStyleRef = findStandardRemarkTextStyleRef(
+      summaryCells,
+      sharedStrings,
+      workbookCells,
+      remarkRow,
+      remarkEndRow,
+    )
 
     for (let rowNumber = remarkRow + 1; rowNumber <= remarkEndRow; rowNumber += 1) {
       ;['B', 'C', 'E', 'F'].forEach((columnName) => {
@@ -974,7 +1041,13 @@ function buildQuotationPatches(
         const sourceText = textAt(cellRef)
         const translatedText = translateRemarkText(sourceText)
         if (translatedText && translatedText !== sourceText) {
-          patchText(cellRef, translatedText)
+          const shouldUseStandardRemarkStyle = columnName === 'B' && Boolean(standardRemarkTextStyleRef)
+          patchText(
+            cellRef,
+            translatedText,
+            shouldUseStandardRemarkStyle ? standardRemarkTextStyleRef : undefined,
+            shouldUseStandardRemarkStyle,
+          )
         }
       })
     }

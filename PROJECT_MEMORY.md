@@ -1669,6 +1669,15 @@ Use this template when updating the memory after future work:
 
 ### 2026-07-14
 
+- Follow-up requirement: Dickie customer-quote exports must use one consistent English font for the translated first three remark lines, and the Disney Cable-car mold quotation table must translate its parts and mold remarks into English.
+- Root cause: the converter replaced translated remark text while retaining the original Chinese-font style in the first rows. Its parts dictionary looked up normalized text against unnormalized keys (so Chinese-comma variants missed), and formula cells with cached Excel error strings were not followed through their simple `总表 → 出客模费 → 模厂` reference chain.
+- Implementation: translated B-column remark text now adopts the existing later English remark style when available. Parts and mold-remark dictionaries are normalized consistently, include the Disney Cable-car part and common-mold vocabulary, and formula-error cache values now fall through to their referenced source cell. Added regressions for the font normalization, cached-formula resolution, all 26 Disney Cable-car mold parts, and populated mold remarks.
+- Files changed: `src/lib/customerPriceConverters/dicky.ts`, `src/lib/__tests__/dickyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`. A corrected customer workbook was generated at `outputs/dickie-disney-cable-fix-20260714/Quotation+of+the+Disney+Cable+car+and+our+breakdown+（14-Jul-2026） (1).xlsx`.
+- Verification: focused Dickie Vitest suite passed 9 tests; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; the corrected workbook was inspected and rendered. The first three remark cells now match the later Times New Roman remark style, and the visible M01–M26 part descriptions plus populated mold remarks are English. All 13 workbook sheets were rendered for final visual QA.
+- Note: the bundled workbook renderer cannot calculate several existing formula chains and displays `#NAME?` in those untouched formula-driven fields; the uploaded workbook shows their calculated values in Excel, and the export continues to request a full Excel recalculation on open.
+
+### 2026-07-14
+
 - Follow-up requirement: Disney customer-quote Plastics rows must translate the remaining Chinese part descriptions visible in the supplied `1000134825` output workbook.
 - Implementation: extended the Disney part-description map with typo-tolerant windshield matching (`档风玻璃` and `挡风玻璃`), plus `车轮` and `公仔/公仔鼻子`, exporting them as `Windshield`, `Wheel`, and `Doll / Doll Nose`. Added end-to-end fixture rows and assertions at both parsed quote-data and exported workbook levels.
 - Files changed: `src/lib/customerPriceConverters/disney.ts`, `src/lib/__tests__/disneyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.

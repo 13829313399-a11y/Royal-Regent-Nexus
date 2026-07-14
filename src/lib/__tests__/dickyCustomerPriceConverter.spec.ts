@@ -117,13 +117,13 @@ function createBabySitterDickyWorkbook(
   rows[11][7] = 69.5
   rows[15][0] = 'Remark（备注）：'
   rows[16][0] = 1
-  rows[16][1] = firstRemark
+  rows[16][1] = { value: firstRemark, style: 4 }
   rows[17][0] = 2
-  rows[17][1] = '公仔头，手脚是搪胶，其他配件及公仔大身是塑胶件.'
+  rows[17][1] = { value: '公仔头，手脚是搪胶，其他配件及公仔大身是塑胶件.', style: 4 }
   rows[18][0] = 3
-  rows[18][1] = '产品可通过RoHS,Non Phthalates(6P标准),Cadmium,ASTM,EN71,EN62115,FCC，EMC等测试。'
+  rows[18][1] = { value: '产品可通过RoHS,Non Phthalates(6P标准),Cadmium,ASTM,EN71,EN62115,FCC，EMC等测试。', style: 4 }
   rows[19][0] = 4
-  rows[19][1] = '报价未含吊柜费，入仓费。'
+  rows[19][1] = { value: '报价未含吊柜费，入仓费。', style: 3 }
   rows[20][0] = 5
   rows[20][1] = '按现如下料价报价(HK$/LB)：'
   rows[21][1] = '料型'
@@ -147,6 +147,56 @@ function createBabySitterDickyWorkbook(
   return asArrayBuffer(createXlsxWorkbook([{ name: '总表', rows }]))
 }
 
+const disneyCableMoldParts: Array<[string, string, string, string]> = [
+  ['M01', '后车胎*2/前小轮', 'Rear Tires * 2 / Front Small Wheels', '米妮/史迪仔/胡迪/雪人\n(共用模具）'],
+  ['M02', '前车胎*2', 'Front Tires * 2', '米妮/史迪仔/胡迪/雪人\n(共用模具）'],
+  ['M03', '车铃', 'Car Bell', '米妮/史迪仔/胡迪/雪人\n(共用模具）'],
+  ['M04', '齿轮', 'Gear', '米妮/史迪仔/胡迪/雪人\n(共用模具）'],
+  ['M05', '遥控器面壳/底壳/电池盖/包装扣*2/螺母压件', 'Remote Control Front Shell / Bottom Shell / Battery Cover / Packing Buckle * 2 / Nut Retainer', '米妮/史迪仔/胡迪/雪人\n(共用模具）'],
+  ['M06', '前进按制，后退按制', 'Forward Button, Reverse Button', '米妮/史迪仔/胡迪/雪人\n(共用模具）'],
+  ['M07', '牙箱盖、前小轮压盖', 'Gearbox Cover / Front Small Wheel Cap', '米妮/史迪仔/胡迪\n(共用模具）'],
+  ['M08', '车面', 'Car Body', '4边行位'],
+  ['M09', '车底/座椅', 'Car Bottom / Seat', ''],
+  ['M10', '3000米妮车灯/3001史迪仔车灯', '3000 Minnie Car Light / 3001 Stitch Car Light', '转水口'],
+  ['M11', '3000米妮前玻璃/3005胡迪玻璃', '3000 Minnie Front Windshield / 3005 Woody Windshield', '转水口'],
+  ['M12', '米妮公仔头/史迪仔公仔头', 'Minnie Doll Head / Stitch Doll Head', '转水口'],
+  ['M13', '米妮公仔身/蝴蝶结/左右手/遥控器蝴蝶结', 'Minnie Doll Body / Bow / Left Hand / Right Hand / Remote Control Bow', '米妮'],
+  ['M14', '车面', 'Car Body', '史迪仔'],
+  ['M15', '车底/座椅', 'Car Bottom / Seat', '行位*1'],
+  ['M16', '史迪仔耳朵/手/遥控器耳朵', 'Stitch Ears / Hands / Remote Control Ears', '史迪仔'],
+  ['M17', '左右车身/车底', 'Left and Right Car Bodies / Car Bottom', ''],
+  ['M18', '车面', 'Car Body', ''],
+  ['M19', '座椅', 'Seat', ''],
+  ['M20', '3002雪宝车灯/3005胡迪车灯', '3002 Olaf Car Light / 3005 Woody Car Light', '转水口'],
+  ['M21', '雪宝公仔前身后身/胡迪公仔身体前壳，身体前壳后壳', 'Olaf Doll Front and Rear Body / Woody Doll Body Front Shell / Rear Shell', '转水口'],
+  ['M22', '雪宝头发/手/鼻子/遥控器配件', 'Olaf Hair / Hands / Nose / Remote Control Accessories', ''],
+  ['M23', '车身', 'Car Body', '胡迪'],
+  ['M24', '尾翼', 'Rear Wing', ''],
+  ['M25', '车底/座椅', 'Car Bottom / Seat', ''],
+  ['M26', '帽子/手/天线', 'Hat / Hands / Antenna', '转水口/喷油'],
+]
+
+function createDisneyCableMoldPartsWorkbook() {
+  const rows: XlsxCellInput[][] = Array.from({ length: 76 }, () => [])
+
+  rows[40][0] = 'Quotation (报价) '
+  rows[46][1] = 'Mold #'
+  rows[46][2] = 'Parts'
+
+  disneyCableMoldParts.forEach(([moldNo, part, _translation, remark], index) => {
+    const row = rows[47 + index]
+    row[0] = '20 307 3001\n史迪仔'
+    row[1] = moldNo
+    row[2] = part
+    row[10] = remark
+  })
+
+  rows[73][1] = 'Finish time(交模期)：'
+  rows[73][9] = '75 Working Days'
+
+  return asArrayBuffer(createXlsxWorkbook([{ name: '总表', rows }]))
+}
+
 function createFormulaLinkedDickyWorkbook() {
   const summaryRows: XlsxCellInput[][] = Array.from({ length: 88 }, () => [])
   const moldFeeRows: XlsxCellInput[][] = Array.from({ length: 8 }, () => [])
@@ -164,11 +214,11 @@ function createFormulaLinkedDickyWorkbook() {
   summaryRows[46][2] = 'Parts'
   summaryRows[47][0] = '20 307 3001\n史迪仔'
   summaryRows[47][1] = 'M01'
-  summaryRows[47][2] = { formula: "'出客模费'!C4" }
+  summaryRows[47][2] = { value: '#NAME?', formula: "'出客模费'!C4" }
   summaryRows[47][10] = { formula: "'出客模费'!L7" }
   summaryRows[48][0] = '20 307 3001\n史迪仔'
   summaryRows[48][1] = 'M02'
-  summaryRows[48][2] = { formula: "'出客模费'!C5" }
+  summaryRows[48][2] = { value: '#NAME?', formula: "'出客模费'!C5" }
   summaryRows[85][1] = 'TOTAL:HK$'
   summaryRows[85][9] = { value: 1000, formula: 'SUM(J48:J85)' }
   summaryRows[86][1] = 'First shot time ( 试模期 )：'
@@ -314,6 +364,40 @@ describe('Dickie customer price converter', () => {
     for (let rowIndex = 27; rowIndex <= 33; rowIndex += 1) {
       expect(quote?.rows[rowIndex]?.[1] ?? '').toBe('')
     }
+  })
+
+  it('uses the standard English remark style for the first translated notes', () => {
+    const source = createBabySitterDickyWorkbook()
+    const sourceZip = unzipSync(new Uint8Array(source))
+    const result = convertDickyInternalQuote(source, 'Estimate Quotation of the Baby sitter.xlsx')
+    const outputZip = unzipSync(createDickyCustomerQuoteWorkbook(result))
+    const quotationPath = findSheetPath(outputZip, 'Quotation')
+
+    expect(readCellStyle(sourceZip, 'xl/worksheets/sheet1.xml', 'B17')).toBe('4')
+    expect(readCellStyle(sourceZip, 'xl/worksheets/sheet1.xml', 'B20')).toBe('3')
+    expect(readCellStyle(outputZip, quotationPath, 'B17')).toBe('3')
+    expect(readCellStyle(outputZip, quotationPath, 'B18')).toBe('3')
+    expect(readCellStyle(outputZip, quotationPath, 'B19')).toBe('3')
+  })
+
+  it('translates every Disney cable-car mold part and its non-empty mold remark', () => {
+    const result = convertDickyInternalQuote(
+      createDisneyCableMoldPartsWorkbook(),
+      'Quotation of the Disney Cable car.xlsx',
+    )
+    const output = createDickyCustomerQuoteWorkbook(result)
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+    const quote = parsed.sheets.find((sheet) => sheet.name === 'Quotation')
+
+    disneyCableMoldParts.forEach(([_moldNo, _part, expectedTranslation, sourceRemark], index) => {
+      const row = quote?.rows[47 + index] ?? []
+      expect(row[2]).toBe(expectedTranslation)
+      expect(String(row[2] ?? '')).not.toMatch(/[\u4E00-\u9FFF]/)
+
+      if (sourceRemark) {
+        expect(String(row[10] ?? '')).not.toMatch(/[\u4E00-\u9FFF]/)
+      }
+    })
   })
 
   it('creates an English Quotation sheet from the imported 总表 workbook', () => {
