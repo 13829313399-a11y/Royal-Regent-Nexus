@@ -1638,3 +1638,9 @@ Use this template when updating the memory after future work:
 - Files changed: `src/views/MoldingSampleProductionTaskView.vue`, `src/views/__tests__/moldingSampleProductionTaskViewLayout.test.ts`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
 - Verification: print-layout source regression passed; `npm run test:unit -- src/views/__tests__/moldingSampleRuntime.spec.ts` passed 34 tests; `npm run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed. Live browser preview of the current production task showed the engineering-only notification design, and the preview detail table measured `clientWidth === scrollWidth` (no horizontal overflow). The native print confirmation was deliberately not clicked.
 - Decision: orders with an unusually large number of long detail rows may still paginate rather than hiding content; ordinary task orders are kept to a single landscape A4 sheet.
+
+- Requirement: update the Color Star plastic customer-quote export. The spray amount now comes from the `喷油` detail sheet when present; `吹气` and `搪胶` map to Blow Molding (`BL`) and Roto Casting (`RC`); purchased parts and packaging use 2% scrap; packaging preserves source B-column category as Type and source C-column material name as Spec.
+- Implementation: `caixing.ts` detects the spray-detail total, writes BL/RC Tool Plan rows, applies 2% to plastic purchase/packing rows (including Carton Shipper), and aligns plastic Summary values. Added a focused conversion regression.
+- Files changed: `src/lib/customerPriceConverters/caixing.ts`, `src/lib/__tests__/caixingCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Color Star Vitest suite and `npm.cmd run build` passed; build retains only the known third-party Rolldown annotation warnings.
+- Decision: changes are limited to the Color Star plastic template; plush remains unchanged.
