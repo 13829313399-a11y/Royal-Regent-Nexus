@@ -5,6 +5,7 @@ export type XlsxCellValue = string | number | boolean | null | undefined
 export interface XlsxParsedSheet {
   name: string
   rows: XlsxCellValue[][]
+  cellFillIds: number[][]
 }
 
 export interface XlsxParsedWorkbook {
@@ -84,6 +85,24 @@ function readSharedStrings(zip: Record<string, Uint8Array>) {
 
   const document = parseXml(xml)
   return Array.from(document.getElementsByTagName('si')).map((item) => getElementText(item))
+}
+
+function readCellStyleFillIds(zip: Record<string, Uint8Array>) {
+  const xml = getZipText(zip, 'xl/styles.xml')
+  if (!xml) {
+    return [0]
+  }
+
+  const document = parseXml(xml)
+  const cellXfs = document.getElementsByTagName('cellXfs')[0]
+  if (!cellXfs) {
+    return [0]
+  }
+
+  return Array.from(cellXfs.getElementsByTagName('xf')).map((item) => {
+    const fillId = Number(item.getAttribute('fillId') ?? 0)
+    return Number.isFinite(fillId) ? fillId : 0
+  })
 }
 
 function columnNameToIndex(columnName: string) {
@@ -168,6 +187,7 @@ function resolveWorksheetTargets(zip: Record<string, Uint8Array>) {
 export function parseXlsxWorkbook(buffer: ArrayBuffer): XlsxParsedWorkbook {
   const zip = unzipSync(new Uint8Array(buffer))
   const sharedStrings = readSharedStrings(zip)
+  const cellStyleFillIds = readCellStyleFillIds(zip)
   const sheets = resolveWorksheetTargets(zip).map((sheet) => {
     const worksheetXml = getZipText(zip, sheet.path)
     if (!worksheetXml) {
@@ -176,24 +196,30 @@ export function parseXlsxWorkbook(buffer: ArrayBuffer): XlsxParsedWorkbook {
 
     const worksheet = parseXml(worksheetXml)
     const rows: XlsxCellValue[][] = []
+    const cellFillIds: number[][] = []
 
     Array.from(worksheet.getElementsByTagName('row')).forEach((row, fallbackRowIndex) => {
       const rowIndex = Number(row.getAttribute('r') ?? fallbackRowIndex + 1) - 1
       const cells: XlsxCellValue[] = rows[rowIndex] ?? []
+      const fills: number[] = cellFillIds[rowIndex] ?? []
 
       Array.from(row.getElementsByTagName('c')).forEach((cell) => {
         const reference = cell.getAttribute('r') ?? ''
         const columnName = reference.match(/[A-Z]+/)?.[0]
         const columnIndex = columnName ? columnNameToIndex(columnName) : cells.length
         cells[columnIndex] = readCellValue(cell, sharedStrings)
+        const styleId = Number(cell.getAttribute('s') ?? 0)
+        fills[columnIndex] = cellStyleFillIds[styleId] ?? 0
       })
 
       rows[rowIndex] = cells
+      cellFillIds[rowIndex] = fills
     })
 
     return {
       name: sheet.name,
       rows,
+      cellFillIds,
     }
   })
 
