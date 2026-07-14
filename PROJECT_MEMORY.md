@@ -371,6 +371,13 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 
 ## Verification Log
 
+### 2026-07-14
+
+- Requirement implementation: the top-right account menu must display the user's registered profile rather than authorization scopes or aggregated role bindings.
+- Implementation: `src/components/layout/AccountMenu.vue` now renders factory, department, and position from `currentUser.profile.primary_factory_id`, `primary_department`, and `position`; global permission scope `*` and multi-role bindings remain available for authorization only and are no longer presented as personal information. Accounts without a registered profile show `未登记`.
+- Files changed: `src/components/layout/AccountMenu.vue`, `src/components/layout/__tests__/accountMenu.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: `npm.cmd run test:unit -- src/components/layout/__tests__/accountMenu.spec.ts` passed (5 tests); `node_modules\\.bin\\vue-tsc.cmd --noEmit` passed; `npm.cmd run build` passed. The build still reports the existing non-blocking third-party `@vueuse/core` `INVALID_ANNOTATION` warnings. Browser verification was not run because the local project processes remain stopped.
+
 ### 2026-06-30
 
 - Reviewed the user-provided啤办业务闭环 document and the 62437 Excel notice.
