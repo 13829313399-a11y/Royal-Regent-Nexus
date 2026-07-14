@@ -1,4 +1,6 @@
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from typing import Any
+
+from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -51,6 +53,11 @@ class MoldingSampleOrder(Base):
         back_populates="order",
         cascade="all, delete-orphan",
         order_by="desc(MoldingSampleProblem.created_at)",
+    )
+    trial_reports: Mapped[list["MoldingSampleTrialReport"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="desc(MoldingSampleTrialReport.updated_at)",
     )
 
 
@@ -143,6 +150,27 @@ class MoldingSampleProblem(Base):
     resolved_at: Mapped[str] = mapped_column(String(32), default="")
 
     order: Mapped[MoldingSampleOrder] = relationship(back_populates="problems")
+
+
+class MoldingSampleTrialReport(Base):
+    """A production-maintained trial report for one engineering mold row."""
+
+    __tablename__ = "molding_sample_trial_reports"
+    __table_args__ = (
+        UniqueConstraint("order_id", "item_id", name="uq_molding_sample_trial_report_order_item"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_orders.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_items.id", ondelete="CASCADE"), index=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_by: Mapped[str] = mapped_column(String(128), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+    order: Mapped[MoldingSampleOrder] = relationship(back_populates="trial_reports")
 
 
 class MoldingSampleMaterialPrice(Base):

@@ -21,6 +21,7 @@ from app.models.molding_sample import (
     MoldingSampleRequisition,
     MoldingSampleSensitiveAuditLog,
     MoldingSampleSetting,
+    MoldingSampleTrialReport,
 )
 from app.schemas.molding_sample import (
     InventoryBatchCreateRequest,
@@ -32,6 +33,7 @@ from app.schemas.molding_sample import (
     MoldingSampleProblemCreateRequest,
     MoldingSampleProblemStatusRequest,
     MoldingSampleStatusRequest,
+    MoldingSampleTrialReportUpsertRequest,
     RequisitionCreateRequest,
     RequisitionStatusRequest,
 )
@@ -356,6 +358,7 @@ def load_order(db: Session, order_id: str, current_user: AuthContext | None = No
             selectinload(MoldingSampleOrder.audit_logs),
             selectinload(MoldingSampleOrder.notifications),
             selectinload(MoldingSampleOrder.problems),
+            selectinload(MoldingSampleOrder.trial_reports),
         )
     )
     if not order:
@@ -373,6 +376,7 @@ def order_statement():
         selectinload(MoldingSampleOrder.audit_logs),
         selectinload(MoldingSampleOrder.notifications),
         selectinload(MoldingSampleOrder.problems),
+        selectinload(MoldingSampleOrder.trial_reports),
     )
 
 
@@ -1377,6 +1381,74 @@ def update_order_items(
     order.updated_at = now_text()
     db.commit()
     return load_order(db, order_id, current_user)
+
+
+def upsert_trial_report(
+    db: Session,
+    order_id: str,
+    item_id: str,
+    payload: MoldingSampleTrialReportUpsertRequest,
+    current_user: AuthContext,
+) -> MoldingSampleTrialReport:
+    """Persist the printable trial report separately from production cost/fillback rows."""
+
+    order = load_order(db, order_id, current_user)
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:production_fillback",
+        order.factory_id,
+        PRODUCTION_DEPARTMENTS,
+    )
+    if order.status not in {"待生产", "生产中"}:
+        raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以填写试模报告")
+
+    if item_id not in {item.id for item in order.items}:
+        raise HTTPException(status_code=404, detail=f"模具明细不存在：{item_id}")
+
+    report = db.scalar(
+        select(MoldingSampleTrialReport).where(
+            MoldingSampleTrialReport.order_id == order.id,
+            MoldingSampleTrialReport.item_id == item_id,
+        )
+    )
+    timestamp = now_precise_text()
+    report_data = payload.data.model_dump()
+
+    if report is None:
+        report = MoldingSampleTrialReport(
+            id=f"{order.id}-trial-{uuid4().hex[:12]}",
+            factory_id=order.factory_id,
+            order_id=order.id,
+            item_id=item_id,
+            data=report_data,
+            created_by=current_user.display_name,
+            created_at=timestamp,
+            updated_by=current_user.display_name,
+            updated_at=timestamp,
+        )
+        db.add(report)
+        audit_action = "填写试模报告"
+    else:
+        report.data = report_data
+        report.updated_by = current_user.display_name
+        report.updated_at = timestamp
+        audit_action = "更新试模报告"
+
+    order.updated_at = now_text()
+    append_audit(
+        db,
+        order,
+        audit_action,
+        current_user,
+        order.status,
+        order.status,
+        f"模具明细：{item_id}",
+    )
+    db.commit()
+    db.refresh(report)
+    return report
 
 
 def transition_status(

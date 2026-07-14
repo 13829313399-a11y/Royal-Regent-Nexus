@@ -4,6 +4,8 @@ import type {
   MoldingSampleItem,
   MoldingSampleOrder,
   MoldingSampleProblem,
+  MoldingSampleTrialReport,
+  MoldingSampleTrialReportData,
 } from '../types/moldingSample.js'
 import type { MoldingSampleMaterialPrice } from '../lib/moldingSampleBusiness.js'
 
@@ -40,6 +42,7 @@ export interface MoldingSampleDetailResponse {
   audit_logs: MoldingSampleAuditLog[]
   notifications: MoldingSampleNotificationResponse[]
   problems: MoldingSampleProblem[]
+  trial_reports: MoldingSampleTrialReport[]
   read_source?: MoldingSampleReadSource
   can_view_cost?: boolean
   read_only?: boolean
@@ -74,6 +77,10 @@ export interface MoldingSampleStatusRequest {
 
 export interface MoldingSampleItemsPatchRequest {
   items: MoldingSampleItemDraft[]
+}
+
+export interface MoldingSampleTrialReportUpsertRequest {
+  data: MoldingSampleTrialReportData
 }
 
 export interface MaterialPricesResponse {
@@ -326,6 +333,13 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
     },
     async updateItems(orderId: string, payload: MoldingSampleItemsPatchRequest) {
       const response = await client.patch<MoldingSampleDetailResponse>(`/injection/${orderId}/items`, payload)
+      return response.data
+    },
+    async upsertTrialReport(orderId: string, itemId: string, payload: MoldingSampleTrialReportUpsertRequest) {
+      const response = await client.put<MoldingSampleTrialReport>(
+        `/injection/${orderId}/trial-reports/${itemId}`,
+        payload,
+      )
       return response.data
     },
     async getMaterialPrices(factoryId?: string) {

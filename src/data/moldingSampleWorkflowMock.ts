@@ -131,6 +131,7 @@ function createRecord(
     audit_logs: auditLogs,
     requisitions: createRequisitions(order, costedItems),
     problems,
+    trial_reports: [],
   }
 }
 

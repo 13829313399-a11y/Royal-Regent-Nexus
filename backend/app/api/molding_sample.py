@@ -19,6 +19,8 @@ from app.schemas.molding_sample import (
     MoldingSampleProblemOut,
     MoldingSampleProblemStatusRequest,
     MoldingSampleStatusRequest,
+    MoldingSampleTrialReportOut,
+    MoldingSampleTrialReportUpsertRequest,
     RequisitionCreateRequest,
     RequisitionOut,
     RequisitionStatusRequest,
@@ -62,6 +64,7 @@ from app.services.molding_sample import (
     update_order_items,
     update_problem_status,
     update_requisition_status,
+    upsert_trial_report,
 )
 from app.services.molding_sample_excel import (
     XLSX_MIME,
@@ -96,6 +99,7 @@ def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResp
         audit_logs=list(order.audit_logs),
         notifications=list(order.notifications),
         problems=list(order.problems),
+        trial_reports=list(order.trial_reports),
         read_source=read_source,
         can_view_cost=can_view_cost,
     )
@@ -272,6 +276,20 @@ def patch_injection_items(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return serialize_order(update_order_items(db, order_id, payload.items, current_user), current_user)
+
+
+@router.put(
+    "/api/injection/{order_id}/trial-reports/{item_id}",
+    response_model=MoldingSampleTrialReportOut,
+)
+def put_injection_trial_report(
+    order_id: str,
+    item_id: str,
+    payload: MoldingSampleTrialReportUpsertRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return upsert_trial_report(db, order_id, item_id, payload, current_user)
 
 
 @router.get("/api/molding-sample-notifications", response_model=list[MoldingSampleNotificationOut])
