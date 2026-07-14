@@ -19,6 +19,13 @@ for (const requiredCopy of [
   '保存回填',
   '打印任务单',
   '确认打印',
+  '工程啤办明细',
+  '工程啤办生产任务单',
+  '客模具编号 / 模具名称',
+  '工模尺寸',
+  '模具状态 / 回模时间',
+  '数量 / 啤数',
+  '需料kg',
   '完成并回传',
   '撤回完成',
   '啤机回填明细',
@@ -99,6 +106,11 @@ for (const requiredImplementation of [
 assert.match(source, /<div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">[\s\S]*<div class="fixed right-4 top-4 z-50 flex items-center gap-2[\s\S]*当前厂区：\{\{ activeFactory\.shortName \}\}[\s\S]*<AccountMenu \/>/)
 assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
 assert.match(source, /total_material_cost/)
+assert.match(source, /<\/main>\s*<section class="molding-sample-task-print-root hidden"/)
+assert.match(source, /#app > main \{ display: none !important; \}/)
+assert.match(source, /#app > \.molding-sample-task-print-root \{ display: block !important; position: static !important;/)
+assert.doesNotMatch(source, /molding-sample-task-print-signatures/)
+assert.doesNotMatch(source, /本任务单由工程部下发给啤机部执行/)
 assert.doesNotMatch(source, /啤机确认机台/)
 assert.doesNotMatch(source, /文件编号/)
 assert.doesNotMatch(source, /production_machine/)

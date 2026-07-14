@@ -647,7 +647,7 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
-  it('opens and confirms a production-task print preview without file or machine fields', async () => {
+  it('prints engineering molding-sample details without production fillback fields', async () => {
     const printSpy = vi.fn()
     vi.stubGlobal('print', printSpy)
     routeState.path = '/modules/production/molding-sample-tasks'
@@ -662,7 +662,19 @@ describe('molding sample runtime error handling', () => {
       items: [{
         ...createMoldingSampleRecord('待生产', 'BP-PROD-PRINT-001').items[0],
         production_machine: '啤办机台-08',
+        mold_id: 'P50002008-01-01',
+        mold_name: '30寸黑武士头盔',
+        mold_dimensions: '650 × 450 × 380 mm',
+        mold_presence_status: 'in_factory',
         material: 'PP (AV161)',
+        color: '黑色',
+        pigment_no: 'PMS Black',
+        quantity: '1/1',
+        shoot_qty: 30,
+        required_material_kg: 15,
+        mold_return_time: '2026-07-18',
+        completion_time: '2026-07-22',
+        notes: '工程首件确认',
         actual_weight_kg: 14.2,
       }],
     } satisfies MoldingSampleDetailResponse
@@ -681,7 +693,15 @@ describe('molding sample runtime error handling', () => {
     expect(printSpy).not.toHaveBeenCalled()
     expect(preview).toContain('BP-PROD-PRINT-001')
     expect(printArea).toContain('PP (AV161)')
-    expect(printArea).toContain('14.20 kg')
+    expect(printArea).toContain('650 × 450 × 380 mm')
+    expect(printArea).toContain('在厂')
+    expect(printArea).toContain('2026-07-18')
+    expect(printArea).toContain('黑色 / PMS Black')
+    expect(printArea).toContain('1/1 / 30')
+    expect(printArea).toContain('15.00 kg')
+    expect(printArea).toContain('工程首件确认')
+    expect(printArea).not.toContain('14.20 kg')
+    expect(printArea).not.toContain('啤机接收')
     expect(preview).not.toContain('文件编号')
     expect(preview).not.toContain('W-G026-00')
     expect(preview).not.toContain('啤机确认机台')
