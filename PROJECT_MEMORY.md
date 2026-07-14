@@ -1596,3 +1596,21 @@ Use this template when updating the memory after future work:
 - Compatibility: backend/API and Excel contracts remain intact. New manual payloads still send an empty `doc_number` and an empty `production_machine` where the existing schema expects those keys; existing historical data remains readable without being surfaced in these views.
 - Files changed: `src/lib/moldingSampleManualCreate.ts`, `src/views/MoldingSampleView.vue`, `src/views/MoldingSampleProductionTaskView.vue`, their manual-create/layout/runtime tests, and `PROJECT_MEMORY.md`.
 - Verification: full frontend Vitest passed `34 files / 140 tests`; `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings; `git diff --check` passed. Live browser review confirmed the retained main print button, the new production-task print preview, absence of all three removed fields on the new-order/normal-detail/expanded-detail/production-task surfaces, and zero browser warnings/errors. The native print confirmation itself was unit-tested rather than invoked in the browser to avoid opening a system print dialog.
+### 2026-07-13
+
+- Requirement: when the molding department first receives an engineering molding-sample order, `打印任务单` must print the engineering order's complete basic data and mold-detail mapping, rather than the production fillback summary.
+- Implementation: production-task print preview and print root now read the untouched engineering `selectedTask.items` rows. They include product/customer, stage/type, engineering sender, supervisor, date, reason, and per-mold dimensions, presence status, return time, material, color/PMS, quantity/shots, required material, due date, and engineering notes. Production machine, received/actual material, cost, and completion-fillback data are excluded. The printed page uses A4 landscape with repeating table headers.
+- Files changed: `src/views/MoldingSampleProductionTaskView.vue`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, `src/views/__tests__/moldingSampleProductionTaskViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
+- Verification: the focused runtime regression passed 34 tests; the full frontend Vitest suite passed 34 files / 142 tests; `npm.cmd run build` passed with only the known third-party `@vueuse/core` Rolldown annotation warnings; live browser verification confirmed the preview renders engineering fields and excludes production fillback fields.
+- Decision: required material is displayed as the engineering-supplied value only; no print-side formula is retained or evaluated.
+
+### 2026-07-13
+
+- Follow-up requirement: a single production-task order must be concentrated on one A4 sheet instead of producing blank extra pages.
+- Root cause and implementation: the previous print rule only hid the surrounding application visually, leaving its full layout in browser pagination. Moved the print root outside the business-page `main` and, in print media, removes that `main` from layout entirely. The isolated print root is normal-flow A4 landscape content with compact 7mm margins, so one ordinary order is paginated as one sheet rather than the application page plus blank sheets.
+- Verification: print-layout source regression, focused runtime regression (34 tests), full frontend Vitest (34 files / 142 tests), production build, and browser print-flow invocation all passed. The native print window does not expose its page counter to browser automation; the structural pagination cause is covered by the layout regression.
+
+### 2026-07-13
+
+- Follow-up requirement: remove the print-only molding-department receipt/production/engineering signoff and explanatory footer from the task sheet.
+- Implementation: the printed engineering task sheet now ends after the mold-detail table; the removed blocks are absent from both the print DOM and print stylesheet.
