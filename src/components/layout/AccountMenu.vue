@@ -49,7 +49,9 @@ const displayName = computed(() =>
   || '已登录账号',
 )
 
-const roleLabel = computed(() => authStore.roles[0] ?? '系统用户')
+const registeredProfile = computed(() => authStore.currentUser?.profile)
+const registeredPosition = computed(() => registeredProfile.value?.position?.trim() ?? '')
+const roleLabel = computed(() => registeredPosition.value || authStore.roles[0] || '系统用户')
 const accountName = computed(() => authStore.currentUser?.username ?? '当前账号')
 
 function resolveAvatarUrl(value: string | undefined) {
@@ -83,58 +85,27 @@ const internalDepartmentLabels: Record<string, string> = {
   'carton-warehouse': '纸箱仓管',
 }
 
-function formatScopeList(scopes: string[], fallback: string, formatter: (scope: string) => string) {
-  const normalizedScopes = Array.from(
-    new Set(scopes.map((scope) => scope.trim()).filter(Boolean)),
-  )
-
-  if (!normalizedScopes.length) {
-    return fallback
+const factoryLabel = computed(() => {
+  const factoryId = registeredProfile.value?.primary_factory_id?.trim()
+  if (!factoryId) {
+    return '未登记'
   }
 
-  if (normalizedScopes.includes('*')) {
-    return formatter('*')
-  }
-
-  const labels = normalizedScopes.map(formatter)
-  return labels.length > 3 ? `${labels.slice(0, 3).join('、')}等${labels.length}项` : labels.join('、')
-}
-
-const factoryLabel = computed(() => formatScopeList(
-  authStore.factoryScopes,
-  '未限定厂区',
-  (scope) => {
-    if (scope === '*') {
-      return '全部厂区'
-    }
-
-    return factoryContexts.find((factory) => factory.id === scope)?.shortName ?? scope
-  },
-))
-
-const departmentLabel = computed(() => formatScopeList(
-  authStore.departmentScopes,
-  '未限定部门',
-  (scope) => {
-    if (scope === '*') {
-      return '全部部门'
-    }
-
-    return internalDepartmentLabels[scope]
-      ?? departmentMap[scope as keyof typeof departmentMap]?.name
-      ?? scope
-  },
-))
-
-const positionLabel = computed(() => {
-  if (!authStore.roles.length) {
-    return '未配置职位'
-  }
-
-  return authStore.roles.length > 3
-    ? `${authStore.roles.slice(0, 3).join('、')}等${authStore.roles.length}项`
-    : authStore.roles.join('、')
+  return factoryContexts.find((factory) => factory.id === factoryId)?.shortName ?? factoryId
 })
+
+const departmentLabel = computed(() => {
+  const departmentId = registeredProfile.value?.primary_department?.trim()
+  if (!departmentId) {
+    return '未登记'
+  }
+
+  return internalDepartmentLabels[departmentId]
+    ?? departmentMap[departmentId as keyof typeof departmentMap]?.name
+    ?? departmentId
+})
+
+const positionLabel = computed(() => registeredPosition.value || '未登记')
 
 function revokePreviewUrl() {
   if (previewAvatarUrl.value) {
