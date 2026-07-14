@@ -1620,3 +1620,11 @@ Use this template when updating the memory after future work:
 
 - Follow-up requirement: remove the print-only molding-department receipt/production/engineering signoff and explanatory footer from the task sheet.
 - Implementation: the printed engineering task sheet now ends after the mold-detail table; the removed blocks are absent from both the print DOM and print stylesheet.
+
+### 2026-07-14
+
+- Requirement: update the Color Star plastic customer-quote export. The spray amount now comes from the `喷油` detail sheet when present; `吹气` and `搪胶` map to Blow Molding (`BL`) and Roto Casting (`RC`); purchased parts and packaging use 2% scrap; packaging preserves source B-column category as Type and source C-column material name as Spec.
+- Implementation: `caixing.ts` detects the spray-detail total, writes BL/RC Tool Plan rows, applies 2% to plastic purchase/packing rows (including Carton Shipper), and aligns plastic Summary values. Added a focused conversion regression.
+- Files changed: `src/lib/customerPriceConverters/caixing.ts`, `src/lib/__tests__/caixingCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Color Star Vitest suite and `npm.cmd run build` passed; build retains only the known third-party Rolldown annotation warnings.
+- Decision: changes are limited to the Color Star plastic template; plush remains unchanged.
