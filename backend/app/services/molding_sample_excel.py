@@ -66,10 +66,8 @@ ITEM_COLUMNS = [
 # latter is the full formal-order export contract and includes production
 # fillback, calculated cost, and historical compatibility fields.
 ENGINEERING_IMPORT_COLUMNS = [
-    ("客模具编号", "mold_id"),
+    ("模具编号", "mold_id"),
     ("模具名称", "mold_name"),
-    ("模具是否在厂", "mold_presence_status"),
-    ("模具回厂时间", "mold_return_time"),
     ("所需用料", "material"),
     ("颜色", "color"),
     ("PMS", "pms"),
@@ -79,10 +77,11 @@ ENGINEERING_IMPORT_COLUMNS = [
     ("所需用料(kg)", "required_material_kg"),
     ("需办日期", "required_date"),
     ("工模尺寸", "mold_dimensions"),
+    ("模具状态（是否在厂）", "mold_presence_status"),
     ("备注", "notes"),
 ]
 
-ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 16, 16, 24, 14, 14, 14, 11, 11, 16, 16, 18, 30]
+ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 11, 11, 16, 16, 18, 18, 30]
 
 BATCH_ORDER_COLUMNS = [
     ("单据ID", "id"),
@@ -153,6 +152,8 @@ ITEM_ALIASES.update(
         "机型/吨位": "machine_type",
         "模具是否在厂": "mold_presence_status",
         "模具在厂状态": "mold_presence_status",
+        "模具状态（是否在厂）": "mold_presence_status",
+        "模具状态(是否在厂)": "mold_presence_status",
         "材料": "material",
         "用料": "material",
         "所需用料": "material",
@@ -448,14 +449,14 @@ def build_engineering_import_template() -> bytes:
     last_column = _column_name(len(ENGINEERING_IMPORT_COLUMNS))
     rows: list[list[object | None]] = [
         ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
-        ["产品编号", "", "客户", "", "产品名称", ""],
+        ["客户", "", "产品编号", "", "产品名称", ""],
         ["开单日期", "", "阶段", "T0", "填写部", "工程部"],
         ["发至", "内部", "审核主管", "", "落单人", ""],
         ["注意事项", ""],
-        ["填写说明：每一行代表一项模具明细；原料价格由系统按“所需用料”自动带出，不需填写；所需用料(kg)请直接填写。"],
+        ["填写说明：每一行代表一项模具明细；原料价格由系统按“所需用料”自动带出，不需填写；所需用料(kg)请直接填写；模具状态请选在厂、不在厂或待确认。"],
         [],
         [label for label, _ in ENGINEERING_IMPORT_COLUMNS],
-        ["", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["" for _ in ENGINEERING_IMPORT_COLUMNS],
     ]
     style_matrix: dict[tuple[int, int], int] = {}
     for column_index in range(1, len(ENGINEERING_IMPORT_COLUMNS) + 1):
@@ -644,6 +645,10 @@ def parse_order_excel(
         order_data["date"] = datetime.now().strftime("%Y-%m-%d")
 
     headers = [str(value or "").strip() for value in rows[detail_header_index]]
+    uses_current_engineering_detail_contract = any(
+        _normalize_header(header) == _normalize_header("模具状态（是否在厂）")
+        for header in headers
+    )
     field_by_index = {
         index: field
         for index, header in enumerate(headers)
@@ -689,7 +694,8 @@ def parse_order_excel(
         if pms:
             item_data["color"] = _format_color_pms(str(item_data.get("color") or ""), pms)
         if required_date:
-            item_data["mold_return_time"] = str(item_data.get("mold_return_time") or "") or required_date
+            if not uses_current_engineering_detail_contract:
+                item_data["mold_return_time"] = str(item_data.get("mold_return_time") or "") or required_date
             item_data["completion_time"] = str(item_data.get("completion_time") or "") or required_date
         existing_notes = str(item_data.get("notes") or "").strip()
         if existing_notes and note_parts:

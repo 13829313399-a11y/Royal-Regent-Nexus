@@ -25,7 +25,6 @@ assert.deepEqual(await api.list('huaxing'), {
 
 await api.create({
   factory_id: 'huaxing',
-  material_code: 'RM-NEW-001',
   material_name: '工程新增 PP',
   category: 'PP',
   unit: 'KG',
@@ -47,7 +46,6 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
 ])
 assert.deepEqual(calls[1].data, {
   factory_id: 'huaxing',
-  material_code: 'RM-NEW-001',
   material_name: '工程新增 PP',
   category: 'PP',
   unit: 'KG',

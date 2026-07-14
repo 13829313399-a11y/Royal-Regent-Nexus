@@ -16,6 +16,7 @@ from app.services.auth import AuthContext, add_auth_audit
 
 RAW_MATERIAL_BASELINE_PATH = Path(__file__).resolve().parents[1] / "data" / "raw_material_baseline.json"
 RAW_MATERIAL_BASELINE_FACTORY_IDS = ("huakang-a", "huakang-b", "huadeng", "huaxing")
+RAW_MATERIAL_CODE_START = 91_000_001
 
 
 def load_raw_material_baseline() -> list[dict[str, object]]:
@@ -147,60 +148,67 @@ def upsert_material_price(
     return unit_price_hkd_per_lb
 
 
+def generate_raw_material_code(db: Session, factory_id: str) -> str:
+    """Return the next eight-digit material code for one factory."""
+    material_codes = db.scalars(
+        select(RawMaterial.material_code).where(RawMaterial.factory_id == factory_id),
+    ).all()
+    numeric_codes = [int(code) for code in material_codes if code.isdecimal()]
+    next_code = max([RAW_MATERIAL_CODE_START - 1, *numeric_codes]) + 1
+    return f"{next_code:08d}"
+
+
 def create_raw_material(
     db: Session,
     payload: RawMaterialCreateRequest,
     current_user: AuthContext,
 ) -> RawMaterialOut:
-    existing = db.scalar(
-        select(RawMaterial.id).where(
-            RawMaterial.factory_id == payload.factory_id,
-            RawMaterial.material_code == payload.material_code,
-        )
-    )
-    if existing:
-        raise HTTPException(status_code=409, detail="当前厂区已存在相同物料编号")
-
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    material = RawMaterial(
-        id=f"RM-{uuid4().hex[:12].upper()}",
-        factory_id=payload.factory_id,
-        material_code=payload.material_code,
-        material_name=payload.material_name,
-        category=payload.category,
-        spec=payload.spec,
-        unit=payload.unit,
-        supplier=payload.supplier,
-        safety_stock_kg=payload.safety_stock_kg,
-        status=payload.status,
-        notes=payload.notes,
-        created_by=current_user.id,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(material)
-    unit_price_hkd_per_lb = upsert_material_price(
-        db,
-        material.material_name,
-        payload.unit_price_hkd_per_lb,
-    )
-    add_auth_audit(
-        db,
-        "raw_material_created",
-        username=current_user.username,
-        user_id=current_user.id,
-        detail=(
-            f"厂区={material.factory_id};物料编号={material.material_code};原料={material.material_name};"
-            f"单价(HKD/磅)={unit_price_hkd_per_lb if unit_price_hkd_per_lb is not None else '未维护'}"
-        ),
-    )
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="当前厂区已存在相同物料编号") from None
-    db.refresh(material)
-    return to_raw_material_out(material, unit_price_hkd_per_lb)
+    for attempt in range(3):
+        material = RawMaterial(
+            id=f"RM-{uuid4().hex[:12].upper()}",
+            factory_id=payload.factory_id,
+            material_code=generate_raw_material_code(db, payload.factory_id),
+            material_name=payload.material_name,
+            category=payload.category,
+            spec=payload.spec,
+            unit=payload.unit,
+            supplier=payload.supplier,
+            safety_stock_kg=payload.safety_stock_kg,
+            status=payload.status,
+            notes=payload.notes,
+            created_by=current_user.id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(material)
+        unit_price_hkd_per_lb = upsert_material_price(
+            db,
+            material.material_name,
+            payload.unit_price_hkd_per_lb,
+        )
+        add_auth_audit(
+            db,
+            "raw_material_created",
+            username=current_user.username,
+            user_id=current_user.id,
+            detail=(
+                f"厂区={material.factory_id};物料编号={material.material_code};原料={material.material_name};"
+                f"单价(HKD/磅)={unit_price_hkd_per_lb if unit_price_hkd_per_lb is not None else '未维护'}"
+            ),
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            if attempt == 2:
+                raise HTTPException(status_code=409, detail="系统生成物料编号冲突，请重试") from None
+            continue
+
+        db.refresh(material)
+        return to_raw_material_out(material, unit_price_hkd_per_lb)
+
+    raise HTTPException(status_code=409, detail="系统生成物料编号冲突，请重试")
 
 
 def update_raw_material(

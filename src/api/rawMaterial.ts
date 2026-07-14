@@ -8,7 +8,6 @@ export interface RawMaterialHttpClient {
 
 export interface RawMaterialCreateRequest {
   factory_id: string
-  material_code: string
   material_name: string
   category: string
   spec?: string

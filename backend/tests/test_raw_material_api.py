@@ -17,6 +17,11 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
         assert len(baseline) == 286
         assert baseline[0]["material_code"] == "91000001"
         assert baseline[0]["material_name"] == "ABS 750NSW"
+        next_material_code = max(
+            int(row["material_code"])
+            for row in baseline
+            if row["material_code"].isdecimal()
+        ) + 1
 
         db_module = importlib.import_module("app.db")
         raw_material_service = importlib.import_module("app.services.raw_material")
@@ -25,7 +30,6 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
 
         payload = {
             "factory_id": "huaxing",
-            "material_code": "RM-ENG-001",
             "material_name": "工程新增 PP 料",
             "category": "PP",
             "spec": "共聚 PP",
@@ -40,7 +44,7 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
         created = created_response.json()
         assert created["id"].startswith("RM-")
         assert created["created_by"] == "user-engineer"
-        assert created["material_code"] == payload["material_code"]
+        assert created["material_code"] == f"{next_material_code:08d}"
         assert created["safety_stock_kg"] == 50
         assert created["unit_price_hkd_per_lb"] is None
 
@@ -57,7 +61,7 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
         })
         assert update_response.status_code == 200
         updated = update_response.json()
-        assert updated["material_code"] == "RM-ENG-001"
+        assert updated["material_code"] == created["material_code"]
         assert updated["material_name"] == "工程更新 PP 料"
         assert updated["unit_price_hkd_per_lb"] == 6.25
         assert updated["safety_stock_kg"] == 60
@@ -67,15 +71,16 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
         listed = listed_response.json()
         assert len(listed) == 287
         assert any(
-            row["material_code"] == "RM-ENG-001"
+            row["material_code"] == created["material_code"]
             and row["material_name"] == "工程更新 PP 料"
             and row["unit_price_hkd_per_lb"] == 6.25
             for row in listed
         )
 
-        duplicate_response = client.post("/api/raw-materials", json=payload)
-        assert duplicate_response.status_code == 409
-        assert duplicate_response.json()["detail"] == "当前厂区已存在相同物料编号"
+        next_payload = {**payload, "material_name": "工程新增 PP 料（二）"}
+        next_response = client.post("/api/raw-materials", json=next_payload)
+        assert next_response.status_code == 201
+        assert next_response.json()["material_code"] == f"{next_material_code + 1:08d}"
 
 
 def test_raw_material_creation_is_scoped_to_engineering_and_warehouse(monkeypatch):
@@ -83,7 +88,6 @@ def test_raw_material_creation_is_scoped_to_engineering_and_warehouse(monkeypatc
         login_as(client, "qa_inspector")
         forbidden = client.post("/api/raw-materials", json={
             "factory_id": "huaxing",
-            "material_code": "RM-QA-001",
             "material_name": "QA 不应新增",
             "category": "ABS",
             "unit": "KG",
@@ -112,7 +116,6 @@ def test_raw_material_creation_is_scoped_to_engineering_and_warehouse(monkeypatc
         login_as(client, "warehouse_keeper")
         allowed = client.post("/api/raw-materials", json={
             "factory_id": "huaxing",
-            "material_code": "RM-WH-001",
             "material_name": "仓管新增 ABS",
             "category": "ABS",
             "unit": "KG",
