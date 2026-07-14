@@ -528,7 +528,7 @@ describe('molding sample runtime error handling', () => {
       gross_weight_g: 11,
       required_material_kg: 1.5,
       mold_return_time: '2026-07-10',
-      completion_time: '',
+      completion_time: '2026-07-11',
       notes: '打印明细备注',
       receipt_no: 'REC-001',
       collected_weight_kg: 1.7,
@@ -563,7 +563,9 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).not.toContain('160T')
     expect(printArea).not.toContain('11.00 g')
     expect(printArea).toContain('模具是否在厂：在厂')
-    expect(printArea).toContain('模具回厂时间：2026-07-10')
+    expect(printArea).toContain('需办日期')
+    expect(printArea).toContain('2026-07-11')
+    expect(printArea).not.toContain('模具回厂时间')
     expect(printArea).not.toContain('REC-001')
     expect(printArea).toContain('1.42 kg')
     expect(printArea).toContain('预计料费')
@@ -1169,8 +1171,9 @@ describe('molding sample runtime error handling', () => {
     expect(detailTable.text()).not.toContain('160T')
     expect(detailTable.text()).toContain('模具在厂')
     expect(detailTable.text()).toContain('在厂')
-    expect(detailTable.text()).toContain('回厂时间')
-    expect(detailTable.text()).toContain('2026-02-03')
+    expect(detailTable.text()).toContain('需办日期')
+    expect(detailTable.text()).toContain('2026-02-04')
+    expect(detailTable.text()).not.toContain('回厂时间')
     expect(wrapper.text()).not.toContain('完整单据数据')
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
@@ -1190,6 +1193,9 @@ describe('molding sample runtime error handling', () => {
     expect(text).toContain('650 × 450 × 380 mm')
     expect(text).not.toContain('160T')
     expect(text).toContain('在厂')
+    expect(text).toContain('需办日期')
+    expect(text).toContain('2026-02-04')
+    expect(text).not.toContain('模具回厂时间')
     expect(text).not.toContain('RC-20260203-01')
     expect(text).toContain('实际料费(HKD)')
     expect(text).not.toContain('啤机确认机台')
@@ -1680,7 +1686,7 @@ describe('molding sample runtime error handling', () => {
     const lineHeaders = wrapper.findAll('[aria-label="模具明细录入表"] [role="columnheader"]').map((node) => node.text())
     expect(lineHeaders).not.toContain('适配机型')
     expect(lineHeaders).not.toContain('整啤毛重(g)')
-    expect(lineHeaders.slice(-3)).toEqual(['工模尺寸', '备注', '操作'])
+    expect(lineHeaders.slice(-3)).toEqual(['模具状态（是否在厂）', '备注', '操作'])
     expect(wrapper.find('[data-testid="create-line-machine-type"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="create-line-gross-weight"]').exists()).toBe(false)
     await wrapper.get('[data-testid="create-product-no"]').setValue('260705-01')
