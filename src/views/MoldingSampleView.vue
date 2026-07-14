@@ -43,7 +43,6 @@ import {
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
-import { rawMaterialDatabaseRows } from '@/data/rawMaterialDatabase'
 import {
   buildCompletionGate,
   calculateExpectedMaterialAmountHkd,
@@ -60,6 +59,7 @@ import {
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
 } from '@/api/moldingSample'
+import { rawMaterialApi, type RawMaterialResponse } from '@/api/rawMaterial'
 import {
   buildManualMoldingSampleCreateRequest,
   createManualMoldingSampleLineDraft,
@@ -241,14 +241,16 @@ const deleteConfirmingOrderId = ref('')
 const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
+const excelTemplateDownloading = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_110px_138px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_130px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
 const RAW_MATERIAL_PICKER_GAP = 8
 const RAW_MATERIAL_PICKER_VIEWPORT_PADDING = 12
 const rawMaterialPriceList = ref<Awaited<ReturnType<typeof moldingSampleApi.getMaterialPrices>>['prices']>([])
+const rawMaterialMasterList = ref<RawMaterialResponse[]>([])
 const RAW_MATERIAL_PICKER_VISIBLE_LIMIT = 60
 const activeRawMaterialPickerLineIndex = ref<number | null>(null)
 const rawMaterialSearchByLine = ref<Record<number, string>>({})
@@ -321,33 +323,33 @@ const activeFactory = computed(() =>
 const rawMaterialOptions = computed<RawMaterialSelectOption[]>(() => {
   const seenValues = new Set<string>()
 
-  return rawMaterialDatabaseRows.flatMap((row) => {
-    const value = row.materialName.trim()
+  return rawMaterialMasterList.value.flatMap((row) => {
+    const value = row.material_name.trim()
 
-    if (!value || seenValues.has(value)) {
+    if (!value || row.status !== '启用' || seenValues.has(value)) {
       return []
     }
 
     seenValues.add(value)
 
-    const sourceParts = [row.materialCode, row.plasticCategory].filter(Boolean)
+    const sourceParts = [row.material_code, row.category].filter(Boolean)
     const label = sourceParts.length ? `${value}（${sourceParts.join(' / ')}）` : value
     const searchText = [
       value,
       label,
-      row.materialCode,
-      row.plasticCategory,
-      row.commodityName,
-      row.origin,
-      row.remarks,
+      row.material_code,
+      row.category,
+      row.spec,
+      row.supplier,
+      row.notes,
     ].join(' ').toLowerCase()
 
     return [{
       value,
       label,
-      code: row.materialCode,
-      category: row.plasticCategory,
-      origin: row.origin,
+      code: row.material_code,
+      category: row.category,
+      origin: row.supplier,
       searchText,
     }]
   })
@@ -1159,6 +1161,21 @@ async function loadProtectedMaterialPrices(requestedFactoryId: string) {
   }
 }
 
+async function loadRawMaterialOptions(requestedFactoryId: string) {
+  try {
+    const rows = await rawMaterialApi.list(requestedFactoryId)
+    if (requestedFactoryId !== selectedFactoryId.value) {
+      return
+    }
+    rawMaterialMasterList.value = rows
+  }
+  catch {
+    if (requestedFactoryId === selectedFactoryId.value) {
+      rawMaterialMasterList.value = []
+    }
+  }
+}
+
 async function loadApiData() {
   const requestedFactoryId = selectedFactoryId.value
   const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
@@ -1173,7 +1190,10 @@ async function loadApiData() {
     }
 
     apiRecords.value = records
-    await loadProtectedMaterialPrices(requestedFactoryId)
+    await Promise.all([
+      loadProtectedMaterialPrices(requestedFactoryId),
+      loadRawMaterialOptions(requestedFactoryId),
+    ])
     if (requestedFactoryId !== selectedFactoryId.value) {
       return
     }
@@ -1193,6 +1213,7 @@ async function loadApiData() {
 
     apiRecords.value = []
     rawMaterialPriceList.value = []
+    rawMaterialMasterList.value = []
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
   }
@@ -1205,6 +1226,28 @@ function triggerExcelImport() {
   }
 
   excelFileInput.value?.click()
+}
+
+async function downloadEngineeringImportTemplate() {
+  if (!canCreateOrder.value) {
+    actionMessage.value = '当前账号没有下载工程部导入模板权限。'
+    return
+  }
+
+  excelTemplateDownloading.value = true
+  actionMessage.value = '正在下载工程部啤办单导入模板...'
+
+  try {
+    const workbook = await moldingSampleApi.downloadEngineeringImportTemplate(selectedFactoryId.value)
+    saveWorkbookAsExcel(workbook, '工程部啤办单_基础资料与模具明细导入模板.xlsx')
+    actionMessage.value = '工程部啤办单导入模板已开始下载。'
+  }
+  catch (error) {
+    actionMessage.value = `导入模板下载失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    excelTemplateDownloading.value = false
+  }
 }
 
 function readWorkbookAsArrayBuffer(file: File) {
@@ -2667,6 +2710,16 @@ onUnmounted(() => {
           v-if="!isSelectedFactoryReadOnly"
           type="button"
           class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="excelTemplateDownloading || !canCreateOrder"
+          @click="downloadEngineeringImportTemplate"
+        >
+          <Download class="size-3.5" aria-hidden="true" />
+          {{ excelTemplateDownloading ? '模板下载中...' : '下载导入模板' }}
+        </button>
+        <button
+          v-if="!isSelectedFactoryReadOnly"
+          type="button"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="excelExporting || !canExportSelectedOrder"
           @click="downloadOrderExcel"
         >
@@ -3281,6 +3334,10 @@ onUnmounted(() => {
               </div>
               <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
                 <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
+                  <input v-model="createDraft.client_name" data-testid="create-client-name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品编号</span>
                   <input
                     :value="createDraft.product_no"
@@ -3288,10 +3345,6 @@ onUnmounted(() => {
                     class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400"
                     @input="updateCreateProductNo(readInputValue($event))"
                   >
-                </label>
-                <label class="block">
-                  <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
-                  <input v-model="createDraft.client_name" data-testid="create-client-name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品名称</span>
@@ -3347,17 +3400,15 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[2120px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[2020px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
                       role="row"
                     >
                       <div class="min-w-0 text-center" role="columnheader">#</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">客模具编号</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">模具编号</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">模具是否在厂</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">模具回厂时间</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">原料价格(HKD/磅)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">颜色</div>
@@ -3368,6 +3419,7 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">所需用料(kg)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">模具状态（是否在厂）</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">备注</div>
                       <div class="min-w-0 truncate text-center" role="columnheader">操作</div>
                     </div>
@@ -3388,8 +3440,6 @@ onUnmounted(() => {
                         <div class="min-w-0" role="cell">
                           <input v-model="line.mold_name" data-testid="create-line-mold-name" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
-                        <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
-                        <div class="min-w-0" role="cell"><input v-model="line.mold_return_time" data-testid="create-line-mold-return-time" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div
                           class="relative min-w-0"
                           role="cell"
@@ -3505,6 +3555,7 @@ onUnmounted(() => {
                           <input v-model="line.required_date" data-testid="create-line-required-date" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell"><input v-model="line.mold_dimensions" data-testid="create-line-mold-dimensions" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
+                        <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.notes" placeholder="备注提示" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>

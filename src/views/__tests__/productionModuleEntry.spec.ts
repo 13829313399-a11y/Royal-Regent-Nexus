@@ -7,7 +7,7 @@ const moduleCenterSource = readFileSync(join(process.cwd(), 'src/views/ModuleCen
 const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
 const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/modules/ModuleCard.vue'), 'utf8')
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
-const rawMaterialDatabaseSource = readFileSync(join(process.cwd(), 'src/data/rawMaterialDatabase.ts'), 'utf8')
+const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend/app/data/raw_material_baseline.json'), 'utf8')) as Array<Record<string, unknown>>
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 const internalPricingViewSource = readFileSync(join(process.cwd(), 'src/views/InternalPricingView.vue'), 'utf8')
@@ -60,6 +60,7 @@ describe('production module entry', () => {
     expect(routerSource).toMatch(/name: 'raw-material-management'/)
     expect(routerSource).toMatch(/RawMaterialManagementView\.vue/)
     expect(routerSource).toMatch(/title: '原料管理模块'/)
+    expect(routerSource).toMatch(/path: '\/modules\/pmc-warehouse\/raw-material-management'[\s\S]{0,360}permissions: \['molding_sample:raw_material_write'\]/)
     expect(routerSource).toMatch(/fullPage: true/)
 
     for (const requiredCopy of [
@@ -86,27 +87,36 @@ describe('production module entry', () => {
       expect(rawMaterialSource).toContain(requiredCopy)
     }
 
-    expect(rawMaterialSource).toMatch(/rawMaterialDatabaseRows/)
-    expect(rawMaterialSource).toMatch(/RAW_MATERIAL_PAGE_SIZE/)
-    expect(rawMaterialSource).toMatch(/function mapRawMaterialRow/)
-    expect(rawMaterialSource).toMatch(/supplier: source\.origin \|\| '未填写'/)
-    expect(rawMaterialSource).toMatch(/spec: source\.commodityName/)
-    expect(rawMaterialSource).toContain('moldingSampleApi.getMaterialPrices(factoryId)')
-    expect(rawMaterialSource).toContain('loadProtectedMaterialPrices')
+    expect(rawMaterialSource).toContain('rawMaterialApi.list(factoryId)')
+    expect(rawMaterialSource).toContain('mapPersistedRawMaterialRow')
+    expect(rawMaterialSource).toContain('原料主数据库读取')
+    expect(rawMaterialSource).toContain('rawMaterialApi.create({')
+    expect(rawMaterialSource).toContain('物料编号（系统自动生成）')
+    expect(rawMaterialSource).toContain('保存后自动生成')
+    expect(rawMaterialSource).not.toContain('material_code: materialCode')
+    expect(rawMaterialSource).not.toContain('请填写物料编号和原料名称。')
+    expect(rawMaterialSource).toContain('rawMaterialApi.update(editingMaterialId.value, payload)')
+    expect(rawMaterialSource).toContain('openEditMaterialModal(row)')
+    expect(rawMaterialSource).toContain('unitPriceHkdPerLb')
+    expect(rawMaterialSource).toContain('工程部维护后会同步用于啤办成本计算。')
+    expect(rawMaterialSource).toContain('已保存到')
+    expect(rawMaterialSource).toContain('及单价已更新')
+    expect(rawMaterialSource).not.toContain('由受保护价格接口维护')
     expect(rawMaterialSource).not.toContain('unitPriceHkdPerLb: source.unitPriceHkdPerLb')
     expect(rawMaterialSource).toMatch(/显示 \{\{ materialStartIndex \}\}-\{\{ materialEndIndex \}\} 条/)
-    expect(rawMaterialSource).not.toMatch(/const rawMaterialRows: RawMaterialRow\[\]/)
+    expect(rawMaterialSource).not.toMatch(/rawMaterialDatabase/)
     expect(rawMaterialSource).not.toMatch(/rawMaterialDatabaseColumns/)
     expect(rawMaterialSource).not.toMatch(/v-for="column in rawMaterialColumns"/)
     expect(rawMaterialSource).not.toMatch(/单价\(HK\$\/Lb\)/)
     expect(rawMaterialSource).not.toMatch(/RM-PVC-001/)
 
-    expect(rawMaterialDatabaseSource).toMatch(/RAW_MATERIAL_PAGE_SIZE = 10/)
-    expect(rawMaterialDatabaseSource).toMatch(/rowCount: 286/)
-    expect(rawMaterialDatabaseSource).toMatch(/sourceFileName: '新建 XLS 工作表 \(2\)\.xls'/)
-    expect(rawMaterialDatabaseSource).toMatch(/"materialCode": "91000001"/)
-    expect(rawMaterialDatabaseSource).toMatch(/"materialName": "ABS 750NSW"/)
-    expect(rawMaterialDatabaseSource).toMatch(/"blendMaterialName01": "HDPE 5502BN（BL）"/)
+    expect(rawMaterialBaseline).toHaveLength(286)
+    expect(rawMaterialBaseline[0]).toMatchObject({
+      materialCode: '91000001',
+      materialName: 'ABS 750NSW',
+    })
+    expect(rawMaterialBaseline.some((row) => row.blendMaterialName01 === 'HDPE 5502BN（BL）')).toBe(true)
+    expect(rawMaterialBaseline.every((row) => !row.unitPriceHkdPerLb && !row.otherCostHkdPerLb)).toBe(true)
 
     expect(rawMaterialSource).not.toMatch(/v-for="factory in productionFactories"/)
     expect(rawMaterialSource).not.toMatch(/function selectFactory/)

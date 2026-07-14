@@ -270,6 +270,13 @@ const activeItems = computed<MoldingSampleItem[]>(() => {
 // The printed handoff is issued when molding first receives the engineering order.
 // Keep it tied to the original engineering rows instead of unsaved production fillback.
 const printableEngineeringItems = computed<MoldingSampleItem[]>(() => selectedTask.value?.items ?? [])
+const canPrintSelectedTask = computed(() =>
+  Boolean(
+    selectedTask.value
+    && printableEngineeringItems.value.length
+    && ['待生产', '生产中', '已完成'].includes(selectedTask.value.order.status),
+  ),
+)
 
 const completionGate = computed(() => {
   if (!selectedTask.value) {
@@ -555,8 +562,8 @@ function updateItemDraft(itemId: string, field: keyof ItemFillbackDraft, value: 
 }
 
 function openTaskPrintPreview() {
-  if (!selectedTask.value) {
-    actionMessage.value = '请先选择一张啤办生产任务单。'
+  if (!canPrintSelectedTask.value) {
+    actionMessage.value = '仅已审核下发至啤机部且包含工程明细的啤办通知单可以打印。'
     return
   }
 
@@ -574,7 +581,7 @@ function confirmTaskPrint() {
     return
   }
 
-  actionMessage.value = `正在打印工程啤办明细任务单 ${selectedTask.value.order.id}。`
+  actionMessage.value = `正在打印工程部下发的啤办通知单 ${selectedTask.value.order.id}。`
   window.print()
 }
 
@@ -1234,7 +1241,8 @@ watchEffect(() => {
               </div>
               <button
                 type="button"
-                class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+                :disabled="!canPrintSelectedTask"
+                class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                 @click="openTaskPrintPreview"
               >
                 <Printer class="size-3.5" aria-hidden="true" />
@@ -1598,8 +1606,8 @@ watchEffect(() => {
                 <Printer class="size-4" aria-hidden="true" />
               </span>
               <div class="min-w-0">
-                <div class="text-[15px] font-bold text-slate-950">工程啤办明细 · 打印预览</div>
-                <p class="mt-0.5 text-[12px] text-slate-500">{{ selectedTask.order.id }} · {{ printableEngineeringItems.length }} 条工程明细</p>
+                <div class="text-[15px] font-bold text-slate-950">啤办通知单 · 打印预览</div>
+                <p class="mt-0.5 text-[12px] text-slate-500">工程审核通过后下发至啤机部 · {{ selectedTask.order.id }}</p>
               </div>
               <button
                 type="button"
@@ -1612,29 +1620,31 @@ watchEffect(() => {
             </header>
             <div class="min-h-0 flex-1 overflow-y-auto bg-slate-100 p-4">
               <article class="mx-auto max-w-6xl rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b-2 border-slate-900 pb-3">
                   <div>
-                    <div class="text-lg font-bold text-slate-950">工程啤办生产任务单</div>
-                    <div class="mt-1 text-[12px] text-slate-500">{{ selectedTask.order.product_name }} · {{ selectedTask.order.client_name }}</div>
+                    <div class="text-[11px] font-bold uppercase tracking-[0.12em] text-teal-700">工程部下发 · 啤机部执行</div>
+                    <div class="mt-1 text-xl font-bold text-slate-950">啤办通知单</div>
+                    <div class="mt-1 text-[12px] text-slate-500">工程审核通过后下发；以下为工程单据填写详情。</div>
                   </div>
-                  <div class="text-right text-[12px] text-slate-500">
-                    <div class="font-mono font-bold text-slate-900">{{ selectedTask.order.id }}</div>
-                    <div>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</div>
+                  <div class="rounded-md bg-slate-900 px-3 py-2 text-right text-[12px] text-white">
+                    <div class="font-mono font-bold">{{ selectedTask.order.id }}</div>
+                    <div class="mt-0.5 text-slate-300">{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</div>
                   </div>
                 </div>
-                <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-3">
-                  <div><span class="text-slate-400">产品编号</span><div class="font-semibold">{{ formatBlank(selectedTask.order.order_number) }}</div></div>
-                  <div><span class="text-slate-400">产品 / 客户</span><div class="font-semibold">{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</div></div>
-                  <div><span class="text-slate-400">阶段 / 类型</span><div class="font-semibold">{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</div></div>
-                  <div><span class="text-slate-400">填写部 / 发至</span><div class="font-semibold">工程部 / {{ formatBlank(selectedTask.order.send_to) }}</div></div>
-                  <div><span class="text-slate-400">工程 / 主管</span><div class="font-semibold">{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</div></div>
-                  <div><span class="text-slate-400">开单日期</span><div class="font-semibold">{{ formatBlank(selectedTask.order.date) }}</div></div>
+                <div class="mt-3 grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 text-[12px] sm:grid-cols-3">
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">产品编号</span><div class="font-semibold">{{ formatBlank(selectedTask.order.order_number) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">产品 / 客户</span><div class="font-semibold">{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">阶段 / 类型</span><div class="font-semibold">{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">填写部 / 发至</span><div class="font-semibold">工程部 / {{ formatBlank(selectedTask.order.send_to) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">工程 / 审核主管</span><div class="font-semibold">{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">开单日期</span><div class="font-semibold">{{ formatBlank(selectedTask.order.date) }}</div></div>
                 </div>
-                <div class="mt-3 rounded-md bg-slate-50 px-3 py-2 text-[12px] text-slate-600"><span class="mr-2 text-slate-400">注意事项 / 开单事由</span>{{ formatBlank(selectedTask.order.reason) }}</div>
-                <div class="mt-4 overflow-x-auto">
-                  <table class="min-w-[980px] w-full border-collapse text-left text-[12px]">
-                    <thead><tr class="border-y border-slate-200 bg-slate-50 text-[11px] text-slate-500"><th class="px-2 py-2">#</th><th class="px-2 py-2">客模具编号 / 模具名称</th><th class="px-2 py-2">工模尺寸</th><th class="px-2 py-2">模具状态 / 回模时间</th><th class="px-2 py-2">原料</th><th class="px-2 py-2">颜色 / PMS</th><th class="px-2 py-2">数量 / 啤数</th><th class="px-2 py-2 text-right">需料kg</th><th class="px-2 py-2">需办日期</th><th class="px-2 py-2">工程备注</th></tr></thead>
-                    <tbody class="divide-y divide-slate-100"><tr v-for="item in printableEngineeringItems" :key="`preview-${item.id}`"><td class="px-2 py-2 text-slate-400">{{ item.sort_order }}</td><td class="px-2 py-2 font-semibold">{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</td><td class="px-2 py-2">{{ formatBlank(item.mold_dimensions) }}</td><td class="px-2 py-2">{{ formatMoldPresenceStatus(item.mold_presence_status) }} / {{ formatBlank(item.mold_return_time) }}</td><td class="px-2 py-2">{{ formatBlank(item.material) }}</td><td class="px-2 py-2">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</td><td class="px-2 py-2">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</td><td class="px-2 py-2 text-right tabular-nums">{{ formatWeight(item.required_material_kg) }}</td><td class="px-2 py-2">{{ formatBlank(item.completion_time) }}</td><td class="px-2 py-2">{{ formatBlank(item.notes) }}</td></tr></tbody>
+                <div class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900"><span class="mr-2 font-semibold text-amber-700">注意事项 / 开单事由</span>{{ formatBlank(selectedTask.order.reason) }}</div>
+                <div class="mt-4 flex items-center justify-between border-b border-slate-200 pb-2"><div class="font-bold text-slate-950">工程模具明细</div><div class="text-[11px] text-slate-400">共 {{ printableEngineeringItems.length }} 项 · 不含啤机回填及费用</div></div>
+                <div class="mt-2 overflow-x-auto">
+                  <table class="min-w-[720px] w-full border-collapse text-left text-[12px]">
+                    <thead><tr class="border-y border-slate-200 bg-slate-50 text-[11px] text-slate-500"><th class="w-10 px-2 py-2">#</th><th class="w-[24%] px-2 py-2">模具信息</th><th class="w-[18%] px-2 py-2">工程时点</th><th class="w-[24%] px-2 py-2">用料与颜色</th><th class="w-[14%] px-2 py-2 text-right">数量 / 需料</th><th class="px-2 py-2">工程备注</th></tr></thead>
+                    <tbody class="divide-y divide-slate-100"><tr v-for="item in printableEngineeringItems" :key="`preview-${item.id}`"><td class="px-2 py-2 align-top text-slate-400">{{ item.sort_order }}</td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</div><div class="mt-0.5 text-[11px] text-slate-500">工模尺寸：{{ formatBlank(item.mold_dimensions) }}</div></td><td class="px-2 py-2 align-top text-[11px] text-slate-600"><div>{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div><div class="mt-0.5">回模：{{ formatBlank(item.mold_return_time) }}</div><div class="mt-0.5">需办：{{ formatBlank(item.completion_time) }}</div></td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(item.material) }}</div><div class="mt-0.5 text-[11px] text-slate-600">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></td><td class="px-2 py-2 align-top text-right"><div class="text-[11px] text-slate-600">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤</div><div class="mt-0.5 font-bold tabular-nums text-slate-900">{{ formatWeight(item.required_material_kg) }}</div></td><td class="px-2 py-2 align-top text-slate-600">{{ formatBlank(item.notes) }}</td></tr></tbody>
                   </table>
                 </div>
               </article>
@@ -1650,12 +1660,14 @@ watchEffect(() => {
     </div>
   </main>
 
-  <section class="molding-sample-task-print-root hidden" data-testid="molding-sample-task-print-area" aria-label="工程啤办明细打印内容">
-    <article v-if="selectedTask" class="molding-sample-task-print-page">
-      <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-title">工程啤办生产任务单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Production Task</div></div><div><strong>{{ selectedTask.order.id }}</strong><span>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</span></div></header>
-      <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(selectedTask.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(selectedTask.order.send_to) }}</strong></div><div><span>工程 / 主管</span><strong>{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</strong></div><div><span>开单日期</span><strong>{{ formatBlank(selectedTask.order.date) }}</strong></div></section>
+  <section class="molding-sample-task-print-root hidden" data-testid="molding-sample-task-print-area" aria-label="工程啤办通知单打印内容">
+    <article v-if="selectedTask" class="molding-sample-task-print-page" :class="{ 'is-dense': printableEngineeringItems.length > 6 }">
+      <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-label">工程部下发 · 啤机部执行</div><div class="molding-sample-task-print-title">啤办通知单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Work Notice</div></div><div class="molding-sample-task-print-id"><strong>{{ selectedTask.order.id }}</strong><span>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</span></div></header>
+      <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(selectedTask.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(selectedTask.order.send_to) }}</strong></div><div><span>工程 / 审核主管</span><strong>{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</strong></div><div><span>开单日期</span><strong>{{ formatBlank(selectedTask.order.date) }}</strong></div></section>
       <section class="molding-sample-task-print-reason"><span>注意事项 / 开单事由</span><strong>{{ formatBlank(selectedTask.order.reason) }}</strong></section>
-      <table class="molding-sample-task-print-table"><thead><tr><th>#</th><th>客模具编号 / 模具名称</th><th>工模尺寸</th><th>模具状态 / 回模时间</th><th>原料</th><th>颜色 / PMS</th><th>数量 / 啤数</th><th>需料kg</th><th>需办日期</th><th>工程备注</th></tr></thead><tbody><tr v-for="item in printableEngineeringItems" :key="`print-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong></td><td>{{ formatBlank(item.mold_dimensions) }}</td><td>{{ formatMoldPresenceStatus(item.mold_presence_status) }} / {{ formatBlank(item.mold_return_time) }}</td><td>{{ formatBlank(item.material) }}</td><td>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</td><td>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</td><td>{{ formatWeight(item.required_material_kg) }}</td><td>{{ formatBlank(item.completion_time) }}</td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
+      <section class="molding-sample-task-print-section-heading"><strong>工程模具明细</strong><span>共 {{ printableEngineeringItems.length }} 项 · 不含啤机回填及费用</span></section>
+      <table class="molding-sample-task-print-table"><colgroup><col class="molding-sample-task-print-index"><col class="molding-sample-task-print-mold"><col class="molding-sample-task-print-timing"><col class="molding-sample-task-print-material"><col class="molding-sample-task-print-quantity"><col class="molding-sample-task-print-notes"></colgroup><thead><tr><th>#</th><th>模具信息</th><th>工程时点</th><th>用料与颜色</th><th>数量 / 需料</th><th>工程备注</th></tr></thead><tbody><tr v-for="item in printableEngineeringItems" :key="`print-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong><span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span></td><td>{{ formatMoldPresenceStatus(item.mold_presence_status) }}<span>回模：{{ formatBlank(item.mold_return_time) }}</span><span>需办：{{ formatBlank(item.completion_time) }}</span></td><td><strong>{{ formatBlank(item.material) }}</strong><span>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</span></td><td class="molding-sample-task-print-quantity-value">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤<strong>{{ formatWeight(item.required_material_kg) }}</strong></td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
+      <footer class="molding-sample-task-print-footer"><span>工程单据填写详情 · 啤机部执行依据</span><span>本通知单不含实际用料、成本及其他啤机回填数据。</span></footer>
     </article>
   </section>
 </template>
@@ -1663,26 +1675,44 @@ watchEffect(() => {
 <style>
 @media print {
   @page { size: A4 landscape; margin: 7mm; }
-  html, body { min-height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; }
+  html, body { min-height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   body * { visibility: hidden; }
   #app > main { display: none !important; }
   .molding-sample-task-print-root, .molding-sample-task-print-root * { visibility: visible; }
   #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: 100% !important; min-height: 0 !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; break-after: avoid-page; }
-  .molding-sample-task-print-page { width: 100%; margin: 0; break-inside: avoid-page; }
-  .molding-sample-task-print-header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #0f172a; padding-bottom: 12px; }
-  .molding-sample-task-print-header > div:last-child { text-align: right; font-size: 11px; }
-  .molding-sample-task-print-header span, .molding-sample-task-print-table span { display: block; margin-top: 3px; color: #64748b; font-size: 10px; font-weight: 400; }
-  .molding-sample-task-print-title { font-size: 20px; font-weight: 700; }
-  .molding-sample-task-print-subtitle { margin-top: 3px; color: #64748b; font-size: 10px; letter-spacing: .08em; }
-  .molding-sample-task-print-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 18px; margin: 14px 0; font-size: 10px; }
-  .molding-sample-task-print-meta div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+  .molding-sample-task-print-page { box-sizing: border-box; width: 100%; min-height: 196mm; margin: 0; break-inside: avoid-page; page-break-inside: avoid; }
+  .molding-sample-task-print-header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; }
+  .molding-sample-task-print-label { color: #0f766e; font-size: 9px; font-weight: 700; letter-spacing: .12em; }
+  .molding-sample-task-print-title { margin-top: 2px; font-size: 21px; font-weight: 700; }
+  .molding-sample-task-print-subtitle { margin-top: 2px; color: #64748b; font-size: 8.5px; letter-spacing: .08em; }
+  .molding-sample-task-print-id { min-width: 178px; padding: 8px 10px; align-self: flex-start; background: #0f172a; color: #fff; text-align: right; font-size: 10px; }
+  .molding-sample-task-print-id strong { display: block; font-size: 12px; }
+  .molding-sample-task-print-id span { display: block; margin-top: 3px; color: #cbd5e1; }
+  .molding-sample-task-print-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 10px 0; border: 1px solid #cbd5e1; background: #cbd5e1; font-size: 9px; }
+  .molding-sample-task-print-meta div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 6px; min-height: 23px; padding: 5px 6px; background: #fff; }
   .molding-sample-task-print-meta span { color: #64748b; }
-  .molding-sample-task-print-reason { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; margin: 0 0 12px; padding: 8px; background: #f8fafc; font-size: 10px; }
-  .molding-sample-task-print-reason span { color: #64748b; }
-  .molding-sample-task-print-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.5px; }
-  .molding-sample-task-print-table th, .molding-sample-task-print-table td { border: 1px solid #cbd5e1; padding: 5px; vertical-align: top; overflow-wrap: anywhere; }
-  .molding-sample-task-print-table th { background: #f8fafc; color: #475569; text-align: left; }
+  .molding-sample-task-print-reason { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; margin: 0 0 10px; padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a; font-size: 9px; }
+  .molding-sample-task-print-reason span { color: #92400e; font-weight: 700; }
+  .molding-sample-task-print-section-heading { display: flex; align-items: center; justify-content: space-between; padding-bottom: 5px; border-bottom: 1px solid #94a3b8; font-size: 10px; }
+  .molding-sample-task-print-section-heading span { color: #64748b; font-size: 8.5px; }
+  .molding-sample-task-print-table { width: 100%; margin-top: 6px; border-collapse: collapse; table-layout: fixed; font-size: 8.5px; }
+  .molding-sample-task-print-index { width: 4%; }
+  .molding-sample-task-print-mold { width: 25%; }
+  .molding-sample-task-print-timing { width: 18%; }
+  .molding-sample-task-print-material { width: 23%; }
+  .molding-sample-task-print-quantity { width: 13%; }
+  .molding-sample-task-print-notes { width: 17%; }
+  .molding-sample-task-print-table th, .molding-sample-task-print-table td { border: 1px solid #cbd5e1; padding: 4px 5px; vertical-align: top; overflow-wrap: anywhere; }
+  .molding-sample-task-print-table th { background: #f1f5f9; color: #334155; text-align: left; font-size: 8px; }
+  .molding-sample-task-print-table td > span { display: block; margin-top: 2px; color: #64748b; font-size: 8px; font-weight: 400; }
+  .molding-sample-task-print-quantity-value { text-align: right; }
+  .molding-sample-task-print-quantity-value strong { display: block; margin-top: 2px; font-size: 9px; }
   .molding-sample-task-print-table thead { display: table-header-group; }
   .molding-sample-task-print-table tr { break-inside: avoid; }
+  .molding-sample-task-print-footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 8px; padding-top: 5px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 8px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta { margin: 7px 0; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table { font-size: 7.5px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table th, .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td { padding: 3px 4px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td > span { font-size: 7px; }
 }
 </style>

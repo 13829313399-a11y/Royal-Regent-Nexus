@@ -22,14 +22,8 @@ import {
   type ProductionFactoryContextId,
   type Tone,
 } from '@/data/enterpriseMock'
-import {
-  RAW_MATERIAL_PAGE_SIZE,
-  rawMaterialDatabaseRows,
-  rawMaterialDatabaseSource,
-  type RawMaterialDatabaseRow,
-} from '@/data/rawMaterialDatabase'
-import { moldingSampleApi } from '@/api/moldingSample'
-import { resolveMaterialPrice } from '@/lib/moldingSampleBusiness'
+import { rawMaterialApi, type RawMaterialResponse } from '@/api/rawMaterial'
+import { getApiErrorMessage } from '@/lib/http'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
 
@@ -46,6 +40,7 @@ interface RawMaterialTabItem {
 }
 
 interface RawMaterialRow {
+  id: string
   rowNumber: number
   code: string
   name: string
@@ -58,7 +53,6 @@ interface RawMaterialRow {
   currentStockKg: number | null
   status: MaterialStatus
   notes: string
-  source: RawMaterialDatabaseRow
 }
 
 interface RequisitionRow {
@@ -106,9 +100,22 @@ const requisitionStatusFilters: Array<'全部' | RequisitionStatus> = ['全部',
 const movementTypeFilters: Array<'全部' | MovementType> = ['全部', '入库', '出库', '撤回']
 const materialStatusFilters: Array<'全部状态' | MaterialStatus> = ['全部状态', '启用', '停用']
 
-const rawMaterialRows = reactive(rawMaterialDatabaseRows.map(mapRawMaterialRow))
-const rawMaterialPageSize = RAW_MATERIAL_PAGE_SIZE
-const materialPriceState = ref<'loading' | 'ready' | 'unavailable'>('loading')
+const rawMaterialRows = reactive<RawMaterialRow[]>([])
+const rawMaterialPageSize = 10
+const isSavingMaterial = ref(false)
+const editingMaterialId = ref<string | null>(null)
+const materialForm = reactive({
+  materialCode: '',
+  materialName: '',
+  category: 'PVC',
+  spec: '',
+  unit: 'KG',
+  supplier: '',
+  safetyStockKg: '',
+  unitPriceHkdPerLb: '',
+  notes: '',
+  status: '启用' as MaterialStatus,
+})
 
 const requisitionRows: RequisitionRow[] = [
   {
@@ -253,7 +260,7 @@ const movementTypeFilter = ref<'全部' | MovementType>('全部')
 const showMaterialModal = ref(false)
 const showRequisitionModal = ref(false)
 const showBatchModal = ref(false)
-const actionMessage = ref(`已从 ${rawMaterialDatabaseSource.sourceFileName} 导入 ${rawMaterialDatabaseSource.rowCount} 条原料资料，作为当前页面物料数据库保存。`)
+const actionMessage = ref('正在从原料主数据库读取资料...')
 
 const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
   const routeFactory = route.query.factory
@@ -271,37 +278,25 @@ const activeFactory = computed(() =>
   appStore.activeProductionFactory,
 )
 
-async function loadProtectedMaterialPrices(factoryId: string) {
-  materialPriceState.value = 'loading'
-  rawMaterialRows.forEach((row) => {
-    row.unitPriceHkdPerLb = null
-  })
-
+async function loadPersistedRawMaterials(factoryId: string) {
   try {
-    const response = await moldingSampleApi.getMaterialPrices(factoryId)
+    const persistedRows = await rawMaterialApi.list(factoryId)
     if (factoryId !== selectedFactoryId.value) {
       return
     }
 
-    rawMaterialRows.forEach((row) => {
-      row.unitPriceHkdPerLb = resolveMaterialPrice(row.name, response.prices)?.unit_price ?? null
-    })
-    materialPriceState.value = 'ready'
+    rawMaterialRows.splice(0, rawMaterialRows.length, ...persistedRows.map(mapPersistedRawMaterialRow))
+    actionMessage.value = `已从 ${activeFactory.value.name} 原料主数据库读取 ${persistedRows.length} 条资料。`
   }
   catch {
-    if (factoryId !== selectedFactoryId.value) {
-      return
+    if (factoryId === selectedFactoryId.value) {
+      notifyAction('无法读取已保存的原料资料，请检查登录状态与后端服务。')
     }
-
-    rawMaterialRows.forEach((row) => {
-      row.unitPriceHkdPerLb = null
-    })
-    materialPriceState.value = 'unavailable'
   }
 }
 
 watch(selectedFactoryId, (factoryId) => {
-  void loadProtectedMaterialPrices(factoryId)
+  void loadPersistedRawMaterials(factoryId)
 }, { immediate: true })
 
 const normalizedSearch = computed(() => globalSearch.value.trim().toLowerCase())
@@ -319,9 +314,6 @@ const normalizedMaterialRows = computed(() =>
       row.supplier,
       row.status,
       row.notes,
-      ...Object.entries(row.source)
-        .filter(([key]) => key !== 'unitPriceHkdPerLb')
-        .map(([, value]) => value),
     ]
       .map((value) => value ?? '')
       .join(' ')
@@ -427,6 +419,7 @@ const availableInventoryWeight = computed(() => inventoryBatchRows.reduce((total
 const depletedBatchCount = computed(() => inventoryBatchRows.filter((row) => row.availableWeightKg <= 0).length)
 
 const tabTitle = computed(() => rawMaterialTabs.find((tab) => tab.id === activeTab.value)?.label ?? '原料资料')
+const isEditingMaterial = computed(() => editingMaterialId.value !== null)
 
 watch(() => route.query.tab, (tab) => {
   activeTab.value = normalizeTab(tab)
@@ -548,61 +541,22 @@ function movementTone(type: MovementType): Tone {
   return 'slate'
 }
 
-function mapRawMaterialRow(source: RawMaterialDatabaseRow, index: number): RawMaterialRow {
-  const name = source.materialName || source.commodityName || ''
-  const materialCode = source.materialCode || `RM-${String(index + 1).padStart(5, '0')}`
-
+function mapPersistedRawMaterialRow(material: RawMaterialResponse, index: number): RawMaterialRow {
   return {
-    rowNumber: source.rowNumber ?? index + 1,
-    code: materialCode,
-    name: name || '未命名原料',
-    spec: source.commodityName || getBlendDescription(source) || source.remarks || '—',
-    category: source.plasticCategory || inferMaterialCategory(name),
-    unit: source.unit || 'KG/包',
-    supplier: source.origin || '未填写',
-    unitPriceHkdPerLb: null,
-    safetyStockKg: null,
+    id: material.id,
+    rowNumber: index + 1,
+    code: material.material_code,
+    name: material.material_name || '未命名原料',
+    spec: material.spec || '—',
+    category: material.category,
+    unit: material.unit,
+    supplier: material.supplier || '未填写',
+    unitPriceHkdPerLb: material.unit_price_hkd_per_lb,
+    safetyStockKg: material.safety_stock_kg,
     currentStockKg: null,
-    status: materialCode && name ? '启用' : '停用',
-    notes: source.remarks || getBlendDescription(source),
-    source,
+    status: material.status,
+    notes: material.notes,
   }
-}
-
-function inferMaterialCategory(name: string) {
-  const normalizedName = name.toUpperCase()
-
-  for (const category of ['PVC', 'ABS', 'PP', 'PC', 'HIPS', 'HDPE', 'LDPE', 'TPE', 'TPR', 'TPU', 'POM', 'PA']) {
-    if (normalizedName.includes(category)) {
-      return category
-    }
-  }
-
-  return '未分类'
-}
-
-function getBlendDescription(source: RawMaterialDatabaseRow) {
-  const blendParts = [
-    { materialName: source.blendMaterialName01, ratio: source.blendRatio01 },
-    { materialName: source.blendMaterialName02, ratio: source.blendRatio02 },
-    { materialName: source.blendMaterialName03, ratio: source.blendRatio03 },
-  ]
-    .filter((blend) => Boolean(blend.materialName))
-    .map(({ materialName, ratio }) => {
-      if (typeof ratio !== 'number') {
-        return materialName
-      }
-
-      return `${materialName} ${formatBlendRatio(ratio)}`
-    })
-
-  return blendParts.length > 0 ? `混料：${blendParts.join(' / ')}` : ''
-}
-
-function formatBlendRatio(ratio: number) {
-  const percentage = ratio > 1 ? ratio : ratio * 100
-
-  return `${Number.isInteger(percentage) ? percentage : Number(percentage.toFixed(1))}%`
 }
 
 function batchAvailableRatio(row: InventoryBatchRow) {
@@ -634,6 +588,101 @@ function closeModals() {
   showMaterialModal.value = false
   showRequisitionModal.value = false
   showBatchModal.value = false
+  editingMaterialId.value = null
+}
+
+function resetMaterialForm() {
+  materialForm.materialCode = ''
+  materialForm.materialName = ''
+  materialForm.category = 'PVC'
+  materialForm.spec = ''
+  materialForm.unit = 'KG'
+  materialForm.supplier = ''
+  materialForm.safetyStockKg = ''
+  materialForm.unitPriceHkdPerLb = ''
+  materialForm.notes = ''
+  materialForm.status = '启用'
+  editingMaterialId.value = null
+}
+
+function openMaterialModal() {
+  resetMaterialForm()
+  showMaterialModal.value = true
+}
+
+function openEditMaterialModal(row: RawMaterialRow) {
+  materialForm.materialCode = row.code
+  materialForm.materialName = row.name
+  materialForm.category = row.category
+  materialForm.spec = row.spec === '—' ? '' : row.spec
+  materialForm.unit = row.unit
+  materialForm.supplier = row.supplier === '未填写' ? '' : row.supplier
+  materialForm.safetyStockKg = row.safetyStockKg === null ? '' : String(row.safetyStockKg)
+  materialForm.unitPriceHkdPerLb = row.unitPriceHkdPerLb === null ? '' : String(row.unitPriceHkdPerLb)
+  materialForm.notes = row.notes
+  materialForm.status = row.status
+  editingMaterialId.value = row.id
+  showMaterialModal.value = true
+}
+
+async function saveMaterial() {
+  const materialName = materialForm.materialName.trim()
+  const safetyStockValue = materialForm.safetyStockKg.trim()
+  const safetyStockKg = safetyStockValue === '' ? null : Number(safetyStockValue)
+  const unitPriceValue = materialForm.unitPriceHkdPerLb.trim()
+  const unitPriceHkdPerLb = unitPriceValue === '' ? null : Number(unitPriceValue)
+
+  if (!materialName) {
+    notifyAction('请填写原料名称。')
+    return
+  }
+  if (!Number.isFinite(safetyStockKg ?? 0) || (safetyStockKg ?? 0) < 0) {
+    notifyAction('安全库存必须是大于或等于 0 的数字。')
+    return
+  }
+  if (!Number.isFinite(unitPriceHkdPerLb ?? 0) || (unitPriceHkdPerLb ?? 0) <= 0) {
+    notifyAction('单价必须是大于 0 的数字，或留空表示暂不维护。')
+    return
+  }
+  isSavingMaterial.value = true
+  try {
+    const payload = {
+      material_name: materialName,
+      category: materialForm.category,
+      spec: materialForm.spec,
+      unit: materialForm.unit,
+      supplier: materialForm.supplier,
+      safety_stock_kg: safetyStockKg,
+      unit_price_hkd_per_lb: unitPriceHkdPerLb,
+      status: materialForm.status,
+      notes: materialForm.notes,
+    }
+    if (editingMaterialId.value) {
+      const updated = await rawMaterialApi.update(editingMaterialId.value, payload)
+      const rowIndex = rawMaterialRows.findIndex((row) => row.id === updated.id)
+      if (rowIndex >= 0) {
+        rawMaterialRows.splice(rowIndex, 1, mapPersistedRawMaterialRow(updated, rowIndex))
+      }
+      closeModals()
+      notifyAction(`原料“${updated.material_name}”及单价已更新。`)
+    }
+    else {
+      const created = await rawMaterialApi.create({
+        factory_id: selectedFactoryId.value,
+        ...payload,
+      })
+      rawMaterialRows.push(mapPersistedRawMaterialRow(created, rawMaterialRows.length))
+      materialPage.value = materialPageCount.value
+      closeModals()
+      notifyAction(`原料“${created.material_name}”已保存到 ${activeFactory.value.name} 数据库。`)
+    }
+  }
+  catch (error) {
+    notifyAction(`保存原料失败：${getApiErrorMessage(error)}`)
+  }
+  finally {
+    isSavingMaterial.value = false
+  }
 }
 
 function saveSecondaryModal() {
@@ -767,7 +816,7 @@ function saveSecondaryModal() {
             <div>
               <h2 class="text-[13px] font-bold text-slate-950">原料资料 · 物料主数据</h2>
               <p class="mt-0.5 text-[11px] text-slate-400">
-                字段按仓库原料模块样式，数据来自 {{ rawMaterialDatabaseSource.sourceFileName }} · 每页 {{ rawMaterialPageSize }} 条
+                当前厂区原料主数据 · 每页 {{ rawMaterialPageSize }} 条
               </p>
             </div>
             <div class="ml-auto flex flex-wrap items-center gap-2">
@@ -801,7 +850,7 @@ function saveSecondaryModal() {
               <button
                 type="button"
                 class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-800"
-                @click="showMaterialModal = true"
+                @click="openMaterialModal"
               >
                 <Plus class="size-4" aria-hidden="true" />
                 新增原料
@@ -828,7 +877,7 @@ function saveSecondaryModal() {
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-50 text-slate-700">
-                <tr v-for="row in paginatedMaterialRows" :key="`${row.code}-${row.rowNumber}`" class="hover:bg-slate-50">
+                <tr v-for="row in paginatedMaterialRows" :key="row.id" class="hover:bg-slate-50">
                   <td class="px-3 py-2.5 tabular-nums text-slate-400">{{ row.rowNumber }}</td>
                   <td class="px-3 py-2.5 font-semibold text-slate-950">{{ row.code }}</td>
                   <td class="px-3 py-2.5 font-semibold text-slate-800">{{ row.name }}</td>
@@ -853,7 +902,7 @@ function saveSecondaryModal() {
                     </span>
                   </td>
                   <td class="whitespace-nowrap px-3 py-2.5 text-center">
-                    <button type="button" class="text-[11px] font-semibold text-teal-700 hover:underline" @click="showMaterialModal = true">编辑</button>
+                    <button type="button" class="text-[11px] font-semibold text-teal-700 hover:underline" @click="openEditMaterialModal(row)">编辑</button>
                     <span class="mx-1 text-slate-200">|</span>
                     <button type="button" class="text-[11px] font-semibold text-slate-400 hover:text-slate-700" @click="notifyAction(`${materialRowLabel(row)} 状态操作待接入原料主数据接口。`)">
                       {{ row.status === '启用' ? '停用' : '启用' }}
@@ -1182,8 +1231,8 @@ function saveSecondaryModal() {
             <Plus class="size-4" aria-hidden="true" />
           </span>
           <div>
-            <div class="text-[14px] font-bold text-slate-950">新增原料</div>
-            <div class="text-[11px] text-slate-400">Add Raw Material · 物料主数据</div>
+            <div class="text-[14px] font-bold text-slate-950">{{ isEditingMaterial ? '编辑原料' : '新增原料' }}</div>
+            <div class="text-[11px] text-slate-400">{{ isEditingMaterial ? 'Edit Raw Material · 物料主数据与单价' : 'Add Raw Material · 物料主数据' }}</div>
           </div>
           <button type="button" class="ml-auto flex size-7 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100" aria-label="关闭新增原料弹窗" @click="closeModals">
             <X class="size-4" aria-hidden="true" />
@@ -1192,16 +1241,16 @@ function saveSecondaryModal() {
         <div class="max-h-[70vh] overflow-y-auto p-5">
           <div class="grid gap-x-4 gap-y-3.5 sm:grid-cols-2">
             <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-slate-500">物料编号 <span class="text-red-500">*</span></span>
-              <input value="91000001" class="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-500 outline-none focus:border-slate-400">
+              <span class="mb-1 block text-[11px] font-medium text-slate-500">物料编号（系统自动生成）</span>
+              <input v-model="materialForm.materialCode" readonly class="h-9 w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-500 outline-none" :placeholder="isEditingMaterial ? '' : '保存后自动生成'">
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">原料名称 / 型号 <span class="text-red-500">*</span></span>
-              <input class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：ABS 750NSW">
+              <input v-model.trim="materialForm.materialName" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：ABS 750NSW">
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">类别 <span class="text-red-500">*</span></span>
-              <select class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+              <select v-model="materialForm.category" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 <option>PVC</option>
                 <option>ABS</option>
                 <option>PP</option>
@@ -1212,11 +1261,11 @@ function saveSecondaryModal() {
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">规格</span>
-              <input class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：30度 软胶">
+              <input v-model.trim="materialForm.spec" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：30度 软胶">
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">计量单位 <span class="text-red-500">*</span></span>
-              <select class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+              <select v-model="materialForm.unit" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 <option>KG</option>
                 <option>g</option>
                 <option>磅</option>
@@ -1225,30 +1274,31 @@ function saveSecondaryModal() {
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价 (HKD/磅)</span>
-              <input type="number" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="由受保护价格接口维护">
+              <input v-model="materialForm.unitPriceHkdPerLb" type="number" min="0" step="0.000001" data-testid="raw-material-unit-price" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：4.85">
+              <span class="mt-1 block text-[10px] text-slate-400">工程部维护后会同步用于啤办成本计算。</span>
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">供应商</span>
-              <input class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：东莞恒益塑胶">
+              <input v-model.trim="materialForm.supplier" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：东莞恒益塑胶">
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">安全库存 (KG)</span>
-              <input type="number" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="50">
+              <input v-model="materialForm.safetyStockKg" type="number" min="0" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="50">
             </label>
             <label class="block sm:col-span-2">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">备注</span>
-              <textarea rows="2" class="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="混合料配比、别名、注意事项"></textarea>
+              <textarea v-model.trim="materialForm.notes" rows="2" class="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="混合料配比、别名、注意事项"></textarea>
             </label>
             <div class="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-2 sm:col-span-2">
               <span class="text-[11px] font-medium text-slate-500">状态</span>
-              <label class="ml-2 inline-flex items-center gap-1 text-[12px]"><input type="radio" name="material-status" checked class="accent-teal-700"> 启用</label>
-              <label class="inline-flex items-center gap-1 text-[12px]"><input type="radio" name="material-status" class="accent-teal-700"> 停用</label>
+              <label class="ml-2 inline-flex items-center gap-1 text-[12px]"><input v-model="materialForm.status" type="radio" name="material-status" value="启用" class="accent-teal-700"> 启用</label>
+              <label class="inline-flex items-center gap-1 text-[12px]"><input v-model="materialForm.status" type="radio" name="material-status" value="停用" class="accent-teal-700"> 停用</label>
             </div>
           </div>
         </div>
         <div class="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
           <button type="button" class="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300" @click="closeModals">取消</button>
-          <button type="button" class="inline-flex h-9 items-center rounded-lg bg-slate-950 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800" @click="closeModals(); notifyAction('原料保存动作待接主数据接口。')">保存</button>
+          <button type="button" class="inline-flex h-9 items-center rounded-lg bg-slate-950 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400" :disabled="isSavingMaterial" @click="saveMaterial">{{ isSavingMaterial ? '保存中…' : '保存' }}</button>
         </div>
       </section>
     </div>
@@ -1303,7 +1353,7 @@ function saveSecondaryModal() {
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价参考 (HKD/磅)</span>
-              <input :value="materialPriceState === 'ready' ? '选择原料后显示' : '无价格权限或暂无价格'" disabled class="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-400 outline-none">
+              <input value="选择原料后显示" disabled class="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-400 outline-none">
             </label>
           </div>
           <div v-else class="grid gap-x-4 gap-y-3.5 sm:grid-cols-2">

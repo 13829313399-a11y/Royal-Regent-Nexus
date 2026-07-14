@@ -1899,6 +1899,85 @@ def test_export_and_import_molding_sample_excel_template(client):
     assert imported["items"][0]["completion_time"] == "2026-07-22"
 
 
+def test_download_engineering_import_template_matches_current_manual_fields(client):
+    login_as(client, "engineer")
+
+    response = client.get("/api/injection/import-excel-template", params={"factory_id": "huaxing"})
+
+    assert response.status_code == 200
+    assert response.content[:2] == b"PK"
+    assert 'filename="engineering-molding-sample-import-template.xlsx"' in response.headers["content-disposition"]
+
+    with ZipFile(BytesIO(response.content)) as workbook:
+        sheet_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    for current_manual_header in [
+        "模具编号",
+        "模具名称",
+        "所需用料",
+        "颜色",
+        "PMS",
+        "色粉",
+        "啤/套",
+        "啤数",
+        "所需用料(kg)",
+        "需办日期",
+        "工模尺寸",
+        "模具状态（是否在厂）",
+        "备注",
+    ]:
+        assert current_manual_header in sheet_xml
+
+    assert "原料价格(HKD/磅)" not in sheet_xml
+    assert "客模具编号" not in sheet_xml
+    assert "模具是否在厂" not in sheet_xml
+    assert "模具回厂时间" not in sheet_xml
+    assert "适配机型" not in sheet_xml
+    assert "毛重g" not in sheet_xml
+    assert "预计料费HKD" not in sheet_xml
+    assert '<autoFilter ref="A8:M8"/>' in sheet_xml
+
+
+def test_parse_molding_sample_excel_accepts_current_engineering_headers():
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    current_rows = [
+        ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
+        ["客户", "ShuShuPaPa", "产品编号", "P50002008", "产品名称", "30寸黑武士"],
+        ["开单日期", "2026/07/14", "阶段", "T0", "填写部", "工程部"],
+        ["发至", "内部", "审核主管", "杨敬作", "落单人", "工程A"],
+        ["注意事项", "首次打样"],
+        [],
+        [],
+        [
+            "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
+            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "备注",
+        ],
+        [
+            "P50002008-01-01", "30寸黑武士-头盔", "PP（AV161）", "黑色", "Black C", "黑种", "2", 30,
+            15, "2026-07-22", "650 × 450 × 380 mm", "在厂", "第一次试模",
+        ],
+    ]
+
+    parsed = excel_service.parse_order_excel(
+        excel_service._build_workbook(excel_service._sheet_xml(current_rows, header_row_index=8))
+    )
+
+    assert parsed.order.order_number == "P50002008"
+    assert parsed.order.product_name == "30寸黑武士"
+    assert parsed.order.date == "2026-07-14"
+    assert parsed.order.workshop == "工程部"
+    assert parsed.order.reason == "首次打样"
+    assert parsed.items[0].mold_id == "P50002008-01-01"
+    assert parsed.items[0].mold_presence_status == "in_factory"
+    assert parsed.items[0].material == "PP（AV161）"
+    assert parsed.items[0].color == "黑色 / PMS Black C"
+    assert parsed.items[0].required_material_kg == 15
+    assert parsed.items[0].mold_return_time == ""
+    assert parsed.items[0].completion_time == "2026-07-22"
+    assert parsed.items[0].machine_type == ""
+    assert parsed.items[0].gross_weight_g is None
+
+
 def test_parse_molding_sample_excel_accepts_legacy_mold_metadata_headers():
     excel_service = importlib.import_module("app.services.molding_sample_excel")
     legacy_rows = [

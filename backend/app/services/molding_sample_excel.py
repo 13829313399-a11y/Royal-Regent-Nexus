@@ -61,6 +61,28 @@ ITEM_COLUMNS = [
     ("保存汇率", "exchange_rate_at_save"),
 ]
 
+# The engineering import sheet intentionally mirrors only the editable fields in
+# the current "新建啤办单" screen.  Keep this separate from ITEM_COLUMNS: the
+# latter is the full formal-order export contract and includes production
+# fillback, calculated cost, and historical compatibility fields.
+ENGINEERING_IMPORT_COLUMNS = [
+    ("模具编号", "mold_id"),
+    ("模具名称", "mold_name"),
+    ("所需用料", "material"),
+    ("颜色", "color"),
+    ("PMS", "pms"),
+    ("色粉", "pigment_no"),
+    ("啤/套", "quantity"),
+    ("啤数", "shoot_qty"),
+    ("所需用料(kg)", "required_material_kg"),
+    ("需办日期", "required_date"),
+    ("工模尺寸", "mold_dimensions"),
+    ("模具状态（是否在厂）", "mold_presence_status"),
+    ("备注", "notes"),
+]
+
+ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 11, 11, 16, 16, 18, 18, 30]
+
 BATCH_ORDER_COLUMNS = [
     ("单据ID", "id"),
     ("工厂ID", "factory_id"),
@@ -125,12 +147,16 @@ ITEM_ALIASES.update(
         "id": "id",
         "模号": "mold_id",
         "模具": "mold_name",
+        "客模具编号": "mold_id",
         "机型": "machine_type",
         "机型/吨位": "machine_type",
         "模具是否在厂": "mold_presence_status",
         "模具在厂状态": "mold_presence_status",
+        "模具状态（是否在厂）": "mold_presence_status",
+        "模具状态(是否在厂)": "mold_presence_status",
         "材料": "material",
         "用料": "material",
+        "所需用料": "material",
         "所需颜色": "color",
         "PMS": "pms",
         "色粉": "pigment_no",
@@ -143,6 +169,9 @@ ITEM_ALIASES.update(
         "毛重": "gross_weight_g",
         "需料": "required_material_kg",
         "需料KG": "required_material_kg",
+        "所需用料(kg)": "required_material_kg",
+        "所需用料（kg）": "required_material_kg",
+        "所需用料kg": "required_material_kg",
         "用料重量（KG)": "required_material_kg",
         "用料重量(KG)": "required_material_kg",
         "用料重量kg": "required_material_kg",
@@ -410,6 +439,41 @@ def export_orders_to_excel(
     )
 
 
+def build_engineering_import_template() -> bytes:
+    """Build the engineering-facing import workbook from the current entry fields.
+
+    No formula is used for required material: engineers enter ``所需用料(kg)``
+    directly, matching the current manual form.
+    """
+
+    last_column = _column_name(len(ENGINEERING_IMPORT_COLUMNS))
+    rows: list[list[object | None]] = [
+        ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
+        ["客户", "", "产品编号", "", "产品名称", ""],
+        ["开单日期", "", "阶段", "T0", "填写部", "工程部"],
+        ["发至", "内部", "审核主管", "", "落单人", ""],
+        ["注意事项", ""],
+        ["填写说明：每一行代表一项模具明细；原料价格由系统按“所需用料”自动带出，不需填写；所需用料(kg)请直接填写；模具状态请选在厂、不在厂或待确认。"],
+        [],
+        [label for label, _ in ENGINEERING_IMPORT_COLUMNS],
+        ["" for _ in ENGINEERING_IMPORT_COLUMNS],
+    ]
+    style_matrix: dict[tuple[int, int], int] = {}
+    for column_index in range(1, len(ENGINEERING_IMPORT_COLUMNS) + 1):
+        style_matrix[(8, column_index)] = DETAIL_HEADER_STYLE_ID
+        style_matrix[(9, column_index)] = DETAIL_BODY_STYLE_ID
+
+    return _build_workbook(
+        _sheet_xml(
+            rows,
+            column_widths=ENGINEERING_IMPORT_COLUMN_WIDTHS,
+            header_row_index=8,
+            style_matrix=style_matrix,
+            merge_ranges=[f"A1:{last_column}1", "B5:F5", f"A6:{last_column}6"],
+        ),
+    )
+
+
 def _safe_text(value: object, fallback: str = "—") -> str:
     text = str(value or "").strip()
     return text if text else fallback
@@ -581,6 +645,10 @@ def parse_order_excel(
         order_data["date"] = datetime.now().strftime("%Y-%m-%d")
 
     headers = [str(value or "").strip() for value in rows[detail_header_index]]
+    uses_current_engineering_detail_contract = any(
+        _normalize_header(header) == _normalize_header("模具状态（是否在厂）")
+        for header in headers
+    )
     field_by_index = {
         index: field
         for index, header in enumerate(headers)
@@ -626,7 +694,8 @@ def parse_order_excel(
         if pms:
             item_data["color"] = _format_color_pms(str(item_data.get("color") or ""), pms)
         if required_date:
-            item_data["mold_return_time"] = str(item_data.get("mold_return_time") or "") or required_date
+            if not uses_current_engineering_detail_contract:
+                item_data["mold_return_time"] = str(item_data.get("mold_return_time") or "") or required_date
             item_data["completion_time"] = str(item_data.get("completion_time") or "") or required_date
         existing_notes = str(item_data.get("notes") or "").strip()
         if existing_notes and note_parts:
@@ -704,7 +773,9 @@ def _read_cell_value(cell: ElementTree.Element, shared_strings: list[str]) -> st
 def _find_detail_header_row(rows: list[list[str]]) -> int | None:
     for index, row in enumerate(rows):
         normalized = {str(value or "").strip() for value in row}
-        if "明细ID" in normalized or ("模具编号" in normalized and ("原料" in normalized or "用料" in normalized)):
+        has_mold_header = bool({"模具编号", "客模具编号"} & normalized)
+        has_material_header = bool({"原料", "用料", "所需用料"} & normalized)
+        if "明细ID" in normalized or (has_mold_header and has_material_header):
             return index
     return None
 
