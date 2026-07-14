@@ -1814,3 +1814,11 @@ Use this template when updating the memory after future work:
 - Static artifact: created `D:/RR/outputs/019f5b59-67a1-7ff2-9b22-82169c70632b/工程部啤办单_基础资料与模具明细导入模板_优化版.xlsx`, with a 30-row input area, status dropdown, and a current field-guide sheet. The original static workbook was open in Excel and therefore was not overwritten.
 - Files changed: `backend/app/services/molding_sample_excel.py`, `backend/tests/test_molding_sample_api.py`, `src/lib/moldingSampleManualCreate.ts`, `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
 - Verification: focused importer regressions passed 3 tests; full `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_molding_sample_api.py -q -p no:cacheprovider` passed 49 tests; manual-create and view-layout contract scripts passed; `npm.cmd run build` passed with only known third-party `@vueuse/core` Rolldown annotation warnings; `git diff --check` passed. The optimized workbook was inspected (correct basic-data/detail order), formula-error scan returned zero matches, and both sheets were rendered for visual QA. The local API was restarted and `/health` returned OK.
+
+### 2026-07-14
+
+- Requirement: Dickie customer-quote exports must retain the imported workbook's original filename without composing a new quotation filename.
+- Implementation: `buildDickyCustomerQuoteFileName()` now returns the recorded `sourceFileName` unchanged (with a `Dickie.xlsx` fallback only when absent); removed the no-longer-used filename sanitization/date helpers and added an exact-name regression.
+- Files changed: `src/lib/customerPriceConverters/dicky.ts`, `src/lib/__tests__/dickyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused Dickie Vitest suite passed 7 tests, `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings, and `git diff --check` passed with Windows line-ending notices only.
+- Decision: this preserves the source filename byte-for-byte from the browser upload, including its original spelling and extension; it does not change Dickie workbook content translation or any other customer export naming.
