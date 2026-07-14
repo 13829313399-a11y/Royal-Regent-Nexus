@@ -339,9 +339,7 @@ describe('Dickie customer price converter', () => {
     expect(quote?.rows[27][2]).toBe('Cost')
     expect(quote?.rows[47][2]).toBe('Car Light')
     const fileName = buildDickyCustomerQuoteFileName(result)
-    expect(fileName).toContain('Quotation of Simba Dickie toys')
-    expect(fileName).toContain('Dickie Cable internal quote')
-    expect(fileName).not.toContain('Dicky')
+    expect(fileName).toBe('Dicky Cable internal quote.xlsx')
 
     const outputXml = strFromU8(unzipSync(output)['xl/worksheets/sheet2.xml'])
     expect(outputXml).toContain("<f>'Stitch史迪仔'!D52</f>")
