@@ -1336,6 +1336,88 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     assert completed_detail_response.json()["items"][0]["actual_weight_kg"] == 2
 
 
+def test_molding_clerk_can_save_one_trial_report_per_mold_item(client):
+    login_as(client, "engineer")
+    client.post("/api/injection", json=sample_order_payload("BP-TRIAL-REPORT-001"))
+
+    login_as(client, "supervisor")
+    approved_response = client.patch(
+        "/api/injection/BP-TRIAL-REPORT-001/status",
+        json={"action": "主管通过"},
+    )
+    assert approved_response.status_code == 200
+    assert approved_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "molding_clerk")
+    report_response = client.put(
+        "/api/injection/BP-TRIAL-REPORT-001/trial-reports/BP-TRIAL-REPORT-001-001",
+        json={
+            "data": {
+                "mold_supplier": "华兴模具厂",
+                "sample_category": "首板",
+                "material_name": "HIPS 425",
+                "material_shots": "30",
+                "color": "深绿色",
+                "color_code": "71139",
+                "front_mold_water": "冻水",
+                "rear_mold_water": "热水",
+                "other_trial_requirement_note": "首件确认后再连续生产",
+                "plastic_model": "HIPS 425",
+                "machine_model": "海天",
+                "machine_no": "A-08",
+                "ejector_count": "3",
+                "cushion_pressure": "30",
+                "clamping_force": "75",
+                "high_pressure": "80",
+                "low_pressure": "55",
+                "pressure_stage_1": "88",
+                "barrel_temperature_head": "230",
+                "molding_mode": "全自动",
+                "mold_issues": ["困气"],
+                "part_issues": ["缩水"],
+                "trial_summary": "首件尺寸正常，需继续观察水口。",
+                "trial_round": "第 1 次试模",
+                "verdict": "合格试模",
+                "tester_name": "华兴啤机部文员",
+            }
+        },
+    )
+
+    assert report_response.status_code == 200
+    report_payload = report_response.json()
+    assert report_payload["order_id"] == "BP-TRIAL-REPORT-001"
+    assert report_payload["item_id"] == "BP-TRIAL-REPORT-001-001"
+    assert report_payload["factory_id"] == "huaxing"
+    assert report_payload["data"]["mold_supplier"] == "华兴模具厂"
+    assert report_payload["data"]["sample_category"] == "首板"
+    assert report_payload["data"]["other_trial_requirement_note"] == "首件确认后再连续生产"
+    assert report_payload["data"]["ejector_count"] == "3"
+    assert report_payload["data"]["clamping_force"] == "75"
+    assert report_payload["data"]["mold_issues"] == ["困气"]
+    assert report_payload["created_by"] == "华兴啤机部文员"
+
+    updated_report_response = client.put(
+        "/api/injection/BP-TRIAL-REPORT-001/trial-reports/BP-TRIAL-REPORT-001-001",
+        json={"data": {"trial_summary": "复核后可以量产。", "verdict": "合格试模"}},
+    )
+    assert updated_report_response.status_code == 200
+    assert updated_report_response.json()["id"] == report_payload["id"]
+    assert updated_report_response.json()["data"]["trial_summary"] == "复核后可以量产。"
+
+    detail_response = client.get("/api/injection/BP-TRIAL-REPORT-001")
+    assert detail_response.status_code == 200
+    trial_reports = detail_response.json()["trial_reports"]
+    assert len(trial_reports) == 1
+    assert trial_reports[0]["data"]["verdict"] == "合格试模"
+
+    missing_item_response = client.put(
+        "/api/injection/BP-TRIAL-REPORT-001/trial-reports/BP-TRIAL-REPORT-001-404",
+        json={"data": {}},
+    )
+    assert missing_item_response.status_code == 404
+    assert "模具明细不存在" in missing_item_response.json()["detail"]
+
+
 def test_engineer_can_withdraw_pending_order_and_resubmit(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-WITHDRAW-001"))

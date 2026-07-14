@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  ClipboardPenLine,
   ChevronRight,
   Flag,
   LayoutDashboard,
@@ -48,11 +49,14 @@ import type {
   MoldingSampleItem,
   MoldingSampleOrder,
   MoldingSampleProblem,
+  MoldingSampleTrialReport,
+  MoldingSampleTrialReportData,
   MoldingSampleStatus,
   MoldingSampleWorkflowRecord,
 } from '@/types/moldingSample'
 import StatusPill from '@/components/common/StatusPill.vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
@@ -99,6 +103,10 @@ const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
 const isSelectedTaskDataExpanded = ref(false)
 const taskPrintPreviewVisible = ref(false)
+const trialReportDialogVisible = ref(false)
+const trialReportReadOnly = ref(false)
+const trialReportInitialItemId = ref('')
+const trialReportSaving = ref(false)
 const protectedMaterialPrices = ref<MoldingSampleMaterialPrice[]>([])
 const protectedRmbToHkdRate = ref<number | null>(null)
 
@@ -191,6 +199,7 @@ const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
       audit_logs: record.audit_logs,
       requisitions: [],
       problems: record.problems ?? [],
+      trial_reports: record.trial_reports ?? [],
     }))
     .filter((record) =>
       !canReadSelectedNotifications.value || notificationOrderIds.value.has(record.order.id),
@@ -276,6 +285,19 @@ const canPrintSelectedTask = computed(() =>
     && printableEngineeringItems.value.length
     && ['待生产', '生产中', '已完成'].includes(selectedTask.value.order.status),
   ),
+)
+const canSaveSelectedTrialReport = computed(() =>
+  Boolean(
+    selectedTask.value
+    && ['待生产', '生产中'].includes(selectedTask.value.order.status)
+    && canFillbackSelectedTaskFactory.value,
+  ),
+)
+const selectedTrialReports = computed(() => selectedTask.value?.trial_reports ?? [])
+const currentProductionOperatorName = computed(() =>
+  authStore.currentUser?.display_name
+  || authStore.currentUser?.username
+  || '',
 )
 
 const completionGate = computed(() => {
@@ -582,7 +604,74 @@ function confirmTaskPrint() {
   }
 
   actionMessage.value = `正在打印工程部下发的啤办通知单 ${selectedTask.value.order.id}。`
+  document.body.classList.add('molding-sample-task-printing')
+  document.getElementById('molding-sample-active-print-page')?.remove()
+  const pageStyle = document.createElement('style')
+  pageStyle.id = 'molding-sample-active-print-page'
+  pageStyle.textContent = '@media print { @page { size: A4 landscape; margin: 7mm; } }'
+  document.head.append(pageStyle)
+  const cleanUp = () => {
+    document.body.classList.remove('molding-sample-task-printing')
+    pageStyle.remove()
+  }
+  window.addEventListener('afterprint', cleanUp, { once: true })
   window.print()
+}
+
+function openTrialReportDialog() {
+  if (!selectedTask.value?.items.length) {
+    actionMessage.value = '当前啤办单没有可填写试模报告的模具明细。'
+    return
+  }
+
+  trialReportReadOnly.value = false
+  trialReportInitialItemId.value = ''
+  trialReportDialogVisible.value = true
+}
+
+function openTrialReportHistory(itemId: string) {
+  if (!selectedTask.value?.trial_reports.some((report) => report.item_id === itemId)) {
+    actionMessage.value = '当前模具尚未保存试模报告。'
+    return
+  }
+
+  trialReportReadOnly.value = true
+  trialReportInitialItemId.value = itemId
+  trialReportDialogVisible.value = true
+}
+
+function closeTrialReportDialog() {
+  trialReportDialogVisible.value = false
+  trialReportReadOnly.value = false
+  trialReportInitialItemId.value = ''
+}
+
+async function saveTrialReport(payload: { itemId: string, data: MoldingSampleTrialReportData }) {
+  if (!selectedTask.value) {
+    actionMessage.value = '请先选择一张啤办生产任务单。'
+    return
+  }
+  if (!canSaveSelectedTrialReport.value) {
+    actionMessage.value = '仅待生产或生产中的任务可保存试模报告，且需具备啤机部回填权限。'
+    return
+  }
+  if (apiState.value !== 'connected') {
+    actionMessage.value = '真实任务读取失败或暂无正式任务，不能保存试模报告。'
+    return
+  }
+
+  trialReportSaving.value = true
+  try {
+    const report = await moldingSampleApi.upsertTrialReport(selectedTask.value.order.id, payload.itemId, { data: payload.data })
+    replaceTrialReportForOrder(selectedTask.value.order.id, report)
+    actionMessage.value = `试模报告已保存并同步至工程部：${selectedTask.value.order.id} · ${payload.itemId}。`
+  }
+  catch (error) {
+    actionMessage.value = `试模报告保存失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    trialReportSaving.value = false
+  }
 }
 
 function applyLocalItemPatches(orderId: string) {
@@ -608,6 +697,18 @@ function replaceApiRecord(record: MoldingSampleDetailResponse) {
     : [record, ...apiRecords.value]
 
   replaceApiNotificationsForOrder(record)
+}
+
+function replaceTrialReportForOrder(orderId: string, report: MoldingSampleTrialReport) {
+  apiRecords.value = apiRecords.value.map((record) => record.order.id === orderId
+    ? {
+        ...record,
+        trial_reports: [
+          report,
+          ...(record.trial_reports ?? []).filter((entry) => entry.id !== report.id && entry.item_id !== report.item_id),
+        ],
+      }
+    : record)
 }
 
 function appendProblemForOrder(orderId: string, problem: MoldingSampleProblem) {
@@ -1241,6 +1342,15 @@ watchEffect(() => {
               </div>
               <button
                 type="button"
+                :disabled="!selectedTask.items.length"
+                class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 text-[12px] font-semibold text-teal-800 transition hover:border-teal-300 hover:bg-teal-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                @click="openTrialReportDialog"
+              >
+                <ClipboardPenLine class="size-3.5" aria-hidden="true" />
+                试模报告填写 / 打印
+              </button>
+              <button
+                type="button"
                 :disabled="!canPrintSelectedTask"
                 class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                 @click="openTaskPrintPreview"
@@ -1249,6 +1359,46 @@ watchEffect(() => {
                 打印任务单
               </button>
             </div>
+          </section>
+
+          <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="molding-sample-trial-report-history">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <ClipboardPenLine class="size-4 text-teal-700" aria-hidden="true" />
+                <div>
+                  <h3 class="text-[13px] font-bold text-slate-950">试模报告历史</h3>
+                  <p class="mt-0.5 text-[11px] text-slate-500">已保存的报告自动同步到工程部单据详情，可随时查看和再次打印。</p>
+                </div>
+              </div>
+              <span class="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700">{{ selectedTrialReports.length }} 份</span>
+            </div>
+            <div v-if="selectedTrialReports.length" class="mt-3 grid gap-2 md:grid-cols-2">
+              <article
+                v-for="report in selectedTrialReports"
+                :key="report.id"
+                class="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
+              >
+                <div class="min-w-0">
+                  <p class="truncate text-[12px] font-semibold text-slate-900">
+                    {{ selectedTask.items.find((item) => item.id === report.item_id)?.mold_id || '未填模具编号' }}
+                    ·
+                    {{ selectedTask.items.find((item) => item.id === report.item_id)?.mold_name || '未填模具名称' }}
+                  </p>
+                  <p class="mt-0.5 truncate text-[11px] text-slate-500">啤机部 {{ report.updated_by || report.created_by || '已保存' }} · {{ report.updated_at || report.created_at }}</p>
+                </div>
+                <button
+                  type="button"
+                  class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-teal-200 bg-white px-2.5 text-[11px] font-semibold text-teal-800 transition hover:bg-teal-50"
+                  @click="openTrialReportHistory(report.item_id)"
+                >
+                  <Printer class="size-3.5" aria-hidden="true" />
+                  查看 / 再次打印
+                </button>
+              </article>
+            </div>
+            <p v-else class="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+              暂无已保存报告。啤机部填写并保存后，这里会形成可查、可重印的历史记录。
+            </p>
           </section>
 
           <div
@@ -1584,6 +1734,21 @@ watchEffect(() => {
         </section>
       </div>
 
+      <MoldingSampleTrialReportDialog
+        :visible="trialReportDialogVisible"
+        :order="selectedTask?.order ?? null"
+        :items="selectedTask?.items ?? []"
+        :reports="selectedTrialReports"
+        :factory-short-name="activeFactory.shortName"
+        :operator-name="currentProductionOperatorName"
+        :can-save="canSaveSelectedTrialReport"
+        :saving="trialReportSaving"
+        :read-only="trialReportReadOnly"
+        :initial-item-id="trialReportInitialItemId"
+        @close="closeTrialReportDialog"
+        @save="saveTrialReport"
+      />
+
       <Transition
         enter-active-class="transition duration-150 ease-out"
         enter-from-class="opacity-0"
@@ -1676,10 +1841,10 @@ watchEffect(() => {
 @media print {
   @page { size: A4 landscape; margin: 7mm; }
   html, body { min-height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-  body * { visibility: hidden; }
-  #app > main { display: none !important; }
-  .molding-sample-task-print-root, .molding-sample-task-print-root * { visibility: visible; }
-  #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: 100% !important; min-height: 0 !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; break-after: avoid-page; }
+  body.molding-sample-task-printing * { visibility: hidden; }
+  body.molding-sample-task-printing #app > main { display: none !important; }
+  body.molding-sample-task-printing .molding-sample-task-print-root, body.molding-sample-task-printing .molding-sample-task-print-root * { visibility: visible; }
+  body.molding-sample-task-printing #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: 100% !important; min-height: 0 !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; break-after: avoid-page; }
   .molding-sample-task-print-page { box-sizing: border-box; width: 100%; min-height: 196mm; margin: 0; break-inside: avoid-page; page-break-inside: avoid; }
   .molding-sample-task-print-header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; }
   .molding-sample-task-print-label { color: #0f766e; font-size: 9px; font-weight: 700; letter-spacing: .12em; }

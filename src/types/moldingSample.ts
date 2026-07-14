@@ -136,6 +136,80 @@ export interface MoldingSampleProblem {
   resolved_at: string
 }
 
+export interface MoldingSampleTrialReportData {
+  mold_supplier: string
+  sample_category: string
+  material_name: string
+  material_shots: string
+  material_weight: string
+  color: string
+  color_code: string
+  color_shots: string
+  color_weight: string
+  virgin_material_shots: string
+  virgin_material_weight: string
+  runner_material_shots: string
+  runner_material_weight: string
+  water_ratio: string
+  water_shots: string
+  water_material_weight: string
+  water_weight: string
+  special_requirements: string
+  front_mold_water: string
+  rear_mold_water: string
+  other_trial_requirement: string
+  other_trial_requirement_note: string
+  baking_time_hours: string
+  mold_condition: string
+  expected_return_time: string
+  gross_weight: string
+  net_weight: string
+  plastic_model: string
+  machine_model: string
+  machine_no: string
+  cooling_time: string
+  holding_time: string
+  cycle_time: string
+  injection_speed: string
+  ejector_count: string
+  cushion_pressure: string
+  clamping_force: string
+  high_pressure: string
+  low_pressure: string
+  pressure_stage_1: string
+  pressure_stage_2: string
+  pressure_stage_3: string
+  pressure_stage_4: string
+  barrel_temperature_head: string
+  barrel_temperature_middle: string
+  barrel_temperature_end: string
+  molding_mode: string
+  mold_issues: string[]
+  part_issues: string[]
+  issue_notes: string
+  trial_summary: string
+  trial_round: string
+  verdict: string
+  tester_name: string
+  tester_date: string
+  molding_supervisor_name: string
+  molding_supervisor_date: string
+  engineer_name: string
+  engineer_date: string
+}
+
+export interface MoldingSampleTrialReport {
+  id: string
+  factory_id: string
+  order_id: string
+  item_id: string
+  data: MoldingSampleTrialReportData
+  created_by: string
+  created_at: string
+  updated_by: string
+  updated_at: string
+}
+
 export interface MoldingSampleWorkflowRecord {
   factory_id: string
   order: MoldingSampleOrder
@@ -143,6 +217,7 @@ export interface MoldingSampleWorkflowRecord {
   audit_logs: MoldingSampleAuditLog[]
   requisitions: MoldingSampleRequisition[]
   problems: MoldingSampleProblem[]
+  trial_reports: MoldingSampleTrialReport[]
   access?: {
     read_source: 'local' | 'cross'
     can_view_cost: boolean

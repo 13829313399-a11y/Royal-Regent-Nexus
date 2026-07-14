@@ -132,6 +132,88 @@ class MoldingSampleProblemStatusRequest(BaseModel):
     status: str
 
 
+class MoldingSampleTrialReportData(BaseModel):
+    """Fields reproduced from the factory's paper trial-mold acceptance receipt."""
+
+    mold_supplier: str = ""
+    sample_category: str = ""
+    material_name: str = ""
+    material_shots: str = ""
+    material_weight: str = ""
+    color: str = ""
+    color_code: str = ""
+    color_shots: str = ""
+    color_weight: str = ""
+    virgin_material_shots: str = ""
+    virgin_material_weight: str = ""
+    runner_material_shots: str = ""
+    runner_material_weight: str = ""
+    water_ratio: str = ""
+    water_shots: str = ""
+    water_material_weight: str = ""
+    water_weight: str = ""
+    special_requirements: str = ""
+    front_mold_water: str = ""
+    rear_mold_water: str = ""
+    other_trial_requirement: str = ""
+    other_trial_requirement_note: str = ""
+    baking_time_hours: str = ""
+    mold_condition: str = ""
+    expected_return_time: str = ""
+    gross_weight: str = ""
+    net_weight: str = ""
+    plastic_model: str = ""
+    machine_model: str = ""
+    machine_no: str = ""
+    cooling_time: str = ""
+    holding_time: str = ""
+    cycle_time: str = ""
+    injection_speed: str = ""
+    ejector_count: str = ""
+    cushion_pressure: str = ""
+    clamping_force: str = ""
+    high_pressure: str = ""
+    low_pressure: str = ""
+    pressure_stage_1: str = ""
+    pressure_stage_2: str = ""
+    pressure_stage_3: str = ""
+    pressure_stage_4: str = ""
+    barrel_temperature_head: str = ""
+    barrel_temperature_middle: str = ""
+    barrel_temperature_end: str = ""
+    molding_mode: str = ""
+    mold_issues: list[str] = Field(default_factory=list)
+    part_issues: list[str] = Field(default_factory=list)
+    issue_notes: str = ""
+    trial_summary: str = ""
+    trial_round: str = ""
+    verdict: str = ""
+    tester_name: str = ""
+    tester_date: str = ""
+    molding_supervisor_name: str = ""
+    molding_supervisor_date: str = ""
+    engineer_name: str = ""
+    engineer_date: str = ""
+
+
+class MoldingSampleTrialReportUpsertRequest(BaseModel):
+    data: MoldingSampleTrialReportData
+
+
+class MoldingSampleTrialReportOut(BaseModel):
+    id: str
+    factory_id: str
+    order_id: str
+    item_id: str
+    data: MoldingSampleTrialReportData
+    created_by: str
+    created_at: str
+    updated_by: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class MoldingSampleCreateRequest(BaseModel):
     order: MoldingSampleOrderIn
     items: list[MoldingSampleItemIn] = Field(default_factory=list)
@@ -147,6 +229,7 @@ class MoldingSampleDetailResponse(BaseModel):
     audit_logs: list[MoldingSampleAuditLogOut] = Field(default_factory=list)
     notifications: list[MoldingSampleNotificationOut] = Field(default_factory=list)
     problems: list[MoldingSampleProblemOut] = Field(default_factory=list)
+    trial_reports: list[MoldingSampleTrialReportOut] = Field(default_factory=list)
     read_source: Literal["local", "cross"] = "local"
     can_view_cost: bool = True
 
