@@ -13,6 +13,7 @@ class CartonMarkComparisonItem(BaseModel):
     side: str
     field_key: str
     label: str
+    comparison_scope: str = "right_value"
     expected: str
     actual: str
     status: str
@@ -45,3 +46,15 @@ class CartonMarkAutoCheckResponse(BaseModel):
     side_photo_fields: list[CartonMarkExtractedField]
     comparisons: list[CartonMarkComparisonItem]
     extraction: list[CartonMarkExtractionStatus]
+
+
+class CartonMarkBatchCheckItem(BaseModel):
+    side: str
+    file_name: str
+    file_index: int = Field(ge=0)
+    result: CartonMarkAutoCheckResponse
+
+
+class CartonMarkBatchCheckResponse(BaseModel):
+    summary: CartonMarkAutoCheckSummary
+    items: list[CartonMarkBatchCheckItem]

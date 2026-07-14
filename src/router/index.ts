@@ -135,6 +135,26 @@ const routes: RouteRecordRaw[] = [
     redirect: '/modules/sales-business/internal-pricing',
   },
   {
+    path: '/modules/pmc-warehouse/carton-mark-check',
+    name: 'carton-mark-template',
+    component: () => import('@/views/CartonMarkTemplateView.vue'),
+    meta: {
+      title: '箱唛资料模板',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/modules/qa/carton-mark-check',
+    name: 'carton-mark-check',
+    component: () => import('@/views/CartonMarkVerificationView.vue'),
+    meta: {
+      title: '箱唛核验',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/:department/:module',
     name: 'module-detail',
     component: () => import('@/views/ModuleDetailView.vue'),

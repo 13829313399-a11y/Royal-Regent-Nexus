@@ -14,6 +14,7 @@ export interface CartonMarkComparisonItem {
   side: 'front' | 'side' | string
   field_key: string
   label: string
+  comparison_scope: 'left_label' | 'right_value' | string
   expected: string
   actual: string
   status: 'pass' | 'mismatch' | 'missing_expected' | 'missing_actual' | 'review' | string
@@ -55,6 +56,27 @@ export interface CartonMarkAutoCheckRequest {
   sidePhoto: Blob
 }
 
+export interface CartonMarkBatchCheckItem {
+  side: 'front' | 'side' | string
+  file_name: string
+  file_index: number
+  result: CartonMarkAutoCheckResponse
+}
+
+export interface CartonMarkBatchCheckResponse {
+  summary: CartonMarkAutoCheckResponse['summary']
+  items: CartonMarkBatchCheckItem[]
+}
+
+export interface CartonMarkBatchCheckRequest {
+  customerName: string
+  po: string
+  item: string
+  pdfTemplate: Blob
+  frontPhotos: Blob[]
+  sidePhotos: Blob[]
+}
+
 export function createCartonMarkApi(client = http) {
   return {
     async autoCheck(payload: CartonMarkAutoCheckRequest) {
@@ -67,6 +89,24 @@ export function createCartonMarkApi(client = http) {
       formData.set('side_photo', payload.sidePhoto)
 
       const response = await client.post<CartonMarkAutoCheckResponse>('/carton-mark/auto-check', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
+      })
+      return response.data
+    },
+
+    async batchAutoCheck(payload: CartonMarkBatchCheckRequest) {
+      const formData = new FormData()
+      formData.set('customer_name', payload.customerName)
+      formData.set('po', payload.po)
+      formData.set('item', payload.item)
+      formData.set('pdf_template', payload.pdfTemplate)
+      payload.frontPhotos.forEach((photo) => formData.append('front_photos', photo))
+      payload.sidePhotos.forEach((photo) => formData.append('side_photos', photo))
+
+      const response = await client.post<CartonMarkBatchCheckResponse>('/carton-mark/batch-auto-check', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
