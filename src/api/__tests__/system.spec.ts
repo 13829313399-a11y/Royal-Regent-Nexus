@@ -26,6 +26,7 @@ describe('systemApi', () => {
     await api.approveRegistrationRequest('registration-1', {
       role_assignments: [{ role_id: 'engineer', factory_id: 'huaxing', department: 'engineering' }],
       review_comment: '资料完整',
+      position: '工程部技术员',
     })
     await api.rejectRegistrationRequest('registration-2', { review_comment: '资料不完整' })
     await api.listUsers('active')
@@ -47,6 +48,7 @@ describe('systemApi', () => {
     expect(calls[3].data).toEqual({
       role_assignments: [{ role_id: 'engineer', factory_id: 'huaxing', department: 'engineering' }],
       review_comment: '资料完整',
+      position: '工程部技术员',
     })
     expect(calls[7].data).toEqual({ temporary_password: '123456', notification_id: 'notice-reset-1' })
   })

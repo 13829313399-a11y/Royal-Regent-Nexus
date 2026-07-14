@@ -790,6 +790,27 @@ def test_registration_accepts_new_huakang_factory_scopes(monkeypatch, factory_id
         assert response.json()["status"] == "pending"
 
 
+def test_registration_rejects_position_longer_than_storage_limit(monkeypatch):
+    with make_client(monkeypatch) as client:
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "username": "position-too-long",
+                "display_name": "职位长度测试",
+                "password": "Strong123",
+                "confirm_password": "Strong123",
+                "phone": "13800000000",
+                "email": "",
+                "factory_id": "huaxing",
+                "department": "engineering",
+                "position": "岗" * 129,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "职位不能超过 128 个字符"
+
+
 def test_register_flushes_new_user_before_registration_request(monkeypatch):
     with make_client(monkeypatch) as client:
         from sqlalchemy.orm import Session as OrmSession
