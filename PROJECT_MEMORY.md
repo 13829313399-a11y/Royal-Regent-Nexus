@@ -1598,6 +1598,12 @@ Use this template when updating the memory after future work:
 - Verification: full frontend Vitest passed `34 files / 140 tests`; `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings; `git diff --check` passed. Live browser review confirmed the retained main print button, the new production-task print preview, absence of all three removed fields on the new-order/normal-detail/expanded-detail/production-task surfaces, and zero browser warnings/errors. The native print confirmation itself was unit-tested rather than invoked in the browser to avoid opening a system print dialog.
 ### 2026-07-13
 
+- Requirement: prevent the local browser from silently using a Vite server started from an old Royal Regent Nexus worktree.
+- Implementation: added `scripts/start-latest-main-dev.ps1`. It fetches `origin/main`, rejects a branch that is behind main or has uncommitted changes, detects the process currently listening on port 5173, and refuses to reuse a server whose command line points to another worktree. `-ReplaceStale` is an explicit opt-in to stop that stale process; `-Check` performs the validation without starting a server.
+- Decision: a feature branch based on the latest main may use 5173, including commits ahead of main, but any checkout behind `origin/main` is blocked. Runtime logs are written under the system temp directory, not the worktree.
+
+### 2026-07-13
+
 - Requirement: when the molding department first receives an engineering molding-sample order, `打印任务单` must print the engineering order's complete basic data and mold-detail mapping, rather than the production fillback summary.
 - Implementation: production-task print preview and print root now read the untouched engineering `selectedTask.items` rows. They include product/customer, stage/type, engineering sender, supervisor, date, reason, and per-mold dimensions, presence status, return time, material, color/PMS, quantity/shots, required material, due date, and engineering notes. Production machine, received/actual material, cost, and completion-fillback data are excluded. The printed page uses A4 landscape with repeating table headers.
 - Files changed: `src/views/MoldingSampleProductionTaskView.vue`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, `src/views/__tests__/moldingSampleProductionTaskViewLayout.test.ts`, and `PROJECT_MEMORY.md`.
