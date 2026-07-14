@@ -13,6 +13,8 @@ from pathlib import Path
 from app.schemas.carton_mark import (
     CartonMarkAutoCheckResponse,
     CartonMarkAutoCheckSummary,
+    CartonMarkBatchCheckItem,
+    CartonMarkBatchCheckResponse,
     CartonMarkComparisonItem,
     CartonMarkExtractedField,
     CartonMarkExtractionStatus,
@@ -31,6 +33,13 @@ class PdfMarkRegion:
     kind: str
     text: str
     box: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class PdfTextSpan:
+    text: str
+    x: float
+    y: float
 
 
 @dataclass(frozen=True)
@@ -58,16 +67,19 @@ FIELD_DEFINITIONS = [
     FieldDefinition("color", "颜色", ("COLOR", "COLOUR", "COL")),
     FieldDefinition("quantity", "数量", (
         "QTY", "QUANTITY", "CANTIDAD", "PCS", "PZAS", "CTN QTY", "QTY/CTN", "QTY PER CTN",
-        "QTY PER CARTON", "PCS/CTN",
+        "QTY PER CARTON", "PCS/CTN", "PIEZAS POR BULTO",
     )),
     FieldDefinition("carton_no", "箱号", (
         "CARTON NO", "CARTON NO.", "CARTON NUMBER", "CTN NO", "CTN NO.", "CTN#", "C/NO",
-        "CARTON", "CAJA NUMERO", "CAJA NÚMERO", "BULTO", "BULTOS", "BULTO NO",
+        "CARTON", "BULTO", "BULTOS", "BULTO NO",
         "BULTO NO.", "NO DE BULTO", "NO. DE BULTO", "NRO BULTO", "NRO. BULTO",
     )),
+    FieldDefinition("box_no", "箱序", ("CAJA NUMERO", "CAJA NÚMERO", "BOX NO", "BOX NUMBER")),
+    FieldDefinition("size", "尺码", ("SIZE", "TALLA")),
     FieldDefinition("gw", "G.W", ("G.W", "G.W.", "GW", "GROSS WEIGHT", "PESO BRUTO")),
     FieldDefinition("nw", "N.W", ("N.W", "N.W.", "NW", "NET WEIGHT", "PESO NETO")),
     FieldDefinition("measurement", "尺寸", ("MEAS", "MEAS.", "MEASUREMENT", "DIMENSION", "CARTON SIZE", "CARTON MEAS", "MEDIDA")),
+    FieldDefinition("section", "分区", ("SECCION / UNECO", "SECCIÓN / UNECO", "SECCION/UNECO", "SECCIÓN/UNECO", "SECCION", "SECCIÓN")),
     FieldDefinition("barcode", "条码", (
         "BARCODE", "BAR CODE", "BARCODE NO", "BAR CODE NO", "CODE", "EAN", "UPC",
         "CODIGO DE BARRAS", "CÓDIGO DE BARRAS",
@@ -229,7 +241,9 @@ def build_carton_mark_auto_check(
     )
     comparisons = [
         *compare_side("front", front_expected_fields, front_fields, front_status),
+        *compare_label_column("front", front_pdf_text, front_text, front_status),
         *compare_side("side", side_expected_fields, side_fields, side_status),
+        *compare_label_column("side", side_pdf_text, side_text, side_status),
     ]
 
     summary = summarize_comparisons(comparisons)
@@ -242,6 +256,95 @@ def build_carton_mark_auto_check(
         side_photo_fields=side_fields,
         comparisons=comparisons,
         extraction=[pdf_status, pdf_layout_status, front_status, side_status],
+    )
+
+
+def build_carton_mark_batch_auto_check(
+    *,
+    pdf_bytes: bytes,
+    front_images: list[tuple[str, bytes]],
+    side_images: list[tuple[str, bytes]],
+    customer_name: str = "",
+    po: str = "",
+    item: str = "",
+) -> CartonMarkBatchCheckResponse:
+    """Check every uploaded front/side image independently against one PDF template."""
+    pdf_text, pdf_status = extract_pdf_text(pdf_bytes)
+    front_pdf_text, side_pdf_text, pdf_layout_status = extract_pdf_template_side_texts(
+        pdf_bytes,
+        fallback_text=pdf_text,
+    )
+    metadata = {
+        "customer_name": customer_name,
+        "po": po,
+        "item": item,
+    }
+    template_fields = merge_metadata_fields(
+        extract_fields(pdf_text, source="pdf_template"),
+        metadata,
+        source="template_metadata",
+    )
+    front_template_fields = merge_metadata_fields(
+        extract_fields(front_pdf_text, source="pdf_front_mark"),
+        metadata,
+        source="template_metadata",
+    )
+    side_template_fields = merge_metadata_fields(
+        extract_fields(side_pdf_text, source="pdf_side_mark"),
+        metadata,
+        source="template_metadata",
+    )
+
+    def build_item(side: str, image_bytes: bytes) -> CartonMarkAutoCheckResponse:
+        source = f"{side}_photo"
+        photo_text, photo_status = extract_image_text(image_bytes, source=source)
+        is_front = side == "front"
+        template_text = front_pdf_text if is_front else side_pdf_text
+        expected_template_seed = front_template_fields if is_front else side_template_fields
+        extracted_fields = extract_fields(photo_text, source=source)
+        expected_fields = enrich_expected_fields_from_actual_values(
+            expected_template_seed or template_fields,
+            extracted_fields,
+            f"{template_text}\n{pdf_text}",
+            source=f"pdf_{side}_value_match",
+        )
+        photo_fields = enrich_fields_from_expected_values(
+            extracted_fields,
+            expected_fields,
+            photo_text,
+            source=f"{side}_photo_value_match",
+        )
+        comparisons = [
+            *compare_side(side, expected_fields, photo_fields, photo_status),
+            *compare_label_column(side, template_text, photo_text, photo_status),
+        ]
+        return CartonMarkAutoCheckResponse(
+            summary=summarize_comparisons(comparisons),
+            template_fields=template_fields,
+            front_template_fields=expected_fields if is_front else [],
+            side_template_fields=expected_fields if not is_front else [],
+            front_photo_fields=photo_fields if is_front else [],
+            side_photo_fields=photo_fields if not is_front else [],
+            comparisons=comparisons,
+            extraction=[pdf_status, pdf_layout_status, photo_status],
+        )
+
+    items: list[CartonMarkBatchCheckItem] = []
+    all_comparisons: list[CartonMarkComparisonItem] = []
+    for side, images in (("front", front_images), ("side", side_images)):
+        for file_index, (file_name, image_bytes) in enumerate(images):
+            result = build_item(side, image_bytes)
+            items.append(CartonMarkBatchCheckItem(
+                side=side,
+                file_name=file_name,
+                file_index=file_index,
+                result=result,
+            ))
+            all_comparisons.extend(result.comparisons)
+
+    return CartonMarkBatchCheckResponse(
+        summary=summarize_comparisons(all_comparisons),
+        items=items,
     )
 
 
@@ -280,6 +383,138 @@ def extract_pdf_text(pdf_bytes: bytes) -> tuple[str, CartonMarkExtractionStatus]
         )
 
 
+def extract_pdf_vector_mark_regions(pdf_bytes: bytes) -> list[PdfMarkRegion]:
+    """Read repeated mark layouts from vector PDF text before falling back to OCR.
+
+    Customer carton-mark PDFs are commonly exported as one very wide page with
+    front / side / front / side marks laid out horizontally.  Raster OCR can
+    identify the outer boxes but loses table cells, while the original PDF
+    already contains text at precise coordinates.  This path keeps that text
+    and splits only deliberately wide pages into their horizontal mark areas.
+    """
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception:
+        return []
+
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        regions: list[PdfMarkRegion] = []
+
+        for page_index, page in enumerate(reader.pages):
+            page_width = float(page.mediabox.width)
+            page_height = float(page.mediabox.height)
+            spans: list[PdfTextSpan] = []
+
+            def collect_text(text, _cm, tm, _font_dict, _font_size):
+                value = str(text or "").strip()
+                if not value:
+                    return
+                try:
+                    x = float(tm[4])
+                    y = float(tm[5])
+                except (IndexError, TypeError, ValueError):
+                    return
+                spans.append(PdfTextSpan(text=value, x=x, y=y))
+
+            page.extract_text(visitor_text=collect_text)
+            regions.extend(build_pdf_vector_mark_regions(
+                spans,
+                page_width=page_width,
+                page_height=page_height,
+                page_index=page_index,
+            ))
+
+        return classify_pdf_mark_regions(regions)
+    except Exception:
+        return []
+
+
+def build_pdf_vector_mark_regions(
+    spans: list[PdfTextSpan],
+    *,
+    page_width: float,
+    page_height: float,
+    page_index: int = 0,
+) -> list[PdfMarkRegion]:
+    """Build ordered mark regions from text origins on a deliberately wide page."""
+    if page_width <= 0 or page_height <= 0 or page_width / page_height < 2.2:
+        return []
+
+    # Decorative footer text is often one long vector string spanning every
+    # mark.  It is not part of any mark table and would otherwise bridge the
+    # horizontal groups, so only use text in the primary page area.
+    usable_spans = [
+        span
+        for span in spans
+        if normalize_compare_value(span.text)
+        and 0 <= span.x <= page_width
+        and span.y >= page_height * 0.32
+    ]
+    if len(usable_spans) < 6:
+        return []
+
+    group_gap = max(80.0, page_width * 0.12)
+    groups: list[list[PdfTextSpan]] = []
+    last_x: float | None = None
+    for span in sorted(usable_spans, key=lambda item: item.x):
+        if last_x is None or span.x - last_x <= group_gap:
+            if not groups:
+                groups.append([])
+            groups[-1].append(span)
+        else:
+            groups.append([span])
+        last_x = span.x
+
+    groups = [group for group in groups if len(group) >= 3]
+    if len(groups) < 2:
+        return []
+
+    # Make later PDF pages sort after the current one.  The box is only used
+    # for reading order after vector extraction, never for an image crop.
+    page_offset = int(page_index * max(page_width * 4, 10_000))
+    regions: list[PdfMarkRegion] = []
+    for group in groups:
+        text = build_pdf_vector_region_text(group)
+        if not text:
+            continue
+        left = int(min(span.x for span in group)) + page_offset
+        right = int(max(span.x for span in group)) + page_offset
+        top = int(max(0, page_height - max(span.y for span in group)))
+        bottom = int(max(0, page_height - min(span.y for span in group)))
+        regions.append(PdfMarkRegion(kind="", text=text, box=(left, top, right, bottom)))
+
+    return regions
+
+
+def build_pdf_vector_region_text(spans: list[PdfTextSpan]) -> str:
+    if not spans:
+        return ""
+
+    row_threshold = 8.0
+    rows: list[list[PdfTextSpan]] = []
+    for span in sorted(spans, key=lambda item: (-item.y, item.x)):
+        row = next(
+            (
+                candidate
+                for candidate in rows
+                if abs(span.y - sum(item.y for item in candidate) / len(candidate)) <= row_threshold
+            ),
+            None,
+        )
+        if row is None:
+            rows.append([span])
+        else:
+            row.append(span)
+
+    lines = []
+    for row in rows:
+        line = " | ".join(item.text for item in sorted(row, key=lambda item: item.x))
+        if line.strip():
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def extract_pdf_template_side_texts(pdf_bytes: bytes, *, fallback_text: str) -> tuple[str, str, CartonMarkExtractionStatus]:
     regions, status = extract_pdf_mark_regions(pdf_bytes)
     if not regions:
@@ -300,6 +535,17 @@ def extract_pdf_template_side_texts(pdf_bytes: bytes, *, fallback_text: str) -> 
 
 
 def extract_pdf_mark_regions(pdf_bytes: bytes) -> tuple[list[PdfMarkRegion], CartonMarkExtractionStatus]:
+    vector_regions = extract_pdf_vector_mark_regions(pdf_bytes)
+    if vector_regions:
+        regions = select_primary_pdf_mark_regions(vector_regions)
+        return regions, CartonMarkExtractionStatus(
+            source="pdf_template_regions",
+            ok=True,
+            engine="pypdf-vector-coordinates",
+            message="已读取 PDF 原始文字坐标，并只提取最左侧第一组正唛和侧唛。",
+            raw_text=clip_text(merge_region_texts(regions)),
+        )
+
     try:
         from PIL import ImageFilter  # type: ignore
         import pypdfium2 as pdfium  # type: ignore
@@ -633,7 +879,19 @@ def classify_pdf_mark_regions(regions: list[PdfMarkRegion]) -> list[PdfMarkRegio
         width = region.box[2] - region.box[0]
         height = max(region.box[3] - region.box[1], 1)
         aspect_ratio = width / height
-        kind = "front" if width >= width_threshold or aspect_ratio >= 1.08 else "side"
+        normalized_text = normalize_compare_value(region.text)
+        front_score = sum(
+            marker in normalized_text
+            for marker in ("IMPORTADOR", "DIRECCION", "PROVEEDOR", "RFC")
+        )
+        side_score = sum(
+            marker in normalized_text
+            for marker in ("DESCRIPCION", "PIEZASPORBULTO", "CAJANUMERO", "MEAS", "SECCION")
+        )
+        if front_score != side_score:
+            kind = "front" if front_score > side_score else "side"
+        else:
+            kind = "front" if width >= width_threshold or aspect_ratio >= 1.08 else "side"
         classified.append(PdfMarkRegion(kind=kind, text=region.text, box=region.box))
 
     return sorted(classified, key=pdf_region_position_key)
@@ -682,32 +940,88 @@ def merge_region_texts(regions) -> str:
     return "\n".join(region.text for region in regions if region.text.strip())
 
 
+@lru_cache(maxsize=1)
+def get_rapidocr_engine():
+    try:
+        from rapidocr import RapidOCR  # type: ignore
+
+        return RapidOCR()
+    except Exception:
+        return None
+
+
 def extract_image_text(image_bytes: bytes, *, source: str) -> tuple[str, CartonMarkExtractionStatus]:
     try:
         from PIL import Image, ImageEnhance, ImageFilter, ImageOps  # type: ignore
-        import pytesseract  # type: ignore
     except Exception:
         return "", CartonMarkExtractionStatus(
             source=source,
             ok=False,
             engine="unconfigured",
-            message="图片 OCR 引擎未配置。请在后端安装 Pillow、pytesseract，并部署 Tesseract 或接入 PaddleOCR。",
+            message="图片 OCR 引擎未配置。请在后端安装 Pillow 及 RapidOCR 或 Tesseract。",
             raw_text="",
         )
 
     try:
+        image = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGB")
+        variants = build_photo_ocr_variants(image, ImageEnhance, ImageFilter, ImageOps)
+        rapidocr_texts = []
+        rapidocr_engine = get_rapidocr_engine()
+
+        if rapidocr_engine is not None:
+            # PP-OCR can detect text lines on perspective/low-contrast carton
+            # labels.  Test the whole label plus the most relevant crops before
+            # falling back to the older character-level Tesseract path.
+            for variant in variants[:8]:
+                text = rapidocr_image_to_text(rapidocr_engine, variant)
+                if text.strip():
+                    rapidocr_texts.append(text)
+                candidate_text = merge_ocr_text_outputs(rapidocr_texts)
+                if len(extract_fields(candidate_text, source=source)) >= 3:
+                    break
+
+        rapidocr_text = merge_ocr_text_outputs(rapidocr_texts)
+        if rapidocr_text and len(extract_fields(rapidocr_text, source=source)) >= 3:
+            return rapidocr_text, CartonMarkExtractionStatus(
+                source=source,
+                ok=True,
+                engine="rapidocr-pp-ocrv6",
+                message="",
+                raw_text=clip_text(rapidocr_text),
+            )
+
+        try:
+            import pytesseract  # type: ignore
+        except Exception:
+            if rapidocr_text:
+                return rapidocr_text, CartonMarkExtractionStatus(
+                    source=source,
+                    ok=True,
+                    engine="rapidocr-pp-ocrv6",
+                    message="RapidOCR 已识别到部分文字；请根据核验结果复核未提取字段。",
+                    raw_text=clip_text(rapidocr_text),
+                )
+            raise RuntimeError("RapidOCR 与 pytesseract 均不可用")
+
         tesseract_cmd, tesseract_lang = configure_tesseract(pytesseract)
         if not tesseract_cmd:
+            if rapidocr_text:
+                return rapidocr_text, CartonMarkExtractionStatus(
+                    source=source,
+                    ok=True,
+                    engine="rapidocr-pp-ocrv6",
+                    message="RapidOCR 已识别到部分文字；请根据核验结果复核未提取字段。",
+                    raw_text=clip_text(rapidocr_text),
+                )
             return "", CartonMarkExtractionStatus(
                 source=source,
                 ok=False,
-                engine="pytesseract",
+                engine="rapidocr+pytesseract",
                 message=missing_tesseract_message(),
                 raw_text="",
             )
 
-        image = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes))).convert("RGB")
-        texts = []
+        texts = list(rapidocr_texts)
         primary_configs = (
             "--oem 3 --psm 6 -c preserve_interword_spaces=1",
             "--oem 3 --psm 4 -c preserve_interword_spaces=1",
@@ -717,7 +1031,7 @@ def extract_image_text(image_bytes: bytes, *, source: str) -> tuple[str, CartonM
             "--oem 3 --psm 6 -c preserve_interword_spaces=1",
             "--oem 3 --psm 11",
         )
-        for index, variant in enumerate(build_photo_ocr_variants(image, ImageEnhance, ImageFilter, ImageOps)):
+        for index, variant in enumerate(variants):
             configs = primary_configs if index < 3 else crop_configs
             for config in configs:
                 text = tesseract_image_to_string(
@@ -744,18 +1058,71 @@ def extract_image_text(image_bytes: bytes, *, source: str) -> tuple[str, CartonM
         return text, CartonMarkExtractionStatus(
             source=source,
             ok=bool(text.strip()),
-            engine="pytesseract-multi-pass",
-            message="" if text.strip() else "图片 OCR 已尝试整图、箱唛候选区域裁剪和轻微旋转，仍未识别到文字；请检查照片清晰度或改用更强 OCR 引擎。",
+            engine="rapidocr-pp-ocrv6+pytesseract-fallback" if rapidocr_engine is not None else "pytesseract-multi-pass",
+            message="" if text.strip() else "图片 OCR 已尝试 PP-OCR、整图、箱唛候选区域裁剪和轻微旋转，仍未识别到文字；请镜头正对单块箱唛、让标签占画面约 70%，避开反光后重拍，或先框选箱唛区域再核对。",
             raw_text=clip_text(text),
         )
     except Exception as exc:
         return "", CartonMarkExtractionStatus(
             source=source,
             ok=False,
-            engine="pytesseract",
+            engine="rapidocr+pytesseract",
             message=f"图片 OCR 失败：{exc}",
             raw_text="",
         )
+
+
+def rapidocr_image_to_text(engine, image) -> str:
+    try:
+        return rapidocr_result_to_text(engine(image))
+    except Exception:
+        return ""
+
+
+def rapidocr_result_to_text(result) -> str:
+    if result is None:
+        return ""
+
+    try:
+        texts = tuple(str(value or "").strip() for value in getattr(result, "txts", ()) or ())
+    except Exception:
+        return ""
+
+    raw_lines = [text for text in texts if text]
+    boxes = getattr(result, "boxes", None)
+    scores = getattr(result, "scores", None)
+    words: list[OcrWord] = []
+
+    if boxes is not None:
+        for index, text in enumerate(texts):
+            if not text:
+                continue
+            try:
+                points = boxes[index]
+                xs = [float(point[0]) for point in points]
+                ys = [float(point[1]) for point in points]
+                score = float(scores[index]) if scores is not None else 0.8
+            except (IndexError, TypeError, ValueError):
+                continue
+            if not xs or not ys:
+                continue
+            left = int(min(xs))
+            top = int(min(ys))
+            words.append(OcrWord(
+                text=text,
+                left=left,
+                top=top,
+                right=max(left + 1, int(max(xs))),
+                bottom=max(top + 1, int(max(ys))),
+                confidence=score * 100,
+            ))
+
+    table_text = build_ocr_word_table_text(words)
+    lines = []
+    if table_text.strip():
+        lines.append(table_text)
+    lines.extend(raw_lines)
+    return merge_ocr_text_outputs(lines)
 
 
 def tesseract_image_to_string(pytesseract_module, image, *, lang: str, config: str, timeout: int) -> str:
@@ -1189,7 +1556,7 @@ def extract_fields(text: str, *, source: str) -> list[CartonMarkExtractedField]:
             fields[definition.key] = CartonMarkExtractedField(
                 key=definition.key,
                 label=definition.label,
-                value=value,
+                value=normalize_extracted_field_value(value, definition),
                 confidence=0.76,
                 source=source,
             )
@@ -1394,6 +1761,22 @@ def levenshtein_distance_at_most(left: str, right: str, max_distance: int) -> bo
     return previous[-1] <= max_distance
 
 
+def levenshtein_distance(left: str, right: str) -> int:
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            current.append(min(
+                current[right_index - 1] + 1,
+                previous[right_index] + 1,
+                previous[right_index - 1] + cost,
+            ))
+        previous = current
+
+    return previous[-1]
+
+
 def merge_metadata_fields(
     fields: list[CartonMarkExtractedField],
     metadata: dict[str, str],
@@ -1459,6 +1842,7 @@ def compare_side(
             side=side,
             field_key=key,
             label=label,
+            comparison_scope="right_value",
             expected=expected,
             actual=actual,
             status=status,
@@ -1467,6 +1851,117 @@ def compare_side(
         ))
 
     return comparisons
+
+
+def compare_label_column(
+    side: str,
+    template_text: str,
+    photo_text: str,
+    photo_status: CartonMarkExtractionStatus,
+) -> list[CartonMarkComparisonItem]:
+    """Compare the printed left-column field names, not only their values."""
+    expected_labels = extract_field_labels(template_text)
+    actual_labels = extract_field_labels(photo_text)
+    comparisons: list[CartonMarkComparisonItem] = []
+
+    for definition in FIELD_DEFINITIONS:
+        expected = expected_labels.get(definition.key, "")
+        if not expected:
+            continue
+
+        actual = actual_labels.get(definition.key, "")
+        if not actual:
+            status = "review" if not photo_status.ok else "missing_actual"
+            note = photo_status.message if not photo_status.ok else "照片左侧字段名未识别，或与 PDF 模板字段名不符。"
+        elif field_label_values_match(expected, actual):
+            status = "pass"
+            note = ""
+        else:
+            status = "mismatch"
+            note = "PDF 模板左侧字段名与实拍不一致。"
+
+        comparisons.append(CartonMarkComparisonItem(
+            side=side,
+            field_key=f"left_label:{definition.key}",
+            label=f"左侧字段名 · {definition.label}",
+            comparison_scope="left_label",
+            expected=expected,
+            actual=actual,
+            status=status,
+            confidence=0.82 if actual else 0.45,
+            note=note,
+        ))
+
+    return comparisons
+
+
+def extract_field_labels(text: str) -> dict[str, str]:
+    candidates = extract_label_candidates(text)
+    labels: dict[str, str] = {}
+    for definition in FIELD_DEFINITIONS:
+        exact = find_exact_field_label(candidates, definition)
+        if exact:
+            labels[definition.key] = exact
+            continue
+
+        approximate = find_approximate_field_label(candidates, definition)
+        if approximate:
+            labels[definition.key] = approximate
+
+    return labels
+
+
+def extract_label_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    seen = set()
+    for line in normalize_ocr_lines(text):
+        first_cell = line.split("|", 1)[0].strip(" :：|#.-")
+        if re.match(r"^\d", first_cell):
+            first_cell = re.sub(r"^\d+(?:[.,]\d+)?", "", first_cell).strip(" :：|#.-")
+        else:
+            first_cell = re.split(r"\d", first_cell, maxsplit=1)[0].strip(" :：|#.-")
+        if not first_cell or not re.search(r"[A-Z一-龥]", first_cell, re.IGNORECASE):
+            continue
+        key = normalize_alias_key(first_cell)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(first_cell)
+    return candidates
+
+
+def find_exact_field_label(candidates: list[str], definition: FieldDefinition) -> str:
+    for candidate in candidates:
+        candidate_key = normalize_alias_key(candidate)
+        for alias in sorted(definition.aliases, key=lambda value: len(normalize_alias_key(value)), reverse=True):
+            if candidate_key == normalize_alias_key(alias):
+                return candidate
+    return ""
+
+
+def find_approximate_field_label(candidates: list[str], definition: FieldDefinition) -> str:
+    best_candidate = ""
+    best_distance: int | None = None
+    for candidate in candidates:
+        candidate_key = normalize_alias_key(candidate)
+        if len(candidate_key) < 5:
+            continue
+        for alias in definition.aliases:
+            alias_key = normalize_alias_key(alias)
+            if len(alias_key) < 6:
+                continue
+            distance_limit = max(2, int(max(len(candidate_key), len(alias_key)) * 0.42))
+            if not levenshtein_distance_at_most(candidate_key, alias_key, distance_limit):
+                continue
+            distance = levenshtein_distance(candidate_key, alias_key)
+            if best_distance is None or distance < best_distance:
+                best_candidate = candidate
+                best_distance = distance
+    return best_candidate
+
+
+def field_label_values_match(expected: str, actual: str) -> bool:
+    return normalize_alias_key(expected) == normalize_alias_key(actual)
 
 
 def field_values_match(key: str, expected: str, actual: str) -> bool:
@@ -1505,15 +2000,56 @@ def summarize_comparisons(comparisons: list[CartonMarkComparisonItem]) -> Carton
 def find_field_value(lines: list[str], definition: FieldDefinition) -> str:
     for index, line in enumerate(lines):
         for alias in sorted(definition.aliases, key=lambda value: len(normalize_compare_value(value)), reverse=True):
+            if alias_is_shadowed_by_other_field(line, alias, definition):
+                continue
             value = extract_value_after_alias(line, alias)
             if is_plausible_field_value(value, definition):
                 return clean_field_value(value)
+            if len(normalize_compare_value(alias)) >= 6:
+                value = extract_value_before_alias(line, alias)
+                if is_plausible_field_value(value, definition):
+                    return clean_field_value(value)
             if line_looks_like_alias(line, alias):
                 next_value = find_next_line_value(lines, index, definition)
                 if next_value:
                     return next_value
 
     return ""
+
+
+def alias_is_shadowed_by_other_field(line: str, alias: str, definition: FieldDefinition) -> bool:
+    """Do not parse a short field alias inside a longer label from another field."""
+    alias_key = normalize_alias_key(alias)
+    line_key = normalize_alias_key(line)
+    if not alias_key or not line_key:
+        return False
+
+    for other_definition in FIELD_DEFINITIONS:
+        if other_definition.key == definition.key:
+            continue
+        for other_alias in other_definition.aliases:
+            other_key = normalize_alias_key(other_alias)
+            if len(other_key) <= len(alias_key):
+                continue
+            if alias_key in other_key and other_key in line_key:
+                return True
+
+    return False
+
+
+def normalize_alias_key(value: str) -> str:
+    return re.sub(r"[^A-Z0-9一-龥]+", "", value.upper())
+
+
+def normalize_extracted_field_value(value: str, definition: FieldDefinition) -> str:
+    cleaned = clean_field_value(value)
+    if definition.key != "quantity":
+        return cleaned
+
+    numeric_values = re.findall(r"\d+(?:[.,]\d+)?", cleaned)
+    if len(numeric_values) > 1 and len(set(numeric_values)) == 1:
+        return numeric_values[0]
+    return cleaned
 
 
 def extract_value_after_alias(line: str, alias: str) -> str:
@@ -1530,6 +2066,27 @@ def extract_value_after_alias(line: str, alias: str) -> str:
     value = truncate_at_next_field_alias(value, alias)
 
     return value
+
+
+def extract_value_before_alias(line: str, alias: str) -> str:
+    """Recover table cells exported as `value + label` in vector PDFs."""
+    match = re.search(
+        rf"^(.*?){build_flexible_alias_pattern(alias)}(?![A-Z0-9])",
+        line,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+
+    prefix = match.group(1).strip(" \t|:/\\#=_;")
+    if not prefix:
+        return ""
+
+    # Keep only the last cell/token: a row can contain another label before
+    # this one, while the immediately preceding token is the actual value.
+    prefix = prefix.split("|")[-1]
+    tokens = re.findall(r"[A-Z0-9][A-Z0-9./-]*", prefix, re.IGNORECASE)
+    return tokens[-1] if tokens else ""
 
 
 def find_next_line_value(lines: list[str], index: int, definition: FieldDefinition) -> str:

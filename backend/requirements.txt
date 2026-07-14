@@ -11,5 +11,7 @@ pypdf
 pypdfium2
 Pillow
 pytesseract
+rapidocr>=3.9.1,<4
+onnxruntime>=1.27,<2
 httpx2
 pytest

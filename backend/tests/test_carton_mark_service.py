@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -41,6 +42,48 @@ def test_carton_mark_auto_check_extracts_template_fields_and_requests_photo_revi
     assert response.summary.review_count > 0
     assert any(item.side == "front" and item.field_key == "po" and item.status == "review" for item in response.comparisons)
     assert any(status.source == "front_photo" and not status.ok for status in response.extraction)
+
+
+def test_carton_mark_batch_auto_check_keeps_front_and_side_images_independent(monkeypatch):
+    from app.schemas.carton_mark import CartonMarkExtractionStatus
+    from app.services import carton_mark
+
+    def status(source: str) -> CartonMarkExtractionStatus:
+        return CartonMarkExtractionStatus(
+            source=source,
+            ok=True,
+            engine="test",
+            raw_text="",
+        )
+
+    monkeypatch.setattr(carton_mark, "extract_pdf_text", lambda _: (
+        "PO 62098330\nITEM 203302017\nCOLOR MULTICOLOR",
+        status("pdf_template"),
+    ))
+    monkeypatch.setattr(carton_mark, "extract_pdf_template_side_texts", lambda *_args, **_kwargs: (
+        "PO 62098330\nITEM 203302017\nCOLOR MULTICOLOR",
+        "PO 62098330\nITEM 203302017\nQTY 24 PCS",
+        status("pdf_layout"),
+    ))
+    monkeypatch.setattr(carton_mark, "extract_image_text", lambda image, *, source: (
+        image.decode("utf-8"),
+        status(source),
+    ))
+
+    response = carton_mark.build_carton_mark_batch_auto_check(
+        pdf_bytes=b"pdf",
+        front_images=[("front-01.jpg", b"PO 62098330\nITEM 203302017\nCOLOR MULTICOLOR")],
+        side_images=[("side-01.jpg", b"PO 62098330\nITEM 203302017\nQTY 24 PCS")],
+        customer_name="Dickie",
+        item="203302017",
+    )
+
+    assert [(item.side, item.file_name, item.file_index) for item in response.items] == [
+        ("front", "front-01.jpg", 0),
+        ("side", "side-01.jpg", 0),
+    ]
+    assert {item.side for item in response.items[0].result.comparisons} == {"front"}
+    assert {item.side for item in response.items[1].result.comparisons} == {"side"}
 
 
 def test_carton_mark_field_extraction_handles_noisy_photo_ocr_rows():
@@ -120,6 +163,69 @@ def test_carton_mark_ocr_word_rows_recover_table_label_values():
     assert fields["po"] == "62098330"
     assert fields["item"] == "203302017"
     assert fields["gw"] == "4.3 KGS"
+
+
+def test_carton_mark_checks_left_labels_and_right_values_for_side_table():
+    from app.schemas.carton_mark import CartonMarkExtractionStatus
+    from app.services.carton_mark import compare_label_column, extract_fields
+
+    template_text = (
+        "DESCRIPCION VEHICULO DE JUGUETE\n"
+        "MODELO 203302017\n"
+        "NUMERO DE PEDIDO 62098330\n"
+        "PIEZAS POR BULTO 24\n"
+        "BULTO 1 DE 1\n"
+        "CAJA NUMERO 1 DE 63\n"
+        "TALLA NA\n"
+        "COLOR MULTICOLOR\n"
+        "SECCION / UNECO 424\n"
+    )
+    photo_text = template_text.replace("NUMERO DE PEDIDO", "NUMERO DE PROVEEDOR")
+    status = CartonMarkExtractionStatus(
+        source="side_photo",
+        ok=True,
+        engine="test",
+        message="",
+        raw_text=photo_text,
+    )
+
+    side_fields = {field.key: field.value for field in extract_fields(template_text, source="pdf_side_mark")}
+    comparisons = compare_label_column("side", template_text, photo_text, status)
+    comparison_map = {item.field_key: item for item in comparisons}
+
+    assert side_fields["carton_no"] == "1 DE 1"
+    assert side_fields["box_no"] == "1 DE 63"
+    assert side_fields["size"] == "NA"
+    assert side_fields["section"] == "424"
+    assert comparison_map["left_label:po"].expected == "NUMERO DE PEDIDO"
+    assert comparison_map["left_label:po"].actual == "NUMERO DE PROVEEDOR"
+    assert comparison_map["left_label:po"].status == "mismatch"
+    assert comparison_map["left_label:box_no"].status == "pass"
+    assert comparison_map["left_label:section"].status == "pass"
+
+
+def test_rapidocr_result_recovers_table_fields_from_detected_text_boxes():
+    from app.services.carton_mark import extract_fields, rapidocr_result_to_text
+
+    result = SimpleNamespace(
+        txts=("NUMERO DE PEDIDO", "62098330", "MODELO", "203302017", "PIEZAS POR BULTO", "24"),
+        scores=(0.98, 0.99, 0.97, 0.99, 0.96, 0.99),
+        boxes=(
+            ((10, 10), (170, 10), (170, 28), (10, 28)),
+            ((260, 10), (345, 10), (345, 28), (260, 28)),
+            ((10, 44), (82, 44), (82, 62), (10, 62)),
+            ((260, 44), (350, 44), (350, 62), (260, 62)),
+            ((10, 78), (180, 78), (180, 96), (10, 96)),
+            ((260, 78), (292, 78), (292, 96), (260, 96)),
+        ),
+    )
+
+    text = rapidocr_result_to_text(result)
+    fields = {field.key: field.value for field in extract_fields(text, source="rapidocr")}
+
+    assert fields["po"] == "62098330"
+    assert fields["item"] == "203302017"
+    assert fields["quantity"] == "24"
 
 
 def test_carton_mark_auto_check_matches_photo_raw_values_when_labels_are_noisy(monkeypatch):
@@ -297,3 +403,51 @@ def test_pdf_template_side_texts_ignores_repeated_second_pair(monkeypatch):
     assert "FRONT 3" not in front_text
     assert "SIDE 2" in side_text
     assert "SIDE 4" not in side_text
+
+
+def test_pdf_vector_regions_keep_only_the_leftmost_front_and_side_marks():
+    from app.services.carton_mark import (
+        PdfTextSpan,
+        build_pdf_vector_mark_regions,
+        classify_pdf_mark_regions,
+        extract_fields,
+        select_primary_pdf_mark_regions,
+    )
+
+    spans = [
+        PdfTextSpan(text="SHIPPING IDENTIFICATION MARK", x=100, y=340),
+        PdfTextSpan(text="IMPORTADOR DILISA", x=100, y=315),
+        PdfTextSpan(text="62098330NUMERO DE PEDIDO", x=100, y=290),
+        PdfTextSpan(text="MODELO 203302017", x=100, y=265),
+        PdfTextSpan(text="DESCRIPCION", x=500, y=340),
+        PdfTextSpan(text="VEHICULO DE JUGUETE", x=650, y=340),
+        PdfTextSpan(text="NUMERO DE PEDIDO", x=500, y=315),
+        PdfTextSpan(text="62098330", x=650, y=315),
+        PdfTextSpan(text="PIEZAS POR BULTO", x=500, y=290),
+        PdfTextSpan(text="24 24", x=650, y=290),
+        PdfTextSpan(text="BULTO", x=500, y=265),
+        PdfTextSpan(text="1 DE 1", x=650, y=265),
+        PdfTextSpan(text="SHIPPING IDENTIFICATION MARK", x=900, y=340),
+        PdfTextSpan(text="IMPORTADOR OTRO CLIENTE", x=900, y=315),
+        PdfTextSpan(text="99999999NUMERO DE PEDIDO", x=900, y=290),
+        PdfTextSpan(text="DESCRIPCION", x=1300, y=340),
+        PdfTextSpan(text="OTRO PRODUCTO", x=1450, y=340),
+        PdfTextSpan(text="NUMERO DE PEDIDO", x=1300, y=315),
+        PdfTextSpan(text="99999999", x=1450, y=315),
+        PdfTextSpan(text="PIEZAS POR BULTO", x=1300, y=290),
+        PdfTextSpan(text="12", x=1450, y=290),
+    ]
+
+    regions = classify_pdf_mark_regions(
+        build_pdf_vector_mark_regions(spans, page_width=1700, page_height=400),
+    )
+    selected = select_primary_pdf_mark_regions(regions)
+    front_fields = {field.key: field.value for field in extract_fields(selected[0].text, source="pdf_front_mark")}
+    side_fields = {field.key: field.value for field in extract_fields(selected[1].text, source="pdf_side_mark")}
+
+    assert [(region.kind, region.box[0]) for region in selected] == [("front", 100), ("side", 500)]
+    assert front_fields["po"] == "62098330"
+    assert front_fields["item"] == "203302017"
+    assert side_fields["po"] == "62098330"
+    assert side_fields["quantity"] == "24"
+    assert side_fields["carton_no"] == "1 DE 1"
