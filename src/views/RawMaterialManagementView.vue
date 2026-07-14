@@ -626,15 +626,14 @@ function openEditMaterialModal(row: RawMaterialRow) {
 }
 
 async function saveMaterial() {
-  const materialCode = materialForm.materialCode.trim()
   const materialName = materialForm.materialName.trim()
   const safetyStockValue = materialForm.safetyStockKg.trim()
   const safetyStockKg = safetyStockValue === '' ? null : Number(safetyStockValue)
   const unitPriceValue = materialForm.unitPriceHkdPerLb.trim()
   const unitPriceHkdPerLb = unitPriceValue === '' ? null : Number(unitPriceValue)
 
-  if (!materialCode || !materialName) {
-    notifyAction('请填写物料编号和原料名称。')
+  if (!materialName) {
+    notifyAction('请填写原料名称。')
     return
   }
   if (!Number.isFinite(safetyStockKg ?? 0) || (safetyStockKg ?? 0) < 0) {
@@ -645,11 +644,6 @@ async function saveMaterial() {
     notifyAction('单价必须是大于 0 的数字，或留空表示暂不维护。')
     return
   }
-  if (!editingMaterialId.value && rawMaterialRows.some((row) => row.code === materialCode)) {
-    notifyAction('当前列表已存在相同物料编号，请更换编号后再保存。')
-    return
-  }
-
   isSavingMaterial.value = true
   try {
     const payload = {
@@ -675,7 +669,6 @@ async function saveMaterial() {
     else {
       const created = await rawMaterialApi.create({
         factory_id: selectedFactoryId.value,
-        material_code: materialCode,
         ...payload,
       })
       rawMaterialRows.push(mapPersistedRawMaterialRow(created, rawMaterialRows.length))
@@ -1248,8 +1241,8 @@ function saveSecondaryModal() {
         <div class="max-h-[70vh] overflow-y-auto p-5">
           <div class="grid gap-x-4 gap-y-3.5 sm:grid-cols-2">
             <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-slate-500">物料编号 <span class="text-red-500">*</span></span>
-              <input v-model.trim="materialForm.materialCode" :readonly="isEditingMaterial" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" :class="isEditingMaterial ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''" placeholder="如：91000001">
+              <span class="mb-1 block text-[11px] font-medium text-slate-500">物料编号（系统自动生成）</span>
+              <input v-model="materialForm.materialCode" readonly class="h-9 w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[12px] text-slate-500 outline-none" :placeholder="isEditingMaterial ? '' : '保存后自动生成'">
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">原料名称 / 型号 <span class="text-red-500">*</span></span>

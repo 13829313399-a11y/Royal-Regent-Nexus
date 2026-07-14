@@ -29,9 +29,8 @@ class RawMaterialFields(BaseModel):
 
 class RawMaterialCreateRequest(RawMaterialFields):
     factory_id: str = Field(min_length=1, max_length=64)
-    material_code: str = Field(min_length=1, max_length=128)
 
-    @field_validator("factory_id", "material_code")
+    @field_validator("factory_id")
     @classmethod
     def strip_identity_text(cls, value: str) -> str:
         return value.strip()

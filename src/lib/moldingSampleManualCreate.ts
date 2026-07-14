@@ -202,7 +202,7 @@ export function buildManualMoldingSampleCreateRequest(
   }
 
   candidateLines.forEach(({ line, sourceIndex }) => {
-    requireField(line.customer_mold_id, `第 ${sourceIndex} 行客模具编号`, errors)
+    requireField(line.customer_mold_id, `第 ${sourceIndex} 行模具编号`, errors)
     requireField(line.mold_name, `第 ${sourceIndex} 行模具名称`, errors)
     requireField(line.material, `第 ${sourceIndex} 行所需用料`, errors)
     requireField(line.color, `第 ${sourceIndex} 行所需颜色`, errors)

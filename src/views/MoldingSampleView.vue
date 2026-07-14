@@ -243,7 +243,7 @@ const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelTemplateDownloading = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_110px_138px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_130px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
@@ -3334,6 +3334,10 @@ onUnmounted(() => {
               </div>
               <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
                 <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
+                  <input v-model="createDraft.client_name" data-testid="create-client-name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                </label>
+                <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品编号</span>
                   <input
                     :value="createDraft.product_no"
@@ -3341,10 +3345,6 @@ onUnmounted(() => {
                     class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400"
                     @input="updateCreateProductNo(readInputValue($event))"
                   >
-                </label>
-                <label class="block">
-                  <span class="mb-1 block text-[11px] font-medium text-slate-500">客户</span>
-                  <input v-model="createDraft.client_name" data-testid="create-client-name" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品名称</span>
@@ -3400,17 +3400,15 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[2120px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[2020px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
                       role="row"
                     >
                       <div class="min-w-0 text-center" role="columnheader">#</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">客模具编号</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">模具编号</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">模具是否在厂</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">模具回厂时间</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">原料价格(HKD/磅)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">颜色</div>
@@ -3421,6 +3419,7 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">所需用料(kg)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">模具状态（是否在厂）</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">备注</div>
                       <div class="min-w-0 truncate text-center" role="columnheader">操作</div>
                     </div>
@@ -3441,8 +3440,6 @@ onUnmounted(() => {
                         <div class="min-w-0" role="cell">
                           <input v-model="line.mold_name" data-testid="create-line-mold-name" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
-                        <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
-                        <div class="min-w-0" role="cell"><input v-model="line.mold_return_time" data-testid="create-line-mold-return-time" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div
                           class="relative min-w-0"
                           role="cell"
@@ -3558,6 +3555,7 @@ onUnmounted(() => {
                           <input v-model="line.required_date" data-testid="create-line-required-date" type="date" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell"><input v-model="line.mold_dimensions" data-testid="create-line-mold-dimensions" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
+                        <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.notes" placeholder="备注提示" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
