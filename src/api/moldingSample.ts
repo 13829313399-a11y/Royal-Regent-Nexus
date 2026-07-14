@@ -273,6 +273,13 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       })
       return response.data
     },
+    async downloadEngineeringImportTemplate(factoryId?: string) {
+      const query = factoryId ? `?factory_id=${encodeURIComponent(factoryId)}` : ''
+      const response = await client.get<ArrayBuffer>(`/injection/import-excel-template${query}`, {
+        responseType: 'arraybuffer',
+      })
+      return response.data
+    },
     async importOrderExcel(workbook: ArrayBuffer, options: MoldingSampleExcelImportOptions = {}) {
       const params = new URLSearchParams()
       if (options.order_id) {

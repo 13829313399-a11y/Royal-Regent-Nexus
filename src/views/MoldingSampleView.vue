@@ -241,6 +241,7 @@ const deleteConfirmingOrderId = ref('')
 const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
+const excelTemplateDownloading = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
 const createLineGridClass = 'grid-cols-[40px_132px_142px_110px_138px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
@@ -1205,6 +1206,28 @@ function triggerExcelImport() {
   }
 
   excelFileInput.value?.click()
+}
+
+async function downloadEngineeringImportTemplate() {
+  if (!canCreateOrder.value) {
+    actionMessage.value = '当前账号没有下载工程部导入模板权限。'
+    return
+  }
+
+  excelTemplateDownloading.value = true
+  actionMessage.value = '正在下载工程部啤办单导入模板...'
+
+  try {
+    const workbook = await moldingSampleApi.downloadEngineeringImportTemplate(selectedFactoryId.value)
+    saveWorkbookAsExcel(workbook, '工程部啤办单_基础资料与模具明细导入模板.xlsx')
+    actionMessage.value = '工程部啤办单导入模板已开始下载。'
+  }
+  catch (error) {
+    actionMessage.value = `导入模板下载失败：${getApiErrorMessage(error)}`
+  }
+  finally {
+    excelTemplateDownloading.value = false
+  }
 }
 
 function readWorkbookAsArrayBuffer(file: File) {
@@ -2662,6 +2685,16 @@ onUnmounted(() => {
         >
           <Upload class="size-3.5" aria-hidden="true" />
           {{ excelImporting ? '导入中...' : '导入Excel' }}
+        </button>
+        <button
+          v-if="!isSelectedFactoryReadOnly"
+          type="button"
+          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="excelTemplateDownloading || !canCreateOrder"
+          @click="downloadEngineeringImportTemplate"
+        >
+          <Download class="size-3.5" aria-hidden="true" />
+          {{ excelTemplateDownloading ? '模板下载中...' : '下载导入模板' }}
         </button>
         <button
           v-if="!isSelectedFactoryReadOnly"

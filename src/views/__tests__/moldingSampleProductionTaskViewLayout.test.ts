@@ -20,12 +20,14 @@ for (const requiredCopy of [
   '打印任务单',
   '确认打印',
   '工程啤办明细',
-  '工程啤办生产任务单',
-  '客模具编号 / 模具名称',
-  '工模尺寸',
-  '模具状态 / 回模时间',
-  '数量 / 啤数',
-  '需料kg',
+  '工程部下发 · 啤机部执行',
+  '工程单据填写详情',
+  '工程模具明细',
+  '模具信息',
+  '工程时点',
+  '用料与颜色',
+  '数量 / 需料',
+  '不含啤机回填及费用',
   '完成并回传',
   '撤回完成',
   '啤机回填明细',
@@ -50,6 +52,7 @@ for (const requiredImplementation of [
   'moldingSampleApi.updateItems',
   'data-testid="molding-sample-task-print-preview"',
   'data-testid="molding-sample-task-print-area"',
+  'canPrintSelectedTask',
   'openTaskPrintPreview',
   'confirmTaskPrint',
   'window.print()',
@@ -109,6 +112,9 @@ assert.match(source, /total_material_cost/)
 assert.match(source, /<\/main>\s*<section class="molding-sample-task-print-root hidden"/)
 assert.match(source, /#app > main \{ display: none !important; \}/)
 assert.match(source, /#app > \.molding-sample-task-print-root \{ display: block !important; position: static !important;/)
+assert.match(source, /@page \{ size: A4 landscape; margin: 7mm; \}/)
+assert.match(source, /min-height: 196mm/)
+assert.match(source, /molding-sample-task-print-page\.is-dense/)
 assert.doesNotMatch(source, /molding-sample-task-print-signatures/)
 assert.doesNotMatch(source, /本任务单由工程部下发给啤机部执行/)
 assert.doesNotMatch(source, /啤机确认机台/)

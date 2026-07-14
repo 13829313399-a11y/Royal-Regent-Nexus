@@ -63,7 +63,13 @@ from app.services.molding_sample import (
     update_problem_status,
     update_requisition_status,
 )
-from app.services.molding_sample_excel import XLSX_MIME, export_order_to_excel, export_orders_to_excel, parse_order_excel
+from app.services.molding_sample_excel import (
+    XLSX_MIME,
+    build_engineering_import_template,
+    export_order_to_excel,
+    export_orders_to_excel,
+    parse_order_excel,
+)
 
 router = APIRouter()
 
@@ -135,6 +141,21 @@ def export_injection_orders_excel(
         content=content,
         media_type=XLSX_MIME,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/api/injection/import-excel-template")
+def download_engineering_import_template(
+    factory_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    resolved_factory_id = resolve_import_factory_id(current_user, factory_id)
+    ensure_molding_create_access(db, current_user, resolved_factory_id)
+    return Response(
+        content=build_engineering_import_template(),
+        media_type=XLSX_MIME,
+        headers={"Content-Disposition": 'attachment; filename="engineering-molding-sample-import-template.xlsx"'},
     )
 
 
