@@ -1663,7 +1663,6 @@ watchEffect(() => {
   <section class="molding-sample-task-print-root hidden" data-testid="molding-sample-task-print-area" aria-label="工程啤办通知单打印内容">
     <article v-if="selectedTask" class="molding-sample-task-print-page" :class="{ 'is-dense': printableEngineeringItems.length > 6 }">
       <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-label">工程部下发 · 啤机部执行</div><div class="molding-sample-task-print-title">啤办通知单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Work Notice</div></div><div class="molding-sample-task-print-id"><strong>{{ selectedTask.order.id }}</strong><span>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</span></div></header>
-      <section class="molding-sample-task-print-handoff"><strong>工程单据填写详情</strong><span>工程审核通过后下发至啤机部执行；打印内容仅包含工程部填写资料。</span></section>
       <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(selectedTask.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(selectedTask.order.send_to) }}</strong></div><div><span>工程 / 审核主管</span><strong>{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</strong></div><div><span>开单日期</span><strong>{{ formatBlank(selectedTask.order.date) }}</strong></div></section>
       <section class="molding-sample-task-print-reason"><span>注意事项 / 开单事由</span><strong>{{ formatBlank(selectedTask.order.reason) }}</strong></section>
       <section class="molding-sample-task-print-section-heading"><strong>工程模具明细</strong><span>共 {{ printableEngineeringItems.length }} 项 · 不含啤机回填及费用</span></section>
@@ -1689,8 +1688,6 @@ watchEffect(() => {
   .molding-sample-task-print-id { min-width: 178px; padding: 8px 10px; align-self: flex-start; background: #0f172a; color: #fff; text-align: right; font-size: 10px; }
   .molding-sample-task-print-id strong { display: block; font-size: 12px; }
   .molding-sample-task-print-id span { display: block; margin-top: 3px; color: #cbd5e1; }
-  .molding-sample-task-print-handoff { display: flex; gap: 10px; align-items: baseline; margin-top: 10px; padding: 7px 8px; border-left: 3px solid #0f766e; background: #ecfdf5; color: #134e4a; font-size: 9.5px; }
-  .molding-sample-task-print-handoff strong { white-space: nowrap; }
   .molding-sample-task-print-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 10px 0; border: 1px solid #cbd5e1; background: #cbd5e1; font-size: 9px; }
   .molding-sample-task-print-meta div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 6px; min-height: 23px; padding: 5px 6px; background: #fff; }
   .molding-sample-task-print-meta span { color: #64748b; }
@@ -1714,7 +1711,6 @@ watchEffect(() => {
   .molding-sample-task-print-table tr { break-inside: avoid; }
   .molding-sample-task-print-footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 8px; padding-top: 5px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 8px; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta { margin: 7px 0; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-handoff { margin-top: 7px; padding: 5px 7px; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-table { font-size: 7.5px; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-table th, .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td { padding: 3px 4px; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td > span { font-size: 7px; }
