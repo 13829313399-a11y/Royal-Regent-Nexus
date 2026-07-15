@@ -860,9 +860,9 @@ describe('molding sample runtime error handling', () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-FULL-001' }
     const detailedRecord = {
-      ...createMoldingSampleRecord('待生产', 'BP-PROD-FULL-001'),
+      ...createMoldingSampleRecord('生产中', 'BP-PROD-FULL-001'),
       order: {
-        ...createMoldingSampleRecord('待生产', 'BP-PROD-FULL-001').order,
+        ...createMoldingSampleRecord('生产中', 'BP-PROD-FULL-001').order,
         order_number: 'P50002008',
         doc_number: 'W-G026-00',
         product_name: '30寸黑武士',
@@ -899,6 +899,22 @@ describe('molding sample runtime error handling', () => {
           injection_cost_hkd: null,
           exchange_rate_at_save: null,
         },
+        ...Array.from({ length: 5 }, (_, index) => {
+          const sortOrder = index + 2
+
+          return {
+            ...createMoldingSampleRecord('生产中', 'BP-PROD-FULL-001').items[0],
+            id: `BP-PROD-FULL-001-00${sortOrder}`,
+            order_id: 'BP-PROD-FULL-001',
+            sort_order: sortOrder,
+            mold_id: `P50002008-01-0${sortOrder}`,
+            mold_name: sortOrder === 6 ? '最后一套护面罩' : `护面罩 ${sortOrder}`,
+            material: 'ABS (PA-757)',
+            required_material_kg: 6 + sortOrder,
+            actual_weight_kg: null,
+            notes: sortOrder === 6 ? '第六套模具完整资料。' : `第 ${sortOrder} 套模具资料。`,
+          }
+        }),
       ],
     } satisfies MoldingSampleDetailResponse
 
@@ -912,16 +928,64 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).not.toContain('完整单据数据')
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
+    expect(wrapper.findAll('[data-testid="production-fillback-item"]')).toHaveLength(6)
+    const actualWeightInputs = wrapper.findAll('[data-testid="production-actual-weight-input"]')
+    expect(actualWeightInputs).toHaveLength(6)
+    expect(wrapper.findAll('[data-testid="production-fillback-expected-cost-panel"]')).toHaveLength(6)
+    expect(wrapper.findAll('[data-testid="production-fillback-actual-cost-panel"]')).toHaveLength(6)
+    const fillbackScroll = wrapper.get('.production-fillback-scroll')
+    const fillbackSummary = wrapper.get('[data-testid="production-fillback-summary"]')
+    expect(fillbackScroll.element.contains(fillbackSummary.element)).toBe(false)
+    Object.defineProperties(fillbackScroll.element, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 700 },
+      scrollTop: { configurable: true, value: 400, writable: true },
+    })
+    const productionScrollBy = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    await fillbackScroll.trigger('wheel', { deltaMode: 0, deltaY: 120 })
+    expect(productionScrollBy).toHaveBeenCalledWith({ behavior: 'auto', top: 120 })
+    productionScrollBy.mockClear()
+    fillbackScroll.element.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      deltaMode: 0,
+      deltaY: 120,
+    }))
+    await nextTick()
+    expect(productionScrollBy).not.toHaveBeenCalled()
+    productionScrollBy.mockRestore()
+    await actualWeightInputs[0].setValue('12.34')
 
     await getButtonByText(wrapper, '展开完整数据').trigger('click')
     await nextTick()
 
-    const fullItemCard = wrapper.get('[data-testid="production-full-item-card"]')
+    expect(wrapper.findAll('[data-testid="production-full-item-card"]')).toHaveLength(1)
+    const indexButtons = wrapper.findAll('[data-testid="production-full-item-index-button"]')
+    expect(indexButtons).toHaveLength(6)
+    expect(indexButtons[0].attributes('aria-pressed')).toBe('true')
+
+    let fullItemCard = wrapper.get('[data-testid="production-full-item-card"]')
+    expect(fullItemCard.text()).toContain('P50002008-01-01')
     expect(fullItemCard.get('[data-testid="production-full-item-material-section"]').text()).toContain('原料与颜色')
     expect(fullItemCard.get('[data-testid="production-full-item-timing-section"]').text()).toContain('生产数量与时点')
     expect(fullItemCard.get('[data-testid="production-full-item-usage-section"]').text()).toContain('实际用量')
     expect(fullItemCard.get('[data-testid="production-full-item-cost-grid"]').text()).toContain('预计料费(HKD)')
     expect(fullItemCard.get('[data-testid="production-full-item-cost-grid"]').text()).toContain('实际料费(HKD)')
+
+    const fullItemPane = wrapper.get('.production-full-item-pane')
+    fullItemPane.element.scrollTop = 180
+    await indexButtons[5].trigger('click')
+    await nextTick()
+    expect(fullItemPane.element.scrollTop).toBe(0)
+    fullItemCard = wrapper.get('[data-testid="production-full-item-card"]')
+    expect(fullItemCard.text()).toContain('P50002008-01-06')
+    expect(fullItemCard.text()).toContain('第六套模具完整资料。')
+    expect(wrapper.findAll('[data-testid="production-full-item-card"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-testid="production-actual-weight-input"]')).toHaveLength(6)
+    await indexButtons[0].trigger('click')
+    await nextTick()
+    expect((wrapper.findAll('[data-testid="production-actual-weight-input"]')[0].element as HTMLInputElement).value).toBe('12.34')
 
     const text = wrapper.text()
     expect(text).toContain('完整单据数据')
@@ -1343,6 +1407,124 @@ describe('molding sample runtime error handling', () => {
     expect(text).not.toContain('啤办费(RMB)')
     expect(text).not.toContain('啤办费(HKD)')
     expect(text).not.toContain('当前汇率(RMB→HKD)')
+
+    wrapper.unmount()
+  })
+
+  it('keeps multi-mold engineering details in a bounded master-detail workspace', async () => {
+    const createDenseRecord = (id: string, prefix: string, itemCount: number) => {
+      const record = createMoldingSampleRecord('待审核', id)
+      record.order.order_number = `${prefix}-PRODUCT`
+      record.order.product_name = `${prefix} 多模具产品`
+      record.items = Array.from({ length: itemCount }, (_, index) => ({
+        id: `${id}-${index + 1}`,
+        order_id: id,
+        sort_order: index + 1,
+        mold_id: `${prefix}-MOLD-${index + 1}`,
+        mold_name: `${prefix} 模具 ${index + 1}`,
+        mold_dimensions: `${600 + index} × 450 × 380 mm`,
+        mold_presence_status: 'in_factory' as const,
+        machine_type: '',
+        production_machine: '',
+        material: `${100 - index}%ABS 750NSW`,
+        material_components: [{ material: 'ABS 750NSW', source_type: 'virgin' as const, ratio_percent: 100 }],
+        material_usage_type: 'production' as const,
+        color: `颜色 ${index + 1}`,
+        pigment_no: `PMS ${index + 1}`,
+        quantity: '1/1',
+        shoot_qty: 30 + index,
+        gross_weight_g: null,
+        required_material_kg: 10 + index,
+        mold_return_time: '',
+        completion_time: `2026-08-${String(index + 1).padStart(2, '0')}`,
+        notes: `${prefix} 第 ${index + 1} 项备注`,
+        receipt_no: '',
+        collected_weight_kg: 9 + index,
+        actual_weight_kg: 8 + index,
+        actual_amount_hkd: 40 + index,
+        injection_cost: null,
+        injection_cost_hkd: null,
+        exchange_rate_at_save: null,
+      }))
+      return record
+    }
+
+    const firstRecord = createDenseRecord('BP-DENSE-A', 'A', 6)
+    const secondRecord = createDenseRecord('BP-DENSE-B', 'B', 2)
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([firstRecord, secondRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(wrapper, firstRecord.order.id).trigger('click')
+    await nextTick()
+
+    const summaryRegion = wrapper.get('[data-testid="molding-sample-detail-scroll-region"]')
+    expect(summaryRegion.attributes('role')).toBe('region')
+    expect(summaryRegion.attributes('tabindex')).toBe('0')
+    expect(summaryRegion.attributes('aria-label')).toContain('6 项')
+    expect(summaryRegion.classes()).toContain('md:max-h-[min(62vh,640px)]')
+    expect(summaryRegion.findAll('[data-testid="molding-sample-detail-row"]')).toHaveLength(6)
+    Object.defineProperties(summaryRegion.element, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, value: 0, writable: true },
+    })
+    const engineeringScrollBy = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    await summaryRegion.trigger('wheel', { deltaMode: 0, deltaY: 100 })
+    expect(engineeringScrollBy).toHaveBeenCalledWith({ behavior: 'auto', top: 100 })
+    engineeringScrollBy.mockClear()
+    await summaryRegion.trigger('wheel', { deltaMode: 0, deltaX: 140, deltaY: 40 })
+    expect(engineeringScrollBy).not.toHaveBeenCalled()
+    summaryRegion.element.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: 0,
+      deltaY: 100,
+      shiftKey: true,
+    }))
+    await nextTick()
+    expect(engineeringScrollBy).not.toHaveBeenCalled()
+    engineeringScrollBy.mockRestore()
+
+    const expandButton = getButtonByText(wrapper, '展开完整数据')
+    expect(expandButton.attributes('aria-expanded')).toBe('false')
+    await expandButton.trigger('click')
+    await nextTick()
+
+    expect(getButtonByText(wrapper, '收起完整数据').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-testid="molding-full-data-workspace"]').classes()).toContain('lg:h-[min(70vh,680px)]')
+    expect(wrapper.get('[data-testid="molding-full-item-index"]').classes()).toEqual(expect.arrayContaining([
+      'overflow-x-auto',
+      'lg:overflow-y-auto',
+    ]))
+    const selectors = wrapper.findAll('[data-testid="molding-full-item-selector"]')
+    expect(selectors).toHaveLength(6)
+    expect(selectors[0]?.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.findAll('[data-testid="molding-full-item-card"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="molding-full-item-card"]').text()).toContain('A-MOLD-1')
+    expect(wrapper.get('[data-testid="molding-full-item-card"]').text()).not.toContain('A-MOLD-6')
+
+    const detailPane = wrapper.get('[data-testid="molding-full-item-detail-pane"]')
+    detailPane.element.scrollTop = 160
+    await selectors[5]!.trigger('click')
+    await nextTick()
+
+    expect(wrapper.findAll('[data-testid="molding-full-item-selector"]')[5]?.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="molding-full-item-card"]').text()).toContain('A-MOLD-6')
+    expect(wrapper.get('[data-testid="molding-full-item-card"]').text()).not.toContain('A-MOLD-1')
+    expect((wrapper.get('[data-testid="molding-full-item-detail-pane"]').element as HTMLElement).scrollTop).toBe(0)
+
+    await getButtonByText(wrapper, '返回看板').trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, secondRecord.order.id).trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="molding-full-data-workspace"]').exists()).toBe(false)
+    await getButtonByText(wrapper, '展开完整数据').trigger('click')
+    await nextTick()
+
+    const nextSelectors = wrapper.findAll('[data-testid="molding-full-item-selector"]')
+    expect(nextSelectors).toHaveLength(2)
+    expect(nextSelectors[0]?.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="molding-full-item-card"]').text()).toContain('B-MOLD-1')
 
     wrapper.unmount()
   })

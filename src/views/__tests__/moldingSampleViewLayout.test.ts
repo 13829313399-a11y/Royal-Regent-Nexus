@@ -141,7 +141,7 @@ for (const requiredImplementation of [
   'countMoldingSampleAttentionMetrics',
   'data-testid="molding-kpi-grid"',
   'lg:grid-cols-4',
-  'xl:grid-cols-7',
+  'xl:grid-cols-[minmax(0,4fr)_minmax(0,3fr)]',
   'moldingSampleApi.listOrders',
   "'huaxing'",
   'createDraft',
@@ -257,8 +257,23 @@ assert.doesNotMatch(source, /<span>\{\{ actionMessage \}\}<\/span>/)
 assert.match(source, /overviewDisplayMode = ref<OverviewDisplayMode>\('board'\)/)
 assert.match(source, /@click="overviewDisplayMode = 'board'"/)
 assert.match(source, /@click="overviewDisplayMode = 'list'"/)
+assert.match(source, /:aria-pressed="overviewDisplayMode === 'board'"/)
+assert.match(source, /:aria-pressed="overviewDisplayMode === 'list'"/)
 assert.match(source, /v-if="overviewDisplayMode === 'board'"/)
 assert.match(source, /v-else[\s\S]*aria-label="啤办单列表"/)
+assert.match(source, /class="app-shell min-h-screen bg-transparent/)
+assert.match(source, /class="enterprise-panel[^\"]*"[\s\S]*data-testid="molding-sample-export-print-toolbar"[\s\S]*Molding Sample Operations/)
+assert.match(source, /data-testid="molding-kpi-grid"[\s\S]*啤办流程概览[\s\S]*啤办风险提醒/)
+assert.match(source, /enterprise-panel group relative min-h-\[104px\]/)
+assert.doesNotMatch(source, /enterprise-panel interactive-surface group relative min-h-\[104px\]/)
+assert.match(source, /surface-subtle flex items-center gap-1 rounded-lg/)
+assert.match(source, /reveal-grid grid grid-cols-1 gap-3 overflow-x-auto overscroll-x-contain/)
+assert.match(source, /selectedOrder\.id === record\.order\.id \? 'border-teal-300 bg-teal-50\/70/)
+assert.match(source, /<span class="inline-flex min-h-8 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50\/80 px-2\.5 text-\[12px\] font-medium text-slate-600">[\s\S]*车间：/)
+assert.doesNotMatch(source, /<button[^>]*>[\s\S]{0,180}车间：/)
+assert.match(source, /role="progressbar"[\s\S]*正在刷新啤办业务数据/)
+assert.match(source, /<RefreshCw[\s\S]*animate-spin motion-reduce:animate-none/)
+assert.match(source, /:disabled="apiState === 'checking'"[\s\S]*:aria-busy="apiState === 'checking'"/)
 assert.match(source, /v-for="record in column\.pagedRecords"[\s\S]*openRecord\(record\)/)
 assert.match(source, /v-for="record in paginatedVisibleRecords"[\s\S]*openRecord\(record\)/)
 assert.match(source, /@click="setView\('material-balance'\)"/)
@@ -287,8 +302,35 @@ assert.match(source, /data-testid="molding-sample-detail-table" class="w-full mi
 assert.doesNotMatch(source, /data-testid="molding-sample-detail-table" class="w-full min-w-\[1300px\]/)
 assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*模具资料[\s\S]*原料 \/ 颜色[\s\S]*预计用料 \/ 料费[\s\S]*实际用料 \/ 料费[\s\S]*状态/)
 assert.match(source, /data-testid="molding-sample-detail-row"/)
+assert.match(source, /data-testid="molding-sample-detail-scroll-region"[\s\S]*role="region"[\s\S]*tabindex="0"/)
+assert.match(source, /function handoffWheelAtBoundary\(event: WheelEvent\)[\s\S]*event\.preventDefault\(\)[\s\S]*window\.scrollBy/)
+assert.match(source, /data-testid="molding-sample-detail-scroll-region"[\s\S]*@wheel="handoffWheelAtBoundary"/)
+assert.match(source, /grid min-w-0 gap-4 xl:grid-cols-\[minmax\(0,1fr\)_340px\][\s\S]*<div class="min-w-0 space-y-4">[\s\S]*<section class="min-w-0 rounded-lg/)
+assert.match(source, /data-testid="molding-sample-detail-scroll-region"[\s\S]*md:max-h-\[min\(62vh,640px\)\][\s\S]*md:overflow-auto/)
+assert.equal(
+  source.replaceAll('overscroll-x-contain', '').includes('overscroll-contain'),
+  false,
+  'vertical scroll regions must hand wheel scrolling back to the page at their boundaries',
+)
+assert.doesNotMatch(source, /overscroll-y-(?:contain|none)/)
+assert.match(source, /data-testid="molding-sample-detail-scroll-region"[\s\S]*sidebar-scrollbar/)
+assert.match(source, /data-testid="molding-full-item-card"[\s\S]*overflow-clip/)
+assert.match(source, /data-testid="molding-full-item-index"[\s\S]*overscroll-x-contain/)
+assert.match(source, /data-testid="molding-full-item-index"[\s\S]*@wheel="handoffWheelAtBoundary"/)
+assert.match(source, /data-testid="molding-full-item-detail-pane"[\s\S]*sidebar-scrollbar/)
+assert.match(source, /data-testid="molding-full-item-detail-pane"[\s\S]*@wheel="handoffWheelAtBoundary"/)
+assert.match(source, /<thead class="sticky top-0 z-10/)
 assert.match(source, /data-testid="expected-material-cost-panel"/)
 assert.match(source, /data-testid="actual-material-cost-panel"/)
+assert.match(source, /aria-controls="molding-sample-full-data"[\s\S]*@click="toggleSelectedOrderData"/)
+assert.match(source, /data-testid="molding-full-data-workspace"[\s\S]*lg:h-\[min\(70vh,680px\)\][\s\S]*lg:grid-cols-\[240px_minmax\(0,1fr\)\]/)
+assert.match(source, /data-testid="molding-full-item-index"[\s\S]*overflow-x-auto[\s\S]*lg:auto-rows-max[\s\S]*lg:content-start[\s\S]*lg:overflow-y-auto[\s\S]*v-for="item in selectedItems"/)
+assert.match(source, /data-testid="molding-full-item-selector"[\s\S]*min-w-\[210px\][\s\S]*lg:min-w-0/)
+assert.match(source, /data-testid="molding-full-item-selector"[\s\S]*:aria-pressed="selectedFullItem\.id === item\.id"/)
+assert.match(source, /data-testid="molding-full-item-selector"[\s\S]*border-teal-300 bg-teal-50 text-teal-950[\s\S]*bg-teal-600 text-white/)
+assert.match(source, /ref="selectedFullItemDetailPane"[\s\S]*data-testid="molding-full-item-detail-pane"[\s\S]*lg:overflow-y-auto[\s\S]*role="region"[\s\S]*tabindex="0"/)
+assert.match(source, /selectedFullItemDetailPane\.value\.scrollTop = 0/)
+assert.match(source, /motion-reduce:transition-none/)
 assert.match(source, /data-testid="molding-full-item-card"/)
 assert.match(source, /data-testid="molding-full-item-metadata-section"[\s\S]*模具资料/)
 assert.match(source, /data-testid="molding-full-item-material-section"[\s\S]*原料与颜色/)
