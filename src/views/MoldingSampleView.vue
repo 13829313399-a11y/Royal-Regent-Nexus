@@ -57,6 +57,10 @@ import {
   resolveMaterialComponents,
   roundMoney,
 } from '@/lib/moldingSampleBusiness'
+import {
+  matchesMoldingSampleSearch,
+  tokenizeMoldingSampleSearchKeyword,
+} from '@/lib/moldingSampleSearch'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   MOLDING_SAMPLE_XLSX_MIME,
@@ -406,22 +410,13 @@ const factoryRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
 )
 
 const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
+  const searchTokens = tokenizeMoldingSampleSearchKeyword(searchKeyword.value)
 
-  if (!keyword) {
+  if (!searchTokens.length) {
     return factoryRecords.value
   }
 
-  return factoryRecords.value.filter((record) => [
-    record.order.id,
-    record.order.order_number,
-    record.order.product_name,
-    record.order.client_name,
-    record.order.supervisor,
-    record.order.eng_name,
-    ...record.items.flatMap((item) => [item.mold_id, item.mold_name, item.material, item.color]),
-    ...record.problems.flatMap((problem) => [problem.description, problem.reported_by, problem.status]),
-  ].some((value) => String(value).toLowerCase().includes(keyword)))
+  return factoryRecords.value.filter((record) => matchesMoldingSampleSearch(record, searchTokens))
 })
 
 const overviewListPagination = computed(() =>
@@ -991,6 +986,7 @@ function isBlankCreateDraft(draft: ManualMoldingSampleOrderDraft) {
   const hasHeaderValue = [
     draft.id,
     draft.product_no,
+    draft.doc_number,
     draft.client_name,
     draft.product_name,
     draft.supervisor,
@@ -1095,6 +1091,7 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
     id: record.order.id,
     factory_id: record.factory_id,
     product_no: record.order.order_number,
+    doc_number: record.order.doc_number,
     client_name: record.order.client_name,
     product_name: record.order.product_name,
     order_date: record.order.date,
@@ -1174,6 +1171,7 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
     id: order.id,
     factory_id: order.factory_id || selectedFactoryId.value,
     product_no: order.order_number || order.id.replace(/^BP-/, ''),
+    doc_number: order.doc_number ?? '',
     client_name: order.client_name,
     product_name: order.product_name,
     order_date: order.date,
@@ -2613,10 +2611,24 @@ onUnmounted(() => {
         <div class="relative ml-1 hidden md:block">
           <Search class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
           <input
+            data-testid="molding-sample-search-input"
             v-model="searchKeyword"
-            placeholder="搜索单号 / 产品 / 客户 / 模具号..."
-            class="h-8 w-72 rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 text-[12px] outline-none transition focus:border-slate-400 focus:bg-white"
+            type="search"
+            aria-label="模糊搜索啤办单"
+            autocomplete="off"
+            placeholder="搜索单号 / 产品 / 客户 / 模具 / 原料..."
+            class="h-8 w-72 rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-8 text-[12px] outline-none transition focus:border-slate-400 focus:bg-white"
+            @keydown.esc="searchKeyword = ''"
           >
+          <button
+            v-if="searchKeyword"
+            type="button"
+            aria-label="清除搜索"
+            class="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-200 hover:text-slate-700"
+            @click="searchKeyword = ''"
+          >
+            <X class="size-3.5" aria-hidden="true" />
+          </button>
         </div>
 
         <div class="ml-auto flex items-center gap-3">
@@ -4391,69 +4403,162 @@ onUnmounted(() => {
                     </p>
                   </div>
 
-                  <div class="mt-3 space-y-2">
+                  <div class="mt-4 space-y-3">
                     <article
                       v-for="item in selectedItems"
                       :key="`full-${item.id}`"
-                      class="rounded-lg border border-slate-200 bg-white p-3"
+                      data-testid="molding-full-item-card"
+                      class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
                     >
-                      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <div class="font-semibold text-slate-950">
-                          {{ item.sort_order }}. {{ item.mold_id }} · {{ item.mold_name }}
-                        </div>
-                        <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
-                          {{ getItemState(item) }}
-                        </span>
-                      </div>
-                      <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                        <div><span class="text-slate-400">工模尺寸</span><div class="font-semibold">{{ formatBlank(item.mold_dimensions) }}</div></div>
-                        <div><span class="text-slate-400">模具是否在厂</span><div class="font-semibold">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div></div>
-                        <div>
-                          <span class="text-slate-400">原料 / 用料用途</span>
-                          <div class="font-semibold">{{ getMaterialCompositionLabel(item) }}</div>
-                          <div :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'">
-                            {{ item.material_usage_type === 'trial' ? '试料 · 金额不计结余' : '正式生产' }}
+                      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/80 px-4 py-3">
+                        <div class="flex min-w-0 items-start gap-3">
+                          <span class="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 px-2 text-[11px] font-bold text-white">
+                            {{ item.sort_order }}
+                          </span>
+                          <div class="min-w-0">
+                            <div class="break-all font-mono text-[12px] font-semibold text-slate-950">{{ item.mold_id }}</div>
+                            <div class="mt-0.5 break-words text-[13px] font-semibold text-slate-700">{{ item.mold_name }}</div>
                           </div>
                         </div>
-                        <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
-                        <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
-                        <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
-                        <div v-if="canViewSelectedOrderCost">
-                          <span class="text-slate-400">预计料费(HKD)</span>
-                          <div
-                            v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
-                            :key="`full-expected-${item.id}-${componentIndex}`"
-                            class="mt-0.5 text-[11px] text-slate-600"
+                        <div class="flex flex-wrap items-center justify-end gap-2">
+                          <span
+                            class="rounded-full px-2.5 py-1 text-[10px] font-bold"
+                            :class="item.material_usage_type === 'trial' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'"
                           >
-                            {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatMoney(component.amount_hkd) }}
-                          </div>
-                          <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatMoney(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</div>
-                        </div>
-                        <div><span class="text-slate-400">需办日期</span><div class="font-semibold">{{ formatBlank(item.completion_time) }}</div></div>
-                        <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
-                        <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
-                        <div v-if="canViewSelectedOrderCost">
-                          <span class="text-slate-400">实际料费(HKD)</span>
-                          <div
-                            data-testid="actual-material-cost-source"
-                            class="mt-0.5 text-[10px] font-semibold"
-                            :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
-                          >
-                            {{ getActualMaterialCostSourceLabel(item) }}
-                          </div>
-                          <div
-                            v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
-                            :key="`full-actual-${item.id}-${componentIndex}`"
-                            class="mt-0.5 text-[11px] text-slate-600"
-                          >
-                            {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatMoney(component.amount_hkd) }}
-                          </div>
-                          <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatMoney(getActualMaterialCostTotal(item)) }}</div>
+                            {{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}
+                          </span>
+                          <span class="rounded-full border px-2.5 py-1 text-[10px] font-bold" :class="getItemStateClass(item)">
+                            {{ getItemState(item) }}
+                          </span>
                         </div>
                       </div>
-                      <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
-                        备注：{{ formatBlank(item.notes) }}
-                      </p>
+                      <div class="p-4">
+                        <div class="grid gap-3 md:grid-cols-2">
+                          <section data-testid="molding-full-item-metadata-section" class="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+                            <h4 class="text-[11px] font-bold tracking-wide text-slate-500">模具资料</h4>
+                            <dl class="mt-3 grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                              <div>
+                                <dt class="text-[11px] font-medium text-slate-500">工模尺寸</dt>
+                                <dd class="mt-1 break-words text-[13px] font-semibold text-slate-900">{{ formatBlank(item.mold_dimensions) }}</dd>
+                              </div>
+                              <div>
+                                <dt class="text-[11px] font-medium text-slate-500">模具是否在厂</dt>
+                                <dd class="mt-1 text-[13px] font-semibold text-slate-900">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</dd>
+                              </div>
+                              <div>
+                                <dt class="text-[11px] font-medium text-slate-500">需办日期</dt>
+                                <dd class="mt-1 text-[13px] font-semibold tabular-nums text-slate-900">{{ formatBlank(item.completion_time) }}</dd>
+                              </div>
+                              <div>
+                                <dt class="text-[11px] font-medium text-slate-500">数量 / 啤数</dt>
+                                <dd class="mt-1 text-[13px] font-semibold tabular-nums text-slate-900">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</dd>
+                              </div>
+                            </dl>
+                          </section>
+
+                          <section data-testid="molding-full-item-material-section" class="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+                            <h4 class="text-[11px] font-bold tracking-wide text-slate-500">原料与颜色</h4>
+                            <dl class="mt-3 space-y-3">
+                              <div>
+                                <dt class="text-[11px] font-medium text-slate-500">原料配比</dt>
+                                <dd class="mt-1 break-words text-[13px] font-semibold leading-5 text-slate-900">{{ getMaterialCompositionLabel(item) }}</dd>
+                              </div>
+                              <div class="border-t border-slate-200 pt-3">
+                                <dt class="text-[11px] font-medium text-slate-500">颜色 / PMS</dt>
+                                <dd class="mt-1 break-words text-[13px] font-semibold text-slate-900">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</dd>
+                              </div>
+                            </dl>
+                          </section>
+                        </div>
+
+                        <section data-testid="molding-full-item-usage-section" class="mt-3 rounded-xl border border-slate-200 p-3.5">
+                          <h4 class="text-[11px] font-bold tracking-wide text-slate-500">用量概览</h4>
+                          <dl class="mt-3 grid gap-2 sm:grid-cols-3">
+                            <div class="rounded-lg bg-slate-50 px-3 py-2.5">
+                              <dt class="text-[11px] font-medium text-slate-500">预计用料</dt>
+                              <dd class="mt-1 text-[15px] font-bold tabular-nums text-slate-950">{{ formatWeight(item.required_material_kg) }}</dd>
+                            </div>
+                            <div class="rounded-lg bg-slate-50 px-3 py-2.5">
+                              <dt class="text-[11px] font-medium text-slate-500">领料重量</dt>
+                              <dd class="mt-1 text-[15px] font-bold tabular-nums text-slate-950">{{ formatWeight(item.collected_weight_kg) }}</dd>
+                            </div>
+                            <div class="rounded-lg bg-slate-900 px-3 py-2.5 text-white">
+                              <dt class="text-[11px] font-medium text-slate-300">实际用料</dt>
+                              <dd class="mt-1 text-[15px] font-bold tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</dd>
+                            </div>
+                          </dl>
+                        </section>
+
+                        <section
+                          v-if="canViewSelectedOrderCost"
+                          data-testid="molding-full-item-cost-grid"
+                          class="mt-3 grid gap-3 lg:grid-cols-2"
+                        >
+                          <article data-testid="molding-full-item-expected-cost-panel" class="overflow-hidden rounded-xl border border-slate-200">
+                            <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
+                              <h4 class="text-[11px] font-bold text-slate-600">预计料费(HKD)</h4>
+                              <p class="mt-0.5 text-[11px] text-slate-500">按预计用料与当前原料价计算</p>
+                            </div>
+                            <div class="divide-y divide-slate-100 px-3.5">
+                              <div
+                                v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
+                                :key="`full-expected-${item.id}-${componentIndex}`"
+                                class="flex items-start justify-between gap-3 py-3"
+                              >
+                                <div class="min-w-0">
+                                  <div class="break-words text-[12px] font-semibold leading-5 text-slate-800">{{ component.material }}</div>
+                                  <div class="mt-0.5 text-[11px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                                </div>
+                                <div class="shrink-0 text-right tabular-nums">
+                                  <div class="text-[11px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                                  <div class="mt-0.5 text-[12px] font-semibold text-slate-900">{{ formatMoney(component.amount_hkd) }}</div>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[12px] font-bold text-slate-950">
+                              <span>预计合计</span>
+                              <span class="tabular-nums">{{ formatMoney(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</span>
+                            </div>
+                          </article>
+
+                          <article data-testid="molding-full-item-actual-cost-panel" class="overflow-hidden rounded-xl border border-slate-200">
+                            <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
+                              <h4 class="text-[11px] font-bold text-slate-600">实际料费(HKD)</h4>
+                              <p
+                                data-testid="actual-material-cost-source"
+                                class="mt-0.5 text-[11px] font-semibold"
+                                :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
+                              >
+                                {{ getActualMaterialCostSourceLabel(item) }}
+                              </p>
+                            </div>
+                            <div class="divide-y divide-slate-100 px-3.5">
+                              <div
+                                v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
+                                :key="`full-actual-${item.id}-${componentIndex}`"
+                                class="flex items-start justify-between gap-3 py-3"
+                              >
+                                <div class="min-w-0">
+                                  <div class="break-words text-[12px] font-semibold leading-5 text-slate-800">{{ component.material }}</div>
+                                  <div class="mt-0.5 text-[11px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                                </div>
+                                <div class="shrink-0 text-right tabular-nums">
+                                  <div class="text-[11px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                                  <div class="mt-0.5 text-[12px] font-semibold text-slate-900">{{ formatMoney(component.amount_hkd) }}</div>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[12px] font-bold text-slate-950">
+                              <span>实际合计</span>
+                              <span class="tabular-nums">{{ formatMoney(getActualMaterialCostTotal(item)) }}</span>
+                            </div>
+                          </article>
+                        </section>
+
+                        <p class="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5 text-[12px] leading-5 text-slate-600">
+                          <span class="font-semibold text-slate-500">备注：</span>{{ formatBlank(item.notes) }}
+                        </p>
+                      </div>
                     </article>
                   </div>
                 </div>

@@ -401,13 +401,61 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
     expect(wrapper.text()).not.toContain('卡点 / 退回')
 
-    await wrapper.get('input[placeholder="搜索单号 / 产品 / 客户 / 模具号..."]').setValue('BP-KPI-PROD-MISSING')
+    await wrapper.get('[data-testid="molding-sample-search-input"]').setValue('BP-KPI-PROD-MISSING')
     await nextTick()
 
     expect(wrapper.get('[data-testid="molding-kpi-factory-orders-value"]').text()).toBe('1')
     expect(wrapper.get('[data-testid="molding-kpi-returned-withdrawn-value"]').text()).toBe('0')
     expect(wrapper.get('[data-testid="molding-kpi-unresolved-problems-value"]').text()).toBe('1')
     expect(wrapper.get('[data-testid="molding-kpi-production-data-pending-value"]').text()).toBe('1')
+
+    wrapper.unmount()
+  })
+
+  it('fuzzy searches orders across normalized order, mold, client, and material fields', async () => {
+    const searchableRecord = createKpiRecord('待审核', 'BP-SEARCH-MIXED-001', null)
+    Object.assign(searchableRecord.order, {
+      doc_number: 'WG-026',
+      product_name: 'Helmet Shell',
+      client_name: 'ShuShuPaPa',
+    })
+    Object.assign(searchableRecord.items[0]!, {
+      mold_id: 'JP-5678',
+      mold_name: 'Head Mold Alpha',
+      material: 'legacy material text',
+      material_components: [
+        { material: 'ABS PA-757', source_type: 'virgin', ratio_percent: 70 },
+        { material: 'PVC 90度（本白,普通）', source_type: 'runner', ratio_percent: 30 },
+      ],
+    })
+    const unrelatedRecord = createKpiRecord('待生产', 'BP-SEARCH-OTHER-002', null)
+    unrelatedRecord.order.client_name = 'Another Client'
+    unrelatedRecord.order.doc_number = 'DOC-OTHER-002'
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([searchableRecord, unrelatedRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    const searchInput = wrapper.get('[data-testid="molding-sample-search-input"]')
+
+    expect(searchInput.attributes('type')).toBe('search')
+    expect(searchInput.attributes('aria-label')).toBe('模糊搜索啤办单')
+
+    for (const keyword of ['jp 5678', 'shushupapa pvc', 'ｗｇ ０２６']) {
+      await searchInput.setValue(keyword)
+      await nextTick()
+
+      expect(wrapper.get('[data-testid="molding-kpi-factory-orders-value"]').text()).toBe('1')
+      expect(wrapper.text()).toContain('BP-SEARCH-MIXED-001')
+      expect(wrapper.text()).not.toContain('BP-SEARCH-OTHER-002')
+    }
+
+    await searchInput.setValue('jp 5678')
+    await wrapper.get('button[aria-label="清除搜索"]').trigger('click')
+    await nextTick()
+
+    expect(searchInput.element).toHaveProperty('value', '')
+    expect(wrapper.get('[data-testid="molding-kpi-factory-orders-value"]').text()).toBe('2')
+    expect(wrapper.text()).toContain('BP-SEARCH-OTHER-002')
 
     wrapper.unmount()
   })
@@ -675,6 +723,55 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('fuzzy searches the production queue across order, mold, client, and material fields', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing' }
+    const searchableRecord = createKpiRecord('待生产', 'BP-PROD-SEARCH-001', null)
+    Object.assign(searchableRecord.order, {
+      doc_number: 'WG-026',
+      product_name: 'Helmet Shell',
+      client_name: 'ShuShuPaPa',
+    })
+    Object.assign(searchableRecord.items[0]!, {
+      mold_id: 'JP-5678',
+      mold_name: 'Head Mold Alpha',
+      material: 'legacy material text',
+      material_components: [
+        { material: 'ABS PA-757', source_type: 'virgin', ratio_percent: 70 },
+        { material: 'PVC 90度（本白,普通）', source_type: 'runner', ratio_percent: 30 },
+      ],
+    })
+    const unrelatedRecord = createKpiRecord('生产中', 'BP-PROD-SEARCH-OTHER-002', null)
+    unrelatedRecord.order.client_name = 'Another Client'
+    unrelatedRecord.order.doc_number = 'DOC-OTHER-002'
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([searchableRecord, unrelatedRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(searchableRecord.order.id, 1),
+      createProductionTaskNotification(unrelatedRecord.order.id, 2),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+    const queue = wrapper.get('[aria-label="啤办生产任务队列"]')
+    const searchInput = wrapper.get('[data-testid="production-task-search-input"]')
+
+    for (const keyword of ['jp 5678', 'shushupapa pvc', 'ｗｇ ０２６']) {
+      await searchInput.setValue(keyword)
+      await nextTick()
+
+      expect(queue.text()).toContain('BP-PROD-SEARCH-001')
+      expect(queue.text()).not.toContain('BP-PROD-SEARCH-OTHER-002')
+    }
+
+    await wrapper.get('button[aria-label="清除生产任务搜索"]').trigger('click')
+    await nextTick()
+
+    expect(searchInput.element).toHaveProperty('value', '')
+    expect(queue.text()).toContain('BP-PROD-SEARCH-OTHER-002')
+
+    wrapper.unmount()
+  })
+
   it('prints engineering molding-sample details without production fillback fields', async () => {
     const printSpy = vi.fn()
     vi.stubGlobal('print', printSpy)
@@ -694,7 +791,12 @@ describe('molding sample runtime error handling', () => {
         mold_name: '30寸黑武士头盔',
         mold_dimensions: '650 × 450 × 380 mm',
         mold_presence_status: 'in_factory',
-        material: 'PP (AV161)',
+        material: 'legacy material text',
+        material_components: [
+          { material: 'ABS PA-757', source_type: 'virgin', ratio_percent: 70 },
+          { material: 'PVC 90度（本白,普通）', source_type: 'runner', ratio_percent: 30 },
+        ],
+        material_usage_type: 'trial',
         color: '黑色',
         pigment_no: 'PMS Black',
         quantity: '1/1',
@@ -720,7 +822,11 @@ describe('molding sample runtime error handling', () => {
     const printArea = wrapper.get('[data-testid="molding-sample-task-print-area"]').text()
     expect(printSpy).not.toHaveBeenCalled()
     expect(preview).toContain('BP-PROD-PRINT-001')
-    expect(printArea).toContain('PP (AV161)')
+    expect(preview).toContain('70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料')
+    expect(preview).toContain('试料 · 不计结余')
+    expect(printArea).toContain('70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料')
+    expect(printArea).not.toContain('legacy material text')
+    expect(printArea).toContain('试料 · 不计结余')
     expect(printArea).toContain('650 × 450 × 380 mm')
     expect(printArea).toContain('在厂')
     expect(printArea).toContain('2026-07-18')
@@ -737,8 +843,15 @@ describe('molding sample runtime error handling', () => {
     expect(preview).not.toContain('啤机确认机台')
     expect(preview).not.toContain('啤办机台-08')
 
+    vi.useFakeTimers()
     await getButtonByExactText(wrapper, '确认打印').trigger('click')
     expect(printSpy).toHaveBeenCalledTimes(1)
+    expect(document.body.classList.contains('molding-sample-task-printing')).toBe(true)
+    expect(document.getElementById('molding-sample-active-print-page')).not.toBeNull()
+    vi.runAllTimers()
+    expect(document.body.classList.contains('molding-sample-task-printing')).toBe(false)
+    expect(document.getElementById('molding-sample-active-print-page')).toBeNull()
+    vi.useRealTimers()
 
     wrapper.unmount()
   })
@@ -802,6 +915,13 @@ describe('molding sample runtime error handling', () => {
 
     await getButtonByText(wrapper, '展开完整数据').trigger('click')
     await nextTick()
+
+    const fullItemCard = wrapper.get('[data-testid="production-full-item-card"]')
+    expect(fullItemCard.get('[data-testid="production-full-item-material-section"]').text()).toContain('原料与颜色')
+    expect(fullItemCard.get('[data-testid="production-full-item-timing-section"]').text()).toContain('生产数量与时点')
+    expect(fullItemCard.get('[data-testid="production-full-item-usage-section"]').text()).toContain('实际用量')
+    expect(fullItemCard.get('[data-testid="production-full-item-cost-grid"]').text()).toContain('预计料费(HKD)')
+    expect(fullItemCard.get('[data-testid="production-full-item-cost-grid"]').text()).toContain('实际料费(HKD)')
 
     const text = wrapper.text()
     expect(text).toContain('完整单据数据')
@@ -875,7 +995,7 @@ describe('molding sample runtime error handling', () => {
 
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
 
-    await wrapper.get('input[aria-label="实际用料"]').setValue('14.2')
+    await wrapper.get('[data-testid="production-actual-weight-input"]').setValue('14.2')
     expect(wrapper.find('input[aria-label="啤办费"]').exists()).toBe(false)
     expect(wrapper.find('input[aria-label="啤机确认机台"]').exists()).toBe(false)
     await getButtonByText(wrapper, '保存回填').trigger('click')
@@ -1193,6 +1313,13 @@ describe('molding sample runtime error handling', () => {
     await getButtonByText(wrapper, '展开完整数据').trigger('click')
     await nextTick()
 
+    const fullItemCard = wrapper.get('[data-testid="molding-full-item-card"]')
+    expect(fullItemCard.get('[data-testid="molding-full-item-metadata-section"]').text()).toContain('模具资料')
+    expect(fullItemCard.get('[data-testid="molding-full-item-material-section"]').text()).toContain('原料与颜色')
+    expect(fullItemCard.get('[data-testid="molding-full-item-usage-section"]').text()).toContain('用量概览')
+    expect(fullItemCard.get('[data-testid="molding-full-item-cost-grid"]').text()).toContain('预计料费(HKD)')
+    expect(fullItemCard.get('[data-testid="molding-full-item-cost-grid"]').text()).toContain('实际料费(HKD)')
+
     const text = wrapper.text()
     expect(text).toContain('完整单据数据')
     expect(text).toContain('产品编号')
@@ -1246,13 +1373,14 @@ describe('molding sample runtime error handling', () => {
 
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
     const actualCostSource = wrapper.get('[data-testid="production-actual-material-cost-source"]')
-    const actualCostCellText = actualCostSource.element.closest('td')?.textContent ?? ''
+    const actualCostPanelText = actualCostSource.element.closest('[data-testid="production-fillback-actual-cost-panel"]')?.textContent ?? ''
 
     expect(actualCostSource.text()).toContain('实际结算快照')
-    expect(actualCostCellText).toContain('$ 60.00')
-    expect(actualCostCellText).toContain('$ 10.00')
-    expect(actualCostCellText).toContain('合计 $ 70.00')
-    expect(actualCostCellText).not.toContain('按当前原料价估算')
+    expect(actualCostPanelText).toContain('$ 60.00')
+    expect(actualCostPanelText).toContain('$ 10.00')
+    expect(actualCostPanelText).toContain('实际合计')
+    expect(wrapper.get('[data-testid="production-fillback-actual-total"]').text()).toBe('$ 70.00')
+    expect(actualCostPanelText).not.toContain('按当前原料价估算')
 
     wrapper.unmount()
   })
@@ -1281,21 +1409,23 @@ describe('molding sample runtime error handling', () => {
     ])
 
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
-    await wrapper.get('input[aria-label="实际用料"]').setValue('20')
+    await wrapper.get('[data-testid="production-actual-weight-input"]').setValue('20')
     await nextTick()
 
     const actualCostSource = wrapper.get('[data-testid="production-actual-material-cost-source"]')
-    const actualCostCellText = actualCostSource.element.closest('td')?.textContent ?? ''
-    const reportTotalText = actualCostSource.element.closest('table')?.querySelector('tfoot')?.textContent ?? ''
+    const actualCostPanelText = actualCostSource.element.closest('[data-testid="production-fillback-actual-cost-panel"]')?.textContent ?? ''
+    const reportTotalText = wrapper.get('[data-testid="production-fillback-summary"]').text()
 
     expect(actualCostSource.text()).toContain('按本次实际用料预览，保存后结算')
     expect(actualCostSource.text()).not.toContain('实际结算快照')
-    expect(actualCostCellText).toContain('16.00 kg')
-    expect(actualCostCellText).toContain('4.00 kg')
-    expect(actualCostCellText).toContain('$ 171.08')
-    expect(actualCostCellText).toContain('$ 42.77')
-    expect(actualCostCellText).toContain('合计 $ 213.85')
+    expect(actualCostPanelText).toContain('16.00 kg')
+    expect(actualCostPanelText).toContain('4.00 kg')
+    expect(actualCostPanelText).toContain('$ 171.08')
+    expect(actualCostPanelText).toContain('$ 42.77')
+    expect(actualCostPanelText).toContain('实际合计')
+    expect(wrapper.get('[data-testid="production-fillback-actual-total"]').text()).toBe('$ 213.85')
     expect(reportTotalText).toContain('$ 213.85')
+    expect(reportTotalText).toContain('全部模具已回填实际用料')
 
     wrapper.unmount()
   })
@@ -1453,6 +1583,10 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).not.toContain('预计料费')
     expect(wrapper.text()).not.toContain('实际料费')
     expect(wrapper.text()).not.toContain('HKD 98.76')
+
+    await getButtonByText(wrapper, '展开完整数据').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="molding-full-item-cost-grid"]').exists()).toBe(false)
 
     wrapper.unmount()
   })
@@ -1924,7 +2058,7 @@ describe('molding sample runtime error handling', () => {
         order_type: '啤办',
         workshop: '工程部',
         send_to: '内部',
-        supervisor: '',
+        supervisor: '华兴主管',
         eng_name: '杨敬作',
         reason: '工程部啤办通知单导入',
       },
@@ -1933,13 +2067,19 @@ describe('molding sample runtime error handling', () => {
           id: 'BP-XLSX-DRAFT-001-001',
           mold_id: 'P50002008-01-01',
           mold_name: '30寸黑武士-头盔',
-          material: 'PP（AV161）',
-          color: '黑色 / PMS Black C',
-          pigment_no: '黑种',
-          quantity: '2',
-          shoot_qty: 30,
+          material: '70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料',
+          material_components: [
+            { material: 'ABS PA-757', source_type: 'virgin', ratio_percent: 70 },
+            { material: 'PVC 90度（本白,普通）', source_type: 'runner', ratio_percent: 30 },
+          ],
+          material_usage_type: 'trial',
+          color: '黑色 / PMS 2487',
+          pigment_no: '黑种-11',
+          quantity: '5/10',
+          shoot_qty: 10,
           required_material_kg: 15,
-          mold_presence_status: 'legacy_unknown_label',
+          mold_dimensions: '207*789',
+          mold_presence_status: 'in_factory',
           mold_return_time: '2026-02-10',
           completion_time: '2026-02-10',
           notes: '报价周期：3天；要求：加急；备注：第一次试模',
@@ -1977,7 +2117,50 @@ describe('molding sample runtime error handling', () => {
     expect((wrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('P50002008-01-01')
     expect((wrapper.get('[data-testid="create-line-color"]').element as HTMLInputElement).value).toBe('黑色')
     expect((wrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('15')
-    expect((wrapper.get('[data-testid="create-line-mold-presence-status"]').element as HTMLSelectElement).value).toBe('')
+    expect((wrapper.get('[data-testid="create-line-mold-presence-status"]').element as HTMLSelectElement).value).toBe('in_factory')
+    expect((wrapper.get('[data-testid="create-line-material-usage-type"]').element as HTMLSelectElement).value).toBe('trial')
+    expect((wrapper.get('[data-testid="create-line-material"]').element as HTMLInputElement).value).toBe('70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料')
+    expect((wrapper.get('input[placeholder="PMS"]').element as HTMLInputElement).value).toBe('2487')
+
+    await wrapper.get('[data-testid="create-line-material-composition-0"]').trigger('click')
+    expect((wrapper.get('[data-testid="material-component-name-0"]').element as HTMLInputElement).value).toBe('ABS PA-757')
+    expect((wrapper.get('[data-testid="material-component-percentage-0"]').element as HTMLInputElement).value).toBe('70')
+    expect((wrapper.get('[data-testid="material-component-name-1"]').element as HTMLInputElement).value).toBe('PVC 90度（本白,普通）')
+    expect((wrapper.get('[data-testid="material-component-source-1"]').element as HTMLSelectElement).value).toBe('runner')
+    expect((wrapper.get('[data-testid="material-component-percentage-1"]').element as HTMLInputElement).value).toBe('30')
+    await wrapper.get('button[aria-label="关闭原料配比弹窗"]').trigger('click')
+
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => ({
+      order: payload.order,
+      items: payload.items,
+      audit_logs: [],
+      problems: [],
+    }))
+
+    await getButtonByText(wrapper, '提交主管审核').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].order.doc_number).toBe('W-G026-00')
+    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].items[0]).toMatchObject({
+      mold_id: 'P50002008-01-01',
+      mold_name: '30寸黑武士-头盔',
+      material: '70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料',
+      material_components: [
+        { material: 'ABS PA-757', source_type: 'virgin', ratio_percent: 70 },
+        { material: 'PVC 90度（本白,普通）', source_type: 'runner', ratio_percent: 30 },
+      ],
+      material_usage_type: 'trial',
+      color: '黑色 / PMS 2487',
+      pigment_no: '黑种-11',
+      quantity: '5/10',
+      shoot_qty: 10,
+      required_material_kg: 15,
+      mold_dimensions: '207*789',
+      mold_presence_status: 'in_factory',
+      completion_time: '2026-02-10',
+    })
 
     wrapper.unmount()
   })

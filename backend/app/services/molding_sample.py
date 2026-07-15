@@ -262,9 +262,13 @@ def resolve_material_price(material: str, prices: list[MoldingSampleMaterialPric
 
 
 def parse_legacy_material_components(material: str) -> list[dict[str, Any]] | None:
-    parts = material.replace("＋", "+").split("+")
-    if len(parts) == 1 and "%" not in material and "％" not in material:
+    normalized_material = material.replace("＋", "+")
+    if not re.match(r"^\s*\d+(?:\.\d+)?\s*[%％]", normalized_material):
         return []
+    if normalized_material.rstrip().endswith("+"):
+        return None
+
+    parts = re.split(r"\+\s*(?=\d+(?:\.\d+)?\s*[%％])", normalized_material)
 
     parsed: list[dict[str, Any]] = []
     total = 0.0
