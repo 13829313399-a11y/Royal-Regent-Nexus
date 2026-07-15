@@ -52,6 +52,16 @@ export const positionSuggestionsByDepartment: Record<ModuleDepartmentId, readonl
     '业务主管',
     '销售经理',
   ],
+  accounting: [
+    '会计文员',
+    '应收会计',
+    '应付会计',
+    '成本会计',
+    '总账会计',
+    '出纳员',
+    '会计主管',
+    '财务经理',
+  ],
 }
 
 export function getPositionSuggestions(department: string): readonly string[] {

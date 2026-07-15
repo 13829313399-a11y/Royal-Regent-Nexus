@@ -33,6 +33,7 @@ export type DepartmentId =
   | 'production'
   | 'qa'
   | 'sales-business'
+  | 'accounting'
 
 export type ModuleDepartmentId = Exclude<DepartmentId, 'overview'>
 
@@ -220,6 +221,7 @@ export const moduleDepartmentIds: ModuleDepartmentId[] = [
   'production',
   'qa',
   'sales-business',
+  'accounting',
 ]
 
 export const factoryContexts: FactoryContext[] = [
@@ -325,6 +327,12 @@ export const departments: Department[] = [
     shortName: '业务',
     focus: '客户、报价、内部定价、印尼物料和 PO 排期协同',
   },
+  {
+    id: 'accounting',
+    name: '会计部',
+    shortName: '会计',
+    focus: '应收应付、费用、资金与月结协同',
+  },
 ]
 
 export const departmentMap = Object.fromEntries(
@@ -357,6 +365,7 @@ export const navigationGroups: NavigationGroup[] = [
       { label: '生产部', to: getDepartmentRoute('production'), icon: Boxes, departmentId: 'production' },
       { label: 'QA 部', to: getDepartmentRoute('qa'), icon: ShieldCheck, departmentId: 'qa' },
       { label: '业务部', to: getDepartmentRoute('sales-business'), icon: ClipboardCheck, departmentId: 'sales-business' },
+      { label: '会计部', to: getDepartmentRoute('accounting'), icon: Calculator, departmentId: 'accounting' },
     ],
   },
   {
@@ -1003,6 +1012,50 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
       { id: 'BUS-131', title: '报价审批超时', meta: '2 单需重新拉通工程与 PMC' },
       { id: 'BUS-144', title: '印尼物料出运复核', meta: '3 批在途 · 2 批待确认船期' },
       { id: 'BUS-162', title: 'PO 入排期确认', meta: '待录入 8 · 待排期 5' },
+    ],
+  },
+  accounting: {
+    departmentId: 'accounting',
+    heroTitle: '会计模块中心',
+    heroSubtitle: '统一承接应收应付、费用、资金和月结事项，后续按正式账务流程接入',
+    panelTitle: '会计部模块',
+    panelSubtitle: '先建立账务协同入口和职责边界，再逐步接入凭证与报表数据',
+    modules: [
+      {
+        id: 'indonesia-invoice-reconciliation',
+        title: '印尼票据核对',
+        owner: '会计部 · 公共模块',
+        summary: '集中核对 RRI 与 RRM 的客户票、供应商票，并汇总金额差异和待复核事项',
+        status: '前端已就绪',
+        statusTone: 'teal',
+        stats: 'RRI · RRM 双厂区',
+        icon: Calculator,
+        route: '/modules/accounting/indonesia-invoice-reconciliation',
+        statusMetrics: [
+          { label: '票据', value: '双票核对', tone: 'teal' },
+          { label: '厂区', value: 'RRI · RRM', tone: 'blue' },
+          { label: '状态', value: '前端就绪', tone: 'green' },
+        ],
+        todos: ['导入客户票与供应商票', '复核单号、日期、货号、数量和金额', '跟进差异并确认核对结论'],
+        children: [
+          { label: '双票导入', summary: '同一票据组分别选择客户票与供应商票 PDF' },
+          { label: '字段核对', summary: '核对单号、日期、SKU、数量、单价与总额' },
+          { label: '差异汇总', summary: '集中查看金额和资料差异的处理状态' },
+          { label: '票据记录', summary: '沉淀 RRI、RRM 两个厂区的核对记录' },
+        ],
+      },
+    ],
+    quickCandidates: ['印尼票据核对', '应收应付对账', '付款申请', '月结报表'],
+    permissionRows: [
+      { role: '会计主管', view: true, edit: true, approve: true },
+      { role: '会计', view: true, edit: true, approve: false },
+      { role: '出纳', view: true, edit: true, approve: false },
+      { role: '总经理', view: true, edit: false, approve: true },
+    ],
+    todos: [
+      { id: 'ACC-101', title: 'RRI 客户票待核对', meta: '需补齐对应供应商票后复核' },
+      { id: 'ACC-112', title: 'RRM 单价差异待确认', meta: '需复核 0.98 核对规则与票据币种' },
+      { id: 'ACC-124', title: '印尼票据汇总口径确认', meta: '需明确月结前的核对截止日期' },
     ],
   },
 }
