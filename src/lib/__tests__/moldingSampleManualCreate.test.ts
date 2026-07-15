@@ -16,6 +16,7 @@ const draft = createManualMoldingSampleOrderDraft({
 Object.assign(draft, {
   id: 'BP-62437',
   product_no: '62437',
+  doc_number: 'W-G026-00',
   client_name: 'BuzzBee',
   product_name: '链条枪',
   stage: 'T0',
@@ -58,7 +59,7 @@ assert.deepEqual(result.errors, [])
 assert.equal(result.payload?.order.id, 'BP-62437')
 assert.equal(result.payload?.order.factory_id, 'huakang-a')
 assert.equal(result.payload?.order.order_number, '62437')
-assert.equal(result.payload?.order.doc_number, '')
+assert.equal(result.payload?.order.doc_number, 'W-G026-00')
 assert.equal(result.payload?.order.client_name, 'BuzzBee')
 assert.equal(result.payload?.order.product_name, '链条枪')
 assert.equal(result.payload?.order.date, '2026-04-09')

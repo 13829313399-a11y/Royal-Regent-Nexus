@@ -42,6 +42,7 @@ export interface ManualMoldingSampleOrderDraft {
   id: string
   factory_id: string
   product_no: string
+  doc_number: string
   client_name: string
   product_name: string
   order_date: string
@@ -64,6 +65,7 @@ export interface ManualMoldingSampleDraftOptions {
   id?: string
   factory_id?: string
   product_no?: string
+  doc_number?: string
   client_name?: string
   product_name?: string
   order_date?: string
@@ -157,6 +159,7 @@ export function createManualMoldingSampleOrderDraft(
     id: input.id ?? '',
     factory_id: input.factory_id ?? 'huakang-a',
     product_no: input.product_no ?? '',
+    doc_number: input.doc_number ?? '',
     client_name: input.client_name ?? '',
     product_name: input.product_name ?? '',
     order_date: input.order_date ?? '',
@@ -303,7 +306,7 @@ export function buildManualMoldingSampleCreateRequest(
     id: orderId,
     factory_id: factoryId,
     order_number: productNo,
-    doc_number: '',
+    doc_number: trimText(draft.doc_number),
     product_name: productName,
     client_name: clientName,
     date: orderDate,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onMounted, ref, watch, watchEffect } from 'vue'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -17,6 +17,7 @@ import {
   Printer,
   RotateCcw,
   Save,
+  Search,
   Send,
   ShieldAlert,
   Table2,
@@ -42,6 +43,10 @@ import {
   type MoldingSampleReportItemRow,
   type MoldingSampleReportSummary,
 } from '@/lib/moldingSampleBusiness'
+import {
+  matchesMoldingSampleSearch,
+  tokenizeMoldingSampleSearchKeyword,
+} from '@/lib/moldingSampleSearch'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   moldingSampleApi,
@@ -98,6 +103,7 @@ const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
 const actionMessage = ref('正在读取啤办生产任务...')
 const selectedOrderId = ref('')
 const queueFilter = ref<ProductionQueueFilter>('全部')
+const productionSearchKeyword = ref('')
 const queueDisplayMode = ref<ProductionTaskDisplayMode>('board')
 const queuePage = ref(1)
 const productionProblem = ref('')
@@ -106,6 +112,8 @@ const notificationUpdating = ref(false)
 const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
 const isSelectedTaskDataExpanded = ref(false)
+const selectedFullDataItemId = ref('')
+const fullDataItemPane = ref<HTMLElement | null>(null)
 const taskPrintPreviewVisible = ref(false)
 const trialReportDialogVisible = ref(false)
 const trialReportReadOnly = ref(false)
@@ -113,6 +121,29 @@ const trialReportInitialItemId = ref('')
 const trialReportSaving = ref(false)
 const protectedMaterialPrices = ref<MoldingSampleMaterialPrice[]>([])
 const protectedRmbToHkdRate = ref<number | null>(null)
+
+function handoffWheelAtBoundary(event: WheelEvent) {
+  const region = event.currentTarget as HTMLElement | null
+  if (
+    !region
+    || event.deltaY === 0
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+    || Math.abs(event.deltaX) > Math.abs(event.deltaY)
+  ) return
+
+  const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1
+  const scrollDistance = event.deltaY * multiplier
+  const edgeTolerance = 1.5
+  const reachedTop = region.scrollTop <= edgeTolerance
+  const reachedBottom = region.scrollTop + region.clientHeight >= region.scrollHeight - edgeTolerance
+
+  if ((scrollDistance < 0 && reachedTop) || (scrollDistance > 0 && reachedBottom)) {
+    event.preventDefault()
+    window.scrollBy({ top: scrollDistance, behavior: 'auto' })
+  }
+}
 
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'blue',
@@ -227,6 +258,18 @@ const taskEntries = computed(() => taskRecords.value
   .sort((left, right) => getTaskPriority(left.order.status) - getTaskPriority(right.order.status)),
 )
 
+const productionSearchTokens = computed(() =>
+  tokenizeMoldingSampleSearchKeyword(productionSearchKeyword.value),
+)
+
+const searchMatchedTaskEntries = computed(() => {
+  if (!productionSearchTokens.value.length) {
+    return taskEntries.value
+  }
+
+  return taskEntries.value.filter((entry) => matchesMoldingSampleSearch(entry, productionSearchTokens.value))
+})
+
 const selectedTask = computed(() => {
   const queryOrderId = readQueryString(route.query.order_id)
   const targetOrderId = selectedOrderId.value || queryOrderId
@@ -280,9 +323,33 @@ const activeItems = computed<MoldingSampleItem[]>(() => {
   })
 })
 
+const selectedFullDataItem = computed(() =>
+  activeItems.value.find((item) => item.id === selectedFullDataItemId.value)
+  ?? activeItems.value[0]
+  ?? null,
+)
+
 // The printed handoff is issued when molding first receives the engineering order.
 // Keep it tied to the original engineering rows instead of unsaved production fillback.
 const printableEngineeringItems = computed<MoldingSampleItem[]>(() => selectedTask.value?.items ?? [])
+const taskPrintDensityClass = computed(() => {
+  const items = printableEngineeringItems.value
+  const textWeight = items.reduce((total, item) => total
+    + formatMaterialComposition(resolveMaterialComponents(item)).length
+    + String(item.mold_name ?? '').length
+    + String(item.notes ?? '').length, String(selectedTask.value?.order.reason ?? '').length)
+  const layoutWeight = items.length * 72 + textWeight
+
+  if (items.length > 7 || layoutWeight > 1_000) {
+    return 'is-dense'
+  }
+
+  if (items.length > 3 || layoutWeight > 480) {
+    return 'is-compact'
+  }
+
+  return ''
+})
 const canPrintSelectedTask = computed(() =>
   Boolean(
     selectedTask.value
@@ -320,7 +387,7 @@ const selectedProblems = computed(() => selectedTask.value?.problems ?? [])
 
 const queueFilters: ProductionQueueFilter[] = ['全部', '待接单', '生产中']
 
-const filteredTaskEntries = computed(() => taskEntries.value.filter((entry) => {
+const filteredTaskEntries = computed(() => searchMatchedTaskEntries.value.filter((entry) => {
   if (queueFilter.value === '待接单') {
     return entry.order.status === '待生产'
   }
@@ -538,6 +605,15 @@ function getReportRow(itemId: string) {
   return selectedReportRowsByItemId.value.get(itemId) ?? null
 }
 
+function selectFullDataItem(itemId: string) {
+  selectedFullDataItemId.value = itemId
+  void nextTick(() => {
+    if (fullDataItemPane.value) {
+      fullDataItemPane.value.scrollTop = 0
+    }
+  })
+}
+
 function getExpectedMaterialCostBreakdown(item: MoldingSampleItem) {
   return calculateMaterialCostBreakdown({
     components: resolveMaterialComponents(item),
@@ -678,14 +754,20 @@ function confirmTaskPrint() {
   document.getElementById('molding-sample-active-print-page')?.remove()
   const pageStyle = document.createElement('style')
   pageStyle.id = 'molding-sample-active-print-page'
-  pageStyle.textContent = '@media print { @page { size: A4 landscape; margin: 7mm; } }'
+  pageStyle.textContent = '@media print { @page { size: A4 landscape; margin: 5mm; } }'
   document.head.append(pageStyle)
+  let cleanedUp = false
   const cleanUp = () => {
+    if (cleanedUp) {
+      return
+    }
+    cleanedUp = true
     document.body.classList.remove('molding-sample-task-printing')
     pageStyle.remove()
   }
   window.addEventListener('afterprint', cleanUp, { once: true })
   window.print()
+  window.setTimeout(cleanUp, 1000)
 }
 
 function openTrialReportDialog() {
@@ -1134,9 +1216,10 @@ watch(selectedTask, () => {
     return acc
   }, {}) ?? {}
   isSelectedTaskDataExpanded.value = false
+  selectedFullDataItemId.value = selectedTask.value?.items[0]?.id ?? ''
 }, { immediate: true })
 
-watch([queueFilter, selectedFactoryId], () => {
+watch([queueFilter, productionSearchKeyword, selectedFactoryId], () => {
   queuePage.value = 1
 })
 
@@ -1155,11 +1238,11 @@ watchEffect(() => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-100 px-4 pb-6 pt-16 text-[13px] leading-relaxed text-slate-900 sm:px-6 xl:px-10">
-    <div class="mx-auto max-w-[1720px] space-y-4">
+  <main class="production-task-page app-shell min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.09),transparent_32rem),linear-gradient(180deg,#f8fafc_0%,#eef4f8_100%)] px-4 pb-6 pt-16 text-[13px] leading-relaxed text-slate-900 sm:px-6 xl:px-10">
+    <div class="app-page mx-auto max-w-[1720px] space-y-4">
       <RouterLink
         to="/modules/production"
-        class="fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 text-sm font-semibold text-slate-600 shadow-sm backdrop-blur transition hover:border-slate-300 hover:text-slate-950 sm:left-6 xl:left-10"
+        class="interactive-surface fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-3 text-sm font-semibold text-slate-600 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.45)] backdrop-blur-xl transition hover:border-teal-200 hover:bg-teal-50/90 hover:text-teal-800 sm:left-6 xl:left-10"
       >
         <ArrowLeft class="size-4" aria-hidden="true" />
         生产部模块
@@ -1173,8 +1256,8 @@ watchEffect(() => {
         <span class="font-semibold text-slate-700">
           生产任务单 · {{ selectedTask?.order.id || '未选择' }}
         </span>
-        <div class="fixed right-4 top-4 z-50 flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-2 py-1 shadow-sm backdrop-blur sm:right-6 xl:right-10">
-          <span class="hidden font-medium text-slate-500 lg:inline">
+        <div class="fixed right-4 top-4 z-50 flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-2 py-1 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.45)] backdrop-blur-xl sm:right-6 xl:right-10">
+          <span class="sr-only font-medium text-slate-500 lg:not-sr-only lg:inline" role="status" aria-live="polite">
             当前厂区：{{ activeFactory.shortName }} · {{ actionMessage }}
           </span>
           <AccountMenu />
@@ -1189,11 +1272,13 @@ watchEffect(() => {
         <span>当前厂区为只读，仅可查看数据</span>
       </section>
 
-      <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div class="flex flex-wrap items-start justify-between gap-4">
+      <section class="enterprise-panel relative overflow-hidden rounded-2xl p-5">
+        <span class="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-teal-500 via-teal-600 to-cyan-600" aria-hidden="true" />
+        <span class="pointer-events-none absolute -right-20 -top-28 size-64 rounded-full bg-teal-100/45 blur-3xl" aria-hidden="true" />
+        <div class="relative flex flex-wrap items-start justify-between gap-4">
           <div class="min-w-0">
-            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">MOLDING SAMPLE PRODUCTION TASK</p>
-            <h1 class="mt-1 text-2xl font-bold tracking-tight text-slate-950">啤机部生产任务单</h1>
+            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">MOLDING SAMPLE PRODUCTION TASK</p>
+            <h1 class="mt-1 text-2xl font-bold tracking-tight text-[#17385e]">啤机部生产任务单</h1>
             <p class="mt-1 max-w-4xl text-sm text-slate-600">
               啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料，完成后把状态回传到同一张工程啤办单。
             </p>
@@ -1205,26 +1290,31 @@ watchEffect(() => {
           <div class="flex flex-wrap gap-2">
             <RouterLink
               :to="engineeringOrderRoute"
-              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+              class="interactive-surface inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white/90 px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800"
             >
               <Send class="size-4" aria-hidden="true" />
               工程啤办单
             </RouterLink>
             <button
               type="button"
-              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+              :disabled="apiState === 'checking'"
+              :aria-busy="apiState === 'checking'"
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#17385e] bg-[#17385e] px-4 text-sm font-semibold text-white shadow-[0_10px_24px_-16px_rgba(23,56,94,0.75)] transition hover:border-[#204b73] hover:bg-[#204b73] disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
               @click="loadApiData"
             >
-              <RotateCcw class="size-4" aria-hidden="true" />
-              刷新任务
+              <RotateCcw class="size-4" :class="apiState === 'checking' ? 'animate-spin' : ''" aria-hidden="true" />
+              {{ apiState === 'checking' ? '刷新中' : '刷新任务' }}
             </button>
           </div>
+        </div>
+        <div v-if="apiState === 'checking'" class="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-teal-100" aria-hidden="true">
+          <span class="production-loading-bar block h-full w-1/3 rounded-full bg-gradient-to-r from-teal-700 via-teal-500 to-cyan-400" />
         </div>
       </section>
 
       <div class="grid min-w-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <aside class="min-w-0 space-y-3 xl:sticky xl:top-20 xl:self-start" aria-label="啤办生产任务队列">
-          <section class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+          <section class="enterprise-panel rounded-2xl p-3.5">
             <div class="flex items-center justify-between gap-3">
               <div>
                 <h2 class="text-[13px] font-bold text-slate-950">我的生产队列</h2>
@@ -1232,23 +1322,50 @@ watchEffect(() => {
               </div>
               <span class="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-bold text-teal-700">{{ taskEntries.length }}</span>
             </div>
+            <div class="relative mt-3">
+              <Search class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+              <input
+                data-testid="production-task-search-input"
+                v-model="productionSearchKeyword"
+                type="search"
+                aria-label="模糊搜索生产任务"
+                autocomplete="off"
+                placeholder="搜索单号 / 产品 / 客户 / 模具 / 原料..."
+                class="h-9 w-full rounded-lg border border-slate-200 bg-slate-50/80 pl-8 pr-8 text-[12px] outline-none shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition focus:border-teal-300 focus:bg-white"
+                @keydown.esc="productionSearchKeyword = ''"
+              >
+              <button
+                v-if="productionSearchKeyword"
+                type="button"
+                aria-label="清除生产任务搜索"
+                class="absolute right-1.5 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-200 hover:text-slate-700"
+                @click="productionSearchKeyword = ''"
+              >
+                <X class="size-3.5" aria-hidden="true" />
+              </button>
+            </div>
+            <p v-if="productionSearchTokens.length" class="mt-1.5 text-[11px] font-medium text-slate-500">
+              找到 {{ searchMatchedTaskEntries.length }} 张匹配任务
+            </p>
             <div class="mt-2 flex flex-wrap gap-1 text-[11px]">
               <button
                 v-for="filter in queueFilters"
                 :key="filter"
                 type="button"
-                class="rounded-md px-2 py-0.5 font-semibold transition"
-                :class="queueFilter === filter ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'"
+                :aria-pressed="queueFilter === filter"
+                class="rounded-md px-2 py-1 font-semibold transition"
+                :class="queueFilter === filter ? 'bg-[#17385e] text-white shadow-sm' : 'text-slate-500 hover:bg-teal-50 hover:text-teal-800'"
                 @click="queueFilter = filter"
               >
                 {{ filter }} {{ getQueueFilterCount(filter) }}
               </button>
             </div>
-            <div class="mt-3 flex rounded-lg border border-slate-200 bg-slate-50 p-1 text-[11px] font-semibold">
+            <div class="surface-subtle mt-3 flex rounded-lg p-1 text-[11px] font-semibold">
               <button
                 type="button"
+                :aria-pressed="queueDisplayMode === 'board'"
                 class="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md transition"
-                :class="queueDisplayMode === 'board' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-slate-900'"
+                :class="queueDisplayMode === 'board' ? 'bg-[#17385e] text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-teal-800'"
                 @click="setQueueDisplayMode('board')"
               >
                 <LayoutDashboard class="size-3.5" aria-hidden="true" />
@@ -1256,8 +1373,9 @@ watchEffect(() => {
               </button>
               <button
                 type="button"
+                :aria-pressed="queueDisplayMode === 'list'"
                 class="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md transition"
-                :class="queueDisplayMode === 'list' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-slate-900'"
+                :class="queueDisplayMode === 'list' ? 'bg-[#17385e] text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-teal-800'"
                 @click="setQueueDisplayMode('list')"
               >
                 <Table2 class="size-3.5" aria-hidden="true" />
@@ -1266,14 +1384,15 @@ watchEffect(() => {
             </div>
           </section>
 
-          <div v-if="filteredTaskEntries.length" class="space-y-2">
-            <div v-if="queueDisplayMode === 'board'" class="space-y-2">
+          <div v-if="filteredTaskEntries.length" class="production-queue-list sidebar-scrollbar space-y-2 pr-0.5" @wheel="handoffWheelAtBoundary">
+            <div v-if="queueDisplayMode === 'board'" class="reveal-grid space-y-2">
               <button
                 v-for="entry in paginatedFilteredTaskEntries"
                 :key="entry.order.id"
                 type="button"
-                class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:border-indigo-300 hover:bg-slate-50"
-                :class="selectedTask?.order.id === entry.order.id ? 'border-2 border-teal-300 bg-teal-50/60' : 'border-slate-200'"
+                :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
+                class="interactive-surface w-full rounded-xl border bg-white p-2.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition motion-reduce:transform-none motion-reduce:transition-none hover:border-teal-200 hover:bg-teal-50/40"
+                :class="selectedTask?.order.id === entry.order.id ? 'border-teal-300 bg-gradient-to-r from-teal-50 to-white shadow-[inset_3px_0_0_rgba(13,148,136,0.75),0_8px_20px_-18px_rgba(13,148,136,0.8)] ring-1 ring-teal-100' : 'border-slate-200'"
                 @click="selectTask(entry.order.id, entry.factory_id)"
               >
                 <div class="flex items-start justify-between gap-2">
@@ -1284,7 +1403,7 @@ watchEffect(() => {
                 <p class="truncate text-[11px] text-slate-400">
                   {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 交期 {{ entry.items[0]?.completion_time || entry.order.date }}
                 </p>
-                <p class="mt-1 truncate text-[10px] font-semibold text-blue-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
+                <p class="mt-1 truncate text-[10px] font-semibold text-teal-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
                 <p
                   v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
                   class="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-500"
@@ -1305,7 +1424,8 @@ watchEffect(() => {
                 v-for="entry in paginatedFilteredTaskEntries"
                 :key="`list-${entry.order.id}`"
                 type="button"
-                class="grid w-full grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 px-3 py-2 text-left text-[12px] transition last:border-b-0 hover:bg-slate-50"
+                :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
+                class="grid w-full grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 px-3 py-2 text-left text-[12px] transition last:border-b-0 hover:bg-teal-50/50"
                 :class="selectedTask?.order.id === entry.order.id ? 'bg-teal-50/70' : 'bg-white'"
                 role="row"
                 @click="selectTask(entry.order.id, entry.factory_id)"
@@ -1319,7 +1439,7 @@ watchEffect(() => {
               </button>
             </div>
 
-            <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500 shadow-sm">
+            <div class="enterprise-panel flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-[11px] text-slate-500">
               <span class="font-medium">每页 10 条</span>
               <span class="font-mono">{{ formatPaginationRange(filteredTaskPagination) }}</span>
               <div class="flex gap-1">
@@ -1343,12 +1463,12 @@ watchEffect(() => {
             </div>
           </div>
           <div v-else class="rounded-xl border border-dashed border-slate-200 bg-white/70 p-5 text-center text-sm text-slate-500">
-            当前筛选下没有内部啤机生产任务。
+            {{ productionSearchTokens.length ? '未找到匹配的生产任务。' : '当前筛选下没有内部啤机生产任务。' }}
           </div>
         </aside>
 
-        <section v-if="selectedTask" class="min-w-0 space-y-4">
-          <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <section v-if="selectedTask" class="reveal-grid min-w-0 space-y-4">
+          <section class="enterprise-panel rounded-2xl p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
@@ -1366,7 +1486,7 @@ watchEffect(() => {
                 </div>
                 <div
                   v-if="selectedNotification"
-                  class="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                  class="surface-subtle mt-3 flex flex-wrap items-center gap-2 rounded-lg px-3 py-2"
                 >
                   <div class="min-w-0 flex-1">
                     <div class="flex flex-wrap items-center gap-2">
@@ -1393,7 +1513,7 @@ watchEffect(() => {
                   <button
                     type="button"
                     :disabled="notificationUpdating || !canMarkSelectedNotificationHandled"
-                    class="h-7 rounded-md bg-slate-900 px-2 text-[11px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    class="h-7 rounded-md bg-[#17385e] px-2 text-[11px] font-semibold text-white transition hover:bg-[#204b73] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                     @click="updateSelectedNotificationStatus('已处理')"
                   >
                     标记已处理
@@ -1406,8 +1526,8 @@ watchEffect(() => {
                   当前任务未找到正式通知，刷新任务后可同步通知状态。
                 </div>
               </div>
-              <div class="rounded-lg bg-slate-900 px-3 py-2 text-right text-white">
-                <div class="text-[11px] text-slate-400">实际料费(HKD)</div>
+              <div class="rounded-xl border border-[#284f76] bg-gradient-to-br from-[#17385e] to-[#204b73] px-3.5 py-2.5 text-right text-white shadow-[0_12px_26px_-18px_rgba(23,56,94,0.85)]">
+                <div class="text-[11px] text-slate-200">实际料费(HKD)</div>
                 <div class="text-lg font-bold tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</div>
               </div>
               <button
@@ -1431,7 +1551,7 @@ watchEffect(() => {
             </div>
           </section>
 
-          <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="molding-sample-trial-report-history">
+          <section class="enterprise-panel rounded-2xl p-3.5" data-testid="molding-sample-trial-report-history">
             <div class="flex flex-wrap items-start justify-between gap-2">
               <div class="flex items-center gap-2">
                 <ClipboardPenLine class="size-4 text-teal-700" aria-hidden="true" />
@@ -1446,7 +1566,7 @@ watchEffect(() => {
               <article
                 v-for="report in selectedTrialReports"
                 :key="report.id"
-                class="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
+                class="interactive-surface surface-subtle flex min-w-0 items-center justify-between gap-3 rounded-lg px-3 py-2.5 motion-reduce:transform-none motion-reduce:transition-none"
               >
                 <div class="min-w-0">
                   <p class="truncate text-[12px] font-semibold text-slate-900">
@@ -1466,7 +1586,7 @@ watchEffect(() => {
                 </button>
               </article>
             </div>
-            <p v-else class="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+            <p v-else class="surface-subtle mt-3 rounded-lg border-dashed px-3 py-2 text-[11px] text-slate-500">
               暂无已保存报告。啤机部填写并保存后，这里会形成可查、可重印的历史记录。
             </p>
           </section>
@@ -1484,123 +1604,203 @@ watchEffect(() => {
             </div>
           </div>
 
-          <section class="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
+          <section class="enterprise-panel min-w-0 overflow-clip rounded-2xl">
+            <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-gradient-to-r from-slate-50/90 via-white to-teal-50/40 px-4 py-3">
               <PencilRuler class="size-4 text-slate-400" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">啤机回填明细 · 实际用料回填</span>
-              <span class="ml-auto text-[11px] text-slate-400">单价按原料表</span>
+              <span class="ml-auto text-[11px] text-slate-400">
+                {{ activeItems.length }} 项<span class="hidden md:inline"> · 区域内滚动查看</span> · 单价按原料表
+              </span>
               <button
                 type="button"
-                class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+                class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800"
+                :aria-expanded="isSelectedTaskDataExpanded"
+                aria-controls="production-complete-order-data"
                 @click="isSelectedTaskDataExpanded = !isSelectedTaskDataExpanded"
               >
                 {{ isSelectedTaskDataExpanded ? '收起完整数据' : '展开完整数据' }}
               </button>
             </div>
-            <div class="overflow-x-auto">
-              <table class="w-full min-w-[860px] text-[12px]">
-                <thead>
-                  <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
-                    <th class="px-2 py-2 text-left font-medium">模具 / 原料</th>
-                    <th class="px-2 py-2 text-right font-medium">领料(kg)</th>
-                    <th class="px-2 py-2 text-right font-medium">实际用料(kg)</th>
-                    <th class="px-2 py-2 text-right font-medium">预计 / 实际料费(HKD)</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-50">
-                  <tr
+            <div data-testid="production-fillback-list" class="p-3">
+              <div
+                class="production-fillback-scroll sidebar-scrollbar rounded-xl bg-slate-50/60 p-1 outline-none focus-visible:ring-2 focus-visible:ring-teal-500/35 focus-visible:ring-offset-2"
+                role="region"
+                aria-label="啤机回填模具明细"
+                tabindex="0"
+                @wheel="handoffWheelAtBoundary"
+              >
+                <div data-testid="production-fillback-grid" class="production-fillback-grid">
+                  <article
                     v-for="item in activeItems"
                     :key="item.id"
-                    class="hover:bg-slate-50/60"
-                    :class="Number(item.actual_weight_kg) > 0 ? '' : 'bg-red-50/40 hover:bg-red-50'"
+                    data-testid="production-fillback-item"
+                    class="overflow-clip rounded-xl border bg-white shadow-[0_8px_24px_-22px_rgba(15,23,42,0.35)]"
+                    :class="Number(item.actual_weight_kg) > 0 ? 'border-slate-200' : 'border-red-200 ring-1 ring-red-100'"
                   >
-                    <td class="px-2 py-2">
-                      <div class="flex items-center gap-1">
-                        <span class="font-mono text-[11px]">{{ item.mold_id }}</span>
-                        <AlertTriangle
-                          v-if="!(Number(item.actual_weight_kg) > 0)"
-                          class="size-3 text-red-500"
-                          aria-hidden="true"
-                        />
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-slate-50 via-white to-teal-50/30 px-4 py-3">
+                  <div class="flex min-w-0 items-start gap-3">
+                    <span class="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-lg bg-[#17385e] px-2 text-[11px] font-bold text-white shadow-sm">
+                      {{ item.sort_order }}
+                    </span>
+                    <div class="min-w-0">
+                      <div class="break-all font-mono text-[12px] font-semibold text-slate-950">{{ item.mold_id }}</div>
+                      <div class="mt-0.5 break-words text-[13px] font-semibold text-slate-700">{{ item.mold_name }}</div>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap items-center justify-end gap-2">
+                    <span
+                      class="rounded-full px-2.5 py-1 text-[10px] font-bold"
+                      :class="item.material_usage_type === 'trial' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'"
+                    >
+                      {{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}
+                    </span>
+                    <span
+                      class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold"
+                      :class="Number(item.actual_weight_kg) > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'"
+                    >
+                      <AlertTriangle v-if="!(Number(item.actual_weight_kg) > 0)" class="size-3" aria-hidden="true" />
+                      {{ Number(item.actual_weight_kg) > 0 ? '已回填' : '待回填' }}
+                    </span>
+                  </div>
+                </div>
+
+                    <div class="p-3">
+                      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(11rem,0.72fr)]">
+                        <section class="surface-subtle rounded-lg p-3">
+                      <h4 class="text-[11px] font-bold tracking-wide text-slate-500">原料资料</h4>
+                      <dl class="mt-3 space-y-3">
+                        <div>
+                          <dt class="text-[11px] font-medium text-slate-500">原料配比</dt>
+                          <dd class="mt-1 break-words text-[13px] font-semibold leading-5 text-slate-900">
+                            {{ formatMaterialComposition(resolveMaterialComponents(item)) }}
+                          </dd>
+                        </div>
+                        <div class="border-t border-slate-200 pt-3">
+                          <dt class="text-[11px] font-medium text-slate-500">备注 / 颜色</dt>
+                          <dd class="mt-1 break-words text-[12px] leading-5" :class="Number(item.actual_weight_kg) > 0 ? 'text-slate-600' : 'font-semibold text-red-600'">
+                            {{ item.notes || item.color || '待啤机部补实际用料' }}
+                          </dd>
+                        </div>
+                      </dl>
+                    </section>
+
+                        <section data-testid="production-fillback-usage-panel" class="surface-subtle rounded-lg p-3">
+                      <h4 class="text-[11px] font-bold tracking-wide text-slate-500">用量回填</h4>
+                      <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                        <div class="rounded-lg bg-slate-50 px-3 py-2.5">
+                          <div class="text-[11px] font-medium text-slate-500">领料重量</div>
+                          <div class="mt-1 text-[15px] font-bold tabular-nums text-slate-950">
+                            {{ formatWeight(item.collected_weight_kg ?? item.required_material_kg) }}
+                          </div>
+                        </div>
+                        <label class="block rounded-lg bg-slate-50 px-3 py-2.5">
+                          <span class="text-[11px] font-medium" :class="Number(item.actual_weight_kg) > 0 ? 'text-slate-500' : 'text-red-600'">实际用料</span>
+                          <span class="mt-1 flex items-center gap-2">
+                            <input
+                              data-testid="production-actual-weight-input"
+                              :value="itemDrafts[item.id]?.actual_weight_kg ?? ''"
+                              :disabled="!canFillbackSelectedTask"
+                              :aria-label="`${item.mold_id} 实际用料`"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              class="h-9 min-w-0 flex-1 rounded-md px-2.5 text-right text-[14px] font-bold tabular-nums outline-none disabled:bg-slate-100 disabled:text-slate-400"
+                              :class="Number(item.actual_weight_kg) > 0 ? 'border border-emerald-200 bg-emerald-50 focus:border-emerald-400' : 'border-2 border-red-300 bg-white placeholder:text-red-300 focus:border-red-500'"
+                              :placeholder="Number(item.actual_weight_kg) > 0 ? '' : '必填'"
+                              @input="updateItemDraft(item.id, 'actual_weight_kg', readInputValue($event))"
+                            >
+                            <span class="text-[11px] font-semibold text-slate-400">kg</span>
+                          </span>
+                        </label>
                       </div>
-                      <div class="text-[12px] font-semibold text-slate-950">{{ item.mold_name }} · {{ formatMaterialComposition(resolveMaterialComponents(item)) }}</div>
-                      <div
-                        class="mt-0.5 text-[10px] font-semibold"
-                        :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'"
-                      >
-                        {{ item.material_usage_type === 'trial' ? '试料 · 金额不计结余' : '正式生产' }}
+                    </section>
+                  </div>
+
+                      <section data-testid="production-fillback-cost-grid" class="mt-2 grid gap-2 sm:grid-cols-2">
+                    <article data-testid="production-fillback-expected-cost-panel" class="overflow-clip rounded-xl border border-slate-200/80 bg-white/90">
+                      <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
+                        <h4 class="text-[11px] font-bold text-slate-600">预计料费(HKD)</h4>
+                        <p class="mt-0.5 text-[11px] text-slate-500">按预计用料与当前原料价计算</p>
                       </div>
-                      <div class="text-[10px]" :class="Number(item.actual_weight_kg) > 0 ? 'text-slate-400' : 'text-red-500'">
-                        {{ item.notes || item.color || '待啤机部补实际用料' }}
+                      <div class="divide-y divide-slate-100 px-3.5">
+                        <div
+                          v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
+                          :key="`production-expected-${item.id}-${componentIndex}`"
+                          class="flex items-start justify-between gap-3 py-3"
+                        >
+                          <div class="min-w-0">
+                            <div class="break-words text-[12px] font-semibold leading-5 text-slate-800">{{ component.material }}</div>
+                            <div class="mt-0.5 text-[11px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                          </div>
+                          <div class="shrink-0 text-right tabular-nums">
+                            <div class="text-[11px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                            <div class="mt-0.5 text-[12px] font-semibold text-slate-900">{{ formatCurrency(component.amount_hkd) }}</div>
+                          </div>
+                        </div>
                       </div>
-                    </td>
-                    <td class="px-2 py-2 text-right tabular-nums text-slate-400">
-                      {{ formatDecimal(item.collected_weight_kg ?? item.required_material_kg) }}
-                    </td>
-                    <td class="px-2 py-1 text-right">
-                      <input
-                        :value="itemDrafts[item.id]?.actual_weight_kg ?? ''"
-                        :disabled="!canFillbackSelectedTask"
-                        aria-label="实际用料"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="h-8 w-20 rounded-md px-2 text-right font-semibold tabular-nums outline-none disabled:bg-slate-50 disabled:text-slate-400"
-                        :class="Number(item.actual_weight_kg) > 0 ? 'border border-emerald-200 bg-emerald-50 focus:border-emerald-400' : 'border-2 border-red-300 bg-white placeholder:text-red-300 focus:border-red-500'"
-                        :placeholder="Number(item.actual_weight_kg) > 0 ? '' : '必填'"
-                        @input="updateItemDraft(item.id, 'actual_weight_kg', readInputValue($event))"
-                      >
-                    </td>
-                    <td class="px-2 py-2 text-right tabular-nums">
-                      <div class="text-[10px] font-semibold text-slate-400">预计</div>
-                      <div
-                        v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
-                        :key="`production-expected-${item.id}-${componentIndex}`"
-                        class="whitespace-nowrap text-[10px] text-slate-500"
-                      >
-                        {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
+                      <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[12px] font-bold text-slate-950">
+                        <span>预计合计</span>
+                        <span class="tabular-nums">{{ formatCurrency(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</span>
                       </div>
-                      <div class="mt-0.5 font-semibold text-slate-900">合计 {{ formatCurrency(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</div>
-                      <div class="mt-1 border-t border-slate-100 pt-1 text-[10px] font-semibold text-slate-400">实际</div>
-                      <div
-                        data-testid="production-actual-material-cost-source"
-                        class="mb-0.5 text-[9px] font-semibold"
-                        :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
-                      >
-                        {{ getActualMaterialCostSourceLabel(item) }}
+                    </article>
+
+                    <article data-testid="production-fillback-actual-cost-panel" class="overflow-clip rounded-xl border border-slate-200/80 bg-white/90">
+                      <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
+                        <h4 class="text-[11px] font-bold text-slate-600">实际料费(HKD)</h4>
+                        <p
+                          data-testid="production-actual-material-cost-source"
+                          class="mt-0.5 text-[11px] font-semibold"
+                          :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
+                        >
+                          {{ getActualMaterialCostSourceLabel(item) }}
+                        </p>
                       </div>
-                      <div
-                        v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
-                        :key="`production-actual-${item.id}-${componentIndex}`"
-                        class="whitespace-nowrap text-[10px] text-slate-500"
-                      >
-                        {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
+                      <div class="divide-y divide-slate-100 px-3.5">
+                        <div
+                          v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
+                          :key="`production-actual-${item.id}-${componentIndex}`"
+                          class="flex items-start justify-between gap-3 py-3"
+                        >
+                          <div class="min-w-0">
+                            <div class="break-words text-[12px] font-semibold leading-5 text-slate-800">{{ component.material }}</div>
+                            <div class="mt-0.5 text-[11px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                          </div>
+                          <div class="shrink-0 text-right tabular-nums">
+                            <div class="text-[11px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                            <div class="mt-0.5 text-[12px] font-semibold text-slate-900">{{ formatCurrency(component.amount_hkd) }}</div>
+                          </div>
+                        </div>
                       </div>
-                      <div class="mt-0.5 font-semibold text-slate-900">合计 {{ formatCurrency(getActualMaterialCostTotal(item)) }}</div>
-                    </td>
-                  </tr>
-                </tbody>
-                <tfoot>
-                  <tr class="border-t border-slate-200 bg-slate-50 text-[12px] font-bold">
-                    <td class="px-2 py-2">
-                      合计{{ selectedReportSummary?.archive_ready ? '' : '（待补齐）' }}
-                    </td>
-                    <td />
-                    <td />
-                    <td class="px-2 py-2 text-right tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</td>
-                  </tr>
-                </tfoot>
-              </table>
+                      <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[12px] font-bold text-slate-950">
+                        <span>实际合计</span>
+                        <span data-testid="production-fillback-actual-total" class="tabular-nums">{{ formatCurrency(getActualMaterialCostTotal(item)) }}</span>
+                      </div>
+                    </article>
+                      </section>
+                    </div>
+                  </article>
+                </div>
+              </div>
+
+              <div data-testid="production-fillback-summary" class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#284f76] bg-gradient-to-r from-[#17385e] to-[#204b73] px-4 py-3 text-white shadow-[0_12px_28px_-20px_rgba(23,56,94,0.85)]">
+                <div>
+                  <div class="text-[11px] font-semibold text-slate-300">实际料费合计</div>
+                  <div class="mt-0.5 text-[11px] text-slate-300">
+                    {{ selectedReportSummary?.has_missing_actual_weight ? '仍有模具待补齐实际用料' : '全部模具已回填实际用料' }}
+                  </div>
+                </div>
+                <div class="text-[18px] font-bold tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</div>
+              </div>
             </div>
             <Transition
-              enter-active-class="transition duration-200 ease-out"
+              enter-active-class="transition duration-200 ease-out motion-reduce:transition-none"
               enter-from-class="-translate-y-2 opacity-0"
               enter-to-class="translate-y-0 opacity-100"
-              leave-active-class="transition duration-150 ease-in"
+              leave-active-class="transition duration-150 ease-in motion-reduce:transition-none"
               leave-from-class="translate-y-0 opacity-100"
               leave-to-class="-translate-y-2 opacity-0"
             >
-              <div v-if="isSelectedTaskDataExpanded" class="border-t border-slate-100 bg-slate-50/70 p-4">
+              <div v-if="isSelectedTaskDataExpanded" id="production-complete-order-data" class="border-t border-slate-100 bg-slate-50/70 p-4">
                 <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 class="text-[13px] font-bold text-slate-950">完整单据数据</h3>
@@ -1650,78 +1850,212 @@ watchEffect(() => {
                   </p>
                 </div>
 
-                <div class="mt-3 space-y-2">
-                  <article
-                    v-for="item in activeItems"
-                    :key="`production-full-${item.id}`"
-                    class="rounded-lg border border-slate-200 bg-white p-3"
-                  >
-                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <div class="font-semibold text-slate-950">
-                        {{ item.sort_order }}. {{ item.mold_id }} · {{ item.mold_name }}
-                      </div>
-                      <span
-                        class="rounded-full border px-2 py-0.5 text-[10px] font-bold"
-                        :class="Number(item.actual_weight_kg) > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'"
+                <div data-testid="production-full-item-master-detail" class="production-full-item-master mt-4">
+                  <nav class="production-full-item-index enterprise-panel sidebar-scrollbar min-w-0 rounded-xl p-2" aria-label="模具明细索引" @wheel="handoffWheelAtBoundary">
+                    <div class="mb-2 hidden items-center justify-between px-1 lg:flex">
+                      <span class="text-[11px] font-bold text-slate-600">模具索引</span>
+                      <span class="text-[10px] text-slate-400">{{ activeItems.length }} 项</span>
+                    </div>
+                    <div class="production-full-item-index-options" aria-label="选择要核对的模具">
+                      <button
+                        v-for="item in activeItems"
+                        :key="`production-full-index-${item.id}`"
+                        type="button"
+                        data-testid="production-full-item-index-button"
+                        :aria-pressed="selectedFullDataItem?.id === item.id"
+                        class="min-w-[13rem] rounded-lg border px-3 py-2 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-teal-500/35 focus-visible:ring-offset-2 motion-reduce:transition-none lg:min-w-0 lg:w-full"
+                        :class="selectedFullDataItem?.id === item.id
+                          ? 'border-teal-300 bg-teal-50 text-teal-950 shadow-sm ring-1 ring-teal-100'
+                          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'"
+                        @click="selectFullDataItem(item.id)"
                       >
-                        {{ Number(item.actual_weight_kg) > 0 ? '已回填' : '待回填' }}
-                      </span>
+                        <span class="flex items-center gap-2">
+                          <span
+                            class="flex h-5 min-w-5 shrink-0 items-center justify-center rounded px-1 text-[10px] font-bold"
+                            :class="selectedFullDataItem?.id === item.id ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600'"
+                          >
+                            {{ item.sort_order }}
+                          </span>
+                          <span class="min-w-0 flex-1 truncate font-mono text-[11px] font-semibold">{{ formatBlank(item.mold_id) }}</span>
+                          <span class="shrink-0 text-[9px] font-bold" :class="Number(item.actual_weight_kg) > 0 ? 'text-emerald-700' : 'text-amber-700'">
+                            {{ Number(item.actual_weight_kg) > 0 ? '已回填' : '待回填' }}
+                          </span>
+                        </span>
+                        <span class="mt-1 block truncate text-[12px] font-semibold">{{ formatBlank(item.mold_name) }}</span>
+                        <span class="mt-1 flex items-center justify-between gap-2 text-[10px]" :class="selectedFullDataItem?.id === item.id ? 'text-teal-800' : 'text-slate-500'">
+                          <span class="min-w-0 truncate">{{ formatMaterialComposition(resolveMaterialComponents(item)) }}</span>
+                          <span class="shrink-0 tabular-nums">{{ formatWeight(item.required_material_kg) }}</span>
+                        </span>
+                      </button>
                     </div>
-                    <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                      <div>
-                        <span class="text-slate-400">原料 / 用料用途</span>
-                        <div class="font-semibold">{{ formatMaterialComposition(resolveMaterialComponents(item)) }}</div>
-                        <div :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'">
-                          {{ item.material_usage_type === 'trial' ? '试料 · 金额不计结余' : '正式生产' }}
+                  </nav>
+
+                  <div
+                    ref="fullDataItemPane"
+                    class="production-full-item-pane sidebar-scrollbar min-w-0 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-teal-500/35 focus-visible:ring-offset-2"
+                    role="region"
+                    :aria-label="`${selectedFullDataItem?.mold_id || '当前模具'}完整数据`"
+                    tabindex="0"
+                    @wheel="handoffWheelAtBoundary"
+                  >
+                    <article
+                      v-for="item in selectedFullDataItem ? [selectedFullDataItem] : []"
+                      :id="`production-full-panel-${item.id}`"
+                      :key="`production-full-${item.id}`"
+                      data-testid="production-full-item-card"
+                      class="enterprise-panel overflow-clip rounded-xl"
+                    >
+                    <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-slate-50 via-white to-teal-50/30 px-4 py-3">
+                      <div class="flex min-w-0 items-start gap-3">
+                        <span class="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-lg bg-[#17385e] px-2 text-[11px] font-bold text-white shadow-sm">
+                          {{ item.sort_order }}
+                        </span>
+                        <div class="min-w-0">
+                          <div class="break-all font-mono text-[12px] font-semibold text-slate-950">{{ item.mold_id }}</div>
+                          <div class="mt-0.5 break-words text-[13px] font-semibold text-slate-700">{{ item.mold_name }}</div>
                         </div>
                       </div>
-                      <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
-                      <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
-                      <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
-                      <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
-                      <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
-                      <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
-                      <div>
-                        <span class="text-slate-400">预计料费(HKD)</span>
-                        <div
-                          v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
-                          :key="`production-full-expected-${item.id}-${componentIndex}`"
-                          class="mt-0.5 text-[11px] text-slate-600"
+                      <div class="flex flex-wrap items-center justify-end gap-2">
+                        <span
+                          class="rounded-full px-2.5 py-1 text-[10px] font-bold"
+                          :class="item.material_usage_type === 'trial' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'"
                         >
-                          {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
-                        </div>
-                        <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatCurrency(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</div>
-                      </div>
-                      <div>
-                        <span class="text-slate-400">实际料费(HKD)</span>
-                        <div
-                          data-testid="production-actual-material-cost-source"
-                          class="mt-0.5 text-[10px] font-semibold"
-                          :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
+                          {{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}
+                        </span>
+                        <span
+                          class="rounded-full border px-2.5 py-1 text-[10px] font-bold"
+                          :class="Number(item.actual_weight_kg) > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'"
                         >
-                          {{ getActualMaterialCostSourceLabel(item) }}
-                        </div>
-                        <div
-                          v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
-                          :key="`production-full-actual-${item.id}-${componentIndex}`"
-                          class="mt-0.5 text-[11px] text-slate-600"
-                        >
-                          {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
-                        </div>
-                        <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatCurrency(getActualMaterialCostTotal(item)) }}</div>
+                          {{ Number(item.actual_weight_kg) > 0 ? '已回填' : '待回填' }}
+                        </span>
                       </div>
                     </div>
-                    <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
-                      备注：{{ formatBlank(item.notes) }}
-                    </p>
-                  </article>
+                    <div class="p-3">
+                      <div class="grid gap-3 md:grid-cols-2">
+                        <section data-testid="production-full-item-material-section" class="surface-subtle rounded-xl p-3.5">
+                          <h4 class="text-[11px] font-bold tracking-wide text-slate-500">原料与颜色</h4>
+                          <dl class="mt-3 space-y-3">
+                            <div>
+                              <dt class="text-[11px] font-medium text-slate-500">原料配比</dt>
+                              <dd class="mt-1 break-words text-[13px] font-semibold leading-5 text-slate-900">
+                                {{ formatMaterialComposition(resolveMaterialComponents(item)) }}
+                              </dd>
+                            </div>
+                            <div class="border-t border-slate-200 pt-3">
+                              <dt class="text-[11px] font-medium text-slate-500">颜色 / PMS</dt>
+                              <dd class="mt-1 break-words text-[13px] font-semibold text-slate-900">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</dd>
+                            </div>
+                          </dl>
+                        </section>
+
+                        <section data-testid="production-full-item-timing-section" class="surface-subtle rounded-xl p-3.5">
+                          <h4 class="text-[11px] font-bold tracking-wide text-slate-500">生产数量与时点</h4>
+                          <dl class="mt-3 grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                            <div>
+                              <dt class="text-[11px] font-medium text-slate-500">数量 / 啤数</dt>
+                              <dd class="mt-1 text-[13px] font-semibold tabular-nums text-slate-900">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</dd>
+                            </div>
+                            <div>
+                              <dt class="text-[11px] font-medium text-slate-500">预计用料</dt>
+                              <dd class="mt-1 text-[13px] font-semibold tabular-nums text-slate-900">{{ formatWeight(item.required_material_kg) }}</dd>
+                            </div>
+                            <div class="sm:col-span-2">
+                              <dt class="text-[11px] font-medium text-slate-500">回模 / 完成时间</dt>
+                              <dd class="mt-1 text-[13px] font-semibold tabular-nums text-slate-900">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</dd>
+                            </div>
+                          </dl>
+                        </section>
+                      </div>
+
+                      <section data-testid="production-full-item-usage-section" class="surface-subtle mt-3 rounded-xl p-3.5">
+                        <h4 class="text-[11px] font-bold tracking-wide text-slate-500">实际用量</h4>
+                        <dl class="mt-3 grid gap-2 sm:grid-cols-2">
+                          <div class="rounded-lg bg-slate-50 px-3 py-2.5">
+                            <dt class="text-[11px] font-medium text-slate-500">领料重量</dt>
+                            <dd class="mt-1 text-[15px] font-bold tabular-nums text-slate-950">{{ formatWeight(item.collected_weight_kg) }}</dd>
+                          </div>
+                          <div class="rounded-lg bg-gradient-to-br from-[#17385e] to-[#204b73] px-3 py-2.5 text-white shadow-sm">
+                            <dt class="text-[11px] font-medium text-slate-300">实际用料</dt>
+                            <dd class="mt-1 text-[15px] font-bold tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</dd>
+                          </div>
+                        </dl>
+                      </section>
+
+                      <section data-testid="production-full-item-cost-grid" class="mt-3 grid gap-3 lg:grid-cols-2">
+                        <article class="overflow-clip rounded-xl border border-slate-200">
+                          <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
+                            <h4 class="text-[11px] font-bold text-slate-600">预计料费(HKD)</h4>
+                            <p class="mt-0.5 text-[11px] text-slate-500">按预计用料与当前原料价计算</p>
+                          </div>
+                          <div class="divide-y divide-slate-100 px-3.5">
+                            <div
+                              v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
+                              :key="`production-full-expected-${item.id}-${componentIndex}`"
+                              class="flex items-start justify-between gap-3 py-3"
+                            >
+                              <div class="min-w-0">
+                                <div class="break-words text-[12px] font-semibold leading-5 text-slate-800">{{ component.material }}</div>
+                                <div class="mt-0.5 text-[11px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                              </div>
+                              <div class="shrink-0 text-right tabular-nums">
+                                <div class="text-[11px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                                <div class="mt-0.5 text-[12px] font-semibold text-slate-900">{{ formatCurrency(component.amount_hkd) }}</div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[12px] font-bold text-slate-950">
+                            <span>预计合计</span>
+                            <span class="tabular-nums">{{ formatCurrency(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</span>
+                          </div>
+                        </article>
+
+                        <article class="overflow-clip rounded-xl border border-slate-200">
+                          <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
+                            <h4 class="text-[11px] font-bold text-slate-600">实际料费(HKD)</h4>
+                            <p
+                              data-testid="production-full-actual-material-cost-source"
+                              class="mt-0.5 text-[11px] font-semibold"
+                              :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
+                            >
+                              {{ getActualMaterialCostSourceLabel(item) }}
+                            </p>
+                          </div>
+                          <div class="divide-y divide-slate-100 px-3.5">
+                            <div
+                              v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
+                              :key="`production-full-actual-${item.id}-${componentIndex}`"
+                              class="flex items-start justify-between gap-3 py-3"
+                            >
+                              <div class="min-w-0">
+                                <div class="break-words text-[12px] font-semibold leading-5 text-slate-800">{{ component.material }}</div>
+                                <div class="mt-0.5 text-[11px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                              </div>
+                              <div class="shrink-0 text-right tabular-nums">
+                                <div class="text-[11px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                                <div class="mt-0.5 text-[12px] font-semibold text-slate-900">{{ formatCurrency(component.amount_hkd) }}</div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[12px] font-bold text-slate-950">
+                            <span>实际合计</span>
+                            <span class="tabular-nums">{{ formatCurrency(getActualMaterialCostTotal(item)) }}</span>
+                          </div>
+                        </article>
+                      </section>
+
+                      <p class="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5 text-[12px] leading-5 text-slate-600">
+                        <span class="font-semibold text-slate-500">备注：</span>{{ formatBlank(item.notes) }}
+                      </p>
+                    </div>
+                    </article>
+                  </div>
                 </div>
               </div>
             </Transition>
           </section>
 
           <div class="grid gap-4 md:grid-cols-2">
-            <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <section class="enterprise-panel rounded-2xl p-4">
               <div class="mb-2 flex items-center gap-2">
                 <ListChecks class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold text-slate-950">生产操作</span>
@@ -1731,7 +2065,7 @@ watchEffect(() => {
                   type="button"
                   :disabled="!canStartSelectedTask"
                   class="flex h-10 w-full items-center justify-center gap-2 rounded-lg text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-                  :class="canStartSelectedTask ? 'bg-slate-950 text-white hover:bg-slate-800' : ''"
+                  :class="canStartSelectedTask ? 'bg-[#17385e] text-white shadow-sm hover:bg-[#204b73]' : ''"
                   @click="runProductionTransition('开始处理')"
                 >
                   <Play class="size-4" aria-hidden="true" />
@@ -1787,7 +2121,7 @@ watchEffect(() => {
               </div>
             </section>
 
-            <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <section class="enterprise-panel rounded-2xl p-4">
               <div class="mb-2 flex flex-wrap items-center gap-2">
                 <Flag class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold text-slate-950">问题记录</span>
@@ -1831,7 +2165,7 @@ watchEffect(() => {
             </section>
           </div>
 
-          <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <section class="enterprise-panel rounded-2xl p-4">
             <div class="flex items-center gap-2">
               <CheckCircle2 class="size-4 text-slate-400" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">完成通知回传</span>
@@ -1942,7 +2276,7 @@ watchEffect(() => {
                 <div class="mt-2 overflow-x-auto">
                   <table class="min-w-[720px] w-full border-collapse text-left text-[12px]">
                     <thead><tr class="border-y border-slate-200 bg-slate-50 text-[11px] text-slate-500"><th class="w-10 px-2 py-2">#</th><th class="w-[24%] px-2 py-2">模具信息</th><th class="w-[18%] px-2 py-2">工程时点</th><th class="w-[24%] px-2 py-2">用料与颜色</th><th class="w-[14%] px-2 py-2 text-right">数量 / 需料</th><th class="px-2 py-2">工程备注</th></tr></thead>
-                    <tbody class="divide-y divide-slate-100"><tr v-for="item in printableEngineeringItems" :key="`preview-${item.id}`"><td class="px-2 py-2 align-top text-slate-400">{{ item.sort_order }}</td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</div><div class="mt-0.5 text-[11px] text-slate-500">工模尺寸：{{ formatBlank(item.mold_dimensions) }}</div></td><td class="px-2 py-2 align-top text-[11px] text-slate-600"><div>{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div><div class="mt-0.5">回模：{{ formatBlank(item.mold_return_time) }}</div><div class="mt-0.5">需办：{{ formatBlank(item.completion_time) }}</div></td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(item.material) }}</div><div class="mt-0.5 text-[11px] text-slate-600">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></td><td class="px-2 py-2 align-top text-right"><div class="text-[11px] text-slate-600">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤</div><div class="mt-0.5 font-bold tabular-nums text-slate-900">{{ formatWeight(item.required_material_kg) }}</div></td><td class="px-2 py-2 align-top text-slate-600">{{ formatBlank(item.notes) }}</td></tr></tbody>
+                    <tbody class="divide-y divide-slate-100"><tr v-for="item in printableEngineeringItems" :key="`preview-${item.id}`"><td class="px-2 py-2 align-top text-slate-400">{{ item.sort_order }}</td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</div><div class="mt-0.5 text-[11px] text-slate-500">工模尺寸：{{ formatBlank(item.mold_dimensions) }}</div></td><td class="px-2 py-2 align-top text-[11px] text-slate-600"><div>{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div><div class="mt-0.5">回模：{{ formatBlank(item.mold_return_time) }}</div><div class="mt-0.5">需办：{{ formatBlank(item.completion_time) }}</div></td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(formatMaterialComposition(resolveMaterialComponents(item))) }}</div><div class="mt-1 text-[10px] font-semibold" :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'">{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</div><div class="mt-0.5 text-[11px] text-slate-600">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></td><td class="px-2 py-2 align-top text-right"><div class="text-[11px] text-slate-600">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤</div><div class="mt-0.5 font-bold tabular-nums text-slate-900">{{ formatWeight(item.required_material_kg) }}</div></td><td class="px-2 py-2 align-top text-slate-600">{{ formatBlank(item.notes) }}</td></tr></tbody>
                   </table>
                 </div>
               </article>
@@ -1959,26 +2293,117 @@ watchEffect(() => {
   </main>
 
   <section class="molding-sample-task-print-root hidden" data-testid="molding-sample-task-print-area" aria-label="工程啤办通知单打印内容">
-    <article v-if="selectedTask" class="molding-sample-task-print-page" :class="{ 'is-dense': printableEngineeringItems.length > 6 }">
+    <article v-if="selectedTask" class="molding-sample-task-print-page" :class="taskPrintDensityClass">
       <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-label">工程部下发 · 啤机部执行</div><div class="molding-sample-task-print-title">啤办通知单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Work Notice</div></div><div class="molding-sample-task-print-id"><strong>{{ selectedTask.order.id }}</strong><span>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</span></div></header>
       <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(selectedTask.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(selectedTask.order.send_to) }}</strong></div><div><span>工程 / 审核主管</span><strong>{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</strong></div><div><span>开单日期</span><strong>{{ formatBlank(selectedTask.order.date) }}</strong></div></section>
       <section class="molding-sample-task-print-reason"><span>注意事项 / 开单事由</span><strong>{{ formatBlank(selectedTask.order.reason) }}</strong></section>
       <section class="molding-sample-task-print-section-heading"><strong>工程模具明细</strong><span>共 {{ printableEngineeringItems.length }} 项 · 不含啤机回填及费用</span></section>
-      <table class="molding-sample-task-print-table"><colgroup><col class="molding-sample-task-print-index"><col class="molding-sample-task-print-mold"><col class="molding-sample-task-print-timing"><col class="molding-sample-task-print-material"><col class="molding-sample-task-print-quantity"><col class="molding-sample-task-print-notes"></colgroup><thead><tr><th>#</th><th>模具信息</th><th>工程时点</th><th>用料与颜色</th><th>数量 / 需料</th><th>工程备注</th></tr></thead><tbody><tr v-for="item in printableEngineeringItems" :key="`print-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong><span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span></td><td>{{ formatMoldPresenceStatus(item.mold_presence_status) }}<span>回模：{{ formatBlank(item.mold_return_time) }}</span><span>需办：{{ formatBlank(item.completion_time) }}</span></td><td><strong>{{ formatBlank(item.material) }}</strong><span>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</span></td><td class="molding-sample-task-print-quantity-value">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤<strong>{{ formatWeight(item.required_material_kg) }}</strong></td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
-      <footer class="molding-sample-task-print-footer"><span>工程单据填写详情 · 啤机部执行依据</span><span>本通知单不含实际用料、成本及其他啤机回填数据。</span></footer>
+      <table class="molding-sample-task-print-table"><colgroup><col class="molding-sample-task-print-index"><col class="molding-sample-task-print-mold"><col class="molding-sample-task-print-timing"><col class="molding-sample-task-print-material"><col class="molding-sample-task-print-quantity"><col class="molding-sample-task-print-notes"></colgroup><thead><tr><th>#</th><th>模具信息</th><th>工程时点</th><th>用料与颜色</th><th>数量 / 需料</th><th>工程备注</th></tr></thead><tbody><tr v-for="item in printableEngineeringItems" :key="`print-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong><span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span></td><td>{{ formatMoldPresenceStatus(item.mold_presence_status) }}<span>回模：{{ formatBlank(item.mold_return_time) }}</span><span>需办：{{ formatBlank(item.completion_time) }}</span></td><td><strong>{{ formatBlank(formatMaterialComposition(resolveMaterialComponents(item))) }}</strong><span class="molding-sample-task-print-usage" :class="{ 'is-trial': item.material_usage_type === 'trial' }">{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</span><span>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</span></td><td class="molding-sample-task-print-quantity-value">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤<strong>{{ formatWeight(item.required_material_kg) }}</strong></td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
     </article>
   </section>
 </template>
 
 <style>
+.production-task-page :where(button, a, input, textarea, select):focus-visible {
+  outline: 2px solid rgb(13 148 136 / 42%);
+  outline-offset: 2px;
+}
+
+.production-loading-bar {
+  animation: production-loading 1.1s ease-in-out infinite;
+}
+
+@keyframes production-loading {
+  0% { transform: translateX(-105%); }
+  50% { transform: translateX(105%); }
+  100% { transform: translateX(305%); }
+}
+
+.production-fillback-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr));
+  gap: .75rem;
+}
+
+.production-full-item-master {
+  display: grid;
+  gap: .75rem;
+}
+
+.production-full-item-index-options {
+  display: flex;
+  gap: .5rem;
+  overflow-x: auto;
+  padding-bottom: .25rem;
+  scrollbar-gutter: stable;
+}
+
+@media (min-width: 768px) {
+  .production-fillback-scroll {
+    max-height: min(72vh, 52rem);
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: stable;
+  }
+}
+
+@media (min-width: 1024px) {
+  .production-full-item-master {
+    grid-template-columns: 14rem minmax(0, 1fr);
+    height: min(76vh, 52rem);
+    overflow: clip;
+  }
+
+  .production-full-item-index,
+  .production-full-item-pane {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .production-full-item-index-options {
+    display: grid;
+    align-content: start;
+    grid-auto-rows: max-content;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+}
+
+@media (min-width: 1280px) {
+  .production-queue-list {
+    max-height: calc(100vh - 18.5rem);
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: stable;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .production-task-page .interactive-surface,
+  .production-task-page .reveal-grid > *,
+  .production-task-page .animate-spin,
+  .production-loading-bar {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+
+  .production-loading-bar {
+    width: 100%;
+    opacity: .65;
+  }
+}
+
 @media print {
-  @page { size: A4 landscape; margin: 7mm; }
-  html, body { min-height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  @page { size: A4 landscape; margin: 5mm; }
+  html, body, body.molding-sample-task-printing #app { min-height: 0 !important; height: auto !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   body.molding-sample-task-printing * { visibility: hidden; }
-  body.molding-sample-task-printing #app > main { display: none !important; }
+  body.molding-sample-task-printing #app > :not(.molding-sample-task-print-root) { display: none !important; }
   body.molding-sample-task-printing .molding-sample-task-print-root, body.molding-sample-task-printing .molding-sample-task-print-root * { visibility: visible; }
-  body.molding-sample-task-printing #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: 100% !important; min-height: 0 !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; break-after: avoid-page; }
-  .molding-sample-task-print-page { box-sizing: border-box; width: 100%; min-height: 196mm; margin: 0; break-inside: avoid-page; page-break-inside: avoid; }
+  body.molding-sample-task-printing #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: 100% !important; min-height: 0 !important; height: auto !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; break-after: auto; }
+  .molding-sample-task-print-page { box-sizing: border-box; width: 100%; min-height: 0; height: auto; margin: 0; break-inside: auto; page-break-inside: auto; break-after: auto; }
   .molding-sample-task-print-header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; }
   .molding-sample-task-print-label { color: #0f766e; font-size: 9px; font-weight: 700; letter-spacing: .12em; }
   .molding-sample-task-print-title { margin-top: 2px; font-size: 21px; font-weight: 700; }
@@ -2003,14 +2428,25 @@ watchEffect(() => {
   .molding-sample-task-print-table th, .molding-sample-task-print-table td { border: 1px solid #cbd5e1; padding: 4px 5px; vertical-align: top; overflow-wrap: anywhere; }
   .molding-sample-task-print-table th { background: #f1f5f9; color: #334155; text-align: left; font-size: 8px; }
   .molding-sample-task-print-table td > span { display: block; margin-top: 2px; color: #64748b; font-size: 8px; font-weight: 400; }
+  .molding-sample-task-print-table .molding-sample-task-print-usage { color: #047857; font-weight: 700; }
+  .molding-sample-task-print-table .molding-sample-task-print-usage.is-trial { color: #b45309; }
   .molding-sample-task-print-quantity-value { text-align: right; }
   .molding-sample-task-print-quantity-value strong { display: block; margin-top: 2px; font-size: 9px; }
   .molding-sample-task-print-table thead { display: table-header-group; }
-  .molding-sample-task-print-table tr { break-inside: avoid; }
-  .molding-sample-task-print-footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 8px; padding-top: 5px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 8px; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta { margin: 7px 0; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table { font-size: 7.5px; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table th, .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td { padding: 3px 4px; }
+  .molding-sample-task-print-table tr { break-inside: avoid-page; page-break-inside: avoid; }
+  .molding-sample-task-print-page.is-compact .molding-sample-task-print-meta { margin: 7px 0; }
+  .molding-sample-task-print-page.is-compact .molding-sample-task-print-meta div { min-height: 21px; padding: 4px 5px; }
+  .molding-sample-task-print-page.is-compact .molding-sample-task-print-reason { margin-bottom: 7px; padding: 5px 6px; }
+  .molding-sample-task-print-page.is-compact .molding-sample-task-print-table { margin-top: 4px; font-size: 8px; }
+  .molding-sample-task-print-page.is-compact .molding-sample-task-print-table th, .molding-sample-task-print-page.is-compact .molding-sample-task-print-table td { padding: 3px 4px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-header { padding-bottom: 5px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-title { font-size: 18px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-id { padding: 6px 8px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta { margin: 5px 0; font-size: 8px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta div { min-height: 19px; padding: 3px 4px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-reason { margin-bottom: 5px; padding: 4px 5px; font-size: 8px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table { margin-top: 3px; font-size: 7.5px; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table th, .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td { padding: 2.5px 3px; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td > span { font-size: 7px; }
 }
 </style>

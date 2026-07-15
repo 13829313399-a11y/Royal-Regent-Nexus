@@ -24,6 +24,7 @@ import {
   PencilLine,
   Plus,
   Printer,
+  RefreshCw,
   RotateCcw,
   Save,
   Search,
@@ -36,7 +37,7 @@ import {
   UserRound,
   X,
 } from '@lucide/vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
 import {
@@ -57,10 +58,16 @@ import {
   resolveMaterialComponents,
   roundMoney,
 } from '@/lib/moldingSampleBusiness'
+import {
+  matchesMoldingSampleSearch,
+  tokenizeMoldingSampleSearchKeyword,
+} from '@/lib/moldingSampleSearch'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
+  type MoldingSampleBoardPageResponse,
+  type MoldingSampleBoardSummaryResponse,
   type MoldingSampleCreateRequest,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
@@ -111,6 +118,7 @@ interface BoardColumn {
   pagedRecords: MoldingSampleWorkflowRecord[]
   pagination: PaginationState<MoldingSampleWorkflowRecord>
   dotClass: string
+  loading: boolean
 }
 
 interface PaginationState<T> {
@@ -216,6 +224,7 @@ interface RawMaterialPickerPosition {
 }
 
 const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
@@ -237,8 +246,15 @@ const printPreviewVisible = ref(false)
 const engineeringTrialReportHistoryVisible = ref(false)
 const engineeringTrialReportItemId = ref('')
 const searchKeyword = ref('')
+const effectiveSearchKeyword = ref('')
 const overviewListPage = ref(1)
 const boardPageByStatus = ref<Partial<Record<MoldingSampleStatus, number>>>({})
+const boardSummary = ref<MoldingSampleBoardSummaryResponse | null>(null)
+const boardPagesByStatus = ref<Partial<Record<MoldingSampleStatus, MoldingSampleBoardPageResponse>>>({})
+const boardLoadingByStatus = ref<Partial<Record<MoldingSampleStatus, boolean>>>({})
+const serverBoardEnabled = ref(false)
+const legacyOrdersLoaded = ref(false)
+const legacyOrdersLoading = ref(false)
 const materialBalancePeriodPage = ref(1)
 const materialBalanceDetailPage = ref(1)
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
@@ -277,6 +293,12 @@ const materialCompositionDraftRows = ref<ManualMoldingSampleMaterialComponentDra
 const materialCompositionError = ref('')
 let createSuccessToastTimer: ReturnType<typeof setTimeout> | null = null
 let actionToastTimer: ReturnType<typeof setTimeout> | null = null
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let legacyOrdersLoadPromise: Promise<void> | null = null
+let boardOverviewRequestId = 0
+let legacyOrdersRequestId = 0
+let deepLinkedOrderRequestId = 0
+const boardPageRequestIds: Partial<Record<MoldingSampleStatus, number>> = {}
 
 const materialCompositionPercentageTotal = computed(() => roundMaterialWeight(
   materialCompositionDraftRows.value.reduce((total, row) => total + (Number(row.ratio_percent) || 0), 0),
@@ -304,7 +326,9 @@ const materialBalancePeriodOptions: MaterialBalancePeriodOption[] = [
   { key: 'month', label: '月结余', detail: '自然月汇总' },
 ]
 
+const MOLDING_SAMPLE_BOARD_PAGE_SIZE = 5
 const MOLDING_SAMPLE_PAGE_SIZE = 10
+const MOLDING_SAMPLE_SEARCH_DEBOUNCE_MS = 275
 
 const statusToneClasses: Record<MoldingSampleStatus, string> = {
   待审核: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -406,39 +430,49 @@ const factoryRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
 )
 
 const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
+  const searchTokens = tokenizeMoldingSampleSearchKeyword(effectiveSearchKeyword.value)
 
-  if (!keyword) {
+  if (!searchTokens.length) {
     return factoryRecords.value
   }
 
-  return factoryRecords.value.filter((record) => [
-    record.order.id,
-    record.order.order_number,
-    record.order.product_name,
-    record.order.client_name,
-    record.order.supervisor,
-    record.order.eng_name,
-    ...record.items.flatMap((item) => [item.mold_id, item.mold_name, item.material, item.color]),
-    ...record.problems.flatMap((problem) => [problem.description, problem.reported_by, problem.status]),
-  ].some((value) => String(value).toLowerCase().includes(keyword)))
+  return factoryRecords.value.filter((record) => matchesMoldingSampleSearch(record, searchTokens))
 })
+
+const overviewOperationRecordCount = computed(() =>
+  serverBoardEnabled.value && overviewDisplayMode.value === 'board'
+    ? boardSummary.value?.total ?? visibleRecords.value.length
+    : visibleRecords.value.length,
+)
 
 const overviewListPagination = computed(() =>
   createPaginationState(visibleRecords.value, overviewListPage.value),
 )
 const paginatedVisibleRecords = computed(() => overviewListPagination.value.rows)
 
-const selectedRecord = computed<MoldingSampleWorkflowRecord | null>(() =>
-  visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
+const selectedRecord = computed<MoldingSampleWorkflowRecord | null>(() => {
+  const selected = visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
     ?? factoryRecords.value.find((record) => record.order.id === selectedOrderId.value)
-    ?? factoryRecords.value[0]
-    ?? null,
-)
+
+  if (selectedOrderId.value) {
+    return selected ?? null
+  }
+
+  return factoryRecords.value[0] ?? null
+})
 
 const selectedBatchOrderIdSet = computed(() => new Set(selectedBatchOrderIds.value))
+const batchSelectableRecords = computed(() => {
+  if (serverBoardEnabled.value && overviewDisplayMode.value === 'board') {
+    return Object.values(boardPagesByStatus.value)
+      .flatMap((page) => page?.rows ?? [])
+      .map(toWorkflowRecord)
+  }
+
+  return visibleRecords.value
+})
 const selectedBatchRecords = computed(() =>
-  visibleRecords.value.filter((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
+  batchSelectableRecords.value.filter((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
 )
 const batchActionRecords = computed(() =>
   selectedBatchRecords.value.length > 0
@@ -449,8 +483,8 @@ const batchActionRecords = computed(() =>
 )
 const selectedBatchCount = computed(() => selectedBatchRecords.value.length)
 const isAllVisibleOrdersSelected = computed(() =>
-  visibleRecords.value.length > 0
-  && visibleRecords.value.every((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
+  batchSelectableRecords.value.length > 0
+  && batchSelectableRecords.value.every((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
 )
 
 const selectedOrder = computed<MoldingSampleOrder>(() => selectedRecord.value?.order ?? createEmptySelectedOrder())
@@ -466,19 +500,32 @@ const isSelectedExternal = computed(() => selectedRecord.value ? isExternalMoldi
 
 const kpiCards = computed<KpiCard[]>(() => {
   const records = visibleRecords.value
-  const reviewCount = records.filter((record) => ['待审核', '待经理审核'].includes(record.order.status)).length
-  const productionCount = records.filter((record) => ['待生产', '生产中'].includes(record.order.status)).length
-  const completedCount = records.filter((record) => record.order.status === '已完成').length
-  const attentionMetrics = countMoldingSampleAttentionMetrics(records)
+  const useServerSummary = serverBoardEnabled.value
+    && overviewDisplayMode.value === 'board'
+    && boardSummary.value !== null
+  const summary = useServerSummary ? boardSummary.value : null
+  const reviewCount = summary?.review_count
+    ?? records.filter((record) => ['待审核', '待经理审核'].includes(record.order.status)).length
+  const productionCount = summary?.production_count
+    ?? records.filter((record) => ['待生产', '生产中'].includes(record.order.status)).length
+  const completedCount = summary?.completed_count
+    ?? records.filter((record) => record.order.status === '已完成').length
+  const localAttentionMetrics = countMoldingSampleAttentionMetrics(records)
+  const attentionMetrics = {
+    rejectedCount: summary?.rejected_count ?? localAttentionMetrics.rejectedCount,
+    withdrawnCount: summary?.withdrawn_count ?? localAttentionMetrics.withdrawnCount,
+    unresolvedProblemCount: summary?.unresolved_problem_count ?? localAttentionMetrics.unresolvedProblemCount,
+    productionDataPendingCount: summary?.production_data_pending_count ?? localAttentionMetrics.productionDataPendingCount,
+  }
 
   return [
     {
       key: 'factory-orders',
       label: '当前厂区单据',
-      value: String(records.length),
+      value: String(summary?.total ?? records.length),
       detail: `${activeFactory.value.shortName} · 按状态分列`,
       icon: Layers,
-      className: 'border-slate-200 bg-white text-slate-700',
+      className: 'border-slate-200 text-slate-700',
     },
     {
       key: 'in-review',
@@ -486,7 +533,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       value: String(reviewCount),
       detail: '主管节点',
       icon: Clock,
-      className: 'border-amber-200 bg-amber-50 text-amber-700',
+      className: 'border-amber-200/80 text-amber-700',
     },
     {
       key: 'production-queue',
@@ -494,7 +541,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       value: String(productionCount),
       detail: '待生产 / 生产中',
       icon: Factory,
-      className: 'border-teal-200 bg-teal-50 text-teal-700',
+      className: 'border-teal-200/80 text-teal-700',
     },
     {
       key: 'completed',
@@ -502,7 +549,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       value: String(completedCount),
       detail: '完成归档回传',
       icon: CheckCheck,
-      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      className: 'border-emerald-200/80 text-emerald-700',
     },
     {
       key: 'returned-withdrawn',
@@ -510,7 +557,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       value: String(attentionMetrics.rejectedCount + attentionMetrics.withdrawnCount),
       detail: `已驳回 ${attentionMetrics.rejectedCount} · 已撤回 ${attentionMetrics.withdrawnCount}`,
       icon: RotateCcw,
-      className: 'border-rose-200 bg-rose-50 text-rose-700',
+      className: 'border-rose-200/80 text-rose-700',
     },
     {
       key: 'unresolved-problems',
@@ -518,7 +565,7 @@ const kpiCards = computed<KpiCard[]>(() => {
       value: String(attentionMetrics.unresolvedProblemCount),
       detail: '存在待处理问题',
       icon: TriangleAlert,
-      className: 'border-orange-200 bg-orange-50 text-orange-700',
+      className: 'border-orange-200/80 text-orange-700',
     },
     {
       key: 'production-data-pending',
@@ -526,15 +573,41 @@ const kpiCards = computed<KpiCard[]>(() => {
       value: String(attentionMetrics.productionDataPendingCount),
       detail: '生产中缺实际用料',
       icon: ClipboardCheck,
-      className: 'border-sky-200 bg-sky-50 text-sky-700',
+      className: 'border-sky-200/80 text-sky-700',
     },
   ]
 })
 
 const boardColumns = computed<BoardColumn[]>(() =>
   boardStatuses.map((status) => {
+    if (serverBoardEnabled.value) {
+      const response = boardPagesByStatus.value[status]
+      const records = (response?.rows ?? []).map(toWorkflowRecord)
+      const pagination = createServerPaginationState(
+        records,
+        response?.total ?? getBoardSummaryStatusTotal(status),
+        response?.page ?? boardPageByStatus.value[status] ?? 1,
+        response?.page_count,
+      )
+
+      return {
+        status,
+        label: status,
+        detail: getStatusColumnDetail(status),
+        records,
+        pagedRecords: records,
+        pagination,
+        dotClass: statusDotClasses[status],
+        loading: Boolean(boardLoadingByStatus.value[status]),
+      }
+    }
+
     const records = visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status)
-    const pagination = createPaginationState(records, boardPageByStatus.value[status] ?? 1)
+    const pagination = createPaginationState(
+      records,
+      boardPageByStatus.value[status] ?? 1,
+      MOLDING_SAMPLE_BOARD_PAGE_SIZE,
+    )
 
     return {
       status,
@@ -544,6 +617,7 @@ const boardColumns = computed<BoardColumn[]>(() =>
       pagedRecords: pagination.rows,
       pagination,
       dotClass: statusDotClasses[status],
+      loading: false,
     }
   }),
 )
@@ -699,6 +773,55 @@ function getRawMaterialUnitPriceLabel(material: string) {
 }
 
 const isSelectedOrderDataExpanded = ref(false)
+const selectedFullItemId = ref('')
+const selectedFullItemDetailPane = ref<HTMLElement | null>(null)
+const selectedFullItem = computed(() => (
+  selectedItems.value.find((item) => item.id === selectedFullItemId.value)
+  ?? selectedItems.value[0]
+  ?? null
+))
+
+function handoffWheelAtBoundary(event: WheelEvent) {
+  const region = event.currentTarget as HTMLElement | null
+  if (
+    !region
+    || event.deltaY === 0
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+    || Math.abs(event.deltaX) > Math.abs(event.deltaY)
+  ) return
+
+  const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1
+  const scrollDistance = event.deltaY * multiplier
+  const edgeTolerance = 1.5
+  const reachedTop = region.scrollTop <= edgeTolerance
+  const reachedBottom = region.scrollTop + region.clientHeight >= region.scrollHeight - edgeTolerance
+
+  if ((scrollDistance < 0 && reachedTop) || (scrollDistance > 0 && reachedBottom)) {
+    event.preventDefault()
+    window.scrollBy({ top: scrollDistance, behavior: 'auto' })
+  }
+}
+
+function toggleSelectedOrderData() {
+  const nextExpanded = !isSelectedOrderDataExpanded.value
+  isSelectedOrderDataExpanded.value = nextExpanded
+
+  if (nextExpanded && !selectedItems.value.some((item) => item.id === selectedFullItemId.value)) {
+    selectedFullItemId.value = selectedItems.value[0]?.id ?? ''
+  }
+}
+
+async function selectFullItem(itemId: string) {
+  selectedFullItemId.value = itemId
+  await nextTick()
+
+  if (selectedFullItemDetailPane.value) {
+    selectedFullItemDetailPane.value.scrollTop = 0
+  }
+}
+
 const ENGINEERING_DEPARTMENT = 'engineering'
 const SHARED_MOLDING_DEPARTMENTS = [
   'engineering',
@@ -991,6 +1114,7 @@ function isBlankCreateDraft(draft: ManualMoldingSampleOrderDraft) {
   const hasHeaderValue = [
     draft.id,
     draft.product_no,
+    draft.doc_number,
     draft.client_name,
     draft.product_name,
     draft.supervisor,
@@ -1095,6 +1219,7 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
     id: record.order.id,
     factory_id: record.factory_id,
     product_no: record.order.order_number,
+    doc_number: record.order.doc_number,
     client_name: record.order.client_name,
     product_name: record.order.product_name,
     order_date: record.order.date,
@@ -1174,6 +1299,7 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
     id: order.id,
     factory_id: order.factory_id || selectedFactoryId.value,
     product_no: order.order_number || order.id.replace(/^BP-/, ''),
+    doc_number: order.doc_number ?? '',
     client_name: order.client_name,
     product_name: order.product_name,
     order_date: order.date,
@@ -1218,7 +1344,7 @@ function startCreateOrder() {
 
   editingRejectedOrderId.value = ''
   restoreSavedCreateDraft()
-  activeView.value = 'create'
+  setView('create')
 }
 
 function startRejectedEdit() {
@@ -1235,7 +1361,7 @@ function startRejectedEdit() {
   editingRejectedOrderId.value = selectedOrder.value.id
   createDraft.value = createDraftFromRecord(selectedRecord.value)
   createErrors.value = []
-  activeView.value = 'create'
+  setView('create')
   actionMessage.value = `已载入${editingRevisionOrderLabel.value} ${selectedOrder.value.id}，修改后可重新提交主管审核。`
 }
 
@@ -1245,7 +1371,7 @@ function cancelRejectedEdit() {
   editingRejectedOrderId.value = ''
   createErrors.value = []
   selectedOrderId.value = orderId || selectedOrderId.value
-  activeView.value = orderId ? 'detail' : 'overview'
+  setView(orderId ? 'detail' : 'overview')
 }
 
 function replaceApiRecord(record: MoldingSampleDetailResponse) {
@@ -1296,46 +1422,387 @@ async function loadRawMaterialOptions(requestedFactoryId: string) {
   }
 }
 
-async function loadApiData() {
+function supportsServerBoardApi() {
+  return typeof moldingSampleApi.getBoardSummary === 'function'
+    && typeof moldingSampleApi.listBoardPage === 'function'
+}
+
+function isServerBoardContextActive() {
+  return activeView.value === 'overview' && overviewDisplayMode.value === 'board'
+}
+
+function isLegacyOrdersContextActive() {
+  return !serverBoardEnabled.value
+    || activeView.value === 'material-balance'
+    || (activeView.value === 'overview' && overviewDisplayMode.value === 'list')
+}
+
+function invalidateServerBoardRequests() {
+  boardOverviewRequestId += 1
+  boardStatuses.forEach((status) => {
+    boardPageRequestIds[status] = (boardPageRequestIds[status] ?? 0) + 1
+  })
+  setAllBoardColumnsLoading(false)
+}
+
+function invalidateLegacyOrdersRequest() {
+  legacyOrdersRequestId += 1
+  legacyOrdersLoadPromise = null
+  legacyOrdersLoading.value = false
+}
+
+function mergeCachedApiRecords(records: MoldingSampleDetailResponse[]) {
+  const merged = new Map(apiRecords.value.map((record) => [record.order.id, record]))
+  records.forEach((record) => merged.set(record.order.id, record))
+  apiRecords.value = Array.from(merged.values())
+}
+
+function replaceBoardPageCache(pages: MoldingSampleBoardPageResponse[]) {
+  const selectedCachedRecord = apiRecords.value.find((record) => record.order.id === selectedOrderId.value)
+  const nextRecords = pages.flatMap((page) => page.rows)
+
+  if (selectedCachedRecord && !nextRecords.some((record) => record.order.id === selectedCachedRecord.order.id)) {
+    nextRecords.push(selectedCachedRecord)
+  }
+
+  apiRecords.value = Array.from(new Map(nextRecords.map((record) => [record.order.id, record])).values())
+  legacyOrdersLoaded.value = false
+}
+
+function setAllBoardColumnsLoading(loading: boolean) {
+  boardLoadingByStatus.value = Object.fromEntries(
+    boardStatuses.map((status) => [status, loading]),
+  ) as Partial<Record<MoldingSampleStatus, boolean>>
+}
+
+function requestBoardSummary(factoryId: string, query: string) {
+  return query
+    ? moldingSampleApi.getBoardSummary(factoryId, query)
+    : moldingSampleApi.getBoardSummary(factoryId)
+}
+
+function requestBoardPage(factoryId: string, status: MoldingSampleStatus, query: string, page: number) {
+  return moldingSampleApi.listBoardPage({
+    factoryId,
+    status,
+    ...(query ? { query } : {}),
+    page,
+    pageSize: MOLDING_SAMPLE_BOARD_PAGE_SIZE,
+  })
+}
+
+async function loadDeepLinkedOrderIfNeeded(requestedFactoryId: string) {
+  const deepLinkedOrderId = readQueryString(route.query.order_id)
+
+  if (!deepLinkedOrderId) {
+    deepLinkedOrderRequestId += 1
+    return
+  }
+
+  const cachedRecord = apiRecords.value.find((record) =>
+    record.order.id === deepLinkedOrderId && record.order.factory_id === requestedFactoryId,
+  )
+  if (cachedRecord) {
+    selectedOrderId.value = cachedRecord.order.id
+    return
+  }
+
+  const requestId = ++deepLinkedOrderRequestId
+  try {
+    const record = await moldingSampleApi.getOrder(deepLinkedOrderId)
+    if (
+      requestId !== deepLinkedOrderRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || deepLinkedOrderId !== readQueryString(route.query.order_id)
+    ) {
+      return
+    }
+    if (record.order.factory_id !== requestedFactoryId) {
+      return
+    }
+
+    mergeCachedApiRecords([record])
+    selectedOrderId.value = record.order.id
+  }
+  catch {
+    // A stale or unauthorized deep link must not hide the otherwise usable board.
+  }
+}
+
+async function loadServerBoardOverview(options: { includeSupportingData?: boolean } = {}) {
   const requestedFactoryId = selectedFactoryId.value
   const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
     ?? requestedFactoryId
+  const requestedQuery = effectiveSearchKeyword.value.trim()
+  const requestId = ++boardOverviewRequestId
+  const pageRequestIds = Object.fromEntries(boardStatuses.map((status) => {
+    const nextRequestId = (boardPageRequestIds[status] ?? 0) + 1
+    boardPageRequestIds[status] = nextRequestId
+    return [status, nextRequestId]
+  })) as Partial<Record<MoldingSampleStatus, number>>
+
   apiState.value = 'checking'
-  actionMessage.value = `正在读取${requestedFactoryName}正式啤办单列表...`
+  setAllBoardColumnsLoading(true)
+  actionMessage.value = requestedQuery
+    ? `正在搜索${requestedFactoryName}啤办单...`
+    : `正在读取${requestedFactoryName}啤办看板...`
 
   try {
-    const records = await moldingSampleApi.listOrders(requestedFactoryId)
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    const [summary, pages] = await Promise.all([
+      requestBoardSummary(requestedFactoryId, requestedQuery),
+      Promise.all(boardStatuses.map((status) =>
+        requestBoardPage(requestedFactoryId, status, requestedQuery, 1),
+      )),
+      options.includeSupportingData
+        ? Promise.all([
+            loadProtectedMaterialPrices(requestedFactoryId),
+            loadRawMaterialOptions(requestedFactoryId),
+          ])
+        : Promise.resolve(),
+    ])
+
+    if (
+      requestId !== boardOverviewRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || requestedQuery !== effectiveSearchKeyword.value.trim()
+      || !isServerBoardContextActive()
+    ) {
       return
     }
 
-    apiRecords.value = records
-    await Promise.all([
-      loadProtectedMaterialPrices(requestedFactoryId),
-      loadRawMaterialOptions(requestedFactoryId),
-    ])
-    if (requestedFactoryId !== selectedFactoryId.value) {
-      return
-    }
-    apiState.value = records.length ? 'connected' : 'empty'
-    actionMessage.value = records.length
-      ? `已读取${requestedFactoryName}正式啤办单 ${records.length} 张。`
+    boardSummary.value = summary
+    const nextPages = { ...boardPagesByStatus.value }
+    pages.forEach((page, index) => {
+      const status = boardStatuses[index]!
+      if (boardPageRequestIds[status] === pageRequestIds[status]) {
+        nextPages[status] = page
+        boardPageByStatus.value = {
+          ...boardPageByStatus.value,
+          [status]: page.page,
+        }
+      }
+    })
+    boardPagesByStatus.value = nextPages
+    replaceBoardPageCache(pages)
+    apiState.value = summary.total ? 'connected' : 'empty'
+    actionMessage.value = summary.total
+      ? `已读取${requestedFactoryName}啤办看板 ${summary.total} 张。`
       : `${requestedFactoryName}暂无正式啤办单，可先新建啤办单。`
 
-    selectedOrderId.value = records.some((record) => record.order.id === selectedOrderId.value)
+    selectedOrderId.value = apiRecords.value.some((record) => record.order.id === selectedOrderId.value)
       ? selectedOrderId.value
-      : records[0]?.order.id ?? ''
+      : pages.flatMap((page) => page.rows)[0]?.order.id ?? ''
+
+    await loadDeepLinkedOrderIfNeeded(requestedFactoryId)
   }
   catch (error) {
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== boardOverviewRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || !isServerBoardContextActive()
+    ) {
       return
     }
 
     apiRecords.value = []
-    rawMaterialPriceList.value = []
-    rawMaterialMasterList.value = []
+    boardSummary.value = null
+    boardPagesByStatus.value = {}
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
+  }
+  finally {
+    boardStatuses.forEach((status) => {
+      if (boardPageRequestIds[status] === pageRequestIds[status]) {
+        boardLoadingByStatus.value = {
+          ...boardLoadingByStatus.value,
+          [status]: false,
+        }
+      }
+    })
+  }
+}
+
+async function loadServerBoardColumn(status: MoldingSampleStatus, page: number) {
+  const requestedFactoryId = selectedFactoryId.value
+  const requestedQuery = effectiveSearchKeyword.value.trim()
+  const requestId = (boardPageRequestIds[status] ?? 0) + 1
+  boardPageRequestIds[status] = requestId
+  boardLoadingByStatus.value = {
+    ...boardLoadingByStatus.value,
+    [status]: true,
+  }
+
+  try {
+    const response = await requestBoardPage(requestedFactoryId, status, requestedQuery, page)
+    if (
+      boardPageRequestIds[status] !== requestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || requestedQuery !== effectiveSearchKeyword.value.trim()
+      || !isServerBoardContextActive()
+    ) {
+      return
+    }
+
+    boardPagesByStatus.value = {
+      ...boardPagesByStatus.value,
+      [status]: response,
+    }
+    boardPageByStatus.value = {
+      ...boardPageByStatus.value,
+      [status]: response.page,
+    }
+    mergeCachedApiRecords(response.rows)
+  }
+  catch (error) {
+    if (boardPageRequestIds[status] === requestId && isServerBoardContextActive()) {
+      actionMessage.value = `${status}分页读取失败：${getApiErrorMessage(error)}`
+    }
+  }
+  finally {
+    if (boardPageRequestIds[status] === requestId) {
+      boardLoadingByStatus.value = {
+        ...boardLoadingByStatus.value,
+        [status]: false,
+      }
+    }
+  }
+}
+
+async function loadLegacyApiData(options: { force?: boolean; includeSupportingData?: boolean } = {}) {
+  if (legacyOrdersLoaded.value && !options.force) {
+    legacyOrdersLoading.value = false
+    apiState.value = apiRecords.value.length ? 'connected' : 'empty'
+    return
+  }
+  if (legacyOrdersLoadPromise && !options.force) {
+    return legacyOrdersLoadPromise
+  }
+
+  const requestedFactoryId = selectedFactoryId.value
+  const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
+    ?? requestedFactoryId
+  const requestId = ++legacyOrdersRequestId
+  legacyOrdersLoading.value = true
+  apiState.value = 'checking'
+  actionMessage.value = `正在读取${requestedFactoryName}完整啤办单列表...`
+
+  const loadPromise = (async () => {
+    try {
+      const [records] = await Promise.all([
+        moldingSampleApi.listOrders(requestedFactoryId),
+        options.includeSupportingData
+          ? Promise.all([
+              loadProtectedMaterialPrices(requestedFactoryId),
+              loadRawMaterialOptions(requestedFactoryId),
+            ])
+          : Promise.resolve(),
+      ])
+      if (
+        requestId !== legacyOrdersRequestId
+        || requestedFactoryId !== selectedFactoryId.value
+        || !isLegacyOrdersContextActive()
+      ) {
+        return
+      }
+
+      apiRecords.value = records
+      legacyOrdersLoaded.value = true
+      apiState.value = records.length ? 'connected' : 'empty'
+      actionMessage.value = records.length
+        ? `已读取${requestedFactoryName}正式啤办单 ${records.length} 张。`
+        : `${requestedFactoryName}暂无正式啤办单，可先新建啤办单。`
+      selectedOrderId.value = records.some((record) => record.order.id === selectedOrderId.value)
+        ? selectedOrderId.value
+        : records[0]?.order.id ?? ''
+    }
+    catch (error) {
+      if (
+        requestId !== legacyOrdersRequestId
+        || requestedFactoryId !== selectedFactoryId.value
+        || !isLegacyOrdersContextActive()
+      ) {
+        return
+      }
+
+      if (!serverBoardEnabled.value) {
+        apiRecords.value = []
+        rawMaterialPriceList.value = []
+        rawMaterialMasterList.value = []
+        apiState.value = 'error'
+        actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
+      }
+      else {
+        apiState.value = boardSummary.value?.total ? 'connected' : 'empty'
+        actionMessage.value = `完整单据列表读取失败：${getApiErrorMessage(error)}`
+      }
+    }
+    finally {
+      if (requestId === legacyOrdersRequestId && requestedFactoryId === selectedFactoryId.value) {
+        legacyOrdersLoading.value = false
+      }
+    }
+  })()
+
+  legacyOrdersLoadPromise = loadPromise
+  try {
+    await loadPromise
+  }
+  finally {
+    if (legacyOrdersLoadPromise === loadPromise) {
+      legacyOrdersLoadPromise = null
+    }
+  }
+}
+
+async function loadApiData() {
+  invalidateServerBoardRequests()
+  invalidateLegacyOrdersRequest()
+  deepLinkedOrderRequestId += 1
+  serverBoardEnabled.value = supportsServerBoardApi()
+  legacyOrdersLoaded.value = false
+
+  if (serverBoardEnabled.value) {
+    boardSummary.value = null
+    boardPagesByStatus.value = {}
+    boardPageByStatus.value = {}
+    apiRecords.value = []
+
+    if (isServerBoardContextActive()) {
+      await loadServerBoardOverview({ includeSupportingData: true })
+    }
+    else if (isLegacyOrdersContextActive()) {
+      await loadLegacyApiData({ force: true, includeSupportingData: true })
+    }
+    else {
+      const requestedFactoryId = selectedFactoryId.value
+      await Promise.all([
+        loadProtectedMaterialPrices(requestedFactoryId),
+        loadRawMaterialOptions(requestedFactoryId),
+        loadDeepLinkedOrderIfNeeded(requestedFactoryId),
+      ])
+      apiState.value = apiRecords.value.length ? 'connected' : 'empty'
+    }
+    return
+  }
+
+  boardSummary.value = null
+  boardPagesByStatus.value = {}
+  boardLoadingByStatus.value = {}
+  await loadLegacyApiData({ force: true, includeSupportingData: true })
+}
+
+async function refreshBoardAfterMutation() {
+  if (!serverBoardEnabled.value) {
+    return
+  }
+
+  legacyOrdersLoaded.value = false
+  if (isServerBoardContextActive()) {
+    await loadServerBoardOverview()
+  }
+  else {
+    boardSummary.value = null
+    boardPagesByStatus.value = {}
   }
 }
 
@@ -1400,7 +1867,7 @@ async function handleExcelImportFile(event: Event) {
     createDraft.value = createDraftFromExcelPreview(preview)
     createErrors.value = []
     selectedOrderId.value = ''
-    activeView.value = 'create'
+    setView('create')
     actionMessage.value = 'Excel已导入到新建开单草稿，请确认数据无误后提交主管审核。'
   }
   catch (error) {
@@ -1427,7 +1894,7 @@ function toggleOrderBatchSelection(orderId: string, event: Event) {
 }
 
 function selectAllVisibleOrders() {
-  selectedBatchOrderIds.value = visibleRecords.value.map((record) => record.order.id)
+  selectedBatchOrderIds.value = batchSelectableRecords.value.map((record) => record.order.id)
 }
 
 function clearBatchSelection() {
@@ -1542,14 +2009,78 @@ function readQueryString(value: unknown) {
   return ''
 }
 
+function replaceRouteOrderId(orderId: string) {
+  if (readQueryString(route.query.order_id) === orderId) {
+    return
+  }
+
+  deepLinkedOrderRequestId += 1
+  const nextQuery = { ...route.query }
+  if (orderId) {
+    nextQuery.order_id = orderId
+  }
+  else {
+    delete nextQuery.order_id
+  }
+  void router.replace({ query: nextQuery })
+}
+
 function setView(view: ViewKey) {
   activeView.value = view
   deleteConfirmingOrderId.value = ''
+
+  if (!serverBoardEnabled.value) {
+    return
+  }
+
+  if (view === 'overview' && overviewDisplayMode.value === 'board') {
+    invalidateLegacyOrdersRequest()
+    void loadServerBoardOverview()
+  }
+  else if (view === 'material-balance' || (view === 'overview' && overviewDisplayMode.value === 'list')) {
+    invalidateServerBoardRequests()
+    void loadLegacyApiData()
+  }
+  else {
+    invalidateServerBoardRequests()
+    invalidateLegacyOrdersRequest()
+    apiState.value = apiRecords.value.length ? 'connected' : 'empty'
+
+    if (
+      view === 'detail'
+      && selectedOrderId.value
+      && !apiRecords.value.some((record) => record.order.id === selectedOrderId.value)
+    ) {
+      const requestedFactoryId = selectedFactoryId.value
+      apiState.value = 'checking'
+      void loadDeepLinkedOrderIfNeeded(requestedFactoryId).finally(() => {
+        if (activeView.value === 'detail' && requestedFactoryId === selectedFactoryId.value) {
+          apiState.value = apiRecords.value.some((record) => record.order.id === selectedOrderId.value)
+            ? 'connected'
+            : 'empty'
+        }
+      })
+    }
+  }
+}
+
+function setOverviewDisplayMode(mode: OverviewDisplayMode) {
+  overviewDisplayMode.value = mode
+
+  if (serverBoardEnabled.value && mode === 'list') {
+    invalidateServerBoardRequests()
+    void loadLegacyApiData()
+  }
+  else if (serverBoardEnabled.value && mode === 'board') {
+    invalidateLegacyOrdersRequest()
+    void loadServerBoardOverview()
+  }
 }
 
 function openRecord(record: MoldingSampleWorkflowRecord) {
   selectedOrderId.value = record.order.id
-  activeView.value = 'detail'
+  replaceRouteOrderId(record.order.id)
+  setView('detail')
   approvalNote.value = ''
   deleteConfirmingOrderId.value = ''
 }
@@ -1673,7 +2204,9 @@ async function submitManualCreate() {
 
     replaceApiRecord(created)
     selectedOrderId.value = created.order.id
-    activeView.value = 'detail'
+    setView('detail')
+    await refreshBoardAfterMutation()
+    selectedOrderId.value = created.order.id
     actionMessage.value = isRejectedResubmit
       ? `啤办单 ${created.order.id} 已保存${revisionLabel}修改并重提主管审核。`
       : `啤办单 ${created.order.id} 已提交主管审核，正式列表已刷新。`
@@ -1764,6 +2297,8 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
     const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, payload)
     replaceApiRecord(updated)
     selectedOrderId.value = updated.order.id
+    await refreshBoardAfterMutation()
+    selectedOrderId.value = updated.order.id
     approvalNote.value = ''
     actionMessage.value = `啤办单 ${updated.order.id} 已${decision}，当前状态：${updated.order.status}。`
   }
@@ -1799,6 +2334,8 @@ async function withdrawSelectedOrder() {
       today,
     })
     replaceApiRecord(updated)
+    selectedOrderId.value = updated.order.id
+    await refreshBoardAfterMutation()
     selectedOrderId.value = updated.order.id
     actionMessage.value = `啤办单 ${updated.order.id} 已撤回，可修改后重新提交主管审核。`
   }
@@ -1836,7 +2373,11 @@ async function deleteSelectedOrder() {
   try {
     await moldingSampleApi.deleteOrder(orderId)
     removeApiRecord(orderId)
-    activeView.value = 'overview'
+    await refreshBoardAfterMutation()
+    if (readQueryString(route.query.order_id) === orderId) {
+      replaceRouteOrderId('')
+    }
+    setView('overview')
     deleteConfirmingOrderId.value = ''
     actionMessage.value = `啤办单 ${orderId} 已删除。`
   }
@@ -1883,7 +2424,7 @@ function getWorkflowStepState(status: MoldingSampleStatus): StatusState {
 function getWorkflowCardClass(state: StatusState) {
   const classes: Record<StatusState, string> = {
     done: 'border-teal-200 bg-teal-50 text-teal-800',
-    current: 'border-slate-950 bg-slate-950 text-white',
+    current: 'border-teal-700 bg-gradient-to-r from-slate-800 to-teal-800 text-white shadow-sm shadow-teal-950/10',
     pending: 'border-slate-200 bg-white text-slate-500',
     rejected: 'border-red-200 bg-red-50 text-red-700',
   }
@@ -1894,7 +2435,7 @@ function getWorkflowCardClass(state: StatusState) {
 function getWorkflowIndexClass(state: StatusState) {
   const classes: Record<StatusState, string> = {
     done: 'bg-teal-600 text-white',
-    current: 'bg-white text-slate-950',
+    current: 'bg-white text-teal-800',
     pending: 'bg-slate-200 text-slate-500',
     rejected: 'bg-red-600 text-white',
   }
@@ -1927,20 +2468,30 @@ function getFlowSummary(record: MoldingSampleWorkflowRecord) {
   return record.order.reject_reason || '退回工程处理'
 }
 
-function getPageCount(total: number) {
-  return Math.max(1, Math.ceil(total / MOLDING_SAMPLE_PAGE_SIZE))
+function getBoardSummaryStatusTotal(status: MoldingSampleStatus) {
+  const counts = boardSummary.value?.status_counts ?? {}
+
+  if (status === '待审核') {
+    return (counts['待审核'] ?? 0) + (counts['待经理审核'] ?? 0)
+  }
+
+  return counts[status] ?? 0
 }
 
-function clampPage(page: number, total: number) {
-  return Math.min(Math.max(1, page), getPageCount(total))
+function getPageCount(total: number, pageSize = MOLDING_SAMPLE_PAGE_SIZE) {
+  return Math.max(1, Math.ceil(total / pageSize))
 }
 
-function createPaginationState<T>(rows: T[], page: number): PaginationState<T> {
+function clampPage(page: number, total: number, pageSize = MOLDING_SAMPLE_PAGE_SIZE) {
+  return Math.min(Math.max(1, page), getPageCount(total, pageSize))
+}
+
+function createPaginationState<T>(rows: T[], page: number, pageSize = MOLDING_SAMPLE_PAGE_SIZE): PaginationState<T> {
   const total = rows.length
-  const pageCount = getPageCount(total)
-  const normalizedPage = clampPage(page, total)
-  const startIndex = (normalizedPage - 1) * MOLDING_SAMPLE_PAGE_SIZE
-  const pageRows = rows.slice(startIndex, startIndex + MOLDING_SAMPLE_PAGE_SIZE)
+  const pageCount = getPageCount(total, pageSize)
+  const normalizedPage = clampPage(page, total, pageSize)
+  const startIndex = (normalizedPage - 1) * pageSize
+  const pageRows = rows.slice(startIndex, startIndex + pageSize)
   const start = total === 0 ? 0 : startIndex + 1
   const end = total === 0 ? 0 : startIndex + pageRows.length
 
@@ -1953,6 +2504,28 @@ function createPaginationState<T>(rows: T[], page: number): PaginationState<T> {
     end,
     hasPrevious: normalizedPage > 1,
     hasNext: normalizedPage < pageCount,
+  }
+}
+
+function createServerPaginationState<T>(
+  rows: T[],
+  total: number,
+  page: number,
+  pageCount = getPageCount(total, MOLDING_SAMPLE_BOARD_PAGE_SIZE),
+): PaginationState<T> {
+  const normalizedPageCount = Math.max(1, pageCount)
+  const normalizedPage = Math.min(Math.max(1, page), normalizedPageCount)
+  const startIndex = (normalizedPage - 1) * MOLDING_SAMPLE_BOARD_PAGE_SIZE
+
+  return {
+    rows,
+    total,
+    page: normalizedPage,
+    pageCount: normalizedPageCount,
+    start: total === 0 ? 0 : startIndex + 1,
+    end: total === 0 ? 0 : Math.min(total, startIndex + rows.length),
+    hasPrevious: normalizedPage > 1,
+    hasNext: normalizedPage < normalizedPageCount,
   }
 }
 
@@ -1974,10 +2547,15 @@ function setOverviewListPage(page: number) {
 }
 
 function setBoardColumnPage(status: MoldingSampleStatus, page: number) {
+  if (serverBoardEnabled.value) {
+    void loadServerBoardColumn(status, page)
+    return
+  }
+
   const total = visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status).length
   boardPageByStatus.value = {
     ...boardPageByStatus.value,
-    [status]: clampPage(page, total),
+    [status]: clampPage(page, total, MOLDING_SAMPLE_BOARD_PAGE_SIZE),
   }
 }
 
@@ -2529,13 +3107,35 @@ function getItemStateClass(item: MoldingSampleItem) {
 }
 
 watchEffect(() => {
-  const queryOrderId = readQueryString(route.query.order_id)
+  appStore.setActiveFactory(selectedFactoryId.value)
+})
 
-  if (queryOrderId && queryOrderId !== selectedOrderId.value) {
-    selectedOrderId.value = queryOrderId
+watch(() => readQueryString(route.query.order_id), (queryOrderId) => {
+  if (!queryOrderId) {
+    deepLinkedOrderRequestId += 1
+    return
   }
 
-  appStore.setActiveFactory(selectedFactoryId.value)
+  selectedOrderId.value = queryOrderId
+  const requestedFactoryId = selectedFactoryId.value
+  const shouldTrackDetailLoad = activeView.value === 'detail'
+    && !apiRecords.value.some((record) => record.order.id === queryOrderId)
+  if (shouldTrackDetailLoad) {
+    apiState.value = 'checking'
+  }
+
+  void loadDeepLinkedOrderIfNeeded(requestedFactoryId).finally(() => {
+    if (
+      shouldTrackDetailLoad
+      && activeView.value === 'detail'
+      && requestedFactoryId === selectedFactoryId.value
+      && queryOrderId === readQueryString(route.query.order_id)
+    ) {
+      apiState.value = apiRecords.value.some((record) => record.order.id === queryOrderId)
+        ? 'connected'
+        : 'empty'
+    }
+  })
 })
 
 restoreSavedCreateDraft()
@@ -2547,8 +3147,13 @@ watch(createDraft, () => {
 }, { deep: true })
 
 watch(selectedFactoryId, () => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  effectiveSearchKeyword.value = searchKeyword.value.trim()
   resetPagination()
-  selectedOrderId.value = ''
+  selectedOrderId.value = readQueryString(route.query.order_id)
   void loadApiData()
 
   if (!isEditingRejectedOrder.value) {
@@ -2558,13 +3163,40 @@ watch(selectedFactoryId, () => {
 
 watch(selectedOrderId, () => {
   isSelectedOrderDataExpanded.value = false
+  selectedFullItemId.value = ''
 })
 
-watch(searchKeyword, () => {
-  resetPagination()
+watch(selectedItems, (items) => {
+  if (!items.some((item) => item.id === selectedFullItemId.value)) {
+    selectedFullItemId.value = items[0]?.id ?? ''
+  }
+}, {
+  immediate: true,
 })
 
-watch(visibleRecords, (records) => {
+watch(searchKeyword, (keyword) => {
+  if (!serverBoardEnabled.value) {
+    effectiveSearchKeyword.value = keyword
+    resetPagination()
+    return
+  }
+
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    effectiveSearchKeyword.value = keyword.trim()
+    resetPagination()
+
+    if (activeView.value === 'overview' && overviewDisplayMode.value === 'board') {
+      void loadServerBoardOverview()
+    }
+  }, MOLDING_SAMPLE_SEARCH_DEBOUNCE_MS)
+})
+
+watch(batchSelectableRecords, (records) => {
   const visibleOrderIds = new Set(records.map((record) => record.order.id))
   selectedBatchOrderIds.value = selectedBatchOrderIds.value.filter((orderId) => visibleOrderIds.has(orderId))
 })
@@ -2582,18 +3214,28 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  invalidateServerBoardRequests()
+  invalidateLegacyOrdersRequest()
+  deepLinkedOrderRequestId += 1
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
   hideActionToast()
   hideCreateSuccessToast()
 })
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-100 text-[13px] leading-relaxed text-slate-900">
-    <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
-      <div class="mx-auto flex max-w-[1720px] items-center gap-4 px-5 py-2.5">
+  <main
+    class="app-shell min-h-screen bg-transparent text-[13px] leading-relaxed text-slate-900"
+    :aria-busy="apiState === 'checking'"
+  >
+    <header class="sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+      <div class="app-page flex items-center gap-4 px-5 py-2.5">
         <RouterLink
           to="/modules/engineering"
-          class="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+          class="inline-flex min-h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-white/85 px-3 text-[12px] font-semibold text-slate-600 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
         >
           <ArrowLeft class="size-4" aria-hidden="true" />
           <span class="hidden sm:inline">工程部模块</span>
@@ -2601,7 +3243,7 @@ onUnmounted(() => {
         </RouterLink>
 
         <div class="flex min-w-0 items-center gap-2.5">
-          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white">
+          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-slate-800 to-teal-700 text-white shadow-[0_6px_18px_-12px_rgba(13,148,136,0.9)]">
             <Beaker class="size-5" aria-hidden="true" />
           </span>
           <div class="min-w-0">
@@ -2613,10 +3255,24 @@ onUnmounted(() => {
         <div class="relative ml-1 hidden md:block">
           <Search class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
           <input
+            data-testid="molding-sample-search-input"
             v-model="searchKeyword"
-            placeholder="搜索单号 / 产品 / 客户 / 模具号..."
-            class="h-8 w-72 rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 text-[12px] outline-none transition focus:border-slate-400 focus:bg-white"
+            type="search"
+            aria-label="模糊搜索啤办单"
+            autocomplete="off"
+            placeholder="搜索单号 / 产品 / 客户 / 模具 / 原料..."
+            class="h-9 w-72 rounded-lg border border-slate-200 bg-slate-50/80 pl-8 pr-8 text-[12px] shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] outline-none transition hover:border-slate-300 hover:bg-white focus:border-teal-400 focus:bg-white focus:ring-2 focus:ring-teal-500/15"
+            @keydown.esc="searchKeyword = ''"
           >
+          <button
+            v-if="searchKeyword"
+            type="button"
+            aria-label="清除搜索"
+            class="absolute right-1.5 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-200 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+            @click="searchKeyword = ''"
+          >
+            <X class="size-3.5" aria-hidden="true" />
+          </button>
         </div>
 
         <div class="ml-auto flex items-center gap-3">
@@ -2628,11 +3284,11 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <nav class="mx-auto flex max-w-[1720px] items-center gap-1 overflow-x-auto px-5">
+      <nav class="app-page flex items-center gap-1 overflow-x-auto px-5" aria-label="啤办业务导航">
         <button
           type="button"
-          class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
-          :class="activeView === 'overview' ? 'bg-slate-900 text-white' : 'text-slate-500'"
+          class="tab-btn inline-flex min-h-9 whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500/35"
+          :class="activeView === 'overview' ? 'border-teal-600 bg-gradient-to-r from-slate-800 to-teal-800 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'"
           @click="setView('overview')"
         >
           <LayoutDashboard class="size-4" aria-hidden="true" />
@@ -2641,8 +3297,8 @@ onUnmounted(() => {
         <button
           v-if="!isSelectedFactoryReadOnly"
           type="button"
-          class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
-          :class="activeView === 'create' ? 'bg-slate-900 text-white' : 'text-slate-500'"
+          class="tab-btn inline-flex min-h-9 whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500/35"
+          :class="activeView === 'create' ? 'border-teal-600 bg-gradient-to-r from-slate-800 to-teal-800 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'"
           @click="startCreateOrder"
         >
           <FilePlus2 class="size-4" aria-hidden="true" />
@@ -2650,8 +3306,8 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="tab-btn inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900"
-          :class="activeView === 'detail' ? 'bg-slate-900 text-white' : 'text-slate-500'"
+          class="tab-btn inline-flex min-h-9 whitespace-nowrap items-center gap-1.5 rounded-t-lg border-b-2 border-transparent px-3 py-2 text-[12.5px] font-semibold transition hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500/35"
+          :class="activeView === 'detail' ? 'border-teal-600 bg-gradient-to-r from-slate-800 to-teal-800 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'"
           @click="setView('detail')"
         >
           <ClipboardCheck class="size-4" aria-hidden="true" />
@@ -2659,13 +3315,21 @@ onUnmounted(() => {
         </button>
         <RouterLink
           :to="productionTaskRoute"
-          class="ml-auto inline-flex whitespace-nowrap items-center gap-1.5 rounded-t-lg px-3 py-2 text-[12.5px] font-semibold text-slate-500 transition hover:text-slate-900"
+          class="ml-auto inline-flex min-h-9 whitespace-nowrap items-center gap-1.5 rounded-t-lg px-3 py-2 text-[12.5px] font-semibold text-slate-500 transition hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500/35"
         >
           <Factory class="size-4" aria-hidden="true" />
           啤办生产任务单
           <ExternalLink class="size-3.5" aria-hidden="true" />
         </RouterLink>
       </nav>
+      <div
+        v-if="apiState === 'checking'"
+        class="h-0.5 overflow-hidden bg-teal-950/[0.05]"
+        role="progressbar"
+        aria-label="正在刷新啤办业务数据"
+      >
+        <span class="block h-full w-2/3 rounded-r-full bg-gradient-to-r from-slate-800 via-teal-600 to-cyan-400 shadow-[0_0_8px_rgba(13,148,136,0.28)] animate-pulse motion-reduce:animate-none" />
+      </div>
     </header>
 
     <Transition
@@ -3027,7 +3691,7 @@ onUnmounted(() => {
       </section>
     </Transition>
 
-    <div class="mx-auto max-w-[1720px] px-5 py-4">
+    <div class="app-page px-5 py-4">
       <section
         v-if="isSelectedFactoryReadOnly"
         class="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-800"
@@ -3040,9 +3704,10 @@ onUnmounted(() => {
       </section>
 
       <section
-        class="mb-3 flex flex-wrap items-center justify-end gap-2"
+        class="enterprise-panel mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl px-3.5 py-3"
         aria-label="啤办业务导出打印操作区"
         data-testid="molding-sample-export-print-toolbar"
+        :aria-busy="apiState === 'checking'"
       >
         <input
           ref="excelFileInput"
@@ -3051,129 +3716,169 @@ onUnmounted(() => {
           :accept="excelAccept"
           @change="handleExcelImportFile"
         >
-        <div class="flex min-h-9 flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm shadow-slate-200/60">
-          <div class="mr-1 border-r border-slate-200 pr-2">
-            <div class="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500">导出 / 打印</div>
-            <div class="text-[11px] text-slate-400">选择单据后可打印详情或合并导出</div>
+        <div class="min-w-[220px] flex-1">
+          <div class="text-[10px] font-bold uppercase tracking-[0.16em] text-teal-700">Molding Sample Operations</div>
+          <div class="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <h1 class="text-[14px] font-bold text-slate-950">{{ activeFactory.shortName }}啤办业务</h1>
+            <span class="text-[11px] text-slate-500">当前共 {{ overviewOperationRecordCount }} 单 · 导出 / 打印</span>
           </div>
+          <div class="mt-0.5 text-[11px] text-slate-400">选择单据后可打印详情或合并导出</div>
+        </div>
+        <div class="flex min-h-9 flex-wrap items-center justify-end gap-2">
           <span
-            class="inline-flex h-7 items-center rounded-md border border-teal-100 bg-teal-50 px-2 text-[12px] font-bold text-teal-700"
+            class="inline-flex min-h-8 items-center rounded-lg border border-teal-100 bg-teal-50 px-2.5 text-[12px] font-bold text-teal-700"
           >
             {{ selectedBatchCount ? `已选 ${selectedBatchCount} 单` : '默认当前单据' }}
           </span>
-        <button
-          v-if="canExportSelectedOrder"
-          type="button"
-          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50"
-          @click="printOverview"
-        >
-          <Printer class="size-3.5" aria-hidden="true" />
-          打印
-        </button>
-        <button
-          v-if="!isSelectedFactoryReadOnly"
-          type="button"
-          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
-          :disabled="excelImporting || !canCreateOrder"
-          @click="triggerExcelImport"
-        >
-          <Upload class="size-3.5" aria-hidden="true" />
-          {{ excelImporting ? '导入中...' : '导入Excel' }}
-        </button>
-        <button
-          v-if="!isSelectedFactoryReadOnly"
-          type="button"
-          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
-          :disabled="excelTemplateDownloading || !canCreateOrder"
-          @click="downloadEngineeringImportTemplate"
-        >
-          <Download class="size-3.5" aria-hidden="true" />
-          {{ excelTemplateDownloading ? '模板下载中...' : '下载导入模板' }}
-        </button>
-        <button
-          v-if="!isSelectedFactoryReadOnly"
-          type="button"
-          class="inline-flex h-7 items-center gap-1 rounded-md border border-teal-200 bg-white px-2 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
-          :disabled="excelExporting || !canExportSelectedOrder"
-          @click="downloadOrderExcel"
-        >
-          <Download class="size-3.5" aria-hidden="true" />
-          {{ excelExporting ? '导出中...' : '导出Excel' }}
-        </button>
-        <button
-          type="button"
-          class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-slate-50 px-2 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-white"
-          @click="loadApiData"
-        >
-          刷新正式列表
-        </button>
+          <button
+            v-if="canExportSelectedOrder"
+            type="button"
+            class="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+            @click="printOverview"
+          >
+            <Printer class="size-3.5" aria-hidden="true" />
+            打印
+          </button>
+          <button
+            v-if="!isSelectedFactoryReadOnly"
+            type="button"
+            class="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-semibold text-slate-600 transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="excelImporting || !canCreateOrder"
+            @click="triggerExcelImport"
+          >
+            <Upload class="size-3.5" aria-hidden="true" />
+            {{ excelImporting ? '导入中...' : '导入Excel' }}
+          </button>
+          <button
+            v-if="!isSelectedFactoryReadOnly"
+            type="button"
+            class="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-semibold text-slate-600 transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="excelTemplateDownloading || !canCreateOrder"
+            @click="downloadEngineeringImportTemplate"
+          >
+            <Download class="size-3.5" aria-hidden="true" />
+            {{ excelTemplateDownloading ? '模板下载中...' : '下载导入模板' }}
+          </button>
+          <button
+            v-if="!isSelectedFactoryReadOnly"
+            type="button"
+            class="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-semibold text-slate-600 transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="excelExporting || !canExportSelectedOrder"
+            @click="downloadOrderExcel"
+          >
+            <Download class="size-3.5" aria-hidden="true" />
+            {{ excelExporting ? '导出中...' : '导出Excel' }}
+          </button>
+          <button
+            type="button"
+            class="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-[12px] font-semibold text-slate-600 transition hover:border-teal-200 hover:bg-white hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="apiState === 'checking'"
+            :aria-busy="apiState === 'checking'"
+            @click="loadApiData"
+          >
+            <RefreshCw
+              class="size-3.5"
+              :class="apiState === 'checking' ? 'animate-spin motion-reduce:animate-none' : ''"
+              aria-hidden="true"
+            />
+            {{ apiState === 'checking' ? '刷新中...' : '刷新正式列表' }}
+          </button>
         </div>
       </section>
 
       <section v-if="activeView === 'overview'" class="space-y-4">
-        <div data-testid="molding-kpi-grid" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
-          <article
-            v-for="card in kpiCards"
-            :key="card.label"
-            :data-testid="`molding-kpi-${card.key}`"
-            class="min-h-[94px] min-w-0 rounded-lg border p-3"
-            :class="card.className"
-          >
-            <div class="flex items-center justify-between">
-              <span class="truncate text-[11px] font-medium opacity-75">{{ card.label }}</span>
-              <component :is="card.icon" class="size-4 opacity-60" aria-hidden="true" />
-            </div>
-            <div :data-testid="`molding-kpi-${card.key}-value`" class="mt-1 text-2xl font-bold tabular-nums text-slate-950">{{ card.value }}</div>
-            <div class="break-words text-[11px] leading-4 opacity-75">{{ card.detail }}</div>
-          </article>
+        <div
+          data-testid="molding-kpi-grid"
+          class="grid gap-3 xl:grid-cols-[minmax(0,4fr)_minmax(0,3fr)]"
+        >
+          <section class="reveal-grid grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="啤办流程概览">
+            <article
+              v-for="card in kpiCards.slice(0, 4)"
+              :key="card.label"
+              :data-testid="`molding-kpi-${card.key}`"
+              class="enterprise-panel group relative min-h-[104px] min-w-0 overflow-clip rounded-xl border p-3.5"
+              :class="card.className"
+            >
+              <span class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-teal-500/55 to-transparent" aria-hidden="true" />
+              <div class="flex items-center justify-between gap-3">
+                <span class="truncate text-[11px] font-semibold opacity-80">{{ card.label }}</span>
+                <span class="surface-subtle flex size-8 shrink-0 items-center justify-center rounded-lg transition-transform duration-200 group-hover:scale-105 motion-reduce:transition-none">
+                  <component :is="card.icon" class="size-4 opacity-70" aria-hidden="true" />
+                </span>
+              </div>
+              <div :data-testid="`molding-kpi-${card.key}-value`" class="mt-1.5 text-[26px] font-semibold leading-none tabular-nums tracking-[-0.035em] text-slate-950">{{ card.value }}</div>
+              <div class="mt-1.5 break-words text-[11px] leading-4 opacity-75">{{ card.detail }}</div>
+            </article>
+          </section>
+          <section class="reveal-grid grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="啤办风险提醒">
+            <article
+              v-for="card in kpiCards.slice(4)"
+              :key="card.label"
+              :data-testid="`molding-kpi-${card.key}`"
+              class="enterprise-panel group relative min-h-[104px] min-w-0 overflow-clip rounded-xl border p-3.5"
+              :class="card.className"
+            >
+              <span class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-teal-500/40 to-transparent" aria-hidden="true" />
+              <div class="flex items-center justify-between gap-3">
+                <span class="truncate text-[11px] font-semibold opacity-80">{{ card.label }}</span>
+                <span class="surface-subtle flex size-8 shrink-0 items-center justify-center rounded-lg transition-transform duration-200 group-hover:scale-105 motion-reduce:transition-none">
+                  <component :is="card.icon" class="size-4 opacity-70" aria-hidden="true" />
+                </span>
+              </div>
+              <div :data-testid="`molding-kpi-${card.key}-value`" class="mt-1.5 text-[26px] font-semibold leading-none tabular-nums tracking-[-0.035em] text-slate-950">{{ card.value }}</div>
+              <div class="mt-1.5 break-words text-[11px] leading-4 opacity-75">{{ card.detail }}</div>
+            </article>
+          </section>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5">
+        <div class="enterprise-panel flex flex-wrap items-center gap-2 rounded-xl p-2.5">
+          <div class="surface-subtle flex items-center gap-1 rounded-lg p-0.5" role="group" aria-label="总览显示方式">
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] transition"
-              :class="overviewDisplayMode === 'board' ? 'bg-slate-900 font-semibold text-white' : 'font-medium text-slate-500 hover:text-slate-900'"
-              @click="overviewDisplayMode = 'board'"
+              class="inline-flex min-h-8 items-center gap-1 rounded-md px-2.5 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+              :class="overviewDisplayMode === 'board' ? 'bg-teal-700 font-semibold text-white shadow-sm' : 'font-medium text-slate-500 hover:bg-white hover:text-slate-900'"
+              :aria-pressed="overviewDisplayMode === 'board'"
+              @click="setOverviewDisplayMode('board')"
             >
               <LayoutDashboard class="size-3.5" aria-hidden="true" />
               看板
             </button>
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] transition"
-              :class="overviewDisplayMode === 'list' ? 'bg-slate-900 font-semibold text-white' : 'font-medium text-slate-500 hover:text-slate-900'"
-              @click="overviewDisplayMode = 'list'"
+              class="inline-flex min-h-8 items-center gap-1 rounded-md px-2.5 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+              :class="overviewDisplayMode === 'list' ? 'bg-teal-700 font-semibold text-white shadow-sm' : 'font-medium text-slate-500 hover:bg-white hover:text-slate-900'"
+              :aria-pressed="overviewDisplayMode === 'list'"
+              @click="setOverviewDisplayMode('list')"
             >
               <Table2 class="size-3.5" aria-hidden="true" />
               列表
             </button>
           </div>
           <span class="mx-1 h-5 w-px bg-slate-200" aria-hidden="true" />
-          <button class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:border-slate-300">
+          <span class="inline-flex min-h-8 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50/80 px-2.5 text-[12px] font-medium text-slate-600">
             <Filter class="size-3.5" aria-hidden="true" />
             车间：{{ selectedOrder.workshop || '全部' }}
-          </button>
-          <button class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:border-slate-300">
+          </span>
+          <span class="inline-flex min-h-8 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50/80 px-2.5 text-[12px] font-medium text-slate-600">
             <UserRound class="size-3.5" aria-hidden="true" />
             主管：{{ selectedOrder.supervisor || '全部' }}
-          </button>
-          <button class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:border-slate-300">
+          </span>
+          <span class="inline-flex min-h-8 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50/80 px-2.5 text-[12px] font-medium text-slate-600">
             <Tag class="size-3.5" aria-hidden="true" />
             类型：啤办
-          </button>
-          <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-[12px] text-slate-600">
+          </span>
+          <div class="surface-subtle flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg px-1.5 py-0.5 text-[12px] text-slate-600">
             <button
               type="button"
-              class="inline-flex h-7 items-center rounded-md px-2 font-semibold transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="!visibleRecords.length || isAllVisibleOrdersSelected"
+              class="inline-flex min-h-8 items-center rounded-md px-2 font-semibold transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!batchSelectableRecords.length || isAllVisibleOrdersSelected"
               @click="selectAllVisibleOrders"
             >
-              全选当前筛选单据
+              {{ serverBoardEnabled && overviewDisplayMode === 'board' ? '全选当前页' : '全选当前筛选单据' }}
             </button>
             <button
               type="button"
-              class="inline-flex h-7 items-center rounded-md px-2 font-semibold transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+              class="inline-flex min-h-8 items-center rounded-md px-2 font-semibold transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="selectedBatchCount === 0"
               @click="clearBatchSelection"
             >
@@ -3185,7 +3890,7 @@ onUnmounted(() => {
           </div>
           <button
             type="button"
-            class="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-100"
+            class="ml-auto inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 text-[12px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
             data-testid="material-balance-button"
             @click="setView('material-balance')"
           >
@@ -3195,7 +3900,7 @@ onUnmounted(() => {
           <button
             v-if="!isSelectedFactoryReadOnly"
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-slate-700"
+            class="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-gradient-to-r from-slate-800 to-teal-800 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:from-slate-700 hover:to-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/40"
             @click="startCreateOrder"
           >
             <Plus class="size-4" aria-hidden="true" />
@@ -3203,13 +3908,20 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div v-if="overviewDisplayMode === 'board'" class="grid grid-cols-1 gap-3 overflow-x-auto pb-2 md:grid-cols-2 xl:grid-cols-6">
+        <div
+          v-if="overviewDisplayMode === 'board'"
+          class="reveal-grid grid grid-cols-1 gap-3 overflow-x-auto overscroll-x-contain pb-2 md:grid-cols-2 xl:grid-flow-col xl:auto-cols-[minmax(260px,1fr)] xl:grid-cols-none"
+        >
           <section
             v-for="column in boardColumns"
             :key="column.status"
-            class="min-h-[230px] rounded-lg bg-slate-50/90 ring-1 ring-inset ring-slate-200"
+            class="surface-subtle min-h-[244px] overflow-hidden rounded-xl"
+            role="region"
+            :aria-label="`${column.label}看板列`"
+            :aria-busy="column.loading"
+            :data-testid="`molding-board-column-${column.status}`"
           >
-            <div class="flex items-center justify-between px-3 py-2.5">
+            <div class="flex items-center justify-between border-b border-slate-200/70 bg-white/60 px-3 py-2.5 backdrop-blur-sm">
               <div class="flex min-w-0 items-center gap-2">
                 <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="column.dotClass" />
                 <div class="min-w-0">
@@ -3217,18 +3929,30 @@ onUnmounted(() => {
                   <div class="truncate text-[10px] text-slate-400">{{ column.detail }}</div>
                 </div>
               </div>
-              <span class="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-500 ring-1 ring-slate-200">
-                {{ column.records.length }}
-              </span>
+              <div class="flex shrink-0 items-center gap-1.5">
+                <RefreshCw
+                  v-if="column.loading"
+                  class="size-3.5 animate-spin text-teal-600 motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+                <span class="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-600 shadow-sm ring-1 ring-slate-200">
+                  {{ column.pagination.total }}
+                </span>
+              </div>
             </div>
 
             <div class="space-y-2 px-2 pb-2">
               <article
                 v-for="record in column.pagedRecords"
                 :key="record.order.id"
-                class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:shadow"
-                :class="selectedOrder.id === record.order.id ? 'border-slate-950 ring-1 ring-slate-950' : isOrderBatchSelected(record.order.id) ? 'border-teal-300 ring-1 ring-teal-200' : 'border-slate-200 hover:border-slate-300'"
+                class="enterprise-panel interactive-surface relative w-full overflow-hidden rounded-xl border p-3 text-left"
+                :class="selectedOrder.id === record.order.id ? 'border-teal-300 bg-teal-50/70 shadow-[0_12px_28px_-24px_rgba(13,148,136,0.85)] ring-1 ring-teal-200' : isOrderBatchSelected(record.order.id) ? 'border-teal-300 bg-teal-50/35 ring-1 ring-teal-100' : 'border-slate-200 hover:border-teal-200'"
               >
+                <span
+                  v-if="selectedOrder.id === record.order.id"
+                  class="absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-teal-500"
+                  aria-hidden="true"
+                />
                 <div class="flex items-start gap-2">
                   <input
                     type="checkbox"
@@ -3239,15 +3963,16 @@ onUnmounted(() => {
                   >
                   <button
                     type="button"
-                    class="min-w-0 flex-1 text-left"
+                    class="min-h-8 min-w-0 flex-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+                    :aria-current="selectedOrder.id === record.order.id ? 'true' : undefined"
                     @click="openRecord(record)"
                   >
                     <div class="flex items-center justify-between gap-2">
                       <span class="font-mono text-[12px] font-bold text-slate-800">{{ record.order.id }}</span>
                       <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{{ record.order.stage || '啤办' }}</span>
                     </div>
-                    <div class="mt-1 truncate text-[13px] font-semibold">{{ record.order.product_name }}</div>
-                    <div class="truncate text-[11px] text-slate-400">{{ record.order.client_name }} · {{ record.items.length }} 项明细</div>
+                    <div class="mt-1.5 truncate text-[13px] font-semibold text-slate-950">{{ record.order.product_name }}</div>
+                    <div class="mt-0.5 truncate text-[11px] text-slate-500">{{ record.order.client_name }} · {{ record.items.length }} 项明细</div>
                     <div class="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px]">
                       <span class="truncate text-slate-500">{{ getFlowSummary(record) }}</span>
                       <span class="shrink-0 text-slate-400">{{ record.order.date }}</span>
@@ -3257,25 +3982,32 @@ onUnmounted(() => {
               </article>
 
               <div
-                v-if="!column.records.length"
-                class="rounded-lg border border-dashed border-slate-200 bg-white/70 p-4 text-center text-[11px] font-medium text-slate-400"
+                v-if="column.loading && !column.pagedRecords.length"
+                class="rounded-xl border border-dashed border-teal-200 bg-teal-50/60 p-5 text-center text-[11px] font-medium text-teal-700"
+                role="status"
+              >
+                正在加载{{ column.label }}单据...
+              </div>
+              <div
+                v-else-if="!column.pagination.total"
+                class="rounded-xl border border-dashed border-slate-200 bg-white/70 p-5 text-center text-[11px] font-medium text-slate-400"
               >
                 暂无{{ column.label }}单据
               </div>
             </div>
             <div
-              v-if="column.records.length"
-              class="border-t border-slate-200 px-2 py-2 text-[11px] text-slate-500"
+              v-if="column.pagination.total"
+              class="border-t border-slate-200/80 bg-white/45 px-2 py-2 text-[11px] text-slate-500"
             >
               <div class="mb-1.5 flex items-center justify-between gap-2">
-                <span class="font-medium">每页 10 条</span>
+                <span class="font-medium">每页 5 条</span>
                 <span class="tabular-nums">{{ formatPaginationRange(column.pagination) }}</span>
               </div>
               <div class="flex items-center justify-between gap-2">
                 <button
                   type="button"
-                  class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
-                  :disabled="!column.pagination.hasPrevious"
+                  class="inline-flex min-h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="column.loading || !column.pagination.hasPrevious"
                   :aria-label="`${column.label}上一页`"
                   @click="setBoardColumnPage(column.status, column.pagination.page - 1)"
                 >
@@ -3285,8 +4017,8 @@ onUnmounted(() => {
                 <span class="shrink-0 tabular-nums">{{ column.pagination.page }} / {{ column.pagination.pageCount }} 页</span>
                 <button
                   type="button"
-                  class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
-                  :disabled="!column.pagination.hasNext"
+                  class="inline-flex min-h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="column.loading || !column.pagination.hasNext"
                   :aria-label="`${column.label}下一页`"
                   @click="setBoardColumnPage(column.status, column.pagination.page + 1)"
                 >
@@ -3297,7 +4029,7 @@ onUnmounted(() => {
             </div>
           </section>
         </div>
-        <section v-else class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <section v-else class="enterprise-panel overflow-hidden rounded-xl">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
             <div class="flex items-center gap-2">
               <Table2 class="size-4 text-slate-400" aria-hidden="true" />
@@ -3309,7 +4041,7 @@ onUnmounted(() => {
               <span class="tabular-nums">{{ formatPaginationRange(overviewListPagination) }}</span>
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                class="inline-flex min-h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
                 :disabled="!overviewListPagination.hasPrevious"
                 aria-label="啤办单列表上一页"
                 @click="setOverviewListPage(overviewListPagination.page - 1)"
@@ -3320,7 +4052,7 @@ onUnmounted(() => {
               <span class="tabular-nums">{{ overviewListPagination.page }} / {{ overviewListPagination.pageCount }} 页</span>
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                class="inline-flex min-h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
                 :disabled="!overviewListPagination.hasNext"
                 aria-label="啤办单列表下一页"
                 @click="setOverviewListPage(overviewListPagination.page + 1)"
@@ -3350,7 +4082,7 @@ onUnmounted(() => {
                   v-for="record in paginatedVisibleRecords"
                   :key="record.order.id"
                   class="cursor-pointer transition hover:bg-slate-50"
-                  :class="selectedOrder.id === record.order.id ? 'bg-slate-50 ring-1 ring-inset ring-slate-200' : ''"
+                  :class="selectedOrder.id === record.order.id ? 'bg-teal-50/70 ring-1 ring-inset ring-teal-200' : ''"
                   @click="openRecord(record)"
                 >
                   <td class="px-3 py-2.5 align-top">
@@ -3364,7 +4096,7 @@ onUnmounted(() => {
                     >
                   </td>
                   <td class="px-3 py-2.5 align-top">
-                    <button type="button" class="font-mono text-[12px] font-bold text-slate-900">
+                    <button type="button" class="min-h-8 rounded-md font-mono text-[12px] font-bold text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30">
                       {{ record.order.id }}
                     </button>
                     <div class="mt-0.5 text-[10px] text-slate-400">{{ record.order.order_number || '未填产品号' }}</div>
@@ -4169,9 +4901,9 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-          <div class="space-y-4">
-            <section class="rounded-lg border border-slate-200 bg-white">
+        <div class="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <div class="min-w-0 space-y-4">
+            <section class="min-w-0 rounded-lg border border-slate-200 bg-white">
               <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
                 <Table2 class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold">模具明细</span>
@@ -4179,12 +4911,21 @@ onUnmounted(() => {
                 <button
                   type="button"
                   class="ml-auto inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
-                  @click="isSelectedOrderDataExpanded = !isSelectedOrderDataExpanded"
+                  :aria-expanded="isSelectedOrderDataExpanded"
+                  aria-controls="molding-sample-full-data"
+                  @click="toggleSelectedOrderData"
                 >
                   {{ isSelectedOrderDataExpanded ? '收起完整数据' : '展开完整数据' }}
                 </button>
               </div>
-              <div class="overflow-x-auto">
+              <div
+                data-testid="molding-sample-detail-scroll-region"
+                class="sidebar-scrollbar overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 md:max-h-[min(62vh,640px)] md:overflow-auto"
+                role="region"
+                :aria-label="`模具明细，共 ${selectedItems.length} 项`"
+                tabindex="0"
+                @wheel="handoffWheelAtBoundary"
+              >
                 <table data-testid="molding-sample-detail-table" class="w-full min-w-[920px] table-fixed text-[12px]">
                   <colgroup>
                     <col class="w-[24%]" />
@@ -4193,7 +4934,7 @@ onUnmounted(() => {
                     <col class="w-[23%]" />
                     <col class="w-[8%]" />
                   </colgroup>
-                  <thead>
+                  <thead class="sticky top-0 z-10 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                     <tr class="border-b border-slate-200 bg-slate-50/80 text-[11px] text-slate-500">
                       <th scope="col" class="px-4 py-2.5 text-left font-semibold">模具资料</th>
                       <th scope="col" class="border-l border-slate-200/80 px-4 py-2.5 text-left font-semibold">原料 / 颜色</th>
@@ -4264,7 +5005,7 @@ onUnmounted(() => {
                         <div
                           v-if="canViewSelectedOrderCost"
                           data-testid="expected-material-cost-panel"
-                          class="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50/70"
+                          class="mt-3 overflow-clip rounded-lg border border-slate-200 bg-slate-50/70"
                         >
                           <div class="border-b border-slate-200 px-2.5 py-1.5 text-[9px] font-semibold text-slate-400">预计料费明细</div>
                           <div class="divide-y divide-slate-200/70 px-2.5">
@@ -4295,7 +5036,7 @@ onUnmounted(() => {
                         <div
                           v-if="canViewSelectedOrderCost"
                           data-testid="actual-material-cost-panel"
-                          class="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50/70"
+                          class="mt-3 overflow-clip rounded-lg border border-slate-200 bg-slate-50/70"
                         >
                           <div
                             data-testid="actual-material-cost-source"
@@ -4333,15 +5074,26 @@ onUnmounted(() => {
                   </tbody>
                 </table>
               </div>
+              <div
+                v-if="selectedItems.length > 3"
+                class="hidden items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-4 py-2 text-[10px] text-slate-500 md:flex"
+              >
+                <span>明细区域固定高度，可在区域内滚动查看全部模具。</span>
+                <span class="shrink-0 font-semibold tabular-nums">共 {{ selectedItems.length }} 项</span>
+              </div>
               <Transition
-                enter-active-class="transition duration-200 ease-out"
+                enter-active-class="transition duration-200 ease-out motion-reduce:transition-none"
                 enter-from-class="-translate-y-2 opacity-0"
                 enter-to-class="translate-y-0 opacity-100"
-                leave-active-class="transition duration-150 ease-in"
+                leave-active-class="transition duration-150 ease-in motion-reduce:transition-none"
                 leave-from-class="translate-y-0 opacity-100"
                 leave-to-class="-translate-y-2 opacity-0"
               >
-                <div v-if="isSelectedOrderDataExpanded" class="border-t border-slate-100 bg-slate-50/70 p-4">
+                <div
+                  v-if="isSelectedOrderDataExpanded"
+                  id="molding-sample-full-data"
+                  class="border-t border-slate-100 bg-slate-50/70 p-3 sm:p-4"
+                >
                   <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <h3 class="text-[13px] font-bold text-slate-950">完整单据数据</h3>
@@ -4391,69 +5143,227 @@ onUnmounted(() => {
                     </p>
                   </div>
 
-                  <div class="mt-3 space-y-2">
-                    <article
-                      v-for="item in selectedItems"
-                      :key="`full-${item.id}`"
-                      class="rounded-lg border border-slate-200 bg-white p-3"
+                  <div
+                    v-if="selectedFullItem"
+                    data-testid="molding-full-data-workspace"
+                    class="mt-4 grid min-h-0 gap-3 lg:h-[min(70vh,680px)] lg:min-h-[480px] lg:grid-cols-[240px_minmax(0,1fr)]"
+                  >
+                    <nav
+                      class="min-h-0 overflow-clip rounded-xl border border-slate-200 bg-white lg:flex lg:flex-col"
+                      aria-label="模具明细索引"
                     >
-                      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <div class="font-semibold text-slate-950">
-                          {{ item.sort_order }}. {{ item.mold_id }} · {{ item.mold_name }}
-                        </div>
-                        <span class="rounded-full border px-2 py-0.5 text-[10px] font-bold" :class="getItemStateClass(item)">
-                          {{ getItemState(item) }}
-                        </span>
-                      </div>
-                      <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                        <div><span class="text-slate-400">工模尺寸</span><div class="font-semibold">{{ formatBlank(item.mold_dimensions) }}</div></div>
-                        <div><span class="text-slate-400">模具是否在厂</span><div class="font-semibold">{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div></div>
+                      <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2.5">
                         <div>
-                          <span class="text-slate-400">原料 / 用料用途</span>
-                          <div class="font-semibold">{{ getMaterialCompositionLabel(item) }}</div>
-                          <div :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'">
-                            {{ item.material_usage_type === 'trial' ? '试料 · 金额不计结余' : '正式生产' }}
+                          <h4 class="text-[11px] font-bold text-slate-700">模具索引</h4>
+                          <p class="text-[10px] text-slate-400">选择一项查看完整资料</p>
+                        </div>
+                        <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">{{ selectedItems.length }} 项</span>
+                      </div>
+                      <div
+                        data-testid="molding-full-item-index"
+                        class="sidebar-scrollbar flex gap-1.5 overflow-x-auto overscroll-x-contain p-2 lg:grid lg:min-h-0 lg:flex-1 lg:auto-rows-max lg:content-start lg:grid-cols-1 lg:overflow-x-hidden lg:overflow-y-auto"
+                        @wheel="handoffWheelAtBoundary"
+                      >
+                        <button
+                          v-for="item in selectedItems"
+                          :key="`full-index-${item.id}`"
+                          type="button"
+                          data-testid="molding-full-item-selector"
+                          class="min-w-[210px] rounded-lg border px-2.5 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 lg:min-w-0"
+                          :class="selectedFullItem.id === item.id ? 'border-teal-300 bg-teal-50 text-teal-950 shadow-sm ring-1 ring-teal-100' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'"
+                          :aria-pressed="selectedFullItem.id === item.id"
+                          :aria-label="`查看第 ${item.sort_order} 项模具 ${item.mold_id} ${item.mold_name} 的完整资料`"
+                          @click="selectFullItem(item.id)"
+                        >
+                          <span class="flex items-start gap-2">
+                            <span
+                              class="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md px-1 text-[9px] font-bold"
+                              :class="selectedFullItem.id === item.id ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-500'"
+                            >
+                              {{ item.sort_order }}
+                            </span>
+                            <span class="min-w-0 flex-1">
+                              <span class="block break-all font-mono text-[11px] font-semibold">{{ item.mold_id }}</span>
+                              <span class="mt-0.5 block truncate text-[11px] opacity-80" :title="item.mold_name">{{ item.mold_name }}</span>
+                            </span>
+                            <ChevronRight
+                              class="mt-0.5 size-3.5 shrink-0"
+                              :class="selectedFullItem.id === item.id ? 'text-teal-600' : 'text-slate-400'"
+                              aria-hidden="true"
+                            />
+                          </span>
+                          <span class="mt-2 block truncate text-[10px] opacity-75" :title="getMaterialCompositionLabel(item)">
+                            {{ getMaterialCompositionLabel(item) }}
+                          </span>
+                          <span class="mt-1.5 flex items-center justify-between gap-2 text-[9px] tabular-nums opacity-75">
+                            <span>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }} 啤</span>
+                            <span>{{ formatWeight(item.required_material_kg) }} → {{ formatWeight(item.actual_weight_kg) }}</span>
+                          </span>
+                        </button>
+                      </div>
+                    </nav>
+
+                    <article
+                      data-testid="molding-full-item-card"
+                      class="min-h-0 min-w-0 overflow-clip rounded-xl border border-slate-200 bg-white shadow-sm lg:flex lg:flex-col"
+                    >
+                      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/80 px-3 py-2.5 lg:shrink-0">
+                        <div class="flex min-w-0 items-start gap-2.5">
+                          <span class="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-lg bg-slate-900 px-1.5 text-[10px] font-bold text-white">
+                            {{ selectedFullItem.sort_order }}
+                          </span>
+                          <div class="min-w-0">
+                            <div class="break-all font-mono text-[12px] font-semibold text-slate-950">{{ selectedFullItem.mold_id }}</div>
+                            <div class="mt-0.5 break-words text-[12px] font-semibold text-slate-700">{{ selectedFullItem.mold_name }}</div>
                           </div>
                         </div>
-                        <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
-                        <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
-                        <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
-                        <div v-if="canViewSelectedOrderCost">
-                          <span class="text-slate-400">预计料费(HKD)</span>
-                          <div
-                            v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
-                            :key="`full-expected-${item.id}-${componentIndex}`"
-                            class="mt-0.5 text-[11px] text-slate-600"
+                        <div class="flex flex-wrap items-center justify-end gap-1.5">
+                          <span
+                            class="rounded-full px-2 py-0.5 text-[9px] font-bold"
+                            :class="selectedFullItem.material_usage_type === 'trial' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'"
                           >
-                            {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatMoney(component.amount_hkd) }}
-                          </div>
-                          <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatMoney(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</div>
-                        </div>
-                        <div><span class="text-slate-400">需办日期</span><div class="font-semibold">{{ formatBlank(item.completion_time) }}</div></div>
-                        <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
-                        <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
-                        <div v-if="canViewSelectedOrderCost">
-                          <span class="text-slate-400">实际料费(HKD)</span>
-                          <div
-                            data-testid="actual-material-cost-source"
-                            class="mt-0.5 text-[10px] font-semibold"
-                            :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
-                          >
-                            {{ getActualMaterialCostSourceLabel(item) }}
-                          </div>
-                          <div
-                            v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
-                            :key="`full-actual-${item.id}-${componentIndex}`"
-                            class="mt-0.5 text-[11px] text-slate-600"
-                          >
-                            {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatMoney(component.amount_hkd) }}
-                          </div>
-                          <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatMoney(getActualMaterialCostTotal(item)) }}</div>
+                            {{ selectedFullItem.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}
+                          </span>
+                          <span class="rounded-full border px-2 py-0.5 text-[9px] font-bold" :class="getItemStateClass(selectedFullItem)">
+                            {{ getItemState(selectedFullItem) }}
+                          </span>
                         </div>
                       </div>
-                      <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
-                        备注：{{ formatBlank(item.notes) }}
-                      </p>
+                      <div
+                        ref="selectedFullItemDetailPane"
+                        data-testid="molding-full-item-detail-pane"
+                        class="sidebar-scrollbar p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 lg:min-h-0 lg:flex-1 lg:overflow-y-auto"
+                        role="region"
+                        :aria-label="`${selectedFullItem.mold_id} ${selectedFullItem.mold_name} 完整资料`"
+                        tabindex="0"
+                        @wheel="handoffWheelAtBoundary"
+                      >
+                        <div class="grid gap-3 md:grid-cols-2">
+                          <section data-testid="molding-full-item-metadata-section" class="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                            <h4 class="text-[11px] font-bold tracking-wide text-slate-500">模具资料</h4>
+                            <dl class="mt-2.5 grid gap-x-4 gap-y-2.5 sm:grid-cols-2">
+                              <div>
+                                <dt class="text-[10px] font-medium text-slate-500">工模尺寸</dt>
+                                <dd class="mt-0.5 break-words text-[12px] font-semibold text-slate-900">{{ formatBlank(selectedFullItem.mold_dimensions) }}</dd>
+                              </div>
+                              <div>
+                                <dt class="text-[10px] font-medium text-slate-500">模具是否在厂</dt>
+                                <dd class="mt-0.5 text-[12px] font-semibold text-slate-900">{{ formatMoldPresenceStatus(selectedFullItem.mold_presence_status) }}</dd>
+                              </div>
+                              <div>
+                                <dt class="text-[10px] font-medium text-slate-500">需办日期</dt>
+                                <dd class="mt-0.5 text-[12px] font-semibold tabular-nums text-slate-900">{{ formatBlank(selectedFullItem.completion_time) }}</dd>
+                              </div>
+                              <div>
+                                <dt class="text-[10px] font-medium text-slate-500">数量 / 啤数</dt>
+                                <dd class="mt-0.5 text-[12px] font-semibold tabular-nums text-slate-900">{{ formatBlank(selectedFullItem.quantity) }} / {{ formatBlank(selectedFullItem.shoot_qty) }}</dd>
+                              </div>
+                            </dl>
+                          </section>
+
+                          <section data-testid="molding-full-item-material-section" class="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                            <h4 class="text-[11px] font-bold tracking-wide text-slate-500">原料与颜色</h4>
+                            <dl class="mt-2.5 space-y-2.5">
+                              <div>
+                                <dt class="text-[10px] font-medium text-slate-500">原料配比</dt>
+                                <dd class="mt-0.5 break-words text-[12px] font-semibold leading-5 text-slate-900">{{ getMaterialCompositionLabel(selectedFullItem) }}</dd>
+                              </div>
+                              <div class="border-t border-slate-200 pt-2.5">
+                                <dt class="text-[10px] font-medium text-slate-500">颜色 / PMS</dt>
+                                <dd class="mt-0.5 break-words text-[12px] font-semibold text-slate-900">{{ formatBlank(selectedFullItem.color) }} / {{ formatBlank(selectedFullItem.pigment_no) }}</dd>
+                              </div>
+                            </dl>
+                          </section>
+                        </div>
+
+                        <section data-testid="molding-full-item-usage-section" class="mt-3 rounded-lg border border-slate-200 p-3">
+                          <h4 class="text-[11px] font-bold tracking-wide text-slate-500">用量概览</h4>
+                          <dl class="mt-2.5 grid gap-2 sm:grid-cols-3">
+                            <div class="rounded-lg bg-slate-50 px-3 py-2">
+                              <dt class="text-[10px] font-medium text-slate-500">预计用料</dt>
+                              <dd class="mt-0.5 text-[14px] font-bold tabular-nums text-slate-950">{{ formatWeight(selectedFullItem.required_material_kg) }}</dd>
+                            </div>
+                            <div class="rounded-lg bg-slate-50 px-3 py-2">
+                              <dt class="text-[10px] font-medium text-slate-500">领料重量</dt>
+                              <dd class="mt-0.5 text-[14px] font-bold tabular-nums text-slate-950">{{ formatWeight(selectedFullItem.collected_weight_kg) }}</dd>
+                            </div>
+                            <div class="rounded-lg bg-slate-900 px-3 py-2 text-white">
+                              <dt class="text-[10px] font-medium text-slate-300">实际用料</dt>
+                              <dd class="mt-0.5 text-[14px] font-bold tabular-nums">{{ formatWeight(selectedFullItem.actual_weight_kg) }}</dd>
+                            </div>
+                          </dl>
+                        </section>
+
+                        <section
+                          v-if="canViewSelectedOrderCost"
+                          data-testid="molding-full-item-cost-grid"
+                          class="mt-3 grid gap-3 lg:grid-cols-2"
+                        >
+                          <article data-testid="molding-full-item-expected-cost-panel" class="overflow-clip rounded-lg border border-slate-200">
+                            <div class="border-b border-slate-100 bg-slate-50 px-3 py-2">
+                              <h4 class="text-[11px] font-bold text-slate-600">预计料费(HKD)</h4>
+                              <p class="mt-0.5 text-[10px] text-slate-500">按预计用料与当前原料价计算</p>
+                            </div>
+                            <div class="divide-y divide-slate-100 px-3">
+                              <div
+                                v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(selectedFullItem).components"
+                                :key="`full-expected-${selectedFullItem.id}-${componentIndex}`"
+                                class="flex items-start justify-between gap-3 py-2"
+                              >
+                                <div class="min-w-0">
+                                  <div class="break-words text-[11px] font-semibold leading-4 text-slate-800">{{ component.material }}</div>
+                                  <div class="mt-0.5 text-[10px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                                </div>
+                                <div class="shrink-0 text-right tabular-nums">
+                                  <div class="text-[10px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                                  <div class="mt-0.5 text-[11px] font-semibold text-slate-900">{{ formatMoney(component.amount_hkd) }}</div>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-950">
+                              <span>预计合计</span>
+                              <span class="tabular-nums">{{ formatMoney(getExpectedMaterialCostBreakdown(selectedFullItem).total_amount_hkd) }}</span>
+                            </div>
+                          </article>
+
+                          <article data-testid="molding-full-item-actual-cost-panel" class="overflow-clip rounded-lg border border-slate-200">
+                            <div class="border-b border-slate-100 bg-slate-50 px-3 py-2">
+                              <h4 class="text-[11px] font-bold text-slate-600">实际料费(HKD)</h4>
+                              <p
+                                data-testid="actual-material-cost-source"
+                                class="mt-0.5 text-[10px] font-semibold"
+                                :class="getActualMaterialCostBreakdown(selectedFullItem).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
+                              >
+                                {{ getActualMaterialCostSourceLabel(selectedFullItem) }}
+                              </p>
+                            </div>
+                            <div class="divide-y divide-slate-100 px-3">
+                              <div
+                                v-for="(component, componentIndex) in getActualMaterialCostBreakdown(selectedFullItem).components"
+                                :key="`full-actual-${selectedFullItem.id}-${componentIndex}`"
+                                class="flex items-start justify-between gap-3 py-2"
+                              >
+                                <div class="min-w-0">
+                                  <div class="break-words text-[11px] font-semibold leading-4 text-slate-800">{{ component.material }}</div>
+                                  <div class="mt-0.5 text-[10px] text-slate-500">{{ getMaterialSourceLabel(component.source_type) }}</div>
+                                </div>
+                                <div class="shrink-0 text-right tabular-nums">
+                                  <div class="text-[10px] text-slate-500">{{ formatWeight(component.weight_kg) }}</div>
+                                  <div class="mt-0.5 text-[11px] font-semibold text-slate-900">{{ formatMoney(component.amount_hkd) }}</div>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-950">
+                              <span>实际合计</span>
+                              <span class="tabular-nums">{{ formatMoney(getActualMaterialCostTotal(selectedFullItem)) }}</span>
+                            </div>
+                          </article>
+                        </section>
+
+                        <p class="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-600">
+                          <span class="font-semibold text-slate-500">备注：</span>{{ formatBlank(selectedFullItem.notes) }}
+                        </p>
+                      </div>
                     </article>
                   </div>
                 </div>

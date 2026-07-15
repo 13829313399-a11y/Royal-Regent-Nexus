@@ -8,6 +8,9 @@ from app.schemas.molding_sample import (
     InventoryMovementOut,
     MaterialPricesResponse,
     MaterialPricesUpdateRequest,
+    MoldingSampleBoardPageResponse,
+    MoldingSampleBoardStatus,
+    MoldingSampleBoardSummaryResponse,
     MoldingSampleCreateRequest,
     MoldingSampleDetailResponse,
     MoldingSampleEditRequest,
@@ -48,9 +51,11 @@ from app.services.molding_sample import (
     ensure_molding_cost_read,
     ensure_permission_in_any_factory,
     get_exchange_rate,
+    get_board_summary,
     get_prices,
     list_inventory_batches,
     list_inventory_movements,
+    list_board_page,
     list_notifications,
     list_orders,
     list_problems,
@@ -161,6 +166,51 @@ def download_engineering_import_template(
         content=build_engineering_import_template(),
         media_type=XLSX_MIME,
         headers={"Content-Disposition": 'attachment; filename="engineering-molding-sample-import-template.xlsx"'},
+    )
+
+
+@router.get("/api/injection/board/page", response_model=MoldingSampleBoardPageResponse)
+def get_injection_board_page(
+    factory_id: str = Query(..., min_length=1),
+    board_status: MoldingSampleBoardStatus = Query(..., alias="status"),
+    q: str = "",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    orders, total, normalized_page, page_count = list_board_page(
+        db,
+        current_user,
+        factory_id=factory_id,
+        board_status=board_status,
+        keyword=q,
+        page=page,
+        page_size=page_size,
+    )
+    return MoldingSampleBoardPageResponse(
+        rows=[serialize_order(order, current_user) for order in orders],
+        total=total,
+        page=normalized_page,
+        page_size=page_size,
+        page_count=page_count,
+    )
+
+
+@router.get("/api/injection/board/summary", response_model=MoldingSampleBoardSummaryResponse)
+def get_injection_board_summary(
+    factory_id: str = Query(..., min_length=1),
+    q: str = "",
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return MoldingSampleBoardSummaryResponse.model_validate(
+        get_board_summary(
+            db,
+            current_user,
+            factory_id=factory_id,
+            keyword=q,
+        )
     )
 
 
