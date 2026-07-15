@@ -106,6 +106,11 @@ for (const requiredImplementation of [
   'queueDisplayMode',
   'filteredTaskPagination',
   'paginatedFilteredTaskEntries',
+  'productionSearchKeyword',
+  'productionSearchTokens',
+  'searchMatchedTaskEntries',
+  'tokenizeMoldingSampleSearchKeyword',
+  'matchesMoldingSampleSearch',
   'setQueuePage',
   'setQueueDisplayMode',
   'aria-label="啤办生产任务队列"',
@@ -124,12 +129,39 @@ assert.match(source, /total_material_cost/)
 assert.match(source, /selectedTask\.value\.order\.status === '已完成'[\s\S]*return activeItems\.value/)
 assert.match(source, /实际结算快照/)
 assert.match(source, /分项按当前原料价估算；合计以已存实际料费为准/)
+assert.match(source, /data-testid="production-fillback-list"/)
+assert.match(source, /data-testid="production-fillback-item"/)
+assert.match(source, /data-testid="production-fillback-usage-panel"[\s\S]*用量回填/)
+assert.match(source, /data-testid="production-fillback-cost-grid"/)
+assert.match(source, /data-testid="production-fillback-actual-cost-panel"/)
+assert.match(source, /data-testid="production-actual-weight-input"[\s\S]*:aria-label="`\$\{item\.mold_id\} 实际用料`"/)
+assert.match(source, /data-testid="production-fillback-actual-total"/)
+assert.match(source, /selectedReportSummary\?\.has_missing_actual_weight[\s\S]*全部模具已回填实际用料/)
+assert.match(source, /data-testid="production-fillback-summary"/)
+assert.match(source, /data-testid="production-full-item-card"/)
+assert.match(source, /data-testid="production-full-item-material-section"[\s\S]*原料与颜色/)
+assert.match(source, /data-testid="production-full-item-timing-section"[\s\S]*生产数量与时点/)
+assert.match(source, /data-testid="production-full-item-usage-section"[\s\S]*实际用量/)
+assert.match(source, /data-testid="production-full-item-cost-grid"/)
+assert.match(source, /data-testid="production-task-search-input"[\s\S]*type="search"[\s\S]*aria-label="模糊搜索生产任务"/)
+assert.match(source, /placeholder="搜索单号 \/ 产品 \/ 客户 \/ 模具 \/ 原料\.\.\."/)
+assert.match(source, /aria-label="清除生产任务搜索"[\s\S]*productionSearchKeyword = ''/)
+assert.doesNotMatch(source, /<table class="w-full min-w-\[860px\] text-\[12px\]">/)
 assert.match(source, /<\/main>\s*<section class="molding-sample-task-print-root hidden"/)
-assert.match(source, /#app > main \{ display: none !important; \}/)
+assert.match(source, /#app > :not\(\.molding-sample-task-print-root\) \{ display: none !important; \}/)
 assert.match(source, /body\.molding-sample-task-printing #app > \.molding-sample-task-print-root \{ display: block !important; position: static !important;/)
-assert.match(source, /@page \{ size: A4 landscape; margin: 7mm; \}/)
-assert.match(source, /min-height: 196mm/)
+assert.match(source, /body\.molding-sample-task-printing #app \{ min-height: 0 !important; height: auto !important;/)
+assert.match(source, /@page \{ size: A4 landscape; margin: 5mm; \}/)
+assert.doesNotMatch(source, /min-height: 196mm/)
+assert.match(source, /molding-sample-task-print-page \{[\s\S]*min-height: 0; height: auto;[\s\S]*break-inside: auto;/)
+assert.match(source, /molding-sample-task-print-table thead \{ display: table-header-group; \}/)
+assert.match(source, /molding-sample-task-print-table tr \{ break-inside: avoid-page; page-break-inside: avoid; \}/)
+assert.match(source, /taskPrintDensityClass/)
+assert.match(source, /molding-sample-task-print-page\.is-compact/)
 assert.match(source, /molding-sample-task-print-page\.is-dense/)
+assert.doesNotMatch(source, /molding-sample-task-print-footer/)
+assert.match(source, /formatMaterialComposition\(resolveMaterialComponents\(item\)\)/)
+assert.match(source, /试料 · 不计结余/)
 assert.doesNotMatch(source, /molding-sample-task-print-signatures/)
 assert.doesNotMatch(source, /molding-sample-task-print-handoff/)
 assert.doesNotMatch(source, /本任务单由工程部下发给啤机部执行/)

@@ -451,11 +451,16 @@ export function normalizeMaterialComponents(
     return []
   }
 
-  const rawParts = trimmedMaterial.split(/[+＋]/)
-  const hasLegacyCompositionSyntax = rawParts.length > 1 || /[%％]/.test(trimmedMaterial)
+  const normalizedMaterial = trimmedMaterial.replace(/＋/g, '+')
+  const hasLegacyCompositionSyntax = /^\s*\d+(?:\.\d+)?\s*[%％]/.test(normalizedMaterial)
   if (!hasLegacyCompositionSyntax) {
     return [{ material: trimmedMaterial, source_type: 'virgin', ratio_percent: 100 }]
   }
+  if (normalizedMaterial.trimEnd().endsWith('+')) {
+    return []
+  }
+
+  const rawParts = normalizedMaterial.split(/\+\s*(?=\d+(?:\.\d+)?\s*[%％])/)
 
   const parsedParts = rawParts.map((part) => {
     const match = part.trim().match(/^(\d+(?:\.\d+)?)\s*[%％]\s*(.+)$/)

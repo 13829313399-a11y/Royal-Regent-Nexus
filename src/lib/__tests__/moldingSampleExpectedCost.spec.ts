@@ -104,6 +104,19 @@ describe('molding sample expected material cost', () => {
     }
   })
 
+  it('keeps plus signs and embedded percentages inside material grade names', () => {
+    expect(normalizeMaterialComponents('PC+ABS')).toEqual([
+      { material: 'PC+ABS', source_type: 'virgin', ratio_percent: 100 },
+    ])
+    expect(normalizeMaterialComponents('PA66+30%GF')).toEqual([
+      { material: 'PA66+30%GF', source_type: 'virgin', ratio_percent: 100 },
+    ])
+    expect(normalizeMaterialComponents('80%PC+ABS + 20%水口料')).toEqual([
+      { material: 'PC+ABS', source_type: 'virgin', ratio_percent: 80 },
+      { material: 'PC+ABS', source_type: 'runner', ratio_percent: 20 },
+    ])
+  })
+
   it('still calculates material fees for trial usage', () => {
     expect(calculateExpectedMaterialAmountHkd({
       ...baseItem,

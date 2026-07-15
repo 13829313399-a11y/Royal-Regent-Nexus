@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const source = readFileSync(join(process.cwd(), 'src/views/MoldingSampleView.vue'), 'utf8')
+const searchSource = readFileSync(join(process.cwd(), 'src/lib/moldingSampleSearch.ts'), 'utf8')
 
 for (const requiredCopy of [
   '啤办单管理',
@@ -104,6 +105,8 @@ for (const requiredImplementation of [
   'formatSignedWeight',
   'formatSignedMoney',
   'selectedFactoryId',
+  'tokenizeMoldingSampleSearchKeyword',
+  'matchesMoldingSampleSearch',
   'productionTaskRoute',
   'apiRecords',
   'apiState',
@@ -286,6 +289,19 @@ assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*模具资�
 assert.match(source, /data-testid="molding-sample-detail-row"/)
 assert.match(source, /data-testid="expected-material-cost-panel"/)
 assert.match(source, /data-testid="actual-material-cost-panel"/)
+assert.match(source, /data-testid="molding-full-item-card"/)
+assert.match(source, /data-testid="molding-full-item-metadata-section"[\s\S]*模具资料/)
+assert.match(source, /data-testid="molding-full-item-material-section"[\s\S]*原料与颜色/)
+assert.match(source, /data-testid="molding-full-item-usage-section"[\s\S]*用量概览/)
+assert.match(source, /data-testid="molding-full-item-cost-grid"/)
+assert.match(source, /data-testid="molding-full-item-expected-cost-panel"[\s\S]*预计料费\(HKD\)/)
+assert.match(source, /data-testid="molding-full-item-actual-cost-panel"[\s\S]*实际料费\(HKD\)/)
+assert.match(source, /data-testid="molding-sample-search-input"[\s\S]*type="search"[\s\S]*aria-label="模糊搜索啤办单"/)
+assert.match(source, /placeholder="搜索单号 \/ 产品 \/ 客户 \/ 模具 \/ 原料\.\.\."/)
+assert.match(source, /aria-label="清除搜索"[\s\S]*searchKeyword = ''/)
+assert.match(searchSource, /normalizeMoldingSampleSearchValue/)
+assert.match(searchSource, /buildMoldingSampleSearchValues/)
+assert.match(searchSource, /tokens\.every\(\(token\) => searchValues\.some\(\(value\) => value\.includes\(token\)\)\)/)
 assert.match(source, /return components\.length \? formatMaterialComposition\(components\) : formatBlank\(item\.material\)/)
 assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*工模尺寸[\s\S]*模具在厂[\s\S]*需办日期/)
 assert.doesNotMatch(source, /data-testid="molding-sample-detail-table"[\s\S]*回厂时间/)

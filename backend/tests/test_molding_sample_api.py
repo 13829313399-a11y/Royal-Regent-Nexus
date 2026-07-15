@@ -673,6 +673,11 @@ def test_legacy_material_parser_is_strict_and_accepts_single_full_ratio_segment(
     assert molding_service.parse_legacy_material_components("100%ABS") == [
         {"material": "ABS", "ratio_percent": 100.0, "source_type": "virgin"}
     ]
+    assert molding_service.parse_legacy_material_components("80%PC+ABS + 20%水口料") == [
+        {"material": "PC+ABS", "ratio_percent": 80.0, "source_type": "virgin"},
+        {"material": "PC+ABS", "ratio_percent": 20.0, "source_type": "runner"},
+    ]
+    assert molding_service.parse_legacy_material_components("PA66+30%GF") == []
     assert molding_service.parse_legacy_material_components("80%ABS+错误段") is None
     assert molding_service.parse_legacy_material_components("80%ABS+19%PVC水口料") is None
     assert molding_service.parse_legacy_material_components("80%ABS+0%PVC水口料") is None
@@ -2278,6 +2283,8 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
 
     with ZipFile(BytesIO(response.content)) as workbook:
         sheet_xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        guide_xml = workbook.read("xl/worksheets/sheet2.xml").decode("utf-8")
+        workbook_xml = workbook.read("xl/workbook.xml").decode("utf-8")
 
     for current_manual_header in [
         "模具编号",
@@ -2305,6 +2312,27 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
     assert "毛重g" not in sheet_xml
     assert "预计料费HKD" not in sheet_xml
     assert '<autoFilter ref="A8:N8"/>' in sheet_xml
+    assert '<dimension ref="A1:N38"/>' in sheet_xml
+    assert '<row r="38">' in sheet_xml
+    assert '<dataValidations count="2">' in sheet_xml
+    assert 'sqref="L9:L38"' in sheet_xml
+    assert '<formula1>"在厂,不在厂,待确认"</formula1>' in sheet_xml
+    assert 'sqref="M9:M38"' in sheet_xml
+    assert '<formula1>"正式生产,试料"</formula1>' in sheet_xml
+
+    assert '<sheet name="啤办单" sheetId="1" r:id="rId1"/>' in workbook_xml
+    assert '<sheet name="填写说明" sheetId="2" r:id="rId2"/>' in workbook_xml
+    for guide_text in [
+        "字段映射",
+        "80%ABS PA-757 + 20%ABS PA-757水口料",
+        "80%ABS PA-757 + 20%水口料",
+        "80%ABS PA-757 + 20%PVC 90度（本白,普通）水口料",
+        "同一种原料",
+        "不同原料",
+        "试料不计入物料结余",
+        "原料价格、预计料费、实际用料和实际料费由系统维护",
+    ]:
+        assert guide_text in guide_xml
 
 
 def test_parse_molding_sample_excel_accepts_current_engineering_headers():
@@ -2339,6 +2367,9 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
     assert parsed.items[0].mold_id == "P50002008-01-01"
     assert parsed.items[0].mold_presence_status == "in_factory"
     assert parsed.items[0].material == "PP（AV161）"
+    assert [component.model_dump() for component in parsed.items[0].material_components] == [
+        {"material": "PP（AV161）", "ratio_percent": 100.0, "source_type": "virgin"}
+    ]
     assert parsed.items[0].color == "黑色 / PMS Black C"
     assert parsed.items[0].required_material_kg == 15
     assert parsed.items[0].mold_return_time == ""
@@ -2346,6 +2377,94 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
     assert parsed.items[0].machine_type == ""
     assert parsed.items[0].gross_weight_g is None
     assert parsed.items[0].material_usage_type == "trial"
+
+
+def test_parse_molding_sample_excel_builds_and_canonicalizes_multi_material_components():
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    current_rows = [
+        ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
+        ["客户", "ShuShuPaPa", "产品编号", "P50002008", "产品名称", "多原料映射测试"],
+        ["开单日期", "2026/07/15", "阶段", "T0", "填写部", "工程部"],
+        ["发至", "内部", "审核主管", "杨敬作", "落单人", "工程A"],
+        ["注意事项", "多原料测试"],
+        [],
+        [],
+        [
+            "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
+            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "用料用途", "备注",
+        ],
+        [
+            "M-MIX-001", "混料模具", "80%ABS PA-757 + 20%PVC 90度（本白,普通）水口料",
+            "黑色", "Black C", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+        ],
+        [
+            "M-MIX-002", "同料水口模具", "80%ABS PA-757 + 20%水口料",
+            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+        ],
+        [
+            "M-SINGLE-003", "加号单料模具", "PC+ABS",
+            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+        ],
+        [
+            "M-MIX-004", "加号混料模具", "80%PC+ABS + 20%水口料",
+            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+        ],
+        [
+            "M-SINGLE-005", "含百分号单料模具", "PA66+30%GF",
+            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+        ],
+    ]
+
+    parsed = excel_service.parse_order_excel(
+        excel_service._build_workbook(excel_service._sheet_xml(current_rows, header_row_index=8))
+    )
+
+    assert parsed.items[0].material == "80% ABS PA-757 + 20% PVC 90度（本白,普通） 水口料"
+    assert [component.model_dump() for component in parsed.items[0].material_components] == [
+        {"material": "ABS PA-757", "ratio_percent": 80.0, "source_type": "virgin"},
+        {"material": "PVC 90度（本白,普通）", "ratio_percent": 20.0, "source_type": "runner"},
+    ]
+    assert parsed.items[1].material == "80% ABS PA-757 + 20% ABS PA-757 水口料"
+    assert [component.model_dump() for component in parsed.items[1].material_components] == [
+        {"material": "ABS PA-757", "ratio_percent": 80.0, "source_type": "virgin"},
+        {"material": "ABS PA-757", "ratio_percent": 20.0, "source_type": "runner"},
+    ]
+    assert parsed.items[2].material == "PC+ABS"
+    assert [component.model_dump() for component in parsed.items[2].material_components] == [
+        {"material": "PC+ABS", "ratio_percent": 100.0, "source_type": "virgin"}
+    ]
+    assert parsed.items[3].material == "80% PC+ABS + 20% PC+ABS 水口料"
+    assert [component.model_dump() for component in parsed.items[3].material_components] == [
+        {"material": "PC+ABS", "ratio_percent": 80.0, "source_type": "virgin"},
+        {"material": "PC+ABS", "ratio_percent": 20.0, "source_type": "runner"},
+    ]
+    assert parsed.items[4].material == "PA66+30%GF"
+    assert [component.model_dump() for component in parsed.items[4].material_components] == [
+        {"material": "PA66+30%GF", "ratio_percent": 100.0, "source_type": "virgin"}
+    ]
+
+
+def test_parse_molding_sample_excel_reports_invalid_engineering_material_row_number():
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    current_rows = [
+        ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
+        ["客户", "ShuShuPaPa", "产品编号", "P50002008", "产品名称", "多原料格式错误测试"],
+        ["开单日期", "2026/07/15", "阶段", "T0", "填写部", "工程部"],
+        ["发至", "内部", "审核主管", "杨敬作", "落单人", "工程A"],
+        ["注意事项", ""],
+        [],
+        [],
+        [
+            "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
+            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "用料用途", "备注",
+        ],
+        ["M-BAD-001", "错误混料", "80%ABS PA-757 + 错误段", "", "", "", "1", 10, 10, "", "", "在厂", "正式生产", ""],
+    ]
+
+    with pytest.raises(ValueError, match="Excel 第 9 行.*所需用料.*比例合计必须为 100%"):
+        excel_service.parse_order_excel(
+            excel_service._build_workbook(excel_service._sheet_xml(current_rows, header_row_index=8))
+        )
 
 
 def test_excel_expected_material_amount_uses_component_prices():
@@ -2537,7 +2656,10 @@ def test_import_huaxing_engineering_molding_sample_template(client):
     assert first_item["sort_order"] == 1
     assert first_item["mold_id"] == "P50002008-01-01"
     assert first_item["mold_name"] == "30寸黑武士-头盔"
-    assert first_item["material"] == "PP（AV161）"
+    assert first_item["material"] == "100% PP（AV161）"
+    assert first_item["material_components"] == [
+        {"material": "PP（AV161）", "ratio_percent": 100.0, "source_type": "virgin"}
+    ]
     assert first_item["color"] == "黑色 / PMS Black C"
     assert first_item["pigment_no"] == "黑种"
     assert first_item["quantity"] == "2"

@@ -9,7 +9,11 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.models.molding_sample import MoldingSampleMaterialPrice, MoldingSampleOrder
 from app.schemas.molding_sample import MoldingSampleCreateRequest, MoldingSampleItemIn, MoldingSampleOrderIn
-from app.services.molding_sample import calculate_material_amount_hkd
+from app.services.molding_sample import (
+    calculate_material_amount_hkd,
+    canonical_material_display,
+    parse_legacy_material_components,
+)
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 SHEET_NAME = "啤办单"
@@ -458,21 +462,56 @@ def build_engineering_import_template() -> bytes:
     """
 
     last_column = _column_name(len(ENGINEERING_IMPORT_COLUMNS))
+    detail_start_row = 9
+    detail_end_row = detail_start_row + 30 - 1
     rows: list[list[object | None]] = [
         ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
         ["客户", "", "产品编号", "", "产品名称", ""],
         ["开单日期", "", "阶段", "T0", "填写部", "工程部"],
         ["发至", "内部", "审核主管", "", "落单人", ""],
         ["注意事项", ""],
-        ["填写说明：每一行代表一项模具明细；原料价格由系统按“所需用料”自动带出，不需填写；所需用料(kg)请直接填写；模具状态请选在厂、不在厂或待确认；用料用途请填正式生产或试料，留空按正式生产处理。"],
+        ["填写说明：基础资料填在上方；每一行代表一项模具明细；多原料请按“比例%原料 + 比例%原料水口料”填写；完整规则和例子请查看“填写说明”工作表。"],
         [],
         [label for label, _ in ENGINEERING_IMPORT_COLUMNS],
-        ["" for _ in ENGINEERING_IMPORT_COLUMNS],
+        *[["" for _ in ENGINEERING_IMPORT_COLUMNS] for _ in range(30)],
     ]
     style_matrix: dict[tuple[int, int], int] = {}
     for column_index in range(1, len(ENGINEERING_IMPORT_COLUMNS) + 1):
         style_matrix[(8, column_index)] = DETAIL_HEADER_STYLE_ID
-        style_matrix[(9, column_index)] = DETAIL_BODY_STYLE_ID
+        for row_index in range(detail_start_row, detail_end_row + 1):
+            style_matrix[(row_index, column_index)] = DETAIL_BODY_STYLE_ID
+
+    guide_rows: list[list[object | None]] = [
+        ["工程部啤办单导入模板 · 填写说明与字段映射"],
+        ["区域", "表格字段", "填写方式 / 字段映射", "业务规则与例子"],
+        ["基础资料", "客户", "填写在 B2", "对应新建啤办单的“客户”"],
+        ["基础资料", "产品编号", "填写在 D2", "对应新建啤办单的“产品编号”"],
+        ["基础资料", "产品名称", "填写在 F2", "对应新建啤办单的“产品名称”"],
+        ["基础资料", "开单日期", "填写在 B3", "建议使用 YYYY-MM-DD；系统也兼容 YYYY/MM/DD"],
+        ["基础资料", "阶段 / 填写部", "填写在 D3 / F3", "默认阶段 T0、填写部 工程部"],
+        ["基础资料", "发至 / 审核主管 / 落单人", "填写在 B4 / D4 / F4", "分别映射新建单的发至、审核主管、落单人"],
+        ["基础资料", "注意事项", "填写在 B5", "映射新建单的注意事项 / 开单事由"],
+        ["模具明细", "模具编号、模具名称", "每个模具占一行", "第 9 至 38 行可直接填写，共预留 30 行"],
+        ["模具明细", "所需用料", "填写单一原料名称，或在同一格填写完整比例组成", "单料例：ABS PA-757"],
+        ["多原料", "同一种原料 + 水口料", "例：80%ABS PA-757 + 20%ABS PA-757水口料", "10kg 表示 8kg 原料 + 2kg 同料水口；同一种原料均按 ABS PA-757 价格计算"],
+        ["多原料", "同料水口简写", "也可写：80%ABS PA-757 + 20%水口料", "水口料未写原料名时，系统自动继承前面的 ABS PA-757"],
+        ["多原料", "不同原料 + 水口料", "例：80%ABS PA-757 + 20%PVC 90度（本白,普通）水口料", "10kg 表示 8kg ABS + 2kg PVC 水口；不同原料按各自价格分别计算后合计"],
+        ["多原料", "比例规则", "每段必须是“比例%原料”，各段用 + 分隔", "比例合计必须为 100%；水口料段请以“水口”或“水口料”结尾"],
+        ["模具明细", "颜色 / PMS / 色粉", "分别填写颜色、PMS 和色粉", "PMS 会与颜色共同显示，色粉单独保存"],
+        ["模具明细", "啤/套 / 啤数", "分别填写每套啤数说明和啤数", "啤数请填写数字"],
+        ["模具明细", "所需用料(kg)", "直接填写本行模具所需总重量", "多原料时系统按各成分比例拆分重量"],
+        ["模具明细", "需办日期", "建议使用 YYYY-MM-DD", "映射明细的需办 / 完成日期"],
+        ["模具明细", "工模尺寸", "直接填写尺寸", "例如 207*789 或 650 × 450 × 380 mm"],
+        ["模具明细", "模具状态（是否在厂）", "使用下拉选择：在厂 / 不在厂 / 待确认", "留空按待确认处理"],
+        ["模具明细", "用料用途", "使用下拉选择：正式生产 / 试料", "试料不计入物料结余；留空按正式生产处理"],
+        ["模具明细", "备注", "填写本行补充信息", "不影响用料比例及费用计算"],
+        ["系统维护", "价格、费用与实际回填", "无需在导入模板填写", "原料价格、预计料费、实际用料和实际料费由系统维护"],
+    ]
+    guide_style_matrix = {
+        (row_index, column_index): DETAIL_BODY_STYLE_ID
+        for row_index in range(3, len(guide_rows) + 1)
+        for column_index in range(1, 5)
+    }
 
     return _build_workbook(
         _sheet_xml(
@@ -481,7 +520,23 @@ def build_engineering_import_template() -> bytes:
             header_row_index=8,
             style_matrix=style_matrix,
             merge_ranges=[f"A1:{last_column}1", "B5:F5", f"A6:{last_column}6"],
+            data_validations=[
+                (f"L{detail_start_row}:L{detail_end_row}", ["在厂", "不在厂", "待确认"], "请选择在厂状态"),
+                (f"M{detail_start_row}:M{detail_end_row}", ["正式生产", "试料"], "请选择用料用途"),
+            ],
         ),
+        additional_sheets=[
+            (
+                "填写说明",
+                _sheet_xml(
+                    guide_rows,
+                    column_widths=[18, 28, 58, 86],
+                    header_row_index=2,
+                    style_matrix=guide_style_matrix,
+                    merge_ranges=["A1:D1"],
+                ),
+            )
+        ],
     )
 
 
@@ -629,17 +684,22 @@ def _build_single_export_total_row(order: MoldingSampleOrder, missing_count: int
     return row
 
 
-def _build_workbook(sheet_xml: str) -> bytes:
+def _build_workbook(
+    sheet_xml: str,
+    additional_sheets: list[tuple[str, str]] | None = None,
+) -> bytes:
+    sheets = [(SHEET_NAME, sheet_xml), *(additional_sheets or [])]
     buffer = BytesIO()
     with ZipFile(buffer, "w", ZIP_DEFLATED) as workbook:
-        workbook.writestr("[Content_Types].xml", _content_types_xml())
+        workbook.writestr("[Content_Types].xml", _content_types_xml(len(sheets)))
         workbook.writestr("_rels/.rels", _root_rels_xml())
         workbook.writestr("docProps/app.xml", _app_xml())
         workbook.writestr("docProps/core.xml", _core_xml())
-        workbook.writestr("xl/workbook.xml", _workbook_xml())
-        workbook.writestr("xl/_rels/workbook.xml.rels", _workbook_rels_xml())
+        workbook.writestr("xl/workbook.xml", _workbook_xml([name for name, _ in sheets]))
+        workbook.writestr("xl/_rels/workbook.xml.rels", _workbook_rels_xml(len(sheets)))
         workbook.writestr("xl/styles.xml", _styles_xml())
-        workbook.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        for sheet_index, (_, current_sheet_xml) in enumerate(sheets, start=1):
+            workbook.writestr(f"xl/worksheets/sheet{sheet_index}.xml", current_sheet_xml)
 
     return buffer.getvalue()
 
@@ -687,7 +747,10 @@ def parse_order_excel(
         if (field := _item_field_for_header(header))
     }
     items: list[MoldingSampleItemIn] = []
-    for row in rows[detail_header_index + 1 :]:
+    for excel_row_number, row in enumerate(
+        rows[detail_header_index + 1 :],
+        start=detail_header_index + 2,
+    ):
         if not any(str(value or "").strip() for value in row):
             continue
         if _row_contains_order_metadata(row):
@@ -739,6 +802,15 @@ def parse_order_excel(
         if note_parts:
             item_data["notes"] = "；".join(note_parts)
 
+        material = str(item_data.get("material") or "").strip()
+        material, material_components = _parse_import_material_components(
+            material,
+            excel_row_number=excel_row_number,
+            strict=uses_current_engineering_detail_contract,
+        )
+        item_data["material"] = material
+        item_data["material_components"] = material_components
+
         if order_id_override or not str(item_data.get("id") or "").strip():
             item_data["id"] = f"{order_id}-{item_number:03d}"
         if _parse_int(item_data.get("sort_order", "")) <= 0:
@@ -749,6 +821,49 @@ def parse_order_excel(
         raise ValueError("Excel 未识别到啤办明细行")
 
     return MoldingSampleCreateRequest(order=MoldingSampleOrderIn(**order_data), items=items)
+
+
+def _parse_import_material_components(
+    material: str,
+    *,
+    excel_row_number: int,
+    strict: bool,
+) -> tuple[str, list[dict[str, object]]]:
+    """Normalize the one-cell engineering material contract into components.
+
+    Current engineering workbooks fail fast when a value visibly attempts the
+    percentage composition syntax but cannot be parsed.  A plus sign without a
+    percentage can be part of a single material name (for example ``PC+ABS``).
+    Formal legacy exports keep their historical permissive behavior so old
+    round trips are still accepted.
+    """
+
+    normalized_material = material.strip()
+    if not normalized_material:
+        return "", []
+
+    parsed_components = parse_legacy_material_components(normalized_material)
+    if parsed_components:
+        return canonical_material_display(parsed_components), parsed_components
+
+    has_composition_marker = bool(
+        re.match(r"^\s*\d+(?:\.\d+)?\s*[%％]", normalized_material)
+    )
+    if has_composition_marker:
+        if strict:
+            raise ValueError(
+                f"Excel 第 {excel_row_number} 行“所需用料”格式错误："
+                "每段须按“比例%原料”填写并用 + 分隔，比例合计必须为 100%"
+            )
+        return normalized_material, []
+
+    return normalized_material, [
+        {
+            "material": normalized_material,
+            "ratio_percent": 100.0,
+            "source_type": "virgin",
+        }
+    ]
 
 
 def _read_first_sheet_rows(workbook_bytes: bytes) -> list[list[str]]:
@@ -1023,6 +1138,7 @@ def _sheet_xml(
     header_row_index: int = DETAIL_HEADER_ROW_INDEX,
     style_matrix: dict[tuple[int, int], int] | None = None,
     merge_ranges: list[str] | None = None,
+    data_validations: list[tuple[str, list[str], str]] | None = None,
 ) -> str:
     widths = column_widths or ITEM_COLUMN_WIDTHS
     row_xml = []
@@ -1050,6 +1166,24 @@ def _sheet_xml(
             + "</mergeCells>"
         )
 
+    data_validations_xml = ""
+    if data_validations:
+        validation_entries: list[str] = []
+        for cell_range, options, prompt in data_validations:
+            option_list = f'"{_escape_xml(",".join(options))}"'
+            validation_entries.append(
+                '<dataValidation type="list" allowBlank="1" showInputMessage="1" '
+                'showErrorMessage="1" errorStyle="stop" '
+                f'sqref="{_escape_xml(cell_range)}" promptTitle="填写提示" '
+                f'prompt="{_escape_xml(prompt)}" errorTitle="填写错误" '
+                f'error="{_escape_xml(prompt)}"><formula1>{option_list}</formula1></dataValidation>'
+            )
+        data_validations_xml = (
+            f'<dataValidations count="{len(validation_entries)}">'
+            + "".join(validation_entries)
+            + "</dataValidations>"
+        )
+
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
@@ -1064,6 +1198,7 @@ def _sheet_xml(
         f"<sheetData>{''.join(row_xml)}</sheetData>"
         f'<autoFilter ref="A{header_row_index}:{last_column}{header_row_index}"/>'
         f"{merge_cells_xml}"
+        f"{data_validations_xml}"
         '<pageMargins left="0.35" right="0.35" top="0.55" bottom="0.55" header="0.2" footer="0.2"/>'
         '<pageSetup orientation="landscape" paperSize="9" fitToWidth="1" fitToHeight="0"/>'
         "</worksheet>"
@@ -1145,14 +1280,19 @@ def _escape_xml(value: str) -> str:
     )
 
 
-def _content_types_xml() -> str:
+def _content_types_xml(sheet_count: int = 1) -> str:
+    worksheet_overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{sheet_index}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for sheet_index in range(1, sheet_count + 1)
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        f"{worksheet_overrides}"
         '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
         '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
         '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
@@ -1171,22 +1311,33 @@ def _root_rels_xml() -> str:
     )
 
 
-def _workbook_xml() -> str:
+def _workbook_xml(sheet_names: list[str] | None = None) -> str:
+    resolved_sheet_names = sheet_names or [SHEET_NAME]
+    sheets_xml = "".join(
+        f'<sheet name="{_escape_xml(sheet_name)}" sheetId="{sheet_index}" r:id="rId{sheet_index}"/>'
+        for sheet_index, sheet_name in enumerate(resolved_sheet_names, start=1)
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        f'<sheets><sheet name="{SHEET_NAME}" sheetId="1" r:id="rId1"/></sheets>'
+        f"<sheets>{sheets_xml}</sheets>"
         "</workbook>"
     )
 
 
-def _workbook_rels_xml() -> str:
+def _workbook_rels_xml(sheet_count: int = 1) -> str:
+    worksheet_relationships = "".join(
+        f'<Relationship Id="rId{sheet_index}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet{sheet_index}.xml"/>'
+        for sheet_index in range(1, sheet_count + 1)
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
-        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        f"{worksheet_relationships}"
+        f'<Relationship Id="rId{sheet_count + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
         "</Relationships>"
     )
 
