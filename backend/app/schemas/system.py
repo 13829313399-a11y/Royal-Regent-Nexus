@@ -10,6 +10,7 @@ class RoleAssignmentRequest(BaseModel):
 class RegistrationApproveRequest(BaseModel):
     role_assignments: list[RoleAssignmentRequest]
     review_comment: str = ""
+    position: str | None = None
 
 
 class RegistrationRejectRequest(BaseModel):

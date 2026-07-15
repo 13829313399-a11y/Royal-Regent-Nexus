@@ -37,7 +37,7 @@ function seedUser() {
     profile: {
       primary_factory_id: 'huaxing',
       primary_department: 'engineering',
-      position: '工程师',
+      position: '工程部技术员',
       confirmation_status: 'confirmed',
     },
     force_password_change: false,
@@ -121,7 +121,7 @@ describe('AccountMenu', () => {
     expect(wrapper.text()).toContain('部门')
     expect(wrapper.text()).toContain('工程部')
     expect(wrapper.text()).toContain('职位')
-    expect(wrapper.text()).toContain('工程师')
+    expect(wrapper.text()).toContain('工程部技术员')
   })
 
   it('does not show authorization scopes or role bindings as registered profile data', async () => {
@@ -138,7 +138,7 @@ describe('AccountMenu', () => {
       profile: {
         primary_factory_id: 'huaxing',
         primary_department: 'engineering',
-        position: '工程师',
+        position: '工程部技术员',
         confirmation_status: 'confirmed',
       },
       force_password_change: false,
@@ -150,7 +150,7 @@ describe('AccountMenu', () => {
 
     expect(wrapper.text()).toContain('华兴')
     expect(wrapper.text()).toContain('工程部')
-    expect(wrapper.text()).toContain('工程师')
+    expect(wrapper.text()).toContain('工程部技术员')
     expect(wrapper.text()).not.toContain('全部厂区')
     expect(wrapper.text()).not.toContain('全部部门')
     expect(wrapper.text()).not.toContain('集团啤办员')

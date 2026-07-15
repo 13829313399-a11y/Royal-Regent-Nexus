@@ -42,6 +42,7 @@ const passwordInputMessage = ref('')
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
 const passwordChineseMessage = '密码不能包含中文，请使用英文、数字或符号'
+const brandLogoUrl = '/brand/huadeng_group_dynamic_logo.svg'
 
 const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
 const departmentOptions = computed(() => departments.filter((item) => item.id !== 'overview'))
@@ -133,7 +134,7 @@ async function submitRegistration() {
 
           <div class="relative z-10 flex items-center gap-3">
             <span class="flex size-14 items-center justify-center rounded-xl bg-white/95 p-2 text-teal-700 shadow-lg shadow-black/20">
-              <img src="/brand/huadeng_group_dynamic_logo.svg" alt="华登集团" class="h-full w-full object-contain">
+              <img :src="brandLogoUrl" alt="华登集团" class="h-full w-full object-contain">
             </span>
             <div>
               <p class="text-[17px] font-bold">Royal Regent Nexus</p>
@@ -279,9 +280,15 @@ async function submitRegistration() {
               <span>职位 <b>*</b></span>
               <span class="control">
                 <BriefcaseBusiness class="control-icon" aria-hidden="true" />
-                <input v-model="position" placeholder="例如 工程师、QA 检验员、啤机文员" type="text">
+                <input
+                  v-model="position"
+                  autocomplete="organization-title"
+                  maxlength="128"
+                  placeholder="例如 工程部技术员、QA 检验员、啤机文员"
+                  type="text"
+                >
               </span>
-              <small>管理员将根据职位推荐系统角色，通过审批前可调整。</small>
+              <small>请填写真实职位。职位用于个人资料展示，不会被系统角色名称覆盖；管理员会在审批时核验或修正。</small>
             </label>
 
             <div class="submit-row">

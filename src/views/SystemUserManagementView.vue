@@ -36,6 +36,7 @@ import {
 } from '@/api/system'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import { departmentMap, departments, factoryContexts } from '@/data/enterpriseMock'
+import { getPositionSuggestions } from '@/data/positionCatalog'
 import { getApiErrorMessage } from '@/lib/http'
 import { useRoute } from 'vue-router'
 
@@ -46,6 +47,7 @@ const users = ref<UserResponse[]>([])
 const roles = ref<RoleResponse[]>([])
 const systemNotifications = ref<SystemNotificationResponse[]>([])
 const selectedRoles = ref<Record<string, string>>({})
+const approvalPositions = ref<Record<string, string>>({})
 const approvalComments = ref<Record<string, string>>({})
 const rejectComments = ref<Record<string, string>>({})
 const userSearch = ref('')
@@ -207,6 +209,9 @@ const passwordResetRequests = computed(() =>
 )
 const selectedRequest = computed(() =>
   requests.value.find((request) => request.id === selectedRequestId.value) ?? requests.value[0] ?? null,
+)
+const selectedPositionSuggestions = computed(() =>
+  getPositionSuggestions(selectedRequest.value?.department ?? ''),
 )
 const factoryScopesForSelectedRequest = computed(() => {
   const request = selectedRequest.value
@@ -459,6 +464,12 @@ async function loadData() {
       systemApi.listNotifications(),
     ])
     requests.value = pendingRequests
+    approvalPositions.value = Object.fromEntries(
+      pendingRequests.map((request) => [
+        request.id,
+        approvalPositions.value[request.id] ?? request.position,
+      ]),
+    )
     users.value = loadedUsers
     roles.value = loadedRoles
     systemNotifications.value = loadedNotifications
@@ -471,6 +482,16 @@ async function loadData() {
 }
 
 async function approveRequest(request: RegistrationRequestResponse) {
+  const approvedPosition = (approvalPositions.value[request.id] ?? request.position).trim()
+  if (!approvedPosition) {
+    errorMessage.value = '请输入确认职位'
+    return
+  }
+  if (approvedPosition.length > 128) {
+    errorMessage.value = '职位不能超过 128 个字符'
+    return
+  }
+
   const roleId = getSelectedRoleId(request)
   if (!roleId) {
     errorMessage.value = '请先选择授权角色'
@@ -490,6 +511,7 @@ async function approveRequest(request: RegistrationRequestResponse) {
     await systemApi.approveRegistrationRequest(request.id, {
       role_assignments,
       review_comment: approvalComments.value[request.id] ?? '',
+      position: approvedPosition,
     })
     successMessage.value = `已通过 ${request.display_name} 的账号申请`
     await loadData()
@@ -720,17 +742,49 @@ onMounted(() => {
               <div class="tags">
                 <span class="tag"><Factory class="size-3.5" aria-hidden="true" />{{ factoryLabel(selectedRequest.factory_id) }}</span>
                 <span class="tag"><Building2 class="size-3.5" aria-hidden="true" />{{ departmentLabel(selectedRequest.department) }}</span>
-                <span class="tag"><BriefcaseBusiness class="size-3.5" aria-hidden="true" />{{ selectedRequest.position }}</span>
+                <span class="tag"><BriefcaseBusiness class="size-3.5" aria-hidden="true" />申请职位：{{ selectedRequest.position }}</span>
                 <span class="tag"><Phone v-if="selectedRequest.phone" class="size-3.5" aria-hidden="true" /><Mail v-else class="size-3.5" aria-hidden="true" />{{ contactLabel(selectedRequest) }}</span>
               </div>
             </div>
           </div>
 
+          <section class="section position-review-section">
+            <div class="sec-title">
+              <span class="st-ic"><BriefcaseBusiness class="size-4" aria-hidden="true" /></span>
+              <h3>员工职位核验</h3>
+              <span class="hint">职位用于个人资料展示，不决定系统权限</span>
+            </div>
+            <div class="position-review-grid">
+              <div class="position-original">
+                <span>用户填写</span>
+                <strong>{{ selectedRequest.position }}</strong>
+              </div>
+              <label class="position-confirm-field">
+                <span>确认职位（可修改）</span>
+                <input
+                  v-model="approvalPositions[selectedRequest.id]"
+                  aria-label="确认职位"
+                  autocomplete="off"
+                  list="approval-position-suggestions"
+                  maxlength="128"
+                  placeholder="请核对或修正员工的真实职位"
+                  type="text"
+                >
+                <datalist id="approval-position-suggestions">
+                  <option v-for="item in selectedPositionSuggestions" :key="item" :value="item"></option>
+                </datalist>
+              </label>
+            </div>
+            <p class="position-role-note">
+              例如“工程部技术员”可以授予“工程师”系统角色；前者是员工职位，后者只用于配置系统权限。
+            </p>
+          </section>
+
           <section class="section">
             <div class="sec-title">
               <span class="st-ic"><Users class="size-4" aria-hidden="true" /></span>
               <h3>系统角色</h3>
-              <span class="hint">根据申请职位「{{ selectedRequest.position }}」智能推荐</span>
+              <span class="hint">角色决定系统权限，与员工职位相互独立</span>
             </div>
             <div class="roles">
               <button
@@ -2852,6 +2906,67 @@ onMounted(() => {
   font-weight: 500;
 }
 
+.position-review-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+}
+
+.position-original,
+.position-confirm-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.position-original {
+  align-content: center;
+  border: 1px solid var(--slate-200);
+  border-radius: var(--radius-sm);
+  background: var(--slate-50);
+  padding: 10px 12px;
+}
+
+.position-original span,
+.position-confirm-field > span {
+  color: var(--slate-500);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.position-original strong {
+  overflow-wrap: anywhere;
+  color: var(--slate-900);
+  font-size: 13px;
+}
+
+.position-confirm-field input {
+  width: 100%;
+  height: 42px;
+  box-sizing: border-box;
+  border: 1px solid var(--slate-200);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--slate-900);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  padding: 0 12px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.position-confirm-field input:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.position-role-note {
+  margin: 10px 0 0;
+  color: var(--slate-500);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
 .roles {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3234,6 +3349,10 @@ onMounted(() => {
 
   .stats,
   .roles {
+    grid-template-columns: 1fr;
+  }
+
+  .position-review-grid {
     grid-template-columns: 1fr;
   }
 
