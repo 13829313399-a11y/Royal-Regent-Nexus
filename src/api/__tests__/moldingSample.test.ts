@@ -39,6 +39,30 @@ const api = createMoldingSampleApi(client as Parameters<typeof createMoldingSamp
 
 assert.deepEqual(await api.listOrders(), { url: '/injection' })
 assert.deepEqual(await api.listOrders('huadeng'), { url: '/injection?factory_id=huadeng' })
+assert.deepEqual(await api.getBoardSummary('huaxing', ' 头盔 客户 '), {
+  url: '/injection/board/summary?factory_id=huaxing&q=%E5%A4%B4%E7%9B%94+%E5%AE%A2%E6%88%B7',
+})
+assert.deepEqual(await api.getBoardSummary('huadeng', '   '), {
+  url: '/injection/board/summary?factory_id=huadeng',
+})
+assert.deepEqual(await api.listBoardPage({
+  factoryId: 'huaxing',
+  status: '待审核',
+  query: ' 黑色 模具 ',
+  page: 2,
+  pageSize: 5,
+}), {
+  url: '/injection/board/page?factory_id=huaxing&status=%E5%BE%85%E5%AE%A1%E6%A0%B8&q=%E9%BB%91%E8%89%B2+%E6%A8%A1%E5%85%B7&page=2&page_size=5',
+})
+assert.deepEqual(await api.listBoardPage({
+  factoryId: 'huadeng',
+  status: '已完成',
+  query: '\t',
+  page: 1,
+  pageSize: 5,
+}), {
+  url: '/injection/board/page?factory_id=huadeng&status=%E5%B7%B2%E5%AE%8C%E6%88%90&page=1&page_size=5',
+})
 assert.deepEqual(await api.getOrder('BP-1'), { url: '/injection/BP-1' })
 
 await api.createOrder({
@@ -217,6 +241,10 @@ await api.deleteRequisition('REQ-1')
 assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'get /injection',
   'get /injection?factory_id=huadeng',
+  'get /injection/board/summary?factory_id=huaxing&q=%E5%A4%B4%E7%9B%94+%E5%AE%A2%E6%88%B7',
+  'get /injection/board/summary?factory_id=huadeng',
+  'get /injection/board/page?factory_id=huaxing&status=%E5%BE%85%E5%AE%A1%E6%A0%B8&q=%E9%BB%91%E8%89%B2+%E6%A8%A1%E5%85%B7&page=2&page_size=5',
+  'get /injection/board/page?factory_id=huadeng&status=%E5%B7%B2%E5%AE%8C%E6%88%90&page=1&page_size=5',
   'get /injection/BP-1',
   'post /injection',
   'patch /injection/BP-1/status',

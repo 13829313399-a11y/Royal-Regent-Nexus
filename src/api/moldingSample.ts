@@ -4,6 +4,7 @@ import type {
   MoldingSampleItem,
   MoldingSampleOrder,
   MoldingSampleProblem,
+  MoldingSampleStatus,
   MoldingSampleTrialReport,
   MoldingSampleTrialReportData,
 } from '../types/moldingSample.js'
@@ -47,6 +48,26 @@ export interface MoldingSampleDetailResponse {
   can_view_cost?: boolean
   read_only?: boolean
   access?: MoldingSampleAccess
+}
+
+export interface MoldingSampleBoardPageResponse {
+  rows: MoldingSampleDetailResponse[]
+  total: number
+  page: number
+  page_size: number
+  page_count: number
+}
+
+export interface MoldingSampleBoardSummaryResponse {
+  total: number
+  status_counts: Partial<Record<MoldingSampleStatus, number>>
+  review_count: number
+  production_count: number
+  completed_count: number
+  rejected_count: number
+  withdrawn_count: number
+  unresolved_problem_count: number
+  production_data_pending_count: number
 }
 
 export type MoldingSampleReadSource = 'local' | 'cross'
@@ -246,6 +267,45 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
     async listOrders(factoryId?: string) {
       const query = factoryId ? `?factory_id=${encodeURIComponent(factoryId)}` : ''
       const response = await client.get<MoldingSampleDetailResponse[]>(`/injection${query}`)
+      return response.data
+    },
+    async getBoardSummary(factoryId: string, query?: string) {
+      const params = new URLSearchParams({ factory_id: factoryId })
+      const normalizedQuery = query?.trim()
+      if (normalizedQuery) {
+        params.set('q', normalizedQuery)
+      }
+      const response = await client.get<MoldingSampleBoardSummaryResponse>(
+        `/injection/board/summary?${params.toString()}`,
+      )
+      return response.data
+    },
+    async listBoardPage({
+      factoryId,
+      status,
+      query,
+      page,
+      pageSize,
+    }: {
+      factoryId: string
+      status: MoldingSampleStatus
+      query?: string
+      page: number
+      pageSize: number
+    }) {
+      const params = new URLSearchParams({
+        factory_id: factoryId,
+        status,
+      })
+      const normalizedQuery = query?.trim()
+      if (normalizedQuery) {
+        params.set('q', normalizedQuery)
+      }
+      params.set('page', String(page))
+      params.set('page_size', String(pageSize))
+      const response = await client.get<MoldingSampleBoardPageResponse>(
+        `/injection/board/page?${params.toString()}`,
+      )
       return response.data
     },
     async getOrder(orderId: string) {

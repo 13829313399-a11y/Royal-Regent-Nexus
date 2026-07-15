@@ -7,6 +7,8 @@ import { moldingSampleApi } from '@/api/moldingSample'
 import { rawMaterialApi } from '@/api/rawMaterial'
 import type { AuthEffectiveAccess, AuthzMode } from '@/api/auth'
 import type {
+  MoldingSampleBoardPageResponse,
+  MoldingSampleBoardSummaryResponse,
   MoldingSampleCreateRequest,
   MoldingSampleDetailResponse,
   MoldingSampleNotificationResponse,
@@ -52,6 +54,11 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   updateMaterialPrices: vi.fn(),
   listInjectionCosts: vi.fn(),
 }))
+type RuntimeMoldingSampleApiMock = typeof moldingSampleApiMock & {
+  getBoardSummary?: ReturnType<typeof vi.fn>
+  listBoardPage?: ReturnType<typeof vi.fn>
+}
+const runtimeMoldingSampleApiMock = moldingSampleApiMock as RuntimeMoldingSampleApiMock
 const rawMaterialApiMock = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
@@ -226,6 +233,55 @@ function createMoldingSampleRecord(
   }
 }
 
+function createRuntimeBoardSummary(records: MoldingSampleDetailResponse[]): MoldingSampleBoardSummaryResponse {
+  const statusCounts: Partial<Record<MoldingSampleStatus, number>> = {}
+
+  records.forEach((record) => {
+    statusCounts[record.order.status] = (statusCounts[record.order.status] ?? 0) + 1
+  })
+
+  return {
+    total: records.length,
+    status_counts: statusCounts,
+    review_count: (statusCounts['待审核'] ?? 0) + (statusCounts['待经理审核'] ?? 0),
+    production_count: (statusCounts['待生产'] ?? 0) + (statusCounts['生产中'] ?? 0),
+    completed_count: statusCounts['已完成'] ?? 0,
+    rejected_count: statusCounts['已驳回'] ?? 0,
+    withdrawn_count: statusCounts['已撤回'] ?? 0,
+    unresolved_problem_count: 0,
+    production_data_pending_count: 0,
+  }
+}
+
+function createRuntimeBoardPage(
+  records: MoldingSampleDetailResponse[],
+  status: MoldingSampleStatus,
+  page: number,
+  pageSize: number,
+): MoldingSampleBoardPageResponse {
+  const statusRows = records.filter((record) => record.order.status === status)
+  const start = (page - 1) * pageSize
+
+  return {
+    rows: statusRows.slice(start, start + pageSize),
+    total: statusRows.length,
+    page,
+    page_size: pageSize,
+    page_count: Math.max(1, Math.ceil(statusRows.length / pageSize)),
+  }
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+
+  return { promise, resolve, reject }
+}
+
 function createKpiRecord(
   status: MoldingSampleStatus,
   id: string,
@@ -336,6 +392,8 @@ describe('molding sample runtime error handling', () => {
   })
 
   afterEach(() => {
+    delete runtimeMoldingSampleApiMock.getBoardSummary
+    delete runtimeMoldingSampleApiMock.listBoardPage
     vi.unstubAllGlobals()
     window.localStorage.clear()
   })
@@ -2047,7 +2105,338 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
-  it('lazy-paginates overview and material balance rows at ten records per page', async () => {
+  it('keeps a completed legacy list load when the initial server board response arrives late', async () => {
+    const lateBoardRecord = createMoldingSampleRecord('待审核', 'BP-LATE-BOARD-001', 1)
+    const fullListRecord = createMoldingSampleRecord('已完成', 'BP-FULL-LIST-001', 2)
+    const boardGate = createDeferred<void>()
+    const getBoardSummaryMock = vi.fn(async () => {
+      await boardGate.promise
+      return createRuntimeBoardSummary([lateBoardRecord])
+    })
+    const listBoardPageMock = vi.fn(async (request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) => {
+      await boardGate.promise
+      return createRuntimeBoardPage(
+        [lateBoardRecord],
+        request.status,
+        request.page,
+        request.pageSize,
+      )
+    })
+    runtimeMoldingSampleApiMock.getBoardSummary = getBoardSummaryMock
+    runtimeMoldingSampleApiMock.listBoardPage = listBoardPageMock
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([fullListRecord])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(getBoardSummaryMock).toHaveBeenCalledTimes(1)
+    expect(listBoardPageMock).toHaveBeenCalledTimes(6)
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('BP-FULL-LIST-001')
+    expect(wrapper.text()).not.toContain('BP-LATE-BOARD-001')
+
+    boardGate.resolve(undefined)
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.text()).toContain('BP-FULL-LIST-001')
+    expect(wrapper.text()).not.toContain('BP-LATE-BOARD-001')
+
+    wrapper.unmount()
+  })
+
+  it('settles the global busy state when leaving a pending server board for the create view', async () => {
+    const pendingRecord = createMoldingSampleRecord('待审核', 'BP-PENDING-BOARD-CREATE', 1)
+    const boardGate = createDeferred<void>()
+    runtimeMoldingSampleApiMock.getBoardSummary = vi.fn(async () => {
+      await boardGate.promise
+      return createRuntimeBoardSummary([pendingRecord])
+    })
+    runtimeMoldingSampleApiMock.listBoardPage = vi.fn(async (request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) => {
+      await boardGate.promise
+      return createRuntimeBoardPage([pendingRecord], request.status, request.page, request.pageSize)
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(wrapper.get('main[aria-busy]').attributes('aria-busy')).toBe('true')
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('main[aria-busy]').attributes('aria-busy')).toBe('false')
+    expect(wrapper.text()).toContain('新建啤办单')
+
+    boardGate.resolve(undefined)
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.get('main[aria-busy]').attributes('aria-busy')).toBe('false')
+    expect(wrapper.text()).toContain('新建啤办单')
+
+    wrapper.unmount()
+  })
+
+  it('settles the global busy state when opening cached detail during a pending full-list load', async () => {
+    const cachedRecord = createMoldingSampleRecord('待审核', 'BP-PENDING-LIST-DETAIL', 1)
+    const lateListRecord = createMoldingSampleRecord('已完成', 'BP-LATE-LIST-DETAIL', 2)
+    const listGate = createDeferred<MoldingSampleDetailResponse[]>()
+    runtimeMoldingSampleApiMock.getBoardSummary = vi.fn().mockResolvedValue(createRuntimeBoardSummary([cachedRecord]))
+    runtimeMoldingSampleApiMock.listBoardPage = vi.fn((request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) =>
+      Promise.resolve(createRuntimeBoardPage([cachedRecord], request.status, request.page, request.pageSize)),
+    )
+    mockedMoldingSampleApi.listOrders.mockReturnValueOnce(listGate.promise)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await nextTick()
+    expect(wrapper.get('main[aria-busy]').attributes('aria-busy')).toBe('true')
+
+    await getButtonByText(wrapper, cachedRecord.order.id).trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('main[aria-busy]').attributes('aria-busy')).toBe('false')
+    expect(wrapper.text()).toContain(cachedRecord.order.id)
+
+    listGate.resolve([lateListRecord])
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.get('main[aria-busy]').attributes('aria-busy')).toBe('false')
+    expect(wrapper.text()).toContain(cachedRecord.order.id)
+    expect(wrapper.text()).not.toContain(lateListRecord.order.id)
+
+    wrapper.unmount()
+  })
+
+  it('drops selections from the previous server-board page before running a batch action', async () => {
+    const records = Array.from({ length: 10 }, (_, index) =>
+      createMoldingSampleRecord('待审核', `BP-PAGE-SELECT-${String(index + 1).padStart(3, '0')}`, index + 1),
+    )
+    const getBoardSummaryMock = vi.fn().mockResolvedValue(createRuntimeBoardSummary(records))
+    const listBoardPageMock = vi.fn((request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) =>
+      Promise.resolve(createRuntimeBoardPage(records, request.status, request.page, request.pageSize)),
+    )
+    runtimeMoldingSampleApiMock.getBoardSummary = getBoardSummaryMock
+    runtimeMoldingSampleApiMock.listBoardPage = listBoardPageMock
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await wrapper.get('[aria-label="选择单据 BP-PAGE-SELECT-001"]').setValue(true)
+    await nextTick()
+    expect(wrapper.text()).toContain('已选 1 单')
+
+    await wrapper.get('button[aria-label="待审核下一页"]').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.text()).toContain('已选 0 单')
+    expect(wrapper.find('[aria-label="选择单据 BP-PAGE-SELECT-001"]').exists()).toBe(false)
+
+    await wrapper.get('[aria-label="选择单据 BP-PAGE-SELECT-006"]').setValue(true)
+    await nextTick()
+    expect(wrapper.text()).toContain('已选 1 单')
+
+    await getButtonByExactText(wrapper, '打印').trigger('click')
+    await nextTick()
+
+    const printPreview = wrapper.get('[data-testid="molding-sample-print-preview"]').text()
+    expect(printPreview).toContain('BP-PAGE-SELECT-006')
+    expect(printPreview).not.toContain('BP-PAGE-SELECT-001')
+
+    wrapper.unmount()
+  })
+
+  it('keeps a clicked cached order selected instead of re-pinning the initial route order', async () => {
+    const routeOrder = createMoldingSampleRecord('待审核', 'BP-ROUTE-A', 1)
+    const clickedOrder = createMoldingSampleRecord('待审核', 'BP-ROUTE-B', 2)
+    routeOrder.order.product_name = '路由初始产品 A'
+    clickedOrder.order.product_name = '用户点击产品 B'
+    const records = [routeOrder, clickedOrder]
+    runtimeMoldingSampleApiMock.getBoardSummary = vi.fn().mockResolvedValue(createRuntimeBoardSummary(records))
+    runtimeMoldingSampleApiMock.listBoardPage = vi.fn((request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) =>
+      Promise.resolve(createRuntimeBoardPage(records, request.status, request.page, request.pageSize)),
+    )
+    routeState.query = {
+      factory: 'huaxing',
+      order_id: routeOrder.order.id,
+    }
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(mockedMoldingSampleApi.getOrder).not.toHaveBeenCalled()
+    await getButtonByText(wrapper, clickedOrder.order.id).trigger('click')
+    await flushPromises()
+    await nextTick()
+    await nextTick()
+
+    expect(routerReplace).toHaveBeenLastCalledWith({
+      query: {
+        factory: 'huaxing',
+        order_id: clickedOrder.order.id,
+      },
+    })
+    expect(routeState.query.order_id).toBe(routeOrder.order.id)
+    expect(wrapper.text()).toContain('用户点击产品 B')
+    expect(wrapper.text()).not.toContain('路由初始产品 A')
+
+    wrapper.unmount()
+  })
+
+  it('routes manual refreshes through the full-order loader in list and material-balance contexts', async () => {
+    const records = [createMoldingSampleRecord('待审核', 'BP-CONTEXT-REFRESH-001', 1)]
+    const getBoardSummaryMock = vi.fn().mockResolvedValue(createRuntimeBoardSummary(records))
+    const listBoardPageMock = vi.fn((request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) =>
+      Promise.resolve(createRuntimeBoardPage(records, request.status, request.page, request.pageSize)),
+    )
+    runtimeMoldingSampleApiMock.getBoardSummary = getBoardSummaryMock
+    runtimeMoldingSampleApiMock.listBoardPage = listBoardPageMock
+    mockedMoldingSampleApi.listOrders.mockResolvedValue(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(getBoardSummaryMock).toHaveBeenCalledTimes(1)
+    expect(listBoardPageMock).toHaveBeenCalledTimes(6)
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(1)
+
+    await getButtonByExactText(wrapper, '刷新正式列表').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(2)
+    expect(getBoardSummaryMock).toHaveBeenCalledTimes(1)
+    expect(listBoardPageMock).toHaveBeenCalledTimes(6)
+
+    await getButtonByText(wrapper, '物料结余').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(2)
+
+    await getButtonByExactText(wrapper, '刷新正式列表').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(3)
+    expect(getBoardSummaryMock).toHaveBeenCalledTimes(1)
+    expect(listBoardPageMock).toHaveBeenCalledTimes(6)
+
+    wrapper.unmount()
+  })
+
+  it('loads the engineering board lazily from server pages without fetching the full order list', async () => {
+    const records = Array.from({ length: 12 }, (_, index) =>
+      createMoldingSampleRecord('待审核', `BP-SERVER-PAGE-${String(index + 1).padStart(3, '0')}`, index + 1),
+    )
+    const summary: MoldingSampleBoardSummaryResponse = {
+      total: 12,
+      status_counts: { 待审核: 12 },
+      review_count: 12,
+      production_count: 0,
+      completed_count: 0,
+      rejected_count: 0,
+      withdrawn_count: 0,
+      unresolved_problem_count: 0,
+      production_data_pending_count: 0,
+    }
+    const buildPage = (
+      status: MoldingSampleStatus,
+      page: number,
+      pageSize: number,
+    ): MoldingSampleBoardPageResponse => {
+      const matchingRows = status === '待审核' ? records : []
+      const start = (page - 1) * pageSize
+
+      return {
+        rows: matchingRows.slice(start, start + pageSize),
+        total: matchingRows.length,
+        page,
+        page_size: pageSize,
+        page_count: Math.max(1, Math.ceil(matchingRows.length / pageSize)),
+      }
+    }
+    let resolveSecondPage: ((value: MoldingSampleBoardPageResponse) => void) | undefined
+    const secondPagePromise = new Promise<MoldingSampleBoardPageResponse>((resolve) => {
+      resolveSecondPage = resolve
+    })
+    const getBoardSummaryMock = vi.fn().mockResolvedValue(summary)
+    const listBoardPageMock = vi.fn((request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) => {
+      if (request.status === '待审核' && request.page === 2) {
+        return secondPagePromise
+      }
+
+      return Promise.resolve(buildPage(request.status, request.page, request.pageSize))
+    })
+    runtimeMoldingSampleApiMock.getBoardSummary = getBoardSummaryMock
+    runtimeMoldingSampleApiMock.listBoardPage = listBoardPageMock
+    routeState.query = {
+      factory: 'huaxing',
+      order_id: 'BP-SERVER-PAGE-012',
+    }
+    mockedMoldingSampleApi.getOrder.mockResolvedValueOnce(records[11]!)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    const waitingColumn = wrapper.get('[data-testid="molding-board-column-待审核"]')
+
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+    expect(getBoardSummaryMock).toHaveBeenCalledWith('huaxing')
+    expect(listBoardPageMock).toHaveBeenCalledTimes(6)
+    expect(listBoardPageMock.mock.calls.every(([request]) => request.page === 1 && request.pageSize === 5)).toBe(true)
+    expect(mockedMoldingSampleApi.getOrder).toHaveBeenCalledWith('BP-SERVER-PAGE-012')
+    expect(wrapper.text()).toContain('当前共 12 单 · 导出 / 打印')
+    expect(waitingColumn.attributes('aria-busy')).toBe('false')
+    expect(waitingColumn.text()).toContain('每页 5 条')
+    expect(waitingColumn.text()).toContain('1-5 / 12 条')
+    expect(waitingColumn.text()).toContain('BP-SERVER-PAGE-005')
+    expect(waitingColumn.text()).not.toContain('BP-SERVER-PAGE-006')
+
+    await wrapper.get('button[aria-label="待审核下一页"]').trigger('click')
+    await nextTick()
+
+    expect(waitingColumn.attributes('aria-busy')).toBe('true')
+    expect(wrapper.get('[data-testid="molding-board-column-已完成"]').attributes('aria-busy')).toBe('false')
+    expect(listBoardPageMock).toHaveBeenCalledTimes(7)
+    expect(listBoardPageMock).toHaveBeenLastCalledWith({
+      factoryId: 'huaxing',
+      status: '待审核',
+      page: 2,
+      pageSize: 5,
+    })
+    expect(getBoardSummaryMock).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+
+    resolveSecondPage?.(buildPage('待审核', 2, 5))
+    await flushPromises()
+    await nextTick()
+
+    expect(waitingColumn.attributes('aria-busy')).toBe('false')
+    expect(waitingColumn.text()).toContain('6-10 / 12 条')
+    expect(waitingColumn.text()).toContain('BP-SERVER-PAGE-010')
+    expect(waitingColumn.text()).not.toContain('BP-SERVER-PAGE-005')
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValue(records)
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(1)
+
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(1)
+
+    await getButtonByExactText(wrapper, '看板').trigger('click')
+    await flushPromises()
+    await getButtonByExactText(wrapper, '列表').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+  })
+
+  it('paginates the legacy engineering board at five rows while keeping list and material balance at ten', async () => {
     const records = Array.from({ length: 12 }, (_, index) =>
       createMoldingSampleRecord('待审核', `BP-PAGE-${String(index + 1).padStart(3, '0')}`, index + 1),
     )
@@ -2056,20 +2445,21 @@ describe('molding sample runtime error handling', () => {
 
     const wrapper = await mountRuntimeView(MoldingSampleView)
 
-    expect(wrapper.text()).toContain('每页 10 条')
-    expect(wrapper.text()).toContain('BP-PAGE-010')
-    expect(wrapper.text()).not.toContain('BP-PAGE-011')
+    expect(wrapper.text()).toContain('每页 5 条')
+    expect(wrapper.text()).toContain('BP-PAGE-005')
+    expect(wrapper.text()).not.toContain('BP-PAGE-006')
 
-    await getButtonByText(wrapper, '下一页').trigger('click')
+    await wrapper.get('button[aria-label="待审核下一页"]').trigger('click')
     await nextTick()
 
-    expect(wrapper.text()).toContain('BP-PAGE-011')
-    expect(wrapper.text()).toContain('BP-PAGE-012')
-    expect(wrapper.text()).not.toContain('BP-PAGE-010')
+    expect(wrapper.text()).toContain('BP-PAGE-006')
+    expect(wrapper.text()).toContain('BP-PAGE-010')
+    expect(wrapper.text()).not.toContain('BP-PAGE-005')
 
     await getButtonByExactText(wrapper, '列表').trigger('click')
     await nextTick()
 
+    expect(wrapper.text()).toContain('每页 10 条')
     expect(wrapper.text()).toContain('BP-PAGE-010')
     expect(wrapper.text()).not.toContain('BP-PAGE-011')
 
