@@ -155,6 +155,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/accounting/indonesia-invoice-reconciliation',
+    name: 'indonesia-invoice-reconciliation',
+    component: () => import('@/views/IndonesiaInvoiceReconciliationView.vue'),
+    meta: {
+      title: '印尼票据核对',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/:department/:module',
     name: 'module-detail',
     component: () => import('@/views/ModuleDetailView.vue'),

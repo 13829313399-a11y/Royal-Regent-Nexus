@@ -8,6 +8,7 @@ describe('position catalog', () => {
     expect(getPositionSuggestions('production')).toContain('啤机技术员')
     expect(getPositionSuggestions('qa')).toContain('QA 检验员')
     expect(getPositionSuggestions('sales-business')).toContain('车间业务跟客')
+    expect(getPositionSuggestions('accounting')).toContain('会计主管')
     expect(Object.values(positionSuggestionsByDepartment).every((items) => items.length >= 8)).toBe(true)
   })
 

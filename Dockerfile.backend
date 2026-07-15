@@ -12,7 +12,10 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 WORKDIR /app/backend
 
 COPY backend/requirements.prod.txt /tmp/requirements.prod.txt
-RUN python -m pip install --upgrade pip \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --upgrade pip \
     && python -m pip install -r /tmp/requirements.prod.txt
 
 COPY backend/ ./
