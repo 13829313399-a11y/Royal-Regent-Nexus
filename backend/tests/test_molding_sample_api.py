@@ -4,6 +4,7 @@ import sqlite3
 import sys
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -467,7 +468,13 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
 
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= audit_columns
     assert {"actor_user_id", "actor_roles", "factory_scope"} <= sensitive_audit_columns
-    assert {"mold_dimensions", "mold_presence_status"} <= item_columns
+    assert {
+        "mold_dimensions",
+        "mold_presence_status",
+        "material_components",
+        "material_usage_type",
+        "actual_material_cost_components",
+    } <= item_columns
 
 
 def test_server_side_material_price_seed_is_additive_once_and_never_overwrites_existing_rows(client):
@@ -533,6 +540,163 @@ def test_server_side_material_price_seed_is_additive_once_and_never_overwrites_e
                 molding_models.MoldingSampleMaterialPrice.material == "ABS SD0150W"
             )
         ) is None
+
+
+def test_material_components_are_canonicalized_and_priced_per_component(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-COMPONENT-COST-001")
+    payload["items"][0].update({
+        "material": "客户端冲突文本",
+        "material_usage_type": "trial",
+        "material_components": [
+            {"material": "HIPS 425", "ratio_percent": 80, "source_type": "virgin"},
+            {"material": "HIPS 425", "ratio_percent": 20, "source_type": "runner"},
+        ],
+    })
+    payload["items"].append({
+        **payload["items"][0],
+        "id": "BP-COMPONENT-COST-001-002",
+        "material_usage_type": "production",
+        "material_components": [
+            {"material": "HIPS 425", "ratio_percent": 80, "source_type": "virgin"},
+            {"material": "ABS 740", "ratio_percent": 20, "source_type": "runner"},
+        ],
+    })
+
+    created = client.post("/api/injection", json=payload)
+    assert created.status_code == 201
+    assert created.json()["items"][0]["material"] == "80% HIPS 425 + 20% HIPS 425 水口料"
+    assert created.json()["items"][0]["material_usage_type"] == "trial"
+    assert created.json()["items"][1]["material"] == "80% HIPS 425 + 20% ABS 740 水口料"
+
+    login_as(client, "supervisor")
+    assert client.patch(
+        "/api/injection/BP-COMPONENT-COST-001/status",
+        json={"action": "主管通过"},
+    ).status_code == 200
+    login_as(client, "molding_clerk")
+    costed = client.patch(
+        "/api/injection/BP-COMPONENT-COST-001/items",
+        json={"items": [
+            {"id": "BP-COMPONENT-COST-001-001", "actual_weight_kg": 10},
+            {"id": "BP-COMPONENT-COST-001-002", "actual_weight_kg": 10},
+        ]},
+    )
+    assert costed.status_code == 200
+    assert costed.json()["items"][0]["actual_amount_hkd"] == 121.25
+    assert costed.json()["items"][1]["actual_amount_hkd"] == 132.27
+    assert costed.json()["items"][0]["actual_material_cost_components"] == [
+        {
+            "material": "HIPS 425",
+            "source_type": "virgin",
+            "ratio_percent": 80.0,
+            "weight_kg": 8.0,
+            "unit_price": 5.5,
+            "amount_hkd": 97.0,
+        },
+        {
+            "material": "HIPS 425",
+            "source_type": "runner",
+            "ratio_percent": 20.0,
+            "weight_kg": 2.0,
+            "unit_price": 5.5,
+            "amount_hkd": 24.25,
+        },
+    ]
+
+
+def test_forced_component_recalculation_clears_stale_total_and_snapshot_when_price_is_missing(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-COMPONENT-MISSING-001")
+    payload["items"][0].update({
+        "material_components": [
+            {"material": "未维护价格原料", "ratio_percent": 100, "source_type": "virgin"},
+        ],
+    })
+    assert client.post("/api/injection", json=payload).status_code == 201
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-COMPONENT-MISSING-001/status", json={"action": "主管通过"})
+    login_as(client, "molding_clerk")
+    response = client.patch(
+        "/api/injection/BP-COMPONENT-MISSING-001/items",
+        json={"items": [{
+            "id": "BP-COMPONENT-MISSING-001-001",
+            "actual_weight_kg": 1,
+            "actual_amount_hkd": 999,
+        }]},
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["actual_amount_hkd"] is None
+    assert response.json()["items"][0]["actual_material_cost_components"] == []
+
+
+def test_legacy_runner_material_strings_use_base_and_named_runner_prices(client):
+    login_as(client, "manager")
+    prices = client.post(
+        "/api/manager-update-prices",
+        json={
+            "prices": [
+                {"material": "ABS", "unit_price": 8, "notes": "测试"},
+                {"material": "PVC", "unit_price": 5, "notes": "测试"},
+            ],
+            "rmb_to_hkd_rate": 1.08,
+        },
+    )
+    assert prices.status_code == 200
+
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-LEGACY-MIX-001")
+    payload["items"][0]["material"] = "80%ABS+20%水口料"
+    payload["items"].append({
+        **payload["items"][0],
+        "id": "BP-LEGACY-MIX-001-002",
+        "material": "80%ABS+20%PVC水口料",
+    })
+    assert client.post("/api/injection", json=payload).status_code == 201
+    login_as(client, "supervisor")
+    client.patch("/api/injection/BP-LEGACY-MIX-001/status", json={"action": "主管通过"})
+    login_as(client, "molding_clerk")
+    response = client.patch(
+        "/api/injection/BP-LEGACY-MIX-001/items",
+        json={"items": [
+            {"id": "BP-LEGACY-MIX-001-001", "actual_weight_kg": 10},
+            {"id": "BP-LEGACY-MIX-001-002", "actual_weight_kg": 10},
+        ]},
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["actual_amount_hkd"] == 176.37
+    assert response.json()["items"][1]["actual_amount_hkd"] == 163.15
+
+
+def test_legacy_material_parser_is_strict_and_accepts_single_full_ratio_segment():
+    molding_service = importlib.import_module("app.services.molding_sample")
+    assert molding_service.parse_legacy_material_components("100%ABS") == [
+        {"material": "ABS", "ratio_percent": 100.0, "source_type": "virgin"}
+    ]
+    assert molding_service.parse_legacy_material_components("80%ABS+错误段") is None
+    assert molding_service.parse_legacy_material_components("80%ABS+19%PVC水口料") is None
+    assert molding_service.parse_legacy_material_components("80%ABS+0%PVC水口料") is None
+
+
+@pytest.mark.parametrize(
+    "components",
+    [
+        [
+            {"material": "ABS", "ratio_percent": 50, "source_type": "virgin"},
+            {"material": "ABS", "ratio_percent": 50, "source_type": "virgin"},
+        ],
+        [
+            {"material": "ABS", "ratio_percent": 80, "source_type": "virgin"},
+            {"material": "PVC", "ratio_percent": 19.98, "source_type": "runner"},
+        ],
+        [{"material": "   ", "ratio_percent": 100, "source_type": "virgin"}],
+    ],
+)
+def test_material_component_validation_rejects_invalid_explicit_components(client, components):
+    login_as(client, "engineer")
+    payload = sample_order_payload(f"BP-COMPONENT-INVALID-{uuid4().hex[:8]}")
+    payload["items"][0]["material_components"] = components
+    assert client.post("/api/injection", json=payload).status_code == 422
 
 
 def test_authenticated_users_can_read_molding_samples_without_changing_permissions(client):
@@ -828,6 +992,14 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
         order.completed_date = "2026-07-12"
         item.actual_weight_kg = 2.2
         item.actual_amount_hkd = 26.4
+        item.actual_material_cost_components = [{
+            "material": "HIPS 425",
+            "source_type": "virgin",
+            "ratio_percent": 100,
+            "weight_kg": 2.2,
+            "unit_price": 5.5,
+            "amount_hkd": 26.4,
+        }]
         item.injection_cost = 80
         item.injection_cost_hkd = 86.4
         item.exchange_rate_at_save = 1.08
@@ -858,6 +1030,7 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
     assert detail["can_view_cost"] is False
     assert detail["items"][0]["actual_weight_kg"] == 2.2
     assert detail["items"][0]["actual_amount_hkd"] is None
+    assert detail["items"][0]["actual_material_cost_components"] == []
     assert detail["items"][0]["injection_cost"] is None
     assert detail["items"][0]["injection_cost_hkd"] is None
     assert detail["items"][0]["exchange_rate_at_save"] is None
@@ -924,6 +1097,7 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
     assert cost_detail["read_source"] == "cross"
     assert cost_detail["can_view_cost"] is True
     assert cost_detail["items"][0]["actual_amount_hkd"] == 26.4
+    assert cost_detail["items"][0]["actual_material_cost_components"][0]["unit_price"] == 5.5
     assert cost_detail["items"][0]["injection_cost"] == 80
     assert cost_detail["items"][0]["injection_cost_hkd"] == 86.4
     assert cost_detail["items"][0]["exchange_rate_at_save"] == 1.08
@@ -1890,6 +2064,61 @@ def test_engineering_edit_delete_permissions_use_login_role(client):
     assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
 
 
+def test_completed_order_header_edit_preserves_material_settlement_snapshot(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-COMPLETE-EDIT-SNAPSHOT-001")
+    payload["items"][0]["material_components"] = [
+        {"material": "HIPS 425", "ratio_percent": 100, "source_type": "virgin"},
+    ]
+    assert client.post("/api/injection", json=payload).status_code == 201
+
+    login_as(client, "supervisor")
+    assert client.patch(
+        "/api/injection/BP-COMPLETE-EDIT-SNAPSHOT-001/status",
+        json={"action": "主管通过"},
+    ).status_code == 200
+
+    login_as(client, "molding_clerk")
+    assert client.patch(
+        "/api/injection/BP-COMPLETE-EDIT-SNAPSHOT-001/status",
+        json={"action": "开始处理"},
+    ).status_code == 200
+    assert client.patch(
+        "/api/injection/BP-COMPLETE-EDIT-SNAPSHOT-001/items",
+        json={"items": [{"id": "BP-COMPLETE-EDIT-SNAPSHOT-001-001", "actual_weight_kg": 2}]},
+    ).status_code == 200
+    completed_response = client.patch(
+        "/api/injection/BP-COMPLETE-EDIT-SNAPSHOT-001/status",
+        json={"action": "标记完成", "today": "2026-07-15"},
+    )
+    assert completed_response.status_code == 200
+    completed = completed_response.json()
+    saved_snapshot = completed["items"][0]["actual_material_cost_components"]
+    assert saved_snapshot
+
+    login_as(client, "manager")
+    edit_payload = {"order": completed["order"], "items": completed["items"]}
+    edit_payload["order"]["product_name"] = "只修正单头名称"
+    edited_response = client.put(
+        "/api/injection/BP-COMPLETE-EDIT-SNAPSHOT-001",
+        json=edit_payload,
+    )
+    assert edited_response.status_code == 200
+    assert edited_response.json()["items"][0]["actual_material_cost_components"] == saved_snapshot
+
+    changed_settlement_payload = {
+        "order": edited_response.json()["order"],
+        "items": edited_response.json()["items"],
+    }
+    changed_settlement_payload["items"][0]["actual_weight_kg"] = 3
+    rejected_response = client.put(
+        "/api/injection/BP-COMPLETE-EDIT-SNAPSHOT-001",
+        json=changed_settlement_payload,
+    )
+    assert rejected_response.status_code == 400
+    assert "先撤回完成" in rejected_response.json()["detail"]
+
+
 def test_only_admin_can_delete_locked_molding_sample_order(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-ADMIN-DELETE-001"))
@@ -1999,6 +2228,7 @@ def test_export_and_import_molding_sample_excel_template(client):
             "mold_presence_status": "out_of_factory",
             "mold_return_time": "2026-07-18",
             "completion_time": "2026-07-22",
+            "material_usage_type": "trial",
         }
     )
     create_response = client.post("/api/injection", json=source_payload)
@@ -2015,6 +2245,8 @@ def test_export_and_import_molding_sample_excel_template(client):
     assert "适配机型" in sheet_xml
     assert "模具是否在厂" in sheet_xml
     assert "模具回厂时间" in sheet_xml
+    assert "用料用途" in sheet_xml
+    assert "试料" in sheet_xml
     assert "不在厂" in sheet_xml
 
     import_response = client.post(
@@ -2032,6 +2264,7 @@ def test_export_and_import_molding_sample_excel_template(client):
     assert imported["items"][0]["mold_presence_status"] == "out_of_factory"
     assert imported["items"][0]["mold_return_time"] == "2026-07-18"
     assert imported["items"][0]["completion_time"] == "2026-07-22"
+    assert imported["items"][0]["material_usage_type"] == "trial"
 
 
 def test_download_engineering_import_template_matches_current_manual_fields(client):
@@ -2059,6 +2292,7 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
         "需办日期",
         "工模尺寸",
         "模具状态（是否在厂）",
+        "用料用途",
         "备注",
     ]:
         assert current_manual_header in sheet_xml
@@ -2070,7 +2304,7 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
     assert "适配机型" not in sheet_xml
     assert "毛重g" not in sheet_xml
     assert "预计料费HKD" not in sheet_xml
-    assert '<autoFilter ref="A8:M8"/>' in sheet_xml
+    assert '<autoFilter ref="A8:N8"/>' in sheet_xml
 
 
 def test_parse_molding_sample_excel_accepts_current_engineering_headers():
@@ -2085,11 +2319,11 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
         [],
         [
             "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
-            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "备注",
+            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "用料用途", "备注",
         ],
         [
             "P50002008-01-01", "30寸黑武士-头盔", "PP（AV161）", "黑色", "Black C", "黑种", "2", 30,
-            15, "2026-07-22", "650 × 450 × 380 mm", "在厂", "第一次试模",
+            15, "2026-07-22", "650 × 450 × 380 mm", "在厂", "试料", "第一次试模",
         ],
     ]
 
@@ -2111,6 +2345,25 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
     assert parsed.items[0].completion_time == "2026-07-22"
     assert parsed.items[0].machine_type == ""
     assert parsed.items[0].gross_weight_g is None
+    assert parsed.items[0].material_usage_type == "trial"
+
+
+def test_excel_expected_material_amount_uses_component_prices():
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    item = SimpleNamespace(
+        required_material_kg=10,
+        material="80%ABS + 20%PVC水口料",
+        material_components=[
+            {"material": "ABS", "ratio_percent": 80, "source_type": "virgin"},
+            {"material": "PVC", "ratio_percent": 20, "source_type": "runner"},
+        ],
+    )
+    prices = [
+        SimpleNamespace(material="ABS", unit_price=8),
+        SimpleNamespace(material="PVC", unit_price=5),
+    ]
+
+    assert excel_service._calculate_expected_amount_hkd(item, prices) == 163.15
 
 
 def test_parse_molding_sample_excel_accepts_legacy_mold_metadata_headers():
@@ -2153,10 +2406,10 @@ def test_export_molding_sample_excel_template_has_report_styling(client):
     assert "缺" in sheet_xml
     assert "原料小计" in sheet_xml
     assert "总计" in sheet_xml
-    assert '<mergeCell ref="A1:Y1"/>' in sheet_xml
-    assert '<mergeCell ref="F2:Y2"/>' in sheet_xml
+    assert '<mergeCell ref="A1:Z1"/>' in sheet_xml
+    assert '<mergeCell ref="F2:Z2"/>' in sheet_xml
     assert '<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>' in sheet_xml
-    assert f'<autoFilter ref="A{detail_header_row}:Y{detail_header_row}"/>' in sheet_xml
+    assert f'<autoFilter ref="A{detail_header_row}:Z{detail_header_row}"/>' in sheet_xml
     assert '<cols>' in sheet_xml
     assert 'customWidth="1"' in sheet_xml
     assert '<col min="2" max="2" width="24" customWidth="1"/>' in sheet_xml

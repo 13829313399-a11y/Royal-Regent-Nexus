@@ -1136,7 +1136,7 @@ describe('molding sample runtime error handling', () => {
           mold_dimensions: '650 × 450 × 380 mm',
           mold_presence_status: 'in_factory',
           production_machine: '啤办机台-08',
-          material: 'PP (AV161)',
+          material: '70%ABS PA-757 + 配比待确认',
           color: '黑色',
           pigment_no: 'PMS 黑色',
           quantity: '1/1',
@@ -1165,6 +1165,16 @@ describe('molding sample runtime error handling', () => {
     await nextTick()
 
     const detailTable = wrapper.get('[data-testid="molding-sample-detail-table"]')
+    expect(detailTable.classes()).toContain('min-w-[920px]')
+    expect(detailTable.findAll('[data-testid="molding-sample-detail-row"]')).toHaveLength(1)
+    expect(detailTable.findAll('thead th')).toHaveLength(5)
+    expect(detailTable.text()).toContain('模具资料')
+    expect(detailTable.text()).toContain('原料 / 颜色')
+    expect(detailTable.text()).toContain('70%ABS PA-757 + 配比待确认')
+    expect(detailTable.text()).toContain('预计用料 / 料费')
+    expect(detailTable.text()).toContain('实际用料 / 料费')
+    expect(detailTable.find('[data-testid="expected-material-cost-panel"]').exists()).toBe(true)
+    expect(detailTable.find('[data-testid="actual-material-cost-panel"]').exists()).toBe(true)
     expect(detailTable.text()).toContain('工模尺寸')
     expect(detailTable.text()).toContain('650 × 450 × 380 mm')
     expect(detailTable.text()).not.toContain('适配机型')
@@ -1174,6 +1184,8 @@ describe('molding sample runtime error handling', () => {
     expect(detailTable.text()).toContain('需办日期')
     expect(detailTable.text()).toContain('2026-02-04')
     expect(detailTable.text()).not.toContain('回厂时间')
+    expect(detailTable.text()).toContain('分项按当前原料价估算')
+    expect(detailTable.text()).toContain('合计 HKD 98.76')
     expect(wrapper.text()).not.toContain('完整单据数据')
     expect(wrapper.text()).not.toContain('整啤毛重(g)')
     expect(wrapper.text()).not.toContain('RC-20260203-01')
@@ -1204,6 +1216,86 @@ describe('molding sample runtime error handling', () => {
     expect(text).not.toContain('啤办费(RMB)')
     expect(text).not.toContain('啤办费(HKD)')
     expect(text).not.toContain('当前汇率(RMB→HKD)')
+
+    wrapper.unmount()
+  })
+
+  it('shows persisted actual material cost components for a completed production task', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-SNAPSHOT-001' }
+    const completedRecord = createKpiRecord('已完成', 'BP-PROD-SNAPSHOT-001', 10)
+    completedRecord.order.completed_date = '2026-07-12'
+    completedRecord.items[0] = {
+      ...completedRecord.items[0],
+      material: '80%ABS 750NSW + 20%ABS 750NSW水口料',
+      material_components: [
+        { material: 'ABS 750NSW', source_type: 'virgin', ratio_percent: 80 },
+        { material: 'ABS 750NSW', source_type: 'runner', ratio_percent: 20 },
+      ],
+      actual_amount_hkd: 70,
+      actual_material_cost_components: [
+        { material: 'ABS 750NSW', source_type: 'virgin', ratio_percent: 80, weight_kg: 8, unit_price: 3, amount_hkd: 60 },
+        { material: 'ABS 750NSW', source_type: 'runner', ratio_percent: 20, weight_kg: 2, unit_price: 3, amount_hkd: 10 },
+      ],
+    }
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([completedRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(completedRecord.order.id),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+    const actualCostSource = wrapper.get('[data-testid="production-actual-material-cost-source"]')
+    const actualCostCellText = actualCostSource.element.closest('td')?.textContent ?? ''
+
+    expect(actualCostSource.text()).toContain('实际结算快照')
+    expect(actualCostCellText).toContain('$ 60.00')
+    expect(actualCostCellText).toContain('$ 10.00')
+    expect(actualCostCellText).toContain('合计 $ 70.00')
+    expect(actualCostCellText).not.toContain('按当前原料价估算')
+
+    wrapper.unmount()
+  })
+
+  it('recalculates the row breakdown while actual weight is edited without labeling the preview as settled', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-SNAPSHOT-PREVIEW-001' }
+    const runningRecord = createKpiRecord('生产中', 'BP-PROD-SNAPSHOT-PREVIEW-001', 10)
+    runningRecord.items[0] = {
+      ...runningRecord.items[0],
+      material: '80%ABS 750NSW + 20%ABS 750NSW水口料',
+      material_components: [
+        { material: 'ABS 750NSW', source_type: 'virgin', ratio_percent: 80 },
+        { material: 'ABS 750NSW', source_type: 'runner', ratio_percent: 20 },
+      ],
+      actual_amount_hkd: 70,
+      actual_material_cost_components: [
+        { material: 'ABS 750NSW', source_type: 'virgin', ratio_percent: 80, weight_kg: 8, unit_price: 3, amount_hkd: 60 },
+        { material: 'ABS 750NSW', source_type: 'runner', ratio_percent: 20, weight_kg: 2, unit_price: 3, amount_hkd: 10 },
+      ],
+    }
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([runningRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(runningRecord.order.id),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+    await wrapper.get('input[aria-label="实际用料"]').setValue('20')
+    await nextTick()
+
+    const actualCostSource = wrapper.get('[data-testid="production-actual-material-cost-source"]')
+    const actualCostCellText = actualCostSource.element.closest('td')?.textContent ?? ''
+    const reportTotalText = actualCostSource.element.closest('table')?.querySelector('tfoot')?.textContent ?? ''
+
+    expect(actualCostSource.text()).toContain('按本次实际用料预览，保存后结算')
+    expect(actualCostSource.text()).not.toContain('实际结算快照')
+    expect(actualCostCellText).toContain('16.00 kg')
+    expect(actualCostCellText).toContain('4.00 kg')
+    expect(actualCostCellText).toContain('$ 171.08')
+    expect(actualCostCellText).toContain('$ 42.77')
+    expect(actualCostCellText).toContain('合计 $ 213.85')
+    expect(reportTotalText).toContain('$ 213.85')
 
     wrapper.unmount()
   })
@@ -1686,7 +1778,7 @@ describe('molding sample runtime error handling', () => {
     const lineHeaders = wrapper.findAll('[aria-label="模具明细录入表"] [role="columnheader"]').map((node) => node.text())
     expect(lineHeaders).not.toContain('适配机型')
     expect(lineHeaders).not.toContain('整啤毛重(g)')
-    expect(lineHeaders.slice(-3)).toEqual(['模具状态（是否在厂）', '备注', '操作'])
+    expect(lineHeaders.slice(-4)).toEqual(['模具状态（是否在厂）', '用料用途', '备注', '操作'])
     expect(wrapper.find('[data-testid="create-line-machine-type"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="create-line-gross-weight"]').exists()).toBe(false)
     await wrapper.get('[data-testid="create-product-no"]').setValue('260705-01')
@@ -1742,6 +1834,80 @@ describe('molding sample runtime error handling', () => {
     expect(restoredWrapper.text()).toContain('新建成功')
 
     restoredWrapper.unmount()
+  })
+
+  it('rejects disabled and duplicate material components before saving a composition', async () => {
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    const materialInput = wrapper.get('[data-testid="create-line-material"]')
+    await materialInput.trigger('focus')
+    await materialInput.setValue('ABS 750NSW')
+    await materialInput.trigger('keydown.enter')
+    await wrapper.get('[data-testid="create-line-material-composition-0"]').trigger('click')
+    await wrapper.get('[data-testid="material-component-percentage-0"]').setValue('50')
+    await getButtonByText(wrapper, '添加组分').trigger('click')
+    await wrapper.get('[data-testid="material-component-name-1"]').setValue('停用 PVC')
+    await wrapper.get('[data-testid="material-component-percentage-1"]').setValue('50')
+    await wrapper.get('[data-testid="save-material-composition"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="material-composition-dialog"]').text()).toContain('不是已启用的原料')
+
+    await wrapper.get('[data-testid="material-component-name-1"]').setValue(' abs 750nsw ')
+    await wrapper.get('[data-testid="save-material-composition"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="material-composition-dialog"]').text()).toContain('原料 + 来源类型')
+
+    await wrapper.get('[data-testid="material-component-source-1"]').setValue('runner')
+    await wrapper.get('[data-testid="save-material-composition"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="material-composition-dialog"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="create-line-material-price"]').text()).toContain('HKD 4.85')
+
+    wrapper.unmount()
+  })
+
+  it('excludes trial material money from balance while retaining its weight', async () => {
+    const record = createKpiRecord('已完成', 'BP-TRIAL-BALANCE-001', 8)
+    record.items[0] = {
+      ...record.items[0],
+      required_material_kg: 10,
+      actual_weight_kg: 8,
+      actual_amount_hkd: 80,
+      material_usage_type: 'production',
+    }
+    record.items.push({
+      ...record.items[0],
+      id: 'BP-TRIAL-BALANCE-001-ITEM-2',
+      sort_order: 2,
+      mold_id: 'M-TRIAL',
+      required_material_kg: 5,
+      actual_weight_kg: 4,
+      actual_amount_hkd: null,
+      material_usage_type: 'trial',
+    })
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(wrapper, '物料结余').trigger('click')
+    await nextTick()
+
+    const summaryCards = wrapper.findAll('article')
+    const expectedCard = summaryCards.find((card) => card.text().includes('预计用料'))
+    const actualCard = summaryCards.find((card) => card.text().includes('实际用料'))
+    const balanceCard = summaryCards.find((card) => card.text().includes('物料结余'))
+    const amountCard = summaryCards.find((card) => card.text().includes('结余金额'))
+    const periodTableText = wrapper.get('table[aria-label="物料周期结余"]').text()
+
+    expect(expectedCard?.text()).toContain('15.00 kg')
+    expect(actualCard?.text()).toContain('12.00 kg')
+    expect(balanceCard?.text()).toContain('+3.00 kg')
+    expect(amountCard?.text()).toContain('+HKD 20.00')
+    expect(amountCard?.text()).toContain('1 项试料已排除金额')
+    expect(periodTableText).toContain('1 项试料金额不计结余')
+    expect(periodTableText).not.toContain('待计价')
+
+    wrapper.unmount()
   })
 
   it('imports Excel into the new-order draft before formal submission', async () => {

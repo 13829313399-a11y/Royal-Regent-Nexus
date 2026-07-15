@@ -33,7 +33,11 @@ import {
   applyCostPreviewToItems,
   buildCompletionGate,
   buildMoldingSampleReportSummary,
+  calculateMaterialCostBreakdown,
+  formatMaterialComposition,
   isExternalMoldingSampleOrder,
+  resolveActualMaterialCostBreakdown,
+  resolveMaterialComponents,
   type MoldingSampleMaterialPrice,
   type MoldingSampleReportItemRow,
   type MoldingSampleReportSummary,
@@ -350,6 +354,10 @@ const selectedPreviewItems = computed<MoldingSampleItem[]>(() => {
     return activeItems.value
   }
 
+  if (selectedTask.value.order.status === '已完成') {
+    return activeItems.value
+  }
+
   return applyCostPreviewToItems(
     activeItems.value,
     protectedMaterialPrices.value,
@@ -364,7 +372,11 @@ const selectedReportSummary = computed<MoldingSampleReportSummary | null>(() => 
     return null
   }
 
-  return buildMoldingSampleReportSummary(selectedTask.value.order, selectedPreviewItems.value)
+  return buildMoldingSampleReportSummary(
+    selectedTask.value.order,
+    selectedPreviewItems.value,
+    protectedMaterialPrices.value,
+  )
 })
 
 const selectedReportRowsByItemId = computed(() =>
@@ -524,6 +536,64 @@ function getQueueStatusLabel(status: MoldingSampleStatus) {
 
 function getReportRow(itemId: string) {
   return selectedReportRowsByItemId.value.get(itemId) ?? null
+}
+
+function getExpectedMaterialCostBreakdown(item: MoldingSampleItem) {
+  return calculateMaterialCostBreakdown({
+    components: resolveMaterialComponents(item),
+    totalWeightKg: item.required_material_kg,
+    prices: protectedMaterialPrices.value,
+  })
+}
+
+function hasUnsavedActualWeightChange(item: MoldingSampleItem) {
+  if (selectedTask.value?.order.status === '已完成') {
+    return false
+  }
+
+  const savedItem = selectedTask.value?.items.find((candidate) => candidate.id === item.id)
+  return savedItem !== undefined
+    && (savedItem.actual_weight_kg ?? null) !== (item.actual_weight_kg ?? null)
+}
+
+function getActualMaterialCostBreakdown(item: MoldingSampleItem) {
+  if (hasUnsavedActualWeightChange(item)) {
+    return {
+      ...calculateMaterialCostBreakdown({
+        components: resolveMaterialComponents(item),
+        totalWeightKg: item.actual_weight_kg,
+        prices: protectedMaterialPrices.value,
+      }),
+      source: 'estimated' as const,
+    }
+  }
+
+  return resolveActualMaterialCostBreakdown(item, protectedMaterialPrices.value)
+}
+
+function getActualMaterialCostTotal(item: MoldingSampleItem) {
+  if (hasUnsavedActualWeightChange(item)) {
+    return getActualMaterialCostBreakdown(item).total_amount_hkd
+  }
+
+  return item.actual_amount_hkd ?? getActualMaterialCostBreakdown(item).total_amount_hkd
+}
+
+function getActualMaterialCostSourceLabel(item: MoldingSampleItem) {
+  if (hasUnsavedActualWeightChange(item)) {
+    return '按本次实际用料预览，保存后结算'
+  }
+  if (getActualMaterialCostBreakdown(item).source === 'persisted') {
+    return '实际结算快照'
+  }
+
+  return item.actual_amount_hkd === null || item.actual_amount_hkd === undefined
+    ? '分项按当前原料价估算'
+    : '分项按当前原料价估算；合计以已存实际料费为准'
+}
+
+function getMaterialSourceLabel(sourceType: 'virgin' | 'runner') {
+  return sourceType === 'runner' ? '水口料' : '原料'
 }
 
 function formatBlank(value: string | number | null | undefined, fallback = '待填写') {
@@ -1434,7 +1504,7 @@ watchEffect(() => {
                     <th class="px-2 py-2 text-left font-medium">模具 / 原料</th>
                     <th class="px-2 py-2 text-right font-medium">领料(kg)</th>
                     <th class="px-2 py-2 text-right font-medium">实际用料(kg)</th>
-                    <th class="px-2 py-2 text-right font-medium">料费(HKD)</th>
+                    <th class="px-2 py-2 text-right font-medium">预计 / 实际料费(HKD)</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-50">
@@ -1453,7 +1523,13 @@ watchEffect(() => {
                           aria-hidden="true"
                         />
                       </div>
-                      <div class="text-[12px] font-semibold text-slate-950">{{ item.mold_name }} · {{ item.material }}</div>
+                      <div class="text-[12px] font-semibold text-slate-950">{{ item.mold_name }} · {{ formatMaterialComposition(resolveMaterialComponents(item)) }}</div>
+                      <div
+                        class="mt-0.5 text-[10px] font-semibold"
+                        :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'"
+                      >
+                        {{ item.material_usage_type === 'trial' ? '试料 · 金额不计结余' : '正式生产' }}
+                      </div>
                       <div class="text-[10px]" :class="Number(item.actual_weight_kg) > 0 ? 'text-slate-400' : 'text-red-500'">
                         {{ item.notes || item.color || '待啤机部补实际用料' }}
                       </div>
@@ -1475,8 +1551,32 @@ watchEffect(() => {
                         @input="updateItemDraft(item.id, 'actual_weight_kg', readInputValue($event))"
                       >
                     </td>
-                    <td class="px-2 py-2 text-right font-semibold tabular-nums" :class="getReportRow(item.id)?.actual_amount_hkd ? 'text-slate-900' : 'text-slate-300'">
-                      {{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd) }}
+                    <td class="px-2 py-2 text-right tabular-nums">
+                      <div class="text-[10px] font-semibold text-slate-400">预计</div>
+                      <div
+                        v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
+                        :key="`production-expected-${item.id}-${componentIndex}`"
+                        class="whitespace-nowrap text-[10px] text-slate-500"
+                      >
+                        {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
+                      </div>
+                      <div class="mt-0.5 font-semibold text-slate-900">合计 {{ formatCurrency(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</div>
+                      <div class="mt-1 border-t border-slate-100 pt-1 text-[10px] font-semibold text-slate-400">实际</div>
+                      <div
+                        data-testid="production-actual-material-cost-source"
+                        class="mb-0.5 text-[9px] font-semibold"
+                        :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
+                      >
+                        {{ getActualMaterialCostSourceLabel(item) }}
+                      </div>
+                      <div
+                        v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
+                        :key="`production-actual-${item.id}-${componentIndex}`"
+                        class="whitespace-nowrap text-[10px] text-slate-500"
+                      >
+                        {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
+                      </div>
+                      <div class="mt-0.5 font-semibold text-slate-900">合计 {{ formatCurrency(getActualMaterialCostTotal(item)) }}</div>
                     </td>
                   </tr>
                 </tbody>
@@ -1485,7 +1585,6 @@ watchEffect(() => {
                     <td class="px-2 py-2">
                       合计{{ selectedReportSummary?.archive_ready ? '' : '（待补齐）' }}
                     </td>
-                    <td />
                     <td />
                     <td />
                     <td class="px-2 py-2 text-right tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</td>
@@ -1569,14 +1668,48 @@ watchEffect(() => {
                       </span>
                     </div>
                     <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
-                      <div><span class="text-slate-400">原料</span><div class="font-semibold">{{ formatBlank(item.material) }}</div></div>
+                      <div>
+                        <span class="text-slate-400">原料 / 用料用途</span>
+                        <div class="font-semibold">{{ formatMaterialComposition(resolveMaterialComponents(item)) }}</div>
+                        <div :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'">
+                          {{ item.material_usage_type === 'trial' ? '试料 · 金额不计结余' : '正式生产' }}
+                        </div>
+                      </div>
                       <div><span class="text-slate-400">颜色 / PMS</span><div class="font-semibold">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></div>
                       <div><span class="text-slate-400">数量 / 啤数</span><div class="font-semibold">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</div></div>
                       <div><span class="text-slate-400">预计用料</span><div class="font-semibold">{{ formatWeight(item.required_material_kg) }}</div></div>
                       <div><span class="text-slate-400">回模 / 完成时间</span><div class="font-semibold">{{ formatBlank(item.mold_return_time) }} / {{ formatBlank(item.completion_time) }}</div></div>
                       <div><span class="text-slate-400">领料重量</span><div class="font-semibold">{{ formatWeight(item.collected_weight_kg) }}</div></div>
                       <div><span class="text-slate-400">实际用料</span><div class="font-semibold">{{ formatWeight(item.actual_weight_kg) }}</div></div>
-                      <div><span class="text-slate-400">实际料费(HKD)</span><div class="font-semibold">{{ formatCurrency(getReportRow(item.id)?.actual_amount_hkd ?? item.actual_amount_hkd) }}</div></div>
+                      <div>
+                        <span class="text-slate-400">预计料费(HKD)</span>
+                        <div
+                          v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
+                          :key="`production-full-expected-${item.id}-${componentIndex}`"
+                          class="mt-0.5 text-[11px] text-slate-600"
+                        >
+                          {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
+                        </div>
+                        <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatCurrency(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</div>
+                      </div>
+                      <div>
+                        <span class="text-slate-400">实际料费(HKD)</span>
+                        <div
+                          data-testid="production-actual-material-cost-source"
+                          class="mt-0.5 text-[10px] font-semibold"
+                          :class="getActualMaterialCostBreakdown(item).source === 'persisted' ? 'text-emerald-600' : 'text-amber-600'"
+                        >
+                          {{ getActualMaterialCostSourceLabel(item) }}
+                        </div>
+                        <div
+                          v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
+                          :key="`production-full-actual-${item.id}-${componentIndex}`"
+                          class="mt-0.5 text-[11px] text-slate-600"
+                        >
+                          {{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }} · {{ formatWeight(component.weight_kg) }} · {{ formatCurrency(component.amount_hkd) }}
+                        </div>
+                        <div class="mt-1 border-t border-slate-100 pt-1 font-semibold">合计 {{ formatCurrency(getActualMaterialCostTotal(item)) }}</div>
+                      </div>
                     </div>
                     <p class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-[12px] leading-5 text-slate-600">
                       备注：{{ formatBlank(item.notes) }}

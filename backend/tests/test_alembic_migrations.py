@@ -21,6 +21,9 @@ AUTH_AVATAR_MIGRATION_REVISION = "20260710_0009"
 CONFIGURABLE_IAM_MIGRATION_REVISION = "20260711_0010"
 PRICING_MIGRATION_REVISION = "20260711_0011"
 NOTIFICATION_DEPARTMENT_MIGRATION_REVISION = "20260712_0012"
+RAW_MATERIAL_MIGRATION_REVISION = "20260714_0013"
+TRIAL_REPORT_MIGRATION_REVISION = "20260714_0014"
+MATERIAL_COMPONENT_MIGRATION_REVISION = "20260715_0015"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -70,7 +73,22 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [NOTIFICATION_DEPARTMENT_MIGRATION_REVISION]
+    assert script.get_heads() == [MATERIAL_COMPONENT_MIGRATION_REVISION]
+
+    material_component_revision = script.get_revision(MATERIAL_COMPONENT_MIGRATION_REVISION)
+    assert material_component_revision.down_revision == TRIAL_REPORT_MIGRATION_REVISION
+    material_component_content = Path(material_component_revision.path).read_text(encoding="utf-8")
+    assert "material_components" in material_component_content
+    assert "material_usage_type" in material_component_content
+    assert "actual_material_cost_components" in material_component_content
+
+    trial_report_revision = script.get_revision(TRIAL_REPORT_MIGRATION_REVISION)
+    assert trial_report_revision.down_revision == RAW_MATERIAL_MIGRATION_REVISION
+    assert "molding_sample_trial_reports" in Path(trial_report_revision.path).read_text(encoding="utf-8")
+
+    raw_material_revision = script.get_revision(RAW_MATERIAL_MIGRATION_REVISION)
+    assert raw_material_revision.down_revision == NOTIFICATION_DEPARTMENT_MIGRATION_REVISION
+    assert "raw_materials" in Path(raw_material_revision.path).read_text(encoding="utf-8")
 
     notification_department_revision = script.get_revision(NOTIFICATION_DEPARTMENT_MIGRATION_REVISION)
     assert notification_department_revision.down_revision == PRICING_MIGRATION_REVISION
@@ -191,3 +209,8 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "avatar_version" in sql
     assert "target_department" in sql
     assert "create table pricing_quotes" in sql
+    assert "create table raw_materials" in sql
+    assert "create table molding_sample_trial_reports" in sql
+    assert "material_components" in sql
+    assert "material_usage_type" in sql
+    assert "actual_material_cost_components" in sql

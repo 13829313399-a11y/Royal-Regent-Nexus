@@ -40,6 +40,9 @@ SQLITE_LEGACY_COLUMNS = {
         ("production_machine", "production_machine VARCHAR(128) NOT NULL DEFAULT ''"),
         ("mold_dimensions", "mold_dimensions VARCHAR(128) NOT NULL DEFAULT ''"),
         ("mold_presence_status", "mold_presence_status VARCHAR(20) NOT NULL DEFAULT 'unknown'"),
+        ("material_components", "material_components JSON NOT NULL DEFAULT '[]'"),
+        ("material_usage_type", "material_usage_type VARCHAR(20) NOT NULL DEFAULT 'production'"),
+        ("actual_material_cost_components", "actual_material_cost_components JSON NOT NULL DEFAULT '[]'"),
     ],
     "molding_sample_audit_logs": [
         ("actor_user_id", "actor_user_id VARCHAR(64) NOT NULL DEFAULT ''"),

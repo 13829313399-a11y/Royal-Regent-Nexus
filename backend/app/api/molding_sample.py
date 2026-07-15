@@ -86,6 +86,7 @@ def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResp
             item.model_copy(
                 update={
                     "actual_amount_hkd": None,
+                    "actual_material_cost_components": [],
                     "injection_cost": None,
                     "injection_cost_hkd": None,
                     "exchange_rate_at_save": None,

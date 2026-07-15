@@ -63,6 +63,17 @@ for (const requiredCopy of [
   '退回 / 撤回',
   '未解决异常',
   '生产数据待补',
+  '配置配比',
+  '用料用途',
+  '正式生产',
+  '试料',
+  '试料金额不计结余',
+  '配比合计',
+  '水口料',
+  '实际结算快照',
+  '分项按当前原料价估算；合计以已存实际料费为准',
+  '不是已启用的原料',
+  '原料 \\+ 来源类型',
 ]) {
   assert.match(source, new RegExp(requiredCopy))
 }
@@ -218,6 +229,17 @@ for (const requiredImplementation of [
   'selectFirstRawMaterialOption',
   'clearRawMaterialSelection',
   'handleRawMaterialPickerFocusOut',
+  'materialCompositionDraftRows',
+  'openMaterialCompositionEditor',
+  'saveMaterialComposition',
+  'calculateMaterialCostBreakdown',
+  'getExpectedMaterialCostBreakdown',
+  'getMaterialCompositionLabel',
+  'getActualMaterialCostBreakdown',
+  'material_usage_type',
+  'resolveActualMaterialCostBreakdown',
+  'findEnabledRawMaterialOption',
+  'duplicateComponentIndex',
 ]) {
   assert.ok(source.includes(requiredImplementation), `Missing implementation: ${requiredImplementation}`)
 }
@@ -258,6 +280,13 @@ assert.doesNotMatch(source, /文件编号/)
 assert.doesNotMatch(source, /啤机确认机台/)
 assert.doesNotMatch(source, /啤办费\(RMB\)|啤办费\(HKD\)|回填实际用料和啤办费/)
 assert.match(source, /data-testid="molding-sample-detail-table"/)
+assert.match(source, /data-testid="molding-sample-detail-table" class="w-full min-w-\[920px\] table-fixed text-\[12px\]"/)
+assert.doesNotMatch(source, /data-testid="molding-sample-detail-table" class="w-full min-w-\[1300px\]/)
+assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*模具资料[\s\S]*原料 \/ 颜色[\s\S]*预计用料 \/ 料费[\s\S]*实际用料 \/ 料费[\s\S]*状态/)
+assert.match(source, /data-testid="molding-sample-detail-row"/)
+assert.match(source, /data-testid="expected-material-cost-panel"/)
+assert.match(source, /data-testid="actual-material-cost-panel"/)
+assert.match(source, /return components\.length \? formatMaterialComposition\(components\) : formatBlank\(item\.material\)/)
 assert.match(source, /data-testid="molding-sample-detail-table"[\s\S]*工模尺寸[\s\S]*模具在厂[\s\S]*需办日期/)
 assert.doesNotMatch(source, /data-testid="molding-sample-detail-table"[\s\S]*回厂时间/)
 assert.doesNotMatch(source, /data-testid="molding-sample-detail-table"[\s\S]*适配机型/)
@@ -281,18 +310,18 @@ assert.match(source, /role="table"/)
 assert.match(source, /<div class="space-y-4 xl:contents">/)
 assert.match(source, /<aside class="space-y-4 xl:col-start-2 xl:row-start-1">/)
 assert.match(source, /<section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">/)
-assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_190px_112px_124px_74px_96px_82px_92px_118px_138px_150px_130px_160px_72px\]'/)
+assert.match(source, /createLineGridClass = 'grid-cols-\[40px_132px_142px_210px_120px_124px_74px_96px_82px_92px_118px_138px_150px_130px_118px_160px_72px\]'/)
 assert.match(source, /:class="createLineGridClass"/)
 assert.match(source, /role="columnheader">原料价格\(HKD\/磅\)<\/div>/)
 assert.doesNotMatch(source, /role="columnheader">整啤毛重\(g\)<\/div>/)
 assert.match(source, /role="columnheader">所需用料\(kg\)<\/div>/)
 assert.match(source, /data-testid="create-line-material-price"/)
-assert.match(source, /getRawMaterialUnitPrice\(line\.material\)/)
+assert.match(source, /getDraftWeightedUnitPrice\(line\)/)
 assert.match(source, /v-model="line\.required_material_kg"/)
 assert.doesNotMatch(source, /data-testid="create-line-gross-weight"/)
 assert.match(source, /data-testid="create-line-required-material"/)
 assert.match(source, /v-model="line\.notes"/)
-assert.match(source, /min-w-\[2020px\]/)
+assert.match(source, /min-w-\[2180px\]/)
 assert.match(source, /columnheader">工模尺寸/)
 assert.doesNotMatch(source, /columnheader">适配机型/)
 assert.match(source, /columnheader">模具状态（是否在厂）/)
@@ -316,6 +345,9 @@ assert.match(source, /role="listbox"/)
 assert.match(source, /v-if="hasUnknownRawMaterialValue\(line\.material\)"[\s\S]*当前值/)
 assert.match(source, /v-for="option in getVisibleRawMaterialOptions\(index\)"[\s\S]*:key="option\.value"[\s\S]*@click="selectRawMaterialOption\(line, index, option\)"/)
 assert.match(source, /aria-label="清除所需用料"[\s\S]*@click="clearRawMaterialSelection\(line, index\)"/)
+assert.match(source, /data-testid="`create-line-material-composition-\$\{index\}`"[\s\S]*配置配比/)
+assert.match(source, /data-testid="create-line-material-usage-type"[\s\S]*value="production">正式生产[\s\S]*value="trial">试料/)
+assert.match(source, /aria-label="配置原料配比"[\s\S]*v-for="\(component, componentIndex\) in materialCompositionDraftRows"[\s\S]*value="virgin">原料[\s\S]*value="runner">水口料[\s\S]*合计 \{\{ materialCompositionPercentageTotal/)
 assert.doesNotMatch(source, /<select[\s\S]*v-model="line\.material"/)
 assert.doesNotMatch(source, /<input v-model="line\.material"/)
 assert.doesNotMatch(source, /class="absolute left-0 top-10[^"]*role="listbox"/)

@@ -1,5 +1,8 @@
 import type {
+  MoldingSampleActualMaterialCostComponent,
   MoldingSampleItem,
+  MoldingSampleMaterialComponent,
+  MoldingSampleMaterialSource,
   MoldingSampleOrder,
   MoldingSampleProblemStatus,
   MoldingSampleRole,
@@ -80,10 +83,36 @@ export interface MoldingSampleItemCostResult {
   injection_cost_hkd: number | null
   exchange_rate_at_save: number | null
   material_unit_price: number | null
+  actual_material_cost_components: MoldingSampleActualMaterialCostComponent[] | null
+}
+
+export interface MoldingSampleMaterialCostComponentRow extends MoldingSampleMaterialComponent {
+  weight_kg: number
+  unit_price: number | null
+  amount_hkd: number | null
+}
+
+export interface MoldingSampleMaterialCostBreakdown {
+  components: MoldingSampleMaterialCostComponentRow[]
+  total_amount_hkd: number | null
+  weighted_unit_price: number | null
+  has_missing_price: boolean
+  has_invalid_ratio: boolean
+}
+
+export interface MoldingSampleMaterialCostBreakdownInput {
+  components: readonly MoldingSampleMaterialComponent[]
+  totalWeightKg: number | null | undefined
+  prices: MoldingSampleMaterialPrice[]
+}
+
+export interface MoldingSampleResolvedActualMaterialCostBreakdown extends MoldingSampleMaterialCostBreakdown {
+  source: 'persisted' | 'estimated'
 }
 
 export interface MoldingSampleMaterialReportRow {
   material: string
+  source_type: MoldingSampleMaterialSource
   line_count: number
   total_weight_kg: number
   total_material_cost_hkd: number
@@ -377,42 +406,261 @@ export function normalizeMaterialName(value: string) {
     .replace(/[\s\-()（）_]/g, '')
 }
 
+const RUNNER_MATERIAL_SUFFIX = /(?:水口料|水口|回料|抽粒)$/i
+
+function findDirectMaterialPrice(material: string, prices: MoldingSampleMaterialPrice[]) {
+  const normalized = normalizeMaterialName(material)
+  return prices.find((price) => Number(price.unit_price) > 0 && normalizeMaterialName(price.material) === normalized) ?? null
+}
+
+function normalizeComponentMaterial(material: string, sourceType: MoldingSampleMaterialSource, fallbackMaterial = '') {
+  const trimmed = material.trim()
+  if (sourceType !== 'runner') {
+    return trimmed
+  }
+
+  return trimmed.replace(RUNNER_MATERIAL_SUFFIX, '').trim() || fallbackMaterial
+}
+
+function hasValidMaterialComponentRatios(components: readonly MoldingSampleMaterialComponent[]) {
+  return components.length > 0
+    && components.every((component) => component.material !== '' && Number.isFinite(component.ratio_percent) && component.ratio_percent > 0)
+    && Math.abs(components.reduce((sum, component) => sum + component.ratio_percent, 0) - 100) <= 0.01
+}
+
+export function normalizeMaterialComponents(
+  material: string,
+  components?: readonly MoldingSampleMaterialComponent[] | null,
+): MoldingSampleMaterialComponent[] {
+  if (components?.length) {
+    const fallbackMaterial = components.find((component) => component.source_type === 'virgin' && component.material.trim())?.material.trim()
+      ?? components.find((component) => component.material.trim())?.material.trim()
+      ?? ''
+
+    const normalizedComponents = components.map((component) => ({
+        material: normalizeComponentMaterial(component.material, component.source_type, fallbackMaterial),
+        source_type: component.source_type === 'runner' ? 'runner' as const : 'virgin' as const,
+        ratio_percent: Number(component.ratio_percent),
+      }))
+
+    return hasValidMaterialComponentRatios(normalizedComponents) ? normalizedComponents : []
+  }
+
+  const trimmedMaterial = material.trim()
+  if (!trimmedMaterial) {
+    return []
+  }
+
+  const rawParts = trimmedMaterial.split(/[+＋]/)
+  const hasLegacyCompositionSyntax = rawParts.length > 1 || /[%％]/.test(trimmedMaterial)
+  if (!hasLegacyCompositionSyntax) {
+    return [{ material: trimmedMaterial, source_type: 'virgin', ratio_percent: 100 }]
+  }
+
+  const parsedParts = rawParts.map((part) => {
+    const match = part.trim().match(/^(\d+(?:\.\d+)?)\s*[%％]\s*(.+)$/)
+    if (!match) {
+      return null
+    }
+    const rawMaterial = match[2].trim()
+    return {
+      material: rawMaterial,
+      source_type: RUNNER_MATERIAL_SUFFIX.test(rawMaterial) ? 'runner' as const : 'virgin' as const,
+      ratio_percent: Number(match[1]),
+    }
+  })
+
+  if (!parsedParts.every((part) => part !== null)) {
+    return []
+  }
+
+  const typedParts = parsedParts as MoldingSampleMaterialComponent[]
+  const fallbackMaterial = typedParts.find((component) => component.source_type === 'virgin')?.material ?? ''
+  const normalizedParts = typedParts.map((component) => ({
+    ...component,
+    material: normalizeComponentMaterial(component.material, component.source_type, fallbackMaterial),
+  }))
+
+  return hasValidMaterialComponentRatios(normalizedParts) ? normalizedParts : []
+}
+
+export function resolveMaterialComponents(
+  input: string | Pick<MoldingSampleItem, 'material' | 'material_components'>,
+) {
+  return typeof input === 'string'
+    ? normalizeMaterialComponents(input)
+    : normalizeMaterialComponents(input.material, input.material_components)
+}
+
+export function formatMaterialComposition(components: readonly MoldingSampleMaterialComponent[]) {
+  if (components.length === 1 && components[0]?.source_type === 'virgin' && Number(components[0].ratio_percent) === 100) {
+    return components[0].material
+  }
+
+  return components.map((component) => {
+    const ratio = Number(component.ratio_percent)
+    const ratioLabel = Number.isInteger(ratio) ? String(ratio) : String(roundMoney(ratio))
+    const sourceLabel = component.source_type === 'runner' ? '水口料' : ''
+    return `${ratioLabel}%${component.material}${sourceLabel}`
+  }).join(' + ')
+}
+
+export function calculateMaterialCostBreakdown(
+  input: MoldingSampleMaterialCostBreakdownInput,
+): MoldingSampleMaterialCostBreakdown {
+  const components = normalizeMaterialComponents('', input.components)
+  const ratioTotal = components.reduce((sum, component) => sum + component.ratio_percent, 0)
+  const hasInvalidRatio = components.length === 0 || Math.abs(ratioTotal - 100) > 0.01
+  const totalWeightKg = Number(input.totalWeightKg)
+  const hasValidWeight = Number.isFinite(totalWeightKg) && totalWeightKg > 0
+  const rows = components.map<MoldingSampleMaterialCostComponentRow>((component) => {
+    const price = findDirectMaterialPrice(component.material, input.prices)
+    const weightKg = Math.round(totalWeightKg * component.ratio_percent * 100) / 10000
+    return {
+      ...component,
+      weight_kg: hasValidWeight ? weightKg : 0,
+      unit_price: price?.unit_price ?? null,
+      amount_hkd: hasValidWeight && price
+        ? roundMoney(weightKg * KG_TO_LB * price.unit_price)
+        : null,
+    }
+  })
+  const hasMissingPrice = rows.some((row) => row.unit_price === null)
+  const weightedUnitPrice = !hasInvalidRatio && !hasMissingPrice
+    ? roundMoney(rows.reduce((sum, row) => sum + (row.unit_price ?? 0) * row.ratio_percent / 100, 0))
+    : null
+
+  return {
+    components: rows,
+    total_amount_hkd: hasValidWeight && !hasInvalidRatio && !hasMissingPrice
+      ? roundMoney(rows.reduce((sum, row) => sum + (row.amount_hkd ?? 0), 0))
+      : null,
+    weighted_unit_price: weightedUnitPrice,
+    has_missing_price: hasMissingPrice,
+    has_invalid_ratio: hasInvalidRatio,
+  }
+}
+
+function createActualMaterialCostSnapshot(
+  breakdown: MoldingSampleMaterialCostBreakdown,
+): MoldingSampleActualMaterialCostComponent[] | null {
+  if (
+    breakdown.total_amount_hkd === null
+    || breakdown.has_missing_price
+    || breakdown.has_invalid_ratio
+    || breakdown.components.some((component) => component.unit_price === null || component.amount_hkd === null)
+  ) {
+    return null
+  }
+
+  return breakdown.components.map((component) => ({
+    material: component.material,
+    source_type: component.source_type,
+    ratio_percent: component.ratio_percent,
+    weight_kg: component.weight_kg,
+    unit_price: component.unit_price as number,
+    amount_hkd: component.amount_hkd as number,
+  }))
+}
+
+export function resolveActualMaterialCostBreakdown(
+  item: MoldingSampleItem,
+  prices: MoldingSampleMaterialPrice[],
+): MoldingSampleResolvedActualMaterialCostBreakdown {
+  const snapshot = item.actual_material_cost_components
+  const hasValidSnapshot = Boolean(
+    snapshot?.length
+    && Math.abs(snapshot.reduce((sum, component) => sum + Number(component.ratio_percent), 0) - 100) <= 0.01
+    && snapshot.every((component) =>
+      component.material.trim() !== ''
+      && (component.source_type === 'virgin' || component.source_type === 'runner')
+      && Number.isFinite(Number(component.ratio_percent))
+      && Number(component.ratio_percent) > 0
+      && Number.isFinite(Number(component.weight_kg))
+      && Number(component.weight_kg) >= 0
+      && Number.isFinite(Number(component.unit_price))
+      && Number(component.unit_price) > 0
+      && Number.isFinite(Number(component.amount_hkd))
+      && Number(component.amount_hkd) >= 0,
+    ),
+  )
+
+  if (snapshot?.length && hasValidSnapshot) {
+    const storedAmount = Number(item.actual_amount_hkd)
+    const hasStoredAmount = item.actual_amount_hkd !== null
+      && item.actual_amount_hkd !== undefined
+      && Number.isFinite(storedAmount)
+    return {
+      components: snapshot.map((component) => ({ ...component })),
+      total_amount_hkd: hasStoredAmount
+        ? roundMoney(storedAmount)
+        : roundMoney(snapshot.reduce((sum, component) => sum + component.amount_hkd, 0)),
+      weighted_unit_price: roundMoney(snapshot.reduce(
+        (sum, component) => sum + component.unit_price * component.ratio_percent / 100,
+        0,
+      )),
+      has_missing_price: false,
+      has_invalid_ratio: false,
+      source: 'persisted',
+    }
+  }
+
+  const estimate = calculateMaterialCostBreakdown({
+    components: resolveMaterialComponents(item),
+    totalWeightKg: item.actual_weight_kg ?? item.collected_weight_kg,
+    prices,
+  })
+  const storedAmount = Number(item.actual_amount_hkd)
+  const hasStoredAmount = item.actual_amount_hkd !== null
+    && item.actual_amount_hkd !== undefined
+    && Number.isFinite(storedAmount)
+
+  return {
+    ...estimate,
+    total_amount_hkd: hasStoredAmount ? roundMoney(storedAmount) : estimate.total_amount_hkd,
+    source: 'estimated',
+  }
+}
+
 export function resolveMaterialPrice(
   material: string,
   prices: MoldingSampleMaterialPrice[],
 ) {
-  const priceMap = new Map(
-    prices
-      .filter((price) => Number(price.unit_price) > 0)
-      .map((price) => [normalizeMaterialName(price.material), price]),
-  )
-  const directPrice = priceMap.get(normalizeMaterialName(material))
+  const components = normalizeMaterialComponents(material)
+  if (!components.length) {
+    return null
+  }
+  if (components.length > 1) {
+    const breakdown = calculateMaterialCostBreakdown({ components, totalWeightKg: 1, prices })
+    return breakdown.weighted_unit_price === null
+      ? null
+      : {
+          material: formatMaterialComposition(components),
+          unit_price: breakdown.weighted_unit_price,
+          notes: '混合原料加权单价',
+        }
+  }
+
+  const directPrice = findDirectMaterialPrice(material, prices)
 
   if (directPrice) {
     return directPrice
   }
 
-  const mixedParts = material
-    .split(/[+＋]/)
-    .map((part) => {
-      const match = part.trim().match(/^(\d+(?:\.\d+)?)\s*[%％]\s*(.+)$/)
-
-      return match
-        ? { ratio: Number(match[1]), material: match[2].trim() }
-        : null
-    })
-    .filter((part): part is { ratio: number, material: string } => part !== null)
-    .sort((a, b) => b.ratio - a.ratio)
-
-  if (mixedParts.length === 0) {
+  const breakdown = calculateMaterialCostBreakdown({ components, totalWeightKg: 1, prices })
+  if (breakdown.weighted_unit_price === null) {
     return null
   }
 
-  return priceMap.get(normalizeMaterialName(mixedParts[0].material)) ?? null
+  return {
+    material: formatMaterialComposition(components),
+    unit_price: breakdown.weighted_unit_price,
+    notes: '混合原料加权单价',
+  }
 }
 
 export function calculateExpectedMaterialAmountHkd(
-  item: Pick<MoldingSampleItem, 'material' | 'required_material_kg'>,
+  item: Pick<MoldingSampleItem, 'material' | 'material_components' | 'required_material_kg'>,
   prices: MoldingSampleMaterialPrice[],
 ) {
   if (item.required_material_kg === null || item.required_material_kg === undefined) {
@@ -420,11 +668,11 @@ export function calculateExpectedMaterialAmountHkd(
   }
 
   const expectedWeightKg = Number(item.required_material_kg)
-  const materialPrice = resolveMaterialPrice(item.material, prices)
-
-  return Number.isFinite(expectedWeightKg) && expectedWeightKg > 0 && materialPrice
-    ? roundMoney(expectedWeightKg * KG_TO_LB * materialPrice.unit_price)
-    : null
+  return calculateMaterialCostBreakdown({
+    components: resolveMaterialComponents(item),
+    totalWeightKg: expectedWeightKg,
+    prices,
+  }).total_amount_hkd
 }
 
 export function calculateMoldingSampleItemCosts(
@@ -436,10 +684,12 @@ export function calculateMoldingSampleItemCosts(
   const actualWeightKg = isExternalOrder
     ? item.collected_weight_kg ?? item.required_material_kg ?? null
     : item.actual_weight_kg
-  const materialPrice = resolveMaterialPrice(item.material, prices)
-  const actualAmountHkd = actualWeightKg !== null && materialPrice
-    ? roundMoney(actualWeightKg * KG_TO_LB * materialPrice.unit_price)
-    : null
+  const materialBreakdown = calculateMaterialCostBreakdown({
+    components: resolveMaterialComponents(item),
+    totalWeightKg: actualWeightKg,
+    prices,
+  })
+  const actualAmountHkd = materialBreakdown.total_amount_hkd
   const hasInjectionCost = item.injection_cost !== null
     && item.injection_cost !== undefined
     && Number.isFinite(Number(item.injection_cost))
@@ -453,7 +703,8 @@ export function calculateMoldingSampleItemCosts(
     actual_amount_hkd: actualAmountHkd,
     injection_cost_hkd: injectionCostHkd,
     exchange_rate_at_save: injectionCostHkd !== null ? rmbToHkdRate : null,
-    material_unit_price: materialPrice?.unit_price ?? null,
+    material_unit_price: materialBreakdown.weighted_unit_price,
+    actual_material_cost_components: createActualMaterialCostSnapshot(materialBreakdown),
   }
 }
 
@@ -469,12 +720,14 @@ export function applyCostPreviewToItems(
     const shouldFillMaterialAmount = forceRecalculateMaterialAmount
       || item.actual_amount_hkd === null
       || item.actual_amount_hkd === undefined
-      || item.actual_amount_hkd === 0
 
     return {
       ...item,
       actual_weight_kg: isExternalOrder ? costs.actual_weight_kg : item.actual_weight_kg,
       actual_amount_hkd: shouldFillMaterialAmount ? costs.actual_amount_hkd : item.actual_amount_hkd,
+      actual_material_cost_components: shouldFillMaterialAmount
+        ? costs.actual_material_cost_components ?? undefined
+        : item.actual_material_cost_components,
       injection_cost_hkd: costs.injection_cost_hkd,
       exchange_rate_at_save: costs.exchange_rate_at_save,
     }
@@ -502,6 +755,7 @@ function getReportInjectionCost(order: MoldingSampleOrder, item: MoldingSampleIt
 export function buildMoldingSampleReportSummary(
   order: MoldingSampleOrder,
   items: MoldingSampleItem[],
+  prices: MoldingSampleMaterialPrice[] = [],
 ): MoldingSampleReportSummary {
   const isExternalOrder = isExternalMoldingSampleOrder(order)
   const materialRows = new Map<string, MoldingSampleMaterialReportRow>()
@@ -514,6 +768,7 @@ export function buildMoldingSampleReportSummary(
   for (const item of items) {
     const materialWeight = getReportMaterialWeight(order, item)
     const materialCost = item.actual_amount_hkd ?? 0
+    const materialBreakdown = resolveActualMaterialCostBreakdown(item, prices)
     const injectionCost = getReportInjectionCost(order, item)
     const hasMaterialWeight = Number(materialWeight) > 0
     const isMissingPrice = hasMaterialWeight && (item.actual_amount_hkd === null || item.actual_amount_hkd === undefined)
@@ -534,26 +789,33 @@ export function buildMoldingSampleReportSummary(
       missingInjectionCostItemIds.push(item.id)
     }
 
-    let materialRow = materialRows.get(item.material)
+    for (const component of materialBreakdown.components) {
+      const materialKey = `${component.material}\u0000${component.source_type}`
+      let materialRow = materialRows.get(materialKey)
 
-    if (!materialRow) {
-      materialRow = {
-        material: item.material || '未填写原料',
-        line_count: 0,
-        total_weight_kg: 0,
-        total_material_cost_hkd: 0,
-        missing_price_item_ids: [],
+      if (!materialRow) {
+        materialRow = {
+          material: component.material || '未填写原料',
+          source_type: component.source_type,
+          line_count: 0,
+          total_weight_kg: 0,
+          total_material_cost_hkd: 0,
+          missing_price_item_ids: [],
+        }
       }
-    }
-    materialRow.line_count += 1
-    materialRow.total_weight_kg = roundMoney(materialRow.total_weight_kg + (materialWeight ?? 0))
-    materialRow.total_material_cost_hkd = roundMoney(materialRow.total_material_cost_hkd + materialCost)
+      materialRow.line_count += 1
+      materialRow.total_weight_kg = roundMoney(materialRow.total_weight_kg + component.weight_kg)
+      materialRow.total_material_cost_hkd = roundMoney(
+        materialRow.total_material_cost_hkd
+        + (component.amount_hkd ?? (materialBreakdown.components.length === 1 ? materialCost : 0)),
+      )
 
-    if (isMissingPrice) {
-      materialRow.missing_price_item_ids.push(item.id)
-    }
+      if (isMissingPrice || component.unit_price === null) {
+        materialRow.missing_price_item_ids.push(item.id)
+      }
 
-    materialRows.set(item.material, materialRow)
+      materialRows.set(materialKey, materialRow)
+    }
 
     if (!isExternalOrder) {
       injectionFeeRows.push({
@@ -577,9 +839,7 @@ export function buildMoldingSampleReportSummary(
     })
   }
 
-  const totalMaterialCost = roundMoney(
-    Array.from(materialRows.values()).reduce((sum, row) => sum + row.total_material_cost_hkd, 0),
-  )
+  const totalMaterialCost = roundMoney(items.reduce((sum, item) => sum + (item.actual_amount_hkd ?? 0), 0))
   const totalInjectionCost = roundMoney(
     injectionFeeRows.reduce((sum, row) => sum + (row.injection_cost_hkd ?? row.injection_cost ?? 0), 0),
   )

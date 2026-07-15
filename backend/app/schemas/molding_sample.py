@@ -1,6 +1,8 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MoldingSampleOrderIn(BaseModel):
@@ -31,6 +33,29 @@ class MoldingSampleOrderOut(MoldingSampleOrderIn):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MoldingSampleMaterialComponent(BaseModel):
+    material: str = Field(min_length=1, max_length=255)
+    ratio_percent: float = Field(gt=0, allow_inf_nan=False)
+    source_type: Literal["virgin", "runner"]
+
+    @field_validator("material")
+    @classmethod
+    def strip_material(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("原料成分名称不能为空")
+        return value
+
+
+class MoldingSampleMaterialCostComponent(BaseModel):
+    material: str
+    source_type: Literal["virgin", "runner"]
+    ratio_percent: float
+    weight_kg: float
+    unit_price: float
+    amount_hkd: float
+
+
 class MoldingSampleItemIn(BaseModel):
     id: str
     order_id: str | None = None
@@ -42,6 +67,9 @@ class MoldingSampleItemIn(BaseModel):
     machine_type: str = ""
     production_machine: str = ""
     material: str = ""
+    material_components: list[MoldingSampleMaterialComponent] = Field(default_factory=list)
+    material_usage_type: Literal["production", "trial"] = "production"
+    actual_material_cost_components: list[MoldingSampleMaterialCostComponent] = Field(default_factory=list)
     color: str = ""
     pigment_no: str = ""
     quantity: str = ""
@@ -58,6 +86,24 @@ class MoldingSampleItemIn(BaseModel):
     injection_cost: float | None = None
     injection_cost_hkd: float | None = None
     exchange_rate_at_save: float | None = None
+
+    @model_validator(mode="after")
+    def validate_material_components(self):
+        if not self.material_components:
+            return self
+
+        seen: set[tuple[str, str]] = set()
+        total = Decimal("0")
+        for component in self.material_components:
+            key = (component.material.casefold(), component.source_type)
+            if key in seen:
+                raise ValueError("原料成分不可重复")
+            seen.add(key)
+            total += Decimal(str(component.ratio_percent))
+
+        if abs(total - Decimal("100")) > Decimal("0.01"):
+            raise ValueError("原料成分比例合计必须为 100%")
+        return self
 
 
 class MoldingSampleItemOut(MoldingSampleItemIn):
