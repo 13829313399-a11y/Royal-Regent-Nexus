@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { Calculator } from '@lucide/vue'
-import InternalPricingPanel from '@/components/modules/sales/InternalPricingPanel.vue'
+import { Layers3 } from '@lucide/vue'
+import InternalQuotePanel from '@/components/modules/sales/InternalQuotePanel.vue'
 import SalesModuleWorkbench from '@/components/modules/sales/SalesModuleWorkbench.vue'
 import { useAppStore } from '@/stores/app'
 
@@ -8,21 +8,21 @@ const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
 
 const metrics = [
-  { label: '计算方式', value: '实时', detail: '输入变化立即重算' },
-  { label: '保存校验', value: '双端', detail: '服务器独立复算' },
-  { label: '规则来源', value: '客户', detail: '定价上下文集中下发' },
+  { label: '业务维度', value: '车间', detail: '按厂区和车间独立归集' },
+  { label: '协同分段', value: '8 个', detail: '业务至装配完整核价' },
+  { label: '放行条件', value: '全审', detail: '八段通过后受控导出' },
 ]
 </script>
 
 <template>
   <SalesModuleWorkbench
-    title="内部报价"
-    description="按客户定价上下文填写报价行项，实时测算规则、返点和税费，并由服务器复算保存。"
-    badge="实时定价与留痕"
-    search-placeholder="搜索内部报价、项目或客户"
+    title="内部报价明细"
+    description="按厂区和车间建立报价单，组织业务、工程、电子、啤机、喷油、搪胶、车缝和装配分段填报与主管审核。"
+    badge="车间协同 · 八段审核"
+    search-placeholder="搜索车间内部报价、产品或客户"
     :metrics="metrics"
   >
-    <template #icon><Calculator aria-hidden="true" /></template>
-    <InternalPricingPanel />
+    <template #icon><Layers3 aria-hidden="true" /></template>
+    <InternalQuotePanel />
   </SalesModuleWorkbench>
 </template>

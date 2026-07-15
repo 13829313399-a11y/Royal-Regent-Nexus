@@ -24,6 +24,9 @@ NOTIFICATION_DEPARTMENT_MIGRATION_REVISION = "20260712_0012"
 RAW_MATERIAL_MIGRATION_REVISION = "20260714_0013"
 TRIAL_REPORT_MIGRATION_REVISION = "20260714_0014"
 MATERIAL_COMPONENT_MIGRATION_REVISION = "20260715_0015"
+INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION = "20260715_0016"
+INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION = "20260715_0017"
+INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION = "20260716_0018"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -73,7 +76,31 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [MATERIAL_COMPONENT_MIGRATION_REVISION]
+    assert script.get_heads() == [INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION]
+
+    artifact_revision = script.get_revision(INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION)
+    assert artifact_revision.down_revision == INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION
+    artifact_content = Path(artifact_revision.path).read_text(encoding="utf-8")
+    for table_name in (
+        "internal_quote_import_batches",
+        "internal_quote_attachments",
+        "internal_quote_export_files",
+    ):
+        assert table_name in artifact_content
+
+    workshop_revision = script.get_revision(INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION)
+    assert workshop_revision.down_revision == INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION
+    assert "huaxing-workshop" in Path(workshop_revision.path).read_text(encoding="utf-8")
+
+    workflow_revision = script.get_revision(INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION)
+    assert workflow_revision.down_revision == MATERIAL_COMPONENT_MIGRATION_REVISION
+    workflow_content = Path(workflow_revision.path).read_text(encoding="utf-8")
+    for table_name in (
+        "internal_quotes",
+        "internal_quote_sections",
+        "internal_quote_audit_logs",
+    ):
+        assert table_name in workflow_content
 
     material_component_revision = script.get_revision(MATERIAL_COMPONENT_MIGRATION_REVISION)
     assert material_component_revision.down_revision == TRIAL_REPORT_MIGRATION_REVISION
@@ -214,3 +241,9 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "material_components" in sql
     assert "material_usage_type" in sql
     assert "actual_material_cost_components" in sql
+    assert "create table internal_quotes" in sql
+    assert "create table internal_quote_sections" in sql
+    assert "create table internal_quote_audit_logs" in sql
+    assert "create table internal_quote_import_batches" in sql
+    assert "create table internal_quote_attachments" in sql
+    assert "create table internal_quote_export_files" in sql
