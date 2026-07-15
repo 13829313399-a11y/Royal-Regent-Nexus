@@ -37,7 +37,7 @@ import {
   UserRound,
   X,
 } from '@lucide/vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
 import {
@@ -66,6 +66,8 @@ import { getApiErrorMessage } from '@/lib/http'
 import {
   MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
+  type MoldingSampleBoardPageResponse,
+  type MoldingSampleBoardSummaryResponse,
   type MoldingSampleCreateRequest,
   type MoldingSampleDetailResponse,
   type MoldingSampleStatusRequest,
@@ -116,6 +118,7 @@ interface BoardColumn {
   pagedRecords: MoldingSampleWorkflowRecord[]
   pagination: PaginationState<MoldingSampleWorkflowRecord>
   dotClass: string
+  loading: boolean
 }
 
 interface PaginationState<T> {
@@ -221,6 +224,7 @@ interface RawMaterialPickerPosition {
 }
 
 const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
@@ -242,8 +246,15 @@ const printPreviewVisible = ref(false)
 const engineeringTrialReportHistoryVisible = ref(false)
 const engineeringTrialReportItemId = ref('')
 const searchKeyword = ref('')
+const effectiveSearchKeyword = ref('')
 const overviewListPage = ref(1)
 const boardPageByStatus = ref<Partial<Record<MoldingSampleStatus, number>>>({})
+const boardSummary = ref<MoldingSampleBoardSummaryResponse | null>(null)
+const boardPagesByStatus = ref<Partial<Record<MoldingSampleStatus, MoldingSampleBoardPageResponse>>>({})
+const boardLoadingByStatus = ref<Partial<Record<MoldingSampleStatus, boolean>>>({})
+const serverBoardEnabled = ref(false)
+const legacyOrdersLoaded = ref(false)
+const legacyOrdersLoading = ref(false)
 const materialBalancePeriodPage = ref(1)
 const materialBalanceDetailPage = ref(1)
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
@@ -282,6 +293,12 @@ const materialCompositionDraftRows = ref<ManualMoldingSampleMaterialComponentDra
 const materialCompositionError = ref('')
 let createSuccessToastTimer: ReturnType<typeof setTimeout> | null = null
 let actionToastTimer: ReturnType<typeof setTimeout> | null = null
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let legacyOrdersLoadPromise: Promise<void> | null = null
+let boardOverviewRequestId = 0
+let legacyOrdersRequestId = 0
+let deepLinkedOrderRequestId = 0
+const boardPageRequestIds: Partial<Record<MoldingSampleStatus, number>> = {}
 
 const materialCompositionPercentageTotal = computed(() => roundMaterialWeight(
   materialCompositionDraftRows.value.reduce((total, row) => total + (Number(row.ratio_percent) || 0), 0),
@@ -309,7 +326,9 @@ const materialBalancePeriodOptions: MaterialBalancePeriodOption[] = [
   { key: 'month', label: '月结余', detail: '自然月汇总' },
 ]
 
+const MOLDING_SAMPLE_BOARD_PAGE_SIZE = 5
 const MOLDING_SAMPLE_PAGE_SIZE = 10
+const MOLDING_SAMPLE_SEARCH_DEBOUNCE_MS = 275
 
 const statusToneClasses: Record<MoldingSampleStatus, string> = {
   待审核: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -411,7 +430,7 @@ const factoryRecords = computed<MoldingSampleWorkflowRecord[]>(() =>
 )
 
 const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
-  const searchTokens = tokenizeMoldingSampleSearchKeyword(searchKeyword.value)
+  const searchTokens = tokenizeMoldingSampleSearchKeyword(effectiveSearchKeyword.value)
 
   if (!searchTokens.length) {
     return factoryRecords.value
@@ -420,21 +439,40 @@ const visibleRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
   return factoryRecords.value.filter((record) => matchesMoldingSampleSearch(record, searchTokens))
 })
 
+const overviewOperationRecordCount = computed(() =>
+  serverBoardEnabled.value && overviewDisplayMode.value === 'board'
+    ? boardSummary.value?.total ?? visibleRecords.value.length
+    : visibleRecords.value.length,
+)
+
 const overviewListPagination = computed(() =>
   createPaginationState(visibleRecords.value, overviewListPage.value),
 )
 const paginatedVisibleRecords = computed(() => overviewListPagination.value.rows)
 
-const selectedRecord = computed<MoldingSampleWorkflowRecord | null>(() =>
-  visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
+const selectedRecord = computed<MoldingSampleWorkflowRecord | null>(() => {
+  const selected = visibleRecords.value.find((record) => record.order.id === selectedOrderId.value)
     ?? factoryRecords.value.find((record) => record.order.id === selectedOrderId.value)
-    ?? factoryRecords.value[0]
-    ?? null,
-)
+
+  if (selectedOrderId.value) {
+    return selected ?? null
+  }
+
+  return factoryRecords.value[0] ?? null
+})
 
 const selectedBatchOrderIdSet = computed(() => new Set(selectedBatchOrderIds.value))
+const batchSelectableRecords = computed(() => {
+  if (serverBoardEnabled.value && overviewDisplayMode.value === 'board') {
+    return Object.values(boardPagesByStatus.value)
+      .flatMap((page) => page?.rows ?? [])
+      .map(toWorkflowRecord)
+  }
+
+  return visibleRecords.value
+})
 const selectedBatchRecords = computed(() =>
-  visibleRecords.value.filter((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
+  batchSelectableRecords.value.filter((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
 )
 const batchActionRecords = computed(() =>
   selectedBatchRecords.value.length > 0
@@ -445,8 +483,8 @@ const batchActionRecords = computed(() =>
 )
 const selectedBatchCount = computed(() => selectedBatchRecords.value.length)
 const isAllVisibleOrdersSelected = computed(() =>
-  visibleRecords.value.length > 0
-  && visibleRecords.value.every((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
+  batchSelectableRecords.value.length > 0
+  && batchSelectableRecords.value.every((record) => selectedBatchOrderIdSet.value.has(record.order.id)),
 )
 
 const selectedOrder = computed<MoldingSampleOrder>(() => selectedRecord.value?.order ?? createEmptySelectedOrder())
@@ -462,16 +500,29 @@ const isSelectedExternal = computed(() => selectedRecord.value ? isExternalMoldi
 
 const kpiCards = computed<KpiCard[]>(() => {
   const records = visibleRecords.value
-  const reviewCount = records.filter((record) => ['待审核', '待经理审核'].includes(record.order.status)).length
-  const productionCount = records.filter((record) => ['待生产', '生产中'].includes(record.order.status)).length
-  const completedCount = records.filter((record) => record.order.status === '已完成').length
-  const attentionMetrics = countMoldingSampleAttentionMetrics(records)
+  const useServerSummary = serverBoardEnabled.value
+    && overviewDisplayMode.value === 'board'
+    && boardSummary.value !== null
+  const summary = useServerSummary ? boardSummary.value : null
+  const reviewCount = summary?.review_count
+    ?? records.filter((record) => ['待审核', '待经理审核'].includes(record.order.status)).length
+  const productionCount = summary?.production_count
+    ?? records.filter((record) => ['待生产', '生产中'].includes(record.order.status)).length
+  const completedCount = summary?.completed_count
+    ?? records.filter((record) => record.order.status === '已完成').length
+  const localAttentionMetrics = countMoldingSampleAttentionMetrics(records)
+  const attentionMetrics = {
+    rejectedCount: summary?.rejected_count ?? localAttentionMetrics.rejectedCount,
+    withdrawnCount: summary?.withdrawn_count ?? localAttentionMetrics.withdrawnCount,
+    unresolvedProblemCount: summary?.unresolved_problem_count ?? localAttentionMetrics.unresolvedProblemCount,
+    productionDataPendingCount: summary?.production_data_pending_count ?? localAttentionMetrics.productionDataPendingCount,
+  }
 
   return [
     {
       key: 'factory-orders',
       label: '当前厂区单据',
-      value: String(records.length),
+      value: String(summary?.total ?? records.length),
       detail: `${activeFactory.value.shortName} · 按状态分列`,
       icon: Layers,
       className: 'border-slate-200 text-slate-700',
@@ -529,8 +580,34 @@ const kpiCards = computed<KpiCard[]>(() => {
 
 const boardColumns = computed<BoardColumn[]>(() =>
   boardStatuses.map((status) => {
+    if (serverBoardEnabled.value) {
+      const response = boardPagesByStatus.value[status]
+      const records = (response?.rows ?? []).map(toWorkflowRecord)
+      const pagination = createServerPaginationState(
+        records,
+        response?.total ?? getBoardSummaryStatusTotal(status),
+        response?.page ?? boardPageByStatus.value[status] ?? 1,
+        response?.page_count,
+      )
+
+      return {
+        status,
+        label: status,
+        detail: getStatusColumnDetail(status),
+        records,
+        pagedRecords: records,
+        pagination,
+        dotClass: statusDotClasses[status],
+        loading: Boolean(boardLoadingByStatus.value[status]),
+      }
+    }
+
     const records = visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status)
-    const pagination = createPaginationState(records, boardPageByStatus.value[status] ?? 1)
+    const pagination = createPaginationState(
+      records,
+      boardPageByStatus.value[status] ?? 1,
+      MOLDING_SAMPLE_BOARD_PAGE_SIZE,
+    )
 
     return {
       status,
@@ -540,6 +617,7 @@ const boardColumns = computed<BoardColumn[]>(() =>
       pagedRecords: pagination.rows,
       pagination,
       dotClass: statusDotClasses[status],
+      loading: false,
     }
   }),
 )
@@ -1266,7 +1344,7 @@ function startCreateOrder() {
 
   editingRejectedOrderId.value = ''
   restoreSavedCreateDraft()
-  activeView.value = 'create'
+  setView('create')
 }
 
 function startRejectedEdit() {
@@ -1283,7 +1361,7 @@ function startRejectedEdit() {
   editingRejectedOrderId.value = selectedOrder.value.id
   createDraft.value = createDraftFromRecord(selectedRecord.value)
   createErrors.value = []
-  activeView.value = 'create'
+  setView('create')
   actionMessage.value = `已载入${editingRevisionOrderLabel.value} ${selectedOrder.value.id}，修改后可重新提交主管审核。`
 }
 
@@ -1293,7 +1371,7 @@ function cancelRejectedEdit() {
   editingRejectedOrderId.value = ''
   createErrors.value = []
   selectedOrderId.value = orderId || selectedOrderId.value
-  activeView.value = orderId ? 'detail' : 'overview'
+  setView(orderId ? 'detail' : 'overview')
 }
 
 function replaceApiRecord(record: MoldingSampleDetailResponse) {
@@ -1344,46 +1422,387 @@ async function loadRawMaterialOptions(requestedFactoryId: string) {
   }
 }
 
-async function loadApiData() {
+function supportsServerBoardApi() {
+  return typeof moldingSampleApi.getBoardSummary === 'function'
+    && typeof moldingSampleApi.listBoardPage === 'function'
+}
+
+function isServerBoardContextActive() {
+  return activeView.value === 'overview' && overviewDisplayMode.value === 'board'
+}
+
+function isLegacyOrdersContextActive() {
+  return !serverBoardEnabled.value
+    || activeView.value === 'material-balance'
+    || (activeView.value === 'overview' && overviewDisplayMode.value === 'list')
+}
+
+function invalidateServerBoardRequests() {
+  boardOverviewRequestId += 1
+  boardStatuses.forEach((status) => {
+    boardPageRequestIds[status] = (boardPageRequestIds[status] ?? 0) + 1
+  })
+  setAllBoardColumnsLoading(false)
+}
+
+function invalidateLegacyOrdersRequest() {
+  legacyOrdersRequestId += 1
+  legacyOrdersLoadPromise = null
+  legacyOrdersLoading.value = false
+}
+
+function mergeCachedApiRecords(records: MoldingSampleDetailResponse[]) {
+  const merged = new Map(apiRecords.value.map((record) => [record.order.id, record]))
+  records.forEach((record) => merged.set(record.order.id, record))
+  apiRecords.value = Array.from(merged.values())
+}
+
+function replaceBoardPageCache(pages: MoldingSampleBoardPageResponse[]) {
+  const selectedCachedRecord = apiRecords.value.find((record) => record.order.id === selectedOrderId.value)
+  const nextRecords = pages.flatMap((page) => page.rows)
+
+  if (selectedCachedRecord && !nextRecords.some((record) => record.order.id === selectedCachedRecord.order.id)) {
+    nextRecords.push(selectedCachedRecord)
+  }
+
+  apiRecords.value = Array.from(new Map(nextRecords.map((record) => [record.order.id, record])).values())
+  legacyOrdersLoaded.value = false
+}
+
+function setAllBoardColumnsLoading(loading: boolean) {
+  boardLoadingByStatus.value = Object.fromEntries(
+    boardStatuses.map((status) => [status, loading]),
+  ) as Partial<Record<MoldingSampleStatus, boolean>>
+}
+
+function requestBoardSummary(factoryId: string, query: string) {
+  return query
+    ? moldingSampleApi.getBoardSummary(factoryId, query)
+    : moldingSampleApi.getBoardSummary(factoryId)
+}
+
+function requestBoardPage(factoryId: string, status: MoldingSampleStatus, query: string, page: number) {
+  return moldingSampleApi.listBoardPage({
+    factoryId,
+    status,
+    ...(query ? { query } : {}),
+    page,
+    pageSize: MOLDING_SAMPLE_BOARD_PAGE_SIZE,
+  })
+}
+
+async function loadDeepLinkedOrderIfNeeded(requestedFactoryId: string) {
+  const deepLinkedOrderId = readQueryString(route.query.order_id)
+
+  if (!deepLinkedOrderId) {
+    deepLinkedOrderRequestId += 1
+    return
+  }
+
+  const cachedRecord = apiRecords.value.find((record) =>
+    record.order.id === deepLinkedOrderId && record.order.factory_id === requestedFactoryId,
+  )
+  if (cachedRecord) {
+    selectedOrderId.value = cachedRecord.order.id
+    return
+  }
+
+  const requestId = ++deepLinkedOrderRequestId
+  try {
+    const record = await moldingSampleApi.getOrder(deepLinkedOrderId)
+    if (
+      requestId !== deepLinkedOrderRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || deepLinkedOrderId !== readQueryString(route.query.order_id)
+    ) {
+      return
+    }
+    if (record.order.factory_id !== requestedFactoryId) {
+      return
+    }
+
+    mergeCachedApiRecords([record])
+    selectedOrderId.value = record.order.id
+  }
+  catch {
+    // A stale or unauthorized deep link must not hide the otherwise usable board.
+  }
+}
+
+async function loadServerBoardOverview(options: { includeSupportingData?: boolean } = {}) {
   const requestedFactoryId = selectedFactoryId.value
   const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
     ?? requestedFactoryId
+  const requestedQuery = effectiveSearchKeyword.value.trim()
+  const requestId = ++boardOverviewRequestId
+  const pageRequestIds = Object.fromEntries(boardStatuses.map((status) => {
+    const nextRequestId = (boardPageRequestIds[status] ?? 0) + 1
+    boardPageRequestIds[status] = nextRequestId
+    return [status, nextRequestId]
+  })) as Partial<Record<MoldingSampleStatus, number>>
+
   apiState.value = 'checking'
-  actionMessage.value = `正在读取${requestedFactoryName}正式啤办单列表...`
+  setAllBoardColumnsLoading(true)
+  actionMessage.value = requestedQuery
+    ? `正在搜索${requestedFactoryName}啤办单...`
+    : `正在读取${requestedFactoryName}啤办看板...`
 
   try {
-    const records = await moldingSampleApi.listOrders(requestedFactoryId)
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    const [summary, pages] = await Promise.all([
+      requestBoardSummary(requestedFactoryId, requestedQuery),
+      Promise.all(boardStatuses.map((status) =>
+        requestBoardPage(requestedFactoryId, status, requestedQuery, 1),
+      )),
+      options.includeSupportingData
+        ? Promise.all([
+            loadProtectedMaterialPrices(requestedFactoryId),
+            loadRawMaterialOptions(requestedFactoryId),
+          ])
+        : Promise.resolve(),
+    ])
+
+    if (
+      requestId !== boardOverviewRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || requestedQuery !== effectiveSearchKeyword.value.trim()
+      || !isServerBoardContextActive()
+    ) {
       return
     }
 
-    apiRecords.value = records
-    await Promise.all([
-      loadProtectedMaterialPrices(requestedFactoryId),
-      loadRawMaterialOptions(requestedFactoryId),
-    ])
-    if (requestedFactoryId !== selectedFactoryId.value) {
-      return
-    }
-    apiState.value = records.length ? 'connected' : 'empty'
-    actionMessage.value = records.length
-      ? `已读取${requestedFactoryName}正式啤办单 ${records.length} 张。`
+    boardSummary.value = summary
+    const nextPages = { ...boardPagesByStatus.value }
+    pages.forEach((page, index) => {
+      const status = boardStatuses[index]!
+      if (boardPageRequestIds[status] === pageRequestIds[status]) {
+        nextPages[status] = page
+        boardPageByStatus.value = {
+          ...boardPageByStatus.value,
+          [status]: page.page,
+        }
+      }
+    })
+    boardPagesByStatus.value = nextPages
+    replaceBoardPageCache(pages)
+    apiState.value = summary.total ? 'connected' : 'empty'
+    actionMessage.value = summary.total
+      ? `已读取${requestedFactoryName}啤办看板 ${summary.total} 张。`
       : `${requestedFactoryName}暂无正式啤办单，可先新建啤办单。`
 
-    selectedOrderId.value = records.some((record) => record.order.id === selectedOrderId.value)
+    selectedOrderId.value = apiRecords.value.some((record) => record.order.id === selectedOrderId.value)
       ? selectedOrderId.value
-      : records[0]?.order.id ?? ''
+      : pages.flatMap((page) => page.rows)[0]?.order.id ?? ''
+
+    await loadDeepLinkedOrderIfNeeded(requestedFactoryId)
   }
   catch (error) {
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== boardOverviewRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || !isServerBoardContextActive()
+    ) {
       return
     }
 
     apiRecords.value = []
-    rawMaterialPriceList.value = []
-    rawMaterialMasterList.value = []
+    boardSummary.value = null
+    boardPagesByStatus.value = {}
     apiState.value = 'error'
     actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
+  }
+  finally {
+    boardStatuses.forEach((status) => {
+      if (boardPageRequestIds[status] === pageRequestIds[status]) {
+        boardLoadingByStatus.value = {
+          ...boardLoadingByStatus.value,
+          [status]: false,
+        }
+      }
+    })
+  }
+}
+
+async function loadServerBoardColumn(status: MoldingSampleStatus, page: number) {
+  const requestedFactoryId = selectedFactoryId.value
+  const requestedQuery = effectiveSearchKeyword.value.trim()
+  const requestId = (boardPageRequestIds[status] ?? 0) + 1
+  boardPageRequestIds[status] = requestId
+  boardLoadingByStatus.value = {
+    ...boardLoadingByStatus.value,
+    [status]: true,
+  }
+
+  try {
+    const response = await requestBoardPage(requestedFactoryId, status, requestedQuery, page)
+    if (
+      boardPageRequestIds[status] !== requestId
+      || requestedFactoryId !== selectedFactoryId.value
+      || requestedQuery !== effectiveSearchKeyword.value.trim()
+      || !isServerBoardContextActive()
+    ) {
+      return
+    }
+
+    boardPagesByStatus.value = {
+      ...boardPagesByStatus.value,
+      [status]: response,
+    }
+    boardPageByStatus.value = {
+      ...boardPageByStatus.value,
+      [status]: response.page,
+    }
+    mergeCachedApiRecords(response.rows)
+  }
+  catch (error) {
+    if (boardPageRequestIds[status] === requestId && isServerBoardContextActive()) {
+      actionMessage.value = `${status}分页读取失败：${getApiErrorMessage(error)}`
+    }
+  }
+  finally {
+    if (boardPageRequestIds[status] === requestId) {
+      boardLoadingByStatus.value = {
+        ...boardLoadingByStatus.value,
+        [status]: false,
+      }
+    }
+  }
+}
+
+async function loadLegacyApiData(options: { force?: boolean; includeSupportingData?: boolean } = {}) {
+  if (legacyOrdersLoaded.value && !options.force) {
+    legacyOrdersLoading.value = false
+    apiState.value = apiRecords.value.length ? 'connected' : 'empty'
+    return
+  }
+  if (legacyOrdersLoadPromise && !options.force) {
+    return legacyOrdersLoadPromise
+  }
+
+  const requestedFactoryId = selectedFactoryId.value
+  const requestedFactoryName = factoryContexts.find((factory) => factory.id === requestedFactoryId)?.shortName
+    ?? requestedFactoryId
+  const requestId = ++legacyOrdersRequestId
+  legacyOrdersLoading.value = true
+  apiState.value = 'checking'
+  actionMessage.value = `正在读取${requestedFactoryName}完整啤办单列表...`
+
+  const loadPromise = (async () => {
+    try {
+      const [records] = await Promise.all([
+        moldingSampleApi.listOrders(requestedFactoryId),
+        options.includeSupportingData
+          ? Promise.all([
+              loadProtectedMaterialPrices(requestedFactoryId),
+              loadRawMaterialOptions(requestedFactoryId),
+            ])
+          : Promise.resolve(),
+      ])
+      if (
+        requestId !== legacyOrdersRequestId
+        || requestedFactoryId !== selectedFactoryId.value
+        || !isLegacyOrdersContextActive()
+      ) {
+        return
+      }
+
+      apiRecords.value = records
+      legacyOrdersLoaded.value = true
+      apiState.value = records.length ? 'connected' : 'empty'
+      actionMessage.value = records.length
+        ? `已读取${requestedFactoryName}正式啤办单 ${records.length} 张。`
+        : `${requestedFactoryName}暂无正式啤办单，可先新建啤办单。`
+      selectedOrderId.value = records.some((record) => record.order.id === selectedOrderId.value)
+        ? selectedOrderId.value
+        : records[0]?.order.id ?? ''
+    }
+    catch (error) {
+      if (
+        requestId !== legacyOrdersRequestId
+        || requestedFactoryId !== selectedFactoryId.value
+        || !isLegacyOrdersContextActive()
+      ) {
+        return
+      }
+
+      if (!serverBoardEnabled.value) {
+        apiRecords.value = []
+        rawMaterialPriceList.value = []
+        rawMaterialMasterList.value = []
+        apiState.value = 'error'
+        actionMessage.value = `正式数据读取失败：${getApiErrorMessage(error)}。不会显示本地示例单据。`
+      }
+      else {
+        apiState.value = boardSummary.value?.total ? 'connected' : 'empty'
+        actionMessage.value = `完整单据列表读取失败：${getApiErrorMessage(error)}`
+      }
+    }
+    finally {
+      if (requestId === legacyOrdersRequestId && requestedFactoryId === selectedFactoryId.value) {
+        legacyOrdersLoading.value = false
+      }
+    }
+  })()
+
+  legacyOrdersLoadPromise = loadPromise
+  try {
+    await loadPromise
+  }
+  finally {
+    if (legacyOrdersLoadPromise === loadPromise) {
+      legacyOrdersLoadPromise = null
+    }
+  }
+}
+
+async function loadApiData() {
+  invalidateServerBoardRequests()
+  invalidateLegacyOrdersRequest()
+  deepLinkedOrderRequestId += 1
+  serverBoardEnabled.value = supportsServerBoardApi()
+  legacyOrdersLoaded.value = false
+
+  if (serverBoardEnabled.value) {
+    boardSummary.value = null
+    boardPagesByStatus.value = {}
+    boardPageByStatus.value = {}
+    apiRecords.value = []
+
+    if (isServerBoardContextActive()) {
+      await loadServerBoardOverview({ includeSupportingData: true })
+    }
+    else if (isLegacyOrdersContextActive()) {
+      await loadLegacyApiData({ force: true, includeSupportingData: true })
+    }
+    else {
+      const requestedFactoryId = selectedFactoryId.value
+      await Promise.all([
+        loadProtectedMaterialPrices(requestedFactoryId),
+        loadRawMaterialOptions(requestedFactoryId),
+        loadDeepLinkedOrderIfNeeded(requestedFactoryId),
+      ])
+      apiState.value = apiRecords.value.length ? 'connected' : 'empty'
+    }
+    return
+  }
+
+  boardSummary.value = null
+  boardPagesByStatus.value = {}
+  boardLoadingByStatus.value = {}
+  await loadLegacyApiData({ force: true, includeSupportingData: true })
+}
+
+async function refreshBoardAfterMutation() {
+  if (!serverBoardEnabled.value) {
+    return
+  }
+
+  legacyOrdersLoaded.value = false
+  if (isServerBoardContextActive()) {
+    await loadServerBoardOverview()
+  }
+  else {
+    boardSummary.value = null
+    boardPagesByStatus.value = {}
   }
 }
 
@@ -1448,7 +1867,7 @@ async function handleExcelImportFile(event: Event) {
     createDraft.value = createDraftFromExcelPreview(preview)
     createErrors.value = []
     selectedOrderId.value = ''
-    activeView.value = 'create'
+    setView('create')
     actionMessage.value = 'Excel已导入到新建开单草稿，请确认数据无误后提交主管审核。'
   }
   catch (error) {
@@ -1475,7 +1894,7 @@ function toggleOrderBatchSelection(orderId: string, event: Event) {
 }
 
 function selectAllVisibleOrders() {
-  selectedBatchOrderIds.value = visibleRecords.value.map((record) => record.order.id)
+  selectedBatchOrderIds.value = batchSelectableRecords.value.map((record) => record.order.id)
 }
 
 function clearBatchSelection() {
@@ -1590,14 +2009,78 @@ function readQueryString(value: unknown) {
   return ''
 }
 
+function replaceRouteOrderId(orderId: string) {
+  if (readQueryString(route.query.order_id) === orderId) {
+    return
+  }
+
+  deepLinkedOrderRequestId += 1
+  const nextQuery = { ...route.query }
+  if (orderId) {
+    nextQuery.order_id = orderId
+  }
+  else {
+    delete nextQuery.order_id
+  }
+  void router.replace({ query: nextQuery })
+}
+
 function setView(view: ViewKey) {
   activeView.value = view
   deleteConfirmingOrderId.value = ''
+
+  if (!serverBoardEnabled.value) {
+    return
+  }
+
+  if (view === 'overview' && overviewDisplayMode.value === 'board') {
+    invalidateLegacyOrdersRequest()
+    void loadServerBoardOverview()
+  }
+  else if (view === 'material-balance' || (view === 'overview' && overviewDisplayMode.value === 'list')) {
+    invalidateServerBoardRequests()
+    void loadLegacyApiData()
+  }
+  else {
+    invalidateServerBoardRequests()
+    invalidateLegacyOrdersRequest()
+    apiState.value = apiRecords.value.length ? 'connected' : 'empty'
+
+    if (
+      view === 'detail'
+      && selectedOrderId.value
+      && !apiRecords.value.some((record) => record.order.id === selectedOrderId.value)
+    ) {
+      const requestedFactoryId = selectedFactoryId.value
+      apiState.value = 'checking'
+      void loadDeepLinkedOrderIfNeeded(requestedFactoryId).finally(() => {
+        if (activeView.value === 'detail' && requestedFactoryId === selectedFactoryId.value) {
+          apiState.value = apiRecords.value.some((record) => record.order.id === selectedOrderId.value)
+            ? 'connected'
+            : 'empty'
+        }
+      })
+    }
+  }
+}
+
+function setOverviewDisplayMode(mode: OverviewDisplayMode) {
+  overviewDisplayMode.value = mode
+
+  if (serverBoardEnabled.value && mode === 'list') {
+    invalidateServerBoardRequests()
+    void loadLegacyApiData()
+  }
+  else if (serverBoardEnabled.value && mode === 'board') {
+    invalidateLegacyOrdersRequest()
+    void loadServerBoardOverview()
+  }
 }
 
 function openRecord(record: MoldingSampleWorkflowRecord) {
   selectedOrderId.value = record.order.id
-  activeView.value = 'detail'
+  replaceRouteOrderId(record.order.id)
+  setView('detail')
   approvalNote.value = ''
   deleteConfirmingOrderId.value = ''
 }
@@ -1721,7 +2204,9 @@ async function submitManualCreate() {
 
     replaceApiRecord(created)
     selectedOrderId.value = created.order.id
-    activeView.value = 'detail'
+    setView('detail')
+    await refreshBoardAfterMutation()
+    selectedOrderId.value = created.order.id
     actionMessage.value = isRejectedResubmit
       ? `啤办单 ${created.order.id} 已保存${revisionLabel}修改并重提主管审核。`
       : `啤办单 ${created.order.id} 已提交主管审核，正式列表已刷新。`
@@ -1812,6 +2297,8 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
     const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, payload)
     replaceApiRecord(updated)
     selectedOrderId.value = updated.order.id
+    await refreshBoardAfterMutation()
+    selectedOrderId.value = updated.order.id
     approvalNote.value = ''
     actionMessage.value = `啤办单 ${updated.order.id} 已${decision}，当前状态：${updated.order.status}。`
   }
@@ -1847,6 +2334,8 @@ async function withdrawSelectedOrder() {
       today,
     })
     replaceApiRecord(updated)
+    selectedOrderId.value = updated.order.id
+    await refreshBoardAfterMutation()
     selectedOrderId.value = updated.order.id
     actionMessage.value = `啤办单 ${updated.order.id} 已撤回，可修改后重新提交主管审核。`
   }
@@ -1884,7 +2373,11 @@ async function deleteSelectedOrder() {
   try {
     await moldingSampleApi.deleteOrder(orderId)
     removeApiRecord(orderId)
-    activeView.value = 'overview'
+    await refreshBoardAfterMutation()
+    if (readQueryString(route.query.order_id) === orderId) {
+      replaceRouteOrderId('')
+    }
+    setView('overview')
     deleteConfirmingOrderId.value = ''
     actionMessage.value = `啤办单 ${orderId} 已删除。`
   }
@@ -1975,20 +2468,30 @@ function getFlowSummary(record: MoldingSampleWorkflowRecord) {
   return record.order.reject_reason || '退回工程处理'
 }
 
-function getPageCount(total: number) {
-  return Math.max(1, Math.ceil(total / MOLDING_SAMPLE_PAGE_SIZE))
+function getBoardSummaryStatusTotal(status: MoldingSampleStatus) {
+  const counts = boardSummary.value?.status_counts ?? {}
+
+  if (status === '待审核') {
+    return (counts['待审核'] ?? 0) + (counts['待经理审核'] ?? 0)
+  }
+
+  return counts[status] ?? 0
 }
 
-function clampPage(page: number, total: number) {
-  return Math.min(Math.max(1, page), getPageCount(total))
+function getPageCount(total: number, pageSize = MOLDING_SAMPLE_PAGE_SIZE) {
+  return Math.max(1, Math.ceil(total / pageSize))
 }
 
-function createPaginationState<T>(rows: T[], page: number): PaginationState<T> {
+function clampPage(page: number, total: number, pageSize = MOLDING_SAMPLE_PAGE_SIZE) {
+  return Math.min(Math.max(1, page), getPageCount(total, pageSize))
+}
+
+function createPaginationState<T>(rows: T[], page: number, pageSize = MOLDING_SAMPLE_PAGE_SIZE): PaginationState<T> {
   const total = rows.length
-  const pageCount = getPageCount(total)
-  const normalizedPage = clampPage(page, total)
-  const startIndex = (normalizedPage - 1) * MOLDING_SAMPLE_PAGE_SIZE
-  const pageRows = rows.slice(startIndex, startIndex + MOLDING_SAMPLE_PAGE_SIZE)
+  const pageCount = getPageCount(total, pageSize)
+  const normalizedPage = clampPage(page, total, pageSize)
+  const startIndex = (normalizedPage - 1) * pageSize
+  const pageRows = rows.slice(startIndex, startIndex + pageSize)
   const start = total === 0 ? 0 : startIndex + 1
   const end = total === 0 ? 0 : startIndex + pageRows.length
 
@@ -2001,6 +2504,28 @@ function createPaginationState<T>(rows: T[], page: number): PaginationState<T> {
     end,
     hasPrevious: normalizedPage > 1,
     hasNext: normalizedPage < pageCount,
+  }
+}
+
+function createServerPaginationState<T>(
+  rows: T[],
+  total: number,
+  page: number,
+  pageCount = getPageCount(total, MOLDING_SAMPLE_BOARD_PAGE_SIZE),
+): PaginationState<T> {
+  const normalizedPageCount = Math.max(1, pageCount)
+  const normalizedPage = Math.min(Math.max(1, page), normalizedPageCount)
+  const startIndex = (normalizedPage - 1) * MOLDING_SAMPLE_BOARD_PAGE_SIZE
+
+  return {
+    rows,
+    total,
+    page: normalizedPage,
+    pageCount: normalizedPageCount,
+    start: total === 0 ? 0 : startIndex + 1,
+    end: total === 0 ? 0 : Math.min(total, startIndex + rows.length),
+    hasPrevious: normalizedPage > 1,
+    hasNext: normalizedPage < normalizedPageCount,
   }
 }
 
@@ -2022,10 +2547,15 @@ function setOverviewListPage(page: number) {
 }
 
 function setBoardColumnPage(status: MoldingSampleStatus, page: number) {
+  if (serverBoardEnabled.value) {
+    void loadServerBoardColumn(status, page)
+    return
+  }
+
   const total = visibleRecords.value.filter((record) => normalizeBoardStatus(record.order.status) === status).length
   boardPageByStatus.value = {
     ...boardPageByStatus.value,
-    [status]: clampPage(page, total),
+    [status]: clampPage(page, total, MOLDING_SAMPLE_BOARD_PAGE_SIZE),
   }
 }
 
@@ -2577,13 +3107,35 @@ function getItemStateClass(item: MoldingSampleItem) {
 }
 
 watchEffect(() => {
-  const queryOrderId = readQueryString(route.query.order_id)
+  appStore.setActiveFactory(selectedFactoryId.value)
+})
 
-  if (queryOrderId && queryOrderId !== selectedOrderId.value) {
-    selectedOrderId.value = queryOrderId
+watch(() => readQueryString(route.query.order_id), (queryOrderId) => {
+  if (!queryOrderId) {
+    deepLinkedOrderRequestId += 1
+    return
   }
 
-  appStore.setActiveFactory(selectedFactoryId.value)
+  selectedOrderId.value = queryOrderId
+  const requestedFactoryId = selectedFactoryId.value
+  const shouldTrackDetailLoad = activeView.value === 'detail'
+    && !apiRecords.value.some((record) => record.order.id === queryOrderId)
+  if (shouldTrackDetailLoad) {
+    apiState.value = 'checking'
+  }
+
+  void loadDeepLinkedOrderIfNeeded(requestedFactoryId).finally(() => {
+    if (
+      shouldTrackDetailLoad
+      && activeView.value === 'detail'
+      && requestedFactoryId === selectedFactoryId.value
+      && queryOrderId === readQueryString(route.query.order_id)
+    ) {
+      apiState.value = apiRecords.value.some((record) => record.order.id === queryOrderId)
+        ? 'connected'
+        : 'empty'
+    }
+  })
 })
 
 restoreSavedCreateDraft()
@@ -2595,8 +3147,13 @@ watch(createDraft, () => {
 }, { deep: true })
 
 watch(selectedFactoryId, () => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  effectiveSearchKeyword.value = searchKeyword.value.trim()
   resetPagination()
-  selectedOrderId.value = ''
+  selectedOrderId.value = readQueryString(route.query.order_id)
   void loadApiData()
 
   if (!isEditingRejectedOrder.value) {
@@ -2617,11 +3174,29 @@ watch(selectedItems, (items) => {
   immediate: true,
 })
 
-watch(searchKeyword, () => {
-  resetPagination()
+watch(searchKeyword, (keyword) => {
+  if (!serverBoardEnabled.value) {
+    effectiveSearchKeyword.value = keyword
+    resetPagination()
+    return
+  }
+
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    effectiveSearchKeyword.value = keyword.trim()
+    resetPagination()
+
+    if (activeView.value === 'overview' && overviewDisplayMode.value === 'board') {
+      void loadServerBoardOverview()
+    }
+  }, MOLDING_SAMPLE_SEARCH_DEBOUNCE_MS)
 })
 
-watch(visibleRecords, (records) => {
+watch(batchSelectableRecords, (records) => {
   const visibleOrderIds = new Set(records.map((record) => record.order.id))
   selectedBatchOrderIds.value = selectedBatchOrderIds.value.filter((orderId) => visibleOrderIds.has(orderId))
 })
@@ -2639,6 +3214,13 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  invalidateServerBoardRequests()
+  invalidateLegacyOrdersRequest()
+  deepLinkedOrderRequestId += 1
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
   hideActionToast()
   hideCreateSuccessToast()
 })
@@ -3138,7 +3720,7 @@ onUnmounted(() => {
           <div class="text-[10px] font-bold uppercase tracking-[0.16em] text-teal-700">Molding Sample Operations</div>
           <div class="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <h1 class="text-[14px] font-bold text-slate-950">{{ activeFactory.shortName }}啤办业务</h1>
-            <span class="text-[11px] text-slate-500">当前共 {{ visibleRecords.length }} 单 · 导出 / 打印</span>
+            <span class="text-[11px] text-slate-500">当前共 {{ overviewOperationRecordCount }} 单 · 导出 / 打印</span>
           </div>
           <div class="mt-0.5 text-[11px] text-slate-400">选择单据后可打印详情或合并导出</div>
         </div>
@@ -3256,7 +3838,7 @@ onUnmounted(() => {
               class="inline-flex min-h-8 items-center gap-1 rounded-md px-2.5 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
               :class="overviewDisplayMode === 'board' ? 'bg-teal-700 font-semibold text-white shadow-sm' : 'font-medium text-slate-500 hover:bg-white hover:text-slate-900'"
               :aria-pressed="overviewDisplayMode === 'board'"
-              @click="overviewDisplayMode = 'board'"
+              @click="setOverviewDisplayMode('board')"
             >
               <LayoutDashboard class="size-3.5" aria-hidden="true" />
               看板
@@ -3266,7 +3848,7 @@ onUnmounted(() => {
               class="inline-flex min-h-8 items-center gap-1 rounded-md px-2.5 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
               :class="overviewDisplayMode === 'list' ? 'bg-teal-700 font-semibold text-white shadow-sm' : 'font-medium text-slate-500 hover:bg-white hover:text-slate-900'"
               :aria-pressed="overviewDisplayMode === 'list'"
-              @click="overviewDisplayMode = 'list'"
+              @click="setOverviewDisplayMode('list')"
             >
               <Table2 class="size-3.5" aria-hidden="true" />
               列表
@@ -3289,10 +3871,10 @@ onUnmounted(() => {
             <button
               type="button"
               class="inline-flex min-h-8 items-center rounded-md px-2 font-semibold transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="!visibleRecords.length || isAllVisibleOrdersSelected"
+              :disabled="!batchSelectableRecords.length || isAllVisibleOrdersSelected"
               @click="selectAllVisibleOrders"
             >
-              全选当前筛选单据
+              {{ serverBoardEnabled && overviewDisplayMode === 'board' ? '全选当前页' : '全选当前筛选单据' }}
             </button>
             <button
               type="button"
@@ -3334,6 +3916,10 @@ onUnmounted(() => {
             v-for="column in boardColumns"
             :key="column.status"
             class="surface-subtle min-h-[244px] overflow-hidden rounded-xl"
+            role="region"
+            :aria-label="`${column.label}看板列`"
+            :aria-busy="column.loading"
+            :data-testid="`molding-board-column-${column.status}`"
           >
             <div class="flex items-center justify-between border-b border-slate-200/70 bg-white/60 px-3 py-2.5 backdrop-blur-sm">
               <div class="flex min-w-0 items-center gap-2">
@@ -3343,9 +3929,16 @@ onUnmounted(() => {
                   <div class="truncate text-[10px] text-slate-400">{{ column.detail }}</div>
                 </div>
               </div>
-              <span class="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-600 shadow-sm ring-1 ring-slate-200">
-                {{ column.records.length }}
-              </span>
+              <div class="flex shrink-0 items-center gap-1.5">
+                <RefreshCw
+                  v-if="column.loading"
+                  class="size-3.5 animate-spin text-teal-600 motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+                <span class="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-600 shadow-sm ring-1 ring-slate-200">
+                  {{ column.pagination.total }}
+                </span>
+              </div>
             </div>
 
             <div class="space-y-2 px-2 pb-2">
@@ -3389,25 +3982,32 @@ onUnmounted(() => {
               </article>
 
               <div
-                v-if="!column.records.length"
+                v-if="column.loading && !column.pagedRecords.length"
+                class="rounded-xl border border-dashed border-teal-200 bg-teal-50/60 p-5 text-center text-[11px] font-medium text-teal-700"
+                role="status"
+              >
+                正在加载{{ column.label }}单据...
+              </div>
+              <div
+                v-else-if="!column.pagination.total"
                 class="rounded-xl border border-dashed border-slate-200 bg-white/70 p-5 text-center text-[11px] font-medium text-slate-400"
               >
                 暂无{{ column.label }}单据
               </div>
             </div>
             <div
-              v-if="column.records.length"
+              v-if="column.pagination.total"
               class="border-t border-slate-200/80 bg-white/45 px-2 py-2 text-[11px] text-slate-500"
             >
               <div class="mb-1.5 flex items-center justify-between gap-2">
-                <span class="font-medium">每页 10 条</span>
+                <span class="font-medium">每页 5 条</span>
                 <span class="tabular-nums">{{ formatPaginationRange(column.pagination) }}</span>
               </div>
               <div class="flex items-center justify-between gap-2">
                 <button
                   type="button"
                   class="inline-flex min-h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
-                  :disabled="!column.pagination.hasPrevious"
+                  :disabled="column.loading || !column.pagination.hasPrevious"
                   :aria-label="`${column.label}上一页`"
                   @click="setBoardColumnPage(column.status, column.pagination.page - 1)"
                 >
@@ -3418,7 +4018,7 @@ onUnmounted(() => {
                 <button
                   type="button"
                   class="inline-flex min-h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-40"
-                  :disabled="!column.pagination.hasNext"
+                  :disabled="column.loading || !column.pagination.hasNext"
                   :aria-label="`${column.label}下一页`"
                   @click="setBoardColumnPage(column.status, column.pagination.page + 1)"
                 >

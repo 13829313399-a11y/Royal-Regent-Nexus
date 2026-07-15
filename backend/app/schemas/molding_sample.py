@@ -280,6 +280,36 @@ class MoldingSampleDetailResponse(BaseModel):
     can_view_cost: bool = True
 
 
+MoldingSampleBoardStatus = Literal[
+    "待审核",
+    "待生产",
+    "生产中",
+    "已完成",
+    "已驳回",
+    "已撤回",
+]
+
+
+class MoldingSampleBoardPageResponse(BaseModel):
+    rows: list[MoldingSampleDetailResponse]
+    total: int
+    page: int
+    page_size: int
+    page_count: int
+
+
+class MoldingSampleBoardSummaryResponse(BaseModel):
+    total: int
+    status_counts: dict[MoldingSampleBoardStatus, int]
+    review_count: int
+    production_count: int
+    completed_count: int
+    rejected_count: int
+    withdrawn_count: int
+    unresolved_problem_count: int
+    production_data_pending_count: int
+
+
 class MoldingSampleStatusRequest(BaseModel):
     action: str
     reason: str = ""

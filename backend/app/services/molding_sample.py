@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from math import isfinite
@@ -8,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.molding_sample import (
@@ -28,6 +29,7 @@ from app.models.molding_sample import (
 from app.schemas.molding_sample import (
     InventoryBatchCreateRequest,
     MaterialPriceIn,
+    MoldingSampleBoardStatus,
     MoldingSampleCreateRequest,
     MoldingSampleEditRequest,
     MoldingSampleItemIn,
@@ -82,6 +84,22 @@ ENGINEERING_SUPERVISOR_TARGET_ROLE = "工程主管"
 MANAGER_TARGET_ROLE = "经理"
 NOTIFICATION_STATUSES = {"未读", "已读", "已处理"}
 PROBLEM_STATUSES = {"待处理", "已解决"}
+BOARD_STATUSES: tuple[MoldingSampleBoardStatus, ...] = (
+    "待审核",
+    "待生产",
+    "生产中",
+    "已完成",
+    "已驳回",
+    "已撤回",
+)
+BOARD_SOURCE_STATUSES: dict[MoldingSampleBoardStatus, tuple[str, ...]] = {
+    "待审核": ("待审核", "待经理审核"),
+    "待生产": ("待生产",),
+    "生产中": ("生产中",),
+    "已完成": ("已完成",),
+    "已驳回": ("已驳回",),
+    "已撤回": ("已撤回",),
+}
 
 INITIAL_ORDER_STATUS = "待审核"
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
@@ -526,6 +544,338 @@ def list_orders(
         order for order in orders
         if molding_read_access(current_user, order.factory_id) is not None
     ]
+
+
+def normalize_board_status(status: str) -> MoldingSampleBoardStatus | None:
+    if status == "待经理审核":
+        return "待审核"
+    if status in BOARD_STATUSES:
+        return status  # type: ignore[return-value]
+    return None
+
+
+def normalize_board_search_value(value: Any) -> str:
+    if value is None:
+        return ""
+
+    normalized = unicodedata.normalize("NFKC", str(value)).casefold()
+    return "".join(
+        character
+        for character in normalized
+        if not character.isspace()
+        and unicodedata.category(character)[0] not in {"P", "S"}
+    )
+
+
+def tokenize_board_search_keyword(keyword: str) -> list[str]:
+    normalized_keyword = unicodedata.normalize("NFKC", keyword or "").strip()
+    if not normalized_keyword:
+        return []
+
+    return [
+        normalized
+        for part in re.split(r"\s+", normalized_keyword)
+        if (normalized := normalize_board_search_value(part))
+    ]
+
+
+def board_search_values(order: MoldingSampleOrder) -> list[str]:
+    values: list[Any] = [
+        order.id,
+        order.order_number,
+        order.doc_number,
+        order.product_name,
+        order.client_name,
+        order.date,
+        order.stage,
+        order.order_type,
+        order.workshop,
+        order.send_to,
+        order.supervisor,
+        order.eng_name,
+        order.reason,
+        order.status,
+        order.reject_reason,
+        order.completed_date,
+    ]
+    presence_labels = {
+        "in_factory": "在厂",
+        "out_of_factory": "不在厂",
+        "unknown": "待确认",
+    }
+
+    for item in order.items:
+        values.extend(
+            [
+                item.id,
+                item.order_id,
+                item.mold_id,
+                item.mold_name,
+                item.mold_dimensions,
+                item.mold_presence_status,
+                presence_labels.get(item.mold_presence_status, "待确认"),
+                item.machine_type,
+                item.production_machine,
+                item.material,
+                item.material_usage_type,
+                "试料" if item.material_usage_type == "trial" else "正式生产",
+                item.color,
+                item.pigment_no,
+                item.quantity,
+                item.shoot_qty,
+                item.required_material_kg,
+                item.mold_return_time,
+                item.completion_time,
+                item.notes,
+                item.receipt_no,
+            ]
+        )
+
+        components = item.material_components or parse_legacy_material_components(item.material) or []
+        if (
+            not components
+            and item.material.strip()
+            and not re.match(r"^\s*\d+(?:\.\d+)?\s*[%％]", item.material.replace("＋", "+"))
+        ):
+            components = [
+                {
+                    "material": item.material.strip(),
+                    "source_type": "virgin",
+                    "ratio_percent": 100,
+                }
+            ]
+        for component in components:
+            source_type = str(component.get("source_type", ""))
+            values.extend(
+                [
+                    component.get("material", ""),
+                    source_type,
+                    "水口料" if source_type == "runner" else "原料",
+                    component.get("ratio_percent", ""),
+                ]
+            )
+
+    for problem in order.problems:
+        values.extend(
+            [
+                problem.id,
+                problem.order_number,
+                problem.description,
+                problem.reported_by,
+                problem.status,
+            ]
+        )
+
+    return [
+        normalized
+        for value in values
+        if (normalized := normalize_board_search_value(value))
+    ]
+
+
+def matches_board_search(order: MoldingSampleOrder, tokens: list[str]) -> bool:
+    if not tokens:
+        return True
+
+    search_values = board_search_values(order)
+    return all(
+        any(token in value for value in search_values)
+        for token in tokens
+    )
+
+
+def _board_search_candidates(
+    db: Session,
+    factory_id: str,
+    source_statuses: tuple[str, ...] | None = None,
+) -> list[MoldingSampleOrder]:
+    statement = (
+        select(MoldingSampleOrder)
+        .where(MoldingSampleOrder.factory_id == factory_id)
+        .options(
+            selectinload(MoldingSampleOrder.items),
+            selectinload(MoldingSampleOrder.problems),
+        )
+    )
+    if source_statuses is not None:
+        statement = statement.where(MoldingSampleOrder.status.in_(source_statuses))
+
+    return list(
+        db.scalars(
+            statement.order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
+        ).all()
+    )
+
+
+def _load_full_board_orders(db: Session, order_ids: list[str]) -> list[MoldingSampleOrder]:
+    if not order_ids:
+        return []
+
+    orders = list(
+        db.scalars(
+            order_statement().where(MoldingSampleOrder.id.in_(order_ids))
+        ).all()
+    )
+    order_by_id = {order.id: order for order in orders}
+    return [order_by_id[order_id] for order_id in order_ids if order_id in order_by_id]
+
+
+def list_board_page(
+    db: Session,
+    current_user: AuthContext,
+    *,
+    factory_id: str,
+    board_status: MoldingSampleBoardStatus,
+    keyword: str,
+    page: int,
+    page_size: int,
+) -> tuple[list[MoldingSampleOrder], int, int, int]:
+    ensure_molding_read(db, current_user, factory_id)
+    source_statuses = BOARD_SOURCE_STATUSES[board_status]
+    tokens = tokenize_board_search_keyword(keyword)
+
+    if tokens:
+        candidates = _board_search_candidates(db, factory_id, source_statuses)
+        matched_order_ids = [
+            order.id for order in candidates
+            if matches_board_search(order, tokens)
+        ]
+        total = len(matched_order_ids)
+        page_count = max(1, (total + page_size - 1) // page_size)
+        normalized_page = min(page, page_count)
+        start = (normalized_page - 1) * page_size
+        page_order_ids = matched_order_ids[start:start + page_size]
+    else:
+        filters = (
+            MoldingSampleOrder.factory_id == factory_id,
+            MoldingSampleOrder.status.in_(source_statuses),
+        )
+        total = int(
+            db.scalar(
+                select(func.count(MoldingSampleOrder.id)).where(*filters)
+            )
+            or 0
+        )
+        page_count = max(1, (total + page_size - 1) // page_size)
+        normalized_page = min(page, page_count)
+        page_order_ids = list(
+            db.scalars(
+                select(MoldingSampleOrder.id)
+                .where(*filters)
+                .order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
+                .offset((normalized_page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+        )
+
+    return _load_full_board_orders(db, page_order_ids), total, normalized_page, page_count
+
+
+def _empty_board_status_counts() -> dict[MoldingSampleBoardStatus, int]:
+    return {status: 0 for status in BOARD_STATUSES}
+
+
+def _is_production_data_pending(order: MoldingSampleOrder) -> bool:
+    return (
+        order.status == "生产中"
+        and not is_external_order(order)
+        and any(not item.actual_weight_kg or item.actual_weight_kg <= 0 for item in order.items)
+    )
+
+
+def get_board_summary(
+    db: Session,
+    current_user: AuthContext,
+    *,
+    factory_id: str,
+    keyword: str,
+) -> dict[str, Any]:
+    ensure_molding_read(db, current_user, factory_id)
+    tokens = tokenize_board_search_keyword(keyword)
+    status_counts = _empty_board_status_counts()
+
+    if tokens:
+        orders = [
+            order
+            for order in _board_search_candidates(db, factory_id)
+            if matches_board_search(order, tokens)
+        ]
+        for order in orders:
+            normalized_status = normalize_board_status(order.status)
+            if normalized_status is not None:
+                status_counts[normalized_status] += 1
+
+        total = len(orders)
+        unresolved_problem_count = sum(
+            any(problem.status == "待处理" for problem in order.problems)
+            for order in orders
+        )
+        production_data_pending_count = sum(_is_production_data_pending(order) for order in orders)
+    else:
+        total = int(
+            db.scalar(
+                select(func.count(MoldingSampleOrder.id)).where(
+                    MoldingSampleOrder.factory_id == factory_id
+                )
+            )
+            or 0
+        )
+        status_rows = db.execute(
+            select(MoldingSampleOrder.status, func.count(MoldingSampleOrder.id))
+            .where(MoldingSampleOrder.factory_id == factory_id)
+            .group_by(MoldingSampleOrder.status)
+        ).all()
+        for source_status, count in status_rows:
+            normalized_status = normalize_board_status(source_status)
+            if normalized_status is not None:
+                status_counts[normalized_status] += int(count)
+
+        unresolved_problem_count = int(
+            db.scalar(
+                select(func.count(MoldingSampleOrder.id)).where(
+                    MoldingSampleOrder.factory_id == factory_id,
+                    exists(
+                        select(MoldingSampleProblem.id).where(
+                            MoldingSampleProblem.order_id == MoldingSampleOrder.id,
+                            MoldingSampleProblem.status == "待处理",
+                        )
+                    ),
+                )
+            )
+            or 0
+        )
+        production_data_pending_count = int(
+            db.scalar(
+                select(func.count(MoldingSampleOrder.id)).where(
+                    MoldingSampleOrder.factory_id == factory_id,
+                    MoldingSampleOrder.status == "生产中",
+                    ~func.coalesce(MoldingSampleOrder.send_to, "").in_(("发至湖南", "发至模厂")),
+                    func.coalesce(MoldingSampleOrder.workshop, "") != "模厂",
+                    exists(
+                        select(MoldingSampleItem.id).where(
+                            MoldingSampleItem.order_id == MoldingSampleOrder.id,
+                            or_(
+                                MoldingSampleItem.actual_weight_kg.is_(None),
+                                MoldingSampleItem.actual_weight_kg <= 0,
+                            ),
+                        )
+                    ),
+                )
+            )
+            or 0
+        )
+
+    return {
+        "total": total,
+        "status_counts": status_counts,
+        "review_count": status_counts["待审核"],
+        "production_count": status_counts["待生产"] + status_counts["生产中"],
+        "completed_count": status_counts["已完成"],
+        "rejected_count": status_counts["已驳回"],
+        "withdrawn_count": status_counts["已撤回"],
+        "unresolved_problem_count": unresolved_problem_count,
+        "production_data_pending_count": production_data_pending_count,
+    }
 
 
 def append_audit(

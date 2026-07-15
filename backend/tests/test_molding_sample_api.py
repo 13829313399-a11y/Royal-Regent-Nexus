@@ -332,6 +332,51 @@ def sample_order_payload(order_id="BP-API-001", external=False):
     }
 
 
+_UNSET = object()
+
+
+def set_board_order_state(order_id, *, status=None, actual_weight_kg=_UNSET):
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, order_id)
+        assert order is not None
+        if status is not None:
+            order.status = status
+        if actual_weight_kg is not _UNSET:
+            item = db.scalar(
+                select(molding_models.MoldingSampleItem)
+                .where(molding_models.MoldingSampleItem.order_id == order_id)
+                .order_by(molding_models.MoldingSampleItem.sort_order)
+            )
+            assert item is not None
+            item.actual_weight_kg = actual_weight_kg
+        db.commit()
+
+
+def add_board_problem(order_id, *, suffix="1", problem_status="待处理", description="表面缩痕"):
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, order_id)
+        assert order is not None
+        db.add(
+            molding_models.MoldingSampleProblem(
+                id=f"{order_id}-problem-{suffix}",
+                factory_id=order.factory_id,
+                order_type="injection",
+                order_id=order.id,
+                order_number=order.order_number,
+                description=description,
+                reported_by="啤机部",
+                status=problem_status,
+                created_at="2026-07-15 08:00",
+                resolved_at="2026-07-15 09:00" if problem_status == "已解决" else "",
+            )
+        )
+        db.commit()
+
+
 def huaxing_engineering_template_workbook() -> bytes:
     excel_service = importlib.import_module("app.services.molding_sample_excel")
     rows = [
@@ -841,6 +886,254 @@ def test_factory_filtered_order_list_returns_only_the_requested_factory_data(cli
     empty_response = client.get("/api/injection", params={"factory_id": "huakang-b"})
     assert empty_response.status_code == 200
     assert empty_response.json() == []
+
+
+def test_engineering_board_page_uses_true_five_row_pages_and_keeps_legacy_list_contract(client):
+    login_as(client, "admin")
+    for sequence in range(1, 13):
+        order_id = f"BP-BOARD-PAGE-{sequence:03d}"
+        payload = sample_order_payload(order_id)
+        payload["order"]["created_at"] = f"2026-07-{sequence:02d} 08:00"
+        payload["order"]["product_name"] = f"分页啤办 {sequence:02d}"
+        assert client.post("/api/injection", json=payload).status_code == 201
+
+    set_board_order_state("BP-BOARD-PAGE-012", status="待经理审核")
+
+    first_page_response = client.get(
+        "/api/injection/board/page",
+        params={"factory_id": "huaxing", "status": "待审核"},
+    )
+    assert first_page_response.status_code == 200
+    first_page = first_page_response.json()
+    assert first_page["total"] == 12
+    assert first_page["page"] == 1
+    assert first_page["page_size"] == 5
+    assert first_page["page_count"] == 3
+    assert [row["order"]["id"] for row in first_page["rows"]] == [
+        "BP-BOARD-PAGE-012",
+        "BP-BOARD-PAGE-011",
+        "BP-BOARD-PAGE-010",
+        "BP-BOARD-PAGE-009",
+        "BP-BOARD-PAGE-008",
+    ]
+    assert first_page["rows"][0]["order"]["status"] == "待经理审核"
+    assert len(first_page["rows"][0]["items"]) == 1
+    assert first_page["rows"][0]["audit_logs"]
+
+    second_page_response = client.get(
+        "/api/injection/board/page",
+        params={
+            "factory_id": "huaxing",
+            "status": "待审核",
+            "page": 2,
+            "page_size": 5,
+        },
+    )
+    assert second_page_response.status_code == 200
+    second_page = second_page_response.json()
+    assert [row["order"]["id"] for row in second_page["rows"]] == [
+        "BP-BOARD-PAGE-007",
+        "BP-BOARD-PAGE-006",
+        "BP-BOARD-PAGE-005",
+        "BP-BOARD-PAGE-004",
+        "BP-BOARD-PAGE-003",
+    ]
+
+    clamped_page_response = client.get(
+        "/api/injection/board/page",
+        params={
+            "factory_id": "huaxing",
+            "status": "待审核",
+            "page": 99,
+            "page_size": 5,
+        },
+    )
+    assert clamped_page_response.status_code == 200
+    clamped_page = clamped_page_response.json()
+    assert clamped_page["page"] == 3
+    assert clamped_page["page_count"] == 3
+    assert [row["order"]["id"] for row in clamped_page["rows"]] == [
+        "BP-BOARD-PAGE-002",
+        "BP-BOARD-PAGE-001",
+    ]
+
+    legacy_response = client.get("/api/injection", params={"factory_id": "huaxing"})
+    assert legacy_response.status_code == 200
+    legacy_rows = legacy_response.json()
+    assert len(legacy_rows) == 12
+    assert set(legacy_rows[0]) == {
+        "order",
+        "items",
+        "audit_logs",
+        "notifications",
+        "problems",
+        "trial_reports",
+        "read_source",
+        "can_view_cost",
+    }
+
+    formerly_conflicting_payload = sample_order_payload("board-page")
+    assert client.post("/api/injection", json=formerly_conflicting_payload).status_code == 201
+    formerly_conflicting_detail = client.get("/api/injection/board-page")
+    assert formerly_conflicting_detail.status_code == 200
+    assert formerly_conflicting_detail.json()["order"]["id"] == "board-page"
+
+
+def test_engineering_board_summary_reports_normalized_status_and_attention_counts(client):
+    login_as(client, "admin")
+    order_specs = [
+        ("BP-BOARD-SUM-PENDING", "待审核", False, _UNSET),
+        ("BP-BOARD-SUM-MANAGER", "待经理审核", False, _UNSET),
+        ("BP-BOARD-SUM-WAITING", "待生产", False, _UNSET),
+        ("BP-BOARD-SUM-RUN-MISSING", "生产中", False, None),
+        ("BP-BOARD-SUM-RUN-FILLED", "生产中", False, 1.25),
+        ("BP-BOARD-SUM-RUN-EXTERNAL", "生产中", True, None),
+        ("BP-BOARD-SUM-COMPLETED", "已完成", False, 1.0),
+        ("BP-BOARD-SUM-REJECTED", "已驳回", False, _UNSET),
+        ("BP-BOARD-SUM-WITHDRAWN", "已撤回", False, _UNSET),
+    ]
+    for sequence, (order_id, order_status, external, actual_weight) in enumerate(order_specs, start=1):
+        payload = sample_order_payload(order_id, external=external)
+        payload["order"]["created_at"] = f"2026-07-{sequence:02d} 08:00"
+        assert client.post("/api/injection", json=payload).status_code == 201
+        set_board_order_state(order_id, status=order_status, actual_weight_kg=actual_weight)
+
+    add_board_problem("BP-BOARD-SUM-RUN-MISSING", suffix="1")
+    add_board_problem("BP-BOARD-SUM-RUN-MISSING", suffix="2", description="披锋")
+    add_board_problem(
+        "BP-BOARD-SUM-COMPLETED",
+        suffix="resolved",
+        problem_status="已解决",
+    )
+
+    response = client.get(
+        "/api/injection/board/summary",
+        params={"factory_id": "huaxing"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "total": 9,
+        "status_counts": {
+            "待审核": 2,
+            "待生产": 1,
+            "生产中": 3,
+            "已完成": 1,
+            "已驳回": 1,
+            "已撤回": 1,
+        },
+        "review_count": 2,
+        "production_count": 4,
+        "completed_count": 1,
+        "rejected_count": 1,
+        "withdrawn_count": 1,
+        "unresolved_problem_count": 1,
+        "production_data_pending_count": 1,
+    }
+
+
+def test_engineering_board_search_matches_normalized_order_item_component_and_problem_fields(client):
+    login_as(client, "admin")
+    searchable_payload = sample_order_payload("BP-BOARD-SEARCH-001")
+    searchable_payload["order"].update(
+        {
+            "doc_number": "W-G026-00",
+            "product_name": "ShuShuPaPa 黑武士",
+            "created_at": "2026-07-15 10:00",
+        }
+    )
+    searchable_payload["items"][0].update(
+        {
+            "mold_id": "jp-5678",
+            "material": "70% ABS PA-757 + 30% PVC 90度（本白,普通）水口料",
+            "material_components": [
+                {"material": "ABS PA-757", "ratio_percent": 70, "source_type": "virgin"},
+                {"material": "PVC 90度（本白,普通）", "ratio_percent": 30, "source_type": "runner"},
+            ],
+        }
+    )
+    assert client.post("/api/injection", json=searchable_payload).status_code == 201
+    add_board_problem("BP-BOARD-SEARCH-001", description="啤件表面缩痕")
+
+    unrelated_payload = sample_order_payload("BP-BOARD-SEARCH-OTHER")
+    unrelated_payload["order"]["doc_number"] = "DOC-OTHER"
+    unrelated_payload["order"]["product_name"] = "无关产品"
+    assert client.post("/api/injection", json=unrelated_payload).status_code == 201
+
+    keyword = "ｗｇ０２６ ｊｐ５６７８ pvc 水口料 缩痕"
+    page_response = client.get(
+        "/api/injection/board/page",
+        params={
+            "factory_id": "huaxing",
+            "status": "待审核",
+            "q": keyword,
+        },
+    )
+    assert page_response.status_code == 200
+    page = page_response.json()
+    assert page["total"] == 1
+    assert [row["order"]["id"] for row in page["rows"]] == ["BP-BOARD-SEARCH-001"]
+
+    summary_response = client.get(
+        "/api/injection/board/summary",
+        params={"factory_id": "huaxing", "q": keyword},
+    )
+    assert summary_response.status_code == 200
+    summary = summary_response.json()
+    assert summary["total"] == 1
+    assert summary["status_counts"]["待审核"] == 1
+    assert summary["unresolved_problem_count"] == 1
+
+    single_material_response = client.get(
+        "/api/injection/board/page",
+        params={
+            "factory_id": "huaxing",
+            "status": "待审核",
+            "q": "docother 原料 virgin 100",
+        },
+    )
+    assert single_material_response.status_code == 200
+    assert [row["order"]["id"] for row in single_material_response.json()["rows"]] == [
+        "BP-BOARD-SEARCH-OTHER"
+    ]
+
+
+def test_engineering_board_queries_are_factory_isolated_and_keep_cross_factory_cost_redaction(client):
+    login_as(client, "admin")
+    huaxing_payload = sample_order_payload("BP-BOARD-FACTORY-HX")
+    huadeng_payload = sample_order_payload("BP-BOARD-FACTORY-HD")
+    huadeng_payload["order"]["factory_id"] = "huadeng"
+    huadeng_payload["items"][0]["actual_weight_kg"] = 2.2
+    huadeng_payload["items"][0]["actual_amount_hkd"] = 88.5
+    huadeng_payload["items"][0]["injection_cost"] = 120
+    assert client.post("/api/injection", json=huaxing_payload).status_code == 201
+    assert client.post("/api/injection", json=huadeng_payload).status_code == 201
+
+    huaxing_summary = client.get(
+        "/api/injection/board/summary",
+        params={"factory_id": "huaxing"},
+    )
+    huadeng_summary = client.get(
+        "/api/injection/board/summary",
+        params={"factory_id": "huadeng"},
+    )
+    assert huaxing_summary.status_code == 200
+    assert huadeng_summary.status_code == 200
+    assert huaxing_summary.json()["total"] == 1
+    assert huadeng_summary.json()["total"] == 1
+
+    login_as(client, "engineer")
+    cross_factory_page = client.get(
+        "/api/injection/board/page",
+        params={"factory_id": "huadeng", "status": "待审核"},
+    )
+    assert cross_factory_page.status_code == 200
+    rows = cross_factory_page.json()["rows"]
+    assert [row["order"]["id"] for row in rows] == ["BP-BOARD-FACTORY-HD"]
+    assert rows[0]["read_source"] == "cross"
+    assert rows[0]["can_view_cost"] is False
+    assert rows[0]["items"][0]["actual_weight_kg"] == 2.2
+    assert rows[0]["items"][0]["actual_amount_hkd"] is None
+    assert rows[0]["items"][0]["injection_cost"] is None
 
 
 def test_same_factory_shared_departments_can_read_molding_samples(enforce_client):

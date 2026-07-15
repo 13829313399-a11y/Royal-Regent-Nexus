@@ -61,6 +61,7 @@ for (const requiredCopy of [
   '新建成功',
   '已填写草稿会自动保留',
   '每页 10 条',
+  '每页 5 条',
   '退回 / 撤回',
   '未解决异常',
   '生产数据待补',
@@ -129,8 +130,21 @@ for (const requiredImplementation of [
   'openEngineeringTrialReportHistory',
   'engineeringTrialReportHistoryVisible',
   'MOLDING_SAMPLE_PAGE_SIZE = 10',
+  'MOLDING_SAMPLE_BOARD_PAGE_SIZE = 5',
+  'MOLDING_SAMPLE_SEARCH_DEBOUNCE_MS = 275',
   'createPaginationState',
+  'createServerPaginationState',
   'boardPageByStatus',
+  'boardSummary',
+  'boardPagesByStatus',
+  'boardLoadingByStatus',
+  'serverBoardEnabled',
+  'supportsServerBoardApi',
+  'loadServerBoardOverview',
+  'loadServerBoardColumn',
+  'loadDeepLinkedOrderIfNeeded',
+  'loadLegacyApiData',
+  'refreshBoardAfterMutation',
   'paginatedVisibleRecords',
   'paginatedMaterialBalanceRows',
   'paginatedMaterialBalancePeriodRows',
@@ -255,8 +269,8 @@ assert.match(source, /leave-to-class="-translate-y-3 scale-95 opacity-0"[\s\S]*:
 assert.match(source, /class="fixed left-1\/2 top-24 z-50[\s\S]*origin-top transform-gpu/)
 assert.doesNotMatch(source, /<span>\{\{ actionMessage \}\}<\/span>/)
 assert.match(source, /overviewDisplayMode = ref<OverviewDisplayMode>\('board'\)/)
-assert.match(source, /@click="overviewDisplayMode = 'board'"/)
-assert.match(source, /@click="overviewDisplayMode = 'list'"/)
+assert.match(source, /@click="setOverviewDisplayMode\('board'\)"/)
+assert.match(source, /@click="setOverviewDisplayMode\('list'\)"/)
 assert.match(source, /:aria-pressed="overviewDisplayMode === 'board'"/)
 assert.match(source, /:aria-pressed="overviewDisplayMode === 'list'"/)
 assert.match(source, /v-if="overviewDisplayMode === 'board'"/)
@@ -275,6 +289,10 @@ assert.match(source, /role="progressbar"[\s\S]*正在刷新啤办业务数据/)
 assert.match(source, /<RefreshCw[\s\S]*animate-spin motion-reduce:animate-none/)
 assert.match(source, /:disabled="apiState === 'checking'"[\s\S]*:aria-busy="apiState === 'checking'"/)
 assert.match(source, /v-for="record in column\.pagedRecords"[\s\S]*openRecord\(record\)/)
+assert.match(source, /:aria-busy="column\.loading"/)
+assert.match(source, /column\.pagination\.total/)
+assert.match(source, /requestBoardPage\(requestedFactoryId, status, requestedQuery, 1\)/)
+assert.match(source, /pageSize: MOLDING_SAMPLE_BOARD_PAGE_SIZE/)
 assert.match(source, /v-for="record in paginatedVisibleRecords"[\s\S]*openRecord\(record\)/)
 assert.match(source, /@click="setView\('material-balance'\)"/)
 assert.match(source, /activeView === 'material-balance'/)
@@ -417,7 +435,7 @@ assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.required_ma
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
 assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
 assert.match(source, /moldingSampleApi\.previewOrderExcel\(workbook,\s*\{\s*factory_id:\s*selectedFactoryId\.value,\s*\}\)/)
-assert.match(source, /activeView\.value = 'create'/)
+assert.match(source, /setView\('create'\)/)
 assert.match(source, /Excel已导入到新建开单草稿/)
 
 for (const removedClearedLayoutCopy of [
