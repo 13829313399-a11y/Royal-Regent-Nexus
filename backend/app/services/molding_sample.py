@@ -1,6 +1,8 @@
 import json
 import re
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+from math import isfinite
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -91,6 +93,14 @@ ALLOWED_ITEM_PATCH_FIELDS = {
     "injection_cost",
     "production_machine",
 }
+MATERIAL_SETTLEMENT_INPUT_FIELDS = (
+    "material",
+    "material_components",
+    "required_material_kg",
+    "collected_weight_kg",
+    "actual_weight_kg",
+    "actual_amount_hkd",
+)
 ENGINEERING_EDIT_DEPARTMENTS = (*ENGINEERING_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS)
 
 
@@ -108,6 +118,10 @@ def round_money(value: float) -> float:
 
 def round_weight(value: float) -> float:
     return round(value + 1e-9, 3)
+
+
+def round_component_weight(value: float) -> float:
+    return float(Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
 
 
 def normalize_material_name(value: str) -> str:
@@ -239,24 +253,131 @@ def resolve_material_price(material: str, prices: list[MoldingSampleMaterialPric
     if direct:
         return direct
 
-    mixed_parts: list[tuple[float, str]] = []
-    for part in material.replace("＋", "+").split("+"):
-        piece = part.strip()
-        if "%" not in piece and "％" not in piece:
-            continue
-
-        normalized_piece = piece.replace("％", "%")
-        ratio_text, material_text = normalized_piece.split("%", 1)
-        try:
-            mixed_parts.append((float(ratio_text.strip()), material_text.strip()))
-        except ValueError:
-            continue
-
+    mixed_parts = parse_legacy_material_components(material)
     if not mixed_parts:
         return None
 
-    mixed_parts.sort(key=lambda item: item[0], reverse=True)
-    return price_map.get(normalize_material_name(mixed_parts[0][1]))
+    dominant = max(mixed_parts, key=lambda item: float(item["ratio_percent"]))
+    return price_map.get(normalize_material_name(str(dominant["material"])))
+
+
+def parse_legacy_material_components(material: str) -> list[dict[str, Any]] | None:
+    parts = material.replace("＋", "+").split("+")
+    if len(parts) == 1 and "%" not in material and "％" not in material:
+        return []
+
+    parsed: list[dict[str, Any]] = []
+    total = 0.0
+    for part in parts:
+        match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*[%％]\s*(.+?)\s*$", part)
+        if not match:
+            return None
+        ratio = float(match.group(1))
+        if not isfinite(ratio) or ratio <= 0:
+            return None
+        label = match.group(2).strip()
+        source_type = "runner" if "水口" in label else "virgin"
+        base_material = re.sub(r"(?:水口料|水口)\s*$", "", label).strip()
+        parsed.append(
+            {
+                "material": base_material,
+                "ratio_percent": ratio,
+                "source_type": source_type,
+            }
+        )
+        total += ratio
+
+    if not isfinite(total) or abs(total - 100) > 0.01:
+        return None
+
+    first_virgin = next(
+        (component["material"] for component in parsed if component["source_type"] == "virgin" and component["material"]),
+        "",
+    )
+    for component in parsed:
+        if component["source_type"] == "runner" and not component["material"]:
+            component["material"] = first_virgin
+    return parsed if parsed and all(component["material"] for component in parsed) else None
+
+
+def canonical_material_display(components: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for component in components:
+        ratio = f"{float(component['ratio_percent']):g}"
+        material = str(component["material"]).strip()
+        if component["source_type"] == "runner" and not material.endswith("水口料"):
+            material = f"{material} 水口料"
+        parts.append(f"{ratio}% {material}")
+    return " + ".join(parts)
+
+
+def normalized_item_data(item_payload: MoldingSampleItemIn, *, exclude: set[str]) -> dict[str, Any]:
+    item_data = item_payload.model_dump(exclude=exclude)
+    item_data["actual_material_cost_components"] = []
+    components = item_data.get("material_components") or []
+    if components:
+        item_data["material"] = canonical_material_display(components)
+    return item_data
+
+
+def material_settlement_inputs_match(existing_item: MoldingSampleItem, item_data: dict[str, Any]) -> bool:
+    for field in MATERIAL_SETTLEMENT_INPUT_FIELDS:
+        existing_value = getattr(existing_item, field, None)
+        incoming_value = item_data.get(field)
+        if field == "material_components":
+            existing_value = existing_value or []
+            incoming_value = incoming_value or []
+        if existing_value != incoming_value:
+            return False
+    return True
+
+
+def calculate_material_amount_hkd(
+    material_weight_kg: float | None,
+    material: str,
+    material_components: list[dict[str, Any]],
+    prices: list[MoldingSampleMaterialPrice],
+) -> tuple[float | None, list[dict[str, Any]]]:
+    if material_weight_kg is None or material_weight_kg <= 0:
+        return None, []
+
+    price_map = {
+        normalize_material_name(price.material): price
+        for price in prices
+        if price.unit_price > 0
+    }
+    components: list[dict[str, Any]] | None = material_components
+    if not components:
+        direct_price = price_map.get(normalize_material_name(material))
+        if direct_price is not None:
+            components = [{"material": material.strip(), "ratio_percent": 100.0, "source_type": "virgin"}]
+        else:
+            components = parse_legacy_material_components(material)
+    if not components:
+        return None, []
+
+    component_fees: list[float] = []
+    snapshots: list[dict[str, Any]] = []
+    for component in components:
+        price = price_map.get(normalize_material_name(str(component["material"])))
+        if price is None:
+            return None, []
+        component_weight = round_component_weight(
+            material_weight_kg * float(component["ratio_percent"]) / 100
+        )
+        component_fee = round_money(component_weight * KG_TO_LB * price.unit_price)
+        component_fees.append(component_fee)
+        snapshots.append(
+            {
+                "material": str(component["material"]),
+                "source_type": str(component["source_type"]),
+                "ratio_percent": float(component["ratio_percent"]),
+                "weight_kg": component_weight,
+                "unit_price": float(price.unit_price),
+                "amount_hkd": component_fee,
+            }
+        )
+    return round_money(sum(component_fees)), snapshots
 
 
 def is_external_order(order: MoldingSampleOrder) -> bool:
@@ -774,7 +895,7 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
     db.add(order)
 
     for index, item_payload in enumerate(payload.items, start=1):
-        item_data = item_payload.model_dump(exclude={"order_id", "sort_order"})
+        item_data = normalized_item_data(item_payload, exclude={"order_id", "sort_order"})
         db.add(
             MoldingSampleItem(
                 **item_data,
@@ -870,6 +991,29 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
         raise HTTPException(status_code=400, detail="啤办单厂区归属不可通过编辑接口变更")
     current_status = order.status
     current_created_at = order.created_at
+    current_external = is_external_order(order)
+    payload_external = payload.order.send_to in {"发至湖南", "发至模厂"} or payload.order.workshop == "模厂"
+    existing_items_by_id = {item.id: item for item in order.items}
+    prepared_items: list[tuple[MoldingSampleItemIn, dict[str, Any], int]] = []
+
+    if current_status == "已完成" and (
+        set(existing_items_by_id) != {item.id for item in payload.items}
+        or current_external != payload_external
+    ):
+        raise HTTPException(status_code=400, detail="已完成单不可增删已结算明细或改变内外部结算方式，请先撤回完成")
+
+    for index, item_payload in enumerate(payload.items, start=1):
+        item_data = normalized_item_data(item_payload, exclude={"order_id", "sort_order"})
+        existing_item = existing_items_by_id.get(item_payload.id)
+        settlement_unchanged = existing_item is not None and material_settlement_inputs_match(existing_item, item_data)
+
+        if current_status == "已完成" and not settlement_unchanged:
+            raise HTTPException(status_code=400, detail="已完成单不可通过全单编辑变更已结算用料，请先撤回完成")
+        if settlement_unchanged and existing_item is not None:
+            item_data["actual_material_cost_components"] = [
+                dict(component) for component in (existing_item.actual_material_cost_components or [])
+            ]
+        prepared_items.append((item_payload, item_data, index))
 
     order_data = payload.order.model_dump(exclude={"id", "factory_id", "status", "created_at", "updated_at"})
     for field, value in order_data.items():
@@ -883,8 +1027,7 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
         db.delete(existing_item)
     db.flush()
 
-    for index, item_payload in enumerate(payload.items, start=1):
-        item_data = item_payload.model_dump(exclude={"order_id", "sort_order"})
+    for item_payload, item_data, index in prepared_items:
         db.add(
             MoldingSampleItem(
                 **item_data,
@@ -1309,13 +1452,19 @@ def calculate_item_costs(
     rate = get_exchange_rate(db)
     external = is_external_order(order)
     material_weight = item.collected_weight_kg or item.required_material_kg if external else item.actual_weight_kg
-    material_price = resolve_material_price(item.material, prices)
+    material_amount_hkd, material_cost_components = calculate_material_amount_hkd(
+        material_weight,
+        item.material,
+        item.material_components,
+        prices,
+    )
 
     if external:
         item.actual_weight_kg = material_weight
 
-    if material_weight and material_price and (force_material_amount or not item.actual_amount_hkd):
-        item.actual_amount_hkd = round_money(material_weight * KG_TO_LB * material_price.unit_price)
+    if force_material_amount or not item.actual_amount_hkd:
+        item.actual_amount_hkd = material_amount_hkd
+        item.actual_material_cost_components = material_cost_components if material_amount_hkd is not None else []
 
     if external:
         item.injection_cost_hkd = None

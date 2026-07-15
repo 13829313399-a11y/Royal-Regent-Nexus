@@ -1,6 +1,9 @@
 import type { MoldingSampleCreateRequest } from '../api/moldingSample.js'
-import { createDefaultMoldingSampleOrder } from './moldingSampleBusiness.js'
+import { createDefaultMoldingSampleOrder, formatMaterialComposition } from './moldingSampleBusiness.js'
 import type {
+  MoldingSampleMaterialComponent,
+  MoldingSampleMaterialSource,
+  MoldingSampleMaterialUsageType,
   MoldingSampleOrderType,
   MoldingSampleSendTo,
   MoldingSampleStage,
@@ -10,6 +13,12 @@ import type {
 
 export type ManualMoldingSampleSendTo = '内部' | MoldingSampleSendTo
 
+export interface ManualMoldingSampleMaterialComponentDraft {
+  material: string
+  source_type: MoldingSampleMaterialSource
+  ratio_percent: string
+}
+
 export interface ManualMoldingSampleLineDraft {
   customer_mold_id: string
   mold_name: string
@@ -17,6 +26,8 @@ export interface ManualMoldingSampleLineDraft {
   mold_presence_status: '' | MoldPresenceStatus
   mold_return_time: string
   material: string
+  material_components: ManualMoldingSampleMaterialComponentDraft[]
+  material_usage_type: MoldingSampleMaterialUsageType
   color: string
   pms: string
   pigment_no: string
@@ -66,7 +77,7 @@ export interface ManualMoldingSampleDraftOptions {
   items?: ManualMoldingSampleLineDraft[]
 }
 
-const manualLineKeys: Array<keyof ManualMoldingSampleLineDraft> = [
+const manualLineKeys = [
   'customer_mold_id',
   'mold_name',
   'mold_dimensions', 'mold_presence_status', 'mold_return_time',
@@ -79,7 +90,7 @@ const manualLineKeys: Array<keyof ManualMoldingSampleLineDraft> = [
   'required_material_kg',
   'required_date',
   'notes',
-]
+] as const
 
 function trimText(value: string | undefined) {
   return (value ?? '').trim()
@@ -94,13 +105,22 @@ export function deriveManualMoldingSampleOrderId(productNo: string) {
 export function createManualMoldingSampleLineDraft(
   input: Partial<ManualMoldingSampleLineDraft> = {},
 ): ManualMoldingSampleLineDraft {
+  const material = input.material ?? ''
+  const materialComponents = input.material_components
+    ? input.material_components.map((component) => createManualMoldingSampleMaterialComponentDraft(component))
+    : material.trim()
+      ? [createSingleManualMaterialComponentDraft(material)]
+      : []
+
   return {
     customer_mold_id: input.customer_mold_id ?? '',
     mold_name: input.mold_name ?? '',
     mold_dimensions: input.mold_dimensions ?? '',
     mold_presence_status: input.mold_presence_status ?? '',
     mold_return_time: input.mold_return_time ?? '',
-    material: input.material ?? '',
+    material,
+    material_components: materialComponents,
+    material_usage_type: input.material_usage_type ?? 'production',
     color: input.color ?? '',
     pms: input.pms ?? '',
     pigment_no: input.pigment_no ?? '',
@@ -110,6 +130,24 @@ export function createManualMoldingSampleLineDraft(
     required_date: input.required_date ?? '',
     notes: input.notes ?? '',
   }
+}
+
+export function createManualMoldingSampleMaterialComponentDraft(
+  input: Partial<ManualMoldingSampleMaterialComponentDraft> = {},
+): ManualMoldingSampleMaterialComponentDraft {
+  return {
+    material: input.material ?? '',
+    source_type: input.source_type === 'runner' ? 'runner' : 'virgin',
+    ratio_percent: input.ratio_percent ?? '',
+  }
+}
+
+export function createSingleManualMaterialComponentDraft(material: string): ManualMoldingSampleMaterialComponentDraft {
+  return createManualMoldingSampleMaterialComponentDraft({
+    material,
+    source_type: 'virgin',
+    ratio_percent: '100',
+  })
 }
 
 export function createManualMoldingSampleOrderDraft(
@@ -135,6 +173,39 @@ export function createManualMoldingSampleOrderDraft(
 
 function isBlankManualLine(line: ManualMoldingSampleLineDraft) {
   return manualLineKeys.every((key) => trimText(line[key]) === '')
+    && !line.material_components.some((component) => trimText(component.material) !== '')
+}
+
+function buildManualMaterialComponents(
+  line: ManualMoldingSampleLineDraft,
+  sourceIndex: number,
+  errors: string[],
+): MoldingSampleMaterialComponent[] {
+  if (!line.material_components.length) {
+    const material = trimText(line.material)
+    return material ? [{ material, source_type: 'virgin', ratio_percent: 100 }] : []
+  }
+
+  const components = line.material_components.map((component, componentIndex) => {
+    const material = trimText(component.material)
+    const ratioPercent = Number(trimText(component.ratio_percent))
+    if (!material) {
+      errors.push(`请填写第 ${sourceIndex} 行第 ${componentIndex + 1} 项原料`)
+    }
+    if (!(Number.isFinite(ratioPercent) && ratioPercent > 0)) {
+      errors.push(`第 ${sourceIndex} 行第 ${componentIndex + 1} 项原料比例必须大于 0`)
+    }
+    return {
+      material,
+      source_type: component.source_type === 'runner' ? 'runner' as const : 'virgin' as const,
+      ratio_percent: ratioPercent,
+    }
+  })
+  const ratioTotal = components.reduce((sum, component) => sum + (Number.isFinite(component.ratio_percent) ? component.ratio_percent : 0), 0)
+  if (Math.abs(ratioTotal - 100) > 0.01) {
+    errors.push(`第 ${sourceIndex} 行原料比例合计必须等于 100%`)
+  }
+  return components
 }
 
 function normalizePms(value: string) {
@@ -201,10 +272,15 @@ export function buildManualMoldingSampleCreateRequest(
     errors.push('至少填写一条明细')
   }
 
+  const materialComponentsBySourceIndex = new Map<number, MoldingSampleMaterialComponent[]>()
   candidateLines.forEach(({ line, sourceIndex }) => {
     requireField(line.customer_mold_id, `第 ${sourceIndex} 行模具编号`, errors)
     requireField(line.mold_name, `第 ${sourceIndex} 行模具名称`, errors)
-    requireField(line.material, `第 ${sourceIndex} 行所需用料`, errors)
+    const materialComponents = buildManualMaterialComponents(line, sourceIndex, errors)
+    materialComponentsBySourceIndex.set(sourceIndex, materialComponents)
+    if (!materialComponents.length) {
+      errors.push(`请填写第 ${sourceIndex} 行所需用料`)
+    }
     requireField(line.color, `第 ${sourceIndex} 行所需颜色`, errors)
     requireField(line.quantity, `第 ${sourceIndex} 行啤/套`, errors)
     requireField(line.required_date, `第 ${sourceIndex} 行需办日期`, errors)
@@ -246,7 +322,12 @@ export function buildManualMoldingSampleCreateRequest(
   return {
     payload: {
       order,
-      items: candidateLines.map(({ line }, index) => ({
+      items: candidateLines.map(({ line, sourceIndex }, index) => {
+        const materialComponents = materialComponentsBySourceIndex.get(sourceIndex) ?? []
+        const material = materialComponents.length
+          ? formatMaterialComposition(materialComponents)
+          : trimText(line.material)
+        return {
         id: `${orderId}-${String(index + 1).padStart(3, '0')}`,
         order_id: orderId,
         sort_order: index + 1,
@@ -256,7 +337,9 @@ export function buildManualMoldingSampleCreateRequest(
         mold_dimensions: trimText(line.mold_dimensions),
         mold_presence_status: line.mold_presence_status || 'unknown',
         production_machine: '',
-        material: trimText(line.material),
+        material,
+        material_components: materialComponents,
+        material_usage_type: line.material_usage_type,
         color: formatManualColorPms(line.color, line.pms),
         pigment_no: trimText(line.pigment_no),
         quantity: trimText(line.quantity),
@@ -273,7 +356,8 @@ export function buildManualMoldingSampleCreateRequest(
         injection_cost: null,
         injection_cost_hkd: null,
         exchange_rate_at_save: null,
-      })),
+        }
+      }),
     },
     errors,
   }

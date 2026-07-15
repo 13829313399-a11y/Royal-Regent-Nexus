@@ -9,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.models.molding_sample import MoldingSampleMaterialPrice, MoldingSampleOrder
 from app.schemas.molding_sample import MoldingSampleCreateRequest, MoldingSampleItemIn, MoldingSampleOrderIn
-from app.services.molding_sample import KG_TO_LB, resolve_material_price, round_money
+from app.services.molding_sample import calculate_material_amount_hkd
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 SHEET_NAME = "啤办单"
@@ -51,6 +51,7 @@ ITEM_COLUMNS = [
     ("预计料费HKD", "expected_amount_hkd"),
     ("模具回厂时间", "mold_return_time"),
     ("完成时间", "completion_time"),
+    ("用料用途", "material_usage_type"),
     ("备注", "notes"),
     ("领料单号", "receipt_no"),
     ("领料kg", "collected_weight_kg"),
@@ -78,10 +79,11 @@ ENGINEERING_IMPORT_COLUMNS = [
     ("需办日期", "required_date"),
     ("工模尺寸", "mold_dimensions"),
     ("模具状态（是否在厂）", "mold_presence_status"),
+    ("用料用途", "material_usage_type"),
     ("备注", "notes"),
 ]
 
-ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 11, 11, 16, 16, 18, 18, 30]
+ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 11, 11, 16, 16, 18, 18, 14, 30]
 
 BATCH_ORDER_COLUMNS = [
     ("单据ID", "id"),
@@ -175,6 +177,8 @@ ITEM_ALIASES.update(
         "用料重量（KG)": "required_material_kg",
         "用料重量(KG)": "required_material_kg",
         "用料重量kg": "required_material_kg",
+        "用途": "material_usage_type",
+        "用料类型": "material_usage_type",
         "回模时间": "mold_return_time",
         "报价周期": "quote_cycle",
         "需办日期": "required_date",
@@ -201,6 +205,11 @@ MOLD_PRESENCE_STATUS_LABELS = {
     "unknown": "待确认",
     "in_factory": "在厂",
     "out_of_factory": "不在厂",
+}
+
+MATERIAL_USAGE_TYPE_LABELS = {
+    "production": "正式生产",
+    "trial": "试料",
 }
 
 DETAIL_HEADER_ROW_INDEX = 10
@@ -242,6 +251,7 @@ ITEM_COLUMN_WIDTHS = [
     14,
     15,
     15,
+    14,
     30,
     18,
     12,
@@ -288,6 +298,7 @@ BATCH_COLUMN_WIDTHS = [
     14,
     15,
     15,
+    14,
     30,
     18,
     12,
@@ -453,7 +464,7 @@ def build_engineering_import_template() -> bytes:
         ["开单日期", "", "阶段", "T0", "填写部", "工程部"],
         ["发至", "内部", "审核主管", "", "落单人", ""],
         ["注意事项", ""],
-        ["填写说明：每一行代表一项模具明细；原料价格由系统按“所需用料”自动带出，不需填写；所需用料(kg)请直接填写；模具状态请选在厂、不在厂或待确认。"],
+        ["填写说明：每一行代表一项模具明细；原料价格由系统按“所需用料”自动带出，不需填写；所需用料(kg)请直接填写；模具状态请选在厂、不在厂或待确认；用料用途请填正式生产或试料，留空按正式生产处理。"],
         [],
         [label for label, _ in ENGINEERING_IMPORT_COLUMNS],
         ["" for _ in ENGINEERING_IMPORT_COLUMNS],
@@ -488,6 +499,8 @@ def _format_decimal(value: float | int | None, digits = 2) -> str:
 def _format_export_item_value(field: str, value: object) -> tuple[object | None, bool]:
     if field == "mold_presence_status":
         return MOLD_PRESENCE_STATUS_LABELS[_normalize_mold_presence_status(value)], False
+    if field == "material_usage_type":
+        return MATERIAL_USAGE_TYPE_LABELS[_normalize_material_usage_type(value)], False
 
     if value is None or str(value).strip() == "":
         if field in FILLBACK_REQUIRED_FIELDS:
@@ -520,6 +533,23 @@ def _normalize_mold_presence_status(value: object) -> str:
     }.get(str(value or "").strip(), "unknown")
 
 
+def _normalize_material_usage_type(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    normalized = {
+        "": "production",
+        "production": "production",
+        "正式": "production",
+        "正式生产": "production",
+        "生产": "production",
+        "trial": "trial",
+        "试料": "trial",
+        "试模": "trial",
+    }.get(text)
+    if normalized is None:
+        raise ValueError("用料用途仅支持“正式生产”或“试料”")
+    return normalized
+
+
 def _field_column_index(field: str) -> int:
     for index, (_, column_field) in enumerate(ITEM_COLUMNS, start=1):
         if column_field == field:
@@ -541,11 +571,13 @@ def _calculate_expected_amount_hkd(
     except (TypeError, ValueError):
         return None
 
-    material_price = resolve_material_price(str(getattr(item, "material", "") or ""), material_prices)
-    if expected_weight_kg <= 0 or material_price is None:
-        return None
-
-    return round_money(expected_weight_kg * KG_TO_LB * material_price.unit_price)
+    amount_hkd, _ = calculate_material_amount_hkd(
+        expected_weight_kg,
+        str(getattr(item, "material", "") or ""),
+        list(getattr(item, "material_components", None) or []),
+        material_prices,
+    )
+    return amount_hkd
 
 
 def _get_export_item_value(
@@ -683,6 +715,8 @@ def parse_order_excel(
                     note_parts.append(f"要求：{requirement}")
             elif field == "mold_presence_status":
                 item_data[field] = _normalize_mold_presence_status(value)
+            elif field == "material_usage_type":
+                item_data[field] = _normalize_material_usage_type(value)
             elif field in NUMERIC_ITEM_FIELDS:
                 item_data[field] = _parse_optional_float(value)
             elif field in {"sort_order", "shoot_qty"}:

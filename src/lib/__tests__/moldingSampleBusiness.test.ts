@@ -11,6 +11,7 @@ import {
   isExternalMoldingSampleOrder,
   isMoldingSampleLocked,
   normalizeMaterialName,
+  resolveActualMaterialCostBreakdown,
   resolveMaterialPrice,
   calculateExpectedMaterialAmountHkd,
   countMoldingSampleAttentionMetrics,
@@ -282,7 +283,8 @@ assert.deepEqual(attentionMetrics, {
 assert.equal(normalizeMaterialName('PP(EP３３２K)-90度'), 'ppep332k90°')
 assert.equal(resolveMaterialPrice('HIPS-425', prices)?.unit_price, 5.5)
 assert.equal(resolveMaterialPrice('PP（AV161）', prices)?.unit_price, 4.6)
-assert.equal(resolveMaterialPrice('30% ABS抽粒 + 70% ABS 750W', prices)?.material, 'ABS 750W')
+assert.equal(resolveMaterialPrice('20% ABS 740 + 80% ABS 750W', prices)?.unit_price, 8.48)
+assert.equal(resolveMaterialPrice('30% ABS抽粒 + 70% ABS 750W', prices), null)
 assert.equal(resolveMaterialPrice('70% 未知料 + 30% ABS 750W', prices), null)
 
 assert.equal(calculateExpectedMaterialAmountHkd(
@@ -300,6 +302,16 @@ assert.equal(costedItem.expected_amount_hkd, 29.83)
 assert.equal(costedItem.actual_amount_hkd, 24.25)
 assert.equal(costedItem.injection_cost_hkd, 108)
 assert.equal(costedItem.exchange_rate_at_save, 1.08)
+assert.deepEqual(costedItem.actual_material_cost_components, [
+  {
+    material: 'HIPS 425',
+    source_type: 'virgin',
+    ratio_percent: 100,
+    weight_kg: 2,
+    unit_price: 5.5,
+    amount_hkd: 24.25,
+  },
+])
 
 const externalCostedItem = calculateMoldingSampleItemCosts(
   { ...baseItem, collected_weight_kg: 2.6, required_material_kg: 2.46, injection_cost: 100 },
@@ -314,7 +326,21 @@ assert.equal(externalCostedItem.injection_cost_hkd, null)
 const previewItems = applyCostPreviewToItems(
   [
     { ...baseItem, actual_weight_kg: 2, actual_amount_hkd: null, injection_cost: 100 },
-    { ...baseItem, id: 'BP-TEST-002', actual_weight_kg: 3, actual_amount_hkd: 88, injection_cost: 120 },
+    {
+      ...baseItem,
+      id: 'BP-TEST-002',
+      actual_weight_kg: 3,
+      actual_amount_hkd: 88,
+      actual_material_cost_components: [{
+        material: 'HIPS 425',
+        source_type: 'virgin',
+        ratio_percent: 100,
+        weight_kg: 3,
+        unit_price: 13.3,
+        amount_hkd: 88,
+      }],
+      injection_cost: 120,
+    },
   ],
   prices,
   1.08,
@@ -322,7 +348,26 @@ const previewItems = applyCostPreviewToItems(
 )
 assert.equal(previewItems[0].actual_amount_hkd, 24.25)
 assert.equal(previewItems[1].actual_amount_hkd, 88)
+assert.equal(previewItems[1].actual_material_cost_components?.[0]?.amount_hkd, 88)
 assert.equal(previewItems[1].injection_cost_hkd, 129.6)
+
+const forcedPreviewItem = applyCostPreviewToItems([previewItems[1]!], prices, 1.08, false, true)[0]!
+assert.equal(forcedPreviewItem.actual_amount_hkd, 36.38)
+assert.equal(forcedPreviewItem.actual_material_cost_components?.[0]?.amount_hkd, 36.38)
+
+const persistedActualBreakdown = resolveActualMaterialCostBreakdown(previewItems[1]!, prices)
+assert.equal(persistedActualBreakdown.source, 'persisted')
+assert.equal(persistedActualBreakdown.total_amount_hkd, 88)
+assert.equal(persistedActualBreakdown.components[0]?.amount_hkd, 88)
+
+const legacyActualBreakdown = resolveActualMaterialCostBreakdown({
+  ...baseItem,
+  actual_weight_kg: 3,
+  actual_amount_hkd: 88,
+}, prices)
+assert.equal(legacyActualBreakdown.source, 'estimated')
+assert.equal(legacyActualBreakdown.total_amount_hkd, 88)
+assert.equal(legacyActualBreakdown.components[0]?.amount_hkd, 36.38)
 
 const internalSummary = buildMoldingSampleReportSummary(
   { ...baseOrder, status: '已完成', completed_date: '2026-07-01' },
@@ -348,6 +393,63 @@ assert.equal(externalSummary.total_material_cost, 31.53)
 assert.equal(externalSummary.total_injection_cost, 0)
 assert.equal(externalSummary.total_cost, 31.53)
 assert.equal(externalSummary.has_missing_injection_cost, false)
+
+const mixedMaterialSummary = buildMoldingSampleReportSummary(
+  { ...baseOrder, status: '已完成', completed_date: '2026-07-01' },
+  [{
+    ...baseItem,
+    material: '80%ABS + 20%PVC水口料',
+    material_components: [
+      { material: 'ABS', source_type: 'virgin', ratio_percent: 80 },
+      { material: 'PVC', source_type: 'runner', ratio_percent: 20 },
+    ],
+    actual_weight_kg: 10,
+    actual_amount_hkd: 163.15,
+    actual_material_cost_components: [
+      {
+        material: 'ABS',
+        source_type: 'virgin',
+        ratio_percent: 80,
+        weight_kg: 8,
+        unit_price: 8,
+        amount_hkd: 141.1,
+      },
+      {
+        material: 'PVC',
+        source_type: 'runner',
+        ratio_percent: 20,
+        weight_kg: 2,
+        unit_price: 5,
+        amount_hkd: 22.05,
+      },
+    ],
+    injection_cost: 0,
+    injection_cost_hkd: 0,
+  }],
+  [
+    { material: 'ABS', unit_price: 80 },
+    { material: 'PVC', unit_price: 50 },
+  ],
+)
+assert.equal(mixedMaterialSummary.total_material_cost, 163.15)
+assert.deepEqual(mixedMaterialSummary.material_rows, [
+  {
+    material: 'ABS',
+    source_type: 'virgin',
+    line_count: 1,
+    total_weight_kg: 8,
+    total_material_cost_hkd: 141.1,
+    missing_price_item_ids: [],
+  },
+  {
+    material: 'PVC',
+    source_type: 'runner',
+    line_count: 1,
+    total_weight_kg: 2,
+    total_material_cost_hkd: 22.05,
+    missing_price_item_ids: [],
+  },
+])
 
 assert.equal(
   generateRequisitionNumber('2026-07-01', [

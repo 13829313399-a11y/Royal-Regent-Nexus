@@ -95,6 +95,8 @@ for (const requiredImplementation of [
   'production_molding_sample_task',
   "'huaxing'",
   'buildCompletionGate',
+  'resolveActualMaterialCostBreakdown',
+  'getActualMaterialCostSourceLabel',
   'isExternalMoldingSampleOrder',
   'selectedFactoryId',
   'engineeringOrderRoute',
@@ -119,6 +121,9 @@ for (const requiredImplementation of [
 assert.match(source, /<div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">[\s\S]*<div class="fixed right-4 top-4 z-50 flex items-center gap-2[\s\S]*当前厂区：\{\{ activeFactory\.shortName \}\}[\s\S]*<AccountMenu \/>/)
 assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
 assert.match(source, /total_material_cost/)
+assert.match(source, /selectedTask\.value\.order\.status === '已完成'[\s\S]*return activeItems\.value/)
+assert.match(source, /实际结算快照/)
+assert.match(source, /分项按当前原料价估算；合计以已存实际料费为准/)
 assert.match(source, /<\/main>\s*<section class="molding-sample-task-print-root hidden"/)
 assert.match(source, /#app > main \{ display: none !important; \}/)
 assert.match(source, /body\.molding-sample-task-printing #app > \.molding-sample-task-print-root \{ display: block !important; position: static !important;/)

@@ -33,6 +33,22 @@ export type MoldingSampleAuditDecision = '提交' | '通过' | '驳回' | '重�
 export type MoldingSampleTone = 'teal' | 'blue' | 'amber' | 'red' | 'slate' | 'green'
 export type MoldPresenceStatus = 'unknown' | 'in_factory' | 'out_of_factory'
 
+export type MoldingSampleMaterialSource = 'virgin' | 'runner'
+
+export type MoldingSampleMaterialUsageType = 'production' | 'trial'
+
+export interface MoldingSampleMaterialComponent {
+  material: string
+  source_type: MoldingSampleMaterialSource
+  ratio_percent: number
+}
+
+export interface MoldingSampleActualMaterialCostComponent extends MoldingSampleMaterialComponent {
+  weight_kg: number
+  unit_price: number
+  amount_hkd: number
+}
+
 export interface MoldingSampleOrder {
   id: string
   factory_id: string
@@ -66,6 +82,8 @@ export interface MoldingSampleItem {
   machine_type: string
   production_machine: string
   material: string
+  material_components?: MoldingSampleMaterialComponent[]
+  material_usage_type?: MoldingSampleMaterialUsageType
   color: string
   pigment_no: string
   quantity: string
@@ -79,6 +97,7 @@ export interface MoldingSampleItem {
   collected_weight_kg: number | null
   actual_weight_kg: number | null
   actual_amount_hkd: number | null
+  actual_material_cost_components?: MoldingSampleActualMaterialCostComponent[]
   injection_cost: number | null
   injection_cost_hkd: number | null
   exchange_rate_at_save: number | null
