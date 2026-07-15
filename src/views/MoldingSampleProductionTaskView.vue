@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onMounted, ref, watch, watchEffect } from 'vue'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -112,6 +112,8 @@ const notificationUpdating = ref(false)
 const itemDrafts = ref<Record<string, ItemFillbackDraft>>({})
 const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSampleItem>>>>({})
 const isSelectedTaskDataExpanded = ref(false)
+const selectedFullDataItemId = ref('')
+const fullDataItemPane = ref<HTMLElement | null>(null)
 const taskPrintPreviewVisible = ref(false)
 const trialReportDialogVisible = ref(false)
 const trialReportReadOnly = ref(false)
@@ -119,6 +121,29 @@ const trialReportInitialItemId = ref('')
 const trialReportSaving = ref(false)
 const protectedMaterialPrices = ref<MoldingSampleMaterialPrice[]>([])
 const protectedRmbToHkdRate = ref<number | null>(null)
+
+function handoffWheelAtBoundary(event: WheelEvent) {
+  const region = event.currentTarget as HTMLElement | null
+  if (
+    !region
+    || event.deltaY === 0
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+    || Math.abs(event.deltaX) > Math.abs(event.deltaY)
+  ) return
+
+  const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1
+  const scrollDistance = event.deltaY * multiplier
+  const edgeTolerance = 1.5
+  const reachedTop = region.scrollTop <= edgeTolerance
+  const reachedBottom = region.scrollTop + region.clientHeight >= region.scrollHeight - edgeTolerance
+
+  if ((scrollDistance < 0 && reachedTop) || (scrollDistance > 0 && reachedBottom)) {
+    event.preventDefault()
+    window.scrollBy({ top: scrollDistance, behavior: 'auto' })
+  }
+}
 
 const statusTones: Record<MoldingSampleStatus, Tone> = {
   待审核: 'blue',
@@ -297,6 +322,12 @@ const activeItems = computed<MoldingSampleItem[]>(() => {
     }
   })
 })
+
+const selectedFullDataItem = computed(() =>
+  activeItems.value.find((item) => item.id === selectedFullDataItemId.value)
+  ?? activeItems.value[0]
+  ?? null,
+)
 
 // The printed handoff is issued when molding first receives the engineering order.
 // Keep it tied to the original engineering rows instead of unsaved production fillback.
@@ -572,6 +603,15 @@ function getQueueStatusLabel(status: MoldingSampleStatus) {
 
 function getReportRow(itemId: string) {
   return selectedReportRowsByItemId.value.get(itemId) ?? null
+}
+
+function selectFullDataItem(itemId: string) {
+  selectedFullDataItemId.value = itemId
+  void nextTick(() => {
+    if (fullDataItemPane.value) {
+      fullDataItemPane.value.scrollTop = 0
+    }
+  })
 }
 
 function getExpectedMaterialCostBreakdown(item: MoldingSampleItem) {
@@ -1176,6 +1216,7 @@ watch(selectedTask, () => {
     return acc
   }, {}) ?? {}
   isSelectedTaskDataExpanded.value = false
+  selectedFullDataItemId.value = selectedTask.value?.items[0]?.id ?? ''
 }, { immediate: true })
 
 watch([queueFilter, productionSearchKeyword, selectedFactoryId], () => {
@@ -1197,11 +1238,11 @@ watchEffect(() => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-100 px-4 pb-6 pt-16 text-[13px] leading-relaxed text-slate-900 sm:px-6 xl:px-10">
-    <div class="mx-auto max-w-[1720px] space-y-4">
+  <main class="production-task-page app-shell min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.09),transparent_32rem),linear-gradient(180deg,#f8fafc_0%,#eef4f8_100%)] px-4 pb-6 pt-16 text-[13px] leading-relaxed text-slate-900 sm:px-6 xl:px-10">
+    <div class="app-page mx-auto max-w-[1720px] space-y-4">
       <RouterLink
         to="/modules/production"
-        class="fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 text-sm font-semibold text-slate-600 shadow-sm backdrop-blur transition hover:border-slate-300 hover:text-slate-950 sm:left-6 xl:left-10"
+        class="interactive-surface fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-3 text-sm font-semibold text-slate-600 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.45)] backdrop-blur-xl transition hover:border-teal-200 hover:bg-teal-50/90 hover:text-teal-800 sm:left-6 xl:left-10"
       >
         <ArrowLeft class="size-4" aria-hidden="true" />
         生产部模块
@@ -1215,8 +1256,8 @@ watchEffect(() => {
         <span class="font-semibold text-slate-700">
           生产任务单 · {{ selectedTask?.order.id || '未选择' }}
         </span>
-        <div class="fixed right-4 top-4 z-50 flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-2 py-1 shadow-sm backdrop-blur sm:right-6 xl:right-10">
-          <span class="hidden font-medium text-slate-500 lg:inline">
+        <div class="fixed right-4 top-4 z-50 flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-2 py-1 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.45)] backdrop-blur-xl sm:right-6 xl:right-10">
+          <span class="sr-only font-medium text-slate-500 lg:not-sr-only lg:inline" role="status" aria-live="polite">
             当前厂区：{{ activeFactory.shortName }} · {{ actionMessage }}
           </span>
           <AccountMenu />
@@ -1231,11 +1272,13 @@ watchEffect(() => {
         <span>当前厂区为只读，仅可查看数据</span>
       </section>
 
-      <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div class="flex flex-wrap items-start justify-between gap-4">
+      <section class="enterprise-panel relative overflow-hidden rounded-2xl p-5">
+        <span class="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-teal-500 via-teal-600 to-cyan-600" aria-hidden="true" />
+        <span class="pointer-events-none absolute -right-20 -top-28 size-64 rounded-full bg-teal-100/45 blur-3xl" aria-hidden="true" />
+        <div class="relative flex flex-wrap items-start justify-between gap-4">
           <div class="min-w-0">
-            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">MOLDING SAMPLE PRODUCTION TASK</p>
-            <h1 class="mt-1 text-2xl font-bold tracking-tight text-slate-950">啤机部生产任务单</h1>
+            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">MOLDING SAMPLE PRODUCTION TASK</p>
+            <h1 class="mt-1 text-2xl font-bold tracking-tight text-[#17385e]">啤机部生产任务单</h1>
             <p class="mt-1 max-w-4xl text-sm text-slate-600">
               啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料，完成后把状态回传到同一张工程啤办单。
             </p>
@@ -1247,26 +1290,31 @@ watchEffect(() => {
           <div class="flex flex-wrap gap-2">
             <RouterLink
               :to="engineeringOrderRoute"
-              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+              class="interactive-surface inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white/90 px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800"
             >
               <Send class="size-4" aria-hidden="true" />
               工程啤办单
             </RouterLink>
             <button
               type="button"
-              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-950 bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
+              :disabled="apiState === 'checking'"
+              :aria-busy="apiState === 'checking'"
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#17385e] bg-[#17385e] px-4 text-sm font-semibold text-white shadow-[0_10px_24px_-16px_rgba(23,56,94,0.75)] transition hover:border-[#204b73] hover:bg-[#204b73] disabled:cursor-wait disabled:border-slate-300 disabled:bg-slate-300"
               @click="loadApiData"
             >
-              <RotateCcw class="size-4" aria-hidden="true" />
-              刷新任务
+              <RotateCcw class="size-4" :class="apiState === 'checking' ? 'animate-spin' : ''" aria-hidden="true" />
+              {{ apiState === 'checking' ? '刷新中' : '刷新任务' }}
             </button>
           </div>
+        </div>
+        <div v-if="apiState === 'checking'" class="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-teal-100" aria-hidden="true">
+          <span class="production-loading-bar block h-full w-1/3 rounded-full bg-gradient-to-r from-teal-700 via-teal-500 to-cyan-400" />
         </div>
       </section>
 
       <div class="grid min-w-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <aside class="min-w-0 space-y-3 xl:sticky xl:top-20 xl:self-start" aria-label="啤办生产任务队列">
-          <section class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+          <section class="enterprise-panel rounded-2xl p-3.5">
             <div class="flex items-center justify-between gap-3">
               <div>
                 <h2 class="text-[13px] font-bold text-slate-950">我的生产队列</h2>
@@ -1283,7 +1331,7 @@ watchEffect(() => {
                 aria-label="模糊搜索生产任务"
                 autocomplete="off"
                 placeholder="搜索单号 / 产品 / 客户 / 模具 / 原料..."
-                class="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-8 text-[12px] outline-none transition focus:border-slate-400 focus:bg-white"
+                class="h-9 w-full rounded-lg border border-slate-200 bg-slate-50/80 pl-8 pr-8 text-[12px] outline-none shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition focus:border-teal-300 focus:bg-white"
                 @keydown.esc="productionSearchKeyword = ''"
               >
               <button
@@ -1304,18 +1352,20 @@ watchEffect(() => {
                 v-for="filter in queueFilters"
                 :key="filter"
                 type="button"
-                class="rounded-md px-2 py-0.5 font-semibold transition"
-                :class="queueFilter === filter ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'"
+                :aria-pressed="queueFilter === filter"
+                class="rounded-md px-2 py-1 font-semibold transition"
+                :class="queueFilter === filter ? 'bg-[#17385e] text-white shadow-sm' : 'text-slate-500 hover:bg-teal-50 hover:text-teal-800'"
                 @click="queueFilter = filter"
               >
                 {{ filter }} {{ getQueueFilterCount(filter) }}
               </button>
             </div>
-            <div class="mt-3 flex rounded-lg border border-slate-200 bg-slate-50 p-1 text-[11px] font-semibold">
+            <div class="surface-subtle mt-3 flex rounded-lg p-1 text-[11px] font-semibold">
               <button
                 type="button"
+                :aria-pressed="queueDisplayMode === 'board'"
                 class="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md transition"
-                :class="queueDisplayMode === 'board' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-slate-900'"
+                :class="queueDisplayMode === 'board' ? 'bg-[#17385e] text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-teal-800'"
                 @click="setQueueDisplayMode('board')"
               >
                 <LayoutDashboard class="size-3.5" aria-hidden="true" />
@@ -1323,8 +1373,9 @@ watchEffect(() => {
               </button>
               <button
                 type="button"
+                :aria-pressed="queueDisplayMode === 'list'"
                 class="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md transition"
-                :class="queueDisplayMode === 'list' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-slate-900'"
+                :class="queueDisplayMode === 'list' ? 'bg-[#17385e] text-white shadow-sm' : 'text-slate-500 hover:bg-white hover:text-teal-800'"
                 @click="setQueueDisplayMode('list')"
               >
                 <Table2 class="size-3.5" aria-hidden="true" />
@@ -1333,14 +1384,15 @@ watchEffect(() => {
             </div>
           </section>
 
-          <div v-if="filteredTaskEntries.length" class="space-y-2">
-            <div v-if="queueDisplayMode === 'board'" class="space-y-2">
+          <div v-if="filteredTaskEntries.length" class="production-queue-list sidebar-scrollbar space-y-2 pr-0.5" @wheel="handoffWheelAtBoundary">
+            <div v-if="queueDisplayMode === 'board'" class="reveal-grid space-y-2">
               <button
                 v-for="entry in paginatedFilteredTaskEntries"
                 :key="entry.order.id"
                 type="button"
-                class="w-full rounded-lg border bg-white p-2.5 text-left shadow-sm transition hover:border-indigo-300 hover:bg-slate-50"
-                :class="selectedTask?.order.id === entry.order.id ? 'border-2 border-teal-300 bg-teal-50/60' : 'border-slate-200'"
+                :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
+                class="interactive-surface w-full rounded-xl border bg-white p-2.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition motion-reduce:transform-none motion-reduce:transition-none hover:border-teal-200 hover:bg-teal-50/40"
+                :class="selectedTask?.order.id === entry.order.id ? 'border-teal-300 bg-gradient-to-r from-teal-50 to-white shadow-[inset_3px_0_0_rgba(13,148,136,0.75),0_8px_20px_-18px_rgba(13,148,136,0.8)] ring-1 ring-teal-100' : 'border-slate-200'"
                 @click="selectTask(entry.order.id, entry.factory_id)"
               >
                 <div class="flex items-start justify-between gap-2">
@@ -1351,7 +1403,7 @@ watchEffect(() => {
                 <p class="truncate text-[11px] text-slate-400">
                   {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 交期 {{ entry.items[0]?.completion_time || entry.order.date }}
                 </p>
-                <p class="mt-1 truncate text-[10px] font-semibold text-blue-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
+                <p class="mt-1 truncate text-[10px] font-semibold text-teal-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
                 <p
                   v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
                   class="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-500"
@@ -1372,7 +1424,8 @@ watchEffect(() => {
                 v-for="entry in paginatedFilteredTaskEntries"
                 :key="`list-${entry.order.id}`"
                 type="button"
-                class="grid w-full grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 px-3 py-2 text-left text-[12px] transition last:border-b-0 hover:bg-slate-50"
+                :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
+                class="grid w-full grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 px-3 py-2 text-left text-[12px] transition last:border-b-0 hover:bg-teal-50/50"
                 :class="selectedTask?.order.id === entry.order.id ? 'bg-teal-50/70' : 'bg-white'"
                 role="row"
                 @click="selectTask(entry.order.id, entry.factory_id)"
@@ -1386,7 +1439,7 @@ watchEffect(() => {
               </button>
             </div>
 
-            <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500 shadow-sm">
+            <div class="enterprise-panel flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-[11px] text-slate-500">
               <span class="font-medium">每页 10 条</span>
               <span class="font-mono">{{ formatPaginationRange(filteredTaskPagination) }}</span>
               <div class="flex gap-1">
@@ -1414,8 +1467,8 @@ watchEffect(() => {
           </div>
         </aside>
 
-        <section v-if="selectedTask" class="min-w-0 space-y-4">
-          <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <section v-if="selectedTask" class="reveal-grid min-w-0 space-y-4">
+          <section class="enterprise-panel rounded-2xl p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
@@ -1433,7 +1486,7 @@ watchEffect(() => {
                 </div>
                 <div
                   v-if="selectedNotification"
-                  class="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                  class="surface-subtle mt-3 flex flex-wrap items-center gap-2 rounded-lg px-3 py-2"
                 >
                   <div class="min-w-0 flex-1">
                     <div class="flex flex-wrap items-center gap-2">
@@ -1460,7 +1513,7 @@ watchEffect(() => {
                   <button
                     type="button"
                     :disabled="notificationUpdating || !canMarkSelectedNotificationHandled"
-                    class="h-7 rounded-md bg-slate-900 px-2 text-[11px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    class="h-7 rounded-md bg-[#17385e] px-2 text-[11px] font-semibold text-white transition hover:bg-[#204b73] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                     @click="updateSelectedNotificationStatus('已处理')"
                   >
                     标记已处理
@@ -1473,8 +1526,8 @@ watchEffect(() => {
                   当前任务未找到正式通知，刷新任务后可同步通知状态。
                 </div>
               </div>
-              <div class="rounded-lg bg-slate-900 px-3 py-2 text-right text-white">
-                <div class="text-[11px] text-slate-400">实际料费(HKD)</div>
+              <div class="rounded-xl border border-[#284f76] bg-gradient-to-br from-[#17385e] to-[#204b73] px-3.5 py-2.5 text-right text-white shadow-[0_12px_26px_-18px_rgba(23,56,94,0.85)]">
+                <div class="text-[11px] text-slate-200">实际料费(HKD)</div>
                 <div class="text-lg font-bold tabular-nums">{{ formatCurrency(selectedReportSummary?.total_material_cost, '$ 0.00') }}</div>
               </div>
               <button
@@ -1498,7 +1551,7 @@ watchEffect(() => {
             </div>
           </section>
 
-          <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="molding-sample-trial-report-history">
+          <section class="enterprise-panel rounded-2xl p-3.5" data-testid="molding-sample-trial-report-history">
             <div class="flex flex-wrap items-start justify-between gap-2">
               <div class="flex items-center gap-2">
                 <ClipboardPenLine class="size-4 text-teal-700" aria-hidden="true" />
@@ -1513,7 +1566,7 @@ watchEffect(() => {
               <article
                 v-for="report in selectedTrialReports"
                 :key="report.id"
-                class="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
+                class="interactive-surface surface-subtle flex min-w-0 items-center justify-between gap-3 rounded-lg px-3 py-2.5 motion-reduce:transform-none motion-reduce:transition-none"
               >
                 <div class="min-w-0">
                   <p class="truncate text-[12px] font-semibold text-slate-900">
@@ -1533,7 +1586,7 @@ watchEffect(() => {
                 </button>
               </article>
             </div>
-            <p v-else class="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+            <p v-else class="surface-subtle mt-3 rounded-lg border-dashed px-3 py-2 text-[11px] text-slate-500">
               暂无已保存报告。啤机部填写并保存后，这里会形成可查、可重印的历史记录。
             </p>
           </section>
@@ -1551,30 +1604,42 @@ watchEffect(() => {
             </div>
           </div>
 
-          <section class="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
+          <section class="enterprise-panel min-w-0 overflow-clip rounded-2xl">
+            <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-gradient-to-r from-slate-50/90 via-white to-teal-50/40 px-4 py-3">
               <PencilRuler class="size-4 text-slate-400" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">啤机回填明细 · 实际用料回填</span>
-              <span class="ml-auto text-[11px] text-slate-400">单价按原料表</span>
+              <span class="ml-auto text-[11px] text-slate-400">
+                {{ activeItems.length }} 项<span class="hidden md:inline"> · 区域内滚动查看</span> · 单价按原料表
+              </span>
               <button
                 type="button"
-                class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+                class="inline-flex h-7 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-600 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800"
+                :aria-expanded="isSelectedTaskDataExpanded"
+                aria-controls="production-complete-order-data"
                 @click="isSelectedTaskDataExpanded = !isSelectedTaskDataExpanded"
               >
                 {{ isSelectedTaskDataExpanded ? '收起完整数据' : '展开完整数据' }}
               </button>
             </div>
-            <div data-testid="production-fillback-list" class="space-y-4 p-4">
-              <article
-                v-for="item in activeItems"
-                :key="item.id"
-                data-testid="production-fillback-item"
-                class="overflow-hidden rounded-xl border bg-white"
-                :class="Number(item.actual_weight_kg) > 0 ? 'border-slate-200' : 'border-red-200 ring-1 ring-red-100'"
+            <div data-testid="production-fillback-list" class="p-3">
+              <div
+                class="production-fillback-scroll sidebar-scrollbar rounded-xl bg-slate-50/60 p-1 outline-none focus-visible:ring-2 focus-visible:ring-teal-500/35 focus-visible:ring-offset-2"
+                role="region"
+                aria-label="啤机回填模具明细"
+                tabindex="0"
+                @wheel="handoffWheelAtBoundary"
               >
-                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/80 px-4 py-3">
+                <div data-testid="production-fillback-grid" class="production-fillback-grid">
+                  <article
+                    v-for="item in activeItems"
+                    :key="item.id"
+                    data-testid="production-fillback-item"
+                    class="overflow-clip rounded-xl border bg-white shadow-[0_8px_24px_-22px_rgba(15,23,42,0.35)]"
+                    :class="Number(item.actual_weight_kg) > 0 ? 'border-slate-200' : 'border-red-200 ring-1 ring-red-100'"
+                  >
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-slate-50 via-white to-teal-50/30 px-4 py-3">
                   <div class="flex min-w-0 items-start gap-3">
-                    <span class="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 px-2 text-[11px] font-bold text-white">
+                    <span class="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-lg bg-[#17385e] px-2 text-[11px] font-bold text-white shadow-sm">
                       {{ item.sort_order }}
                     </span>
                     <div class="min-w-0">
@@ -1599,9 +1664,9 @@ watchEffect(() => {
                   </div>
                 </div>
 
-                <div class="p-4">
-                  <div class="grid gap-3 xl:grid-cols-[minmax(0,1fr)_280px]">
-                    <section class="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+                    <div class="p-3">
+                      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(11rem,0.72fr)]">
+                        <section class="surface-subtle rounded-lg p-3">
                       <h4 class="text-[11px] font-bold tracking-wide text-slate-500">原料资料</h4>
                       <dl class="mt-3 space-y-3">
                         <div>
@@ -1619,7 +1684,7 @@ watchEffect(() => {
                       </dl>
                     </section>
 
-                    <section data-testid="production-fillback-usage-panel" class="rounded-xl border border-slate-200 p-3.5">
+                        <section data-testid="production-fillback-usage-panel" class="surface-subtle rounded-lg p-3">
                       <h4 class="text-[11px] font-bold tracking-wide text-slate-500">用量回填</h4>
                       <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
                         <div class="rounded-lg bg-slate-50 px-3 py-2.5">
@@ -1651,8 +1716,8 @@ watchEffect(() => {
                     </section>
                   </div>
 
-                  <section data-testid="production-fillback-cost-grid" class="mt-3 grid gap-3 lg:grid-cols-2">
-                    <article data-testid="production-fillback-expected-cost-panel" class="overflow-hidden rounded-xl border border-slate-200">
+                      <section data-testid="production-fillback-cost-grid" class="mt-2 grid gap-2 sm:grid-cols-2">
+                    <article data-testid="production-fillback-expected-cost-panel" class="overflow-clip rounded-xl border border-slate-200/80 bg-white/90">
                       <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
                         <h4 class="text-[11px] font-bold text-slate-600">预计料费(HKD)</h4>
                         <p class="mt-0.5 text-[11px] text-slate-500">按预计用料与当前原料价计算</p>
@@ -1679,7 +1744,7 @@ watchEffect(() => {
                       </div>
                     </article>
 
-                    <article data-testid="production-fillback-actual-cost-panel" class="overflow-hidden rounded-xl border border-slate-200">
+                    <article data-testid="production-fillback-actual-cost-panel" class="overflow-clip rounded-xl border border-slate-200/80 bg-white/90">
                       <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
                         <h4 class="text-[11px] font-bold text-slate-600">实际料费(HKD)</h4>
                         <p
@@ -1711,11 +1776,13 @@ watchEffect(() => {
                         <span data-testid="production-fillback-actual-total" class="tabular-nums">{{ formatCurrency(getActualMaterialCostTotal(item)) }}</span>
                       </div>
                     </article>
-                  </section>
+                      </section>
+                    </div>
+                  </article>
                 </div>
-              </article>
+              </div>
 
-              <div data-testid="production-fillback-summary" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-900 px-4 py-3 text-white">
+              <div data-testid="production-fillback-summary" class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#284f76] bg-gradient-to-r from-[#17385e] to-[#204b73] px-4 py-3 text-white shadow-[0_12px_28px_-20px_rgba(23,56,94,0.85)]">
                 <div>
                   <div class="text-[11px] font-semibold text-slate-300">实际料费合计</div>
                   <div class="mt-0.5 text-[11px] text-slate-300">
@@ -1726,14 +1793,14 @@ watchEffect(() => {
               </div>
             </div>
             <Transition
-              enter-active-class="transition duration-200 ease-out"
+              enter-active-class="transition duration-200 ease-out motion-reduce:transition-none"
               enter-from-class="-translate-y-2 opacity-0"
               enter-to-class="translate-y-0 opacity-100"
-              leave-active-class="transition duration-150 ease-in"
+              leave-active-class="transition duration-150 ease-in motion-reduce:transition-none"
               leave-from-class="translate-y-0 opacity-100"
               leave-to-class="-translate-y-2 opacity-0"
             >
-              <div v-if="isSelectedTaskDataExpanded" class="border-t border-slate-100 bg-slate-50/70 p-4">
+              <div v-if="isSelectedTaskDataExpanded" id="production-complete-order-data" class="border-t border-slate-100 bg-slate-50/70 p-4">
                 <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 class="text-[13px] font-bold text-slate-950">完整单据数据</h3>
@@ -1783,16 +1850,64 @@ watchEffect(() => {
                   </p>
                 </div>
 
-                <div class="mt-4 space-y-3">
-                  <article
-                    v-for="item in activeItems"
-                    :key="`production-full-${item.id}`"
-                    data-testid="production-full-item-card"
-                    class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+                <div data-testid="production-full-item-master-detail" class="production-full-item-master mt-4">
+                  <nav class="production-full-item-index enterprise-panel sidebar-scrollbar min-w-0 rounded-xl p-2" aria-label="模具明细索引" @wheel="handoffWheelAtBoundary">
+                    <div class="mb-2 hidden items-center justify-between px-1 lg:flex">
+                      <span class="text-[11px] font-bold text-slate-600">模具索引</span>
+                      <span class="text-[10px] text-slate-400">{{ activeItems.length }} 项</span>
+                    </div>
+                    <div class="production-full-item-index-options" aria-label="选择要核对的模具">
+                      <button
+                        v-for="item in activeItems"
+                        :key="`production-full-index-${item.id}`"
+                        type="button"
+                        data-testid="production-full-item-index-button"
+                        :aria-pressed="selectedFullDataItem?.id === item.id"
+                        class="min-w-[13rem] rounded-lg border px-3 py-2 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-teal-500/35 focus-visible:ring-offset-2 motion-reduce:transition-none lg:min-w-0 lg:w-full"
+                        :class="selectedFullDataItem?.id === item.id
+                          ? 'border-teal-300 bg-teal-50 text-teal-950 shadow-sm ring-1 ring-teal-100'
+                          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'"
+                        @click="selectFullDataItem(item.id)"
+                      >
+                        <span class="flex items-center gap-2">
+                          <span
+                            class="flex h-5 min-w-5 shrink-0 items-center justify-center rounded px-1 text-[10px] font-bold"
+                            :class="selectedFullDataItem?.id === item.id ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600'"
+                          >
+                            {{ item.sort_order }}
+                          </span>
+                          <span class="min-w-0 flex-1 truncate font-mono text-[11px] font-semibold">{{ formatBlank(item.mold_id) }}</span>
+                          <span class="shrink-0 text-[9px] font-bold" :class="Number(item.actual_weight_kg) > 0 ? 'text-emerald-700' : 'text-amber-700'">
+                            {{ Number(item.actual_weight_kg) > 0 ? '已回填' : '待回填' }}
+                          </span>
+                        </span>
+                        <span class="mt-1 block truncate text-[12px] font-semibold">{{ formatBlank(item.mold_name) }}</span>
+                        <span class="mt-1 flex items-center justify-between gap-2 text-[10px]" :class="selectedFullDataItem?.id === item.id ? 'text-teal-800' : 'text-slate-500'">
+                          <span class="min-w-0 truncate">{{ formatMaterialComposition(resolveMaterialComponents(item)) }}</span>
+                          <span class="shrink-0 tabular-nums">{{ formatWeight(item.required_material_kg) }}</span>
+                        </span>
+                      </button>
+                    </div>
+                  </nav>
+
+                  <div
+                    ref="fullDataItemPane"
+                    class="production-full-item-pane sidebar-scrollbar min-w-0 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-teal-500/35 focus-visible:ring-offset-2"
+                    role="region"
+                    :aria-label="`${selectedFullDataItem?.mold_id || '当前模具'}完整数据`"
+                    tabindex="0"
+                    @wheel="handoffWheelAtBoundary"
                   >
-                    <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/80 px-4 py-3">
+                    <article
+                      v-for="item in selectedFullDataItem ? [selectedFullDataItem] : []"
+                      :id="`production-full-panel-${item.id}`"
+                      :key="`production-full-${item.id}`"
+                      data-testid="production-full-item-card"
+                      class="enterprise-panel overflow-clip rounded-xl"
+                    >
+                    <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-slate-50 via-white to-teal-50/30 px-4 py-3">
                       <div class="flex min-w-0 items-start gap-3">
-                        <span class="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 px-2 text-[11px] font-bold text-white">
+                        <span class="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-lg bg-[#17385e] px-2 text-[11px] font-bold text-white shadow-sm">
                           {{ item.sort_order }}
                         </span>
                         <div class="min-w-0">
@@ -1815,9 +1930,9 @@ watchEffect(() => {
                         </span>
                       </div>
                     </div>
-                    <div class="p-4">
+                    <div class="p-3">
                       <div class="grid gap-3 md:grid-cols-2">
-                        <section data-testid="production-full-item-material-section" class="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+                        <section data-testid="production-full-item-material-section" class="surface-subtle rounded-xl p-3.5">
                           <h4 class="text-[11px] font-bold tracking-wide text-slate-500">原料与颜色</h4>
                           <dl class="mt-3 space-y-3">
                             <div>
@@ -1833,7 +1948,7 @@ watchEffect(() => {
                           </dl>
                         </section>
 
-                        <section data-testid="production-full-item-timing-section" class="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+                        <section data-testid="production-full-item-timing-section" class="surface-subtle rounded-xl p-3.5">
                           <h4 class="text-[11px] font-bold tracking-wide text-slate-500">生产数量与时点</h4>
                           <dl class="mt-3 grid gap-x-4 gap-y-3 sm:grid-cols-2">
                             <div>
@@ -1852,14 +1967,14 @@ watchEffect(() => {
                         </section>
                       </div>
 
-                      <section data-testid="production-full-item-usage-section" class="mt-3 rounded-xl border border-slate-200 p-3.5">
+                      <section data-testid="production-full-item-usage-section" class="surface-subtle mt-3 rounded-xl p-3.5">
                         <h4 class="text-[11px] font-bold tracking-wide text-slate-500">实际用量</h4>
                         <dl class="mt-3 grid gap-2 sm:grid-cols-2">
                           <div class="rounded-lg bg-slate-50 px-3 py-2.5">
                             <dt class="text-[11px] font-medium text-slate-500">领料重量</dt>
                             <dd class="mt-1 text-[15px] font-bold tabular-nums text-slate-950">{{ formatWeight(item.collected_weight_kg) }}</dd>
                           </div>
-                          <div class="rounded-lg bg-slate-900 px-3 py-2.5 text-white">
+                          <div class="rounded-lg bg-gradient-to-br from-[#17385e] to-[#204b73] px-3 py-2.5 text-white shadow-sm">
                             <dt class="text-[11px] font-medium text-slate-300">实际用料</dt>
                             <dd class="mt-1 text-[15px] font-bold tabular-nums">{{ formatWeight(item.actual_weight_kg) }}</dd>
                           </div>
@@ -1867,7 +1982,7 @@ watchEffect(() => {
                       </section>
 
                       <section data-testid="production-full-item-cost-grid" class="mt-3 grid gap-3 lg:grid-cols-2">
-                        <article class="overflow-hidden rounded-xl border border-slate-200">
+                        <article class="overflow-clip rounded-xl border border-slate-200">
                           <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
                             <h4 class="text-[11px] font-bold text-slate-600">预计料费(HKD)</h4>
                             <p class="mt-0.5 text-[11px] text-slate-500">按预计用料与当前原料价计算</p>
@@ -1894,7 +2009,7 @@ watchEffect(() => {
                           </div>
                         </article>
 
-                        <article class="overflow-hidden rounded-xl border border-slate-200">
+                        <article class="overflow-clip rounded-xl border border-slate-200">
                           <div class="border-b border-slate-100 bg-slate-50 px-3.5 py-2.5">
                             <h4 class="text-[11px] font-bold text-slate-600">实际料费(HKD)</h4>
                             <p
@@ -1932,14 +2047,15 @@ watchEffect(() => {
                         <span class="font-semibold text-slate-500">备注：</span>{{ formatBlank(item.notes) }}
                       </p>
                     </div>
-                  </article>
+                    </article>
+                  </div>
                 </div>
               </div>
             </Transition>
           </section>
 
           <div class="grid gap-4 md:grid-cols-2">
-            <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <section class="enterprise-panel rounded-2xl p-4">
               <div class="mb-2 flex items-center gap-2">
                 <ListChecks class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold text-slate-950">生产操作</span>
@@ -1949,7 +2065,7 @@ watchEffect(() => {
                   type="button"
                   :disabled="!canStartSelectedTask"
                   class="flex h-10 w-full items-center justify-center gap-2 rounded-lg text-[13px] font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-                  :class="canStartSelectedTask ? 'bg-slate-950 text-white hover:bg-slate-800' : ''"
+                  :class="canStartSelectedTask ? 'bg-[#17385e] text-white shadow-sm hover:bg-[#204b73]' : ''"
                   @click="runProductionTransition('开始处理')"
                 >
                   <Play class="size-4" aria-hidden="true" />
@@ -2005,7 +2121,7 @@ watchEffect(() => {
               </div>
             </section>
 
-            <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <section class="enterprise-panel rounded-2xl p-4">
               <div class="mb-2 flex flex-wrap items-center gap-2">
                 <Flag class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold text-slate-950">问题记录</span>
@@ -2049,7 +2165,7 @@ watchEffect(() => {
             </section>
           </div>
 
-          <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <section class="enterprise-panel rounded-2xl p-4">
             <div class="flex items-center gap-2">
               <CheckCircle2 class="size-4 text-slate-400" aria-hidden="true" />
               <span class="text-[13px] font-bold text-slate-950">完成通知回传</span>
@@ -2188,6 +2304,98 @@ watchEffect(() => {
 </template>
 
 <style>
+.production-task-page :where(button, a, input, textarea, select):focus-visible {
+  outline: 2px solid rgb(13 148 136 / 42%);
+  outline-offset: 2px;
+}
+
+.production-loading-bar {
+  animation: production-loading 1.1s ease-in-out infinite;
+}
+
+@keyframes production-loading {
+  0% { transform: translateX(-105%); }
+  50% { transform: translateX(105%); }
+  100% { transform: translateX(305%); }
+}
+
+.production-fillback-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr));
+  gap: .75rem;
+}
+
+.production-full-item-master {
+  display: grid;
+  gap: .75rem;
+}
+
+.production-full-item-index-options {
+  display: flex;
+  gap: .5rem;
+  overflow-x: auto;
+  padding-bottom: .25rem;
+  scrollbar-gutter: stable;
+}
+
+@media (min-width: 768px) {
+  .production-fillback-scroll {
+    max-height: min(72vh, 52rem);
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: stable;
+  }
+}
+
+@media (min-width: 1024px) {
+  .production-full-item-master {
+    grid-template-columns: 14rem minmax(0, 1fr);
+    height: min(76vh, 52rem);
+    overflow: clip;
+  }
+
+  .production-full-item-index,
+  .production-full-item-pane {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .production-full-item-index-options {
+    display: grid;
+    align-content: start;
+    grid-auto-rows: max-content;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+}
+
+@media (min-width: 1280px) {
+  .production-queue-list {
+    max-height: calc(100vh - 18.5rem);
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: stable;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .production-task-page .interactive-surface,
+  .production-task-page .reveal-grid > *,
+  .production-task-page .animate-spin,
+  .production-loading-bar {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+
+  .production-loading-bar {
+    width: 100%;
+    opacity: .65;
+  }
+}
+
 @media print {
   @page { size: A4 landscape; margin: 5mm; }
   html, body, body.molding-sample-task-printing #app { min-height: 0 !important; height: auto !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
