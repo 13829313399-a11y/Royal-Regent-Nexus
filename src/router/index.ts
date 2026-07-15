@@ -187,6 +187,7 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: true,
       permissions: ['molding_sample:read', 'molding_sample:cross_factory_read'],
       enforcePermissions: true,
+      allowAuthenticatedReadOnly: true,
     },
   },
   {
@@ -340,9 +341,11 @@ export async function refreshAndRevalidateAuthorization(
     ? currentRoute.meta.permissions.filter((permission): permission is string => typeof permission === 'string')
     : []
   const shouldEnforcePermissions = currentRoute.meta.enforcePermissions === true
+  const allowAuthenticatedReadOnly = currentRoute.meta.allowAuthenticatedReadOnly === true
   if (
     currentRoute.name !== 'forbidden'
     && shouldEnforcePermissions
+    && !allowAuthenticatedReadOnly
     && permissions.length
     && !authStore.canAny(permissions)
   ) {
@@ -408,7 +411,13 @@ router.beforeEach(async (to) => {
 
   const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []
   const shouldEnforcePermissions = to.meta.enforcePermissions === true
-  if (shouldEnforcePermissions && permissions.length && !authStore.canAny(permissions)) {
+  const allowAuthenticatedReadOnly = to.meta.allowAuthenticatedReadOnly === true
+  if (
+    shouldEnforcePermissions
+    && !allowAuthenticatedReadOnly
+    && permissions.length
+    && !authStore.canAny(permissions)
+  ) {
     return {
       name: 'forbidden',
       replace: true,

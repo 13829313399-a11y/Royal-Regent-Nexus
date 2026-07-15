@@ -14,6 +14,17 @@ function route(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function defaultReadOnlyRoute() {
+  return route({
+    meta: {
+      requiresAuth: true,
+      enforcePermissions: true,
+      allowAuthenticatedReadOnly: true,
+      permissions: ['molding_sample:read', 'molding_sample:cross_factory_read'],
+    },
+  })
+}
+
 function routerFor(currentRoute = route()) {
   return {
     currentRoute: { value: currentRoute },
@@ -36,6 +47,19 @@ describe('authorization snapshot route revalidation', () => {
       'molding_sample:cross_factory_read',
     ])
     expect(router.replace).toHaveBeenCalledWith({ name: 'forbidden' })
+  })
+
+  it('keeps a default read-only route available after a refresh without a route permission', async () => {
+    const authStore = {
+      isAuthenticated: true,
+      refreshSession: vi.fn(async () => true),
+      canAny: vi.fn(() => false),
+    }
+    const router = routerFor(defaultReadOnlyRoute())
+
+    await expect(refreshAndRevalidateAuthorization(authStore, router)).resolves.toBe('refreshed')
+    expect(authStore.canAny).not.toHaveBeenCalled()
+    expect(router.replace).not.toHaveBeenCalled()
   })
 
   it('redirects to login after refresh confirms the session expired', async () => {

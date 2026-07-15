@@ -373,6 +373,21 @@ This document is the persistent working memory for Royal Regent Nexus. Codex mus
 
 ### 2026-07-14
 
+- Browser-feedback refinement: the registration-page field label is `职位`, and the employee enters it through a plain text box without a browser suggestion dropdown.
+- Implementation: removed the registration field's `list` binding and `datalist` while retaining the free-text placeholder, 128-character limit, profile/role separation, and administrator approval-time correction flow. Approval-page position assistance remains available to administrators and is outside this registration-only refinement.
+- Files changed for this refinement: `src/views/RegisterView.vue`, `src/views/__tests__/registerView.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused registration tests passed with 3 files and 4 tests; `node_modules\\.bin\\vue-tsc.cmd --noEmit` passed; `npm.cmd run build` passed with only the existing third-party `@vueuse/core` `INVALID_ANNOTATION` warnings. Live browser verification at `http://127.0.0.1:5173/register` confirmed the field is an `input[type="text"]` labeled `职位`, has no `list` attribute, the page contains no `datalist`, and the browser console contains no application errors.
+
+### 2026-07-14
+
+- Requirement implementation: registration positions must not be fixed to system-role names. Employees can enter their real position, administrators can correct it during approval, and the final employee position must remain independent from RBAC role assignments.
+- Implementation: added department-specific position suggestions while keeping the registration control free text; added an editable `确认职位` field to the pending-registration approval view; approval now submits and persists the corrected position to both the registration request and employee profile, records the correction in the auth audit log, and keeps explicit role assignments as the only authorization source. Public registration and approval both reject positions longer than 128 characters. Leadership-style position recommendations are now department-aware so normal factory-department registrations never default to the management-only `manager` role.
+- Files changed: `backend/app/services/auth.py`, `backend/app/schemas/system.py`, `backend/app/services/system.py`, `backend/tests/test_auth_api.py`, `backend/tests/test_system_user_management_api.py`, `src/api/system.ts`, `src/api/__tests__/authRegistration.spec.ts`, `src/api/__tests__/system.spec.ts`, `src/data/positionCatalog.ts`, `src/data/__tests__/positionCatalog.spec.ts`, `src/views/RegisterView.vue`, `src/views/SystemUserManagementView.vue`, `src/views/__tests__/registerView.spec.ts`, `src/views/__tests__/registerViewRuntime.spec.ts`, `src/views/__tests__/systemUserManagementView.spec.ts`, `src/views/__tests__/systemUserManagementPositionRuntime.spec.ts`, `src/components/layout/__tests__/accountMenu.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused frontend registration/approval/profile tests passed with 8 files and 15 tests; `node_modules\\.bin\\vue-tsc.cmd --noEmit` passed; `npm.cmd run build` passed with only the existing third-party `@vueuse/core` `INVALID_ANNOTATION` warnings; backend auth and system-user-management regression passed with 50 tests. Live browser verification at `http://127.0.0.1:5173/register` confirmed 9 Engineering suggestions, department-linked Production suggestions, no horizontal overflow, and no browser errors. The full frontend run passed 154 of 155 tests; the sole failure is the pre-existing unrelated `src/router/__tests__/systemPermission.spec.ts` expectation for `molding_sample:warehouse_requisition`, while the unchanged router currently uses `molding_sample:raw_material_write` for the raw-material route.
+- Scope boundary: this change supports correcting the position while the registration request is pending. Editing an already approved employee's position remains a separate user-profile management capability.
+
+### 2026-07-14
+
 - Requirement implementation: `需办日期` must be a visible, non-omitted field on the molding-sample detail page.
 - Implementation: `src/views/MoldingSampleView.vue` now shows the persisted `completion_time` as `需办日期` in the detail table, expanded complete data, and print detail. The obsolete current-form presentation of `mold_return_time` / `回厂时间` was removed from those views.
 - Files changed: `src/views/MoldingSampleView.vue`, `src/views/__tests__/moldingSampleViewLayout.test.ts`, `src/views/__tests__/moldingSampleRuntime.spec.ts`, and `PROJECT_MEMORY.md`.
@@ -1666,6 +1681,14 @@ Use this template when updating the memory after future work:
 - Files changed: `src/lib/customerPriceConverters/dicky.ts`, `src/lib/__tests__/dickyCustomerPriceConverter.spec.ts`, and `PROJECT_MEMORY.md`.
 - Verification: focused Dickie Vitest suite passed 7 tests, `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings, and `git diff --check` passed with Windows line-ending notices only.
 - Decision: this preserves the source filename byte-for-byte from the browser upload, including its original spelling and extension; it does not change Dickie workbook content translation or any other customer export naming.
+
+### 2026-07-14
+
+- Requirement: authenticated users must be able to view molding-sample data across factories and departments by default, without changing any existing user roles, role bindings, or individual permission overrides. The new access must be view-only.
+- Implementation: `business_authz.py` now supplies a default molding-sample cross-factory read source only when no active explicit deny exists. The molding-sample read policy and route guard accept that source, while all create, edit, workflow, production, delete, cost, and export checks remain protected. The local write gate still requires the caller's original local business-read authorization, so this default read policy cannot activate a pre-existing write override by itself.
+- Files changed: `backend/app/services/business_authz.py`, `backend/app/services/molding_sample.py`, `backend/tests/test_molding_sample_api.py`, `src/router/index.ts`, `src/router/__tests__/authorizationRefresh.spec.ts`, `src/router/__tests__/systemPermission.spec.ts`, and `PROJECT_MEMORY.md`.
+- Verification: focused authorization regressions passed 10 tests; the full molding-sample backend suite passed 51 tests; the molding runtime/router Vitest suites passed 40 tests; `npm.cmd run build` and `git diff --check` passed. Build output contains only the existing third-party `@vueuse/core` Rolldown annotation warnings.
+- Scope decision: this extends read-only access for the molding-sample module that produced the reported 403. Other business modules retain their existing independent authorization policies. An explicit individual deny of `molding_sample:cross_factory_read` continues to block the default read access.
 
 ### 2026-07-14
 
