@@ -9,7 +9,10 @@ import {
   type RoleSummary,
 } from '@/api/iam'
 import IamNavigation from '@/components/iam/IamNavigation.vue'
-import { permissionDisplayLabel } from '@/components/iam/permissionCatalogLabels'
+import {
+  isBuiltInPositionPermissionVisible,
+  permissionDisplayLabel,
+} from '@/components/iam/permissionCatalogLabels'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -30,12 +33,30 @@ const successMessage = ref('')
 
 const groupedPermissions = computed(() => {
   const groups = new Map<string, { moduleName: string; permissions: PermissionCatalogItem[] }>()
-  permissions.value.filter((item) => item.status === 'active').forEach((permission) => {
+  permissions.value
+    .filter((item) => item.status === 'active' && isBuiltInPositionPermissionVisible(item.code))
+    .forEach((permission) => {
     const group = groups.get(permission.module_code)
     if (group) group.permissions.push(permission)
     else groups.set(permission.module_code, { moduleName: permission.module_name, permissions: [permission] })
-  })
+    })
   return [...groups.entries()].map(([moduleCode, value]) => ({ moduleCode, ...value }))
+})
+const groupedSystemPositions = computed(() => {
+  const groups = new Map<string, { department: string; name: string; roles: RoleSummary[] }>()
+  const sortedRoles = [...roles.value]
+    .sort((left, right) => left.position_sort_order - right.position_sort_order || left.name.localeCompare(right.name, 'zh-CN'))
+  sortedRoles.forEach((role) => {
+      const department = role.position_department || 'other'
+      const group = groups.get(department)
+      if (group) group.roles.push(role)
+      else groups.set(department, {
+        department,
+        name: role.position_department_name || department,
+        roles: [role],
+      })
+  })
+  return [...groups.values()]
 })
 const activePermissionCount = computed(() => permissions.value.filter((item) => item.status === 'active').length)
 const templatePermissionCount = computed(() => roleAccess.value?.permission_codes.length ?? 0)
@@ -78,7 +99,7 @@ async function loadData() {
   errorMessage.value = ''
   try {
     const [roleItems, permissionItems, scopeResponse] = await Promise.all([
-      iamApi.listRoles(),
+      iamApi.listSystemPositions(),
       iamApi.listPermissions('active'),
       iamApi.getManageableScopes(),
     ])
@@ -117,13 +138,15 @@ async function previewChanges() {
 
 async function commitChanges() {
   if (!roleAccess.value || !preview.value) return
+  const roleId = roleAccess.value.id
   isSaving.value = true
   errorMessage.value = ''
   try {
     await iamApi.commitRoleAccess(roleAccess.value.id, preview.value.preview_token, confirmedHighRisk.value)
-    const message = `角色模板“${roleAccess.value.name}”已更新，绑定用户的有效权限已重新计算。`
+    const message = `内置职位“${roleAccess.value.name}”的权限已更新，绑定用户的有效权限已重新计算。`
     preview.value = null
-    await loadRoleAccess(roleAccess.value.id)
+    roles.value = await iamApi.listSystemPositions()
+    await loadRoleAccess(roleId)
     await authStore.refreshSession()
     successMessage.value = message
   } catch (error) {
@@ -139,18 +162,18 @@ onMounted(() => void loadData())
 
 <template>
   <main class="min-h-screen overflow-x-clip bg-slate-100 text-slate-950">
-    <IamNavigation data-testid="role-templates-sticky-navigation" class="sticky top-0 z-30 shadow-sm" title="角色模板" subtitle="角色用于批量授权；用户级允许或禁止仍在用户权限页单独维护。" />
+    <IamNavigation data-testid="role-templates-sticky-navigation" class="sticky top-0 z-30 shadow-sm" title="内置职位权限" subtitle="按部门维护固定职位权限；员工只需绑定一个内置权限职位。" />
     <div class="mx-auto grid min-w-0 max-w-[1480px] gap-5 px-4 py-6 sm:px-5 xl:grid-cols-[300px_minmax(0,1fr)] xl:px-8">
       <aside class="min-w-0 h-fit rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-        <h2 class="px-2 py-2 text-sm font-bold text-slate-900">角色列表</h2>
-        <button v-for="role in roles" :key="role.id" type="button" class="mt-1 min-w-0 w-full rounded-xl px-3 py-3 text-left transition" :class="selectedRoleId === role.id ? 'bg-emerald-50 text-emerald-900' : 'hover:bg-slate-50'" :aria-pressed="selectedRoleId === role.id" @click="loadRoleAccess(role.id)">
-          <span class="flex items-center justify-between gap-2"><b class="text-sm">{{ role.name }}</b><ShieldCheck v-if="role.is_protected" class="size-4 text-amber-600" /></span>
-          <span v-if="role.is_protected" class="mt-1 block text-xs leading-5 text-slate-500">
-            模板记录 {{ role.permission_count }} 项 · 自动拥有全部 {{ activePermissionCount }} 项
-          </span>
-          <span v-else class="mt-1 block text-xs text-slate-500">模板授予 {{ role.permission_count }} 项 · {{ role.binding_count }} 位用户</span>
-        </button>
-        <p v-if="!roles.length && !isLoading" class="p-4 text-center text-sm text-slate-500">暂无角色模板。</p>
+        <h2 class="px-2 py-2 text-sm font-bold text-slate-900">内置职位目录</h2>
+        <section v-for="group in groupedSystemPositions" :key="group.department" class="mt-2 border-t border-slate-100 pt-2 first:mt-0 first:border-t-0">
+          <h3 class="px-2 py-1 text-xs font-bold text-slate-400">{{ group.name }}</h3>
+          <button v-for="role in group.roles" :key="role.id" type="button" class="mt-1 min-w-0 w-full rounded-xl px-3 py-3 text-left transition" :class="selectedRoleId === role.id ? 'bg-emerald-50 text-emerald-900' : 'hover:bg-slate-50'" :aria-pressed="selectedRoleId === role.id" @click="loadRoleAccess(role.id)">
+            <span class="flex items-center justify-between gap-2"><b class="text-sm">{{ role.name }}</b><ShieldCheck v-if="role.is_protected" class="size-4 text-amber-600" /></span>
+            <span class="mt-1 block text-xs text-slate-500">{{ role.permission_count ? `已配置 ${role.permission_count} 项权限` : '权限待配置' }} · {{ role.binding_count }} 位用户</span>
+          </button>
+        </section>
+        <p v-if="!roles.length && !isLoading" class="p-4 text-center text-sm text-slate-500">暂无内置职位。</p>
       </aside>
 
       <section class="min-w-0">
@@ -161,7 +184,7 @@ onMounted(() => void loadData())
         <template v-else>
           <header class="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div class="flex flex-wrap items-start justify-between gap-4">
-              <div><h2 class="text-xl font-bold">{{ roleAccess.name }}</h2><p class="mt-1 text-sm text-slate-500">{{ roleAccess.description || roleAccess.code }} · 模板版本 {{ roleAccess.version }}</p></div>
+              <div><h2 class="text-xl font-bold">{{ roleAccess.name }}</h2><p class="mt-1 text-sm text-slate-500">{{ roleAccess.position_department_name }} · {{ roleAccess.description || roleAccess.code }} · 权限版本 {{ roleAccess.version }}</p></div>
               <span v-if="roleAccess.is_protected" class="rounded-full bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-700">受保护角色，不可在线修改</span>
               <span v-else class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">影响 {{ roleAccess.binding_count }} 位绑定用户</span>
             </div>
@@ -173,7 +196,7 @@ onMounted(() => void loadData())
               <div>
                 <p class="font-bold">超级管理员按系统规则自动拥有全部启用权限</p>
                 <p class="mt-1">
-                  下方勾选仅表示角色模板已记录 {{ templatePermissionCount }} 项；实际有效权限为当前权限目录全部
+                  下方勾选仅表示角色模板已记录 {{ templatePermissionCount }} 项；实际有效权限为系统已登记的全部
                   {{ activePermissionCount }} 项。以后新增并启用的权限也会自动包含，无需修改此模板。
                 </p>
               </div>
@@ -201,8 +224,8 @@ onMounted(() => void loadData())
           </div>
 
           <section v-if="!roleAccess.is_protected && canManageRoleTemplates" class="mt-5 grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:grid-cols-[1fr_auto] lg:items-end">
-            <label class="grid gap-1.5 text-sm font-semibold text-slate-700">变更原因（必填）<input v-model="reason" class="h-11 rounded-xl border border-slate-200 px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" placeholder="说明为什么调整此角色模板"></label>
-            <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white disabled:opacity-50" :disabled="!hasChanges || isSaving" @click="previewChanges"><LoaderCircle v-if="isSaving" class="size-4 animate-spin" /><Save v-else class="size-4" />预览模板影响</button>
+            <label class="grid gap-1.5 text-sm font-semibold text-slate-700">变更原因（必填）<input v-model="reason" class="h-11 rounded-xl border border-slate-200 px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" placeholder="说明为什么调整此内置职位权限"></label>
+            <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white disabled:opacity-50" :disabled="!hasChanges || isSaving" @click="previewChanges"><LoaderCircle v-if="isSaving" class="size-4 animate-spin" /><Save v-else class="size-4" />预览职位影响</button>
           </section>
         </template>
       </section>
@@ -210,7 +233,7 @@ onMounted(() => void loadData())
 
     <div v-if="preview" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" @click.self="preview = null">
       <section class="w-full min-w-0 max-w-2xl rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="role-preview-title">
-        <header class="flex items-start justify-between border-b border-slate-200 p-5"><div><h2 id="role-preview-title" class="text-lg font-bold">角色模板影响预览</h2><p class="mt-1 text-sm text-slate-500">将影响 {{ preview.affected_user_count }} 位当前绑定用户。</p></div><button type="button" aria-label="关闭角色模板影响预览" class="rounded-lg p-2 hover:bg-slate-100" @click="preview = null"><X class="size-5" /></button></header>
+        <header class="flex items-start justify-between border-b border-slate-200 p-5"><div><h2 id="role-preview-title" class="text-lg font-bold">内置职位影响预览</h2><p class="mt-1 text-sm text-slate-500">将影响 {{ preview.affected_user_count }} 位当前绑定用户。</p></div><button type="button" aria-label="关闭内置职位影响预览" class="rounded-lg p-2 hover:bg-slate-100" @click="preview = null"><X class="size-5" /></button></header>
         <div class="max-h-[55vh] overflow-y-auto p-5">
           <div v-for="diff in preview.diffs" :key="diff.permission_code" class="flex items-center justify-between gap-4 border-b border-slate-100 py-3 text-sm"><span class="min-w-0"><b class="block text-slate-900">{{ permissionLabels.get(diff.permission_code) || diff.permission_code }}</b><code class="block break-all text-xs text-slate-400">{{ diff.permission_code }}</code></span><span class="shrink-0 font-bold" :class="diff.after ? 'text-emerald-700' : 'text-rose-700'">{{ diff.before ? '已有' : '无' }} → {{ diff.after ? '授予' : '移除' }}</span></div>
           <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600"><span>我已核对高风险权限及全部受影响用户。</span></label>

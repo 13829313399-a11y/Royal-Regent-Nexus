@@ -24,15 +24,23 @@ describe('systemApi', () => {
     await api.updateNotification('notice-1', { status: 'handled' })
     await api.listRegistrationRequests('pending')
     await api.approveRegistrationRequest('registration-1', {
-      role_assignments: [{ role_id: 'engineer', factory_id: 'huaxing', department: 'engineering' }],
+      system_position_role_id: 'engineer',
+      profile: {
+        display_name: '张三',
+        phone: '13800000000',
+        email: '',
+        factory_id: 'huaxing',
+        department: 'engineering',
+        position: '工程部技术员',
+      },
       review_comment: '资料完整',
-      position: '工程部技术员',
     })
     await api.rejectRegistrationRequest('registration-2', { review_comment: '资料不完整' })
     await api.listUsers('active')
     await api.updateUserStatus('user-1', { status: 'suspended' })
     await api.resetUserPassword('user-1', { temporary_password: '123456', notification_id: 'notice-reset-1' })
     await api.listRoles()
+    await api.listSystemPositions()
 
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       'get /system/notifications',
@@ -44,11 +52,19 @@ describe('systemApi', () => {
       'patch /system/users/user-1/status',
       'post /system/users/user-1/reset-password',
       'get /system/roles',
+      'get /system/positions',
     ])
     expect(calls[3].data).toEqual({
-      role_assignments: [{ role_id: 'engineer', factory_id: 'huaxing', department: 'engineering' }],
+      system_position_role_id: 'engineer',
+      profile: {
+        display_name: '张三',
+        phone: '13800000000',
+        email: '',
+        factory_id: 'huaxing',
+        department: 'engineering',
+        position: '工程部技术员',
+      },
       review_comment: '资料完整',
-      position: '工程部技术员',
     })
     expect(calls[7].data).toEqual({ temporary_password: '123456', notification_id: 'notice-reset-1' })
   })

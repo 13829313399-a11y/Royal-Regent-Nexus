@@ -26,28 +26,32 @@ import {
   Users,
   XCircle,
 } from '@lucide/vue'
+import { useRoute } from 'vue-router'
 import {
   systemApi,
+  type RegistrationProfileRequest,
   type RegistrationRequestResponse,
-  type RoleAssignmentRequest,
   type RoleResponse,
   type SystemNotificationResponse,
   type UserResponse,
 } from '@/api/system'
 import UserAvatar from '@/components/common/UserAvatar.vue'
-import { departmentMap, departments, factoryContexts } from '@/data/enterpriseMock'
+import { factoryContexts } from '@/data/enterpriseMock'
 import { getPositionSuggestions } from '@/data/positionCatalog'
+import {
+  registrationDepartmentLabel,
+  registrationDepartments,
+} from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
-import { useRoute } from 'vue-router'
 
 const route = useRoute()
 const activeTab = ref<'pending' | 'password-reset' | 'users'>('pending')
 const requests = ref<RegistrationRequestResponse[]>([])
 const users = ref<UserResponse[]>([])
-const roles = ref<RoleResponse[]>([])
+const systemPositions = ref<RoleResponse[]>([])
 const systemNotifications = ref<SystemNotificationResponse[]>([])
-const selectedRoles = ref<Record<string, string>>({})
-const approvalPositions = ref<Record<string, string>>({})
+const selectedSystemPositions = ref<Record<string, string>>({})
+const approvalProfiles = ref<Record<string, RegistrationProfileRequest>>({})
 const approvalComments = ref<Record<string, string>>({})
 const rejectComments = ref<Record<string, string>>({})
 const userSearch = ref('')
@@ -58,203 +62,35 @@ const actionKey = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 
-type PermissionDefinition = {
-  label: string
-  code: string
-  matchCode?: string
-  locked?: boolean
-}
-
-type PermissionGroupDefinition = {
-  title: string
-  permissions: PermissionDefinition[]
-}
-
-const allFactoryScopeLabel = '全部厂区 ( * )'
-
-const permissionGroupDefinitions: PermissionGroupDefinition[] = [
-  {
-    title: '工程 / 啤办',
-    permissions: [
-      { label: '查看啤办单据', code: 'molding_sample:read' },
-      { label: '导出本厂啤办单', code: 'molding_sample:export' },
-      { label: '跨厂查看啤办单据', code: 'molding_sample:cross_factory_read' },
-      { label: '跨厂查看啤办成本', code: 'molding_sample:cross_factory_cost_read' },
-      { label: '新建啤办申请', code: 'molding_sample:create' },
-      { label: '编辑草稿', code: 'molding_sample:edit_draft' },
-      { label: '删除草稿', code: 'molding_sample:delete_draft' },
-      { label: '主管审核', code: 'molding_sample:supervisor_review' },
-      { label: '经理终审', code: 'molding_sample:manager_review' },
-      { label: '改价维护', code: 'molding_sample:price_update' },
-      { label: '敏感审计查看', code: 'molding_sample:audit_read' },
-    ],
-  },
-  {
-    title: '生产 / 仓管',
-    permissions: [
-      { label: '生产任务查看', code: 'molding_sample:production_read' },
-      { label: '开始生产', code: 'molding_sample:production_start' },
-      { label: '生产回填', code: 'molding_sample:production_fillback' },
-      { label: '生产完成', code: 'molding_sample:production_complete' },
-      { label: '领料申请', code: 'molding_sample:warehouse_requisition' },
-      { label: '库存发料', code: 'molding_sample:inventory_issue' },
-    ],
-  },
-  {
-    title: 'QA / 箱唛',
-    permissions: [
-      { label: '查看箱唛', code: 'carton_mark:read' },
-      { label: '维护箱唛模板', code: 'carton_mark:template_upload' },
-      { label: '上传实拍', code: 'carton_mark:photo_upload' },
-      { label: '箱唛复核', code: 'carton_mark:review' },
-    ],
-  },
-  {
-    title: '报价 / 排产',
-    permissions: [
-      { label: '查看报价中心', code: 'customer_price:read' },
-      { label: '导入内部报价', code: 'customer_price:import_internal_quote' },
-      { label: '导出客户报价', code: 'customer_price:export_customer_quote' },
-      { label: '报价差异比较', code: 'customer_price:compare' },
-      { label: '查看内部报价', code: 'internal_pricing:read' },
-      { label: '创建内部报价', code: 'internal_pricing:create' },
-      { label: '编辑内部报价分段', code: 'internal_pricing:edit' },
-      { label: '审核内部报价分段', code: 'internal_pricing:review' },
-      { label: '导出内部报价明细', code: 'internal_pricing:export' },
-      { label: '查看注塑排产', code: 'injection_schedule:read' },
-      { label: '导入排产计划', code: 'injection_schedule:import' },
-    ],
-  },
-  {
-    title: '协同 / 通用',
-    permissions: [
-      { label: '接收模块通知', code: 'molding_sample:notification_read' },
-      { label: '账号 / 权限管理', code: 'admin.manage', matchCode: 'system:user_manage', locked: true },
-      { label: '角色权限维护', code: 'system:role_manage', locked: true },
-    ],
-  },
-]
-
-const rolePermissionPresets: Record<string, string[]> = {
-  group_molding_readonly: [
-    'molding_sample:cross_factory_read',
-  ],
-  engineer: [
-    'molding_sample:read',
-    'molding_sample:export',
-    'molding_sample:create',
-    'molding_sample:edit_draft',
-    'molding_sample:delete_draft',
-    'molding_sample:notification_read',
-  ],
-  molding_production_observer: [
-    'molding_sample:production_read',
-  ],
-  engineering_supervisor: [
-    'molding_sample:read',
-    'molding_sample:supervisor_review',
-    'molding_sample:notification_read',
-  ],
-  manager: [
-    'molding_sample:read',
-    'molding_sample:edit_draft',
-    'molding_sample:delete_draft',
-    'molding_sample:manager_review',
-    'molding_sample:price_update',
-    'molding_sample:audit_read',
-    'molding_sample:notification_read',
-  ],
-  carton_warehouse_keeper: [
-    'carton_mark:read',
-    'carton_mark:template_upload',
-  ],
-  qa_inspector: [
-    'carton_mark:read',
-    'carton_mark:photo_upload',
-    'carton_mark:review',
-  ],
-  molding_clerk: [
-    'molding_sample:read',
-    'molding_sample:production_read',
-    'molding_sample:production_start',
-    'molding_sample:production_fillback',
-    'molding_sample:production_complete',
-    'molding_sample:notification_read',
-    'injection_schedule:read',
-    'injection_schedule:import',
-  ],
-  sales_customer_owner: [
-    'customer_price:read',
-    'customer_price:import_internal_quote',
-    'customer_price:export_customer_quote',
-    'customer_price:compare',
-    'internal_pricing:read',
-    'internal_pricing:create',
-    'internal_pricing:edit',
-    'internal_pricing:export',
-  ],
-  sales_customer_supervisor: [
-    'customer_price:read',
-    'customer_price:import_internal_quote',
-    'customer_price:export_customer_quote',
-    'customer_price:compare',
-    'internal_pricing:read',
-    'internal_pricing:create',
-    'internal_pricing:edit',
-    'internal_pricing:review',
-    'internal_pricing:export',
-  ],
-  admin: permissionGroupDefinitions.flatMap((group) =>
-    group.permissions.map((permission) => permission.matchCode ?? permission.code),
-  ),
-}
-
+const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active'))
 const pendingUsers = computed(() => users.value.filter((user) => user.status === 'pending'))
-const suspendedUsers = computed(() => users.value.filter((user) => user.status === 'suspended'))
 const passwordResetRequests = computed(() =>
   systemNotifications.value.filter((notification) => notification.type === 'password_reset' && notification.status !== 'handled'),
 )
 const selectedRequest = computed(() =>
   requests.value.find((request) => request.id === selectedRequestId.value) ?? requests.value[0] ?? null,
 )
-const selectedPositionSuggestions = computed(() =>
-  getPositionSuggestions(selectedRequest.value?.department ?? ''),
-)
-const factoryScopesForSelectedRequest = computed(() => {
-  const request = selectedRequest.value
-  return factoryContexts
-    .filter((factory) => factory.id !== 'group')
-    .map((factory) => ({
-      id: factory.id,
-      label: factory.shortName,
-      active: factory.id === request?.factory_id,
-    }))
-})
-const departmentScopesForSelectedRequest = computed(() => {
-  const request = selectedRequest.value
-  return departments
-    .filter((department) => department.id !== 'overview')
-    .map((department) => ({
-      id: department.id,
-      label: department.name,
-      active: department.id === request?.department,
-    }))
+const selectedProfile = computed(() => selectedRequest.value ? approvalProfile(selectedRequest.value) : null)
+const selectedPositionSuggestions = computed(() => getPositionSuggestions(selectedProfile.value?.department ?? ''))
+const selectedDepartmentSystemPositions = computed(() => {
+  const department = selectedProfile.value?.department ?? ''
+  return positionsForDepartment(department)
 })
 const filteredUsers = computed(() => {
   const keyword = userSearch.value.trim().toLowerCase()
   return users.value.filter((user) => {
     const statusMatched = userStatusFilter.value === 'all' || user.status === userStatusFilter.value
     if (!statusMatched) return false
-
     if (!keyword) return true
     return [
       user.username,
       user.display_name,
       user.phone,
       user.email,
-      user.roles.map((role) => role.role_name).join(' '),
-      user.roles.map((role) => role.department).join(' '),
+      userPosition(user),
+      userSystemPositionName(user),
+      userPrimaryDepartment(user),
     ].some((value) => value.toLowerCase().includes(keyword))
   })
 })
@@ -270,7 +106,7 @@ function factoryLabel(factoryId: string) {
 }
 
 function departmentLabel(departmentId: string) {
-  return departmentMap[departmentId as keyof typeof departmentMap]?.name ?? departmentId
+  return registrationDepartmentLabel(departmentId)
 }
 
 const userStatusPresentations: Record<string, { label: string; toneClass: string }> = {
@@ -284,10 +120,6 @@ const userStatusPresentations: Record<string, { label: string; toneClass: string
 
 function userStatusPresentation(status: string) {
   return userStatusPresentations[status] ?? { label: '未知状态', toneClass: 'pill-slate' }
-}
-
-function roleName(roleId: string) {
-  return roles.value.find((role) => role.id === roleId)?.name ?? roleId
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -304,15 +136,9 @@ function avatarText(name: string | null | undefined, username: string) {
 
 function resolveUserAvatarUrl(value: string | undefined) {
   const avatarUrl = value?.trim()
-  if (!avatarUrl || /^https?:\/\//i.test(avatarUrl)) {
-    return avatarUrl ?? ''
-  }
-
+  if (!avatarUrl || /^https?:\/\//i.test(avatarUrl)) return avatarUrl ?? ''
   const apiBaseUrl = import.meta.env?.VITE_API_BASE_URL
-  if (!apiBaseUrl || !/^https?:\/\//i.test(apiBaseUrl)) {
-    return avatarUrl
-  }
-
+  if (!apiBaseUrl || !/^https?:\/\//i.test(apiBaseUrl)) return avatarUrl
   try {
     return new URL(avatarUrl, apiBaseUrl).toString()
   } catch {
@@ -334,110 +160,62 @@ function resetRequestUser(notification: SystemNotificationResponse) {
   return users.value.find((user) => user.id === userId) ?? null
 }
 
-function roleToneClass(name: string) {
-  if (/管理员|经理|主管/.test(name)) return 'pill-violet'
-  if (/QA|检验|品质/.test(name)) return 'pill-blue'
-  if (/仓|PMC|排产/.test(name)) return 'pill-amber'
-  return 'pill-teal'
-}
-
-function inferPermissionCodesForRole(role: RoleResponse | undefined, request: RegistrationRequestResponse) {
-  const roleText = `${role?.name ?? ''} ${role?.code ?? ''} ${request.position} ${request.department}`
-  if (/管理员|admin/i.test(roleText)) return rolePermissionPresets.admin
-  if (/QA|检验|品质/i.test(roleText)) return rolePermissionPresets.qa_inspector
-  if (/仓|PMC|物料|carton/i.test(roleText)) return rolePermissionPresets.carton_warehouse_keeper
-  if (/生产|啤机|排产/i.test(roleText)) return rolePermissionPresets.molding_clerk
-  if (/车间业务主管|业务主管/i.test(roleText)) return rolePermissionPresets.sales_customer_supervisor
-  if (/业务|报价|客户|sales/i.test(roleText)) return rolePermissionPresets.sales_customer_owner
-  if (/主管|supervisor/i.test(roleText)) return rolePermissionPresets.engineering_supervisor
-  if (/经理|manager/i.test(roleText)) return rolePermissionPresets.manager
-  return rolePermissionPresets.engineer
-}
-
-function permissionGroupsForSelectedRole(request: RegistrationRequestResponse) {
-  const selectedRoleId = getSelectedRoleId(request)
-  const role = roles.value.find((candidate) => candidate.id === selectedRoleId)
-  const roleKey = role?.code || role?.id || selectedRoleId
-  const roleKeys = roleKey === 'engineer'
-    ? ['engineer', 'molding_production_observer', 'group_molding_readonly']
-    : [roleKey]
-  const permissionCodes = new Set(
-    roleKeys.flatMap((key) => rolePermissionPresets[key] ?? inferPermissionCodesForRole(role, request)),
-  )
-
-  return permissionGroupDefinitions
-    .map((group) => ({
-      title: group.title,
-      permissions: group.permissions.map((permission) => ({
-        ...permission,
-        enabled: permissionCodes.has(permission.matchCode ?? permission.code),
-      })),
-    }))
-    .filter((group) => group.permissions.some((permission) => permission.enabled || permission.locked))
-}
-
-function getSelectedRoleId(request: RegistrationRequestResponse) {
-  if (!selectedRoles.value[request.id]) {
-    selectedRoles.value[request.id] = request.recommended_role_ids[0] ?? roles.value[0]?.id ?? ''
+function approvalProfile(request: RegistrationRequestResponse) {
+  const existing = approvalProfiles.value[request.id]
+  if (existing) return existing
+  const profile: RegistrationProfileRequest = {
+    display_name: request.display_name,
+    phone: request.phone,
+    email: request.email,
+    factory_id: request.factory_id,
+    department: request.department,
+    position: request.position,
   }
-
-  return selectedRoles.value[request.id]
+  approvalProfiles.value = { ...approvalProfiles.value, [request.id]: profile }
+  return profile
 }
 
-function setSelectedRoleId(requestId: string, roleId: string) {
-  selectedRoles.value = { ...selectedRoles.value, [requestId]: roleId }
+function positionsForDepartment(department: string) {
+  return systemPositions.value
+    .filter((role) => role.is_system_position && role.position_department === department)
+    .sort((left, right) => left.position_sort_order - right.position_sort_order || left.name.localeCompare(right.name, 'zh-CN'))
 }
 
-function roleIsApplicableToRequest(role: RoleResponse, request: RegistrationRequestResponse) {
-  if (role.requires_global_factory) return false
-  return !role.applicable_departments.length
-    || role.applicable_departments.includes('*')
-    || role.applicable_departments.includes(request.department)
+function getSelectedSystemPositionId(request: RegistrationRequestResponse) {
+  const department = approvalProfile(request).department
+  const available = positionsForDepartment(department)
+  const current = selectedSystemPositions.value[request.id]
+  if (current && available.some((role) => role.id === current)) return current
+  if (Object.prototype.hasOwnProperty.call(selectedSystemPositions.value, request.id)) return ''
+  const recommended = request.recommended_role_ids.find((roleId) => available.some((role) => role.id === roleId))
+  if (recommended) {
+    selectedSystemPositions.value = { ...selectedSystemPositions.value, [request.id]: recommended }
+  }
+  return recommended ?? ''
 }
 
-function selectedRoleUsesEngineerBundle(request: RegistrationRequestResponse) {
-  const selectedRoleId = getSelectedRoleId(request)
-  return roles.value.find((role) => role.id === selectedRoleId)?.code === 'engineer'
+function setSelectedSystemPosition(requestId: string, roleId: string) {
+  selectedSystemPositions.value = { ...selectedSystemPositions.value, [requestId]: roleId }
 }
 
-function engineerBundleSummary(request: RegistrationRequestResponse) {
-  return [
-    `工程师 · ${factoryLabel(request.factory_id)} / ${departmentLabel(request.department)}`,
-    `生产任务观察员 · ${factoryLabel(request.factory_id)} / 生产部（只读）`,
-    '集团啤办只读 · 全部厂区 / 全部部门（外厂隐藏成本）',
-  ]
+function handleProfileDepartmentChange(request: RegistrationRequestResponse) {
+  selectedSystemPositions.value = { ...selectedSystemPositions.value, [request.id]: '' }
 }
 
-function buildApprovalRoleAssignments(request: RegistrationRequestResponse): RoleAssignmentRequest[] | null {
-  const selectedRoleId = getSelectedRoleId(request)
-  const selectedRole = roles.value.find((role) => role.id === selectedRoleId)
-  if (!selectedRole) return null
+function userPrimaryFactory(user: UserResponse) {
+  return user.primary_factory_id || user.roles[0]?.factory_id || ''
+}
 
-  const assignments: RoleAssignmentRequest[] = [
-    {
-      role_id: selectedRole.id,
-      factory_id: request.factory_id,
-      department: request.department,
-    },
-  ]
-  if (selectedRole.code !== 'engineer') return assignments
+function userPrimaryDepartment(user: UserResponse) {
+  return user.primary_department || user.roles[0]?.department || ''
+}
 
-  const productionObserver = roles.value.find((role) => role.code === 'molding_production_observer')
-  const groupReadonly = roles.value.find((role) => role.code === 'group_molding_readonly')
-  if (!productionObserver || !groupReadonly) return null
-  assignments.push(
-    {
-      role_id: productionObserver.id,
-      factory_id: request.factory_id,
-      department: 'production',
-    },
-    {
-      role_id: groupReadonly.id,
-      factory_id: '*',
-      department: '*',
-    },
-  )
-  return assignments
+function userPosition(user: UserResponse) {
+  return user.position?.trim() || '未填写'
+}
+
+function userSystemPositionName(user: UserResponse) {
+  return user.system_position_role_name?.trim() || '未分配'
 }
 
 function selectRequest(requestId: string) {
@@ -449,13 +227,11 @@ function ensureSelectedRequest() {
     selectedRequestId.value = ''
     return
   }
-
   const requestedId = typeof route.query.request_id === 'string' ? route.query.request_id : ''
   if (requestedId && requests.value.some((request) => request.id === requestedId)) {
     selectedRequestId.value = requestedId
     return
   }
-
   if (!requests.value.some((request) => request.id === selectedRequestId.value)) {
     selectedRequestId.value = requests.value[0].id
   }
@@ -465,21 +241,16 @@ async function loadData() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [pendingRequests, loadedUsers, loadedRoles, loadedNotifications] = await Promise.all([
+    const [pendingRequests, loadedUsers, loadedPositions, loadedNotifications] = await Promise.all([
       systemApi.listRegistrationRequests('pending'),
       systemApi.listUsers(''),
-      systemApi.listRoles(),
+      systemApi.listSystemPositions(),
       systemApi.listNotifications(),
     ])
     requests.value = pendingRequests
-    approvalPositions.value = Object.fromEntries(
-      pendingRequests.map((request) => [
-        request.id,
-        approvalPositions.value[request.id] ?? request.position,
-      ]),
-    )
+    for (const request of pendingRequests) approvalProfile(request)
     users.value = loadedUsers
-    roles.value = loadedRoles
+    systemPositions.value = loadedPositions
     systemNotifications.value = loadedNotifications
     ensureSelectedRequest()
   } catch (error) {
@@ -490,25 +261,39 @@ async function loadData() {
 }
 
 async function approveRequest(request: RegistrationRequestResponse) {
-  const approvedPosition = (approvalPositions.value[request.id] ?? request.position).trim()
-  if (!approvedPosition) {
+  const source = approvalProfile(request)
+  const profile: RegistrationProfileRequest = {
+    display_name: source.display_name.trim(),
+    phone: source.phone.trim(),
+    email: source.email.trim(),
+    factory_id: source.factory_id,
+    department: source.department,
+    position: source.position.trim(),
+  }
+  if (!profile.display_name) {
+    errorMessage.value = '请输入姓名'
+    return
+  }
+  if (!profile.phone && !profile.email) {
+    errorMessage.value = '手机或邮箱至少填写一项'
+    return
+  }
+  if (!profile.factory_id || !profile.department) {
+    errorMessage.value = '请选择厂区和部门'
+    return
+  }
+  if (!profile.position) {
     errorMessage.value = '请输入确认职位'
     return
   }
-  if (approvedPosition.length > 128) {
+  if (profile.position.length > 128) {
     errorMessage.value = '职位不能超过 128 个字符'
     return
   }
-
-  const roleId = getSelectedRoleId(request)
-  if (!roleId) {
-    errorMessage.value = '请先选择授权角色'
-    return
-  }
-
-  const role_assignments = buildApprovalRoleAssignments(request)
-  if (!role_assignments) {
-    errorMessage.value = '工程师默认组合角色尚未初始化，请刷新页面后重试'
+  const systemPositionRoleId = getSelectedSystemPositionId(request)
+  const selectedPosition = systemPositions.value.find((role) => role.id === systemPositionRoleId)
+  if (!selectedPosition || selectedPosition.position_department !== profile.department) {
+    errorMessage.value = '请为当前部门选择一个内置权限职位'
     return
   }
 
@@ -517,11 +302,11 @@ async function approveRequest(request: RegistrationRequestResponse) {
   successMessage.value = ''
   try {
     await systemApi.approveRegistrationRequest(request.id, {
-      role_assignments,
+      system_position_role_id: systemPositionRoleId,
+      profile,
       review_comment: approvalComments.value[request.id] ?? '',
-      position: approvedPosition,
     })
-    successMessage.value = `已通过 ${request.display_name} 的账号申请`
+    successMessage.value = `已通过 ${profile.display_name} 的账号申请`
     await loadData()
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
@@ -536,7 +321,6 @@ async function rejectRequest(request: RegistrationRequestResponse) {
     errorMessage.value = '拒绝申请时需要填写原因'
     return
   }
-
   actionKey.value = `reject:${request.id}`
   errorMessage.value = ''
   successMessage.value = ''
@@ -572,7 +356,6 @@ async function resetPasswordFromNotification(notification: SystemNotificationRes
     errorMessage.value = '未匹配到系统账号，请人工核验后再处理'
     return
   }
-
   actionKey.value = `reset-password:${notification.id}`
   errorMessage.value = ''
   successMessage.value = ''
@@ -606,13 +389,9 @@ async function markPasswordResetHandled(notification: SystemNotificationResponse
 }
 
 onMounted(() => {
-  if (route.query.tab === 'password-reset') {
-    activeTab.value = 'password-reset'
-  } else if (route.query.tab === 'users') {
-    activeTab.value = 'users'
-  } else if (route.query.request_id) {
-    activeTab.value = 'pending'
-  }
+  if (route.query.tab === 'password-reset') activeTab.value = 'password-reset'
+  else if (route.query.tab === 'users') activeTab.value = 'users'
+  else if (route.query.request_id) activeTab.value = 'pending'
   void loadData()
 })
 </script>
@@ -631,7 +410,7 @@ onMounted(() => {
               <ShieldCheck class="size-6" aria-hidden="true" />
             </span>
             <div>
-              <h1>权限 / 角色审批</h1>
+              <h1>账号 / 权限职位审批</h1>
               <p>Royal Regent Nexus · 集团账号开通制</p>
             </div>
           </div>
@@ -650,9 +429,9 @@ onMounted(() => {
               用户列表
             </button>
           </nav>
-          <RouterLink class="ghost-link iam-console-entry" to="/system/iam/permissions">
+          <RouterLink class="ghost-link iam-console-entry" to="/system/iam/roles">
             <SlidersHorizontal class="size-4" aria-hidden="true" />
-            高级权限管理
+            内置职位权限
           </RouterLink>
           <button type="button" class="ghost-link" :disabled="isLoading" @click="loadData">
             <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
@@ -759,124 +538,81 @@ onMounted(() => {
           <section class="section position-review-section">
             <div class="sec-title">
               <span class="st-ic"><BriefcaseBusiness class="size-4" aria-hidden="true" /></span>
-              <h3>员工职位核验</h3>
-              <span class="hint">职位用于个人资料展示，不决定系统权限</span>
+              <h3>注册资料核验</h3>
+              <span class="hint">资料填错可直接修正；账号 / 工号保持不变</span>
             </div>
-            <div class="position-review-grid">
-              <div class="position-original">
-                <span>用户填写</span>
-                <strong>{{ selectedRequest.position }}</strong>
-              </div>
+            <div class="registration-review-grid">
               <label class="position-confirm-field">
-                <span>确认职位（可修改）</span>
-                <input
-                  v-model="approvalPositions[selectedRequest.id]"
-                  aria-label="确认职位"
-                  autocomplete="off"
-                  list="approval-position-suggestions"
-                  maxlength="128"
-                  placeholder="请核对或修正员工的真实职位"
-                  type="text"
-                >
+                <span>姓名</span>
+                <input v-model="approvalProfile(selectedRequest).display_name" aria-label="确认姓名" autocomplete="name" type="text">
+              </label>
+              <label class="position-confirm-field">
+                <span>账号 / 工号</span>
+                <input :value="selectedRequest.username" aria-label="账号或工号" disabled type="text">
+              </label>
+              <label class="position-confirm-field">
+                <span>电话</span>
+                <input v-model="approvalProfile(selectedRequest).phone" aria-label="确认电话" autocomplete="tel" type="tel">
+              </label>
+              <label class="position-confirm-field">
+                <span>邮箱</span>
+                <input v-model="approvalProfile(selectedRequest).email" aria-label="确认邮箱" autocomplete="email" type="email">
+              </label>
+              <label class="position-confirm-field">
+                <span>厂区</span>
+                <select v-model="approvalProfile(selectedRequest).factory_id" aria-label="确认厂区">
+                  <option v-for="factory in factoryOptions" :key="factory.id" :value="factory.id">{{ factory.shortName }}</option>
+                </select>
+              </label>
+              <label class="position-confirm-field">
+                <span>部门</span>
+                <select v-model="approvalProfile(selectedRequest).department" aria-label="确认部门" @change="handleProfileDepartmentChange(selectedRequest)">
+                  <option v-for="department in registrationDepartments" :key="department.id" :value="department.id">{{ department.name }}</option>
+                </select>
+              </label>
+              <label class="position-confirm-field registration-position-field">
+                <span>真实职位（可修改）</span>
+                <input v-model="approvalProfile(selectedRequest).position" aria-label="确认职位" autocomplete="organization-title" list="approval-position-suggestions" maxlength="128" placeholder="请核对或修正员工填写的真实职位" type="text">
                 <datalist id="approval-position-suggestions">
                   <option v-for="item in selectedPositionSuggestions" :key="item" :value="item"></option>
                 </datalist>
               </label>
             </div>
             <p class="position-role-note">
-              例如“工程部技术员”可以授予“工程师”系统角色；前者是员工职位，后者只用于配置系统权限。
+              真实职位只用于个人资料展示；下方内置权限职位才决定系统可用功能。
             </p>
           </section>
 
           <section class="section">
             <div class="sec-title">
               <span class="st-ic"><Users class="size-4" aria-hidden="true" /></span>
-              <h3>系统角色</h3>
-              <span class="hint">角色决定系统权限，与员工职位相互独立</span>
+              <h3>内置权限职位</h3>
+              <span class="hint">只需选择一个；系统会统一处理底层授权</span>
             </div>
-            <div class="roles">
+            <p class="system-position-department-label">
+              当前权限部门：<strong>{{ departmentLabel(approvalProfile(selectedRequest).department) }}</strong>
+            </p>
+            <div v-if="selectedDepartmentSystemPositions.length" class="roles" role="radiogroup" aria-label="选择内置权限职位">
               <button
-                v-for="role in roles"
+                v-for="role in selectedDepartmentSystemPositions"
                 :key="role.id"
                 type="button"
                 class="role"
-                :class="{ sel: getSelectedRoleId(selectedRequest) === role.id }"
-                :disabled="!roleIsApplicableToRequest(role, selectedRequest)"
-                :title="!roleIsApplicableToRequest(role, selectedRequest) ? role.scope_guidance : role.description"
-                @click="setSelectedRoleId(selectedRequest.id, role.id)"
+                role="radio"
+                :aria-checked="getSelectedSystemPositionId(selectedRequest) === role.id"
+                :class="{ sel: getSelectedSystemPositionId(selectedRequest) === role.id }"
+                :title="role.description"
+                @click="setSelectedSystemPosition(selectedRequest.id, role.id)"
               >
                 <span v-if="selectedRequest.recommended_role_ids.includes(role.id)" class="reco">推荐</span>
                 <span class="check"><Check class="size-3" aria-hidden="true" /></span>
                 <div class="rname">{{ role.name }}</div>
                 <div class="rdesc">{{ role.description || role.code }}</div>
-                <div v-if="!roleIsApplicableToRequest(role, selectedRequest)" class="role-scope-warning">
-                  当前申请范围不适用
-                </div>
+                <div class="role-permission-count">{{ role.permission_count ? `已配置 ${role.permission_count} 项权限` : '权限待配置' }}</div>
               </button>
             </div>
-            <div v-if="selectedRoleUsesEngineerBundle(selectedRequest)" class="engineer-bundle-note">
-              <strong>工程师默认组合授权</strong>
-              <span v-for="item in engineerBundleSummary(selectedRequest)" :key="item">{{ item }}</span>
-              <small>不包含主管审核、啤机生产写入、仓库出入库、敏感审计或跨厂成本。</small>
-            </div>
-          </section>
-
-          <section class="section">
-            <div class="sec-title">
-              <span class="st-ic"><KeyRound class="size-4" aria-hidden="true" /></span>
-              <h3>权限清单</h3>
-              <span class="hint">角色默认已勾选，高危权限锁定</span>
-            </div>
-            <div class="perm-groups">
-              <div v-for="group in permissionGroupsForSelectedRole(selectedRequest)" :key="group.title" class="perm-group">
-                <h4>{{ group.title }}</h4>
-                <label
-                  v-for="permission in group.permissions"
-                  :key="permission.code"
-                  :class="[permission.locked ? 'perm locked' : 'perm', { on: permission.enabled }]"
-                >
-                  <span class="cbx">
-                    <Check v-if="permission.enabled" class="size-3" aria-hidden="true" />
-                  </span>
-                  <span class="pt">{{ permission.label }}</span>
-                  <span class="pc">{{ permission.code }}</span>
-                </label>
-              </div>
-            </div>
-          </section>
-
-          <section class="section">
-            <div class="sec-title">
-              <span class="st-ic"><ShieldCheck class="size-4" aria-hidden="true" /></span>
-              <h3>数据范围</h3>
-              <span class="hint">限定该账号可访问的厂区与部门</span>
-            </div>
-            <div class="scope-block">
-              <div class="scope-lbl">厂区范围 (factory_scopes)</div>
-              <div class="chips">
-                <span
-                  v-for="factory in factoryScopesForSelectedRequest"
-                  :key="factory.id"
-                  class="chip"
-                  :class="{ on: factory.active }"
-                >
-                  <span class="cd"></span>{{ factory.label }}
-                </span>
-                <span class="chip all"><span class="cd"></span>{{ allFactoryScopeLabel }}</span>
-              </div>
-            </div>
-            <div class="scope-block">
-              <div class="scope-lbl">部门范围 (department_scopes)</div>
-              <div class="chips">
-                <span
-                  v-for="department in departmentScopesForSelectedRequest"
-                  :key="department.id"
-                  class="chip"
-                  :class="{ on: department.active }"
-                >
-                  <span class="cd"></span>{{ department.label }}
-                </span>
-              </div>
+            <div v-else class="empty-system-positions">
+              当前部门还没有可分配的内置权限职位，请先到“内置职位权限”完成配置。
             </div>
           </section>
 
@@ -979,7 +715,7 @@ onMounted(() => {
       <div class="table-tools">
         <label class="search-box">
           <Search class="size-4" aria-hidden="true" />
-          <input v-model="userSearch" aria-label="搜索用户" placeholder="搜索姓名、工号、联系方式、角色..." type="search">
+          <input v-model="userSearch" aria-label="搜索用户" placeholder="搜索姓名、工号、联系方式、个人职位或权限职位..." type="search">
         </label>
         <div class="seg">
           <button type="button" :class="{ on: userStatusFilter === 'all' }" @click="userStatusFilter = 'all'">全部</button>
@@ -996,7 +732,8 @@ onMounted(() => {
               <th>用户</th>
               <th>联系方式</th>
               <th>厂区 / 部门</th>
-              <th>角色</th>
+              <th>个人职位</th>
+              <th>权限职位</th>
               <th>状态</th>
               <th>最后登录</th>
               <th class="ops-head">操作</th>
@@ -1004,7 +741,7 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr v-if="!filteredUsers.length">
-              <td colspan="7" class="empty-row">没有匹配的账号。</td>
+              <td colspan="8" class="empty-row">没有匹配的账号。</td>
             </tr>
             <tr v-for="user in filteredUsers" v-else :key="user.id">
               <td>
@@ -1030,19 +767,13 @@ onMounted(() => {
                 </div>
               </td>
               <td class="muted">
-                {{ user.roles.map((role) => `${factoryLabel(role.factory_id)} · ${departmentLabel(role.department)}`).join('、') || '-' }}
+                {{ userPrimaryFactory(user) ? factoryLabel(userPrimaryFactory(user)) : '待确认' }} · {{ userPrimaryDepartment(user) ? departmentLabel(userPrimaryDepartment(user)) : '待确认' }}
               </td>
+              <td><span class="employee-position-text">{{ userPosition(user) }}</span></td>
               <td>
                 <div class="role-tags">
-                  <span
-                    v-for="role in user.roles"
-                    :key="role.id"
-                    class="pill"
-                    :class="roleToneClass(role.role_name)"
-                  >
-                    <span></span>{{ role.role_name }}
-                  </span>
-                  <span v-if="!user.roles.length" class="tag">未授权</span>
+                  <span v-if="user.system_position_role_id" class="pill pill-teal"><span></span>{{ userSystemPositionName(user) }}</span>
+                  <span v-else class="tag">未分配</span>
                 </div>
               </td>
               <td>
@@ -1059,7 +790,7 @@ onMounted(() => {
                     :to="`/system/users/${encodeURIComponent(user.id)}/access`"
                   >
                     <SlidersHorizontal class="size-3.5" aria-hidden="true" />
-                    配置权限
+                    调整权限职位
                   </RouterLink>
                   <button
                     v-if="user.status === 'active'"
@@ -1089,7 +820,7 @@ onMounted(() => {
         </table>
         <div class="table-foot">
           <span>共 {{ users.length }} 个账号 · 当前显示 {{ filteredUsers.length }} 个 · 待审批账号 {{ pendingUsers.length }} 个</span>
-          <span class="table-foot-badge"><UserCog class="size-3.5" aria-hidden="true" /> RBAC 授权</span>
+          <span class="table-foot-badge"><UserCog class="size-3.5" aria-hidden="true" /> 内置职位授权</span>
         </div>
       </div>
     </section>
@@ -2920,6 +2651,16 @@ onMounted(() => {
   gap: 12px;
 }
 
+.registration-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.registration-position-field {
+  grid-column: 1 / -1;
+}
+
 .position-original,
 .position-confirm-field {
   display: grid;
@@ -2948,7 +2689,8 @@ onMounted(() => {
   font-size: 13px;
 }
 
-.position-confirm-field input {
+.position-confirm-field input,
+.position-confirm-field select {
   width: 100%;
   height: 42px;
   box-sizing: border-box;
@@ -2963,7 +2705,14 @@ onMounted(() => {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.position-confirm-field input:focus {
+.position-confirm-field input:disabled {
+  color: var(--slate-500);
+  background: var(--slate-100);
+  cursor: not-allowed;
+}
+
+.position-confirm-field input:focus,
+.position-confirm-field select:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px var(--ring);
 }
@@ -2979,6 +2728,39 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
+}
+
+.system-position-department-label {
+  margin: 0 0 10px;
+  color: var(--slate-500);
+  font-size: 12px;
+}
+
+.system-position-department-label strong {
+  color: var(--slate-900);
+}
+
+.role-permission-count {
+  margin-top: 7px;
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.empty-system-positions {
+  padding: 18px;
+  border: 1px dashed var(--slate-300);
+  border-radius: 12px;
+  color: var(--slate-500);
+  background: var(--slate-50);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.employee-position-text {
+  color: var(--slate-700);
+  font-size: 12.5px;
+  font-weight: 700;
 }
 
 .role {
@@ -3362,6 +3144,14 @@ onMounted(() => {
 
   .position-review-grid {
     grid-template-columns: 1fr;
+  }
+
+  .registration-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .registration-position-field {
+    grid-column: auto;
   }
 
   .actions {

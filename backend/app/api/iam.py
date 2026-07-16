@@ -17,6 +17,8 @@ from app.schemas.iam import (
     RoleAccessPreviewRequest,
     RoleAccessPreviewResponse,
     RoleSummaryOut,
+    SystemPositionPreviewRequest,
+    SystemPositionPreviewResponse,
     UserAccessOut,
     UserAccessPreviewRequest,
     UserSearchOut,
@@ -25,6 +27,7 @@ from app.services.auth import AuthContext, get_current_user
 from app.services.iam import (
     approve_access_request,
     commit_role_access,
+    commit_system_position,
     commit_user_access,
     create_access_request,
     get_manageable_scopes,
@@ -34,7 +37,9 @@ from app.services.iam import (
     list_audit_events,
     list_permissions,
     list_roles,
+    list_system_positions,
     preview_role_access,
+    preview_system_position,
     preview_user_access,
     reject_access_request,
     search_users,
@@ -99,6 +104,41 @@ def user_access_commit(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return commit_user_access(db, current_user, user_id, payload, request=request)
+
+
+@router.get("/system-positions", response_model=list[RoleSummaryOut])
+def system_positions(
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return list_system_positions(db, current_user)
+
+
+@router.post(
+    "/users/{user_id}/system-position/preview",
+    response_model=SystemPositionPreviewResponse,
+)
+def user_system_position_preview(
+    user_id: str,
+    payload: SystemPositionPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return preview_system_position(db, current_user, user_id, payload)
+
+
+@router.post(
+    "/users/{user_id}/system-position/commit",
+    response_model=AccessCommitResponse,
+)
+def user_system_position_commit(
+    user_id: str,
+    payload: AccessCommitRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return commit_system_position(db, current_user, user_id, payload, request=request)
 
 
 @router.get("/roles", response_model=list[RoleSummaryOut])

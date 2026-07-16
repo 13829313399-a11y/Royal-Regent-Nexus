@@ -50,17 +50,25 @@ from app.schemas.iam import (
     RoleBindingOut,
     RolePermissionDiffOut,
     RoleSummaryOut,
+    SystemPositionPreviewRequest,
+    SystemPositionPreviewResponse,
     UserAccessOut,
     UserAccessPreviewRequest,
     UserAccessUserOut,
     UserSearchOut,
 )
-from app.services.auth import AuthContext, build_auth_context, can, now_text
+from app.services.auth import AuthContext, add_auth_audit, build_auth_context, can, now_text
 from app.services.permission_scope_policy import (
     ScopePolicy,
     permission_scope_policy,
     role_scope_policy,
     scope_is_applicable,
+)
+from app.services.system_positions import (
+    SPECIAL_SYSTEM_ROLE_CODES,
+    SYSTEM_POSITION_DEFINITIONS,
+    get_system_position,
+    recommend_system_position_role_id,
 )
 
 
@@ -139,6 +147,45 @@ def get_user_access(db: Session, current_user: AuthContext, user_id: str) -> Use
     registration = _latest_registration(db, user_id)
     phone = profile.phone if profile else (registration.phone if registration else "")
     email = profile.email if profile else (registration.email if registration else "")
+    role_bindings = _role_bindings_out(db, user_id)
+    overrides = _overrides_out(db, user_id)
+    effective_binding_ids = {binding.id for binding in _active_bindings(db, user_id)}
+    lifecycle_bindings = _lifecycle_active_bindings(db, user_id)
+    active_system_positions = sorted(
+        [
+            binding
+            for binding in role_bindings
+            if binding.id in effective_binding_ids and get_system_position(binding.role_id) is not None
+        ],
+        key=lambda binding: get_system_position(binding.role_id).sort_order,
+    )
+    system_position_binding = active_system_positions[0] if active_system_positions else None
+    legacy_role_count = sum(
+        1
+        for binding in role_bindings
+        if binding.id in effective_binding_ids
+        and get_system_position(binding.role_id) is None
+        and binding.role_code not in SPECIAL_SYSTEM_ROLE_CODES
+    )
+    kept_system_position_binding_id = system_position_binding.id if system_position_binding else ""
+    roles_by_id = {
+        item.id: item
+        for item in db.scalars(
+            select(AuthRole).where(
+                AuthRole.id.in_({binding.role_id for binding in lifecycle_bindings})
+            )
+        ).all()
+    } if lifecycle_bindings else {}
+    cleanup_role_count = sum(
+        1
+        for binding in lifecycle_bindings
+        if binding.id != kept_system_position_binding_id
+        and (
+            roles_by_id.get(binding.role_id) is None
+            or roles_by_id[binding.role_id].code not in SPECIAL_SYSTEM_ROLE_CODES
+        )
+    )
+    lifecycle_overrides = _lifecycle_active_overrides(db, user_id)
     return UserAccessOut(
         user=UserAccessUserOut(
             id=user.id,
@@ -150,9 +197,20 @@ def get_user_access(db: Session, current_user: AuthContext, user_id: str) -> Use
         ),
         profile=_profile_out(profile),
         authorization_version=_get_revision(db, user_id),
-        role_bindings=_role_bindings_out(db, user_id),
-        overrides=_overrides_out(db, user_id),
+        role_bindings=role_bindings,
+        overrides=overrides,
         effective_access=_effective_access_out(db, user_id),
+        system_position_role_id=system_position_binding.role_id if system_position_binding else "",
+        system_position_role_name=system_position_binding.role_name if system_position_binding else "",
+        recommended_system_position_role_id=(
+            recommend_system_position_role_id(profile.position, profile.primary_department)
+            if profile
+            else ""
+        ),
+        legacy_role_count=legacy_role_count,
+        active_override_count=len(_active_overrides(db, user_id)),
+        cleanup_role_count=cleanup_role_count,
+        cleanup_override_count=len(lifecycle_overrides),
     )
 
 
@@ -192,10 +250,13 @@ def preview_user_access(
         for item in operations
     )
     high_risk = any(item["risk_level"] == "high" for item in operations)
-    requires_approval = not is_super_admin and (cross_scope or high_risk)
-
     if not is_super_admin and not actor_scopes:
         raise HTTPException(status_code=403, detail="无权限管理用户授权")
+    if not is_super_admin and (cross_scope or high_risk):
+        raise HTTPException(
+            status_code=403,
+            detail="跨范围或高风险权限变更请由集团超级管理员直接操作",
+        )
 
     diffs = _preview_user_diffs(db, user_id, operations)
     raw_token, expires_at = _store_preview(
@@ -206,7 +267,7 @@ def preview_user_access(
         base_revision=current_revision,
         payload={"reason": reason, "operations": operations},
         summary={
-            "requires_approval": requires_approval,
+            "requires_approval": False,
             "high_risk": high_risk,
             "cross_scope": cross_scope,
         },
@@ -216,7 +277,7 @@ def preview_user_access(
         preview_token=raw_token,
         expires_at=expires_at,
         base_revision=current_revision,
-        requires_approval=requires_approval,
+        requires_approval=False,
         high_risk=high_risk,
         diffs=diffs,
     )
@@ -234,8 +295,6 @@ def commit_user_access(
     preview, preview_payload, summary = _load_preview(
         db, payload.preview_token, current_user.id, "user", user_id
     )
-    if summary.get("high_risk") and not payload.confirm_high_risk:
-        raise HTTPException(status_code=400, detail="高风险权限变更需要二次确认")
     current_revision = _get_revision(db, user_id, for_update=True)
     if preview.base_revision != current_revision:
         raise HTTPException(status_code=409, detail="用户权限已变化，请重新预览")
@@ -246,20 +305,15 @@ def commit_user_access(
         not _scope_is_managed(current_scopes, item["factory_id"], item["department"])
         for item in preview_payload["operations"]
     )
-    currently_requires_approval = not current_is_super_admin and (
+    if not current_is_super_admin and (
         bool(summary.get("high_risk")) or currently_cross_scope
-    )
-    if currently_requires_approval:
-        _ensure_access_requester(db, current_user, preview_payload["operations"])
-        access_request = _create_access_request_from_preview(db, current_user.id, user_id, preview, preview_payload)
-        preview.consumed_at = now_text()
-        db.commit()
-        return AccessCommitResponse(
-            status="pending_approval",
-            authorization_version=current_revision,
-            request_id=access_request.id,
-            message="权限申请已提交，等待集团超级管理员审批",
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="跨范围或高风险权限变更请由集团超级管理员直接操作",
         )
+    if summary.get("high_risk") and not payload.confirm_high_risk:
+        raise HTTPException(status_code=400, detail="高风险权限变更需要二次确认")
 
     _apply_user_operations(
         db,
@@ -276,6 +330,279 @@ def commit_user_access(
         status="committed",
         authorization_version=revision,
         message="权限变更已生效",
+    )
+
+
+def preview_system_position(
+    db: Session,
+    current_user: AuthContext,
+    user_id: str,
+    payload: SystemPositionPreviewRequest,
+) -> SystemPositionPreviewResponse:
+    _ensure_iam_manager(db, current_user)
+    user = _load_user(db, user_id)
+    profile = db.get(EmployeeProfile, user_id)
+    if profile is None or not profile.primary_factory_id or not profile.primary_department:
+        raise HTTPException(status_code=400, detail="该用户尚未确认主组织资料")
+
+    reason = _required_reason(payload.reason)
+    current_revision = _get_revision(db, user_id, for_update=True)
+    if payload.base_revision != current_revision:
+        raise HTTPException(status_code=409, detail="用户权限已变化，请刷新后重新预览")
+
+    role = _load_role(db, payload.system_position_role_id.strip())
+    position = get_system_position(role.id)
+    if position is None:
+        raise HTTPException(status_code=400, detail="请选择系统内置权限职位")
+    if position.department != profile.primary_department:
+        raise HTTPException(
+            status_code=400,
+            detail=f"内置权限职位“{role.name}”不属于用户主部门",
+        )
+    _ensure_scope_applicable(
+        role_scope_policy(role.code),
+        profile.primary_factory_id,
+        profile.primary_department,
+        subject=f"内置权限职位 {role.name}",
+    )
+    role_metadata = _get_role_metadata(db, role.id)
+    role_template_version = role_metadata.version if role_metadata else 1
+
+    effective_bindings = _active_bindings(db, user_id)
+    effective_binding_ids = {binding.id for binding in effective_bindings}
+    lifecycle_bindings = _lifecycle_active_bindings(db, user_id)
+    roles_by_id = {
+        item.id: item
+        for item in db.scalars(
+            select(AuthRole).where(
+                AuthRole.id.in_({binding.role_id for binding in lifecycle_bindings})
+            )
+        ).all()
+    } if lifecycle_bindings else {}
+    before_positions = sorted(
+        [
+            binding
+            for binding in effective_bindings
+            if get_system_position(binding.role_id) is not None
+        ],
+        key=lambda binding: get_system_position(binding.role_id).sort_order,
+    )
+
+    operations: list[dict[str, Any]] = []
+    kept_selected = False
+    for binding in lifecycle_bindings:
+        bound_role = roles_by_id.get(binding.role_id)
+        if bound_role and bound_role.code in SPECIAL_SYSTEM_ROLE_CODES:
+            continue
+        if (
+            not kept_selected
+            and binding.id in effective_binding_ids
+            and binding.role_id == role.id
+            and binding.factory_id == profile.primary_factory_id
+            and binding.department == profile.primary_department
+        ):
+            kept_selected = True
+            continue
+        operations.append(
+            {
+                "kind": "role_binding",
+                "operation": "revoke",
+                "binding_id": binding.id,
+                "role_id": binding.role_id,
+                "factory_id": binding.factory_id,
+                "department": binding.department,
+                "valid_until": "",
+                "risk_level": "high" if _role_is_high_risk(db, bound_role or _load_role(db, binding.role_id)) else "normal",
+            }
+        )
+
+    if not kept_selected:
+        operations.append(
+            {
+                "kind": "role_binding",
+                "operation": "add",
+                "binding_id": "",
+                "role_id": role.id,
+                "factory_id": profile.primary_factory_id,
+                "department": profile.primary_department,
+                "valid_until": "",
+                "risk_level": "high" if _role_is_high_risk(db, role) else "normal",
+            }
+        )
+
+    permission_by_id = {
+        item.id: item
+        for item in db.scalars(select(AuthPermission)).all()
+    }
+    lifecycle_overrides = _lifecycle_active_overrides(db, user_id)
+    for override in lifecycle_overrides:
+        permission = permission_by_id.get(override.permission_id)
+        if permission is None:
+            continue
+        operations.append(
+            {
+                "kind": "permission_override",
+                "operation": "set",
+                "permission_id": permission.id,
+                "permission_code": permission.code,
+                "effect": "inherit",
+                "factory_id": override.factory_id,
+                "department": override.department,
+                "valid_until": "",
+                "risk_level": _permission_risk(db, permission),
+            }
+        )
+
+    if not operations:
+        raise HTTPException(status_code=400, detail="该用户已使用所选内置权限职位")
+
+    actor_scopes = _manager_scopes(db, current_user.id)
+    is_super_admin = _is_superadmin(db, current_user.id)
+    cross_scope = any(
+        not _scope_is_managed(actor_scopes, item["factory_id"], item["department"])
+        for item in operations
+    )
+    high_risk = any(item["risk_level"] == "high" for item in operations)
+    if not is_super_admin and not actor_scopes:
+        raise HTTPException(status_code=403, detail="无权限管理用户授权")
+    if not is_super_admin and (cross_scope or high_risk):
+        raise HTTPException(
+            status_code=403,
+            detail="跨范围或高风险内置职位调整请由集团超级管理员直接操作",
+        )
+
+    diffs = _preview_user_diffs(db, user_id, operations, allow_empty=True)
+    before_role_ids = [binding.role_id for binding in before_positions]
+    before_role_names = [
+        roles_by_id[binding.role_id].name
+        if binding.role_id in roles_by_id
+        else binding.role_id
+        for binding in before_positions
+    ]
+    removed_role_count = sum(
+        1
+        for item in operations
+        if item["kind"] == "role_binding" and item["operation"] == "revoke"
+    )
+    raw_token, expires_at = _store_preview(
+        db,
+        actor_user_id=current_user.id,
+        target_type="system_position",
+        target_id=user_id,
+        base_revision=current_revision,
+        payload={
+            "reason": reason,
+            "operations": operations,
+            "system_position_role_id": role.id,
+            "system_position_role_version": role_template_version,
+        },
+        summary={
+            "requires_approval": False,
+            "high_risk": high_risk,
+            "cross_scope": cross_scope,
+            "before_role_ids": before_role_ids,
+            "before_role_names": before_role_names,
+            "after_role_id": role.id,
+            "after_role_name": role.name,
+            "removed_role_count": removed_role_count,
+            "removed_override_count": len(lifecycle_overrides),
+        },
+    )
+    db.commit()
+    return SystemPositionPreviewResponse(
+        preview_token=raw_token,
+        expires_at=expires_at,
+        base_revision=current_revision,
+        before_role_ids=before_role_ids,
+        before_role_names=before_role_names,
+        after_role_id=role.id,
+        after_role_name=role.name,
+        removed_role_count=removed_role_count,
+        removed_override_count=len(lifecycle_overrides),
+        requires_approval=False,
+        high_risk=high_risk,
+        diffs=diffs,
+    )
+
+
+def commit_system_position(
+    db: Session,
+    current_user: AuthContext,
+    user_id: str,
+    payload: AccessCommitRequest,
+    request: Request | None = None,
+) -> AccessCommitResponse:
+    _require_writes_enabled()
+    _ensure_iam_manager(db, current_user)
+    preview, preview_payload, summary = _load_preview(
+        db,
+        payload.preview_token,
+        current_user.id,
+        "system_position",
+        user_id,
+    )
+    role = _load_role(db, preview_payload.get("system_position_role_id", ""))
+    system_position = get_system_position(role.id)
+    if system_position is None:
+        raise HTTPException(status_code=409, detail="内置权限职位目录已变化，请重新预览")
+    role_metadata = _get_role_metadata(db, role.id, for_update=True)
+    current_role_version = role_metadata.version if role_metadata else 1
+    if preview_payload.get("system_position_role_version") != current_role_version:
+        raise HTTPException(status_code=409, detail="内置权限职位模板已变化，请重新预览")
+    profile = db.get(EmployeeProfile, user_id)
+    if profile is None or system_position.department != profile.primary_department:
+        raise HTTPException(status_code=409, detail="用户主部门已变化，请重新预览")
+
+    operations = preview_payload["operations"]
+    current_high_risk = _operations_are_high_risk(db, operations)
+    if current_high_risk != bool(summary.get("high_risk")):
+        raise HTTPException(status_code=409, detail="权限风险等级已变化，请重新预览")
+    current_revision = _get_revision(db, user_id, for_update=True)
+    if preview.base_revision != current_revision:
+        raise HTTPException(status_code=409, detail="用户权限已变化，请重新预览")
+    current_is_super_admin = _is_superadmin(db, current_user.id)
+    current_scopes = _manager_scopes(db, current_user.id)
+    currently_cross_scope = any(
+        not _scope_is_managed(current_scopes, item["factory_id"], item["department"])
+        for item in operations
+    )
+    if not current_is_super_admin and (current_high_risk or currently_cross_scope):
+        raise HTTPException(
+            status_code=403,
+            detail="跨范围或高风险内置职位调整请由集团超级管理员直接操作",
+        )
+    if current_high_risk and not payload.confirm_high_risk:
+        raise HTTPException(status_code=400, detail="高风险内置职位变更需要二次确认")
+
+    _apply_user_operations(
+        db,
+        actor_user_id=current_user.id,
+        target_user_id=user_id,
+        operations=operations,
+        reason=preview_payload["reason"],
+        request=request,
+    )
+    revision = _increment_revision(db, user_id)
+    preview.consumed_at = now_text()
+    target_user = _load_user(db, user_id)
+    add_auth_audit(
+        db,
+        "system_position_changed",
+        username=target_user.username,
+        user_id=user_id,
+        detail=(
+            f"内置权限职位：{','.join(summary.get('before_role_names', [])) or '未归类'}"
+            f" -> {summary.get('after_role_name', role.name)}；"
+            f"清理旧角色 {summary.get('removed_role_count', 0)} 个、"
+            f"用户级权限 {summary.get('removed_override_count', 0)} 项"
+        ),
+        request=request,
+    )
+    db.commit()
+    return AccessCommitResponse(
+        status="committed",
+        authorization_version=revision,
+        message="内置权限职位已更新并立即生效",
     )
 
 
@@ -307,6 +634,24 @@ def list_roles(db: Session, current_user: AuthContext) -> list[RoleSummaryOut]:
     return [_role_summary(db, role) for role in roles]
 
 
+def list_system_positions(db: Session, current_user: AuthContext) -> list[RoleSummaryOut]:
+    _ensure_iam_manager(db, current_user)
+    _ensure_permission_catalog_reader(db, current_user)
+    roles_by_id = {
+        role.id: role
+        for role in db.scalars(
+            select(AuthRole).where(
+                AuthRole.id.in_([item.role_id for item in SYSTEM_POSITION_DEFINITIONS])
+            )
+        ).all()
+    }
+    return [
+        _role_summary(db, roles_by_id[item.role_id])
+        for item in SYSTEM_POSITION_DEFINITIONS
+        if item.role_id in roles_by_id
+    ]
+
+
 def get_role_access(db: Session, current_user: AuthContext, role_id: str) -> RoleAccessOut:
     _ensure_iam_manager(db, current_user)
     _ensure_permission_catalog_reader(db, current_user)
@@ -323,6 +668,9 @@ def preview_role_access(
 ) -> RoleAccessPreviewResponse:
     _ensure_role_manager(db, current_user)
     role = _load_role(db, role_id)
+    system_position = get_system_position(role.id)
+    if system_position and payload.name not in {None, system_position.name}:
+        raise HTTPException(status_code=400, detail="系统内置职位名称不可修改")
     metadata = _get_role_metadata(db, role.id, for_update=True)
     if metadata and metadata.protected:
         raise HTTPException(status_code=400, detail="受保护角色不能修改")
@@ -401,6 +749,9 @@ def commit_role_access(
         raise HTTPException(status_code=409, detail="角色模板已变化，请重新预览")
     if metadata and metadata.protected:
         raise HTTPException(status_code=400, detail="受保护角色不能修改")
+    system_position = get_system_position(role.id)
+    if system_position and preview_payload.get("name") not in {None, system_position.name}:
+        raise HTTPException(status_code=409, detail="系统内置职位名称不可修改")
 
     desired_codes = preview_payload["permission_codes"]
     permissions = _permissions_by_code(db, desired_codes)
@@ -430,7 +781,7 @@ def commit_role_access(
     metadata.version = version + 1
     metadata.updated_at = now_text()
     metadata.updated_by_user_id = current_user.id
-    for user_id in _active_role_user_ids(db, role.id):
+    for user_id in sorted(_active_role_user_ids(db, role.id)):
         _increment_revision(db, user_id)
     _add_event(
         db,
@@ -478,6 +829,19 @@ def approve_access_request(
     access_request = _load_access_request(db, request_id)
     if access_request.status != "pending":
         raise HTTPException(status_code=400, detail="该权限申请已处理")
+    operations = [_operation_from_request_item(item) for item in _request_items(db, access_request.id)]
+    if _system_position_request_has_drift(
+        db,
+        access_request.target_user_id,
+        operations,
+    ):
+        access_request.status = "expired"
+        access_request.decision_by_user_id = current_user.id
+        access_request.decision_comment = "内置权限职位模板或风险等级已变化，请重新预览并提交"
+        access_request.decided_at = now_text()
+        access_request.updated_at = now_text()
+        db.commit()
+        raise HTTPException(status_code=409, detail="内置权限职位已变化，该申请已失效")
     current_revision = _get_revision(db, access_request.target_user_id, for_update=True)
     if current_revision != access_request.base_revision:
         access_request.status = "expired"
@@ -487,7 +851,6 @@ def approve_access_request(
         access_request.updated_at = now_text()
         db.commit()
         raise HTTPException(status_code=409, detail="目标用户权限已变化，该申请已失效")
-    operations = [_operation_from_request_item(item) for item in _request_items(db, access_request.id)]
     _apply_user_operations(
         db,
         actor_user_id=current_user.id,
@@ -853,7 +1216,13 @@ def _normalize_user_operations(
     return operations
 
 
-def _preview_user_diffs(db: Session, user_id: str, operations: list[dict[str, Any]]) -> list[AccessDiffOut]:
+def _preview_user_diffs(
+    db: Session,
+    user_id: str,
+    operations: list[dict[str, Any]],
+    *,
+    allow_empty: bool = False,
+) -> list[AccessDiffOut]:
     excluded_bindings: set[str] = set()
     added_bindings: list[dict[str, str]] = []
     override_changes: dict[tuple[str, str, str], str] = {}
@@ -902,7 +1271,7 @@ def _preview_user_diffs(db: Session, user_id: str, operations: list[dict[str, An
                 risk_level=_permission_risk(db, permission),
             )
         )
-    if not diffs:
+    if not diffs and not allow_empty:
         raise HTTPException(status_code=400, detail="提交内容不会改变最终权限")
     return diffs
 
@@ -1078,7 +1447,7 @@ def _apply_override_operation(
 ) -> None:
     now = now_text()
     existing = [
-        item for item in _active_overrides(db, target_user_id)
+        item for item in _lifecycle_active_overrides(db, target_user_id)
         if item.permission_id == operation["permission_id"]
         and item.factory_id == operation["factory_id"]
         and item.department == operation["department"]
@@ -1234,7 +1603,16 @@ def _create_access_request_from_preview(
     )
     db.add(access_request)
     db.flush()
+    preview_summary = _json_object(preview.summary_json)
+    system_position_context = {}
+    if payload.get("system_position_role_id"):
+        system_position_context = {
+            "system_position_role_id": payload["system_position_role_id"],
+            "system_position_role_version": payload.get("system_position_role_version", 1),
+            "system_position_preview_high_risk": bool(preview_summary.get("high_risk")),
+        }
     for index, operation in enumerate(payload["operations"], start=1):
+        stored_operation = {**operation, **system_position_context}
         db.add(
             AuthAccessRequestItem(
                 id=f"{access_request.id}:item:{index}",
@@ -1249,7 +1627,7 @@ def _create_access_request_from_preview(
                 department=operation["department"],
                 valid_from="",
                 valid_until=operation.get("valid_until", ""),
-                payload_json=json.dumps(operation, ensure_ascii=False, sort_keys=True),
+                payload_json=json.dumps(stored_operation, ensure_ascii=False, sort_keys=True),
                 created_at=now,
             )
         )
@@ -1570,6 +1948,28 @@ def _active_bindings(db: Session, user_id: str = "") -> list[AuthUserRole]:
     ]
 
 
+def _lifecycle_active_bindings(db: Session, user_id: str = "") -> list[AuthUserRole]:
+    query = select(AuthUserRole)
+    if user_id:
+        query = query.where(AuthUserRole.user_id == user_id)
+    bindings = list(db.scalars(query).all())
+    if not bindings:
+        return []
+    metadata = {
+        item.user_role_id: item
+        for item in db.scalars(
+            select(AuthRoleBindingMetadata).where(
+                AuthRoleBindingMetadata.user_role_id.in_([item.id for item in bindings])
+            )
+        ).all()
+    }
+    return [
+        binding
+        for binding in bindings
+        if metadata.get(binding.id) is None or metadata[binding.id].state == "active"
+    ]
+
+
 def _active_overrides(db: Session, user_id: str) -> list[AuthUserPermissionOverride]:
     overrides = list(
         db.scalars(
@@ -1577,6 +1977,17 @@ def _active_overrides(db: Session, user_id: str) -> list[AuthUserPermissionOverr
         ).all()
     )
     return [item for item in overrides if _metadata_is_effective(item, state_attribute="status")]
+
+
+def _lifecycle_active_overrides(db: Session, user_id: str) -> list[AuthUserPermissionOverride]:
+    return list(
+        db.scalars(
+            select(AuthUserPermissionOverride).where(
+                AuthUserPermissionOverride.user_id == user_id,
+                AuthUserPermissionOverride.status == "active",
+            )
+        ).all()
+    )
 
 
 def _metadata_is_effective(item: Any | None, state_attribute: str) -> bool:
@@ -1629,6 +2040,7 @@ def _role_permission_codes(db: Session, role_id: str) -> list[str]:
 def _role_summary(db: Session, role: AuthRole) -> RoleSummaryOut:
     metadata = _get_role_metadata(db, role.id)
     scope_policy = role_scope_policy(role.code)
+    system_position = get_system_position(role.id)
     return RoleSummaryOut(
         id=role.id,
         code=role.code,
@@ -1641,6 +2053,10 @@ def _role_summary(db: Session, role: AuthRole) -> RoleSummaryOut:
         applicable_departments=list(scope_policy.departments),
         requires_global_factory=scope_policy.requires_global_factory,
         scope_guidance=scope_policy.guidance,
+        is_system_position=system_position is not None,
+        position_department=system_position.department if system_position else "",
+        position_department_name=system_position.department_name if system_position else "",
+        position_sort_order=system_position.sort_order if system_position else 0,
     )
 
 
@@ -1659,6 +2075,11 @@ def _get_revision(db: Session, user_id: str, *, for_update: bool = False) -> int
             .where(AuthUserAuthorizationRevision.user_id == user_id)
             .with_for_update()
         )
+        if item is None:
+            raise HTTPException(
+                status_code=409,
+                detail="用户授权版本元数据缺失，请重启服务完成初始化后重试",
+            )
     else:
         item = db.get(AuthUserAuthorizationRevision, user_id)
     return item.revision if item else 0
@@ -1672,11 +2093,12 @@ def _increment_revision(db: Session, user_id: str) -> int:
     )
     now = now_text()
     if item is None:
-        item = AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now)
-        db.add(item)
-    else:
-        item.revision += 1
-        item.updated_at = now
+        raise HTTPException(
+            status_code=409,
+            detail="用户授权版本元数据缺失，请重启服务完成初始化后重试",
+        )
+    item.revision += 1
+    item.updated_at = now
     db.flush()
     return item.revision
 
@@ -1688,11 +2110,17 @@ def _get_role_metadata(
     for_update: bool = False,
 ) -> AuthRoleMetadata | None:
     if for_update:
-        return db.scalar(
+        metadata = db.scalar(
             select(AuthRoleMetadata)
             .where(AuthRoleMetadata.role_id == role_id)
             .with_for_update()
         )
+        if metadata is None:
+            raise HTTPException(
+                status_code=409,
+                detail="角色权限模板元数据缺失，请重启服务完成初始化后重试",
+            )
+        return metadata
     return db.get(AuthRoleMetadata, role_id)
 
 
@@ -1773,6 +2201,46 @@ def _role_is_high_risk(db: Session, role: AuthRole) -> bool:
     return role.code == "admin" or any(
         _permission_risk(db, _permission_by_code(db, code)) == "high"
         for code in _role_permission_codes(db, role.id)
+    )
+
+
+def _operations_are_high_risk(db: Session, operations: list[dict[str, Any]]) -> bool:
+    for operation in operations:
+        if operation.get("kind") == "role_binding":
+            role = db.get(AuthRole, operation.get("role_id", ""))
+            if role is None or _role_is_high_risk(db, role):
+                return True
+            continue
+        permission = db.get(AuthPermission, operation.get("permission_id", ""))
+        if _permission_risk(db, permission) == "high":
+            return True
+    return False
+
+
+def _system_position_request_has_drift(
+    db: Session,
+    target_user_id: str,
+    operations: list[dict[str, Any]],
+) -> bool:
+    context = next(
+        (item for item in operations if item.get("system_position_role_id")),
+        None,
+    )
+    if context is None:
+        return False
+    role = db.get(AuthRole, context["system_position_role_id"])
+    system_position = get_system_position(role.id) if role else None
+    if role is None or system_position is None:
+        return True
+    metadata = _get_role_metadata(db, role.id, for_update=True)
+    current_version = metadata.version if metadata else 1
+    if context.get("system_position_role_version") != current_version:
+        return True
+    profile = db.get(EmployeeProfile, target_user_id)
+    if profile is None or profile.primary_department != system_position.department:
+        return True
+    return _operations_are_high_risk(db, operations) != bool(
+        context.get("system_position_preview_high_risk")
     )
 
 
@@ -1892,7 +2360,11 @@ def _load_role(db: Session, role_id: str) -> AuthRole:
 
 
 def _load_access_request(db: Session, request_id: str) -> AuthAccessRequest:
-    item = db.get(AuthAccessRequest, request_id)
+    item = db.scalar(
+        select(AuthAccessRequest)
+        .where(AuthAccessRequest.id == request_id)
+        .with_for_update()
+    )
     if item is None:
         raise HTTPException(status_code=404, detail="权限申请不存在")
     return item

@@ -7,8 +7,19 @@ class RoleAssignmentRequest(BaseModel):
     department: str
 
 
+class RegistrationProfileCorrection(BaseModel):
+    display_name: str = Field(min_length=1, max_length=128)
+    phone: str = Field(default="", max_length=64)
+    email: str = Field(default="", max_length=128)
+    factory_id: str = Field(min_length=1, max_length=64)
+    department: str = Field(min_length=1, max_length=64)
+    position: str = Field(min_length=1, max_length=128)
+
+
 class RegistrationApproveRequest(BaseModel):
-    role_assignments: list[RoleAssignmentRequest]
+    role_assignments: list[RoleAssignmentRequest] = Field(default_factory=list)
+    system_position_role_id: str = Field(default="", max_length=64)
+    profile: RegistrationProfileCorrection | None = None
     review_comment: str = ""
     position: str | None = None
 
@@ -38,6 +49,11 @@ class RoleOut(BaseModel):
     applicable_departments: list[str] = Field(default_factory=list)
     requires_global_factory: bool = False
     scope_guidance: str = ""
+    is_system_position: bool = False
+    position_department: str = ""
+    position_department_name: str = ""
+    position_sort_order: int = 0
+    permission_count: int = 0
 
 
 class UserRoleAssignmentOut(BaseModel):
@@ -82,6 +98,11 @@ class UserOut(BaseModel):
     updated_at: str
     roles: list[UserRoleAssignmentOut]
     avatar_url: str = ""
+    primary_factory_id: str = ""
+    primary_department: str = ""
+    position: str = ""
+    system_position_role_id: str = ""
+    system_position_role_name: str = ""
 
 
 class SystemNotificationOut(BaseModel):

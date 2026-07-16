@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BookOpenCheck, ClipboardCheck, FileClock, Home, ShieldCheck, UsersRound } from '@lucide/vue'
+import { Home, ShieldCheck, UsersRound } from '@lucide/vue'
 import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -11,10 +11,7 @@ defineProps<{
 const authStore = useAuthStore()
 const items = computed(() => [
   { to: '/system/users', label: '用户与授权', icon: UsersRound, permissions: ['system:user_manage'] },
-  { to: '/system/iam/roles', label: '角色模板', icon: ShieldCheck, permissions: ['system:permission_catalog_read'] },
-  { to: '/system/iam/permissions', label: '权限目录', icon: BookOpenCheck, permissions: ['system:permission_catalog_read'] },
-  { to: '/system/iam/requests', label: '权限申请', icon: ClipboardCheck, permissions: ['system:access_request', 'system:access_approve'] },
-  { to: '/system/iam/audit', label: '操作记录', icon: FileClock, permissions: ['system:audit_read'] },
+  { to: '/system/iam/roles', label: '内置职位权限', icon: ShieldCheck, permissions: ['system:permission_catalog_read'] },
 ].filter((item) => item.permissions.some((permission) => authStore.can(permission))))
 </script>
 

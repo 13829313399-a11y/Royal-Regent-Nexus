@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS
+
 
 @dataclass(frozen=True)
 class ScopePolicy:
@@ -149,6 +151,16 @@ ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "sales_customer_owner": ScopePolicy(("sales-business",), guidance="仅适用于营业部范围"),
     "sales_customer_supervisor": ScopePolicy(("sales-business",), guidance="仅适用于营业部范围"),
 }
+
+ROLE_SCOPE_POLICIES.update(
+    {
+        item.role_id: ScopePolicy(
+            (item.department,),
+            guidance=f"仅适用于{item.department_name}范围",
+        )
+        for item in SYSTEM_POSITION_DEFINITIONS
+    }
+)
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:

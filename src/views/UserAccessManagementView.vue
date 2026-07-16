@@ -1,26 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { ArrowLeft, CalendarClock, LoaderCircle, RefreshCw, Save, ShieldAlert } from '@lucide/vue'
+import { computed, onMounted, ref } from 'vue'
+import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle, RefreshCw, Save, ShieldCheck, X } from '@lucide/vue'
 import { useRoute } from 'vue-router'
 import {
   iamApi,
-  type EffectiveAccessEntry,
-  type ManageableScope,
   type PermissionCatalogItem,
-  type PermissionDraftEffect,
-  type RoleBinding,
-  type RoleBindingDraft,
+  type RoleAccessResponse,
   type RoleSummary,
-  type UserAccessPreviewResponse,
   type UserAccessResponse,
+  type UserSystemPositionPreviewResponse,
 } from '@/api/iam'
-import IamAccessPreviewDialog from '@/components/iam/IamAccessPreviewDialog.vue'
 import IamIdentitySummary from '@/components/iam/IamIdentitySummary.vue'
 import IamNavigation from '@/components/iam/IamNavigation.vue'
-import IamPermissionMatrix, { type PermissionMatrixResolution } from '@/components/iam/IamPermissionMatrix.vue'
-import IamRoleBindings from '@/components/iam/IamRoleBindings.vue'
-import IamScopeSelector from '@/components/iam/IamScopeSelector.vue'
-import { departmentMap, departments, factoryContexts } from '@/data/enterpriseMock'
+import {
+  isBuiltInPositionPermissionVisible,
+  permissionDisplayLabel,
+} from '@/components/iam/permissionCatalogLabels'
+import { registrationDepartments } from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -28,164 +24,130 @@ const route = useRoute()
 const authStore = useAuthStore()
 
 const access = ref<UserAccessResponse | null>(null)
+const systemPositions = ref<RoleSummary[]>([])
 const permissions = ref<PermissionCatalogItem[]>([])
-const roles = ref<RoleSummary[]>([])
-const manageableScopes = ref<ManageableScope[]>([])
-const selectedFactoryId = ref('')
-const selectedDepartment = ref('')
-const draftStates = ref<Record<string, PermissionDraftEffect>>({})
-const originalStates = ref<Record<string, PermissionDraftEffect>>({})
-const roleBindingDrafts = ref<RoleBindingDraft[]>([])
+const selectedSystemPositionRoleId = ref('')
+const selectedPositionAccess = ref<RoleAccessResponse | null>(null)
 const reason = ref('')
-const validUntil = ref('')
-const preview = ref<UserAccessPreviewResponse | null>(null)
+const preview = ref<UserSystemPositionPreviewResponse | null>(null)
+const confirmedHighRisk = ref(false)
 const isLoading = ref(false)
+const isLoadingPosition = ref(false)
 const isPreviewing = ref(false)
 const isCommitting = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
 
 const userId = computed(() => String(route.params.userId ?? ''))
-const activePermissions = computed(() => permissions.value
-  .filter((permission) => permission.status === 'active')
-  .sort((left, right) => left.sort_order - right.sort_order || left.code.localeCompare(right.code)))
-
-const changedPermissionCodes = computed(() => activePermissions.value
-  .map((permission) => permission.code)
-  .filter((permissionCode) => draftStates.value[permissionCode] !== originalStates.value[permissionCode]))
-const changeCount = computed(() => changedPermissionCodes.value.length + roleBindingDrafts.value.length)
-
-const resolutionByPermission = computed<Record<string, PermissionMatrixResolution | undefined>>(() => {
-  const resolutions: Record<string, PermissionMatrixResolution | undefined> = {}
-  for (const permission of activePermissions.value) {
-    const entries = (access.value?.effective_access ?? []).filter((entry) =>
-      entry.permission_code === permission.code
-      && scopeMatches(entry, selectedFactoryId.value, selectedDepartment.value),
-    )
-    const denied = entries.find((entry) => entry.effect === 'deny' || entry.allowed === false)
-    const allowed = entries.find((entry) => entry.effect === 'allow' && entry.allowed !== false)
-    const resolved = denied ?? allowed
-    resolutions[permission.code] = resolved
-      ? {
-          allowed: resolved.effect === 'allow' && resolved.allowed !== false,
-          source_label: sourceLabel(resolved),
-        }
-      : { allowed: false, source_label: '默认拒绝' }
+const userFactory = computed(() => access.value?.profile?.primary_factory_id ?? '')
+const userDepartment = computed(() => access.value?.profile?.primary_department ?? '')
+const hasPrimaryOrganization = computed(() => Boolean(userFactory.value && userDepartment.value))
+const assignableSystemPositions = computed(() => hasPrimaryOrganization.value
+  ? systemPositions.value.filter((position) => position.position_department === userDepartment.value)
+  : [],
+)
+const selectedSystemPosition = computed(() =>
+  systemPositions.value.find((position) => position.id === selectedSystemPositionRoleId.value) ?? null,
+)
+const hasPositionChange = computed(() =>
+  Boolean(selectedSystemPositionRoleId.value)
+  && selectedSystemPositionRoleId.value !== (access.value?.system_position_role_id ?? ''),
+)
+const hasHistoricalAuthorization = computed(() =>
+  Boolean((access.value?.cleanup_role_count ?? 0) || (access.value?.cleanup_override_count ?? 0)),
+)
+const hasSystemPositionAction = computed(() => hasPrimaryOrganization.value
+  && (hasPositionChange.value || hasHistoricalAuthorization.value))
+const groupedSystemPositions = computed(() => {
+  const sorted = [...assignableSystemPositions.value]
+    .filter((position) => position.is_system_position)
+    .sort((left, right) => {
+      const leftDepartment = registrationDepartments.findIndex((item) => item.id === left.position_department)
+      const rightDepartment = registrationDepartments.findIndex((item) => item.id === right.position_department)
+      const departmentOrder = (leftDepartment < 0 ? 999 : leftDepartment) - (rightDepartment < 0 ? 999 : rightDepartment)
+      return departmentOrder || left.position_sort_order - right.position_sort_order || left.name.localeCompare(right.name, 'zh-CN')
+    })
+  const groups = new Map<string, { department: string; name: string; positions: RoleSummary[] }>()
+  for (const position of sorted) {
+    const department = position.position_department || 'other'
+    const group = groups.get(department)
+    if (group) group.positions.push(position)
+    else groups.set(department, {
+      department,
+      name: position.position_department_name || department,
+      positions: [position],
+    })
   }
-  return resolutions
+  return [...groups.values()]
 })
+const groupedInheritedPermissions = computed(() => {
+  const enabledCodes = new Set(selectedPositionAccess.value?.permission_codes ?? [])
+  const groups = new Map<string, { moduleCode: string; moduleName: string; items: PermissionCatalogItem[] }>()
+  permissions.value
+    .filter((permission) => permission.status === 'active'
+      && enabledCodes.has(permission.code)
+      && isBuiltInPositionPermissionVisible(permission.code))
+    .sort((left, right) => left.sort_order - right.sort_order || left.code.localeCompare(right.code))
+    .forEach((permission) => {
+      const group = groups.get(permission.module_code)
+      if (group) group.items.push(permission)
+      else groups.set(permission.module_code, {
+        moduleCode: permission.module_code,
+        moduleName: permission.module_name,
+        items: [permission],
+      })
+    })
+  return [...groups.values()]
+})
+const visibleInheritedPermissionCount = computed(() => groupedInheritedPermissions.value
+  .reduce((total, group) => total + group.items.length, 0))
+const permissionLabels = computed(() => new Map(
+  permissions.value.map((permission) => [permission.code, permissionDisplayLabel(permission)]),
+))
 
-function scopeMatches(entry: EffectiveAccessEntry, factoryId: string, department: string) {
-  return (entry.factory_id === '*' || entry.factory_id === factoryId)
-    && (entry.department === '*' || entry.department === department)
-}
-
-function sourceLabel(entry: EffectiveAccessEntry) {
-  if (entry.source_name) return entry.source_name
-  if (entry.source_ids?.length) return `${entry.source_type} · ${entry.source_ids.join('、')}`
-  return entry.source_type || (entry.allowed ? '有效授权' : '明确禁止')
-}
-
-function factoryLabel(factoryId: string) {
-  if (factoryId === '*') return '全部厂区'
-  return factoryContexts.find((factory) => factory.id === factoryId)?.shortName ?? factoryId
-}
-
-function departmentLabel(departmentId: string) {
-  if (departmentId === '*') return '全部部门'
-  return departmentMap[departmentId as keyof typeof departmentMap]?.name ?? departmentId
-}
-
-function uniqueScopes(scopes: ManageableScope[]) {
-  const seen = new Set<string>()
-  return scopes.filter((scope) => {
-    const key = `${scope.factory_id}:${scope.department}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
-function buildFallbackScopes(userAccess: UserAccessResponse, superAdmin: boolean) {
-  if (superAdmin) {
-    const result: ManageableScope[] = [{ factory_id: '*', factory_name: '全部厂区', department: '*', department_name: '全部部门' }]
-    for (const factory of factoryContexts.filter((item) => item.id !== 'group')) {
-      for (const department of departments.filter((item) => item.id !== 'overview')) {
-        result.push({
-          factory_id: factory.id,
-          factory_name: factory.shortName,
-          department: department.id,
-          department_name: department.name,
-        })
-      }
-    }
-    return result
-  }
-
-  return uniqueScopes([
-    ...userAccess.role_bindings.map((binding) => ({
-      factory_id: binding.factory_id,
-      factory_name: factoryLabel(binding.factory_id),
-      department: binding.department,
-      department_name: departmentLabel(binding.department),
-    })),
-    ...userAccess.overrides.map((override) => ({
-      factory_id: override.factory_id,
-      factory_name: factoryLabel(override.factory_id),
-      department: override.department,
-      department_name: departmentLabel(override.department),
-    })),
-  ])
-}
-
-function resetDraftForScope() {
-  const next: Record<string, PermissionDraftEffect> = {}
-  for (const permission of activePermissions.value) {
-    const currentOverride = access.value?.overrides.find((override) =>
-      override.permission_code === permission.code
-      && override.factory_id === selectedFactoryId.value
-      && override.department === selectedDepartment.value
-      && override.state === 'active',
-    )
-    next[permission.code] = currentOverride?.effect ?? 'inherit'
-  }
-  draftStates.value = { ...next }
-  originalStates.value = { ...next }
-  preview.value = null
-}
-
-function selectInitialScope() {
-  const preferredFactory = access.value?.profile?.primary_factory_id
-  const preferredDepartment = access.value?.profile?.primary_department
-  const preferred = manageableScopes.value.find((scope) =>
-    scope.factory_id === preferredFactory && scope.department === preferredDepartment,
+function initialSystemPosition(userAccess: UserAccessResponse, positions: RoleSummary[]) {
+  if (!userAccess.profile?.primary_factory_id || !userAccess.profile.primary_department) return ''
+  const candidates = positions.filter((position) =>
+    position.position_department === userAccess.profile?.primary_department,
   )
-  const first = preferred ?? manageableScopes.value[0]
-  selectedFactoryId.value = first?.factory_id ?? ''
-  selectedDepartment.value = first?.department ?? ''
+  const existing = candidates.find((position) => position.id === userAccess.system_position_role_id)
+  if (existing) return existing.id
+  const recommended = candidates.find((position) => position.id === userAccess.recommended_system_position_role_id)
+  if (recommended) return recommended.id
+  return ''
+}
+
+async function loadSelectedPositionAccess() {
+  preview.value = null
+  successMessage.value = ''
+  selectedPositionAccess.value = null
+  if (!selectedSystemPositionRoleId.value) return
+  isLoadingPosition.value = true
+  try {
+    selectedPositionAccess.value = await iamApi.getRoleAccess(selectedSystemPositionRoleId.value)
+  } catch (error) {
+    errorMessage.value = getApiErrorMessage(error)
+  } finally {
+    isLoadingPosition.value = false
+  }
 }
 
 async function loadData() {
   isLoading.value = true
   errorMessage.value = ''
-  successMessage.value = ''
   try {
-    const [catalog, scopeResponse, userAccess] = await Promise.all([
-      iamApi.listPermissions('active'),
-      iamApi.getManageableScopes(),
+    const [userAccess, positions, catalog] = await Promise.all([
       iamApi.getUserAccess(userId.value),
+      iamApi.listSystemPositions(),
+      iamApi.listPermissions('active'),
     ])
-    roles.value = await iamApi.listRoles()
-    permissions.value = catalog
     access.value = userAccess
-    const fallbackScopes = buildFallbackScopes(userAccess, scopeResponse.is_super_admin)
-    manageableScopes.value = uniqueScopes(
-      scopeResponse.is_super_admin
-        ? [...scopeResponse.scopes, ...fallbackScopes]
-        : scopeResponse.scopes.length ? scopeResponse.scopes : fallbackScopes,
-    )
-    selectInitialScope()
-    resetDraftForScope()
+    systemPositions.value = positions.filter((position) => position.is_system_position)
+    permissions.value = catalog
+    selectedSystemPositionRoleId.value = initialSystemPosition(userAccess, systemPositions.value)
+    reason.value = ''
+    preview.value = null
+    await loadSelectedPositionAccess()
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
     if ((error as { response?: { status?: number } })?.response?.status === 403) {
@@ -196,98 +158,38 @@ async function loadData() {
   }
 }
 
-function updatePermissionState(permissionCode: string, effect: PermissionDraftEffect) {
-  draftStates.value = { ...draftStates.value, [permissionCode]: effect }
-  preview.value = null
-  successMessage.value = ''
-}
-
-function addRoleBinding(roleId: string) {
-  const duplicate = access.value?.role_bindings.some((binding) =>
-    binding.state === 'active'
-    && binding.role_id === roleId
-    && binding.factory_id === selectedFactoryId.value
-    && binding.department === selectedDepartment.value,
-  ) || roleBindingDrafts.value.some((draft) =>
-    draft.operation === 'add'
-    && draft.role_id === roleId
-    && draft.factory_id === selectedFactoryId.value
-    && draft.department === selectedDepartment.value,
-  )
-  if (duplicate) {
-    errorMessage.value = '该角色已在当前范围生效或已加入草稿。'
-    return
-  }
-  roleBindingDrafts.value = [...roleBindingDrafts.value, {
-    operation: 'add',
-    role_id: roleId,
-    factory_id: selectedFactoryId.value,
-    department: selectedDepartment.value,
-    valid_until: validUntil.value ? new Date(`${validUntil.value}T23:59:59`).toISOString() : null,
-  }]
-  preview.value = null
-  errorMessage.value = ''
-}
-
-function revokeRoleBinding(binding: RoleBinding) {
-  if (roleBindingDrafts.value.some((draft) => draft.operation === 'revoke' && draft.binding_id === binding.id)) {
-    return
-  }
-  roleBindingDrafts.value = [...roleBindingDrafts.value, {
-    operation: 'revoke',
-    binding_id: binding.id,
-    role_id: binding.role_id,
-    factory_id: binding.factory_id,
-    department: binding.department,
-  }]
-  preview.value = null
-}
-
-function undoRoleBindingDraft(index: number) {
-  roleBindingDrafts.value = roleBindingDrafts.value.filter((_, draftIndex) => draftIndex !== index)
-  preview.value = null
-}
-
-function discardDraft() {
-  draftStates.value = { ...originalStates.value }
-  roleBindingDrafts.value = []
+function discardChange() {
+  selectedSystemPositionRoleId.value = access.value
+    ? initialSystemPosition(access.value, systemPositions.value)
+    : ''
   reason.value = ''
-  validUntil.value = ''
   preview.value = null
   errorMessage.value = ''
+  void loadSelectedPositionAccess()
 }
 
-async function previewChanges() {
-  const trimmedReason = reason.value.trim()
-  if (!changeCount.value) {
-    errorMessage.value = '请先调整至少一项权限。'
+async function previewChange() {
+  if (!hasSystemPositionAction.value) {
+    errorMessage.value = '当前权限职位和历史授权都不需要调整。'
     return
   }
-  if (!trimmedReason) {
-    errorMessage.value = '权限变更必须填写原因。'
+  if (!reason.value.trim()) {
+    errorMessage.value = '调整权限职位必须填写原因。'
     return
   }
-
   isPreviewing.value = true
   errorMessage.value = ''
+  successMessage.value = ''
   try {
-    preview.value = await iamApi.previewUserAccess(userId.value, {
+    preview.value = await iamApi.previewUserSystemPosition(userId.value, {
       base_revision: access.value?.authorization_version ?? 0,
-      reason: trimmedReason,
-      role_bindings: roleBindingDrafts.value,
-      overrides: changedPermissionCodes.value.map((permissionCode) => ({
-        permission_code: permissionCode,
-        effect: draftStates.value[permissionCode] ?? 'inherit',
-        factory_id: selectedFactoryId.value,
-        department: selectedDepartment.value,
-        valid_until: draftStates.value[permissionCode] === 'inherit' || !validUntil.value
-          ? null
-          : new Date(`${validUntil.value}T23:59:59`).toISOString(),
-      })),
+      system_position_role_id: selectedSystemPositionRoleId.value,
+      reason: reason.value.trim(),
     })
+    confirmedHighRisk.value = false
   } catch (error) {
     const status = (error as { response?: { status?: number } })?.response?.status
-    errorMessage.value = status === 409 ? '授权版本已变化，页面已刷新，请重新调整。' : getApiErrorMessage(error)
+    errorMessage.value = status === 409 ? '授权版本已变化，页面已刷新，请重新选择。' : getApiErrorMessage(error)
     if (status === 409) await loadData()
     if (status === 403) await authStore.refreshSession()
   } finally {
@@ -295,22 +197,20 @@ async function previewChanges() {
   }
 }
 
-async function commitChanges(confirmHighRisk: boolean) {
+async function commitChange() {
   if (!preview.value) return
   isCommitting.value = true
   errorMessage.value = ''
   try {
-    const result = await iamApi.commitUserAccess(userId.value, preview.value.preview_token, confirmHighRisk)
-    const message = result.status === 'pending_approval'
-      ? `权限申请已提交${result.request_id ? `（${result.request_id}）` : ''}，等待集团超级管理员审批。`
-      : '权限调整已提交并立即生效。'
+    const result = await iamApi.commitUserSystemPosition(
+      userId.value,
+      preview.value.preview_token,
+      confirmedHighRisk.value,
+    )
     preview.value = null
-    roleBindingDrafts.value = []
-    reason.value = ''
-    validUntil.value = ''
     await loadData()
     await authStore.refreshSession()
-    successMessage.value = message
+    successMessage.value = '权限职位已更换并立即生效。'
   } catch (error) {
     const status = (error as { response?: { status?: number } })?.response?.status
     errorMessage.value = status === 409 ? '预览已失效或授权版本已变化，请重新预览。' : getApiErrorMessage(error)
@@ -322,93 +222,119 @@ async function commitChanges(confirmHighRisk: boolean) {
   }
 }
 
-watch([selectedFactoryId, selectedDepartment], ([factoryId, department], previous) => {
-  if (!previous || !factoryId || !department) return
-  resetDraftForScope()
-  roleBindingDrafts.value = []
-  reason.value = ''
-  validUntil.value = ''
-})
+function diffStateLabel(value: 'allow' | 'deny' | 'none') {
+  return value === 'allow' ? '拥有' : value === 'deny' ? '禁止' : '无'
+}
 
-onMounted(() => {
-  void loadData()
-})
+onMounted(() => void loadData())
 </script>
 
 <template>
   <main class="min-h-screen min-w-0 max-w-full overflow-x-clip bg-slate-100 text-slate-950">
-    <IamNavigation title="用户权限配置" subtitle="按用户、模块、操作和组织范围精确调整；角色模板仍作为基础授权来源。" />
+    <IamNavigation title="调整权限职位" subtitle="员工只绑定一个内置权限职位；具体权限统一在内置职位权限中维护。" />
 
     <div class="mx-auto grid w-full min-w-0 max-w-[1480px] gap-5 px-4 py-5 sm:px-5 sm:py-6 xl:px-8">
-      <RouterLink class="flex w-fit items-center gap-2 text-sm font-bold text-slate-600 hover:text-emerald-700" to="/system/users?tab=users">
-        <ArrowLeft class="size-4" />返回用户列表
+      <RouterLink class="inline-flex w-fit items-center gap-2 text-sm font-bold text-slate-600 hover:text-emerald-800" to="/system/users?tab=users">
+        <ArrowLeft class="size-4" aria-hidden="true" />返回用户列表
       </RouterLink>
 
-      <div v-if="errorMessage" role="alert" class="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-        <ShieldAlert class="mt-0.5 size-5 shrink-0" />
-        <span>{{ errorMessage }}</span>
+      <div v-if="errorMessage" role="alert" class="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+        <AlertTriangle class="mt-0.5 size-4 shrink-0" aria-hidden="true" />{{ errorMessage }}
       </div>
       <div v-if="successMessage" role="status" class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">{{ successMessage }}</div>
 
       <div v-if="isLoading" class="grid min-h-72 place-items-center rounded-2xl border border-slate-200 bg-white">
-        <div class="text-center text-slate-500"><LoaderCircle class="mx-auto mb-3 size-7 animate-spin text-emerald-700" /><p>正在读取用户有效权限…</p></div>
+        <div class="text-center text-slate-500"><LoaderCircle class="mx-auto mb-3 size-7 animate-spin text-emerald-700" /><p>正在读取用户权限职位…</p></div>
       </div>
 
       <template v-else-if="access">
         <IamIdentitySummary :access="access" />
 
-        <div class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <IamScopeSelector
-            v-model:factory-id="selectedFactoryId"
-            v-model:department="selectedDepartment"
-            :scopes="manageableScopes"
-            :disabled="changeCount > 0"
-            :has-pending-draft="changeCount > 0"
-          />
-          <IamRoleBindings
-            :bindings="access.role_bindings"
-            :roles="roles"
-            :factory-id="selectedFactoryId"
-            :department="selectedDepartment"
-            :drafts="roleBindingDrafts"
-            :disabled="!manageableScopes.length"
-            @add="addRoleBinding"
-            @revoke="revokeRoleBinding"
-            @undo="undoRoleBindingDraft"
-          />
-        </div>
+        <section class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+          <article class="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div class="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 class="flex items-center gap-2 font-bold"><ShieldCheck class="size-4 text-emerald-700" />内置权限职位</h2>
+                <p class="mt-1 text-sm text-slate-500">更换职位后，原有底层角色和个人特殊权限会统一清理。</p>
+              </div>
+              <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">单一职位</span>
+            </div>
 
-        <div v-if="!manageableScopes.length" class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-          当前管理员没有可管理的厂区 / 部门范围。你仍可查看授权来源，但不能修改权限。
-        </div>
+            <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+              <span class="text-xs font-semibold text-slate-500">当前权限职位</span>
+              <strong class="mt-1 block text-slate-950">{{ access.system_position_role_name || '尚未分配' }}</strong>
+            </div>
 
-        <IamPermissionMatrix
-          :permissions="activePermissions"
-          :states="draftStates"
-          :resolutions="resolutionByPermission"
-          :factory-id="selectedFactoryId"
-          :department="selectedDepartment"
-          :disabled="!manageableScopes.length"
-          @change="updatePermissionState"
-        />
+            <div v-if="!hasPrimaryOrganization" data-testid="missing-primary-department" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
+              <AlertTriangle class="mt-0.5 size-5 shrink-0" aria-hidden="true" />
+              <div>
+                <b>尚未确认主组织资料</b>
+                <p>请先在账号审批或用户资料中补全厂区和部门，再分配内置权限职位。</p>
+              </div>
+            </div>
 
-        <section data-testid="permission-action-panel" class="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div class="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_220px_auto] xl:items-end">
-            <label class="grid gap-1.5 text-sm font-semibold text-slate-700">
-              变更原因 <span class="text-xs font-normal text-slate-400">必填，将进入审计记录</span>
-              <input v-model="reason" type="text" maxlength="300" placeholder="例如：新增设备维修模块，需要开放查看和修改权限" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 px-3 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100">
+            <label v-else class="mt-4 grid gap-1.5 text-sm font-semibold text-slate-700">
+              选择新的内置权限职位
+              <select v-model="selectedSystemPositionRoleId" aria-label="选择新的内置权限职位" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" @change="loadSelectedPositionAccess">
+                <option value="" disabled>请选择内置权限职位</option>
+                <optgroup v-for="group in groupedSystemPositions" :key="group.department" :label="group.name">
+                  <option v-for="position in group.positions" :key="position.id" :value="position.id">
+                    {{ position.name }}（{{ position.permission_count }} 项权限）
+                  </option>
+                </optgroup>
+              </select>
+              <span class="text-xs font-normal text-slate-400">只显示员工主部门可分配的内置职位。</span>
             </label>
+
+            <div v-if="selectedSystemPosition" class="mt-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-sm text-emerald-950">
+              <b>{{ selectedSystemPosition.position_department_name }} · {{ selectedSystemPosition.name }}</b>
+              <p class="mt-1 leading-6 text-emerald-800">{{ selectedSystemPosition.description || '该职位的权限由管理员统一维护。' }}</p>
+            </div>
+
+            <div v-if="hasHistoricalAuthorization" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
+              <AlertTriangle class="mt-0.5 size-5 shrink-0" aria-hidden="true" />
+              <div>
+                <b>检测到历史授权</b>
+                <p>当前生效 {{ access.legacy_role_count }} 条旧角色、{{ access.active_override_count }} 条个人特殊权限；本次共将清理 {{ access.cleanup_role_count }} 条普通角色和 {{ access.cleanup_override_count }} 条个人权限（包括尚未生效或已到期的残留授权）。</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <header class="border-b border-slate-200 px-5 py-4">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div><h2 class="font-bold">将继承的权限</h2><p class="mt-1 text-sm text-slate-500">这里只展示内置职位结果，不能逐项修改。</p></div>
+                <span class="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{{ visibleInheritedPermissionCount }} 项</span>
+              </div>
+            </header>
+            <div v-if="isLoadingPosition" class="grid min-h-48 place-items-center"><LoaderCircle class="size-6 animate-spin text-emerald-700" /></div>
+            <div v-else-if="groupedInheritedPermissions.length" class="divide-y divide-slate-100">
+              <section v-for="group in groupedInheritedPermissions" :key="group.moduleCode" class="p-5">
+                <div class="mb-3"><h3 class="font-bold text-slate-900">{{ group.moduleName }}</h3><code class="text-xs text-slate-400">{{ group.moduleCode }}</code></div>
+                <ul class="grid gap-2 sm:grid-cols-2">
+                  <li v-for="permission in group.items" :key="permission.code" class="flex min-w-0 items-start gap-2 rounded-xl bg-slate-50 p-3">
+                    <CheckCircle2 class="mt-0.5 size-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                    <span class="min-w-0"><b class="block text-sm">{{ permissionDisplayLabel(permission) }}</b><code class="block break-all text-xs text-slate-400">{{ permission.code }}</code></span>
+                  </li>
+                </ul>
+              </section>
+            </div>
+            <p v-else class="p-8 text-center text-sm text-slate-500">该内置职位尚未配置权限，当前将保持默认拒绝。</p>
+          </article>
+        </section>
+
+        <section v-if="hasPrimaryOrganization" data-testid="system-position-action-panel" class="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <label class="grid gap-1.5 text-sm font-semibold text-slate-700">
-              <span class="flex items-center gap-1.5"><CalendarClock class="size-4" />有效期至</span>
-              <input v-model="validUntil" type="date" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 px-3 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100">
+              调整原因 <span class="text-xs font-normal text-slate-400">必填，将进入审计记录</span>
+              <input v-model="reason" type="text" maxlength="300" placeholder="例如：员工岗位职责调整为工程主管" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 px-3 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100">
             </label>
-            <div class="grid min-w-0 grid-cols-1 gap-2 sm:flex">
-              <button type="button" class="inline-flex h-11 w-full min-w-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto" :disabled="!changeCount || isPreviewing" @click="discardDraft">
-                <RefreshCw class="size-4" />取消草稿
+            <div class="grid grid-cols-1 gap-2 sm:flex">
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" :disabled="isPreviewing" @click="discardChange">
+                <RefreshCw class="size-4" />取消修改
               </button>
-              <button type="button" class="inline-flex h-11 w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto" :disabled="!changeCount || isPreviewing || !manageableScopes.length || !reason.trim()" @click="previewChanges">
-                <LoaderCircle v-if="isPreviewing" class="size-4 animate-spin" />
-                <Save v-else class="size-4" />预览 {{ changeCount }} 项变更
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!hasSystemPositionAction || isPreviewing || !reason.trim()" @click="previewChange">
+                <LoaderCircle v-if="isPreviewing" class="size-4 animate-spin" /><Save v-else class="size-4" />{{ hasPositionChange ? '预览职位调整' : '预览历史授权清理' }}
               </button>
             </div>
           </div>
@@ -416,14 +342,32 @@ onMounted(() => {
       </template>
     </div>
 
-    <IamAccessPreviewDialog
-      v-if="preview"
-      :preview="preview"
-      :permissions="permissions"
-      :reason="reason"
-      :is-committing="isCommitting"
-      @close="preview = null"
-      @commit="commitChanges"
-    />
+    <div v-if="preview" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" @click.self="preview = null">
+      <section class="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="system-position-preview-title">
+        <header class="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+          <div><h2 id="system-position-preview-title" class="text-lg font-bold">确认权限职位调整</h2><p class="mt-1 text-sm text-slate-500">系统会以一次事务完成旧授权清理和新职位绑定。</p></div>
+          <button type="button" aria-label="关闭权限职位调整预览" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" :disabled="isCommitting" @click="preview = null"><X class="size-5" /></button>
+        </header>
+        <div class="max-h-[62vh] overflow-y-auto p-5">
+          <div class="flex flex-col items-stretch gap-3 rounded-xl bg-slate-50 p-4 sm:flex-row sm:items-center">
+            <span class="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><small class="block text-slate-400">调整前</small><b>{{ preview.before_role_names.join('、') || '未分配内置职位' }}</b></span>
+            <ArrowRight class="mx-auto size-5 shrink-0 text-slate-400 sm:mx-0" />
+            <span class="flex-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"><small class="block text-emerald-600">调整后</small><b>{{ preview.after_role_name }}</b></span>
+          </div>
+          <div class="mt-4 grid gap-3 sm:grid-cols-2">
+            <div class="rounded-xl border border-slate-200 p-3 text-sm"><span class="text-slate-500">清理历史角色</span><b class="mt-1 block text-lg">{{ preview.removed_role_count }} 条</b></div>
+            <div class="rounded-xl border border-slate-200 p-3 text-sm"><span class="text-slate-500">清理个人特殊权限</span><b class="mt-1 block text-lg">{{ preview.removed_override_count }} 条</b></div>
+          </div>
+          <div v-if="preview.diffs.length" class="mt-4 overflow-hidden rounded-xl border border-slate-200">
+            <div v-for="diff in preview.diffs" :key="`${diff.permission_code}:${diff.factory_id}:${diff.department}`" class="flex flex-col gap-2 border-b border-slate-100 p-3 text-sm last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
+              <span class="min-w-0"><b class="block">{{ permissionLabels.get(diff.permission_code) || diff.permission_code }}</b><code class="block break-all text-xs text-slate-400">{{ diff.permission_code }}</code></span>
+              <span class="shrink-0 font-bold" :class="diff.after === 'allow' ? 'text-emerald-700' : 'text-rose-700'">{{ diffStateLabel(diff.before) }} → {{ diffStateLabel(diff.after) }}</span>
+            </div>
+          </div>
+          <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600"><span>我已核对高风险权限和历史授权清理范围。</span></label>
+        </div>
+        <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4"><button type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" :disabled="isCommitting" @click="preview = null">返回修改</button><button type="button" class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="isCommitting || (preview.high_risk && !confirmedHighRisk)" @click="commitChange"><LoaderCircle v-if="isCommitting" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" />确认并立即生效</button></footer>
+      </section>
+    </div>
   </main>
 </template>

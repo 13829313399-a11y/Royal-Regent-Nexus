@@ -20,7 +20,8 @@ import {
 } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
-import { departments, factoryContexts } from '@/data/enterpriseMock'
+import { factoryContexts } from '@/data/enterpriseMock'
+import { registrationDepartments } from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
 
 const router = useRouter()
@@ -45,7 +46,7 @@ const passwordChineseMessage = '密码不能包含中文，请使用英文、数
 const brandLogoUrl = '/brand/huadeng_group_dynamic_logo.svg'
 
 const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
-const departmentOptions = computed(() => departments.filter((item) => item.id !== 'overview'))
+const departmentOptions = registrationDepartments
 
 function normalizePasswordInput(value: string) {
   const normalizedValue = value.replace(chinesePasswordGlobalPattern, '')
@@ -158,7 +159,7 @@ async function submitRegistration() {
               </span>
               <div>
                 <h2>按厂区和部门审批</h2>
-                <p>管理员会根据职位推荐角色，并在通过前确认最终权限。</p>
+                <p>管理员会核对真实职位，并归类到一个内置权限职位。</p>
               </div>
             </div>
           </div>
