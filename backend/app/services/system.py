@@ -503,15 +503,13 @@ def approve_registration_with_system_position(
     role = db.get(AuthRole, role_id)
     if system_position is None or role is None:
         raise HTTPException(status_code=400, detail="请选择系统内置权限职位")
-    if system_position.department != department:
-        raise HTTPException(
-            status_code=400,
-            detail=f"内置权限职位“{role.name}”不属于所选部门",
-        )
+    permission_department = system_position.department
+    if permission_department != department:
+        ensure_user_manage(db, current_user, factory_id, permission_department)
     assignment = RoleAssignmentRequest(
         role_id=role.id,
         factory_id=factory_id,
-        department=department,
+        department=permission_department,
     )
     validate_role_assignment_scope(db, assignment)
 
@@ -639,7 +637,7 @@ def approve_registration_with_system_position(
             user_id=user.id,
             role_id=role.id,
             factory_id=factory_id,
-            department=department,
+            department=permission_department,
         )
     )
     db.flush()
@@ -670,14 +668,14 @@ def approve_registration_with_system_position(
             permission_id="",
             effect="allow",
             factory_id=factory_id,
-            department=department,
+            department=permission_department,
             before_json="{}",
             after_json=json.dumps(
                 {
                     "role_id": role.id,
                     "role_name": role.name,
                     "factory_id": factory_id,
-                    "department": department,
+                    "department": permission_department,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

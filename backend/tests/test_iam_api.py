@@ -777,6 +777,103 @@ def test_system_position_preview_replaces_legacy_grants_and_overrides(monkeypatc
         assert all(item["state"] != "active" for item in updated["overrides"])
 
 
+def test_system_position_can_cross_profile_department_with_position_scope(monkeypatch):
+    with make_client(monkeypatch) as client:
+        user_id = create_user(
+            "cross-department-position",
+            "engineer",
+            "huaxing",
+            "engineering",
+            display_name="工程资料生产权限账号",
+        )
+        login(client, "admin")
+        access = client.get(f"/api/iam/users/{user_id}/access").json()
+
+        preview_response = client.post(
+            f"/api/iam/users/{user_id}/system-position/preview",
+            json={
+                "base_revision": access["authorization_version"],
+                "system_position_role_id": "position_production_clerk",
+                "reason": "员工资料保留工程部，权限归类到生产文员",
+            },
+        )
+        assert preview_response.status_code == 200, preview_response.text
+        preview = preview_response.json()
+        assert preview["after_role_id"] == "position_production_clerk"
+        assert any(item["department"] == "production" for item in preview["diffs"])
+
+        commit_response = client.post(
+            f"/api/iam/users/{user_id}/system-position/commit",
+            json={
+                "preview_token": preview["preview_token"],
+                "confirm_high_risk": preview["high_risk"],
+            },
+        )
+        assert commit_response.status_code == 200, commit_response.text
+
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            profile = db.get(models.EmployeeProfile, user_id)
+            active_bindings = [
+                binding
+                for binding in db.query(models.AuthUserRole).filter_by(user_id=user_id).all()
+                if (metadata := db.get(models.AuthRoleBindingMetadata, binding.id)) is None
+                or metadata.state == "active"
+            ]
+            assert profile.primary_department == "engineering"
+            assert [
+                (binding.role_id, binding.factory_id, binding.department)
+                for binding in active_bindings
+            ] == [("position_production_clerk", "huaxing", "production")]
+
+        client.post("/api/auth/logout")
+        session = login(client, "cross-department-position")
+        assert session["profile"]["primary_department"] == "engineering"
+        assert session["roles"] == ["生产文员"]
+        assert "molding_sample:production_start" in session["permissions"]
+        assert "molding_sample:create" not in session["permissions"]
+
+
+def test_scoped_manager_cannot_assign_own_position_scope_to_out_of_scope_user(monkeypatch):
+    with make_client(monkeypatch) as client:
+        target_user_id = create_user(
+            "unbound-engineering-target",
+            "engineer",
+            "huaxing",
+            "engineering",
+        )
+        create_user(
+            "production-position-manager",
+            "department_permission_admin",
+            "huaxing",
+            "production",
+        )
+
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            target_bindings = db.query(models.AuthUserRole).filter_by(user_id=target_user_id).all()
+            for binding in target_bindings:
+                metadata = db.get(models.AuthRoleBindingMetadata, binding.id)
+                if metadata is not None:
+                    db.delete(metadata)
+                db.delete(binding)
+            db.commit()
+
+        login(client, "production-position-manager")
+        response = client.post(
+            f"/api/iam/users/{target_user_id}/system-position/preview",
+            json={
+                "base_revision": 1,
+                "system_position_role_id": "position_production_clerk",
+                "reason": "尝试给范围外工程用户授予本部门职位",
+            },
+        )
+        assert response.status_code == 403, response.text
+        assert "集团超级管理员直接操作" in response.json()["detail"]
+
+
 def test_system_position_cleanup_revokes_future_dated_grants(monkeypatch):
     with make_client(monkeypatch) as client:
         user_id = create_user(

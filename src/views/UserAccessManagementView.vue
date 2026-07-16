@@ -43,7 +43,7 @@ const userFactory = computed(() => access.value?.profile?.primary_factory_id ?? 
 const userDepartment = computed(() => access.value?.profile?.primary_department ?? '')
 const hasPrimaryOrganization = computed(() => Boolean(userFactory.value && userDepartment.value))
 const assignableSystemPositions = computed(() => hasPrimaryOrganization.value
-  ? systemPositions.value.filter((position) => position.position_department === userDepartment.value)
+  ? systemPositions.value
   : [],
 )
 const selectedSystemPosition = computed(() =>
@@ -104,15 +104,23 @@ const visibleInheritedPermissionCount = computed(() => groupedInheritedPermissio
 const permissionLabels = computed(() => new Map(
   permissions.value.map((permission) => [permission.code, permissionDisplayLabel(permission)]),
 ))
+const previewBeforePositionLabel = computed(() => preview.value?.before_role_ids
+  .map((roleId, index) => systemPositionDisplayName(roleId, preview.value?.before_role_names[index] ?? roleId))
+  .join('、') || '未分配内置职位')
+const previewAfterPositionLabel = computed(() => preview.value
+  ? systemPositionDisplayName(preview.value.after_role_id, preview.value.after_role_name)
+  : '')
+
+function systemPositionDisplayName(roleId: string, fallback: string) {
+  const position = systemPositions.value.find((item) => item.id === roleId)
+  return position ? `${position.position_department_name} · ${position.name}` : fallback
+}
 
 function initialSystemPosition(userAccess: UserAccessResponse, positions: RoleSummary[]) {
   if (!userAccess.profile?.primary_factory_id || !userAccess.profile.primary_department) return ''
-  const candidates = positions.filter((position) =>
-    position.position_department === userAccess.profile?.primary_department,
-  )
-  const existing = candidates.find((position) => position.id === userAccess.system_position_role_id)
+  const existing = positions.find((position) => position.id === userAccess.system_position_role_id)
   if (existing) return existing.id
-  const recommended = candidates.find((position) => position.id === userAccess.recommended_system_position_role_id)
+  const recommended = positions.find((position) => position.id === userAccess.recommended_system_position_role_id)
   if (recommended) return recommended.id
   return ''
 }
@@ -283,7 +291,7 @@ onMounted(() => void loadData())
                   </option>
                 </optgroup>
               </select>
-              <span class="text-xs font-normal text-slate-400">只显示员工主部门可分配的内置职位。</span>
+              <span class="text-xs font-normal text-slate-400">显示全部内置职位，并按权限部门分组。</span>
             </label>
 
             <div v-if="selectedSystemPosition" class="mt-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-sm text-emerald-950">
@@ -350,9 +358,9 @@ onMounted(() => void loadData())
         </header>
         <div class="max-h-[62vh] overflow-y-auto p-5">
           <div class="flex flex-col items-stretch gap-3 rounded-xl bg-slate-50 p-4 sm:flex-row sm:items-center">
-            <span class="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><small class="block text-slate-400">调整前</small><b>{{ preview.before_role_names.join('、') || '未分配内置职位' }}</b></span>
+            <span class="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><small class="block text-slate-400">调整前</small><b>{{ previewBeforePositionLabel }}</b></span>
             <ArrowRight class="mx-auto size-5 shrink-0 text-slate-400 sm:mx-0" />
-            <span class="flex-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"><small class="block text-emerald-600">调整后</small><b>{{ preview.after_role_name }}</b></span>
+            <span class="flex-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"><small class="block text-emerald-600">调整后</small><b>{{ previewAfterPositionLabel }}</b></span>
           </div>
           <div class="mt-4 grid gap-3 sm:grid-cols-2">
             <div class="rounded-xl border border-slate-200 p-3 text-sm"><span class="text-slate-500">清理历史角色</span><b class="mt-1 block text-lg">{{ preview.removed_role_count }} 条</b></div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ClipboardPenLine, Printer, Save, X, ZoomIn, ZoomOut } from '@lucide/vue'
 import MoldingSampleTrialReportSheet from '@/components/molding/MoldingSampleTrialReportSheet.vue'
 import type {
@@ -34,10 +34,12 @@ const selectedItemId = ref('')
 const draft = ref<MoldingSampleTrialReportData>(createEmptyTrialReportData())
 const previewVisible = ref(false)
 const reportZoom = ref(1)
+const printing = ref(false)
 
 const selectedItem = computed(() => props.items.find((item) => item.id === selectedItemId.value) ?? null)
 const savedReport = computed(() => props.reports.find((report) => report.item_id === selectedItemId.value) ?? null)
-const companyName = computed(() => `${props.factoryShortName || '华兴'}（河源）玩具制品有限公司`)
+const companyLocation = computed(() => ['华康A', '华康B'].includes(props.factoryShortName.trim()) ? '东源' : '河源')
+const companyName = computed(() => `${props.factoryShortName || '华兴'}（${companyLocation.value}）玩具制品有限公司`)
 const savedStatusText = computed(() => {
   if (savedReport.value) {
     return props.readOnly
@@ -86,16 +88,74 @@ function saveTrialReport() {
     emit('save', { itemId: selectedItem.value.id, data: cloneReportData(draft.value) })
   }
 }
-function confirmPrint() {
+function waitForAnimationFrame() {
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+}
+
+async function waitForPrintLayout(printRoot: HTMLElement) {
+  await nextTick()
+
+  if (document.fonts?.status === 'loading') {
+    await document.fonts.ready
+  }
+
+  await waitForAnimationFrame()
+  void printRoot.offsetHeight
+  await waitForAnimationFrame()
+}
+
+async function confirmPrint() {
+  if (printing.value) {
+    return
+  }
+
+  printing.value = true
   document.body.classList.add('molding-sample-trial-report-printing')
   document.getElementById('molding-sample-active-print-page')?.remove()
   const pageStyle = document.createElement('style')
   pageStyle.id = 'molding-sample-active-print-page'
   pageStyle.textContent = '@media print { @page { size: A4 portrait; margin: 0; } }'
   document.head.append(pageStyle)
-  const cleanUp = () => { document.body.classList.remove('molding-sample-trial-report-printing'); pageStyle.remove() }
+  let cleanedUp = false
+  let cleanupTimer: number | undefined
+  const cleanUp = () => {
+    if (cleanedUp) {
+      return
+    }
+
+    cleanedUp = true
+    printing.value = false
+    document.body.classList.remove('molding-sample-trial-report-printing')
+    pageStyle.remove()
+    window.removeEventListener('afterprint', cleanUp)
+    if (cleanupTimer !== undefined) {
+      window.clearTimeout(cleanupTimer)
+    }
+  }
   window.addEventListener('afterprint', cleanUp, { once: true })
-  window.print()
+
+  try {
+    const printItemId = selectedItem.value?.id
+    const printRoot = document.querySelector<HTMLElement>('[data-testid="molding-sample-trial-report-print-area"]')
+
+    if (!printItemId || !printRoot?.firstElementChild) {
+      cleanUp()
+      return
+    }
+
+    await waitForPrintLayout(printRoot)
+
+    if (!printRoot.isConnected || !printRoot.firstElementChild || selectedItem.value?.id !== printItemId) {
+      cleanUp()
+      return
+    }
+
+    cleanupTimer = window.setTimeout(cleanUp, 60_000)
+    window.print()
+  }
+  catch {
+    cleanUp()
+  }
 }
 </script>
 

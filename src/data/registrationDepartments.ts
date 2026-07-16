@@ -15,10 +15,10 @@ export interface RegistrationDepartment {
 }
 
 export const registrationDepartments: readonly RegistrationDepartment[] = [
-  { id: 'management', name: '管理层', shortName: '管理' },
+  { id: 'management', name: '总务', shortName: '总务' },
   { id: 'engineering', name: '工程部', shortName: '工程' },
   { id: 'sales-business', name: '业务部', shortName: '业务' },
-  { id: 'production', name: '生产部', shortName: '生产' },
+  { id: 'production', name: '生产部（啤喷装）', shortName: '啤喷装' },
   { id: 'pmc-warehouse', name: '仓库', shortName: '仓库' },
   { id: 'qa', name: 'QA部', shortName: 'QA' },
   { id: 'qc', name: 'QC部', shortName: 'QC' },
