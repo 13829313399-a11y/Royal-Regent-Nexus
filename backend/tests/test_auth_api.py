@@ -86,6 +86,9 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_price:compare",
                         "customer_price:read",
                         "injection_schedule:read",
+                        "internal_quote:read",
+                        "internal_quote:summary_read",
+                        "internal_quote:timeline_read",
                         "molding_sample:audit_read",
                         "molding_sample:cross_factory_cost_read",
                         "molding_sample:cross_factory_read",
@@ -401,7 +404,20 @@ def test_sales_customer_supervisor_role_is_seeded_with_customer_price_permission
                 "customer_price:import_internal_quote",
                 "customer_price:export_customer_quote",
                 "customer_price:compare",
-                }
+                "internal_quote:read",
+                "internal_quote:create",
+                "internal_quote:clone",
+                "internal_quote:header_edit",
+                "internal_quote:summary_read",
+                "internal_quote:timeline_read",
+                "internal_quote:archive",
+                "internal_quote:export",
+                "internal_quote:final_submit",
+                "internal_quote:final_approve",
+                "internal_quote:sales_edit",
+                "internal_quote:sales_review",
+                "internal_quote:reference_manage",
+            }
 
 
 def test_seed_preserves_existing_account_role_template_and_additional_binding(monkeypatch):
@@ -473,6 +489,50 @@ def test_seed_upgrades_existing_engineering_and_warehouse_roles_with_raw_materia
             for role_id in auth_service.RAW_MATERIAL_WRITE_DEFAULT_ROLE_IDS:
                 assert db.get(auth_models.AuthRolePermission, f"{role_id}:{permission.id}") is not None
             assert db.get(auth_models.AuthIamState, auth_service.RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER) is not None
+
+
+def test_seed_upgrades_existing_business_roles_with_internal_quote_p4_release_permissions_once(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            marker = db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER,
+            )
+            assert marker is not None
+            db.delete(marker)
+
+            expected_mappings = []
+            for role_id, permission_codes in auth_service.INTERNAL_QUOTE_P4_RELEASE_ROLE_PERMISSIONS.items():
+                for permission_code in permission_codes:
+                    permission = db.scalar(
+                        auth_service.select(auth_models.AuthPermission).where(
+                            auth_models.AuthPermission.code == permission_code
+                        )
+                    )
+                    assert permission is not None
+                    mapping_id = f"{role_id}:{permission.id}"
+                    mapping = db.get(auth_models.AuthRolePermission, mapping_id)
+                    assert mapping is not None
+                    db.delete(mapping)
+                    expected_mappings.append(mapping_id)
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            for mapping_id in expected_mappings:
+                assert db.get(auth_models.AuthRolePermission, mapping_id) is not None
+            assert db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER,
+            ) is not None
+
+            auth_service.seed_auth_defaults(db)
+            assert db.query(auth_models.AuthRolePermission).filter(
+                auth_models.AuthRolePermission.id.in_(expected_mappings)
+            ).count() == len(expected_mappings)
 
 
 def test_seed_reconciles_fixed_system_position_names_without_overwriting_template(monkeypatch):

@@ -106,6 +106,41 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/sales-business/internal-quote-desk',
+    component: () => import('@/views/InternalQuoteDeskView.vue'),
+    meta: {
+      title: '内部报价台',
+      fullPage: true,
+      requiresAuth: true,
+    },
+    children: [
+      {
+        path: '',
+        name: 'internal-quote-desk-home',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteHome.vue'),
+        meta: { title: '内部报价台', fullPage: true, requiresAuth: true },
+      },
+      {
+        path: ':quoteId/collaboration',
+        name: 'internal-quote-collaboration',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteCollaboration.vue'),
+        meta: { title: '内部报价协作', fullPage: true, requiresAuth: true },
+      },
+      {
+        path: ':quoteId/summary',
+        name: 'internal-quote-summary',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteSummary.vue'),
+        meta: { title: '内部报价汇总与放行', fullPage: true, requiresAuth: true },
+      },
+      {
+        path: ':quoteId/export',
+        name: 'internal-quote-export-summary',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteExportSummary.vue'),
+        meta: { title: '内部报价导出汇总', fullPage: true, requiresAuth: true },
+      },
+    ],
+  },
+  {
     path: '/modules/sales-business/quote-center',
     redirect: '/modules/sales-business/customer-price-conversion',
   },

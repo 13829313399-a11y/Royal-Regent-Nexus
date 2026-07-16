@@ -1,8 +1,8 @@
 """add IAM position scope modes and permission access kinds
 
-Revision ID: 20260716_0020
-Revises: 20260716_0019
-Create Date: 2026-07-16 21:30:00
+Revision ID: 20260717_0024
+Revises: 20260716_0023
+Create Date: 2026-07-17 10:00:00
 """
 
 from typing import Sequence, Union
@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260716_0020"
-down_revision: Union[str, None] = "20260716_0019"
+revision: str = "20260717_0024"
+down_revision: Union[str, None] = "20260716_0023"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -28,6 +28,9 @@ READ_PERMISSION_CODES = (
     "customer_price:read",
     "customer_price:compare",
     "injection_schedule:read",
+    "internal_quote:read",
+    "internal_quote:summary_read",
+    "internal_quote:timeline_read",
     "system:audit_read",
     "system:permission_catalog_read",
 )

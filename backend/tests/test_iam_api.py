@@ -199,6 +199,12 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
         assert role_access.status_code == 200, role_access.text
         assert role_access.json()["id"] == "engineer"
         assert set(role_access.json()["permission_codes"]) == {
+            "internal_quote:read",
+            "internal_quote:create",
+            "internal_quote:clone",
+            "internal_quote:summary_read",
+            "internal_quote:timeline_read",
+            "internal_quote:engineering_edit",
             "molding_sample:read",
             "molding_sample:export",
             "molding_sample:create",
@@ -770,6 +776,10 @@ def test_system_position_template_accepts_cross_department_permissions_and_scope
         access_kinds = {item["code"]: item["access_kind"] for item in catalog}
         assert access_kinds["molding_sample:read"] == "read"
         assert access_kinds["molding_sample:create"] == "operate"
+        assert access_kinds["internal_quote:read"] == "read"
+        assert access_kinds["internal_quote:summary_read"] == "read"
+        assert access_kinds["internal_quote:timeline_read"] == "read"
+        assert access_kinds["internal_quote:create"] == "operate"
 
         cross_read_codes = sorted(
             set(updated["permission_codes"]) | {"carton_mark:read"}

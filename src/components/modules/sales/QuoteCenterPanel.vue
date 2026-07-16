@@ -2,6 +2,8 @@
 import { CheckCircle2, Download, Eye, Search, UploadCloud, Users } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
+import CustomerPriceArtifactPanel from '@/components/modules/sales/CustomerPriceArtifactPanel.vue'
+import type { CustomerPriceInternalQuoteArtifact } from '@/api/customerPriceArtifact'
 import {
   buildBuzzBeeCustomerQuoteFileName,
   convertBuzzBeeInternalQuote,
@@ -32,6 +34,11 @@ import {
   type CaixingProductType,
 } from '@/lib/customerPriceConverters/caixing'
 import { useAppStore } from '@/stores/app'
+import {
+  prepareP4CustomerConversion,
+  type P4ConfiguredCustomerId,
+  type P4PreparedCustomerConversion,
+} from '@/lib/customerPriceConverters/p4CustomerAdapter'
 import { useAuthStore } from '@/stores/auth'
 
 type ConversionStatus = '待转换' | '待复核' | '已生成'
@@ -140,6 +147,8 @@ const customerOptions: CustomerOption[] = [
   },
 ]
 
+const artifactCustomerOptions = customerOptions.map(({ id, name }) => ({ id, name }))
+
 const selectedCustomerId = ref(customerOptions[0]?.id ?? '')
 const caixingProductTypeOptions = [
   { id: 'plastic', label: '塑胶', detail: '塑胶 / 注塑类报客价' },
@@ -167,6 +176,10 @@ const isImportDragActive = ref(false)
 let importDragDepth = 0
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const EXCEL_HTML_MIME_TYPE = 'application/vnd.ms-excel;charset=utf-8'
+const preparedP4Conversions = new Map<string, {
+  handoff: CustomerPriceInternalQuoteArtifact
+  conversion: P4PreparedCustomerConversion
+}>()
 
 const conversionRows = ref<CustomerPriceConversionRow[]>([
   {
@@ -573,6 +586,66 @@ function readFileAsArrayBuffer(file: File) {
   return file.arrayBuffer()
 }
 
+function configuredCustomerId(customerName: string): P4ConfiguredCustomerId | null {
+  const normalized = customerName.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  const matched = customerOptions.find((customer) => customer.name.trim().toLowerCase().replace(/[\s_-]+/g, '') === normalized)
+  return matched && ['buzzbee', 'disney', 'dicky', 'caixing'].includes(matched.id)
+    ? matched.id as P4ConfiguredCustomerId
+    : null
+}
+
+async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, blob: Blob) {
+  const customerId = configuredCustomerId(handoff.customer)
+  if (!customerId) {
+    throw new Error(`尚未配置“${handoff.customer}”的 P4 客户转换规则`)
+  }
+  const conversion = prepareP4CustomerConversion(
+    await blob.arrayBuffer(),
+    handoff.file_name,
+    customerId,
+  )
+  preparedP4Conversions.set(handoff.id, { handoff, conversion })
+}
+
+function commitP4Artifact(handoffId: string) {
+  const prepared = preparedP4Conversions.get(handoffId)
+  if (!prepared) return
+  preparedP4Conversions.delete(handoffId)
+  const { handoff, conversion } = prepared
+
+  if (conversion.customerId === 'buzzbee') {
+    const result = conversion.result
+    const detailCount = result.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+    buzzBeeConversionResult.value = result
+    disneyConversionResult.value = null
+    dickyConversionResult.value = null
+    caixingConversionResult.value = null
+    importedWorkbookSheets.value = result.sheets
+    importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
+  }
+
+  importedFileName.value = handoff.file_name
+  importedCustomerId.value = conversion.customerId
+  importedCaixingProductType.value = ''
+  importedAt.value = '刚刚'
+  importErrorMessage.value = ''
+  selectedSheetId.value = 'all'
+  selectedExportVersionId.value = ''
+  const totalInternalHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0).toFixed(3))
+  const totalCustomerHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0).toFixed(3))
+  conversionRows.value = conversionRows.value.map((row) => row.customerId !== conversion.customerId
+    ? row
+    : {
+        ...row,
+        internalPriceHkd: totalInternalHkd || row.internalPriceHkd,
+        customerPriceHkd: totalCustomerHkd || row.customerPriceHkd,
+        marginBand: totalInternalHkd && totalCustomerHkd ? buildMarginBand(totalInternalHkd, totalCustomerHkd) : row.marginBand,
+        status: row.status === '已生成' ? '待复核' : '待转换',
+        sourceFileName: handoff.file_name,
+        updatedAt: '刚刚',
+      })
+}
+
 function resolvePublicAssetUrl(url: string) {
   if (/^(?:[a-z][a-z\d+\-.]*:)?\/\//i.test(url) || url.startsWith('blob:') || url.startsWith('data:')) {
     return url
@@ -960,9 +1033,17 @@ async function exportCustomerQuoteExcel() {
 
 <template>
   <div class="space-y-5">
+    <CustomerPriceArtifactPanel
+      :customers="artifactCustomerOptions"
+      :selected-customer-id="selectedCustomerId"
+      :prepare-artifact="prepareP4Artifact"
+      @select-customer="selectedCustomerId = $event"
+      @artifact-consumed="commitP4Artifact"
+    />
+
     <SectionPanel
       title="导入内部报价"
-      subtitle="右上角先点选客户，再把内部报价 Excel 导入到当前客户名下"
+      subtitle="优先从上方 P4 v2 交接池直接转换；客户专属字段不足时会在接收前阻断，并保留这里的原专用 Excel 导入路径"
     >
       <template #action>
         <div class="flex flex-wrap items-center justify-end gap-2">

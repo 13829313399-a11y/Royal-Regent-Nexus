@@ -9,6 +9,7 @@ const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/module
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
 const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend/app/data/raw_material_baseline.json'), 'utf8')) as Array<Record<string, unknown>>
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
+const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/CustomerPriceArtifactPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 
@@ -169,7 +170,7 @@ describe('production module entry', () => {
 
     for (const requiredCopy of [
       '导入内部报价',
-      '右上角先点选客户，再把内部报价 Excel 导入到当前客户名下',
+      '优先从上方 P4 v2 交接池直接转换',
       '当前客户：',
       '导入后会锁定客户并生成下方明细对比',
       '输出报客价 Excel',
@@ -198,6 +199,18 @@ describe('production module entry', () => {
     expect(quoteCenterPanelSource).not.toContain('v-for="customer in ownCustomers"')
     expect(quoteCenterPanelSource).not.toContain('writableCustomerIds')
     expect(quoteCenterPanelSource).not.toContain('workshopSalesWorkshopNames')
+
+    for (const requiredArtifactCopy of [
+      '内部报价交接池',
+      'p4_final_approved',
+      '待接收',
+      '已接收',
+      '已撤销',
+      '接收并转换',
+      'customer_price:import_internal_quote',
+    ]) {
+      expect(customerPriceArtifactPanelSource).toContain(requiredArtifactCopy)
+    }
 
     expect(quoteCenterPanelSource).not.toContain('{{ currentAccount }}')
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+if context.is_offline_mode():
+    os.environ["ALEMBIC_OFFLINE_METADATA_ONLY"] = "1"
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -15,6 +19,7 @@ from app.core.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models import auth  # noqa: F401,E402
 from app.models import injection_schedule  # noqa: F401,E402
+from app.models import internal_quote  # noqa: F401,E402
 from app.models import molding_sample  # noqa: F401,E402
 from app.models import pricing  # noqa: F401,E402
 from app.models import raw_material  # noqa: F401,E402

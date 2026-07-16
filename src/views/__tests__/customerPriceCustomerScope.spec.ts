@@ -1,9 +1,17 @@
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+
+vi.mock('@/api/customerPriceArtifact', () => ({
+  customerPriceArtifactApi: {
+    list: vi.fn(async () => []),
+    consume: vi.fn(),
+    download: vi.fn(),
+  },
+}))
 
 const customerPricePermissions = [
   'customer_price:read',
