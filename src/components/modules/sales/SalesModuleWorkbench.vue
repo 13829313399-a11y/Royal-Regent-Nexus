@@ -16,9 +16,10 @@ withDefaults(defineProps<{
   description: string
   badge: string
   searchPlaceholder?: string
-  metrics: SalesWorkbenchMetric[]
+  metrics?: SalesWorkbenchMetric[]
 }>(), {
   searchPlaceholder: '',
+  metrics: () => [],
 })
 
 const appStore = useAppStore()
@@ -65,7 +66,7 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
           <p class="sales-page-description">{{ description }}</p>
         </div>
 
-        <div class="sales-metrics">
+        <div v-if="metrics.length" class="sales-metrics">
           <article v-for="metric in metrics" :key="metric.label" class="sales-metric">
             <p>{{ metric.label }}</p>
             <strong>{{ metric.value }}</strong>

@@ -122,7 +122,7 @@ def test_wildcard_superadmin_keeps_scoped_access_in_legacy_without_role_permissi
         AUTHZ_WRITES_ENABLED="false",
     ):
         auth_service = importlib.import_module("app.services.auth")
-        permission = "internal_pricing:export"
+        permission = "customer_price:export_customer_quote"
         superadmin = auth_service.AuthContext(
             id="user-admin",
             username="admin",
@@ -284,7 +284,7 @@ def test_default_admin_is_not_seeded_without_explicit_password(monkeypatch):
             assert db.query(auth_models.AuthPermission).filter_by(code="system:user_manage").count() == 1
 
 
-def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeypatch):
+def test_sales_customer_supervisor_role_is_seeded_with_customer_price_permissions(monkeypatch):
     with make_client(monkeypatch, SEED_DEFAULT_ACCOUNTS="false"):
         db_module = importlib.import_module("app.db")
         auth_models = importlib.import_module("app.models.auth")
@@ -305,11 +305,6 @@ def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeyp
                 "customer_price:import_internal_quote",
                 "customer_price:export_customer_quote",
                 "customer_price:compare",
-                    "internal_pricing:read",
-                    "internal_pricing:create",
-                    "internal_pricing:edit",
-                    "internal_pricing:review",
-                    "internal_pricing:export",
                 }
 
 

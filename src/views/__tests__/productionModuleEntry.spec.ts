@@ -10,8 +10,6 @@ const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMateria
 const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend/app/data/raw_material_baseline.json'), 'utf8')) as Array<Record<string, unknown>>
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
-const internalPricingViewSource = readFileSync(join(process.cwd(), 'src/views/InternalPricingView.vue'), 'utf8')
-const internalQuotePanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/InternalQuotePanel.vue'), 'utf8')
 const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 
 describe('production module entry', () => {
@@ -129,15 +127,12 @@ describe('production module entry', () => {
     expect(moduleCardSource).toMatch(/@click\.stop/)
   })
 
-  it('registers customer conversion and internal pricing as two independent sales modules', () => {
+  it('registers customer conversion and the remaining sales modules', () => {
     expect(enterpriseSource).toMatch(/id: 'customer-price-conversion'/)
     expect(enterpriseSource).toMatch(/title: '客价转换台'/)
     expect(enterpriseSource).toMatch(/选择客户、导入内部报价、输出报客价 Excel/)
     expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/customer-price-conversion'/)
-    expect(enterpriseSource).toMatch(/id: 'internal-pricing'/)
-    expect(enterpriseSource).toMatch(/title: '内部报价明细'/)
-    expect(enterpriseSource).toMatch(/按厂区和车间组织八部门成本填报、审核与受控导出/)
-    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/internal-pricing'/)
+    expect(enterpriseSource).not.toMatch(/id: 'internal-pricing'/)
     expect(enterpriseSource).not.toMatch(/id: 'quote-center'/)
     expect(enterpriseSource).not.toMatch(/title: '报价与成本中心'/)
     expect(enterpriseSource).not.toMatch(/id: 'order-approval'/)
@@ -159,11 +154,8 @@ describe('production module entry', () => {
     expect(routerSource).toMatch(/name: 'customer-price-conversion'/)
     expect(routerSource).toMatch(/title: '客价转换台'/)
     expect(routerSource).toMatch(/permissions: \['customer_price:read'\]/)
-    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/internal-pricing'/)
-    expect(routerSource).toMatch(/name: 'internal-pricing'/)
-    expect(routerSource).toMatch(/InternalPricingView\.vue/)
-    expect(routerSource).toMatch(/title: '内部报价明细'/)
-    expect(routerSource).toMatch(/permissions: \['internal_pricing:read'\]/)
+    expect(routerSource).not.toMatch(/\/modules\/sales-business\/internal-pricing/)
+    expect(routerSource).not.toMatch(/InternalPricingView\.vue/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/order-approval'/)
@@ -174,28 +166,6 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toMatch(/title="客价转换台"/)
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
     expect(customerPriceConversionViewSource).not.toMatch(/quoteDeskTabs/)
-
-    expect(internalPricingViewSource).toMatch(/InternalQuotePanel/)
-    expect(internalPricingViewSource).toMatch(/SalesModuleWorkbench/)
-    expect(internalPricingViewSource).toMatch(/title="内部报价明细"/)
-    expect(internalPricingViewSource).not.toMatch(/QuoteCenterPanel/)
-    expect(internalPricingViewSource).not.toMatch(/InternalPricingPanel/)
-
-    for (const requiredCopy of [
-      '内部报价明细工作台',
-      '八部门协同核价',
-      'workshopFilter',
-      '所属车间 *',
-      '新建内部报价',
-      'internal_pricing:edit',
-      'internal_pricing:review',
-      'internal_pricing:export',
-      '提交审核',
-      '导出 XLSX',
-      '报价操作记录',
-    ]) {
-      expect(internalQuotePanelSource).toContain(requiredCopy)
-    }
 
     for (const requiredCopy of [
       '导入内部报价',

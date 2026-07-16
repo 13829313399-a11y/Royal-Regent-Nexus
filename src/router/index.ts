@@ -106,25 +106,8 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/sales-business/internal-pricing',
-    name: 'internal-pricing',
-    component: () => import('@/views/InternalPricingView.vue'),
-    meta: {
-      title: '内部报价明细',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['internal_pricing:read'],
-      enforcePermissions: true,
-    },
-  },
-  {
     path: '/modules/sales-business/quote-center',
-    redirect: (to) => {
-      const rawSection = Array.isArray(to.query.section) ? to.query.section[0] : to.query.section
-      return rawSection === 'internal-pricing' || rawSection === 'quote-pool'
-        ? '/modules/sales-business/internal-pricing'
-        : '/modules/sales-business/customer-price-conversion'
-    },
+    redirect: '/modules/sales-business/customer-price-conversion',
   },
   {
     path: '/modules/sales-business/quote-center/customer-price-conversion',
@@ -132,7 +115,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/modules/sales-business/order-approval',
-    redirect: '/modules/sales-business/internal-pricing',
+    redirect: '/modules/sales-business',
   },
   {
     path: '/modules/pmc-warehouse/carton-mark-check',

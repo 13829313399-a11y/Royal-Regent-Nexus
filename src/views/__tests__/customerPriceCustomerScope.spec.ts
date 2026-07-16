@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -48,7 +48,11 @@ function mountPanel(username: string, deniedPermissions: string[] = []) {
 }
 
 describe('QuoteCenterPanel customer visibility', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    window.history.replaceState({}, '', '/')
+  })
+  afterEach(() => window.history.replaceState({}, '', '/'))
 
   it('lets an ordinary sales account see and switch every customer', async () => {
     const wrapper = mountPanel('ordinary-sales-user')
