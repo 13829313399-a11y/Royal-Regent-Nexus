@@ -14,7 +14,6 @@ describe('system user management routing', () => {
     expect(source).toMatch(/path:\s*'\/modules\/production\/injection-scheduling'[\s\S]{0,360}permissions:\s*\[['"]injection_schedule:read['"]\]/)
     expect(source).toMatch(/path:\s*'\/modules\/pmc-warehouse\/raw-material-management'[\s\S]{0,360}permissions:\s*\[['"]molding_sample:raw_material_write['"]\]/)
     expect(source).toMatch(/path:\s*'\/modules\/sales-business\/customer-price-conversion'[\s\S]{0,360}permissions:\s*\[['"]customer_price:read['"]\]/)
-    expect(source).toMatch(/path:\s*'\/modules\/sales-business\/internal-pricing'[\s\S]{0,360}permissions:\s*\[['"]internal_pricing:read['"]\]/)
     expect(source).toMatch(/path:\s*'\/modules\/molding-sample'[\s\S]{0,360}enforcePermissions:\s*true/)
     expect(source).toMatch(/path:\s*'\/modules\/production\/molding-sample-tasks'[\s\S]{0,360}enforcePermissions:\s*true/)
     expect(source).toMatch(/path:\s*'\/modules\/production\/injection-scheduling'[\s\S]{0,360}enforcePermissions:\s*true/)

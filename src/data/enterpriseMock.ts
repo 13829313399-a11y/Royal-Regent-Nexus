@@ -904,7 +904,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     heroTitle: '业务模块中心',
     heroSubtitle: '把客户、报价、内部定价、送印尼物料和 PO 入排期连成统一入口',
     panelTitle: '业务部模块',
-    panelSubtitle: '优先承接客价转换、内部报价、送印尼物料和 PO 入排期',
+    panelSubtitle: '优先承接客价转换、送印尼物料和 PO 入排期',
     modules: [
       {
         id: 'customer-price-conversion',
@@ -927,29 +927,6 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
           { label: '报价导入', summary: '识别客户内部报价 Excel 与多 Sheet 明细' },
           { label: '报客价输出', summary: '按客户模板生成报客价文件' },
           { label: '版本对比', summary: '对比明细、利润带和历史导出版本' },
-        ],
-      },
-      {
-        id: 'internal-pricing',
-        title: '内部报价明细',
-        owner: '车间业务 / 各核价部门',
-        summary: '按厂区和车间组织八部门成本填报、审核与受控导出',
-        status: '已接入',
-        statusTone: 'green',
-        stats: '车间归集 · 八段审核',
-        icon: Calculator,
-        route: '/modules/sales-business/internal-pricing',
-        statusMetrics: [
-          { label: '维度', value: '车间', tone: 'teal' },
-          { label: '分段', value: '8 个', tone: 'blue' },
-          { label: '出口', value: '全审', tone: 'green' },
-        ],
-        todos: ['按车间建立内部报价', '推进八部门成本分段', '全部审核后导出报价明细'],
-        children: [
-          { label: '车间建单', summary: '按厂区对应车间独立归集；华兴统一使用“华兴”' },
-          { label: '部门分段', summary: '八部门专用字段、公式与参考快照协同填报' },
-          { label: '主管审核', summary: '逐段通过、退回和重开并保留审计' },
-          { label: '受控导出', summary: '八段全部通过后生成内部报价 XLSX' },
         ],
       },
       {

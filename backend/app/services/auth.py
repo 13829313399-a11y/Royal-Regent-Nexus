@@ -43,22 +43,6 @@ LEGACY_EXPORT_COMPAT_PERMISSION = "molding_sample:export"
 RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER = "raw_material_write_default_grant_v1_completed"
 RAW_MATERIAL_WRITE_PERMISSION = "molding_sample:raw_material_write"
 RAW_MATERIAL_WRITE_DEFAULT_ROLE_IDS = ("engineer", "engineering_supervisor", "warehouse_keeper")
-INTERNAL_PRICING_WORKFLOW_GRANT_MARKER = "internal_pricing_workflow_grants_v1_completed"
-INTERNAL_PRICING_WORKFLOW_ROLE_PERMISSIONS = {
-    "sales_customer_owner": {
-        "internal_pricing:read",
-        "internal_pricing:create",
-        "internal_pricing:edit",
-        "internal_pricing:export",
-    },
-    "sales_customer_supervisor": {
-        "internal_pricing:read",
-        "internal_pricing:create",
-        "internal_pricing:edit",
-        "internal_pricing:review",
-        "internal_pricing:export",
-    },
-}
 DEFAULT_PASSWORD = "123456"
 PASSWORD_HASH_ITERATIONS = 160_000
 SESSION_HOURS = 12
@@ -107,11 +91,6 @@ MOLDING_SAMPLE_PERMISSIONS = [
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
     "customer_price:compare",
-    "internal_pricing:read",
-    "internal_pricing:create",
-    "internal_pricing:edit",
-    "internal_pricing:review",
-    "internal_pricing:export",
     "system:user_manage",
     "system:role_manage",
 ]
@@ -214,21 +193,12 @@ ROLE_PERMISSIONS = {
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
-        "internal_pricing:read",
-        "internal_pricing:create",
-        "internal_pricing:edit",
-        "internal_pricing:export",
     },
     "sales_customer_supervisor": {
         "customer_price:read",
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
-        "internal_pricing:read",
-        "internal_pricing:create",
-        "internal_pricing:edit",
-        "internal_pricing:review",
-        "internal_pricing:export",
     },
     "factory_permission_admin": {
         "system:user_manage",
@@ -732,76 +702,6 @@ def seed_raw_material_write_default_grant_once(db: Session, now: str) -> int:
     return created_count
 
 
-def seed_internal_pricing_workflow_grants_once(db: Session, now: str) -> int:
-    """Extend existing sales role templates for the approved collaborative quote workflow."""
-    if db.get(AuthIamState, INTERNAL_PRICING_WORKFLOW_GRANT_MARKER) is not None:
-        return 0
-
-    permissions_by_code = {
-        permission.code: permission
-        for permission in db.scalars(select(AuthPermission)).all()
-    }
-    created_count = 0
-    updated_role_ids: set[str] = set()
-    for role_id, permission_codes in INTERNAL_PRICING_WORKFLOW_ROLE_PERMISSIONS.items():
-        if db.get(AuthRole, role_id) is None:
-            continue
-        for permission_code in permission_codes:
-            permission = permissions_by_code.get(permission_code)
-            if permission is None:
-                continue
-            role_permission_id = f"{role_id}:{permission.id}"
-            if db.get(AuthRolePermission, role_permission_id) is not None:
-                continue
-            db.add(
-                AuthRolePermission(
-                    id=role_permission_id,
-                    role_id=role_id,
-                    permission_id=permission.id,
-                )
-            )
-            created_count += 1
-            updated_role_ids.add(role_id)
-
-    db.flush()
-    for role_id in updated_role_ids:
-        metadata = db.get(AuthRoleMetadata, role_id)
-        if metadata is not None:
-            metadata.version += 1
-            metadata.updated_at = now
-
-    if updated_role_ids:
-        affected_user_ids = {
-            binding.user_id
-            for binding in db.scalars(
-                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
-            ).all()
-        }
-        for user_id in affected_user_ids:
-            revision = db.get(AuthUserAuthorizationRevision, user_id)
-            if revision is None:
-                db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
-            else:
-                revision.revision += 1
-                revision.updated_at = now
-
-    db.add(
-        AuthIamState(
-            key=INTERNAL_PRICING_WORKFLOW_GRANT_MARKER,
-            value_json=json.dumps(
-                {
-                    "completed_at": now,
-                    "created_role_permission_count": created_count,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            updated_at=now,
-        )
-    )
-    return created_count
-
-
 def seed_legacy_read_compat_once(db: Session, now: str) -> int:
     if db.get(AuthIamState, LEGACY_READ_COMPAT_MARKER) is not None:
         return 0
@@ -1111,7 +1011,6 @@ def seed_auth_defaults(db: Session) -> None:
     db.flush()
     seed_iam_sidecars(db, now)
     seed_raw_material_write_default_grant_once(db, now)
-    seed_internal_pricing_workflow_grants_once(db, now)
     seed_legacy_read_compat_once(db, now)
     seed_legacy_export_compat_once(db, now)
     ensure_authz_startup_safety(db)
