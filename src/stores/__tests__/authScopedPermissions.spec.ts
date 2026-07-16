@@ -40,6 +40,204 @@ describe('authStore scoped permission decisions', () => {
     expect(store.matchingGrants('maintenance:update', 'huaxing', 'engineering')).toHaveLength(1)
   })
 
+  it.each(['legacy', 'shadow'] as const)(
+    'does not mistake an ordinary role with default scope metadata for a system position in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      store.applySession(session({
+        authz_mode: authzMode,
+        grants: [{
+          role_id: 'engineer',
+          role_code: 'engineer',
+          role_name: '工程师',
+          factory_id: 'huaxing',
+          department: 'engineering',
+          permissions: ['maintenance:update'],
+          scope_mode: 'own_factory',
+          read_permission_codes: [],
+          unrestricted_department: false,
+          data_scope: 'department',
+        }],
+      }))
+
+      expect(store.can('maintenance:update', 'huaxing', 'qa')).toBe(true)
+      expect(store.can('maintenance:update', 'huadeng', 'engineering')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow', 'enforce'] as const)(
+    'lets a system position use its permissions across departments in its own factory in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions: ['maintenance:update'],
+        grants: [{
+          role_id: 'position-engineering-engineer',
+          role_code: 'position_engineering_engineer',
+          role_name: '工程师',
+          factory_id: 'huaxing',
+          department: 'engineering',
+          permissions: ['maintenance:update'],
+          scope_mode: 'own_factory',
+          read_permission_codes: [],
+          unrestricted_department: true,
+          data_scope: 'department',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? [{
+              permission_code: 'maintenance:update',
+              factory_id: 'huaxing',
+              department: 'engineering',
+              effect: 'allow',
+              allowed: true,
+              source_type: 'role_binding',
+              source_ids: ['position-binding'],
+            }]
+          : undefined,
+      }))
+
+      expect(store.can('maintenance:update', 'huaxing', 'engineering')).toBe(true)
+      expect(store.can('maintenance:update', 'huaxing', 'qa')).toBe(true)
+      expect(store.can('maintenance:update', 'huadeng', 'engineering')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow', 'enforce'] as const)(
+    'limits cross-factory-read positions to their declared read permissions in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions: ['maintenance:read', 'maintenance:update'],
+        factory_scopes: ['*'],
+        grants: [{
+          role_id: 'position-engineering-engineer',
+          role_code: 'position_engineering_engineer',
+          role_name: '工程师',
+          factory_id: 'huaxing',
+          department: 'engineering',
+          permissions: ['maintenance:read', 'maintenance:update'],
+          scope_mode: 'cross_factory_read',
+          read_permission_codes: ['maintenance:read'],
+          unrestricted_department: true,
+          data_scope: 'all',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? [
+              {
+                permission_code: 'maintenance:read',
+                factory_id: 'huaxing',
+                department: 'engineering',
+                effect: 'allow',
+                allowed: true,
+                source_type: 'role_binding',
+                source_ids: ['position-binding'],
+              },
+              {
+                permission_code: 'maintenance:update',
+                factory_id: 'huaxing',
+                department: 'engineering',
+                effect: 'allow',
+                allowed: true,
+                source_type: 'role_binding',
+                source_ids: ['position-binding'],
+              },
+            ]
+          : undefined,
+      }))
+
+      expect(store.can('maintenance:read', 'huadeng', 'qa')).toBe(true)
+      expect(store.can('maintenance:update', 'huaxing', 'qa')).toBe(true)
+      expect(store.can('maintenance:update', 'huadeng', 'engineering')).toBe(false)
+      expect(store.matchingGrants('maintenance:read', 'huadeng', 'qa')).toHaveLength(1)
+      expect(store.matchingGrants('maintenance:update', 'huadeng', 'qa')).toHaveLength(0)
+    },
+  )
+
+  it.each(['legacy', 'shadow', 'enforce'] as const)(
+    'lets cross-factory-operate positions use every selected permission across factories in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions: ['maintenance:read', 'maintenance:update'],
+        factory_scopes: ['*'],
+        grants: [{
+          role_id: 'position-engineering-manager',
+          role_code: 'position_engineering_manager',
+          role_name: '经理',
+          factory_id: 'huaxing',
+          department: 'engineering',
+          permissions: ['maintenance:read', 'maintenance:update'],
+          scope_mode: 'cross_factory_operate',
+          read_permission_codes: ['maintenance:read'],
+          unrestricted_department: true,
+          data_scope: 'all',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? [
+              {
+                permission_code: 'maintenance:read',
+                factory_id: 'huaxing',
+                department: 'engineering',
+                effect: 'allow',
+                allowed: true,
+                source_type: 'role_binding',
+                source_ids: ['position-binding'],
+              },
+              {
+                permission_code: 'maintenance:update',
+                factory_id: 'huaxing',
+                department: 'engineering',
+                effect: 'allow',
+                allowed: true,
+                source_type: 'role_binding',
+                source_ids: ['position-binding'],
+              },
+            ]
+          : undefined,
+      }))
+
+      expect(store.can('maintenance:read', 'huadeng', 'qa')).toBe(true)
+      expect(store.can('maintenance:update', 'huadeng', 'qa')).toBe(true)
+    },
+  )
+
+  it('does not let a wildcard system-position binding bypass its configured scope mode', () => {
+    const store = useAuthStore()
+    const applyPosition = (scopeMode: 'own_factory' | 'cross_factory_read' | 'cross_factory_operate') => {
+      store.applySession(session({
+        authz_mode: 'legacy',
+        permissions: ['maintenance:read', 'maintenance:update'],
+        grants: [{
+          role_id: 'position_engineering_engineer',
+          role_code: 'position_engineering_engineer',
+          role_name: '工程师',
+          factory_id: '*',
+          department: '*',
+          permissions: ['maintenance:read', 'maintenance:update'],
+          scope_mode: scopeMode,
+          read_permission_codes: ['maintenance:read'],
+          unrestricted_department: true,
+          data_scope: 'all',
+        }],
+      }))
+    }
+
+    applyPosition('own_factory')
+    expect(store.can('maintenance:read', 'huadeng', 'qa')).toBe(false)
+    expect(store.can('maintenance:update', 'huadeng', 'qa')).toBe(false)
+
+    applyPosition('cross_factory_read')
+    expect(store.can('maintenance:read', 'huadeng', 'qa')).toBe(true)
+    expect(store.can('maintenance:update', 'huadeng', 'qa')).toBe(false)
+
+    applyPosition('cross_factory_operate')
+    expect(store.can('maintenance:read', 'huadeng', 'qa')).toBe(true)
+    expect(store.can('maintenance:update', 'huadeng', 'qa')).toBe(true)
+  })
+
   it('uses the effective access snapshot and gives a scoped deny priority', () => {
     const store = useAuthStore()
     store.applySession(session({
@@ -274,5 +472,57 @@ describe('authStore scoped permission decisions', () => {
     }))
 
     expect(store.can('molding_sample:create', 'huaxing', 'engineering')).toBe(false)
+  })
+
+  it('keeps a home-factory deny local while a scoped position still allows another factory', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      authz_mode: 'enforce',
+      permissions: ['maintenance:read'],
+      grants: [{
+        role_id: 'position_engineering_engineer',
+        role_code: 'position_engineering_engineer',
+        role_name: '工程师',
+        factory_id: 'huaxing',
+        department: 'engineering',
+        permissions: ['maintenance:read'],
+        scope_mode: 'cross_factory_read',
+        read_permission_codes: ['maintenance:read'],
+        unrestricted_department: true,
+        data_scope: 'all',
+      }],
+      effective_access: [{
+        permission_code: 'maintenance:read',
+        factory_id: 'huaxing',
+        department: 'engineering',
+        effect: 'deny',
+        allowed: false,
+        source_type: 'user_override',
+        source_ids: ['deny-home-read'],
+      }],
+    }))
+
+    expect(store.can('maintenance:read', 'huaxing', 'engineering')).toBe(false)
+    expect(store.can('maintenance:read', 'huadeng', 'qa')).toBe(true)
+    expect(store.can('maintenance:read')).toBe(true)
+  })
+
+  it('keeps a wildcard explicit deny above an anywhere permission summary', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      authz_mode: 'enforce',
+      permissions: ['maintenance:read'],
+      effective_access: [{
+        permission_code: 'maintenance:read',
+        factory_id: '*',
+        department: '*',
+        effect: 'deny',
+        allowed: false,
+        source_type: 'user_override',
+        source_ids: ['deny-all-read'],
+      }],
+    }))
+
+    expect(store.can('maintenance:read')).toBe(false)
   })
 })

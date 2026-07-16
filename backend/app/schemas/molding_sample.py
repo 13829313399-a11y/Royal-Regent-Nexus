@@ -276,7 +276,7 @@ class MoldingSampleDetailResponse(BaseModel):
     notifications: list[MoldingSampleNotificationOut] = Field(default_factory=list)
     problems: list[MoldingSampleProblemOut] = Field(default_factory=list)
     trial_reports: list[MoldingSampleTrialReportOut] = Field(default_factory=list)
-    read_source: Literal["local", "cross"] = "local"
+    read_source: Literal["local", "cross", "cross_operate"] = "local"
     can_view_cost: bool = True
 
 

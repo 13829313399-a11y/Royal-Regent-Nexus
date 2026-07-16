@@ -49,6 +49,7 @@ from app.services.auth import (
     time_window_is_active,
     validate_password_characters,
 )
+from app.services.iam_scope import OWN_FACTORY_SCOPE
 from app.services.permission_scope_policy import role_scope_policy, scope_is_applicable
 from app.services.system_positions import (
     SPECIAL_SYSTEM_ROLE_CODES,
@@ -134,6 +135,13 @@ def role_is_high_risk(db: Session, role_id: str) -> bool:
     if role is None:
         return True
     if role.code == "admin":
+        return True
+    role_metadata = db.get(AuthRoleMetadata, role_id)
+    if (
+        get_system_position(role_id) is not None
+        and role_metadata is not None
+        and role_metadata.scope_mode != OWN_FACTORY_SCOPE
+    ):
         return True
     permission_ids = {
         item.permission_id

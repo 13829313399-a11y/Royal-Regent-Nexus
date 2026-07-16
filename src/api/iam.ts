@@ -7,6 +7,8 @@ export interface IamHttpClient {
 
 export type PermissionRiskLevel = 'normal' | 'high'
 export type PermissionScopeType = 'global' | 'factory' | 'department' | 'factory_department'
+export type PermissionAccessKind = 'read' | 'operate'
+export type RoleScopeMode = 'own_factory' | 'cross_factory_read' | 'cross_factory_operate'
 export type PermissionEffect = 'allow' | 'deny'
 export type PermissionDraftEffect = PermissionEffect | 'inherit'
 
@@ -17,6 +19,7 @@ export interface PermissionCatalogItem {
   module_code: string
   module_name: string
   action: string
+  access_kind: PermissionAccessKind
   risk_level: PermissionRiskLevel
   scope_type: PermissionScopeType
   status: 'active' | 'inactive'
@@ -172,6 +175,7 @@ export interface RoleSummary {
   is_protected: boolean
   binding_count: number
   permission_count: number
+  scope_mode: RoleScopeMode
   applicable_departments: string[]
   requires_global_factory: boolean
   scope_guidance: string
@@ -189,6 +193,7 @@ export interface RoleAccessPreviewRequest {
   base_version: number
   reason: string
   permission_codes: string[]
+  scope_mode?: RoleScopeMode
 }
 
 export interface RolePermissionDiff {
@@ -201,6 +206,8 @@ export interface RolePermissionDiff {
 export interface RoleAccessPreviewResponse {
   preview_token: string
   base_version: number
+  before_scope_mode: RoleScopeMode
+  after_scope_mode: RoleScopeMode
   diffs: RolePermissionDiff[]
   affected_user_count: number
   high_risk: boolean

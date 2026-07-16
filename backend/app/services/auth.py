@@ -33,7 +33,17 @@ from app.models.auth import (
     SystemNotification,
 )
 from app.schemas.auth import AuthMeResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest, RegisterResponse
-from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS
+from app.services.iam_scope import (
+    CROSS_FACTORY_OPERATE_SCOPE,
+    CROSS_FACTORY_READ_SCOPE,
+    OPERATE_ACCESS_KIND,
+    OWN_FACTORY_SCOPE,
+    READ_ACCESS_KIND,
+    VALID_ACCESS_KINDS,
+    VALID_SCOPE_MODES,
+    default_permission_access_kind,
+)
+from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS, get_system_position
 
 SESSION_COOKIE_NAME = "rr_session"
 logger = logging.getLogger(__name__)
@@ -422,6 +432,9 @@ class AuthGrantContext:
     department: str
     permissions: frozenset[str]
     data_scope: str = "department"
+    scope_mode: str = OWN_FACTORY_SCOPE
+    read_permissions: frozenset[str] = frozenset()
+    unrestricted_department: bool = False
     binding_id: str = ""
     role_code: str = ""
     valid_from: str = ""
@@ -560,6 +573,23 @@ def scope_matches(
     return granted_department in {"*", target_department}
 
 
+def system_position_grant_scope_source(
+    grant: AuthGrantContext,
+    permission: str,
+    factory_id: str,
+) -> str | None:
+    """Resolve a built-in position without trusting wildcard home scopes."""
+    if not grant.unrestricted_department:
+        return None
+    if grant.factory_id != "*" and grant.factory_id == factory_id:
+        return "local"
+    if grant.scope_mode == CROSS_FACTORY_OPERATE_SCOPE:
+        return "cross_operate"
+    if grant.scope_mode == CROSS_FACTORY_READ_SCOPE and permission in grant.read_permissions:
+        return "cross_read"
+    return None
+
+
 def hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac(
         "sha256",
@@ -685,6 +715,7 @@ def permission_catalog_values(code: str, sort_order: int) -> dict[str, str | int
         "module_code": module_code,
         "action": action,
         "risk_level": risk_level,
+        "access_kind": default_permission_access_kind(code),
         "scope_type": "factory_department",
         "status": "active",
         "sort_order": sort_order,
@@ -714,6 +745,7 @@ def seed_iam_sidecars(db: Session, now: str) -> None:
                     role_id=role.id,
                     version=1,
                     protected=1 if role.code == "admin" else 0,
+                    scope_mode=OWN_FACTORY_SCOPE,
                     created_at=now,
                     updated_at=now,
                 )
@@ -1828,7 +1860,16 @@ def authorization_decision(
         grant
         for grant in user.grants
         if permission in grant.permissions
-        and scope_matches(grant.factory_id, grant.department, factory_id, department)
+        and (
+            (
+                grant.unrestricted_department
+                and system_position_grant_scope_source(grant, permission, factory_id) == "local"
+            )
+            or (
+                not grant.unrestricted_department
+                and scope_matches(grant.factory_id, grant.department, factory_id, department)
+            )
+        )
         and time_window_is_active(grant.valid_from, grant.valid_until, at)
     ]
     if matching_grants:
@@ -1837,6 +1878,36 @@ def authorization_decision(
             "role_binding",
             tuple(sorted(grant.binding_id for grant in matching_grants if grant.binding_id)),
             "、".join(sorted({grant.role_name for grant in matching_grants})),
+        )
+
+    # A built-in position is a function bundle, not an organization boundary.
+    # Its binding factory remains the employee's home-factory anchor while the
+    # position template decides whether read-only or operating permissions may
+    # expand to another concrete factory. Department is intentionally ignored
+    # for these grants so administrators can freely combine module permissions.
+    cross_factory_grants = [
+        grant
+        for grant in user.grants
+        if grant.unrestricted_department
+        and permission in grant.permissions
+        and system_position_grant_scope_source(grant, permission, factory_id)
+        in {"cross_read", "cross_operate"}
+        and time_window_is_active(grant.valid_from, grant.valid_until, at)
+    ]
+    if cross_factory_grants:
+        source_type = (
+            "role_binding_cross_operate"
+            if any(
+                system_position_grant_scope_source(grant, permission, factory_id) == "cross_operate"
+                for grant in cross_factory_grants
+            )
+            else "role_binding_cross_read"
+        )
+        return (
+            True,
+            source_type,
+            tuple(sorted(grant.binding_id for grant in cross_factory_grants if grant.binding_id)),
+            "、".join(sorted({grant.role_name for grant in cross_factory_grants})),
         )
 
     return False, "default", (), "默认拒绝"
@@ -1860,6 +1931,14 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     permission_code_by_id = {permission.id: permission.code for permission in all_permissions}
     permission_metadata = list(db.scalars(select(AuthPermissionMetadata)).all())
     permission_status_by_id = {item.permission_id: item.status for item in permission_metadata}
+    permission_access_kind_by_id = {
+        item.permission_id: (
+            item.access_kind
+            if item.access_kind in VALID_ACCESS_KINDS
+            else default_permission_access_kind(permission_code_by_id.get(item.permission_id, ""))
+        )
+        for item in permission_metadata
+    }
     active_permission_codes = frozenset(
         permission.code
         for permission in all_permissions
@@ -1893,8 +1972,18 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     roles = list(db.scalars(select(AuthRole).where(AuthRole.id.in_(role_ids))).all()) if role_ids else []
     role_name_by_id = {role.id: role.name for role in roles}
     role_code_by_id = {role.id: role.code for role in roles}
+    role_metadata = (
+        list(db.scalars(select(AuthRoleMetadata).where(AuthRoleMetadata.role_id.in_(role_ids))).all())
+        if role_ids
+        else []
+    )
+    role_metadata_by_id = {item.role_id: item for item in role_metadata}
+    system_position_role_ids = {
+        role_id for role_id in role_ids if get_system_position(role_id) is not None
+    }
 
     permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
+    read_permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
     if role_ids:
         role_permissions = list(
             db.scalars(select(AuthRolePermission).where(AuthRolePermission.role_id.in_(role_ids))).all()
@@ -1903,6 +1992,19 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
             permission_code = permission_code_by_id.get(role_permission.permission_id)
             if permission_code in active_permission_codes:
                 permissions_by_role_id.setdefault(role_permission.role_id, set()).add(permission_code)
+                access_kind = permission_access_kind_by_id.get(
+                    role_permission.permission_id,
+                    default_permission_access_kind(permission_code),
+                )
+                if access_kind == READ_ACCESS_KIND:
+                    read_permissions_by_role_id.setdefault(role_permission.role_id, set()).add(permission_code)
+
+    def role_scope_mode(role_id: str) -> str:
+        if role_id not in system_position_role_ids:
+            return OWN_FACTORY_SCOPE
+        metadata = role_metadata_by_id.get(role_id)
+        value = metadata.scope_mode if metadata else OWN_FACTORY_SCOPE
+        return value if value in VALID_SCOPE_MODES else OWN_FACTORY_SCOPE
 
     grants = tuple(
         AuthGrantContext(
@@ -1911,7 +2013,16 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
             factory_id=user_role.factory_id,
             department=user_role.department,
             permissions=frozenset(permissions_by_role_id.get(user_role.role_id, set())),
-            data_scope="all" if user_role.factory_id == "*" else "department",
+            data_scope=(
+                "all"
+                if user_role.factory_id == "*" or role_scope_mode(user_role.role_id) != OWN_FACTORY_SCOPE
+                else "factory"
+                if user_role.role_id in system_position_role_ids
+                else "department"
+            ),
+            scope_mode=role_scope_mode(user_role.role_id),
+            read_permissions=frozenset(read_permissions_by_role_id.get(user_role.role_id, set())),
+            unrestricted_department=user_role.role_id in system_position_role_ids,
             binding_id=user_role.id,
             role_code=role_code_by_id.get(user_role.role_id, user_role.role_id),
             valid_from=(binding_metadata_by_id[user_role.id].valid_from if user_role.id in binding_metadata_by_id else ""),
@@ -1963,8 +2074,17 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     revision_row = db.get(AuthUserAuthorizationRevision, user.id)
     role_names = tuple(role_name_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
     role_codes = tuple(role_code_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
-    factory_scopes = tuple(sorted({user_role.factory_id for user_role in user_roles if user_role.factory_id}))
-    department_scopes = tuple(sorted({user_role.department for user_role in user_roles if user_role.department}))
+    factory_scope_values = {user_role.factory_id for user_role in user_roles if user_role.factory_id}
+    department_scope_values = {user_role.department for user_role in user_roles if user_role.department}
+    if any(
+        grant.unrestricted_department and grant.scope_mode != OWN_FACTORY_SCOPE
+        for grant in grants
+    ):
+        factory_scope_values.add("*")
+    if any(grant.unrestricted_department for grant in grants):
+        department_scope_values.add("*")
+    factory_scopes = tuple(sorted(factory_scope_values))
+    department_scopes = tuple(sorted(department_scope_values))
 
     context = AuthContext(
         id=user.id,
@@ -2023,6 +2143,30 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
                 )
             )
 
+    # ``permissions`` is a flat compatibility union consumed by older guards
+    # and the frontend's target-less checks. A deny at the home factory must
+    # not hide a permission that a cross-scoped built-in position still allows
+    # at another real factory. Keep effective_access anchor-centric, but check
+    # every known concrete factory when calculating that flat union.
+    cross_position_permission_codes = {
+        permission_code
+        for grant in grants
+        if grant.unrestricted_department and grant.scope_mode != OWN_FACTORY_SCOPE
+        for permission_code in grant.permissions
+    }
+    for permission_code in sorted(cross_position_permission_codes - allowed_permission_codes):
+        if any(
+            authorization_decision(
+                context,
+                permission_code,
+                candidate_factory_id,
+                "*",
+                at=checked_at,
+            )[0]
+            for candidate_factory_id in sorted(ALLOWED_FACTORY_IDS)
+        ):
+            allowed_permission_codes.add(permission_code)
+
     return replace(
         context,
         permissions=frozenset(allowed_permission_codes),
@@ -2070,6 +2214,9 @@ def to_auth_response(context: AuthContext) -> AuthMeResponse:
                 "department": grant.department,
                 "permissions": sorted(grant.permissions),
                 "data_scope": grant.data_scope,
+                "scope_mode": grant.scope_mode,
+                "read_permission_codes": sorted(grant.read_permissions),
+                "unrestricted_department": grant.unrestricted_department,
             }
             for grant in context.grants
         ],
@@ -2148,6 +2295,10 @@ def legacy_has_permission_in_scope(
 ) -> bool:
     for grant in user.grants:
         if permission not in grant.permissions:
+            continue
+        if grant.unrestricted_department:
+            if system_position_grant_scope_source(grant, permission, factory_id) is not None:
+                return True
             continue
         if grant.factory_id != "*" and grant.factory_id != factory_id:
             continue

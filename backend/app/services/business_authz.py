@@ -11,6 +11,7 @@ from app.services.auth import (
     authorization_decision,
     can,
     legacy_has_permission_in_scope,
+    system_position_grant_scope_source,
 )
 
 
@@ -56,13 +57,14 @@ def is_local_factory(user: AuthContext, factory_id: str) -> bool:
 
 
 def ensure_molding_local_write(db: Session, user: AuthContext, factory_id: str) -> None:
-    if local_molding_read_access(user, factory_id):
+    read_source = molding_read_access(user, factory_id)
+    if read_source in {"local", "cross_operate"}:
         return
 
     reason = (
         f"本厂啤办单未获本地读取授权，禁止写入：{factory_id}"
         if is_local_factory(user, factory_id)
-        else f"外厂啤办单只允许查看，禁止写入：{factory_id}"
+        else f"未配置跨厂操作范围，禁止写入外厂啤办单：{factory_id}"
     )
     add_auth_audit(
         db,
@@ -87,11 +89,6 @@ def canonical_permission_for_departments(
         MOLDING_CROSS_FACTORY_COST_PERMISSION,
     }:
         return can(user, permission, factory_id, None)
-    if (
-        permission.startswith("molding_sample:")
-        and not is_local_factory(user, factory_id)
-    ):
-        return False
     return any(can(user, permission, factory_id, department) for department in normalized_departments)
 
 
@@ -156,41 +153,54 @@ def ensure_permission_for_departments(
 def canonical_molding_read_access(user: AuthContext, factory_id: str) -> str | None:
     if canonical_local_molding_read_access(user, factory_id):
         return "local"
-    if canonical_permission_for_departments(
-        user,
-        MOLDING_CROSS_FACTORY_READ_PERMISSION,
-        factory_id,
-        CROSS_FACTORY_DEPARTMENTS,
+    cross_sources: list[str] = []
+    for permission, departments in (
+        ("molding_sample:read", SHARED_MOLDING_DEPARTMENTS),
+        ("molding_sample:production_read", PRODUCTION_DEPARTMENTS),
     ):
+        for department in departments:
+            allowed, source_type, _, _ = authorization_decision(
+                user,
+                permission,
+                factory_id,
+                department,
+            )
+            if allowed:
+                cross_sources.append(source_type)
+    if "role_binding_cross_operate" in cross_sources:
+        return "cross_operate"
+    if cross_sources:
         return "cross"
-    return default_cross_factory_molding_read_access(user, factory_id)
-
-
-def legacy_molding_read_access(user: AuthContext, factory_id: str) -> str | None:
-    if legacy_local_molding_read_access(user, factory_id):
-        return "local"
-    if legacy_has_permission_in_scope(user, MOLDING_CROSS_FACTORY_READ_PERMISSION, factory_id, None):
-        return "cross"
-    return default_cross_factory_molding_read_access(user, factory_id)
-
-
-def default_cross_factory_molding_read_access(user: AuthContext, factory_id: str) -> str | None:
-    """Give every authenticated account cross-organization molding visibility.
-
-    This is a read-policy default, not a role or permission assignment.  It
-    intentionally leaves user role bindings, overrides, and write checks
-    untouched.  A direct deny of the dedicated cross-factory read permission,
-    or a system-disabled permission, still takes precedence.
-    """
     allowed, source_type, _, _ = authorization_decision(
         user,
         MOLDING_CROSS_FACTORY_READ_PERMISSION,
         factory_id,
         None,
     )
-    if not allowed and source_type in {"user_override", "inactive_permission"}:
-        return None
-    return "cross"
+    if allowed:
+        return "cross_operate" if source_type == "role_binding_cross_operate" else "cross"
+    return None
+
+
+def legacy_molding_read_access(user: AuthContext, factory_id: str) -> str | None:
+    if legacy_local_molding_read_access(user, factory_id):
+        return "local"
+    for permission in (
+        "molding_sample:read",
+        "molding_sample:production_read",
+        MOLDING_CROSS_FACTORY_READ_PERMISSION,
+    ):
+        if not legacy_has_permission_in_scope(user, permission, factory_id, None):
+            continue
+        if any(
+            permission in grant.permissions
+            and system_position_grant_scope_source(grant, permission, factory_id)
+            == "cross_operate"
+            for grant in user.grants
+        ):
+            return "cross_operate"
+        return "cross"
+    return None
 
 
 def canonical_local_molding_read_access(user: AuthContext, factory_id: str) -> bool:
@@ -271,7 +281,7 @@ def can_view_molding_cost(user: AuthContext, factory_id: str, read_source: str |
     source = read_source or molding_read_access(user, factory_id)
     if source == "local":
         return True
-    if source != "cross":
+    if source not in {"cross", "cross_operate"}:
         return False
     return has_permission_for_departments(
         user,
