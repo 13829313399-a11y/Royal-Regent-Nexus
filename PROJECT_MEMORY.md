@@ -1758,6 +1758,14 @@ Use this template when updating the memory after future work:
 
 ### 2026-07-16
 
+
+### 2026-07-16
+
+- Requirement: reduce context-window waste when Codex uses `PROJECT_MEMORY.md` for feature changes by allowing progressive, task-scoped memory retrieval instead of requiring the entire document to be loaded every time.
+- Implementation: added a `Progressive Memory Retrieval` rule to `AGENTS.md`: read newest entries first, search by task-specific keywords, then read the complete paragraph or dated section for each match; expand to more sections or the full document only when the selected context is incomplete, ambiguous, or conflicting.
+- Files changed: `AGENTS.md` and `PROJECT_MEMORY.md`.
+- Verification: reviewed the Markdown wording and ran `git diff --check -- AGENTS.md PROJECT_MEMORY.md`.
+- Decision: the mandatory pre-change memory check remains in force, but it is satisfied by targeted retrieval when the relevant context is clear.
 - Requirement: fix the Huaxing internal-quote page where the protected system administrator received `无授权范围内操作权限` and the quote detail/editor stayed blank; repair both the authorization mismatch and the page-level failure coupling.
 - Root cause: the backend was running in `legacy` authorization mode. Canonical IAM correctly classified the protected `admin@*/system` binding as `superadmin`, but `has_permission_in_scope()` returned the legacy role-permission result, so a pre-existing administrator role without the newly introduced `internal_pricing:export` mapping was denied on the export-history endpoint. `InternalQuotePanel.loadQuote()` used one rejecting `Promise.all`, causing that optional export-history 403 to suppress the already successful quote detail.
 - Implementation: `has_permission_in_scope()` now preserves a successful canonical `superadmin` decision in every rollout mode before applying legacy/shadow fallback; inactive permissions and all non-superadmin users retain their existing canonical/legacy behavior. Internal-quote detail loading now uses independent settled results for import batches, attachments, and retained exports, keeps the quote/detail editor visible when one optional artifact fails, clears only that artifact collection, and reports a scoped partial-load message.
