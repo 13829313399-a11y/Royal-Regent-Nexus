@@ -356,7 +356,6 @@ def preview_system_position(
             detail="跨范围内置职位调整请由集团超级管理员直接操作",
         )
 
-    reason = _required_reason(payload.reason)
     current_revision = _get_revision(db, user_id, for_update=True)
     if payload.base_revision != current_revision:
         raise HTTPException(status_code=409, detail="用户权限已变化，请刷新后重新预览")
@@ -462,6 +461,12 @@ def preview_system_position(
 
     if not operations:
         raise HTTPException(status_code=400, detail="该用户已使用所选内置权限职位")
+
+    reason = payload.reason.strip() or (
+        f"系统清理内置权限职位历史授权，保留{position.department_name} · {role.name}"
+        if kept_selected
+        else f"系统调整内置权限职位为{position.department_name} · {role.name}"
+    )
 
     cross_scope = any(
         not _scope_is_managed(actor_scopes, item["factory_id"], item["department"])

@@ -147,7 +147,7 @@ class UserAccessPreviewRequest(BaseModel):
 class SystemPositionPreviewRequest(BaseModel):
     base_revision: int = Field(ge=0)
     system_position_role_id: str = Field(min_length=1, max_length=64)
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(default="", max_length=500)
 
 
 class AccessDiffOut(BaseModel):

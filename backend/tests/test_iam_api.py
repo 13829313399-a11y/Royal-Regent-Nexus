@@ -742,7 +742,6 @@ def test_system_position_preview_replaces_legacy_grants_and_overrides(monkeypatc
             json={
                 "base_revision": access["authorization_version"],
                 "system_position_role_id": "position_engineering_engineer",
-                "reason": "统一归类到内置工程师权限职位",
             },
         )
         assert preview_response.status_code == 200, preview_response.text
@@ -775,6 +774,16 @@ def test_system_position_preview_replaces_legacy_grants_and_overrides(monkeypatc
             if item["state"] == "active"
         ] == ["position_engineering_engineer"]
         assert all(item["state"] != "active" for item in updated["overrides"])
+
+        with db_module.SessionLocal() as db:
+            position_binding = db.query(models.AuthUserRole).filter_by(
+                user_id=user_id,
+                role_id="position_engineering_engineer",
+            ).one()
+            position_metadata = db.get(models.AuthRoleBindingMetadata, position_binding.id)
+            legacy_metadata = db.get(models.AuthRoleBindingMetadata, legacy_binding_id)
+            assert position_metadata.reason == "系统调整内置权限职位为工程部 · 工程师"
+            assert legacy_metadata.revoke_reason == "系统调整内置权限职位为工程部 · 工程师"
 
 
 def test_system_position_can_cross_profile_department_with_position_scope(monkeypatch):
@@ -960,7 +969,6 @@ def test_system_position_cleanup_revokes_future_dated_grants(monkeypatch):
             json={
                 "base_revision": access["authorization_version"],
                 "system_position_role_id": "position_engineering_engineer",
-                "reason": "清理未来才会生效的旧授权",
             },
         )
         assert preview_response.status_code == 200, preview_response.text
@@ -982,6 +990,8 @@ def test_system_position_cleanup_revokes_future_dated_grants(monkeypatch):
             future_override = db.get(models.AuthUserPermissionOverride, future_override_id)
             assert binding_metadata.state == "revoked"
             assert future_override.status == "revoked"
+            assert binding_metadata.revoke_reason == "系统清理内置权限职位历史授权，保留工程部 · 工程师"
+            assert future_override.revoke_reason == "系统清理内置权限职位历史授权，保留工程部 · 工程师"
 
         updated = client.get(f"/api/iam/users/{user_id}/access").json()
         assert updated["system_position_role_id"] == "position_engineering_engineer"
