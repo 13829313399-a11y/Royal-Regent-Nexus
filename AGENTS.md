@@ -13,6 +13,16 @@ PROJECT_MEMORY.md
 
 These reads must happen before planning implementation details and before applying edits.
 
+### Progressive Memory Retrieval
+
+When modifying a feature, Codex may retrieve `PROJECT_MEMORY.md` progressively instead of loading the entire document:
+
+1. Read the newest entries first.
+2. Search for relevant entries using task-specific keywords.
+3. Read the complete paragraph or dated section for each matching result.
+
+Expand to additional sections or the full document only when the retrieved context is incomplete, ambiguous, or conflicting.
+
 ## Scope
 
 These rules apply to:
