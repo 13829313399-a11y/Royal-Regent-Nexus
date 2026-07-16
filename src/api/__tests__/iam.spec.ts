@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createIamApi } from '@/api/iam'
 
 describe('iamApi', () => {
-  it('uses the IAM contracts for user access, role templates, requests, and audit', async () => {
+  it('uses the IAM contracts for user access and built-in position templates', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const client = {
       async get<T = unknown>(url: string): Promise<{ data: T }> {
@@ -32,7 +32,14 @@ describe('iamApi', () => {
       }],
     })
     await api.commitUserAccess('user/1', 'preview-1', true)
+    await api.previewUserSystemPosition('user/1', {
+      base_revision: 3,
+      system_position_role_id: 'engineering_supervisor',
+      reason: '岗位调整',
+    })
+    await api.commitUserSystemPosition('user/1', 'position-preview', false)
     await api.listRoles()
+    await api.listSystemPositions()
     await api.getRoleAccess('engineer')
     await api.previewRoleAccess('engineer', {
       base_version: 2,
@@ -40,11 +47,6 @@ describe('iamApi', () => {
       permission_codes: ['maintenance:read'],
     })
     await api.commitRoleAccess('engineer', 'role-preview', false)
-    await api.listAccessRequests('pending')
-    await api.approveAccessRequest('request/1', '范围和风险已复核')
-    await api.rejectAccessRequest('request/2', '范围不符合要求')
-    await api.listAuditEvents({ target_user_id: 'user-1', module_code: 'maintenance' })
-
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       'get /iam/permissions?status=active',
       'get /iam/manageable-scopes',
@@ -52,14 +54,13 @@ describe('iamApi', () => {
       'get /iam/users/user%2F1/access',
       'post /iam/users/user%2F1/access/preview',
       'post /iam/users/user%2F1/access/commit',
+      'post /iam/users/user%2F1/system-position/preview',
+      'post /iam/users/user%2F1/system-position/commit',
       'get /iam/roles',
+      'get /iam/system-positions',
       'get /iam/roles/engineer/access',
       'post /iam/roles/engineer/access/preview',
       'post /iam/roles/engineer/access/commit',
-      'get /iam/access-requests?status=pending',
-      'post /iam/access-requests/request%2F1/approve',
-      'post /iam/access-requests/request%2F2/reject',
-      'get /iam/audit-events?target_user_id=user-1&module_code=maintenance',
     ])
     expect(calls[4].data).toEqual({
       base_revision: 3,
@@ -73,5 +74,11 @@ describe('iamApi', () => {
       }],
     })
     expect(calls[5].data).toEqual({ preview_token: 'preview-1', confirm_high_risk: true })
+    expect(calls[6].data).toEqual({
+      base_revision: 3,
+      system_position_role_id: 'engineering_supervisor',
+      reason: '岗位调整',
+    })
+    expect(calls[7].data).toEqual({ preview_token: 'position-preview', confirm_high_risk: false })
   })
 })

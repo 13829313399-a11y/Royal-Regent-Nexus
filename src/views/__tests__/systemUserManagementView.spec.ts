@@ -3,113 +3,72 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const source = readFileSync(join(process.cwd(), 'src/views/SystemUserManagementView.vue'), 'utf8')
+const template = source.slice(source.indexOf('<template>'), source.indexOf('<style scoped>'))
 
 describe('SystemUserManagementView source contract', () => {
-  it('loads pending requests, users, roles, and submits approval assignments', () => {
+  it('edits registration profile data and assigns one department system position', () => {
     for (const requiredSource of [
       'systemApi.listRegistrationRequests',
       'systemApi.listUsers',
-      'systemApi.listRoles',
-      'systemApi.listNotifications',
+      'systemApi.listSystemPositions',
       'systemApi.approveRegistrationRequest',
       'systemApi.rejectRegistrationRequest',
+      'approvalProfiles',
+      'RegistrationProfileRequest',
+      'system_position_role_id',
+      'profile,',
+      'registrationDepartments',
+      'selectedDepartmentSystemPositions',
+      'positionsForDepartment',
+      'role="radiogroup"',
+      'role="radio"',
+      'aria-label="确认姓名"',
+      'aria-label="确认电话"',
+      'aria-label="确认邮箱"',
+      'aria-label="确认厂区"',
+      'aria-label="确认部门"',
+      'aria-label="确认职位"',
+      '注册资料核验',
+      '内置权限职位',
+      '真实职位只用于个人资料展示',
+      '个人职位',
+      '权限职位',
+      '调整权限职位',
+      '/system/users/${encodeURIComponent(user.id)}/access',
+      'to="/system/iam/roles"',
+    ]) {
+      expect(source).toContain(requiredSource)
+    }
+
+    expect(source).not.toContain('buildApprovalRoleAssignments')
+    expect(source).not.toContain('permissionGroupsForSelectedRole')
+    expect(source).not.toContain('inferPermissionCodesForRole')
+    expect(template).not.toContain('权限清单')
+    expect(template).not.toContain('数据范围')
+    expect(template).not.toContain('工程师默认组合授权')
+    expect(template).not.toContain('高级权限管理')
+  })
+
+  it('retains account operations and the reference approval shell', () => {
+    for (const requiredSource of [
+      'systemApi.listNotifications',
       'systemApi.updateUserStatus',
       'systemApi.resetUserPassword',
       'password_reset',
       '密码重置',
       '重置为临时密码',
-      'notification_id',
-      'role_assignments',
-      'approvalPositions',
-      'approvedPosition',
-      'position: approvedPosition',
-      '确认职位（可修改）',
-      'aria-label="确认职位"',
-      'approval-position-suggestions',
-      '职位用于个人资料展示，不决定系统权限',
-      '角色决定系统权限，与员工职位相互独立',
-      '工程部技术员',
-      'recommended_role_ids',
-      '待审批',
-      '用户列表',
-      '联系方式',
-      'user.phone',
-      'user.email',
       'UserAvatar',
       'user.avatar_url',
-      'resolveUserAvatarUrl',
-      'shape="rounded"',
-      '6 厂区',
+      '停用',
+      '恢复',
       'permission-approval-page',
       'class="wrap"',
       'class="topbar"',
-      'class="topbar-left"',
-      'class="home-exit-link"',
-      'ArrowLeft',
-      'position: sticky;',
-      'backdrop-filter: blur(14px);',
-      'class="brand"',
-      'class="admin"',
-      'class="stats"',
-      'class="stat"',
       'class="grid approval-workspace"',
-      'class="panel-head"',
       'class="queue"',
       'class="q-item"',
-      'class="applicant"',
-      'class="section"',
-      'class="sec-title"',
-      'class="roles"',
-      'class="actions"',
-      'class="note-in"',
-      'btn-approve',
-      '权限清单',
-      'permissionGroupsForSelectedRole',
-      'perm-groups',
-      'perm-group',
-      'perm locked',
-      'admin.manage',
-      'sales_customer_supervisor',
-      'factoryScopesForSelectedRequest',
-      'departmentScopesForSelectedRequest',
-      'allFactoryScopeLabel',
-      'molding_sample:create',
-      '跨厂查看啤办单据',
-      'molding_sample:cross_factory_read',
-      '跨厂查看啤办成本',
-      'molding_sample:cross_factory_cost_read',
-      'group_molding_readonly',
-      'molding_production_observer',
-      'buildApprovalRoleAssignments',
-      '工程师默认组合授权',
-      '外厂隐藏成本',
-      '不包含主管审核、啤机生产写入、仓库出入库、敏感审计或跨厂成本',
-      'selectedRequest',
-      'route.query.request_id',
-      '停用',
-      '恢复',
-      "userStatusFilter = ref<'all' | 'active' | 'suspended' | 'retired'>('all')",
-      "retired: { label: '已离职', toneClass: 'pill-slate' }",
-      "userStatusPresentation(user.status).label",
-      "userStatusPresentation(user.status).toneClass",
-      "label: '未知状态'",
-      'aria-label="搜索用户"',
-      '配置权限',
-      '/system/users/${encodeURIComponent(user.id)}/access',
-      '高级权限管理',
-      '/system/iam/permissions',
     ]) {
       expect(source).toContain(requiredSource)
     }
-
-    const readonlyPreset = source.match(/group_molding_readonly:\s*\[([\s\S]*?)\],/)
-    expect(readonlyPreset?.[1]).toContain("'molding_sample:cross_factory_read'")
-    expect(readonlyPreset?.[1]).not.toContain('molding_sample:create')
-    expect(readonlyPreset?.[1]).not.toContain('molding_sample:cross_factory_cost_read')
-
-    const engineerPreset = source.match(/engineer:\s*\[([\s\S]*?)\],/)
-    expect(engineerPreset?.[1]).toContain("'molding_sample:export'")
-    expect(engineerPreset?.[1]).not.toContain('molding_sample:supervisor_review')
-    expect(engineerPreset?.[1]).not.toContain('molding_sample:production_start')
   })
 })

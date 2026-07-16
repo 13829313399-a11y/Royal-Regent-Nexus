@@ -379,6 +379,32 @@ def test_seed_upgrades_existing_engineering_and_warehouse_roles_with_raw_materia
             assert db.get(auth_models.AuthIamState, auth_service.RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER) is not None
 
 
+def test_seed_reconciles_fixed_system_position_names_without_overwriting_template(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            role = db.get(auth_models.AuthRole, "position_qc_inspector")
+            permission_ids_before = {
+                item.permission_id
+                for item in db.query(auth_models.AuthRolePermission).filter_by(role_id=role.id).all()
+            }
+            role.name = "QC 检验员"
+            role.description = "管理员维护的职位说明"
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            updated = db.get(auth_models.AuthRole, role.id)
+            assert updated.name == "QC检验员"
+            assert updated.description == "管理员维护的职位说明"
+            assert {
+                item.permission_id
+                for item in db.query(auth_models.AuthRolePermission).filter_by(role_id=role.id).all()
+            } == permission_ids_before
+
+
 def test_canonical_can_uses_deny_then_allow_then_role_and_scope(monkeypatch):
     with make_client(monkeypatch):
         auth_service = importlib.import_module("app.services.auth")

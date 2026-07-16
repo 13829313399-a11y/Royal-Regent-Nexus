@@ -97,6 +97,13 @@ class UserAccessOut(BaseModel):
     role_bindings: list[RoleBindingOut]
     overrides: list[PermissionOverrideOut]
     effective_access: list[EffectiveAccessOut]
+    system_position_role_id: str = ""
+    system_position_role_name: str = ""
+    recommended_system_position_role_id: str = ""
+    legacy_role_count: int = 0
+    active_override_count: int = 0
+    cleanup_role_count: int = 0
+    cleanup_override_count: int = 0
 
 
 class RoleBindingChange(BaseModel):
@@ -137,6 +144,12 @@ class UserAccessPreviewRequest(BaseModel):
     override_changes: list[PermissionOverrideChange] = Field(default_factory=list)
 
 
+class SystemPositionPreviewRequest(BaseModel):
+    base_revision: int = Field(ge=0)
+    system_position_role_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class AccessDiffOut(BaseModel):
     permission_code: str
     factory_id: str
@@ -146,6 +159,21 @@ class AccessDiffOut(BaseModel):
     before_source: str = ""
     after_source: str = ""
     risk_level: str
+
+
+class SystemPositionPreviewResponse(BaseModel):
+    preview_token: str
+    expires_at: str
+    base_revision: int
+    before_role_ids: list[str] = Field(default_factory=list)
+    before_role_names: list[str] = Field(default_factory=list)
+    after_role_id: str
+    after_role_name: str
+    removed_role_count: int = 0
+    removed_override_count: int = 0
+    requires_approval: bool = False
+    high_risk: bool = False
+    diffs: list[AccessDiffOut] = Field(default_factory=list)
 
 
 class AccessPreviewResponse(BaseModel):
@@ -181,6 +209,10 @@ class RoleSummaryOut(BaseModel):
     applicable_departments: list[str] = Field(default_factory=list)
     requires_global_factory: bool = False
     scope_guidance: str = ""
+    is_system_position: bool = False
+    position_department: str = ""
+    position_department_name: str = ""
+    position_sort_order: int = 0
 
 
 class RoleAccessOut(BaseModel):
@@ -196,6 +228,10 @@ class RoleAccessOut(BaseModel):
     applicable_departments: list[str] = Field(default_factory=list)
     requires_global_factory: bool = False
     scope_guidance: str = ""
+    is_system_position: bool = False
+    position_department: str = ""
+    position_department_name: str = ""
+    position_sort_order: int = 0
 
 
 class RoleAccessPreviewRequest(BaseModel):

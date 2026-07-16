@@ -209,7 +209,7 @@ const routes: RouteRecordRaw[] = [
     name: 'system-user-access',
     component: () => import('@/views/UserAccessManagementView.vue'),
     meta: {
-      title: '用户权限配置',
+      title: '调整权限职位',
       fullPage: true,
       requiresAuth: true,
       permissions: ['system:access_manage'],
@@ -221,7 +221,7 @@ const routes: RouteRecordRaw[] = [
     name: 'iam-role-templates',
     component: () => import('@/views/IamRoleTemplatesView.vue'),
     meta: {
-      title: '角色模板',
+      title: '内置职位权限',
       fullPage: true,
       requiresAuth: true,
       permissions: ['system:permission_catalog_read'],
@@ -230,39 +230,15 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/system/iam/permissions',
-    name: 'iam-permission-catalog',
-    component: () => import('@/views/IamPermissionCatalogView.vue'),
-    meta: {
-      title: '权限目录',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['system:permission_catalog_read'],
-      enforcePermissions: true,
-    },
+    redirect: '/system/iam/roles',
   },
   {
     path: '/system/iam/requests',
-    name: 'iam-access-requests',
-    component: () => import('@/views/IamAccessRequestsView.vue'),
-    meta: {
-      title: '权限申请',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['system:access_request', 'system:access_approve'],
-      enforcePermissions: true,
-    },
+    redirect: '/system/iam/roles',
   },
   {
     path: '/system/iam/audit',
-    name: 'iam-audit-events',
-    component: () => import('@/views/IamAuditView.vue'),
-    meta: {
-      title: '权限操作记录',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['system:audit_read'],
-      enforcePermissions: true,
-    },
+    redirect: '/system/iam/roles',
   },
   {
     path: '/forbidden',

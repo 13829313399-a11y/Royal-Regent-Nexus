@@ -12,9 +12,22 @@ export interface RoleAssignmentRequest {
   department: string
 }
 
+export interface RegistrationProfileRequest {
+  display_name: string
+  phone: string
+  email: string
+  factory_id: string
+  department: string
+  position: string
+}
+
 export interface RegistrationApproveRequest {
-  role_assignments: RoleAssignmentRequest[]
+  system_position_role_id: string
+  profile: RegistrationProfileRequest
   review_comment?: string
+  /** @deprecated Compatibility only. New approval screens must not send this field. */
+  role_assignments?: RoleAssignmentRequest[]
+  /** @deprecated Compatibility only. Use profile.position. */
   position?: string
 }
 
@@ -43,6 +56,11 @@ export interface RoleResponse {
   applicable_departments: string[]
   requires_global_factory: boolean
   scope_guidance: string
+  is_system_position: boolean
+  position_department: string
+  position_department_name: string
+  position_sort_order: number
+  permission_count: number
 }
 
 export interface UserRoleAssignmentResponse {
@@ -87,6 +105,11 @@ export interface UserResponse {
   updated_at: string
   roles: UserRoleAssignmentResponse[]
   avatar_url?: string
+  primary_factory_id?: string
+  primary_department?: string
+  position?: string
+  system_position_role_id?: string
+  system_position_role_name?: string
 }
 
 export interface SystemNotificationResponse {
@@ -141,6 +164,10 @@ export function createSystemApi(client: SystemHttpClient = http) {
     },
     async listRoles() {
       const response = await client.get<RoleResponse[]>('/system/roles')
+      return response.data
+    },
+    async listSystemPositions() {
+      const response = await client.get<RoleResponse[]>('/system/positions')
       return response.data
     },
   }

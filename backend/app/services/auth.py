@@ -33,6 +33,7 @@ from app.models.auth import (
     SystemNotification,
 )
 from app.schemas.auth import AuthMeResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest, RegisterResponse
+from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS
 
 SESSION_COOKIE_NAME = "rr_session"
 logger = logging.getLogger(__name__)
@@ -125,6 +126,9 @@ DEFAULT_ROLES = [
     ("factory_permission_admin", "厂区权限管理员", "在授权厂区内管理普通用户权限"),
     ("department_permission_admin", "部门权限管理员", "在授权部门内管理普通用户权限"),
     ("admin", "系统管理员", "系统配置和权限管理"),
+] + [
+    (item.role_id, item.name, item.description)
+    for item in SYSTEM_POSITION_DEFINITIONS
 ]
 
 ROLE_PERMISSIONS = {
@@ -173,6 +177,13 @@ ROLE_PERMISSIONS = {
         "carton_mark:read",
         "carton_mark:photo_upload",
         "carton_mark:review",
+    },
+    "qa_clerk": {
+        "carton_mark:read",
+        "carton_mark:photo_upload",
+    },
+    "carton_external": {
+        "carton_mark:read",
     },
     "molding_clerk": {
         "molding_sample:read",
@@ -237,6 +248,11 @@ ROLE_PERMISSIONS = {
     "admin": set(APPLICATION_PERMISSIONS),
 }
 
+for system_position in SYSTEM_POSITION_DEFINITIONS:
+    ROLE_PERMISSIONS[system_position.role_id] = set(
+        ROLE_PERMISSIONS.get(system_position.permission_profile, set())
+    )
+
 DEFAULT_USERS = [
     ("user-admin", "admin", "系统管理员", "admin", "*", "*"),
 ]
@@ -268,10 +284,13 @@ RETIRED_DEFAULT_USER_IDS = {
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
 ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huakang-c", "huakang-d", "huadeng", "huaxing"}
 ALLOWED_DEPARTMENTS = {
+    "management",
     "engineering",
     "pmc-warehouse",
     "production",
     "qa",
+    "qc",
+    "carton",
     "sales-business",
 }
 
@@ -944,6 +963,9 @@ def ensure_authz_startup_safety(db: Session) -> None:
 def seed_auth_defaults(db: Session) -> None:
     now = now_text()
     created_role_ids: set[str] = set()
+    system_position_names = {
+        item.role_id: item.name for item in SYSTEM_POSITION_DEFINITIONS
+    }
 
     for code in APPLICATION_PERMISSIONS:
         permission_id = f"perm-{code.replace(':', '-')}"
@@ -951,9 +973,15 @@ def seed_auth_defaults(db: Session) -> None:
             db.add(AuthPermission(id=permission_id, code=code, name=code, description=""))
 
     for role_id, name, description in DEFAULT_ROLES:
-        if db.get(AuthRole, role_id) is None:
+        role = db.get(AuthRole, role_id)
+        if role is None:
             db.add(AuthRole(id=role_id, code=role_id, name=name, description=description))
             created_role_ids.add(role_id)
+        elif role_id in system_position_names:
+            # Built-in position names are part of the fixed catalog and cannot be
+            # edited in IAM. Reconcile display-name fixes without touching the
+            # administrator-owned description or permission mappings.
+            role.name = system_position_names[role_id]
 
     db.flush()
     permissions_by_code = {permission.code: permission for permission in db.scalars(select(AuthPermission)).all()}

@@ -3,66 +3,65 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const source = readFileSync(join(process.cwd(), 'src/views/UserAccessManagementView.vue'), 'utf8')
-const matrixSource = readFileSync(join(process.cwd(), 'src/components/iam/IamPermissionMatrix.vue'), 'utf8')
-const identitySource = readFileSync(join(process.cwd(), 'src/components/iam/IamIdentitySummary.vue'), 'utf8')
-const roleBindingsSource = readFileSync(join(process.cwd(), 'src/components/iam/IamRoleBindings.vue'), 'utf8')
-const scopeSource = readFileSync(join(process.cwd(), 'src/components/iam/IamScopeSelector.vue'), 'utf8')
 
 describe('UserAccessManagementView contract', () => {
-  it('implements scoped three-state draft, preview, and atomic commit', () => {
+  it('changes one system position through preview and atomic commit', () => {
     for (const required of [
       'IamIdentitySummary',
-      'IamScopeSelector',
-      'IamRoleBindings',
-      'IamPermissionMatrix',
-      'inherit',
-      'allow',
-      'deny',
       'iamApi.getUserAccess',
+      'iamApi.listSystemPositions',
       'iamApi.listPermissions',
-      'iamApi.getManageableScopes',
-      'iamApi.previewUserAccess',
+      'iamApi.getRoleAccess',
+      'iamApi.previewUserSystemPosition',
+      'iamApi.commitUserSystemPosition',
+      'system_position_role_id',
+      'assignableSystemPositions',
+      'position.position_department === userDepartment.value',
       'base_revision',
-      'reason',
-      'iamApi.commitUserAccess',
       'preview_token',
-      'confirmHighRisk',
+      'confirmedHighRisk',
       'authStore.refreshSession',
+      '内置权限职位',
+      '选择新的内置权限职位',
+      '只显示员工主部门可分配的内置职位',
+      '尚未确认主组织资料',
+      'missing-primary-department',
+      '将继承的权限',
+      '这里只展示内置职位结果，不能逐项修改',
+      '检测到历史授权',
+      'legacy_role_count',
+      'active_override_count',
+      'cleanup_role_count',
+      'cleanup_override_count',
+      'hasSystemPositionAction',
+      '预览历史授权清理',
+      'removed_role_count',
+      'removed_override_count',
+      'data-testid="system-position-action-panel"',
     ]) {
       expect(source).toContain(required)
     }
-    expect(source).not.toContain('hasPermission(')
-    expect(source).not.toContain('factoryScopes')
   })
 
-  it('contains a narrow-screen layout contract without page-level horizontal scrolling', () => {
+  it('does not render scope, multi-role, granular override, or expiry controls', () => {
+    for (const removed of [
+      'IamScopeSelector',
+      'IamRoleBindings',
+      'IamPermissionMatrix',
+      'PermissionDraftEffect',
+      'RoleBindingDraft',
+      'updatePermissionState',
+      'addRoleBinding',
+      'revokeRoleBinding',
+      'validUntil',
+      '有效期至',
+      '用户级调整',
+    ]) {
+      expect(source).not.toContain(removed)
+    }
     expect(source).toContain('overflow-x-clip')
     expect(source).toContain('w-full min-w-0')
-    expect(source).toContain('data-testid="permission-action-panel"')
-    expect(source).toContain(':has-pending-draft="changeCount > 0"')
-    expect(source).toContain('!reason.trim()')
-    expect(source).not.toContain('xl:sticky xl:bottom-4')
-    expect(source).not.toContain('xl:mb-28')
-    expect(source).toContain('grid-cols-1')
-
-    expect(matrixSource).toContain('data-testid="mobile-permission-list"')
-    expect(matrixSource).toContain('md:hidden')
-    expect(matrixSource).toContain('data-testid="desktop-permission-table"')
-    expect(matrixSource).toContain('class="hidden overflow-x-auto')
-    expect(matrixSource).toContain('md:block')
-    expect(matrixSource).toContain('[overflow-wrap:anywhere]')
-
-    expect(identitySource).toContain('[overflow-wrap:anywhere]')
-    expect(identitySource).toContain('min-w-0')
-    expect(identitySource).toContain("suspended: '已停用'")
-    expect(identitySource).toContain("retired: '已离职'")
-    expect(identitySource).toContain("pending: '待审批'")
-    expect(identitySource).toContain("rejected: '已拒绝'")
-    expect(identitySource).toContain("labels[status] ?? '未知状态'")
-    expect(identitySource).toContain("access.user.phone || '未填写'")
-    expect(identitySource).toContain("access.user.email || '未填写'")
-    expect(roleBindingsSource).toContain('aria-label="新增角色模板"')
-    expect(roleBindingsSource).toContain("binding.factory_id === '*' || binding.factory_id === props.factoryId")
-    expect(scopeSource).toContain('存在未提交的草稿，切换范围前请先预览或取消草稿。')
+    expect(source).toContain('aria-label="选择新的内置权限职位"')
+    expect(source).toContain('role="dialog"')
   })
 })
