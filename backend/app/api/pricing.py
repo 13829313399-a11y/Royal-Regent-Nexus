@@ -17,7 +17,7 @@ def read_pricing_context(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission_in_scope(db, current_user, "internal_pricing:read", factory_id, "sales-business")
+    ensure_permission_in_scope(db, current_user, "customer_price:read", factory_id, "sales-business")
     return get_pricing_context(customer_id)
 
 
@@ -28,7 +28,7 @@ def read_pricing_quotes(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission_in_scope(db, current_user, "internal_pricing:read", factory_id, "sales-business")
+    ensure_permission_in_scope(db, current_user, "customer_price:read", factory_id, "sales-business")
     return list_quotes(db, factory_id, customer_id)
 
 
@@ -38,5 +38,5 @@ def submit_pricing_quote(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission_in_scope(db, current_user, "internal_pricing:create", payload.factory_id, "sales-business")
+    ensure_permission_in_scope(db, current_user, "customer_price:export_customer_quote", payload.factory_id, "sales-business")
     return create_quote(db, payload, current_user.id)

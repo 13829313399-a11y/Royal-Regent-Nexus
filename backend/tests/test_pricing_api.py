@@ -122,7 +122,7 @@ def test_pricing_context_and_quote_submission_are_permission_scoped_and_persiste
         assert anonymous.status_code == 401
 
         profile = login(client, "sales_a", "sales_customer_owner")
-        assert "internal_pricing:create" in profile["permissions"]
+        assert "customer_price:export_customer_quote" in profile["permissions"]
 
         context_response = client.get("/api/pricing/context?customer_id=buzzbee&factory_id=huaxing")
         assert context_response.status_code == 200
@@ -177,7 +177,7 @@ def test_quote_submission_rejects_tampered_totals_and_wrong_factory_scope(monkey
         assert out_of_scope.status_code == 403
 
 
-def test_engineering_user_cannot_use_internal_pricing(monkeypatch):
+def test_engineering_user_cannot_use_customer_pricing(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "engineer_pricing", "engineer")
         response = client.get("/api/pricing/context?customer_id=buzzbee&factory_id=huaxing")

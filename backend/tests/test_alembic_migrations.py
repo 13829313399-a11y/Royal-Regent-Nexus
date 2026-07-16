@@ -27,6 +27,7 @@ MATERIAL_COMPONENT_MIGRATION_REVISION = "20260715_0015"
 INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION = "20260715_0016"
 INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION = "20260715_0017"
 INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION = "20260716_0018"
+INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION = "20260716_0019"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -76,7 +77,13 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION]
+    assert script.get_heads() == [INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION]
+
+    archive_revision = script.get_revision(INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
+    assert archive_revision.down_revision == INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION
+    archive_content = Path(archive_revision.path).read_text(encoding="utf-8")
+    assert "initiator_department" in archive_content
+    assert "is_required" in archive_content
 
     artifact_revision = script.get_revision(INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION)
     assert artifact_revision.down_revision == INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION
