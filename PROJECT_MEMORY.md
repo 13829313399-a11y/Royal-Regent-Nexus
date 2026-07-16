@@ -1682,6 +1682,14 @@ Use this template when updating the memory after future work:
 - Verification: focused Dickie Vitest suite passed 7 tests, `npm.cmd run build` passed with only the known third-party `@vueuse/core` annotation warnings, and `git diff --check` passed with Windows line-ending notices only.
 - Decision: this preserves the source filename byte-for-byte from the browser upload, including its original spelling and extension; it does not change Dickie workbook content translation or any other customer export naming.
 
+### 2026-07-16
+
+- Requirement: reduce context-window waste when Codex uses `PROJECT_MEMORY.md` for feature changes by allowing progressive, task-scoped memory retrieval instead of requiring the entire document to be loaded every time.
+- Implementation: added a `Progressive Memory Retrieval` rule to `AGENTS.md`: read newest entries first, search by task-specific keywords, then read the complete paragraph or dated section for each match; expand to more sections or the full document only when the selected context is incomplete, ambiguous, or conflicting.
+- Files changed: `AGENTS.md` and `PROJECT_MEMORY.md`.
+- Verification: reviewed the Markdown wording and ran `git diff --check -- AGENTS.md PROJECT_MEMORY.md`.
+- Decision: the mandatory pre-change memory check remains in force, but it is satisfied by targeted retrieval when the relevant context is clear.
+
 ### 2026-07-15
 
 - Requirement: the engineering molding-sample board must show five orders per status column and use real data lazy loading instead of downloading every full order before rendering the board.
