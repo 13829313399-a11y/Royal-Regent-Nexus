@@ -31,7 +31,7 @@ const ACTION_LABELS: Record<string, string> = {
   access_manage: '管理用户授权',
   access_request: '提交权限申请',
   access_approve: '审批权限申请',
-  permission_catalog_read: '查看权限目录',
+  permission_catalog_read: '查看内置职位权限',
   cross_factory_read: '跨厂查看',
   cross_factory_cost_read: '跨厂查看成本',
 }
@@ -69,7 +69,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'system:access_manage': '管理用户授权',
   'system:access_request': '提交权限申请',
   'system:audit_read': '查看权限操作记录',
-  'system:permission_catalog_read': '查看权限目录',
+  'system:permission_catalog_read': '查看内置职位权限',
   'system:role_manage': '管理角色模板',
   'system:user_manage': '管理用户账号',
 }
@@ -81,6 +81,12 @@ const SCOPE_LABELS: Record<string, string> = {
   factory_department: '指定厂区与部门',
   business_object: '指定业务对象',
 }
+
+const LEGACY_IAM_PAGE_PERMISSION_CODES = new Set([
+  'system:access_approve',
+  'system:access_request',
+  'system:audit_read',
+])
 
 export function permissionActionLabel(action: string) {
   return ACTION_LABELS[action] ?? '自定义操作'
@@ -109,4 +115,8 @@ export function permissionDisplayLabel(permission: PermissionLabelSource) {
 
 export function permissionScopeLabel(scopeType: string) {
   return SCOPE_LABELS[scopeType] ?? '自定义范围'
+}
+
+export function isBuiltInPositionPermissionVisible(permissionCode: string) {
+  return !LEGACY_IAM_PAGE_PERMISSION_CODES.has(permissionCode)
 }

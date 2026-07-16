@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  isBuiltInPositionPermissionVisible,
   permissionActionLabel,
   permissionDisplayLabel,
   permissionScopeLabel,
@@ -12,24 +13,38 @@ function readView(name: string) {
 }
 
 describe('IAM management view semantics and accessibility', () => {
-  it('separates protected-role template records from automatic superadmin access', () => {
+  it('groups fixed system positions by department for template maintenance', () => {
     const source = readView('IamRoleTemplatesView')
 
     for (const required of [
-      'activePermissionCount',
-      'templatePermissionCount',
-      '模板记录',
-      '自动拥有全部',
-      '超级管理员按系统规则自动拥有全部启用权限',
-      '系统自动拥有',
-      'aria-pressed',
-      '关闭角色模板影响预览',
+      'iamApi.listSystemPositions()',
+      'groupedSystemPositions',
+      'position_department',
+      'position_department_name',
+      'position_sort_order',
+      '内置职位权限',
+      '内置职位目录',
+      '按部门维护固定职位权限',
+      'roles.value = await iamApi.listSystemPositions()',
+      '关闭内置职位影响预览',
       'overflow-x-clip',
       'data-testid="role-templates-sticky-navigation"',
       'sticky top-0 z-30',
+      'data-testid="role-editor-workspace"',
+      'xl:h-dvh',
+      'xl:min-h-0',
+      'data-testid="role-directory-scroll-region"',
+      'data-testid="role-permission-scroll-region"',
+      'overflow-y-auto',
+      'data-testid="role-editor-action-bar"',
+      '搜索职位',
+      '搜索权限',
+      '有变更',
+      '当前职位还有未保存的权限修改',
     ]) {
       expect(source).toContain(required)
     }
+    expect(source).not.toContain('iamApi.listRoles()')
     expect(source).not.toContain('overflow-x-hidden')
     expect(source).not.toContain('sticky bottom-4')
   })
@@ -97,7 +112,7 @@ describe('IAM management view semantics and accessibility', () => {
       'system:access_manage': '管理用户授权',
       'system:access_request': '提交权限申请',
       'system:audit_read': '查看权限操作记录',
-      'system:permission_catalog_read': '查看权限目录',
+      'system:permission_catalog_read': '查看内置职位权限',
       'system:role_manage': '管理角色模板',
       'system:user_manage': '管理用户账号',
     }
@@ -105,59 +120,22 @@ describe('IAM management view semantics and accessibility', () => {
     for (const [code, label] of Object.entries(registeredPermissionLabels)) {
       expect(permissionDisplayLabel({ code, name: code })).toBe(label)
     }
-
-    const source = readView('IamPermissionCatalogView')
-    for (const required of [
-      'permissionActionLabel(permission.action)',
-      'permissionDisplayLabel(permission)',
-      'permissionScopeLabel(permission.scope_type)',
-      '{{ permission.action }}',
-      '{{ permission.scope_type }}',
-      '搜索权限',
-      '按模块筛选权限',
-      '按风险级别筛选权限',
-      'overflow-x-auto',
-      'overscroll-x-contain',
-      'data-testid="permission-catalog-sticky-controls"',
-      'sticky top-0 z-30',
-      'overflow-x-clip',
-    ]) {
-      expect(source).toContain(required)
-    }
-    expect(source).not.toContain('overflow-x-hidden')
+    expect(isBuiltInPositionPermissionVisible('system:access_request')).toBe(false)
+    expect(isBuiltInPositionPermissionVisible('system:access_approve')).toBe(false)
+    expect(isBuiltInPositionPermissionVisible('system:audit_read')).toBe(false)
+    expect(isBuiltInPositionPermissionVisible('system:permission_catalog_read')).toBe(true)
 
     const roleSource = readView('IamRoleTemplatesView')
     expect(roleSource).toContain('permissionDisplayLabel(permission)')
     expect(roleSource).toContain('permissionLabels.get(diff.permission_code)')
   })
 
-  it('labels request status, review reason, and audit filters without page overflow', () => {
-    const requestSource = readView('IamAccessRequestsView')
-    for (const required of [
-      '申请状态',
-      '按申请状态筛选',
-      '复核意见（必填）',
-      '说明批准或拒绝的依据',
-      'effectLabel(change.effect)',
-      'permissionLabel(change.permission_code)',
-      'overflow-x-hidden',
-    ]) {
-      expect(requestSource).toContain(required)
-    }
-
-    const auditSource = readView('IamAuditView')
-    for (const required of [
-      '筛选权限操作记录',
-      '按目标用户 ID 筛选',
-      '按模块代码筛选',
-      '按厂区代码筛选',
-      '筛选开始日期',
-      '筛选结束日期',
-      'minmax(0,1fr)',
-      'permissionLabel(event.permission_code)',
-      'overflow-x-hidden',
-    ]) {
-      expect(auditSource).toContain(required)
-    }
+  it('keeps IAM navigation focused on users and built-in positions', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/iam/IamNavigation.vue'), 'utf8')
+    expect(source).toContain("to: '/system/users', label: '用户与授权'")
+    expect(source).toContain("to: '/system/iam/roles', label: '内置职位权限'")
+    expect(source).not.toContain("label: '权限目录'")
+    expect(source).not.toContain("label: '权限申请'")
+    expect(source).not.toContain("label: '操作记录'")
   })
 })

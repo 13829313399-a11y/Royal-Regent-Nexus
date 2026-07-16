@@ -18,6 +18,7 @@ from app.services.system import (
     approve_registration_request,
     list_registration_requests,
     list_roles,
+    list_system_positions,
     list_system_notifications,
     list_users,
     read_user_avatar,
@@ -129,3 +130,11 @@ def roles(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return list_roles(db, current_user)
+
+
+@router.get("/positions", response_model=list[RoleOut])
+def system_positions(
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return list_system_positions(db, current_user)

@@ -103,6 +103,13 @@ export interface UserAccessResponse {
   role_bindings: RoleBinding[]
   overrides: UserPermissionOverride[]
   effective_access: EffectiveAccessEntry[]
+  system_position_role_id: string
+  system_position_role_name: string
+  recommended_system_position_role_id: string
+  legacy_role_count: number
+  active_override_count: number
+  cleanup_role_count: number
+  cleanup_override_count: number
 }
 
 export interface RoleBindingDraft {
@@ -168,6 +175,10 @@ export interface RoleSummary {
   applicable_departments: string[]
   requires_global_factory: boolean
   scope_guidance: string
+  is_system_position: boolean
+  position_department: string
+  position_department_name: string
+  position_sort_order: number
 }
 
 export interface RoleAccessResponse extends RoleSummary {
@@ -195,38 +206,25 @@ export interface RoleAccessPreviewResponse {
   high_risk: boolean
 }
 
-export interface AccessRequestItem {
-  id: string
-  requester_user_id: string
-  requester_name: string
-  target_user_id: string
-  target_user_name: string
-  status: 'pending' | 'approved' | 'rejected' | 'invalidated'
-  reason: string
-  high_risk: boolean
+export interface UserSystemPositionPreviewRequest {
   base_revision: number
-  changes: PermissionOverrideDraft[]
-  created_at: string
-  reviewed_at?: string | null
-  review_reason?: string | null
+  system_position_role_id: string
+  reason?: string
 }
 
-export interface AuthorizationAuditEvent {
-  id: string
-  event_type: string
-  actor_user_id: string
-  actor_name: string
-  target_user_id?: string | null
-  target_user_name?: string | null
-  permission_code?: string | null
-  factory_id?: string | null
-  department?: string | null
-  reason: string
-  before_value?: unknown
-  after_value?: unknown
-  request_id?: string | null
-  ip_address?: string | null
-  created_at: string
+export interface UserSystemPositionPreviewResponse {
+  preview_token: string
+  base_revision: number
+  before_role_ids: string[]
+  before_role_names: string[]
+  after_role_id: string
+  after_role_name: string
+  removed_role_count: number
+  removed_override_count: number
+  requires_approval: boolean
+  high_risk: boolean
+  diffs: PermissionAccessDiff[]
+  expires_at?: string
 }
 
 function buildQuery(params: Record<string, string | undefined>) {
@@ -270,8 +268,26 @@ export function createIamApi(client: IamHttpClient = http) {
       )
       return response.data
     },
+    async previewUserSystemPosition(userId: string, payload: UserSystemPositionPreviewRequest) {
+      const response = await client.post<UserSystemPositionPreviewResponse>(
+        `/iam/users/${encodeURIComponent(userId)}/system-position/preview`,
+        payload,
+      )
+      return response.data
+    },
+    async commitUserSystemPosition(userId: string, previewToken: string, confirmHighRisk = false) {
+      const response = await client.post<AccessCommitResponse>(
+        `/iam/users/${encodeURIComponent(userId)}/system-position/commit`,
+        { preview_token: previewToken, confirm_high_risk: confirmHighRisk },
+      )
+      return response.data
+    },
     async listRoles() {
       const response = await client.get<RoleSummary[]>('/iam/roles')
+      return response.data
+    },
+    async listSystemPositions() {
+      const response = await client.get<RoleSummary[]>('/iam/system-positions')
       return response.data
     },
     async getRoleAccess(roleId: string) {
@@ -290,36 +306,6 @@ export function createIamApi(client: IamHttpClient = http) {
         `/iam/roles/${encodeURIComponent(roleId)}/access/commit`,
         { preview_token: previewToken, confirm_high_risk: confirmHighRisk },
       )
-      return response.data
-    },
-    async listAccessRequests(status = 'pending') {
-      const response = await client.get<AccessRequestItem[]>(`/iam/access-requests${buildQuery({ status })}`)
-      return response.data
-    },
-    async approveAccessRequest(requestId: string, reason: string) {
-      const response = await client.post<AccessRequestItem>(
-        `/iam/access-requests/${encodeURIComponent(requestId)}/approve`,
-        { reason },
-      )
-      return response.data
-    },
-    async rejectAccessRequest(requestId: string, reason: string) {
-      const response = await client.post<AccessRequestItem>(
-        `/iam/access-requests/${encodeURIComponent(requestId)}/reject`,
-        { reason },
-      )
-      return response.data
-    },
-    async listAuditEvents(filters: {
-      actor_user_id?: string
-      target_user_id?: string
-      module_code?: string
-      factory_id?: string
-      department?: string
-      from?: string
-      to?: string
-    } = {}) {
-      const response = await client.get<AuthorizationAuditEvent[]>(`/iam/audit-events${buildQuery(filters)}`)
       return response.data
     },
   }

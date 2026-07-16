@@ -14,10 +14,12 @@ from app.models.auth import (
     AuthRegistrationRequest,
     AuthRole,
     AuthRoleBindingMetadata,
+    AuthRoleMetadata,
     AuthRolePermission,
     AuthSession,
     AuthUser,
     AuthUserAuthorizationRevision,
+    AuthUserPermissionOverride,
     AuthUserRole,
     EmployeeProfile,
     SystemNotification,
@@ -36,6 +38,8 @@ from app.schemas.system import (
     UserStatusUpdateRequest,
 )
 from app.services.auth import (
+    ALLOWED_DEPARTMENTS,
+    ALLOWED_FACTORY_IDS,
     AuthContext,
     add_auth_audit,
     build_auth_context,
@@ -46,6 +50,12 @@ from app.services.auth import (
     validate_password_characters,
 )
 from app.services.permission_scope_policy import role_scope_policy, scope_is_applicable
+from app.services.system_positions import (
+    SPECIAL_SYSTEM_ROLE_CODES,
+    SYSTEM_POSITION_DEFINITIONS,
+    get_system_position,
+    recommend_system_position_role_id,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -148,51 +158,92 @@ def role_is_high_risk(db: Session, role_id: str) -> bool:
     )
 
 
-def increment_authorization_revision(db: Session, user_id: str, now: str) -> int:
-    revision = db.get(AuthUserAuthorizationRevision, user_id)
+def lock_role_metadata(db: Session, role_ids: list[str]) -> None:
+    normalized_role_ids = sorted({role_id.strip() for role_id in role_ids if role_id.strip()})
+    if not normalized_role_ids:
+        return
+    # Role-template writes take the same lock before changing permission rows.
+    # A deterministic order also prevents multi-role registration approvals from
+    # deadlocking with one another.
+    locked_metadata = db.scalars(role_metadata_for_update_statement(normalized_role_ids)).all()
+    if len(locked_metadata) != len(normalized_role_ids):
+        raise HTTPException(
+            status_code=409,
+            detail="角色权限模板元数据缺失，请重启服务完成初始化后重试",
+        )
+
+
+def role_metadata_for_update_statement(role_ids: list[str]):
+    return (
+        select(AuthRoleMetadata)
+        .where(AuthRoleMetadata.role_id.in_(role_ids))
+        .order_by(AuthRoleMetadata.role_id)
+        .with_for_update()
+    )
+
+
+def lock_authorization_revision(
+    db: Session,
+    user_id: str,
+) -> AuthUserAuthorizationRevision:
+    revision = db.scalar(authorization_revision_for_update_statement(user_id))
     if revision is None:
-        revision = AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now)
-        db.add(revision)
-    else:
-        revision.revision += 1
-        revision.updated_at = now
+        # Startup seeding and registration both create this sidecar. Failing
+        # closed avoids racing another transaction that might also try to create
+        # the same primary-key row without holding a lock.
+        raise HTTPException(
+            status_code=409,
+            detail="用户授权版本元数据缺失，请重启服务完成初始化后重试",
+        )
+    return revision
+
+
+def authorization_revision_for_update_statement(user_id: str):
+    return (
+        select(AuthUserAuthorizationRevision)
+        .where(AuthUserAuthorizationRevision.user_id == user_id)
+        .with_for_update()
+    )
+
+
+def increment_authorization_revision(
+    revision: AuthUserAuthorizationRevision,
+    now: str,
+) -> int:
+    revision.revision += 1
+    revision.updated_at = now
     return revision.revision
 
 
 def recommend_role_ids(registration_request: AuthRegistrationRequest) -> list[str]:
-    position = registration_request.position.strip().lower()
-    department = registration_request.department
-
-    is_leadership_position = (
-        "主管" in registration_request.position
-        or "经理" in registration_request.position
-        or "supervisor" in position
-        or "manager" in position
+    role_id = recommend_system_position_role_id(
+        registration_request.position,
+        registration_request.department,
     )
-    if is_leadership_position:
-        department_leadership_roles = {
-            "engineering": "engineering_supervisor",
-            "sales-business": "sales_customer_supervisor",
-        }
-        leadership_role_id = department_leadership_roles.get(department)
-        if leadership_role_id:
-            return [leadership_role_id]
-
-    department_defaults = {
-        "engineering": "engineer",
-        "pmc-warehouse": "carton_warehouse_keeper",
-        "production": "molding_clerk",
-        "qa": "qa_inspector",
-        "sales-business": "sales_customer_owner",
-    }
-    role_id = department_defaults.get(department)
     return [role_id] if role_id else []
 
 
 def list_roles(db: Session, current_user: AuthContext) -> list[RoleOut]:
     ensure_user_manage(db, current_user)
     roles = db.scalars(select(AuthRole).order_by(AuthRole.id)).all()
-    return [role_to_out(role) for role in roles]
+    return [role_to_out(db, role) for role in roles]
+
+
+def list_system_positions(db: Session, current_user: AuthContext) -> list[RoleOut]:
+    ensure_user_manage(db, current_user)
+    roles_by_id = {
+        role.id: role
+        for role in db.scalars(
+            select(AuthRole).where(
+                AuthRole.id.in_([item.role_id for item in SYSTEM_POSITION_DEFINITIONS])
+            )
+        ).all()
+    }
+    return [
+        role_to_out(db, roles_by_id[item.role_id])
+        for item in SYSTEM_POSITION_DEFINITIONS
+        if item.role_id in roles_by_id
+    ]
 
 
 def list_registration_requests(
@@ -220,6 +271,15 @@ def approve_registration_request(
     payload: RegistrationApproveRequest,
     request: Request | None = None,
 ) -> RegistrationRequestOut:
+    if payload.system_position_role_id.strip() or payload.profile is not None:
+        return approve_registration_with_system_position(
+            db,
+            current_user,
+            request_id,
+            payload,
+            request=request,
+        )
+
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
     ensure_user_manage(
@@ -250,6 +310,9 @@ def approve_registration_request(
         raise HTTPException(status_code=404, detail="申请账号不存在")
     now = now_text()
 
+    lock_role_metadata(db, [assignment.role_id for assignment in role_assignments])
+    authorization_revision = lock_authorization_revision(db, user.id)
+
     for assignment in role_assignments:
         validate_role_assignment(db, assignment)
         if not is_superadmin(current_user):
@@ -259,9 +322,9 @@ def approve_registration_request(
                 assignment.factory_id.strip(),
                 assignment.department.strip(),
             ):
-                raise HTTPException(status_code=403, detail="跨范围角色授权请通过权限申请")
+                raise HTTPException(status_code=403, detail="跨范围角色授权请由集团超级管理员直接操作")
             if role_is_high_risk(db, assignment.role_id.strip()):
-                raise HTTPException(status_code=403, detail="管理员或高风险角色请通过权限申请")
+                raise HTTPException(status_code=403, detail="管理员或高风险角色请由集团超级管理员直接操作")
         validate_role_assignment_scope(db, assignment)
 
     existing_user_roles = list(
@@ -375,7 +438,7 @@ def approve_registration_request(
     registration_request.reviewed_at = now
     registration_request.updated_at = now
     if added_binding_ids:
-        increment_authorization_revision(db, user.id, now)
+        increment_authorization_revision(authorization_revision, now)
     mark_registration_notifications_handled(db, registration_request.id, now)
     add_auth_audit(
         db,
@@ -387,6 +450,283 @@ def approve_registration_request(
             f"职位：{original_position}"
             f"{' -> ' + approved_position if approved_position != original_position else ''}；"
             f"角色：{','.join(item.role_id for item in role_assignments)}"
+        ),
+        request=request,
+    )
+    db.commit()
+    return registration_request_to_out(registration_request)
+
+
+def approve_registration_with_system_position(
+    db: Session,
+    current_user: AuthContext,
+    request_id: str,
+    payload: RegistrationApproveRequest,
+    request: Request | None = None,
+) -> RegistrationRequestOut:
+    ensure_user_manage(db, current_user)
+    registration_request = load_registration_request(db, request_id)
+    ensure_user_manage(
+        db,
+        current_user,
+        registration_request.factory_id,
+        registration_request.department,
+    )
+    if registration_request.status != "pending":
+        raise HTTPException(status_code=400, detail="该申请已处理")
+    if payload.profile is None:
+        raise HTTPException(status_code=400, detail="请核对注册资料")
+
+    display_name = payload.profile.display_name.strip()
+    phone = payload.profile.phone.strip()
+    email = payload.profile.email.strip()
+    factory_id = payload.profile.factory_id.strip()
+    department = payload.profile.department.strip()
+    position = payload.profile.position.strip()
+    role_id = payload.system_position_role_id.strip()
+
+    if not display_name:
+        raise HTTPException(status_code=400, detail="请输入姓名")
+    if not phone and not email:
+        raise HTTPException(status_code=400, detail="手机或邮箱至少填写一项")
+    if factory_id not in ALLOWED_FACTORY_IDS:
+        raise HTTPException(status_code=400, detail="请选择有效厂区")
+    if department not in ALLOWED_DEPARTMENTS:
+        raise HTTPException(status_code=400, detail="请选择有效部门")
+    if not position:
+        raise HTTPException(status_code=400, detail="请输入职位")
+    if len(position) > 128:
+        raise HTTPException(status_code=400, detail="职位不能超过 128 个字符")
+
+    ensure_user_manage(db, current_user, factory_id, department)
+    system_position = get_system_position(role_id)
+    role = db.get(AuthRole, role_id)
+    if system_position is None or role is None:
+        raise HTTPException(status_code=400, detail="请选择系统内置权限职位")
+    permission_department = system_position.department
+    if permission_department != department:
+        ensure_user_manage(db, current_user, factory_id, permission_department)
+    assignment = RoleAssignmentRequest(
+        role_id=role.id,
+        factory_id=factory_id,
+        department=permission_department,
+    )
+    validate_role_assignment_scope(db, assignment)
+
+    user = db.get(AuthUser, registration_request.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="申请账号不存在")
+
+    now = now_text()
+    lock_role_metadata(db, [role.id])
+    authorization_revision = lock_authorization_revision(db, user.id)
+    if not is_superadmin(current_user) and role_is_high_risk(db, role.id):
+        raise HTTPException(status_code=403, detail="高风险内置职位请由集团超级管理员审批")
+
+    original_profile = {
+        "display_name": registration_request.display_name,
+        "phone": registration_request.phone,
+        "email": registration_request.email,
+        "factory_id": registration_request.factory_id,
+        "department": registration_request.department,
+        "position": registration_request.position,
+    }
+    roles_by_id = {
+        item.id: item
+        for item in db.scalars(select(AuthRole)).all()
+    }
+    existing_bindings = list(
+        db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all()
+    )
+    for binding in existing_bindings:
+        metadata = db.get(AuthRoleBindingMetadata, binding.id)
+        if metadata is not None and metadata.state != "active":
+            continue
+        bound_role = roles_by_id.get(binding.role_id)
+        if bound_role and bound_role.code in SPECIAL_SYSTEM_ROLE_CODES:
+            continue
+        if metadata is None:
+            metadata = AuthRoleBindingMetadata(
+                user_role_id=binding.id,
+                state="active",
+                source_type="legacy_import",
+                source_id="",
+                valid_from="",
+                valid_until="",
+                reason="",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(metadata)
+        metadata.state = "revoked"
+        metadata.revoked_by_user_id = current_user.id
+        metadata.revoked_at = now
+        metadata.revoke_reason = "注册审批统一归类到内置权限职位"
+        metadata.updated_at = now
+        db.add(
+            AuthAuthorizationEvent(
+                id=f"auth-event-{secrets.token_hex(16)}",
+                actor_user_id=current_user.id,
+                target_user_id=user.id,
+                event_type="role_binding_revoke",
+                target_type="role_binding",
+                target_id=binding.id,
+                permission_id="",
+                effect="",
+                factory_id=binding.factory_id,
+                department=binding.department,
+                before_json=json.dumps(
+                    {
+                        "role_id": binding.role_id,
+                        "factory_id": binding.factory_id,
+                        "department": binding.department,
+                        "state": "active",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                after_json=json.dumps({"state": "revoked"}, ensure_ascii=False, sort_keys=True),
+                reason=payload.review_comment.strip() or "注册审批统一归类到内置权限职位",
+                ip_address=request.client.host if request and request.client else "",
+                user_agent=request.headers.get("user-agent", "") if request else "",
+                access_request_id="",
+                created_at=now,
+            )
+        )
+
+    active_overrides = list(
+        db.scalars(
+            select(AuthUserPermissionOverride).where(
+                AuthUserPermissionOverride.user_id == user.id,
+                AuthUserPermissionOverride.status == "active",
+            )
+        ).all()
+    )
+    for override in active_overrides:
+        override.status = "revoked"
+        override.revoked_by_user_id = current_user.id
+        override.revoked_at = now
+        override.revoke_reason = "注册审批统一归类到内置权限职位"
+        override.updated_at = now
+        db.add(
+            AuthAuthorizationEvent(
+                id=f"auth-event-{secrets.token_hex(16)}",
+                actor_user_id=current_user.id,
+                target_user_id=user.id,
+                event_type="permission_override_removed",
+                target_type="permission_override",
+                target_id=override.id,
+                permission_id=override.permission_id,
+                effect="inherit",
+                factory_id=override.factory_id,
+                department=override.department,
+                before_json=json.dumps({"effect": override.effect}, ensure_ascii=False, sort_keys=True),
+                after_json="{}",
+                reason=payload.review_comment.strip() or "注册审批统一归类到内置权限职位",
+                ip_address=request.client.host if request and request.client else "",
+                user_agent=request.headers.get("user-agent", "") if request else "",
+                access_request_id="",
+                created_at=now,
+            )
+        )
+
+    user_role_id = f"user-role-{secrets.token_hex(16)}"
+    db.add(
+        AuthUserRole(
+            id=user_role_id,
+            user_id=user.id,
+            role_id=role.id,
+            factory_id=factory_id,
+            department=permission_department,
+        )
+    )
+    db.flush()
+    db.add(
+        AuthRoleBindingMetadata(
+            user_role_id=user_role_id,
+            state="active",
+            source_type="system_position",
+            source_id=registration_request.id,
+            valid_from=now,
+            valid_until="",
+            reason=payload.review_comment.strip() or "注册审批分配内置权限职位",
+            created_by_user_id=current_user.id,
+            approved_by_user_id=current_user.id,
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.add(
+        AuthAuthorizationEvent(
+            id=f"auth-event-{secrets.token_hex(16)}",
+            actor_user_id=current_user.id,
+            target_user_id=user.id,
+            event_type="system_position_assign",
+            target_type="role_binding",
+            target_id=user_role_id,
+            permission_id="",
+            effect="allow",
+            factory_id=factory_id,
+            department=permission_department,
+            before_json="{}",
+            after_json=json.dumps(
+                {
+                    "role_id": role.id,
+                    "role_name": role.name,
+                    "factory_id": factory_id,
+                    "department": permission_department,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            reason=payload.review_comment.strip() or "注册审批分配内置权限职位",
+            ip_address=request.client.host if request and request.client else "",
+            user_agent=request.headers.get("user-agent", "") if request else "",
+            access_request_id="",
+            created_at=now,
+        )
+    )
+
+    profile = db.get(EmployeeProfile, user.id)
+    if profile is None:
+        profile = EmployeeProfile(user_id=user.id, created_at=now)
+        db.add(profile)
+    profile.primary_factory_id = factory_id
+    profile.primary_department = department
+    profile.position = position
+    profile.phone = phone
+    profile.email = email
+    profile.confirmation_status = "confirmed"
+    profile.source_registration_request_id = registration_request.id
+    profile.updated_at = now
+
+    user.display_name = display_name
+    user.status = "active"
+    user.updated_at = now
+    registration_request.display_name = display_name
+    registration_request.phone = phone
+    registration_request.email = email
+    registration_request.factory_id = factory_id
+    registration_request.department = department
+    registration_request.position = position
+    registration_request.status = "approved"
+    registration_request.reviewer_user_id = current_user.id
+    registration_request.review_comment = payload.review_comment.strip()
+    registration_request.reviewed_at = now
+    registration_request.updated_at = now
+    increment_authorization_revision(authorization_revision, now)
+    mark_registration_notifications_handled(db, registration_request.id, now)
+    add_auth_audit(
+        db,
+        "registration_approved",
+        username=user.username,
+        user_id=user.id,
+        detail=(
+            "审批通过；"
+            f"资料：{json.dumps(original_profile, ensure_ascii=False, sort_keys=True)} -> "
+            f"{json.dumps({'display_name': display_name, 'phone': phone, 'email': email, 'factory_id': factory_id, 'department': department, 'position': position}, ensure_ascii=False, sort_keys=True)}；"
+            f"内置权限职位：{role.name}({role.id})"
         ),
         request=request,
     )
@@ -591,10 +931,18 @@ def update_system_notification(
 
 
 def load_registration_request(db: Session, request_id: str) -> AuthRegistrationRequest:
-    registration_request = db.get(AuthRegistrationRequest, request_id)
+    registration_request = db.scalar(registration_request_for_update_statement(request_id))
     if registration_request is None:
         raise HTTPException(status_code=404, detail="注册申请不存在")
     return registration_request
+
+
+def registration_request_for_update_statement(request_id: str):
+    return (
+        select(AuthRegistrationRequest)
+        .where(AuthRegistrationRequest.id == request_id)
+        .with_for_update()
+    )
 
 
 def validate_role_assignment(db: Session, assignment: RoleAssignmentRequest) -> None:
@@ -657,7 +1005,7 @@ def expand_registration_role_assignments(
         if not is_superadmin(current_user):
             raise HTTPException(
                 status_code=403,
-                detail="工程师默认组合包含集团跨厂只读权限，请由集团超级管理员审批或提交权限申请",
+                detail="工程师默认组合包含集团跨厂只读权限，请由集团超级管理员直接操作",
             )
         companion_roles = {
             "molding_production_observer": (
@@ -810,8 +1158,14 @@ def count_active_superadmins(db: Session) -> int:
     return sum(1 for user in active_users if user_is_superadmin(db, user.id))
 
 
-def role_to_out(role: AuthRole) -> RoleOut:
+def role_to_out(db: Session, role: AuthRole) -> RoleOut:
     policy = role_scope_policy(role.code)
+    position = get_system_position(role.id)
+    permission_count = len(
+        db.scalars(
+            select(AuthRolePermission).where(AuthRolePermission.role_id == role.id)
+        ).all()
+    )
     return RoleOut(
         id=role.id,
         code=role.code,
@@ -820,6 +1174,11 @@ def role_to_out(role: AuthRole) -> RoleOut:
         applicable_departments=list(policy.departments),
         requires_global_factory=policy.requires_global_factory,
         scope_guidance=policy.guidance,
+        is_system_position=position is not None,
+        position_department=position.department if position else "",
+        position_department_name=position.department_name if position else "",
+        position_sort_order=position.sort_order if position else 0,
+        permission_count=permission_count,
     )
 
 
@@ -861,6 +1220,16 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
         for role in db.scalars(select(AuthRole).where(AuthRole.id.in_([item.role_id for item in user_roles]))).all()
     } if user_roles else {}
     phone, email = latest_registration_contact(db, user.id)
+    profile = db.get(EmployeeProfile, user.id)
+    system_position_roles = sorted(
+        [
+            roles_by_id[item.role_id]
+            for item in user_roles
+            if item.role_id in roles_by_id and get_system_position(item.role_id) is not None
+        ],
+        key=lambda item: get_system_position(item.id).sort_order,
+    )
+    system_position_role = system_position_roles[0] if system_position_roles else None
     return UserOut(
         id=user.id,
         username=user.username,
@@ -888,6 +1257,11 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
             )
             for user_role in user_roles
         ],
+        primary_factory_id=profile.primary_factory_id if profile else "",
+        primary_department=profile.primary_department if profile else "",
+        position=profile.position if profile else "",
+        system_position_role_id=system_position_role.id if system_position_role else "",
+        system_position_role_name=system_position_role.name if system_position_role else "",
     )
 
 

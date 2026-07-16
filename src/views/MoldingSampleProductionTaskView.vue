@@ -2398,11 +2398,11 @@ watchEffect(() => {
 
 @media print {
   @page { size: A4 landscape; margin: 5mm; }
-  html, body, body.molding-sample-task-printing #app { min-height: 0 !important; height: auto !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  html, body, body.molding-sample-task-printing #app { min-height: 0 !important; height: auto !important; max-width: none !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   body.molding-sample-task-printing * { visibility: hidden; }
   body.molding-sample-task-printing #app > :not(.molding-sample-task-print-root) { display: none !important; }
   body.molding-sample-task-printing .molding-sample-task-print-root, body.molding-sample-task-printing .molding-sample-task-print-root * { visibility: visible; }
-  body.molding-sample-task-printing #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: 100% !important; min-height: 0 !important; height: auto !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; break-after: auto; }
+  body.molding-sample-task-printing #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: calc(297mm - 10mm) !important; max-width: none !important; min-height: 0 !important; height: auto !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; break-after: auto; }
   .molding-sample-task-print-page { box-sizing: border-box; width: 100%; min-height: 0; height: auto; margin: 0; break-inside: auto; page-break-inside: auto; break-after: auto; }
   .molding-sample-task-print-header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; }
   .molding-sample-task-print-label { color: #0f766e; font-size: 9px; font-weight: 700; letter-spacing: .12em; }
@@ -2419,12 +2419,12 @@ watchEffect(() => {
   .molding-sample-task-print-section-heading { display: flex; align-items: center; justify-content: space-between; padding-bottom: 5px; border-bottom: 1px solid #94a3b8; font-size: 10px; }
   .molding-sample-task-print-section-heading span { color: #64748b; font-size: 8.5px; }
   .molding-sample-task-print-table { width: 100%; margin-top: 6px; border-collapse: collapse; table-layout: fixed; font-size: 8.5px; }
-  .molding-sample-task-print-index { width: 4%; }
+  .molding-sample-task-print-index { width: 3%; }
   .molding-sample-task-print-mold { width: 25%; }
-  .molding-sample-task-print-timing { width: 18%; }
-  .molding-sample-task-print-material { width: 23%; }
-  .molding-sample-task-print-quantity { width: 13%; }
-  .molding-sample-task-print-notes { width: 17%; }
+  .molding-sample-task-print-timing { width: 17%; }
+  .molding-sample-task-print-material { width: 27%; }
+  .molding-sample-task-print-quantity { width: 12%; }
+  .molding-sample-task-print-notes { width: 16%; }
   .molding-sample-task-print-table th, .molding-sample-task-print-table td { border: 1px solid #cbd5e1; padding: 4px 5px; vertical-align: top; overflow-wrap: anywhere; }
   .molding-sample-task-print-table th { background: #f1f5f9; color: #334155; text-align: left; font-size: 8px; }
   .molding-sample-task-print-table td > span { display: block; margin-top: 2px; color: #64748b; font-size: 8px; font-weight: 400; }
