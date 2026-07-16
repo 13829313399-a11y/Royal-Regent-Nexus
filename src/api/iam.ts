@@ -209,7 +209,7 @@ export interface RoleAccessPreviewResponse {
 export interface UserSystemPositionPreviewRequest {
   base_revision: number
   system_position_role_id: string
-  reason: string
+  reason?: string
 }
 
 export interface UserSystemPositionPreviewResponse {

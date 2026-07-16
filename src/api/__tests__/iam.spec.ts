@@ -35,7 +35,6 @@ describe('iamApi', () => {
     await api.previewUserSystemPosition('user/1', {
       base_revision: 3,
       system_position_role_id: 'engineering_supervisor',
-      reason: '岗位调整',
     })
     await api.commitUserSystemPosition('user/1', 'position-preview', false)
     await api.listRoles()
@@ -77,7 +76,6 @@ describe('iamApi', () => {
     expect(calls[6].data).toEqual({
       base_revision: 3,
       system_position_role_id: 'engineering_supervisor',
-      reason: '岗位调整',
     })
     expect(calls[7].data).toEqual({ preview_token: 'position-preview', confirm_high_risk: false })
   })

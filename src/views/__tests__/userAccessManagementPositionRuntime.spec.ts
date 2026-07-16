@@ -130,20 +130,20 @@ describe('UserAccessManagementView system position change', () => {
     expect(wrapper.text()).toContain('当前生效 2 条旧角色、1 条个人特殊权限')
     expect(wrapper.text()).toContain('本次共将清理 2 条普通角色和 1 条个人权限')
     expect(wrapper.get('select[aria-label="选择新的内置权限职位"]').text()).toContain('生产文员')
+    expect(wrapper.text()).not.toContain('调整原因')
 
     await wrapper.get('select[aria-label="选择新的内置权限职位"]').setValue('position-production-clerk')
-    await wrapper.get('input[placeholder="例如：员工岗位职责调整为工程主管"]').setValue('职责调整')
     await flushPromises()
 
     const previewButton = wrapper.findAll('button').find((button) => button.text().includes('预览职位调整'))
     expect(previewButton).toBeDefined()
+    expect(previewButton!.attributes('disabled')).toBeUndefined()
     await previewButton!.trigger('click')
     await flushPromises()
 
     expect(previewUserSystemPositionMock).toHaveBeenCalledWith('user-1', {
       base_revision: 2,
       system_position_role_id: 'position-production-clerk',
-      reason: '职责调整',
     })
     expect(wrapper.text()).toContain('清理历史角色')
     expect(wrapper.text()).toContain('清理个人特殊权限')
@@ -179,7 +179,6 @@ describe('UserAccessManagementView system position change', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.get('input[placeholder="例如：员工岗位职责调整为工程主管"]').setValue('整理历史授权')
     const cleanupButton = wrapper.findAll('button').find((button) => button.text().includes('预览历史授权清理'))
     expect(cleanupButton).toBeDefined()
     expect(cleanupButton!.attributes('disabled')).toBeUndefined()
@@ -190,7 +189,6 @@ describe('UserAccessManagementView system position change', () => {
     expect(previewUserSystemPositionMock).toHaveBeenCalledWith('user-1', {
       base_revision: 2,
       system_position_role_id: 'position-engineer',
-      reason: '整理历史授权',
     })
   })
 

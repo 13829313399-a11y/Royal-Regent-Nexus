@@ -57,6 +57,10 @@ describe('UserAccessManagementView contract', () => {
       'validUntil',
       '有效期至',
       '用户级调整',
+      '调整原因',
+      '例如：员工岗位职责调整为工程主管',
+      'reason = ref',
+      'reason.trim()',
     ]) {
       expect(source).not.toContain(removed)
     }

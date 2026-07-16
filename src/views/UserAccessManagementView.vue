@@ -28,7 +28,6 @@ const systemPositions = ref<RoleSummary[]>([])
 const permissions = ref<PermissionCatalogItem[]>([])
 const selectedSystemPositionRoleId = ref('')
 const selectedPositionAccess = ref<RoleAccessResponse | null>(null)
-const reason = ref('')
 const preview = ref<UserSystemPositionPreviewResponse | null>(null)
 const confirmedHighRisk = ref(false)
 const isLoading = ref(false)
@@ -153,7 +152,6 @@ async function loadData() {
     systemPositions.value = positions.filter((position) => position.is_system_position)
     permissions.value = catalog
     selectedSystemPositionRoleId.value = initialSystemPosition(userAccess, systemPositions.value)
-    reason.value = ''
     preview.value = null
     await loadSelectedPositionAccess()
   } catch (error) {
@@ -170,7 +168,6 @@ function discardChange() {
   selectedSystemPositionRoleId.value = access.value
     ? initialSystemPosition(access.value, systemPositions.value)
     : ''
-  reason.value = ''
   preview.value = null
   errorMessage.value = ''
   void loadSelectedPositionAccess()
@@ -181,10 +178,6 @@ async function previewChange() {
     errorMessage.value = '当前权限职位和历史授权都不需要调整。'
     return
   }
-  if (!reason.value.trim()) {
-    errorMessage.value = '调整权限职位必须填写原因。'
-    return
-  }
   isPreviewing.value = true
   errorMessage.value = ''
   successMessage.value = ''
@@ -192,7 +185,6 @@ async function previewChange() {
     preview.value = await iamApi.previewUserSystemPosition(userId.value, {
       base_revision: access.value?.authorization_version ?? 0,
       system_position_role_id: selectedSystemPositionRoleId.value,
-      reason: reason.value.trim(),
     })
     confirmedHighRisk.value = false
   } catch (error) {
@@ -306,6 +298,15 @@ onMounted(() => void loadData())
                 <p>当前生效 {{ access.legacy_role_count }} 条旧角色、{{ access.active_override_count }} 条个人特殊权限；本次共将清理 {{ access.cleanup_role_count }} 条普通角色和 {{ access.cleanup_override_count }} 条个人权限（包括尚未生效或已到期的残留授权）。</p>
               </div>
             </div>
+
+            <div v-if="hasPrimaryOrganization" data-testid="system-position-action-panel" class="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" :disabled="isPreviewing" @click="discardChange">
+                <RefreshCw class="size-4" />取消修改
+              </button>
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!hasSystemPositionAction || isPreviewing" @click="previewChange">
+                <LoaderCircle v-if="isPreviewing" class="size-4 animate-spin" /><Save v-else class="size-4" />{{ hasPositionChange ? '预览职位调整' : '预览历史授权清理' }}
+              </button>
+            </div>
           </article>
 
           <article class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -331,22 +332,6 @@ onMounted(() => void loadData())
           </article>
         </section>
 
-        <section v-if="hasPrimaryOrganization" data-testid="system-position-action-panel" class="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-            <label class="grid gap-1.5 text-sm font-semibold text-slate-700">
-              调整原因 <span class="text-xs font-normal text-slate-400">必填，将进入审计记录</span>
-              <input v-model="reason" type="text" maxlength="300" placeholder="例如：员工岗位职责调整为工程主管" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 px-3 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100">
-            </label>
-            <div class="grid grid-cols-1 gap-2 sm:flex">
-              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" :disabled="isPreviewing" @click="discardChange">
-                <RefreshCw class="size-4" />取消修改
-              </button>
-              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!hasSystemPositionAction || isPreviewing || !reason.trim()" @click="previewChange">
-                <LoaderCircle v-if="isPreviewing" class="size-4 animate-spin" /><Save v-else class="size-4" />{{ hasPositionChange ? '预览职位调整' : '预览历史授权清理' }}
-              </button>
-            </div>
-          </div>
-        </section>
       </template>
     </div>
 

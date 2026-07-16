@@ -30,6 +30,17 @@ describe('IAM management view semantics and accessibility', () => {
       'overflow-x-clip',
       'data-testid="role-templates-sticky-navigation"',
       'sticky top-0 z-30',
+      'data-testid="role-editor-workspace"',
+      'xl:h-dvh',
+      'xl:min-h-0',
+      'data-testid="role-directory-scroll-region"',
+      'data-testid="role-permission-scroll-region"',
+      'overflow-y-auto',
+      'data-testid="role-editor-action-bar"',
+      '搜索职位',
+      '搜索权限',
+      '有变更',
+      '当前职位还有未保存的权限修改',
     ]) {
       expect(source).toContain(required)
     }
