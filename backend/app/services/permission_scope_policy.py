@@ -21,6 +21,26 @@ SHARED_MOLDING_DEPARTMENTS = (
 
 
 MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    "internal_pricing:read": ScopePolicy(
+        ("sales-business",),
+        guidance="仅在业务部范围按厂区查看内部报价",
+    ),
+    "internal_pricing:create": ScopePolicy(
+        ("sales-business",),
+        guidance="仅在业务部范围按厂区和车间新建内部报价",
+    ),
+    "internal_pricing:edit": ScopePolicy(
+        ("sales-business",),
+        guidance="仅在业务部范围编辑和提交车间报价分段",
+    ),
+    "internal_pricing:review": ScopePolicy(
+        ("sales-business",),
+        guidance="仅业务主管在业务部范围审核车间报价分段",
+    ),
+    "internal_pricing:export": ScopePolicy(
+        ("sales-business",),
+        guidance="仅在八个分段全部通过后导出内部报价",
+    ),
     "molding_sample:read": ScopePolicy(
         SHARED_MOLDING_DEPARTMENTS,
         guidance="在工程、生产/啤机、PMC/仓库或管理范围生效",

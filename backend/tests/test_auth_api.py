@@ -115,6 +115,87 @@ def test_auth_me_exposes_current_authz_mode_without_removing_existing_fields(mon
             }.issubset(body)
 
 
+def test_wildcard_superadmin_keeps_scoped_access_in_legacy_without_role_permission(monkeypatch):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE="legacy",
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        permission = "internal_pricing:export"
+        superadmin = auth_service.AuthContext(
+            id="user-admin",
+            username="admin",
+            display_name="系统管理员",
+            roles=("系统管理员",),
+            role_codes=("admin",),
+            permissions=frozenset({permission}),
+            factory_scopes=("*",),
+            department_scopes=("system",),
+            grants=(
+                auth_service.AuthGrantContext(
+                    role_id="admin",
+                    role_code="admin",
+                    role_name="系统管理员",
+                    factory_id="*",
+                    department="system",
+                    permissions=frozenset(),
+                    data_scope="all",
+                    binding_id="user-admin:admin:*:system",
+                ),
+            ),
+            active_permission_codes=frozenset({permission}),
+        )
+
+        assert auth_service.legacy_has_permission_in_scope(
+            superadmin,
+            permission,
+            "huaxing",
+            "sales-business",
+        ) is False
+        assert auth_service.authorization_decision(
+            superadmin,
+            permission,
+            "huaxing",
+            "sales-business",
+        )[1] == "superadmin"
+        assert auth_service.has_permission_in_scope(
+            superadmin,
+            permission,
+            "huaxing",
+            "sales-business",
+        ) is True
+
+        ordinary_user = auth_service.AuthContext(
+            id="user-sales",
+            username="sales",
+            display_name="普通业务",
+            roles=("普通业务",),
+            role_codes=("sales",),
+            permissions=frozenset(),
+            factory_scopes=("huaxing",),
+            department_scopes=("sales-business",),
+            grants=(
+                auth_service.AuthGrantContext(
+                    role_id="sales",
+                    role_code="sales",
+                    role_name="普通业务",
+                    factory_id="huaxing",
+                    department="sales-business",
+                    permissions=frozenset(),
+                    binding_id="user-sales:sales:huaxing:sales-business",
+                ),
+            ),
+            active_permission_codes=frozenset({permission}),
+        )
+        assert auth_service.has_permission_in_scope(
+            ordinary_user,
+            permission,
+            "huaxing",
+            "sales-business",
+        ) is False
+
+
 def test_login_session_cookie_secure_flag_can_be_enabled_by_env(monkeypatch):
     with make_client(monkeypatch, SESSION_COOKIE_SECURE="true") as client:
         login_response = client.post(
@@ -224,9 +305,12 @@ def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeyp
                 "customer_price:import_internal_quote",
                 "customer_price:export_customer_quote",
                 "customer_price:compare",
-                "internal_pricing:read",
-                "internal_pricing:create",
-            }
+                    "internal_pricing:read",
+                    "internal_pricing:create",
+                    "internal_pricing:edit",
+                    "internal_pricing:review",
+                    "internal_pricing:export",
+                }
 
 
 def test_seed_preserves_existing_account_role_template_and_additional_binding(monkeypatch):

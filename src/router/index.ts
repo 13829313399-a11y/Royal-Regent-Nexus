@@ -110,7 +110,7 @@ const routes: RouteRecordRaw[] = [
     name: 'internal-pricing',
     component: () => import('@/views/InternalPricingView.vue'),
     meta: {
-      title: '内部报价',
+      title: '内部报价明细',
       fullPage: true,
       requiresAuth: true,
       permissions: ['internal_pricing:read'],
