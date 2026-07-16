@@ -198,6 +198,12 @@ def test_admin_catalog_scope_and_user_access_contract(monkeypatch):
         assert role_access.status_code == 200, role_access.text
         assert role_access.json()["id"] == "engineer"
         assert set(role_access.json()["permission_codes"]) == {
+            "internal_quote:read",
+            "internal_quote:create",
+            "internal_quote:clone",
+            "internal_quote:summary_read",
+            "internal_quote:timeline_read",
+            "internal_quote:engineering_edit",
             "molding_sample:read",
             "molding_sample:export",
             "molding_sample:create",

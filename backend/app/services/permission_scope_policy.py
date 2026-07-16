@@ -14,6 +14,23 @@ ENGINEERING_DEPARTMENTS = ("engineering",)
 PRODUCTION_DEPARTMENTS = ("production", "molding")
 WAREHOUSE_DEPARTMENTS = ("pmc-warehouse", "warehouse")
 MANAGEMENT_DEPARTMENTS = ("management",)
+INTERNAL_QUOTE_SECTION_DEPARTMENTS = {
+    "sales": ("sales-business",),
+    "engineering": ENGINEERING_DEPARTMENTS,
+    "electronic": ("electronic",),
+    "molding": PRODUCTION_DEPARTMENTS,
+    "painting": ("painting",),
+    "slush": ("slush",),
+    "sewing": ("sewing",),
+    "assembly": ("assembly",),
+}
+INTERNAL_QUOTE_ALL_DEPARTMENTS = tuple(
+    dict.fromkeys(
+        department
+        for departments in INTERNAL_QUOTE_SECTION_DEPARTMENTS.values()
+        for department in departments
+    )
+)
 SHARED_MOLDING_DEPARTMENTS = (
     *ENGINEERING_DEPARTMENTS,
     *PRODUCTION_DEPARTMENTS,
@@ -104,6 +121,30 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
 }
 
 
+INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    "internal_quote:read": ScopePolicy(INTERNAL_QUOTE_ALL_DEPARTMENTS),
+    "internal_quote:create": ScopePolicy(("sales-business", "engineering")),
+    "internal_quote:clone": ScopePolicy(("sales-business", "engineering")),
+    "internal_quote:header_edit": ScopePolicy(("sales-business",)),
+    "internal_quote:summary_read": ScopePolicy(INTERNAL_QUOTE_ALL_DEPARTMENTS),
+    "internal_quote:timeline_read": ScopePolicy(INTERNAL_QUOTE_ALL_DEPARTMENTS),
+    "internal_quote:archive": ScopePolicy(("sales-business",)),
+    "internal_quote:reference_manage": ScopePolicy(("sales-business", "engineering")),
+    "internal_quote:export": ScopePolicy(("sales-business",)),
+    "internal_quote:final_submit": ScopePolicy(("sales-business",)),
+    "internal_quote:final_approve": ScopePolicy(("sales-business",)),
+    "customer_price:read": ScopePolicy(("sales-business",)),
+    "customer_price:import_internal_quote": ScopePolicy(("sales-business",)),
+    "customer_price:export_customer_quote": ScopePolicy(("sales-business",)),
+    "customer_price:compare": ScopePolicy(("sales-business",)),
+    **{
+        f"internal_quote:{section_code}_{action}": ScopePolicy(departments)
+        for section_code, departments in INTERNAL_QUOTE_SECTION_DEPARTMENTS.items()
+        for action in ("edit", "review")
+    },
+}
+
+
 ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "admin": ScopePolicy(
         ("*",),
@@ -144,7 +185,10 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
-    return MOLDING_PERMISSION_SCOPE_POLICIES.get(permission_code, ScopePolicy())
+    return MOLDING_PERMISSION_SCOPE_POLICIES.get(
+        permission_code,
+        INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(permission_code, ScopePolicy()),
+    )
 
 
 def role_scope_policy(role_code: str) -> ScopePolicy:
