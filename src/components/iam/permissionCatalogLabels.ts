@@ -86,6 +86,8 @@ const LEGACY_IAM_PAGE_PERMISSION_CODES = new Set([
   'system:access_approve',
   'system:access_request',
   'system:audit_read',
+  'system:permission_catalog_read',
+  'system:role_manage',
 ])
 
 export function permissionActionLabel(action: string) {

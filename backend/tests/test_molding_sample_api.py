@@ -478,6 +478,14 @@ def enforce_client(monkeypatch):
         yield test_client
 
 
+@pytest.fixture(params=["legacy", "shadow", "enforce"])
+def position_scope_client(monkeypatch, request):
+    monkeypatch.setenv("AUTHZ_MODE", request.param)
+    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "false")
+    with make_client(monkeypatch) as test_client:
+        yield test_client
+
+
 def test_unauthenticated_access_to_molding_sample_api_is_rejected(client):
     response = client.get("/api/injection")
 
@@ -838,12 +846,10 @@ def test_factory_scope_limits_molding_sample_reads_and_writes(client):
     login_as(client, "engineer")
     list_response = client.get("/api/injection")
     assert list_response.status_code == 200
-    assert any(record["order"]["id"] == "BP-HD-SCOPE-001" for record in list_response.json())
+    assert all(record["order"]["id"] != "BP-HD-SCOPE-001" for record in list_response.json())
 
     detail_response = client.get("/api/injection/BP-HD-SCOPE-001")
-    assert detail_response.status_code == 200
-    assert detail_response.json()["read_source"] == "cross"
-    assert detail_response.json()["can_view_cost"] is False
+    assert detail_response.status_code == 403
 
     single_export_response = client.get("/api/injection/BP-HD-SCOPE-001/export-excel")
     assert single_export_response.status_code == 403
@@ -1121,6 +1127,12 @@ def test_engineering_board_queries_are_factory_isolated_and_keep_cross_factory_c
     assert huaxing_summary.json()["total"] == 1
     assert huadeng_summary.json()["total"] == 1
 
+    grant_permission_override(
+        "engineer",
+        "molding_sample:cross_factory_read",
+        factory_id="*",
+        department="*",
+    )
     login_as(client, "engineer")
     cross_factory_page = client.get(
         "/api/injection/board/page",
@@ -1153,9 +1165,7 @@ def test_same_factory_shared_departments_can_read_molding_samples(enforce_client
 
     login_as(client, "qa_inspector")
     qa_response = client.get("/api/injection/BP-SHARED-LOCAL-READ-001")
-    assert qa_response.status_code == 200
-    assert qa_response.json()["read_source"] == "cross"
-    assert qa_response.json()["can_view_cost"] is False
+    assert qa_response.status_code == 403
 
 
 def test_production_read_keeps_local_cost_view_while_foreign_factory_is_default_read_only(enforce_client):
@@ -1303,6 +1313,12 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
         item.exchange_rate_at_save = 1.08
         db.commit()
 
+    grant_permission_override(
+        "engineer",
+        "molding_sample:cross_factory_read",
+        factory_id="*",
+        department="*",
+    )
     login_as(client, "engineer")
 
     db_module = importlib.import_module("app.db")
@@ -1419,24 +1435,122 @@ def test_cross_factory_read_is_read_only_and_hides_costs_until_separately_allowe
     ).status_code == 403
 
 
-def test_default_cross_factory_read_respects_an_existing_explicit_deny(enforce_client):
+def test_cross_factory_read_is_denied_without_an_explicit_grant(enforce_client):
     client = enforce_client
     login_as(client, "admin")
     payload = sample_order_payload("BP-CROSS-READ-DENY-001")
     payload["order"]["factory_id"] = "huadeng"
     assert client.post("/api/injection", json=payload).status_code == 201
 
-    grant_permission_override(
-        "qa_inspector",
-        "molding_sample:cross_factory_read",
-        factory_id="huadeng",
-        department="*",
-        effect="deny",
-    )
     login_as(client, "qa_inspector")
 
     assert client.get("/api/injection/BP-CROSS-READ-DENY-001").status_code == 403
     assert client.get("/api/injection", params={"factory_id": "huadeng"}).status_code == 403
+
+
+def test_system_position_scope_modes_control_cross_factory_read_and_operate(position_scope_client):
+    client = position_scope_client
+    login_as(client, "admin")
+    foreign_order = sample_order_payload("BP-POSITION-SCOPE-FOREIGN-001")
+    foreign_order["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=foreign_order).status_code == 201
+
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    with db_module.SessionLocal() as db:
+        now = auth_service.now_text()
+        salt, password_hash = auth_service.make_password_hash("123456")
+        db.add(
+            auth_models.AuthUser(
+                id="user-position-scope",
+                username="position_scope",
+                display_name="跨厂职位测试",
+                password_salt=salt,
+                password_hash=password_hash,
+                status="active",
+                force_password_change=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            auth_models.AuthUserRole(
+                id="user-position-scope:position_engineering_engineer:huaxing:sales-business",
+                user_id="user-position-scope",
+                role_id="position_engineering_engineer",
+                factory_id="huaxing",
+                department="sales-business",
+            )
+        )
+        db.add(
+            auth_models.EmployeeProfile(
+                user_id="user-position-scope",
+                primary_factory_id="huaxing",
+                primary_department="sales-business",
+                position="业务技术员",
+                phone="",
+                email="",
+                confirmation_status="confirmed",
+                source_registration_request_id="",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            auth_models.AuthUserAuthorizationRevision(
+                user_id="user-position-scope",
+                revision=1,
+                updated_at=now,
+            )
+        )
+        metadata = db.get(auth_models.AuthRoleMetadata, "position_engineering_engineer")
+        metadata.scope_mode = "cross_factory_read"
+        db.commit()
+
+    profile = login_as(client, "position_scope")
+    position_grant = next(
+        item for item in profile["grants"]
+        if item["role_id"] == "position_engineering_engineer"
+    )
+    assert position_grant["factory_id"] == "huaxing"
+    assert position_grant["scope_mode"] == "cross_factory_read"
+    assert position_grant["unrestricted_department"] is True
+    assert "molding_sample:read" in position_grant["read_permission_codes"]
+    assert "*" in profile["factory_scopes"]
+
+    foreign_detail = client.get("/api/injection/BP-POSITION-SCOPE-FOREIGN-001")
+    assert foreign_detail.status_code == 200
+    assert foreign_detail.json()["read_source"] == "cross"
+
+    blocked_create = sample_order_payload("BP-POSITION-SCOPE-READ-BLOCK-001")
+    blocked_create["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=blocked_create).status_code == 403
+
+    # Department labels no longer constrain a built-in position's configured
+    # functions inside its home factory.
+    local_create = sample_order_payload("BP-POSITION-SCOPE-LOCAL-001")
+    assert client.post("/api/injection", json=local_create).status_code == 201
+
+    with db_module.SessionLocal() as db:
+        metadata = db.get(auth_models.AuthRoleMetadata, "position_engineering_engineer")
+        metadata.scope_mode = "cross_factory_operate"
+        revision = db.get(auth_models.AuthUserAuthorizationRevision, "user-position-scope")
+        revision.revision += 1
+        revision.updated_at = auth_service.now_text()
+        db.commit()
+
+    login_as(client, "position_scope")
+    operated_detail = client.get("/api/injection/BP-POSITION-SCOPE-FOREIGN-001")
+    assert operated_detail.status_code == 200
+    assert operated_detail.json()["read_source"] == "cross_operate"
+
+    allowed_create = sample_order_payload("BP-POSITION-SCOPE-OPERATE-001")
+    allowed_create["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=allowed_create).status_code == 201
+    assert client.get(
+        "/api/injection/BP-POSITION-SCOPE-FOREIGN-001/export-excel"
+    ).status_code == 200
 
 
 def test_foreign_factory_regular_permissions_cannot_bypass_organization_gate(enforce_client):
@@ -1610,12 +1724,11 @@ def test_scoped_permission_prevents_cross_factory_permission_reuse(client):
     login_as(client, "cross_scope")
     scoped_list_response = client.get("/api/injection")
     assert scoped_list_response.status_code == 200
-    cross_record = next(
-        record for record in scoped_list_response.json()
-        if record["order"]["id"] == "BP-CROSS-READ-BLOCKED"
+    assert all(
+        record["order"]["id"] != "BP-CROSS-READ-BLOCKED"
+        for record in scoped_list_response.json()
     )
-    assert cross_record["read_source"] == "cross"
-    assert client.get("/api/injection/BP-CROSS-READ-BLOCKED").status_code == 200
+    assert client.get("/api/injection/BP-CROSS-READ-BLOCKED").status_code == 403
 
     blocked_payload = sample_order_payload("BP-CROSS-BLOCKED")
     blocked_payload["order"]["factory_id"] = "huakang-a"

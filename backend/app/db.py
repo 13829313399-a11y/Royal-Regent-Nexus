@@ -57,6 +57,12 @@ SQLITE_LEGACY_COLUMNS = {
     "system_notifications": [
         ("target_department", "target_department VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
+    "auth_permission_metadata": [
+        ("access_kind", "access_kind VARCHAR(16) NOT NULL DEFAULT 'operate'"),
+    ],
+    "auth_role_metadata": [
+        ("scope_mode", "scope_mode VARCHAR(32) NOT NULL DEFAULT 'own_factory'"),
+    ],
 }
 
 
@@ -84,6 +90,34 @@ def ensure_sqlite_legacy_columns() -> None:
             for column_name, column_ddl in columns:
                 if column_name not in existing_columns:
                     connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_ddl}")
+
+        # Adding the column defaults historical rows to the safe ``operate``
+        # kind. Reconcile the known read-only permissions so an upgraded local
+        # database does not silently lose cross-factory viewing access.
+        permission_metadata_columns = {
+            row["name"]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(auth_permission_metadata)"
+            ).mappings()
+        }
+        permission_columns = {
+            row["name"]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(auth_permissions)"
+            ).mappings()
+        }
+        if "access_kind" in permission_metadata_columns and {"id", "code"} <= permission_columns:
+            from app.services.iam_scope import READ_PERMISSION_CODES
+
+            for permission_code in READ_PERMISSION_CODES:
+                connection.exec_driver_sql(
+                    "UPDATE auth_permission_metadata "
+                    "SET access_kind = 'read' "
+                    "WHERE permission_id = ("
+                    "SELECT id FROM auth_permissions WHERE code = ?"
+                    ")",
+                    (permission_code,),
+                )
 
 
 def init_db() -> None:

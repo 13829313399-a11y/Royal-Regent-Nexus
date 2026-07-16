@@ -70,7 +70,7 @@ export interface MoldingSampleBoardSummaryResponse {
   production_data_pending_count: number
 }
 
-export type MoldingSampleReadSource = 'local' | 'cross'
+export type MoldingSampleReadSource = 'local' | 'cross' | 'cross_operate'
 
 export interface MoldingSampleAccess {
   read_source?: MoldingSampleReadSource

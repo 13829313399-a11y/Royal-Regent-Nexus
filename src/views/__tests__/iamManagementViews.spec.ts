@@ -122,8 +122,9 @@ describe('IAM management view semantics and accessibility', () => {
     }
     expect(isBuiltInPositionPermissionVisible('system:access_request')).toBe(false)
     expect(isBuiltInPositionPermissionVisible('system:access_approve')).toBe(false)
+    expect(isBuiltInPositionPermissionVisible('system:role_manage')).toBe(false)
     expect(isBuiltInPositionPermissionVisible('system:audit_read')).toBe(false)
-    expect(isBuiltInPositionPermissionVisible('system:permission_catalog_read')).toBe(true)
+    expect(isBuiltInPositionPermissionVisible('system:permission_catalog_read')).toBe(false)
 
     const roleSource = readView('IamRoleTemplatesView')
     expect(roleSource).toContain('permissionDisplayLabel(permission)')

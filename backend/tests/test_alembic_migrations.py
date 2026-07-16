@@ -28,6 +28,7 @@ INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION = "20260715_0016"
 INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION = "20260715_0017"
 INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION = "20260716_0018"
 INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION = "20260716_0019"
+IAM_POSITION_SCOPE_MIGRATION_REVISION = "20260716_0020"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -77,7 +78,14 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION]
+    assert script.get_heads() == [IAM_POSITION_SCOPE_MIGRATION_REVISION]
+
+    scope_revision = script.get_revision(IAM_POSITION_SCOPE_MIGRATION_REVISION)
+    assert scope_revision.down_revision == INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION
+    scope_content = Path(scope_revision.path).read_text(encoding="utf-8")
+    assert "access_kind" in scope_content
+    assert "scope_mode" in scope_content
+    assert "cross_factory_read" in scope_content
 
     archive_revision = script.get_revision(INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
     assert archive_revision.down_revision == INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION
@@ -254,3 +262,5 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "create table internal_quote_import_batches" in sql
     assert "create table internal_quote_attachments" in sql
     assert "create table internal_quote_export_files" in sql
+    assert "add column access_kind" in sql
+    assert "add column scope_mode" in sql

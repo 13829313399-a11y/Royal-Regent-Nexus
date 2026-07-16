@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 
 
 OverrideEffect = Literal["inherit", "allow", "deny"]
+ScopeMode = Literal["own_factory", "cross_factory_read", "cross_factory_operate"]
+AccessKind = Literal["read", "operate"]
 
 
 class PermissionOut(BaseModel):
@@ -14,6 +16,7 @@ class PermissionOut(BaseModel):
     module_name: str
     action: str
     risk_level: str
+    access_kind: AccessKind = "operate"
     scope_type: str
     status: str
     sort_order: int = 0
@@ -206,6 +209,7 @@ class RoleSummaryOut(BaseModel):
     is_protected: bool
     binding_count: int
     permission_count: int
+    scope_mode: ScopeMode = "own_factory"
     applicable_departments: list[str] = Field(default_factory=list)
     requires_global_factory: bool = False
     scope_guidance: str = ""
@@ -225,6 +229,7 @@ class RoleAccessOut(BaseModel):
     binding_count: int
     permission_count: int
     permission_codes: list[str]
+    scope_mode: ScopeMode = "own_factory"
     applicable_departments: list[str] = Field(default_factory=list)
     requires_global_factory: bool = False
     scope_guidance: str = ""
@@ -239,6 +244,7 @@ class RoleAccessPreviewRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=1000)
     permission_codes: list[str]
+    scope_mode: ScopeMode | None = None
     reason: str = Field(min_length=1, max_length=500)
 
 
@@ -256,6 +262,8 @@ class RoleAccessPreviewResponse(BaseModel):
     affected_user_count: int
     diffs: list[RolePermissionDiffOut]
     high_risk: bool
+    before_scope_mode: ScopeMode = "own_factory"
+    after_scope_mode: ScopeMode = "own_factory"
 
 
 class RoleAccessCommitResponse(BaseModel):

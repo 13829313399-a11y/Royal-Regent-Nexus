@@ -181,24 +181,31 @@ function isWildcardMoldingAdministrator() {
   )
 }
 
-function isLocalProductionFactory(factoryId: string) {
-  if (isWildcardMoldingAdministrator() || authStore.authzMode !== 'enforce') {
-    return true
-  }
-
+function isHomeProductionFactory(factoryId: string) {
+  if (isWildcardMoldingAdministrator() || authStore.authzMode !== 'enforce') return true
   const primaryFactoryId = authStore.currentUser?.profile?.primary_factory_id?.trim()
-  if (primaryFactoryId) {
-    return primaryFactoryId === factoryId
-  }
-
+  if (primaryFactoryId) return primaryFactoryId === factoryId
   return authStore.grants.some((grant) => grant.factory_id === factoryId)
 }
 
+function canOperateProductionFactory(factoryId: string) {
+  if (isHomeProductionFactory(factoryId)) return true
+  return authStore.grants.some((grant) =>
+    grant.scope_mode === 'cross_factory_operate'
+    && grant.factory_id !== factoryId,
+  )
+}
+
 function canProductionPermission(permission: string, factoryId: string) {
-  return isLocalProductionFactory(factoryId)
-    && ['production', 'molding'].some((department) =>
-      authStore.can(permission, factoryId, department),
-    )
+  if (
+    ['molding_sample:production_start', 'molding_sample:production_fillback', 'molding_sample:production_complete'].includes(permission)
+    && !canOperateProductionFactory(factoryId)
+  ) {
+    return false
+  }
+  return ['production', 'molding'].some((department) =>
+    authStore.can(permission, factoryId, department),
+  )
 }
 
 const canReadSelectedFactory = computed(() =>
@@ -295,13 +302,13 @@ const canCompleteSelectedTaskFactory = computed(() =>
   canProductionPermission('molding_sample:production_complete', selectedTaskFactoryId.value),
 )
 const canUpdateSelectedNotification = computed(() =>
-  canProductionPermission('molding_sample:notification_read', selectedTaskFactoryId.value),
+  canOperateProductionFactory(selectedTaskFactoryId.value)
+  && canProductionPermission('molding_sample:notification_read', selectedTaskFactoryId.value),
 )
 const isSelectedFactoryReadOnly = computed(() => ![
   'molding_sample:production_start',
   'molding_sample:production_fillback',
   'molding_sample:production_complete',
-  'molding_sample:notification_read',
 ].some((permission) => canProductionPermission(permission, selectedFactoryId.value)))
 
 const activeItems = computed<MoldingSampleItem[]>(() => {

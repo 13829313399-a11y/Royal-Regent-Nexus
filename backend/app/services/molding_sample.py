@@ -407,8 +407,7 @@ def is_external_order(order: MoldingSampleOrder) -> bool:
 
 
 def ensure_export_permission(db: Session, current_user: AuthContext, factory_id: str) -> None:
-    if ensure_molding_read(db, current_user, factory_id) != "local":
-        raise HTTPException(status_code=403, detail="跨厂只读权限不允许导出啤办单")
+    ensure_molding_read(db, current_user, factory_id)
     ensure_permission_for_departments(
         db,
         current_user,

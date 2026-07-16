@@ -5,7 +5,7 @@ import type { Component } from 'vue'
 import { nextTick } from 'vue'
 import { moldingSampleApi } from '@/api/moldingSample'
 import { rawMaterialApi } from '@/api/rawMaterial'
-import type { AuthEffectiveAccess, AuthzMode } from '@/api/auth'
+import type { AuthEffectiveAccess, AuthGrantScopeMode, AuthzMode } from '@/api/auth'
 import type {
   MoldingSampleBoardPageResponse,
   MoldingSampleBoardSummaryResponse,
@@ -109,6 +109,9 @@ async function mountRuntimeView(
     effectiveAccess?: AuthEffectiveAccess[]
     grantPermissions?: string[]
     primaryFactoryId?: string
+    scopeMode?: AuthGrantScopeMode
+    readPermissionCodes?: string[]
+    unrestrictedDepartment?: boolean
   } = {},
 ) {
   const pinia = createPinia()
@@ -145,6 +148,9 @@ async function mountRuntimeView(
       factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
       department: administrator ? 'system' : options.department ?? '*',
       permissions: options.grantPermissions ?? permissions,
+      scope_mode: options.scopeMode,
+      read_permission_codes: options.readPermissionCodes,
+      unrestricted_department: options.unrestrictedDepartment,
       data_scope: administrator ? 'all' : 'department',
     }],
     factory_scopes: factoryScopes,
@@ -1827,6 +1833,57 @@ describe('molding sample runtime error handling', () => {
     await getButtonByText(wrapper, '展开完整数据').trigger('click')
     await nextTick()
     expect(wrapper.find('[data-testid="molding-full-item-cost-grid"]').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('enables configured operations in another factory for a cross-factory-operate position', async () => {
+    routeState.query = { factory: 'huadeng' }
+    const record = createKpiRecord('待审核', 'BP-CROSS-OPERATE-HD-001', 1.25)
+    record.order.factory_id = 'huadeng'
+    Object.assign(record, {
+      read_source: 'cross_operate',
+      can_view_cost: false,
+      read_only: false,
+    })
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['跨厂工程协作'],
+      permissions: ['molding_sample:read', 'molding_sample:create'],
+      grantPermissions: ['molding_sample:read', 'molding_sample:create'],
+      factoryScopes: ['huaxing', '*'],
+      department: 'sales-business',
+      authzMode: 'enforce',
+      primaryFactoryId: 'huaxing',
+      scopeMode: 'cross_factory_operate',
+      readPermissionCodes: ['molding_sample:read'],
+      unrestrictedDepartment: true,
+      effectiveAccess: [
+        {
+          permission_code: 'molding_sample:read',
+          factory_id: 'huaxing',
+          department: 'sales-business',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'role_binding',
+          source_ids: ['position-cross-operate'],
+        },
+        {
+          permission_code: 'molding_sample:create',
+          factory_id: 'huaxing',
+          department: 'sales-business',
+          effect: 'allow',
+          allowed: true,
+          source_type: 'role_binding',
+          source_ids: ['position-cross-operate'],
+        },
+      ],
+    })
+
+    expect(wrapper.text()).toContain('BP-CROSS-OPERATE-HD-001')
+    expect(wrapper.text()).not.toContain('跨厂只读')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('工程部 · 新建开单'))).toBe(true)
 
     wrapper.unmount()
   })

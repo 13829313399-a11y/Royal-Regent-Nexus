@@ -44,6 +44,8 @@ export interface PasswordResetResponse {
   message: string
 }
 
+export type AuthGrantScopeMode = 'own_factory' | 'cross_factory_read' | 'cross_factory_operate'
+
 export interface AuthGrant {
   role_id: string
   role_code?: string
@@ -51,6 +53,9 @@ export interface AuthGrant {
   factory_id: string
   department: string
   permissions: string[]
+  scope_mode?: AuthGrantScopeMode
+  read_permission_codes?: string[]
+  unrestricted_department?: boolean
   data_scope: string
 }
 

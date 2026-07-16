@@ -31,6 +31,7 @@ import {
   type CaixingConversionResult,
   type CaixingProductType,
 } from '@/lib/customerPriceConverters/caixing'
+import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
 type ConversionStatus = '待转换' | '待复核' | '已生成'
@@ -98,6 +99,7 @@ interface ExportedQuoteVersion {
 }
 
 const authStore = useAuthStore()
+const appStore = useAppStore()
 
 const customerOptions: CustomerOption[] = [
   {
@@ -247,7 +249,10 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
   },
 ])
 
-const visibleCustomers = computed(() => customerOptions)
+const visibleCustomers = computed(() => customerOptions.map((customer) => ({
+  ...customer,
+  factoryId: appStore.activeProductionFactory.id,
+})))
 
 const selectedCustomer = computed<CustomerOption>(() => {
   return visibleCustomers.value.find((customer) => customer.id === selectedCustomerId.value)
