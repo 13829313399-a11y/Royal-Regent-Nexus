@@ -902,10 +902,33 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
   'sales-business': {
     departmentId: 'sales-business',
     heroTitle: '业务模块中心',
-    heroSubtitle: '把客户、报价、内部定价、送印尼物料和 PO 入排期连成统一入口',
+    heroSubtitle: '把内部成本报价、客户报价转换、送印尼物料和 PO 入排期连成统一入口',
     panelTitle: '业务部模块',
-    panelSubtitle: '优先承接客价转换、送印尼物料和 PO 入排期',
+    panelSubtitle: '优先承接内部报价协作、客价转换、送印尼物料和 PO 入排期',
     modules: [
+      {
+        id: 'internal-quote-desk',
+        title: '内部报价台',
+        owner: '业务部 / 各核价责任部门',
+        summary: '业务部与工程部建单，八部门成本协作、主管审核、业务最终放行和受控导出',
+        status: '前端已接入',
+        statusTone: 'teal',
+        stats: '协作中 2 · 待放行 2',
+        icon: Calculator,
+        route: '/modules/sales-business/internal-quote-desk',
+        statusMetrics: [
+          { label: '建单', value: '业务 / 工程', tone: 'teal' },
+          { label: '协作', value: '八责任分段', tone: 'blue' },
+          { label: '放行', value: '业务复核', tone: 'green' },
+        ],
+        todos: ['新建或复制内部报价', '跟进责任分段填报与审核', '汇总放行并受控导出'],
+        children: [
+          { label: '报价首页', summary: '搜索、筛选、建单和复制报价' },
+          { label: '部门协作', summary: '八责任分段填报、审核和审计' },
+          { label: '汇总与放行', summary: '成本汇总、业务复核和最终放行' },
+          { label: '导出汇总', summary: '预览并生成受控内部报价工作簿' },
+        ],
+      },
       {
         id: 'customer-price-conversion',
         title: '客价转换台',

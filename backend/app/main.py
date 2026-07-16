@@ -5,6 +5,10 @@ from fastapi import FastAPI
 from app.api.auth import router as auth_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.injection_schedule import router as injection_schedule_router
+from app.api.internal_quote import (
+    customer_price_artifact_router,
+    router as internal_quote_router,
+)
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.iam import router as iam_router
 from app.api.molding_sample import router as molding_sample_router
@@ -25,6 +29,8 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(carton_mark_router)
 app.include_router(injection_schedule_router)
+app.include_router(internal_quote_router)
+app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
