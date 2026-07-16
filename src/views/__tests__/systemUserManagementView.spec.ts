@@ -6,7 +6,7 @@ const source = readFileSync(join(process.cwd(), 'src/views/SystemUserManagementV
 const template = source.slice(source.indexOf('<template>'), source.indexOf('<style scoped>'))
 
 describe('SystemUserManagementView source contract', () => {
-  it('edits registration profile data and assigns one department system position', () => {
+  it('edits registration profile data and assigns one system position from the full catalog', () => {
     for (const requiredSource of [
       'systemApi.listRegistrationRequests',
       'systemApi.listUsers',
@@ -18,10 +18,13 @@ describe('SystemUserManagementView source contract', () => {
       'system_position_role_id',
       'profile,',
       'registrationDepartments',
-      'selectedDepartmentSystemPositions',
-      'positionsForDepartment',
-      'role="radiogroup"',
-      'role="radio"',
+      'allSystemPositions',
+      'groupedSystemPositions',
+      'aria-label="选择内置权限职位"',
+      '<optgroup',
+      'selected-system-position-summary',
+      'aria-live="polite"',
+      'aria-atomic="true"',
       'aria-label="确认姓名"',
       'aria-label="确认电话"',
       'aria-label="确认邮箱"',
@@ -41,8 +44,11 @@ describe('SystemUserManagementView source contract', () => {
     }
 
     expect(source).not.toContain('buildApprovalRoleAssignments')
+    expect(source).not.toContain('positionsForDepartment')
     expect(source).not.toContain('permissionGroupsForSelectedRole')
     expect(source).not.toContain('inferPermissionCodesForRole')
+    expect(template).not.toContain('role="radiogroup"')
+    expect(template).not.toContain('role="radio"')
     expect(template).not.toContain('权限清单')
     expect(template).not.toContain('数据范围')
     expect(template).not.toContain('工程师默认组合授权')

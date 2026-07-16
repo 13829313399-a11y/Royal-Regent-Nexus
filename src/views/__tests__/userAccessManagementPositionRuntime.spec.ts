@@ -46,10 +46,10 @@ const positions = [
   },
   {
     id: 'position-production-clerk', code: 'position_production_clerk', name: '生产文员',
-    description: '生产部资料权限', version: 1, is_protected: false, binding_count: 1,
+    description: '生产部（啤喷装）资料权限', version: 1, is_protected: false, binding_count: 1,
     permission_count: 0, applicable_departments: ['production'], requires_global_factory: false,
-    scope_guidance: '生产部', is_system_position: true, position_department: 'production',
-    position_department_name: '生产部', position_sort_order: 30,
+    scope_guidance: '生产部（啤喷装）', is_system_position: true, position_department: 'production',
+    position_department_name: '生产部（啤喷装）', position_sort_order: 30,
   },
 ]
 
@@ -107,7 +107,7 @@ describe('UserAccessManagementView system position change', () => {
     previewUserSystemPositionMock.mockReset().mockResolvedValue({
       preview_token: 'preview-1', base_revision: 2,
       before_role_ids: ['legacy-engineer'], before_role_names: ['工程师'],
-      after_role_id: 'position-supervisor', after_role_name: '工程部主管',
+      after_role_id: 'position-production-clerk', after_role_name: '生产文员',
       removed_role_count: 2, removed_override_count: 1,
       requires_approval: false, high_risk: false,
       diffs: [{
@@ -129,9 +129,9 @@ describe('UserAccessManagementView system position change', () => {
     expect(wrapper.get('[data-testid="identity-summary"]').text()).toBe('技术员')
     expect(wrapper.text()).toContain('当前生效 2 条旧角色、1 条个人特殊权限')
     expect(wrapper.text()).toContain('本次共将清理 2 条普通角色和 1 条个人权限')
-    expect(wrapper.get('select[aria-label="选择新的内置权限职位"]').text()).not.toContain('生产文员')
+    expect(wrapper.get('select[aria-label="选择新的内置权限职位"]').text()).toContain('生产文员')
 
-    await wrapper.get('select[aria-label="选择新的内置权限职位"]').setValue('position-supervisor')
+    await wrapper.get('select[aria-label="选择新的内置权限职位"]').setValue('position-production-clerk')
     await wrapper.get('input[placeholder="例如：员工岗位职责调整为工程主管"]').setValue('职责调整')
     await flushPromises()
 
@@ -142,11 +142,12 @@ describe('UserAccessManagementView system position change', () => {
 
     expect(previewUserSystemPositionMock).toHaveBeenCalledWith('user-1', {
       base_revision: 2,
-      system_position_role_id: 'position-supervisor',
+      system_position_role_id: 'position-production-clerk',
       reason: '职责调整',
     })
     expect(wrapper.text()).toContain('清理历史角色')
     expect(wrapper.text()).toContain('清理个人特殊权限')
+    expect(wrapper.text()).toContain('生产部（啤喷装） · 生产文员')
 
     const commitButton = wrapper.findAll('button').find((button) => button.text().includes('确认并立即生效'))
     expect(commitButton).toBeDefined()
@@ -156,6 +157,22 @@ describe('UserAccessManagementView system position change', () => {
     expect(commitUserSystemPositionMock).toHaveBeenCalledWith('user-1', 'preview-1', false)
     expect(refreshSessionMock).toHaveBeenCalled()
     expect(wrapper.text()).toContain('权限职位已更换并立即生效')
+  })
+
+  it('keeps an existing cross-department system position selected after refresh', async () => {
+    getUserAccessMock.mockResolvedValue({
+      ...access,
+      system_position_role_id: 'position-production-clerk',
+      system_position_role_name: '生产文员',
+      recommended_system_position_role_id: 'position-engineer',
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const select = wrapper.get('select[aria-label="选择新的内置权限职位"]')
+    expect((select.element as HTMLSelectElement).value).toBe('position-production-clerk')
+    expect(getRoleAccessMock).toHaveBeenCalledWith('position-production-clerk')
   })
 
   it('allows cleanup while keeping the same system position', async () => {

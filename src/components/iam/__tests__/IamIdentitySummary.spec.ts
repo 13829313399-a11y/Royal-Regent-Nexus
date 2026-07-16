@@ -35,7 +35,7 @@ function accessForDepartment(department: string): UserAccessResponse {
 
 describe('IamIdentitySummary department labels', () => {
   it.each([
-    ['management', '管理层'],
+    ['management', '总务'],
     ['pmc-warehouse', '仓库'],
     ['qc', 'QC部'],
     ['carton', '纸箱部'],

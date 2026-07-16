@@ -51,14 +51,14 @@ const positions = [
   },
   {
     id: 'position_production_manager', code: 'position_production_manager', name: '生产经理', description: '生产管理权限',
-    applicable_departments: ['production'], requires_global_factory: false, scope_guidance: '生产部',
-    is_system_position: true, position_department: 'production', position_department_name: '生产部',
+    applicable_departments: ['production'], requires_global_factory: false, scope_guidance: '生产部（啤喷装）',
+    is_system_position: true, position_department: 'production', position_department_name: '生产部（啤喷装）',
     position_sort_order: 10, permission_count: 5,
   },
   {
     id: 'position_production_clerk', code: 'position_production_clerk', name: '生产文员', description: '生产资料权限',
-    applicable_departments: ['production'], requires_global_factory: false, scope_guidance: '生产部',
-    is_system_position: true, position_department: 'production', position_department_name: '生产部',
+    applicable_departments: ['production'], requires_global_factory: false, scope_guidance: '生产部（啤喷装）',
+    is_system_position: true, position_department: 'production', position_department_name: '生产部（啤喷装）',
     position_sort_order: 30, permission_count: 0,
   },
 ]
@@ -88,9 +88,12 @@ describe('SystemUserManagementView registration approval', () => {
 
     await wrapper.get('input[aria-label="确认姓名"]').setValue(' 张小明 ')
     await wrapper.get('input[aria-label="确认职位"]').setValue(' 高级工程技术员 ')
-    const supervisorButton = wrapper.findAll('button[role="radio"]').find((button) => button.text().includes('主管'))
-    expect(supervisorButton).toBeDefined()
-    await supervisorButton!.trigger('click')
+    await wrapper.get('select[aria-label="选择内置权限职位"]').setValue('position_engineering_supervisor')
+
+    const selectedSummary = wrapper.get('[data-testid="selected-system-position-summary"]')
+    expect(selectedSummary.text()).toContain('工程部 · 主管')
+    expect(selectedSummary.text()).toContain('工程审核权限')
+    expect(selectedSummary.text()).toContain('5 项权限')
 
     const approveButton = wrapper.findAll('button').find((button) => button.text().includes('通过并开通'))
     await approveButton!.trigger('click')
@@ -107,24 +110,41 @@ describe('SystemUserManagementView registration approval', () => {
     expect(approveRegistrationRequestMock.mock.calls[0]?.[1]).not.toHaveProperty('role_assignments')
   })
 
-  it('filters system positions when the administrator corrects the department', async () => {
+  it('groups every system position and allows an explicit cross-department selection after the department changes', async () => {
     const wrapper = mountView()
     await flushPromises()
+
+    const positionSelect = wrapper.get('select[aria-label="选择内置权限职位"]')
+    const positionGroups = positionSelect.findAll('optgroup')
+    const positionOptions = positionSelect.findAll('option').filter((option) => option.attributes('value'))
+    expect(positionGroups.map((group) => group.attributes('label'))).toEqual(['工程部', '生产部（啤喷装）'])
+    expect(positionOptions).toHaveLength(4)
+    expect((positionSelect.element as HTMLSelectElement).value).toBe('position_engineering_engineer')
+    expect(positionSelect.text()).toContain('工程师 · 6 项权限 · 推荐')
+    expect(positionSelect.text()).toContain('生产文员 · 权限待配置')
+    expect(wrapper.get('[data-testid="selected-system-position-summary"]').text()).toContain('推荐')
 
     await wrapper.get('select[aria-label="确认部门"]').setValue('production')
     await flushPromises()
 
-    const positionButtons = wrapper.findAll('button[role="radio"]')
-    expect(positionButtons).toHaveLength(2)
-    expect(positionButtons[0]?.text()).toContain('生产经理')
-    expect(positionButtons[1]?.text()).toContain('生产文员')
-    expect(positionButtons[1]?.text()).toContain('权限待配置')
-    expect(positionButtons.every((button) => button.attributes('aria-checked') === 'false')).toBe(true)
+    expect((positionSelect.element as HTMLSelectElement).value).toBe('')
+    expect(positionSelect.findAll('option').filter((option) => option.attributes('value'))).toHaveLength(4)
+    expect(wrapper.find('[data-testid="selected-system-position-summary"]').exists()).toBe(false)
+
+    await positionSelect.setValue('position_engineering_engineer')
+    expect(wrapper.get('[data-testid="selected-system-position-summary"]').text()).toContain('工程部 · 工程师')
 
     const approveButton = wrapper.findAll('button').find((button) => button.text().includes('通过并开通'))
     await approveButton!.trigger('click')
-    expect(wrapper.text()).toContain('请为当前部门选择一个内置权限职位')
-    expect(approveRegistrationRequestMock).not.toHaveBeenCalled()
+    await flushPromises()
+    expect(approveRegistrationRequestMock).toHaveBeenCalledWith('registration-1', {
+      system_position_role_id: 'position_engineering_engineer',
+      profile: {
+        display_name: '张三', phone: '13800000000', email: '', factory_id: 'huaxing',
+        department: 'production', position: '工程部技术员',
+      },
+      review_comment: '',
+    })
   })
 
   it('blocks approval when the administrator clears the confirmed position', async () => {

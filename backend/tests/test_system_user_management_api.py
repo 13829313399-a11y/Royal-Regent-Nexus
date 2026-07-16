@@ -328,7 +328,7 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
         assert {
             department_name: positions_by_department[department_name]
             for department_name in (
-                "管理层",
+                "总务",
                 "工程部",
                 "业务部",
                 "仓库",
@@ -337,7 +337,7 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
                 "纸箱部",
             )
         } == {
-            "管理层": ["总经理"],
+            "总务": ["总经理"],
             "工程部": ["经理", "主管", "工程师"],
             "业务部": ["经理", "主管", "业务"],
             "仓库": ["经理", "主管", "仓管"],
@@ -360,6 +360,11 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
             "啤机主管",
             "啤机文员",
         ]
+        assert {
+            item["position_department_name"]
+            for item in catalog
+            if item["position_department"] == "production"
+        } == {"生产部（啤喷装）"}
 
         client.post("/api/auth/logout")
         payload = register_payload("custom-engineering-title")
@@ -383,16 +388,6 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
             "department": "engineering",
             "position": "高级工程技术员",
         }
-        wrong_department_role = client.post(
-            f"/api/system/registration-requests/{registration['id']}/approve",
-            json={
-                "system_position_role_id": "position_sales_business",
-                "profile": corrected_profile,
-            },
-        )
-        assert wrong_department_role.status_code == 400
-        assert "不属于所选部门" in wrong_department_role.json()["detail"]
-
         for field, value in (
             ("display_name", "姓" * 129),
             ("phone", "1" * 65),
@@ -402,7 +397,7 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
             invalid_response = client.post(
                 f"/api/system/registration-requests/{registration['id']}/approve",
                 json={
-                    "system_position_role_id": "position_engineering_engineer",
+                    "system_position_role_id": "position_sales_business",
                     "profile": invalid_profile,
                 },
             )
@@ -411,9 +406,9 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
         approve_response = client.post(
             f"/api/system/registration-requests/{registration['id']}/approve",
             json={
-                "system_position_role_id": "position_engineering_engineer",
+                "system_position_role_id": "position_sales_business",
                 "profile": corrected_profile,
-                "review_comment": "资料已核正并归类到工程师权限职位",
+                "review_comment": "资料部门保持工程部，权限归类到业务职位",
             },
         )
         assert approve_response.status_code == 200, approve_response.text
@@ -432,19 +427,21 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
                     active_bindings.append((binding, metadata))
             assert user.display_name == "张三"
             assert profile.position == "高级工程技术员"
+            assert profile.primary_department == "engineering"
             assert profile.phone == "13900000000"
             assert profile.email == "zhangsan@example.com"
             assert [
                 (binding.role_id, binding.factory_id, binding.department)
                 for binding, _ in active_bindings
-            ] == [("position_engineering_engineer", "huaxing", "engineering")]
+            ] == [("position_sales_business", "huaxing", "sales-business")]
             assert active_bindings[0][1].source_type == "system_position"
 
         client.post("/api/auth/logout")
         approved_profile = login(client, "custom-engineering-title", "Strong123")
         assert approved_profile["profile"]["position"] == "高级工程技术员"
-        assert approved_profile["roles"] == ["工程师"]
-        assert "molding_sample:create" in approved_profile["permissions"]
+        assert approved_profile["roles"] == ["业务"]
+        assert "customer_price:read" in approved_profile["permissions"]
+        assert "molding_sample:create" not in approved_profile["permissions"]
         assert "molding_sample:cross_factory_read" not in approved_profile["permissions"]
 
 

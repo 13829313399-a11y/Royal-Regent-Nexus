@@ -73,9 +73,39 @@ const selectedRequest = computed(() =>
 )
 const selectedProfile = computed(() => selectedRequest.value ? approvalProfile(selectedRequest.value) : null)
 const selectedPositionSuggestions = computed(() => getPositionSuggestions(selectedProfile.value?.department ?? ''))
-const selectedDepartmentSystemPositions = computed(() => {
-  const department = selectedProfile.value?.department ?? ''
-  return positionsForDepartment(department)
+const allSystemPositions = computed(() => systemPositions.value
+  .filter((role) => role.is_system_position)
+  .sort((left, right) => left.position_sort_order - right.position_sort_order || left.name.localeCompare(right.name, 'zh-CN')),
+)
+const groupedSystemPositions = computed(() => {
+  const groups = new Map<string, RoleResponse[]>()
+  for (const role of allSystemPositions.value) {
+    const department = role.position_department || 'other'
+    const positions = groups.get(department)
+    if (positions) positions.push(role)
+    else groups.set(department, [role])
+  }
+  const orderedGroups = registrationDepartments
+    .map((department) => ({
+      department: department.id,
+      name: department.name,
+      positions: groups.get(department.id) ?? [],
+    }))
+    .filter((group) => group.positions.length)
+  const knownDepartments = new Set<string>(registrationDepartments.map((department) => department.id))
+  const extraGroups = [...groups.entries()]
+    .filter(([department]) => !knownDepartments.has(department))
+    .map(([department, positions]) => ({
+      department,
+      name: departmentLabel(department),
+      positions,
+    }))
+  return [...orderedGroups, ...extraGroups]
+})
+const selectedApprovalSystemPosition = computed(() => {
+  if (!selectedRequest.value) return null
+  const selectedRoleId = getSelectedSystemPositionId(selectedRequest.value)
+  return systemPositions.value.find((role) => role.id === selectedRoleId) ?? null
 })
 const filteredUsers = computed(() => {
   const keyword = userSearch.value.trim().toLowerCase()
@@ -175,22 +205,12 @@ function approvalProfile(request: RegistrationRequestResponse) {
   return profile
 }
 
-function positionsForDepartment(department: string) {
-  return systemPositions.value
-    .filter((role) => role.is_system_position && role.position_department === department)
-    .sort((left, right) => left.position_sort_order - right.position_sort_order || left.name.localeCompare(right.name, 'zh-CN'))
-}
-
 function getSelectedSystemPositionId(request: RegistrationRequestResponse) {
-  const department = approvalProfile(request).department
-  const available = positionsForDepartment(department)
+  const available = allSystemPositions.value
   const current = selectedSystemPositions.value[request.id]
   if (current && available.some((role) => role.id === current)) return current
   if (Object.prototype.hasOwnProperty.call(selectedSystemPositions.value, request.id)) return ''
   const recommended = request.recommended_role_ids.find((roleId) => available.some((role) => role.id === roleId))
-  if (recommended) {
-    selectedSystemPositions.value = { ...selectedSystemPositions.value, [request.id]: recommended }
-  }
   return recommended ?? ''
 }
 
@@ -292,8 +312,8 @@ async function approveRequest(request: RegistrationRequestResponse) {
   }
   const systemPositionRoleId = getSelectedSystemPositionId(request)
   const selectedPosition = systemPositions.value.find((role) => role.id === systemPositionRoleId)
-  if (!selectedPosition || selectedPosition.position_department !== profile.department) {
-    errorMessage.value = '请为当前部门选择一个内置权限职位'
+  if (!selectedPosition?.is_system_position) {
+    errorMessage.value = '请选择一个内置权限职位'
     return
   }
 
@@ -590,29 +610,46 @@ onMounted(() => {
               <span class="hint">只需选择一个；系统会统一处理底层授权</span>
             </div>
             <p class="system-position-department-label">
-              当前权限部门：<strong>{{ departmentLabel(approvalProfile(selectedRequest).department) }}</strong>
+              员工资料部门：<strong>{{ departmentLabel(approvalProfile(selectedRequest).department) }}</strong>；可从全部内置职位中选择权限职位
             </p>
-            <div v-if="selectedDepartmentSystemPositions.length" class="roles" role="radiogroup" aria-label="选择内置权限职位">
-              <button
-                v-for="role in selectedDepartmentSystemPositions"
-                :key="role.id"
-                type="button"
-                class="role"
-                role="radio"
-                :aria-checked="getSelectedSystemPositionId(selectedRequest) === role.id"
-                :class="{ sel: getSelectedSystemPositionId(selectedRequest) === role.id }"
-                :title="role.description"
-                @click="setSelectedSystemPosition(selectedRequest.id, role.id)"
+            <template v-if="allSystemPositions.length">
+              <label class="system-position-picker">
+                <span>选择内置权限职位</span>
+                <select
+                  :value="getSelectedSystemPositionId(selectedRequest)"
+                  aria-label="选择内置权限职位"
+                  @change="setSelectedSystemPosition(selectedRequest.id, ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="" disabled>请选择内置权限职位</option>
+                  <optgroup v-for="group in groupedSystemPositions" :key="group.department" :label="group.name">
+                    <option v-for="role in group.positions" :key="role.id" :value="role.id">
+                      {{ role.name }} · {{ role.permission_count ? `${role.permission_count} 项权限` : '权限待配置' }}{{ selectedRequest.recommended_role_ids.includes(role.id) ? ' · 推荐' : '' }}
+                    </option>
+                  </optgroup>
+                </select>
+              </label>
+              <div
+                v-if="selectedApprovalSystemPosition"
+                class="selected-system-position-summary"
+                data-testid="selected-system-position-summary"
+                aria-live="polite"
+                aria-atomic="true"
               >
-                <span v-if="selectedRequest.recommended_role_ids.includes(role.id)" class="reco">推荐</span>
-                <span class="check"><Check class="size-3" aria-hidden="true" /></span>
-                <div class="rname">{{ role.name }}</div>
-                <div class="rdesc">{{ role.description || role.code }}</div>
-                <div class="role-permission-count">{{ role.permission_count ? `已配置 ${role.permission_count} 项权限` : '权限待配置' }}</div>
-              </button>
-            </div>
+                <span class="selected-system-position-check"><Check class="size-3.5" aria-hidden="true" /></span>
+                <div class="selected-system-position-copy">
+                  <div class="selected-system-position-title">
+                    <strong>{{ departmentLabel(selectedApprovalSystemPosition.position_department) }} · {{ selectedApprovalSystemPosition.name }}</strong>
+                    <span v-if="selectedRequest.recommended_role_ids.includes(selectedApprovalSystemPosition.id)">推荐</span>
+                  </div>
+                  <p :title="selectedApprovalSystemPosition.description || selectedApprovalSystemPosition.code">
+                    {{ selectedApprovalSystemPosition.description || selectedApprovalSystemPosition.code }}
+                  </p>
+                </div>
+                <b class="selected-system-position-count">{{ selectedApprovalSystemPosition.permission_count ? `${selectedApprovalSystemPosition.permission_count} 项权限` : '权限待配置' }}</b>
+              </div>
+            </template>
             <div v-else class="empty-system-positions">
-              当前部门还没有可分配的内置权限职位，请先到“内置职位权限”完成配置。
+              当前还没有可分配的内置权限职位，请先到“内置职位权限”完成配置。
             </div>
           </section>
 
@@ -2724,12 +2761,6 @@ onMounted(() => {
   line-height: 1.6;
 }
 
-.roles {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-
 .system-position-department-label {
   margin: 0 0 10px;
   color: var(--slate-500);
@@ -2738,13 +2769,6 @@ onMounted(() => {
 
 .system-position-department-label strong {
   color: var(--slate-900);
-}
-
-.role-permission-count {
-  margin-top: 7px;
-  color: var(--teal-dark);
-  font-size: 11px;
-  font-weight: 700;
 }
 
 .empty-system-positions {
@@ -2763,81 +2787,88 @@ onMounted(() => {
   font-weight: 700;
 }
 
-.role {
-  position: relative;
-  min-height: auto;
-  border: 1.5px solid var(--slate-200);
-  border-radius: var(--radius-md);
+.system-position-picker {
+  display: grid;
+  gap: 6px;
+  color: var(--slate-700);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.system-position-picker select {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--slate-300);
+  border-radius: 10px;
   background: white;
-  cursor: pointer;
-  padding: 12px 13px;
-  text-align: left;
-  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
-}
-
-.role:hover {
-  border-color: var(--teal-200);
-}
-
-.role:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.role-scope-warning {
-  margin-top: 5px;
-  color: #b45309;
-  font-size: 10.5px;
+  color: var(--slate-900);
+  font: inherit;
   font-weight: 700;
+  padding: 0 38px 0 12px;
+  outline: none;
 }
 
-.role.sel {
+.system-position-picker select:focus {
   border-color: var(--teal);
-  background: var(--teal-50);
   box-shadow: 0 0 0 3px var(--ring);
 }
 
-.role .rname {
-  color: var(--slate-900);
-  font-size: 13px;
-  font-weight: 800;
+.selected-system-position-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  border: 1px solid var(--teal-200);
+  border-radius: 12px;
+  background: var(--teal-50);
+  padding: 10px 12px;
 }
 
-.role .rdesc {
-  margin-top: 4px;
-  color: var(--slate-500);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
-.role .reco {
-  position: absolute;
-  top: -8px;
-  right: 10px;
-  border-radius: 999px;
-  background: var(--teal);
-  color: white;
-  font-size: 10px;
-  font-weight: 800;
-  padding: 2px 8px;
-  box-shadow: 0 3px 8px rgb(15 118 110 / 30%);
-}
-
-.role .check {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  display: none;
-  width: 18px;
-  height: 18px;
+.selected-system-position-check {
+  display: grid;
+  width: 24px;
+  height: 24px;
   place-items: center;
   border-radius: 999px;
   background: var(--teal);
   color: white;
 }
 
-.role.sel .check {
-  display: grid;
+.selected-system-position-copy {
+  min-width: 0;
+}
+
+.selected-system-position-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  color: var(--slate-900);
+  font-size: 12.5px;
+}
+
+.selected-system-position-title span {
+  border-radius: 999px;
+  background: var(--teal);
+  color: white;
+  font-size: 9.5px;
+  font-weight: 800;
+  padding: 2px 7px;
+}
+
+.selected-system-position-copy p {
+  margin: 2px 0 0;
+  color: var(--slate-500);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.selected-system-position-count {
+  color: var(--teal-dark);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .engineer-bundle-note {
@@ -3100,10 +3131,6 @@ onMounted(() => {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .roles {
-    grid-template-columns: 1fr 1fr;
-  }
-
   .perm-groups {
     grid-template-columns: 1fr;
   }
@@ -3137,9 +3164,16 @@ onMounted(() => {
     overflow-x: auto;
   }
 
-  .stats,
-  .roles {
+  .stats {
     grid-template-columns: 1fr;
+  }
+
+  .selected-system-position-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .selected-system-position-count {
+    grid-column: 2;
   }
 
   .position-review-grid {

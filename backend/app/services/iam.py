@@ -90,10 +90,10 @@ DEPARTMENT_NAMES = {
     "*": "全部部门",
     "system": "系统管理",
     "engineering": "工程部",
-    "management": "管理层",
+    "management": "总务",
     "molding": "啤机部（历史部门代码）",
     "pmc-warehouse": "PMC / 仓库",
-    "production": "生产部",
+    "production": "生产部（啤喷装）",
     "qa": "品质部",
     "sales-business": "营业部",
     "warehouse": "仓库（历史部门代码）",
@@ -344,6 +344,17 @@ def preview_system_position(
     profile = db.get(EmployeeProfile, user_id)
     if profile is None or not profile.primary_factory_id or not profile.primary_department:
         raise HTTPException(status_code=400, detail="该用户尚未确认主组织资料")
+    actor_scopes = _manager_scopes(db, current_user.id)
+    is_super_admin = _is_superadmin(db, current_user.id)
+    if not is_super_admin and not _scope_is_managed(
+        actor_scopes,
+        profile.primary_factory_id,
+        profile.primary_department,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="跨范围内置职位调整请由集团超级管理员直接操作",
+        )
 
     reason = _required_reason(payload.reason)
     current_revision = _get_revision(db, user_id, for_update=True)
@@ -354,15 +365,11 @@ def preview_system_position(
     position = get_system_position(role.id)
     if position is None:
         raise HTTPException(status_code=400, detail="请选择系统内置权限职位")
-    if position.department != profile.primary_department:
-        raise HTTPException(
-            status_code=400,
-            detail=f"内置权限职位“{role.name}”不属于用户主部门",
-        )
+    permission_department = position.department
     _ensure_scope_applicable(
         role_scope_policy(role.code),
         profile.primary_factory_id,
-        profile.primary_department,
+        permission_department,
         subject=f"内置权限职位 {role.name}",
     )
     role_metadata = _get_role_metadata(db, role.id)
@@ -399,7 +406,7 @@ def preview_system_position(
             and binding.id in effective_binding_ids
             and binding.role_id == role.id
             and binding.factory_id == profile.primary_factory_id
-            and binding.department == profile.primary_department
+            and binding.department == permission_department
         ):
             kept_selected = True
             continue
@@ -424,7 +431,7 @@ def preview_system_position(
                 "binding_id": "",
                 "role_id": role.id,
                 "factory_id": profile.primary_factory_id,
-                "department": profile.primary_department,
+                "department": permission_department,
                 "valid_until": "",
                 "risk_level": "high" if _role_is_high_risk(db, role) else "normal",
             }
@@ -456,8 +463,6 @@ def preview_system_position(
     if not operations:
         raise HTTPException(status_code=400, detail="该用户已使用所选内置权限职位")
 
-    actor_scopes = _manager_scopes(db, current_user.id)
-    is_super_admin = _is_superadmin(db, current_user.id)
     cross_scope = any(
         not _scope_is_managed(actor_scopes, item["factory_id"], item["department"])
         for item in operations
@@ -495,6 +500,9 @@ def preview_system_position(
             "operations": operations,
             "system_position_role_id": role.id,
             "system_position_role_version": role_template_version,
+            "profile_primary_factory_id": profile.primary_factory_id,
+            "profile_primary_department": profile.primary_department,
+            "system_position_department": permission_department,
         },
         summary={
             "requires_approval": False,
@@ -550,8 +558,20 @@ def commit_system_position(
     if preview_payload.get("system_position_role_version") != current_role_version:
         raise HTTPException(status_code=409, detail="内置权限职位模板已变化，请重新预览")
     profile = db.get(EmployeeProfile, user_id)
-    if profile is None or system_position.department != profile.primary_department:
-        raise HTTPException(status_code=409, detail="用户主部门已变化，请重新预览")
+    if (
+        profile is None
+        or profile.primary_factory_id != preview_payload.get("profile_primary_factory_id")
+        or profile.primary_department != preview_payload.get("profile_primary_department")
+    ):
+        raise HTTPException(status_code=409, detail="用户主组织已变化，请重新预览")
+    if system_position.department != preview_payload.get("system_position_department"):
+        raise HTTPException(status_code=409, detail="内置权限职位目录已变化，请重新预览")
+    _ensure_scope_applicable(
+        role_scope_policy(role.code),
+        profile.primary_factory_id,
+        system_position.department,
+        subject=f"内置权限职位 {role.name}",
+    )
 
     operations = preview_payload["operations"]
     current_high_risk = _operations_are_high_risk(db, operations)
@@ -562,6 +582,15 @@ def commit_system_position(
         raise HTTPException(status_code=409, detail="用户权限已变化，请重新预览")
     current_is_super_admin = _is_superadmin(db, current_user.id)
     current_scopes = _manager_scopes(db, current_user.id)
+    if not current_is_super_admin and not _scope_is_managed(
+        current_scopes,
+        profile.primary_factory_id,
+        profile.primary_department,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="跨范围内置职位调整请由集团超级管理员直接操作",
+        )
     currently_cross_scope = any(
         not _scope_is_managed(current_scopes, item["factory_id"], item["department"])
         for item in operations
@@ -1610,6 +1639,9 @@ def _create_access_request_from_preview(
             "system_position_role_id": payload["system_position_role_id"],
             "system_position_role_version": payload.get("system_position_role_version", 1),
             "system_position_preview_high_risk": bool(preview_summary.get("high_risk")),
+            "profile_primary_factory_id": payload.get("profile_primary_factory_id", ""),
+            "profile_primary_department": payload.get("profile_primary_department", ""),
+            "system_position_department": payload.get("system_position_department", ""),
         }
     for index, operation in enumerate(payload["operations"], start=1):
         stored_operation = {**operation, **system_position_context}
@@ -2237,7 +2269,12 @@ def _system_position_request_has_drift(
     if context.get("system_position_role_version") != current_version:
         return True
     profile = db.get(EmployeeProfile, target_user_id)
-    if profile is None or profile.primary_department != system_position.department:
+    if (
+        profile is None
+        or profile.primary_factory_id != context.get("profile_primary_factory_id")
+        or profile.primary_department != context.get("profile_primary_department")
+        or system_position.department != context.get("system_position_department")
+    ):
         return True
     return _operations_are_high_risk(db, operations) != bool(
         context.get("system_position_preview_high_risk")

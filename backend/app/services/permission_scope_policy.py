@@ -37,11 +37,11 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
     "molding_sample:edit_draft": ScopePolicy(
         (*ENGINEERING_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-        guidance="仅在工程部、管理层或全部部门范围生效",
+        guidance="仅在工程部、总务或全部部门范围生效",
     ),
     "molding_sample:delete_draft": ScopePolicy(
         (*ENGINEERING_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-        guidance="仅在工程部、管理层或全部部门范围生效",
+        guidance="仅在工程部、总务或全部部门范围生效",
     ),
     "molding_sample:supervisor_review": ScopePolicy(
         ENGINEERING_DEPARTMENTS,
@@ -49,7 +49,7 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
     "molding_sample:manager_review": ScopePolicy(
         MANAGEMENT_DEPARTMENTS,
-        guidance="仅管理层或全部部门范围生效",
+        guidance="仅总务或全部部门范围生效",
     ),
     "molding_sample:raw_material_write": ScopePolicy(
         (*ENGINEERING_DEPARTMENTS, *WAREHOUSE_DEPARTMENTS),
@@ -65,27 +65,27 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
     "molding_sample:production_read": ScopePolicy(
         PRODUCTION_DEPARTMENTS,
-        guidance="仅生产部/啤机部范围生效；工程页查看进度使用单据查看权限",
+        guidance="仅生产部（啤喷装）范围生效；工程页查看进度使用单据查看权限",
     ),
     "molding_sample:production_start": ScopePolicy(
         PRODUCTION_DEPARTMENTS,
-        guidance="仅生产部/啤机部范围生效",
+        guidance="仅生产部（啤喷装）范围生效",
     ),
     "molding_sample:production_fillback": ScopePolicy(
         PRODUCTION_DEPARTMENTS,
-        guidance="仅生产部/啤机部范围生效",
+        guidance="仅生产部（啤喷装）范围生效",
     ),
     "molding_sample:production_complete": ScopePolicy(
         PRODUCTION_DEPARTMENTS,
-        guidance="仅生产部/啤机部范围生效",
+        guidance="仅生产部（啤喷装）范围生效",
     ),
     "molding_sample:price_update": ScopePolicy(
         MANAGEMENT_DEPARTMENTS,
-        guidance="仅管理层或全部部门范围生效",
+        guidance="仅总务或全部部门范围生效",
     ),
     "molding_sample:audit_read": ScopePolicy(
         MANAGEMENT_DEPARTMENTS,
-        guidance="读取集团敏感操作审计，仅管理层或全部部门范围生效",
+        guidance="读取集团敏感操作审计，仅总务或全部部门范围生效",
     ),
     "molding_sample:notification_read": ScopePolicy(
         SHARED_MOLDING_DEPARTMENTS,
@@ -117,17 +117,17 @@ ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
     "engineer": ScopePolicy(ENGINEERING_DEPARTMENTS, guidance="仅适用于工程部范围"),
     "engineering_supervisor": ScopePolicy(ENGINEERING_DEPARTMENTS, guidance="仅适用于工程部范围"),
-    "manager": ScopePolicy(MANAGEMENT_DEPARTMENTS, guidance="仅适用于管理层范围"),
+    "manager": ScopePolicy(MANAGEMENT_DEPARTMENTS, guidance="仅适用于总务范围"),
     "warehouse_keeper": ScopePolicy(WAREHOUSE_DEPARTMENTS, guidance="仅适用于 PMC/仓库范围"),
     "carton_warehouse_keeper": ScopePolicy(WAREHOUSE_DEPARTMENTS, guidance="仅适用于 PMC/仓库范围"),
     "qa_inspector": ScopePolicy(("qa",), guidance="仅适用于品质部范围"),
-    "molding_clerk": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部/啤机部范围"),
+    "molding_clerk": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"),
     "molding_production_observer": ScopePolicy(
         PRODUCTION_DEPARTMENTS,
-        guidance="仅适用于生产部/啤机部范围，只读查看生产任务和进度",
+        guidance="仅适用于生产部（啤喷装）范围，只读查看生产任务和进度",
     ),
-    "molding_operator": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部/啤机部范围"),
-    "molding_supervisor": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部/啤机部范围"),
+    "molding_operator": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"),
+    "molding_supervisor": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"),
     "sales_customer_owner": ScopePolicy(("sales-business",), guidance="仅适用于营业部范围"),
     "sales_customer_supervisor": ScopePolicy(("sales-business",), guidance="仅适用于营业部范围"),
 }

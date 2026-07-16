@@ -16,14 +16,14 @@ describe('UserAccessManagementView contract', () => {
       'iamApi.commitUserSystemPosition',
       'system_position_role_id',
       'assignableSystemPositions',
-      'position.position_department === userDepartment.value',
       'base_revision',
       'preview_token',
       'confirmedHighRisk',
       'authStore.refreshSession',
       '内置权限职位',
       '选择新的内置权限职位',
-      '只显示员工主部门可分配的内置职位',
+      '显示全部内置职位，并按权限部门分组',
+      'previewAfterPositionLabel',
       '尚未确认主组织资料',
       'missing-primary-department',
       '将继承的权限',
@@ -41,6 +41,7 @@ describe('UserAccessManagementView contract', () => {
     ]) {
       expect(source).toContain(required)
     }
+    expect(source).not.toContain('position.position_department === userDepartment.value')
   })
 
   it('does not render scope, multi-role, granular override, or expiry controls', () => {
