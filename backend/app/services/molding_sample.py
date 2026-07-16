@@ -408,6 +408,10 @@ def is_external_order(order: MoldingSampleOrder) -> bool:
 
 def ensure_export_permission(db: Session, current_user: AuthContext, factory_id: str) -> None:
     ensure_molding_read(db, current_user, factory_id)
+    # Export is an operating permission. A user with cross-factory read scope
+    # may inspect the record, but must not turn that read-only scope into a
+    # downloadable data export unless the position has cross-factory operate.
+    ensure_molding_local_write(db, current_user, factory_id)
     ensure_permission_for_departments(
         db,
         current_user,

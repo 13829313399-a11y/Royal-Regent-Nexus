@@ -757,7 +757,7 @@ def test_material_component_validation_rejects_invalid_explicit_components(clien
     assert client.post("/api/injection", json=payload).status_code == 422
 
 
-def test_authenticated_users_can_read_molding_samples_without_changing_permissions(client):
+def test_authenticated_users_without_molding_read_cannot_browse_samples(client):
     login_as(client, "engineer")
     create_response = client.post("/api/injection", json=sample_order_payload("BP-BROWSE-001"))
     assert create_response.status_code == 201
@@ -767,18 +767,17 @@ def test_authenticated_users_can_read_molding_samples_without_changing_permissio
 
     list_response = client.get("/api/injection")
     assert list_response.status_code == 200
-    assert [row["order"]["id"] for row in list_response.json()] == ["BP-BROWSE-001"]
+    assert list_response.json() == []
 
     detail_response = client.get("/api/injection/BP-BROWSE-001")
-    assert detail_response.status_code == 200
-    assert detail_response.json()["read_source"] == "cross"
-    assert detail_response.json()["can_view_cost"] is False
+    assert detail_response.status_code == 403
     assert client.get("/api/injection/BP-BROWSE-001/export-excel").status_code == 403
     assert client.get(
         "/api/injection/export-excel",
         params=[("order_ids", "BP-BROWSE-001")],
     ).status_code == 403
-    assert client.get("/api/problems", params={"order_id": "BP-BROWSE-001"}).status_code == 200
+    problems_response = client.get("/api/problems", params={"order_id": "BP-BROWSE-001"})
+    assert problems_response.status_code == 403
 
 
 def test_engineer_can_create_order_and_production_user_reads_notification_after_supervisor_approval(client):
