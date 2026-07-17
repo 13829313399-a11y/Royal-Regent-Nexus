@@ -86,6 +86,12 @@ describe('production module entry', () => {
     ]) {
       expect(rawMaterialSource).toContain(requiredCopy)
     }
+    expect(rawMaterialSource).toMatch(/const canManageSelectedFactory = computed/)
+    expect(rawMaterialSource).toContain('当前厂区为只读，可查看原料资料，但不能新增、编辑、领料或调整库存。')
+    expect(rawMaterialSource).toMatch(/:disabled="!canManageSelectedFactory"[\s\S]{0,260}@click="openMaterialModal"/)
+    expect(rawMaterialSource).toMatch(/:disabled="!canManageSelectedFactory"[\s\S]{0,260}@click="openRequisitionModal"/)
+    expect(rawMaterialSource).toMatch(/:disabled="!canManageSelectedFactory"[\s\S]{0,260}@click="openBatchModal"/)
+    expect(rawMaterialSource).toMatch(/isSavingMaterial \|\| !canManageSelectedFactory/)
 
     expect(rawMaterialSource).toContain('rawMaterialApi.list(factoryId)')
     expect(rawMaterialSource).toContain('mapPersistedRawMaterialRow')

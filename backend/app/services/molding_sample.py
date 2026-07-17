@@ -1,6 +1,7 @@
 import json
 import re
 import unicodedata
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from math import isfinite
@@ -41,7 +42,7 @@ from app.schemas.molding_sample import (
     RequisitionCreateRequest,
     RequisitionStatusRequest,
 )
-from app.services.auth import AuthContext, ensure_permission
+from app.services.auth import AuthContext, add_auth_audit, can, ensure_permission
 from app.services.business_authz import (
     CROSS_FACTORY_DEPARTMENTS,
     ENGINEERING_DEPARTMENTS,
@@ -78,6 +79,14 @@ DEFAULT_PRICES = [
 SENSITIVE_AUDIT_LIST_LIMIT = 200
 PRODUCTION_TASK_MODULE = "production_molding_sample_task"
 ENGINEERING_MOLDING_SAMPLE_MODULE = "engineering_molding_sample"
+PRODUCTION_TASK_VISIBLE_STATUSES = frozenset({"待生产", "生产中", "已完成"})
+FIXED_PRODUCTION_TASK_ROLE_IDS = frozenset(
+    {
+        "position_molding_clerk",
+        "position_molding_supervisor",
+        "position_molding_manager",
+    }
+)
 PRODUCTION_TARGET_ROLE = "啤机部"
 ENGINEERING_TARGET_ROLE = "工程部"
 ENGINEERING_SUPERVISOR_TARGET_ROLE = "工程主管"
@@ -495,6 +504,97 @@ def ensure_any_local_molding_read(db: Session, current_user: AuthContext) -> Non
     raise AssertionError("unreachable")
 
 
+def is_production_task_only_access(
+    current_user: AuthContext,
+    factory_id: str,
+) -> bool:
+    fixed_task_grants = tuple(
+        grant
+        for grant in current_user.grants
+        if grant.role_id in FIXED_PRODUCTION_TASK_ROLE_IDS
+    )
+    if not fixed_task_grants:
+        return False
+
+    fixed_task_context = replace(
+        current_user,
+        grants=fixed_task_grants,
+        overrides=(),
+    )
+    fixed_task_read = any(
+        can(
+            fixed_task_context,
+            "molding_sample:production_read",
+            factory_id,
+            department,
+        )
+        for department in PRODUCTION_DEPARTMENTS
+    )
+    if not fixed_task_read:
+        return False
+
+    nonfixed_context = replace(
+        current_user,
+        grants=tuple(
+            grant
+            for grant in current_user.grants
+            if grant.role_id not in FIXED_PRODUCTION_TASK_ROLE_IDS
+        ),
+    )
+    override_only_context = replace(current_user, grants=())
+    has_independent_production_read = has_permission_for_departments(
+        nonfixed_context,
+        "molding_sample:production_read",
+        factory_id,
+        PRODUCTION_DEPARTMENTS,
+    ) or any(
+        can(
+            override_only_context,
+            "molding_sample:production_read",
+            factory_id,
+            department,
+        )
+        for department in PRODUCTION_DEPARTMENTS
+    )
+    has_general_read = has_permission_for_departments(
+        current_user,
+        "molding_sample:read",
+        factory_id,
+        SHARED_MOLDING_DEPARTMENTS,
+    ) or has_permission_for_departments(
+        current_user,
+        MOLDING_CROSS_FACTORY_READ_PERMISSION,
+        factory_id,
+        CROSS_FACTORY_DEPARTMENTS,
+    ) or any(
+        can(
+            override_only_context,
+            permission,
+            factory_id,
+            department,
+        )
+        for permission, departments in (
+            ("molding_sample:read", SHARED_MOLDING_DEPARTMENTS),
+            (MOLDING_CROSS_FACTORY_READ_PERMISSION, CROSS_FACTORY_DEPARTMENTS),
+        )
+        for department in departments
+    )
+    return not has_independent_production_read and not has_general_read
+
+
+def ensure_order_read_allowed(
+    db: Session,
+    current_user: AuthContext,
+    order: MoldingSampleOrder,
+) -> None:
+    ensure_molding_read(db, current_user, order.factory_id)
+    if (
+        is_production_task_only_access(current_user, order.factory_id)
+        and order.status not in PRODUCTION_TASK_VISIBLE_STATUSES
+    ):
+        raise HTTPException(status_code=403, detail="啤机职位只能查看已进入生产流程的任务")
+
+
 def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
     order = db.scalar(
         select(MoldingSampleOrder)
@@ -511,7 +611,7 @@ def load_order(db: Session, order_id: str, current_user: AuthContext | None = No
         raise HTTPException(status_code=404, detail="啤办单不存在")
 
     if current_user is not None:
-        ensure_molding_read(db, current_user, order.factory_id)
+        ensure_order_read_allowed(db, current_user, order)
 
     return order
 
@@ -546,6 +646,10 @@ def list_orders(
     return [
         order for order in orders
         if molding_read_access(current_user, order.factory_id) is not None
+        and (
+            not is_production_task_only_access(current_user, order.factory_id)
+            or order.status in PRODUCTION_TASK_VISIBLE_STATUSES
+        )
     ]
 
 
@@ -734,6 +838,8 @@ def list_board_page(
     page_size: int,
 ) -> tuple[list[MoldingSampleOrder], int, int, int]:
     ensure_molding_read(db, current_user, factory_id)
+    if is_production_task_only_access(current_user, factory_id):
+        raise HTTPException(status_code=403, detail="啤机职位不能读取工程啤办看板")
     source_statuses = BOARD_SOURCE_STATUSES[board_status]
     tokens = tokenize_board_search_keyword(keyword)
 
@@ -794,6 +900,8 @@ def get_board_summary(
     keyword: str,
 ) -> dict[str, Any]:
     ensure_molding_read(db, current_user, factory_id)
+    if is_production_task_only_access(current_user, factory_id):
+        raise HTTPException(status_code=403, detail="啤机职位不能读取工程啤办看板")
     tokens = tokenize_board_search_keyword(keyword)
     status_counts = _empty_board_status_counts()
 
@@ -1032,6 +1140,76 @@ def notification_departments(target_module: str, target_role: str) -> tuple[str,
     return ENGINEERING_DEPARTMENTS
 
 
+def notification_module_permission(target_module: str) -> str:
+    if target_module == PRODUCTION_TASK_MODULE:
+        return "molding_sample:production_read"
+    return "molding_sample:read"
+
+
+def has_notification_scope_permission(
+    current_user: AuthContext,
+    permission: str,
+    notification: MoldingSampleNotification,
+) -> bool:
+    fixed_contract_grants = tuple(
+        grant
+        for grant in current_user.grants
+        if grant.unrestricted_department
+        and "molding_sample:notification_read" in grant.permissions
+    )
+    departments = notification_departments(
+        notification.target_module,
+        notification.target_role,
+    )
+    fixed_contract_context = replace(
+        current_user,
+        grants=fixed_contract_grants,
+    )
+    fixed_contract_allowed = bool(fixed_contract_grants) and any(
+        can(
+            fixed_contract_context,
+            permission,
+            notification.factory_id,
+            department,
+        )
+        for department in departments
+    )
+    compatibility_grants = tuple(
+        grant
+        for grant in current_user.grants
+        if grant not in fixed_contract_grants
+    )
+    compatibility_allowed = has_permission_for_departments(
+        replace(current_user, grants=compatibility_grants),
+        permission,
+        notification.factory_id,
+        departments,
+    )
+    return fixed_contract_allowed or compatibility_allowed
+
+
+def ensure_notification_scope_permission(
+    db: Session,
+    current_user: AuthContext,
+    permission: str,
+    notification: MoldingSampleNotification,
+) -> None:
+    if has_notification_scope_permission(current_user, permission, notification):
+        return
+    add_auth_audit(
+        db,
+        "permission_denied",
+        username=current_user.username,
+        user_id=current_user.id,
+        detail=(
+            f"缺少通知范围内权限：{permission}@{notification.factory_id}/"
+            f"{notification.target_module}"
+        ),
+    )
+    db.commit()
+    raise HTTPException(status_code=403, detail="无授权范围内通知权限")
+
+
 def list_notifications(
     db: Session,
     current_user: AuthContext,
@@ -1061,20 +1239,15 @@ def list_notifications(
     )
     return [
         notification for notification in notifications
-        if has_permission_for_departments(
+        if has_notification_scope_permission(
             current_user,
             "molding_sample:notification_read",
-            notification.factory_id,
-            notification_departments(notification.target_module, notification.target_role),
+            notification,
         )
-        and (
-            notification.target_module != PRODUCTION_TASK_MODULE
-            or has_permission_for_departments(
-                current_user,
-                "molding_sample:production_read",
-                notification.factory_id,
-                PRODUCTION_DEPARTMENTS,
-            )
+        and has_notification_scope_permission(
+            current_user,
+            notification_module_permission(notification.target_module),
+            notification,
         )
     ]
 
@@ -1089,12 +1262,17 @@ def update_notification(
     if notification is None:
         raise HTTPException(status_code=404, detail="啤办通知不存在")
     ensure_molding_local_write(db, current_user, notification.factory_id)
-    ensure_permission_for_departments(
+    ensure_notification_scope_permission(
         db,
         current_user,
         "molding_sample:notification_read",
-        notification.factory_id,
-        notification_departments(notification.target_module, notification.target_role),
+        notification,
+    )
+    ensure_notification_scope_permission(
+        db,
+        current_user,
+        notification_module_permission(notification.target_module),
+        notification,
     )
     if payload.status not in NOTIFICATION_STATUSES:
         raise HTTPException(status_code=400, detail="通知状态无效")

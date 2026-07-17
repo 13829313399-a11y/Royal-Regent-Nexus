@@ -204,6 +204,78 @@ describe('authStore scoped permission decisions', () => {
     },
   )
 
+  it('keeps cross-factory-read position notifications inside the home factory and department', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      permissions: ['molding_sample:read', 'molding_sample:notification_read'],
+      factory_scopes: ['*'],
+      grants: [{
+        role_id: 'position_engineering_engineer',
+        role_code: 'position_engineering_engineer',
+        role_name: '工程师',
+        factory_id: 'huaxing',
+        department: 'engineering',
+        permissions: ['molding_sample:read', 'molding_sample:notification_read'],
+        scope_mode: 'cross_factory_read',
+        read_permission_codes: ['molding_sample:read', 'molding_sample:notification_read'],
+        unrestricted_department: true,
+        data_scope: 'all',
+      }],
+    }))
+
+    expect(store.can('molding_sample:read', 'huadeng', 'engineering')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huaxing', 'engineering')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huaxing', 'production')).toBe(false)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'engineering')).toBe(false)
+  })
+
+  it('lets a molding supervisor receive cross-factory production notifications only', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      permissions: ['molding_sample:production_read', 'molding_sample:notification_read'],
+      factory_scopes: ['*'],
+      grants: [{
+        role_id: 'position_molding_supervisor',
+        role_code: 'position_molding_supervisor',
+        role_name: '啤机主管',
+        factory_id: 'huaxing',
+        department: 'production',
+        permissions: ['molding_sample:production_read', 'molding_sample:notification_read'],
+        scope_mode: 'cross_factory_operate',
+        read_permission_codes: ['molding_sample:production_read', 'molding_sample:notification_read'],
+        unrestricted_department: true,
+        data_scope: 'all',
+      }],
+    }))
+
+    expect(store.can('molding_sample:notification_read', 'huaxing', 'molding')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'production')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'engineering')).toBe(false)
+  })
+
+  it('keeps the general manager notification scope unrestricted', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      permissions: ['molding_sample:notification_read'],
+      factory_scopes: ['*'],
+      grants: [{
+        role_id: 'position_general_manager',
+        role_code: 'position_general_manager',
+        role_name: '总经理',
+        factory_id: 'huaxing',
+        department: 'management',
+        permissions: ['molding_sample:notification_read'],
+        scope_mode: 'cross_factory_operate',
+        read_permission_codes: ['molding_sample:notification_read'],
+        unrestricted_department: true,
+        data_scope: 'all',
+      }],
+    }))
+
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'engineering')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'production')).toBe(true)
+  })
+
   it('does not let a wildcard system-position binding bypass its configured scope mode', () => {
     const store = useAuthStore()
     const applyPosition = (scopeMode: 'own_factory' | 'cross_factory_read' | 'cross_factory_operate') => {

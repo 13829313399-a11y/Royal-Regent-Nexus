@@ -14,6 +14,10 @@ const updateNotificationMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ can: () => true }),
+}))
+
 vi.mock('@/api/system', () => ({
   systemApi: {
     listRegistrationRequests: listRegistrationRequestsMock,
@@ -119,10 +123,18 @@ describe('SystemUserManagementView registration approval', () => {
     const positionOptions = positionSelect.findAll('option').filter((option) => option.attributes('value'))
     expect(positionGroups.map((group) => group.attributes('label'))).toEqual(['工程部', '生产部（啤喷装）'])
     expect(positionOptions).toHaveLength(4)
-    expect((positionSelect.element as HTMLSelectElement).value).toBe('position_engineering_engineer')
+    expect((positionSelect.element as HTMLSelectElement).value).toBe('')
     expect(positionSelect.text()).toContain('工程师 · 6 项权限 · 推荐')
     expect(positionSelect.text()).toContain('生产文员 · 权限待配置')
-    expect(wrapper.get('[data-testid="selected-system-position-summary"]').text()).toContain('推荐')
+    expect(wrapper.find('[data-testid="selected-system-position-summary"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="registration-position-recommendation"]').text()).toContain(
+      '推荐仅用于提示，不会自动选中或授权',
+    )
+
+    const approveButton = wrapper.findAll('button').find((button) => button.text().includes('通过并开通'))
+    await approveButton!.trigger('click')
+    expect(wrapper.text()).toContain('请选择一个内置权限职位')
+    expect(approveRegistrationRequestMock).not.toHaveBeenCalled()
 
     await wrapper.get('select[aria-label="确认部门"]').setValue('production')
     await flushPromises()
@@ -134,7 +146,6 @@ describe('SystemUserManagementView registration approval', () => {
     await positionSelect.setValue('position_engineering_engineer')
     expect(wrapper.get('[data-testid="selected-system-position-summary"]').text()).toContain('工程部 · 工程师')
 
-    const approveButton = wrapper.findAll('button').find((button) => button.text().includes('通过并开通'))
     await approveButton!.trigger('click')
     await flushPromises()
     expect(approveRegistrationRequestMock).toHaveBeenCalledWith('registration-1', {

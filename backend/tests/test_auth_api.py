@@ -548,30 +548,67 @@ def test_seed_upgrades_existing_business_roles_with_internal_quote_p4_release_pe
             ).count() == len(expected_mappings)
 
 
-def test_seed_reconciles_fixed_system_position_names_without_overwriting_template(monkeypatch):
+def test_seed_reconciles_fixed_system_position_template_from_code(monkeypatch):
     with make_client(monkeypatch):
         db_module = importlib.import_module("app.db")
         auth_models = importlib.import_module("app.models.auth")
         auth_service = importlib.import_module("app.services.auth")
+        positions = importlib.import_module("app.services.system_positions")
         with db_module.SessionLocal() as db:
-            role = db.get(auth_models.AuthRole, "position_qc_inspector")
-            permission_ids_before = {
-                item.permission_id
-                for item in db.query(auth_models.AuthRolePermission).filter_by(role_id=role.id).all()
-            }
-            role.name = "QC 检验员"
-            role.description = "管理员维护的职位说明"
+            role_id = "position_engineering_engineer"
+            definition = positions.get_system_position(role_id)
+            role = db.get(auth_models.AuthRole, role_id)
+            metadata = db.get(auth_models.AuthRoleMetadata, role_id)
+            baseline_version = metadata.version
+            removed_permission = db.query(auth_models.AuthPermission).filter_by(
+                code="molding_sample:read"
+            ).one()
+            removed_link = db.query(auth_models.AuthRolePermission).filter_by(
+                role_id=role_id,
+                permission_id=removed_permission.id,
+            ).one()
+            db.delete(removed_link)
+            extra_permission = db.query(auth_models.AuthPermission).filter_by(
+                code="system:user_manage"
+            ).one()
+            db.add(
+                auth_models.AuthRolePermission(
+                    id=f"{role_id}:{extra_permission.id}",
+                    role_id=role_id,
+                    permission_id=extra_permission.id,
+                )
+            )
+            role.name = "管理员修改的职位名"
+            role.description = "管理员修改的职位说明"
+            metadata.scope_mode = "cross_factory_operate"
             db.commit()
 
             auth_service.seed_auth_defaults(db)
 
             updated = db.get(auth_models.AuthRole, role.id)
-            assert updated.name == "QC检验员"
-            assert updated.description == "管理员维护的职位说明"
-            assert {
+            updated_metadata = db.get(auth_models.AuthRoleMetadata, role_id)
+            actual_permission_ids = {
                 item.permission_id
-                for item in db.query(auth_models.AuthRolePermission).filter_by(role_id=role.id).all()
-            } == permission_ids_before
+                for item in db.query(auth_models.AuthRolePermission).filter_by(
+                    role_id=role_id
+                ).all()
+            }
+            expected_permission_ids = {
+                db.query(auth_models.AuthPermission).filter_by(code=code).one().id
+                for code in definition.permission_codes
+            }
+            assert updated.name == definition.name
+            assert updated.description == definition.description
+            assert updated_metadata.scope_mode == definition.scope_mode
+            assert updated_metadata.version == baseline_version + 1
+            assert actual_permission_ids == expected_permission_ids
+
+            version_after_reconcile = updated_metadata.version
+            auth_service.seed_auth_defaults(db)
+            assert (
+                db.get(auth_models.AuthRoleMetadata, role_id).version
+                == version_after_reconcile
+            )
 
 
 def test_canonical_can_uses_deny_then_allow_then_role_and_scope(monkeypatch):
@@ -693,6 +730,201 @@ def test_system_position_scope_contract_is_consistent_across_authz_modes(monkeyp
         assert auth_service.has_permission_in_scope(
             wildcard_operate, operate_permission, "huadeng", "engineering"
         )
+
+
+@pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
+def test_system_position_notifications_follow_factory_and_department_contract(
+    monkeypatch,
+    authz_mode,
+):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE=authz_mode,
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        notification_permission = "molding_sample:notification_read"
+
+        def context_for(grant):
+            return auth_service.AuthContext(
+                id=f"user-{grant.role_id}",
+                username=grant.role_id,
+                display_name=grant.role_name,
+                roles=(grant.role_name,),
+                role_codes=(grant.role_id,),
+                permissions=grant.permissions,
+                factory_scopes=("*", grant.factory_id),
+                department_scopes=("*", grant.department),
+                grants=(grant,),
+                active_permission_codes=grant.permissions,
+            )
+
+        engineering_grant = auth_service.AuthGrantContext(
+            role_id="position_engineering_engineer",
+            role_name="工程师",
+            factory_id="huaxing",
+            department="engineering",
+            permissions=frozenset(
+                {notification_permission, "molding_sample:read"}
+            ),
+            scope_mode="cross_factory_read",
+            read_permissions=frozenset(
+                {notification_permission, "molding_sample:read"}
+            ),
+            unrestricted_department=True,
+        )
+        engineer = context_for(engineering_grant)
+        assert auth_service.has_permission_in_scope(
+            engineer, "molding_sample:read", "huadeng", "engineering"
+        )
+        assert auth_service.has_permission_in_scope(
+            engineer, notification_permission, "huaxing", "engineering"
+        )
+        assert not auth_service.has_permission_in_scope(
+            engineer, notification_permission, "huaxing", "production"
+        )
+        assert not auth_service.has_permission_in_scope(
+            engineer, notification_permission, "huadeng", "engineering"
+        )
+
+        molding_grant = auth_service.AuthGrantContext(
+            role_id="position_molding_supervisor",
+            role_name="啤机主管",
+            factory_id="huaxing",
+            department="production",
+            permissions=frozenset(
+                {notification_permission, "molding_sample:production_read"}
+            ),
+            scope_mode="cross_factory_operate",
+            read_permissions=frozenset(
+                {notification_permission, "molding_sample:production_read"}
+            ),
+            unrestricted_department=True,
+        )
+        molding_supervisor = context_for(molding_grant)
+        assert auth_service.has_permission_in_scope(
+            molding_supervisor, notification_permission, "huadeng", "molding"
+        )
+        assert not auth_service.has_permission_in_scope(
+            molding_supervisor, notification_permission, "huadeng", "engineering"
+        )
+
+        manager_grant = auth_service.replace(
+            molding_grant,
+            role_id="position_general_manager",
+            role_name="总经理",
+            department="management",
+        )
+        general_manager = context_for(manager_grant)
+        assert auth_service.has_permission_in_scope(
+            general_manager, notification_permission, "huadeng", "engineering"
+        )
+        assert auth_service.has_permission_in_scope(
+            general_manager, notification_permission, "huadeng", "production"
+        )
+
+
+@pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
+def test_general_manager_business_matrix_and_system_denials_across_authz_modes(
+    monkeypatch,
+    authz_mode,
+):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE=authz_mode,
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        business_authz = importlib.import_module("app.services.business_authz")
+        permission_codes = importlib.import_module("app.services.permission_codes")
+        positions = importlib.import_module("app.services.system_positions")
+
+        definition = positions.get_system_position("position_general_manager")
+        assert definition is not None
+        grant = auth_service.AuthGrantContext(
+            role_id=definition.role_id,
+            role_name=definition.name,
+            factory_id="huaxing",
+            department="management",
+            permissions=frozenset(definition.permission_codes),
+            scope_mode=definition.scope_mode,
+            read_permissions=frozenset(definition.permission_codes),
+            unrestricted_department=True,
+            binding_id="binding-general-manager",
+            role_code=definition.role_id,
+        )
+        context = auth_service.AuthContext(
+            id="user-general-manager",
+            username="general-manager",
+            display_name="集团总经理",
+            roles=(definition.name,),
+            role_codes=(definition.role_id,),
+            permissions=frozenset(definition.permission_codes),
+            factory_scopes=("*", "huaxing"),
+            department_scopes=("*", "management"),
+            grants=(grant,),
+            profile=auth_service.AuthProfileContext(
+                primary_factory_id="huaxing",
+                primary_department="management",
+                position="集团总经理",
+                confirmation_status="confirmed",
+            ),
+            active_permission_codes=frozenset(
+                permission_codes.APPLICATION_PERMISSION_CODES
+            ),
+        )
+
+        representative_business_access = (
+            ("molding_sample:cross_factory_read", "huadeng", "engineering"),
+            ("molding_sample:cross_factory_cost_read", "huadeng", "engineering"),
+            ("molding_sample:create", "huadeng", "engineering"),
+            ("molding_sample:raw_material_write", "huadeng", "pmc-warehouse"),
+            ("molding_sample:inventory_issue", "huaxing", "pmc-warehouse"),
+            ("injection_schedule:read", "huadeng", "production"),
+            ("injection_schedule:import", "huadeng", "production"),
+            ("carton_mark:template_upload", "huadeng", "carton"),
+            ("carton_mark:photo_upload", "huaxing", "qa"),
+            ("internal_quote:read", "huadeng", "sales-business"),
+            ("internal_quote:engineering_edit", "huadeng", "engineering"),
+            ("internal_quote:molding_review", "huaxing", "molding"),
+            ("customer_price:read", "huadeng", "sales-business"),
+            ("customer_price:import_internal_quote", "huadeng", "sales-business"),
+            ("customer_price:export_customer_quote", "huaxing", "sales-business"),
+        )
+        for permission, factory_id, department in representative_business_access:
+            assert auth_service.can(context, permission, factory_id, department)
+            assert auth_service.has_permission_in_scope(
+                context,
+                permission,
+                factory_id,
+                department,
+            )
+
+        # Every currently registered business permission is available both at
+        # the employee's real home factory and a foreign factory. This remains
+        # permission-driven; the role is not treated as a wildcard admin.
+        for permission in permission_codes.BUSINESS_PERMISSION_CODES:
+            assert auth_service.can(context, permission, "huaxing", "management")
+            assert auth_service.can(context, permission, "huadeng", "engineering")
+            assert auth_service.has_permission_in_scope(
+                context,
+                permission,
+                "huadeng",
+                "engineering",
+            )
+
+        assert not business_authz.is_wildcard_super_admin(context)
+        assert grant.factory_id == "huaxing"
+        assert context.profile.primary_factory_id == "huaxing"
+        for permission in permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES:
+            assert not auth_service.can(context, permission, "huaxing", "management")
+            assert not auth_service.can(context, permission, "huadeng", "system")
+            assert not auth_service.has_permission_in_scope(
+                context,
+                permission,
+                "huadeng",
+                "system",
+            )
 
 
 def test_legacy_read_compat_backfills_only_eligible_existing_users_once(monkeypatch):

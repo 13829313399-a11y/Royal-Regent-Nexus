@@ -3,6 +3,73 @@ import importlib
 from test_molding_sample_api import login_as, make_client
 
 
+def create_fixed_position_user(
+    username: str,
+    role_id: str,
+    department: str,
+) -> None:
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    user_id = f"user-{username}"
+    now = auth_service.now_text()
+    with db_module.SessionLocal() as db:
+        salt, password_hash = auth_service.make_password_hash("123456")
+        db.add(
+            auth_models.AuthUser(
+                id=user_id,
+                username=username,
+                display_name=username,
+                password_salt=salt,
+                password_hash=password_hash,
+                status="active",
+                force_password_change=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            auth_models.AuthUserRole(
+                id=f"{user_id}:{role_id}:huaxing:{department}",
+                user_id=user_id,
+                role_id=role_id,
+                factory_id="huaxing",
+                department=department,
+            )
+        )
+        db.add(
+            auth_models.EmployeeProfile(
+                user_id=user_id,
+                primary_factory_id="huaxing",
+                primary_department=department,
+                position=username,
+                phone="",
+                email="",
+                confirmation_status="confirmed",
+                source_registration_request_id="",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            auth_models.AuthUserAuthorizationRevision(
+                user_id=user_id,
+                revision=1,
+                updated_at=now,
+            )
+        )
+        db.commit()
+
+
+def login_fixed_position_user(client, username: str):
+    response = client.post(
+        "/api/auth/login",
+        json={"username": username, "password": "123456"},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
     with make_client(monkeypatch) as client:
         unauthenticated = client.get("/api/raw-materials?factory_id=huaxing")
@@ -121,3 +188,55 @@ def test_raw_material_creation_is_scoped_to_engineering_and_warehouse(monkeypatc
             "unit": "KG",
         })
         assert allowed.status_code == 201
+
+
+def test_every_engineering_and_warehouse_fixed_position_can_manage_home_raw_materials(
+    monkeypatch,
+):
+    fixed_positions = (
+        ("fixed_engineer", "position_engineering_engineer", "engineering"),
+        ("fixed_engineering_supervisor", "position_engineering_supervisor", "engineering"),
+        ("fixed_engineering_manager", "position_engineering_manager", "engineering"),
+        ("fixed_warehouse_keeper", "position_warehouse_keeper", "pmc-warehouse"),
+        ("fixed_warehouse_supervisor", "position_warehouse_supervisor", "pmc-warehouse"),
+        ("fixed_warehouse_manager", "position_warehouse_manager", "pmc-warehouse"),
+    )
+
+    with make_client(monkeypatch) as client:
+        for username, role_id, department in fixed_positions:
+            create_fixed_position_user(username, role_id, department)
+            profile = login_fixed_position_user(client, username)
+            assert "molding_sample:raw_material_write" in profile["permissions"]
+            created = client.post(
+                "/api/raw-materials",
+                json={
+                    "factory_id": "huaxing",
+                    "material_name": f"{username} 新增原料",
+                    "category": "ABS",
+                    "unit": "KG",
+                },
+            )
+            assert created.status_code == 201
+            client.post("/api/auth/logout")
+
+        login_fixed_position_user(client, "fixed_engineer")
+        assert client.get(
+            "/api/raw-materials",
+            params={"factory_id": "huadeng"},
+        ).status_code == 200
+        assert client.post(
+            "/api/raw-materials",
+            json={
+                "factory_id": "huadeng",
+                "material_name": "工程师不得写入外厂原料",
+                "category": "ABS",
+                "unit": "KG",
+            },
+        ).status_code == 403
+        client.post("/api/auth/logout")
+
+        login_fixed_position_user(client, "fixed_warehouse_keeper")
+        assert client.get(
+            "/api/raw-materials",
+            params={"factory_id": "huadeng"},
+        ).status_code == 403

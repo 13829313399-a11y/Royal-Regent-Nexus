@@ -43,8 +43,10 @@ import {
   registrationDepartments,
 } from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const authStore = useAuthStore()
 const activeTab = ref<'pending' | 'password-reset' | 'users'>('pending')
 const requests = ref<RegistrationRequestResponse[]>([])
 const users = ref<UserResponse[]>([])
@@ -106,6 +108,12 @@ const selectedApprovalSystemPosition = computed(() => {
   if (!selectedRequest.value) return null
   const selectedRoleId = getSelectedSystemPositionId(selectedRequest.value)
   return systemPositions.value.find((role) => role.id === selectedRoleId) ?? null
+})
+const recommendedApprovalSystemPosition = computed(() => {
+  if (!selectedRequest.value) return null
+  const recommendedRoleId = selectedRequest.value.recommended_role_ids
+    .find((roleId) => allSystemPositions.value.some((role) => role.id === roleId))
+  return allSystemPositions.value.find((role) => role.id === recommendedRoleId) ?? null
 })
 const filteredUsers = computed(() => {
   const keyword = userSearch.value.trim().toLowerCase()
@@ -209,9 +217,7 @@ function getSelectedSystemPositionId(request: RegistrationRequestResponse) {
   const available = allSystemPositions.value
   const current = selectedSystemPositions.value[request.id]
   if (current && available.some((role) => role.id === current)) return current
-  if (Object.prototype.hasOwnProperty.call(selectedSystemPositions.value, request.id)) return ''
-  const recommended = request.recommended_role_ids.find((roleId) => available.some((role) => role.id === roleId))
-  return recommended ?? ''
+  return ''
 }
 
 function setSelectedSystemPosition(requestId: string, roleId: string) {
@@ -449,7 +455,11 @@ onMounted(() => {
               用户列表
             </button>
           </nav>
-          <RouterLink class="ghost-link iam-console-entry" to="/system/iam/roles">
+          <RouterLink
+            v-if="authStore.can('system:permission_catalog_read')"
+            class="ghost-link iam-console-entry"
+            to="/system/iam/roles"
+          >
             <SlidersHorizontal class="size-4" aria-hidden="true" />
             内置职位权限
           </RouterLink>
@@ -612,6 +622,14 @@ onMounted(() => {
             <p class="system-position-department-label">
               员工资料部门：<strong>{{ departmentLabel(approvalProfile(selectedRequest).department) }}</strong>；可从全部内置职位中选择权限职位
             </p>
+            <div
+              v-if="recommendedApprovalSystemPosition && !selectedApprovalSystemPosition"
+              class="position-role-note"
+              data-testid="registration-position-recommendation"
+            >
+              <strong>推荐：{{ recommendedApprovalSystemPosition.position_department_name }} · {{ recommendedApprovalSystemPosition.name }}</strong>
+              <span>推荐仅用于提示，不会自动选中或授权；请管理员核对后主动选择。</span>
+            </div>
             <template v-if="allSystemPositions.length">
               <label class="system-position-picker">
                 <span>选择内置权限职位</span>
@@ -822,7 +840,7 @@ onMounted(() => {
               <td>
                 <div class="row-ops">
                   <RouterLink
-                    v-if="user.status === 'active' || user.status === 'suspended'"
+                    v-if="authStore.can('system:access_manage') && (user.status === 'active' || user.status === 'suspended')"
                     class="btn btn-sm iam-access-link"
                     :to="`/system/users/${encodeURIComponent(user.id)}/access`"
                   >

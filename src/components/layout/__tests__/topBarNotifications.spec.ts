@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import TopBar from '../TopBar.vue'
 import { useAuthStore } from '@/stores/auth'
-import type { AuthEffectiveAccess, AuthzMode } from '@/api/auth'
+import type { AuthEffectiveAccess, AuthGrantScopeMode, AuthzMode } from '@/api/auth'
 import { moldingSampleApi } from '@/api/moldingSample'
 import type { MoldingSampleNotificationResponse } from '@/api/moldingSample'
 import { systemApi, type SystemNotificationResponse } from '@/api/system'
@@ -78,10 +78,18 @@ function seedAccount(options: {
   factoryScopes?: string[]
   authzMode?: AuthzMode
   effectiveAccess?: AuthEffectiveAccess[]
+  roleId?: string
+  factoryId?: string
+  department?: string
+  scopeMode?: AuthGrantScopeMode
+  readPermissionCodes?: string[]
+  unrestrictedDepartment?: boolean
 }) {
   const permissions = options.permissions ?? ['molding_sample:notification_read']
   const factoryScopes = options.factoryScopes ?? ['huaxing']
   const administrator = options.roles.includes('系统管理员')
+  const roleId = options.roleId ?? (administrator ? 'admin' : 'test-role')
+  const department = options.department ?? (administrator ? 'system' : 'engineering')
   useAuthStore().applySession({
     id: 'user-test',
     username: 'tester',
@@ -89,16 +97,19 @@ function seedAccount(options: {
     roles: options.roles,
     permissions,
     grants: [{
-      role_id: administrator ? 'admin' : 'test-role',
-      role_code: administrator ? 'admin' : 'test-role',
+      role_id: roleId,
+      role_code: roleId,
       role_name: options.roles[0] ?? '测试角色',
-      factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
-      department: administrator ? 'system' : 'engineering',
+      factory_id: options.factoryId ?? (factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing'),
+      department,
       permissions,
+      scope_mode: options.scopeMode,
+      read_permission_codes: options.readPermissionCodes,
+      unrestricted_department: options.unrestrictedDepartment,
       data_scope: administrator ? 'all' : 'department',
     }],
     factory_scopes: factoryScopes,
-    department_scopes: ['engineering'],
+    department_scopes: [department],
     authz_mode: options.authzMode,
     effective_access: options.effectiveAccess,
     force_password_change: false,
@@ -330,10 +341,14 @@ describe('TopBar notifications', () => {
     expect(wrapper.text()).not.toContain('工程部回传')
   })
 
-  it('shows supervisor review notifications without mixing engineering department messages', async () => {
+  it('lets an engineering supervisor inherit same-department engineering notifications', async () => {
     seedAccount({
       roles: ['工程主管'],
-      permissions: ['molding_sample:notification_read', 'molding_sample:supervisor_review'],
+      permissions: [
+        'molding_sample:notification_read',
+        'molding_sample:supervisor_review',
+        'molding_sample:create',
+      ],
       factoryScopes: ['huaxing'],
     })
     moldingSampleApiMock.listNotifications.mockResolvedValue([
@@ -357,13 +372,126 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    expect(wrapper.get('button[aria-label="未处理项通知"]').text()).toContain('1')
+    expect(wrapper.get('button[aria-label="未处理项通知"]').text()).toContain('2')
 
     await wrapper.get('button[aria-label="未处理项通知"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('啤办单待主管审核')
-    expect(wrapper.text()).not.toContain('工程部回传')
+    expect(wrapper.text()).toContain('工程部回传')
+  })
+
+  it('keeps an engineering fixed position bell inside its home factory and department', async () => {
+    seedAccount({
+      roles: ['工程师'],
+      permissions: ['molding_sample:notification_read', 'molding_sample:read'],
+      factoryScopes: ['*'],
+      roleId: 'position_engineering_engineer',
+      factoryId: 'huaxing',
+      department: 'engineering',
+      scopeMode: 'cross_factory_read',
+      readPermissionCodes: ['molding_sample:notification_read', 'molding_sample:read'],
+      unrestrictedDepartment: true,
+    })
+    moldingSampleApiMock.listNotifications.mockResolvedValue([
+      createNotification({
+        id: 'N-ENGINEER-HOME',
+        order_id: 'BP-ENGINEER-HOME',
+        factory_id: 'huaxing',
+        target_role: '工程部',
+        title: '华兴工程通知',
+      }),
+      createNotification({
+        id: 'N-ENGINEER-FOREIGN',
+        order_id: 'BP-ENGINEER-FOREIGN',
+        factory_id: 'huadeng',
+        target_role: '工程部',
+        title: '华登工程通知',
+      }),
+      createNotification({
+        id: 'N-ENGINEER-PRODUCTION',
+        order_id: 'BP-ENGINEER-PRODUCTION',
+        factory_id: 'huaxing',
+        target_role: '啤机部',
+        target_module: 'production_molding_sample_task',
+        title: '华兴啤机通知',
+      }),
+    ])
+
+    const wrapper = mountTopBar()
+    await flushPromises()
+
+    expect(wrapper.get('button[aria-label="未处理项通知"]').text()).toContain('1')
+    await wrapper.get('button[aria-label="未处理项通知"]').trigger('click')
+    expect(wrapper.text()).toContain('华兴工程通知')
+    expect(wrapper.text()).not.toContain('华登工程通知')
+    expect(wrapper.text()).not.toContain('华兴啤机通知')
+  })
+
+  it('keeps a molding clerk bell local while a molding supervisor receives all factories', async () => {
+    const notifications = [
+      createNotification({
+        id: 'N-MOLDING-HOME',
+        order_id: 'BP-MOLDING-HOME',
+        factory_id: 'huaxing',
+        target_role: '啤机部',
+        target_module: 'production_molding_sample_task',
+        title: '华兴啤机任务',
+      }),
+      createNotification({
+        id: 'N-MOLDING-FOREIGN',
+        order_id: 'BP-MOLDING-FOREIGN',
+        factory_id: 'huadeng',
+        target_role: '啤机部',
+        target_module: 'production_molding_sample_task',
+        title: '华登啤机任务',
+      }),
+      createNotification({
+        id: 'N-MOLDING-ENGINEERING',
+        order_id: 'BP-MOLDING-ENGINEERING',
+        factory_id: 'huaxing',
+        target_role: '工程部',
+        title: '华兴工程消息',
+      }),
+    ]
+    const sharedOptions = {
+      permissions: ['molding_sample:notification_read', 'molding_sample:production_read'],
+      factoryScopes: ['*'],
+      factoryId: 'huaxing',
+      department: 'production',
+      readPermissionCodes: ['molding_sample:notification_read', 'molding_sample:production_read'],
+      unrestrictedDepartment: true,
+    }
+
+    seedAccount({
+      ...sharedOptions,
+      roles: ['啤机文员'],
+      roleId: 'position_molding_clerk',
+      scopeMode: 'cross_factory_read',
+    })
+    moldingSampleApiMock.listNotifications.mockResolvedValue(notifications)
+    const clerkWrapper = mountTopBar()
+    await flushPromises()
+    expect(clerkWrapper.get('button[aria-label="未处理项通知"]').text()).toContain('1')
+    await clerkWrapper.get('button[aria-label="未处理项通知"]').trigger('click')
+    expect(clerkWrapper.text()).toContain('华兴啤机任务')
+    expect(clerkWrapper.text()).not.toContain('华登啤机任务')
+    expect(clerkWrapper.text()).not.toContain('华兴工程消息')
+    clerkWrapper.unmount()
+
+    seedAccount({
+      ...sharedOptions,
+      roles: ['啤机主管'],
+      roleId: 'position_molding_supervisor',
+      scopeMode: 'cross_factory_operate',
+    })
+    const supervisorWrapper = mountTopBar()
+    await flushPromises()
+    expect(supervisorWrapper.get('button[aria-label="未处理项通知"]').text()).toContain('2')
+    await supervisorWrapper.get('button[aria-label="未处理项通知"]').trigger('click')
+    expect(supervisorWrapper.text()).toContain('华兴啤机任务')
+    expect(supervisorWrapper.text()).toContain('华登啤机任务')
+    expect(supervisorWrapper.text()).not.toContain('华兴工程消息')
   })
 
   it('reloads notifications when opening the panel and links messages to their workflow page', async () => {

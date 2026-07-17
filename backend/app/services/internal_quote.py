@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.auth import AuthRole, AuthUser, AuthUserRole, SystemNotification
+from app.models.auth import AuthUser, AuthUserRole, SystemNotification
 from app.models.internal_quote import (
     InternalQuote,
     InternalQuoteArtifactHandoff,
@@ -38,15 +38,13 @@ from app.schemas.internal_quote import (
 )
 from app.services.auth import (
     AuthContext,
-    add_auth_audit,
+    build_auth_context,
+    can,
     ensure_permission_in_scope,
     has_permission_in_scope,
     now_text,
 )
-from app.services.business_authz import (
-    ensure_permission_for_departments,
-    is_local_factory,
-)
+from app.services.business_authz import ensure_permission_for_departments
 from app.services.internal_quote_calculator import (
     FORMULA_VERSION,
     CalculationInputError,
@@ -105,22 +103,7 @@ def _request_metadata(request: Request | None) -> tuple[str, str]:
     return request_id[:96], ip_address[:128]
 
 
-def _ensure_local_factory(db: Session, user: AuthContext, factory_id: str) -> None:
-    if is_local_factory(user, factory_id):
-        return
-    add_auth_audit(
-        db,
-        "permission_denied",
-        username=user.username,
-        user_id=user.id,
-        detail=f"内部报价台禁止跨厂访问：{factory_id}",
-    )
-    db.commit()
-    raise HTTPException(status_code=403, detail="内部报价台仅允许访问本厂数据")
-
-
 def ensure_quote_read(db: Session, user: AuthContext, factory_id: str) -> None:
-    _ensure_local_factory(db, user, factory_id)
     ensure_permission_for_departments(
         db,
         user,
@@ -137,7 +120,6 @@ def ensure_quote_permission(
     factory_id: str,
     departments: tuple[str, ...],
 ) -> None:
-    _ensure_local_factory(db, user, factory_id)
     ensure_permission_for_departments(db, user, permission, factory_id, departments)
 
 
@@ -800,7 +782,6 @@ def create_quote(
     user: AuthContext,
     request: Request | None = None,
 ) -> InternalQuoteOut:
-    _ensure_local_factory(db, user, payload.factory_id)
     ensure_permission_in_scope(
         db,
         user,
@@ -902,6 +883,25 @@ def list_quotes(
     ]
 
 
+def _has_business_owner_binding(
+    db: Session,
+    user: AuthUser,
+    factory_id: str,
+) -> bool:
+    context = build_auth_context(db, user)
+    return can(
+        context,
+        "internal_quote:sales_edit",
+        factory_id,
+        "sales-business",
+    ) and any(
+        grant.factory_id in {factory_id, "*"}
+        and grant.department in {"sales-business", "*"}
+        and "internal_quote:sales_edit" in grant.permissions
+        for grant in context.grants
+    )
+
+
 def list_business_owners(
     db: Session,
     user: AuthContext,
@@ -911,10 +911,8 @@ def list_business_owners(
     users = db.scalars(
         select(AuthUser)
         .join(AuthUserRole, AuthUserRole.user_id == AuthUser.id)
-        .join(AuthRole, AuthRole.id == AuthUserRole.role_id)
         .where(
             AuthUser.status == "active",
-            AuthRole.code.in_(("sales_customer_owner", "sales_customer_supervisor")),
             AuthUserRole.factory_id.in_((factory_id, "*")),
             AuthUserRole.department.in_(("sales-business", "*")),
         )
@@ -928,6 +926,7 @@ def list_business_owners(
             display_name=item.display_name or item.username,
         )
         for item in users
+        if _has_business_owner_binding(db, item, factory_id)
     ]
 
 
