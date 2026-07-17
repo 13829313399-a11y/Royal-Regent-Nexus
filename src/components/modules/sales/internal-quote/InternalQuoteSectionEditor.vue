@@ -170,7 +170,7 @@ async function downloadAttachment(id: string, fileName: string) {
       <footer><label><input v-model="importMode" type="radio" value="append">追加</label><label><input v-model="importMode" type="radio" value="replace">替换</label><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting" @click="confirmImport">确认{{ importMode === 'append' ? '追加' : '替换' }}</button></footer>
     </section>
 
-    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :disabled="!editable" />
+    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :customer="quote.customer" :disabled="!editable" />
 
     <section class="calculation-snapshot"><header><strong>服务端权威计算快照</strong><span>保存后由 {{ quote.formulaVersion }} 重算；前端不生成正式金额</span></header><div class="snapshot-table-scroll"><table><thead><tr><th>项目</th><th>类型</th><th>公式口径</th><th>金额 HKD</th></tr></thead><tbody><tr v-for="line in section.lines" :key="line.id"><td>{{ line.item }}</td><td>{{ line.specification }}</td><td>{{ line.formula }}</td><td>{{ line.amountHkd.toFixed(4) }}</td></tr><tr v-if="!section.lines.length"><td colspan="4" class="empty">保存有效明细后显示服务端计算结果</td></tr></tbody><tfoot><tr><td colspan="3">{{ section.label }}权威小计</td><td>HKD {{ section.totalHkd.toFixed(4) }}</td></tr></tfoot></table></div></section>
 

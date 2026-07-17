@@ -40,6 +40,7 @@ DEFAULT_MACHINE_PRICES = (
     ("7A-9A", "60-80T", "1050"),
     ("10A-12A", "120T", "1160"),
     ("14A-16A", "150T", "1490"),
+    ("18A", "180T", "1890"),
     ("20A", "200T", "1920"),
     ("24A", "260T", "1920"),
     ("30A-32A", "320T", "2220"),
@@ -97,13 +98,57 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
             "markup": "default 1.2",
             "settlement": "default 0.98",
         }],
+        "customer_quote_fields": {
+            "buzzbee": {
+                "color_box_tiers": [
+                    {"quote_price_hkd": "decimal>0", "fsc_price_hkd": "decimal>0", "moq": "text"},
+                ],
+            },
+            "disney": {
+                "item_number": "text",
+                "quote_date": "YYYY-MM-DD",
+                "revision": "integer>=0",
+                "minimum_order_qty": "decimal>0",
+                "moq_prices_usd": {"qty_3000": "decimal>0", "qty_5000": "decimal>0", "qty_10000": "decimal>0"},
+                "transportation_usd": "decimal>=0",
+                "model_cost_usd": "decimal>=0",
+                "setup_charge_usd": "decimal>=0",
+            },
+            "dickie": {
+                "client_name": "text",
+                "quote_date": "YYYY-MM-DD",
+                "attention": "text",
+                "revision": "text",
+                "from_name": "text",
+                "project_name_en": "English text",
+                "first_shot_time": "English text",
+                "finish_time": "English text",
+                "product_rows": [{"line_no": "integer>=0", "item_text_en": "English text", "units_per_carton": "text", "carton_cbm": "decimal>0", "color_box_size_cm": "text", "carton_size_cm": "text", "production_moq": "text", "price_40h_hkd": "decimal>0", "price_20h_hkd": "decimal>0", "price_lcl_hkd": "decimal>0"}],
+                "remark_lines": [{"line_no": "integer>=0", "text_en": "English text"}],
+                "material_prices_hkd": [{"material": "text", "price_hkd_lb": "decimal>0"}],
+            },
+            "caixing": {
+                "product_type": "plastic|plush",
+                "item_number": "text",
+                "item_name": "text",
+                "quote_date": "YYYY-MM-DD",
+                "carton_length_in": "decimal>0",
+                "carton_width_in": "decimal>0",
+                "carton_height_in": "decimal>0",
+                "carton_cuft": "decimal>0",
+                "carton_cbm": "decimal>0",
+                "pcs_per_carton": "decimal>0",
+                "carton_price_hkd": "decimal>0",
+                "cost_rows": [{"group": "special|electronic|purchase|packing|carton|fabric|spraying|tampo|assembly|packout|rooting|sewing|special_offer", "tax_tag": "text", "category": "text", "description": "text", "base_cost_hkd": "decimal>=0", "customer_cost_hkd": "decimal>=0"}],
+            },
+        },
     },
     "engineering": {
-        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0"}],
-        "molds": [{"item": "text", "quantity": "decimal>=0", "cost_rmb": "decimal>=0"}],
+        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "disney_description": "text", "disney_section": "product|package", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>=0"}],
+        "molds": [{"item": "text", "quantity": "decimal>=0", "cost_rmb": "decimal>=0", "disney_mold_no": "text", "disney_parts": "text", "disney_material": "text", "disney_cavities": "decimal>0", "disney_parts_per_shot": "decimal>0", "disney_tool_cost_usd": "decimal>=0", "dickie_project_name_en": "English text", "dickie_mold_no": "text", "dickie_parts_en": "English text", "dickie_resin": "text", "dickie_mold_size": "text", "dickie_mold_material": "text", "dickie_cavities": "decimal>0", "dickie_parts_per_shot": "decimal>0", "dickie_mold_cost_hkd": "decimal>0", "dickie_remark_en": "English text", "caixing_tool_plan_ref": "text", "caixing_mold_cost_hkd": "decimal>=0", "caixing_customer_mold_cost_hkd": "decimal>0"}],
         "amortization_qty": "decimal>0 when mold cost exists",
         "customer_mold_subsidy_usd": "decimal>=0",
-        "cartons": [{"length_in": "decimal>0", "width_in": "decimal>0", "height_in": "decimal>0", "qty_per_carton": "decimal>0", "flat_cards": "list"}],
+        "cartons": [{"length_in": "decimal>0", "width_in": "decimal>0", "height_in": "decimal>0", "qty_per_carton": "decimal>0", "flat_cards": "list", "disney_unit_price_usd": "decimal>=0"}],
     },
     "electronic": {
         "components": [{"item": "text", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "children": "recursive list"}],
@@ -116,10 +161,11 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "tax_credit_difference_hkd": "decimal>=0",
     },
     "molding": {
-        "injection_lines": [{"material": "exact text", "grade": "exact text", "net_weight_g": "decimal>=0", "loss_rate_percent": "default 3", "machine_code": "A-code", "sets": "decimal>0", "target_output": "decimal>0", "quantity": "default 1"}],
+        "injection_lines": [{"material": "exact text", "grade": "exact text", "net_weight_g": "decimal>=0", "loss_rate_percent": "default 3", "machine_code": "A-code", "sets": "decimal>0", "target_output": "decimal>0", "quantity": "default 1", "disney_mold_no": "text", "disney_resin_cost_usd_kg": "decimal>0", "disney_cycle_time_seconds": "decimal>0", "disney_labor_rate_usd_hr": "decimal>0"}],
         "blow_lines": [{"material": "exact text", "grade": "exact text", "estimated_weight_g": "decimal>=0", "labor_hkd": "decimal>=0", "burr_hkd": "decimal>=0", "profit_multiplier": "default 1.05", "quantity": "default 1"}],
+        "caixing_tool_plan_rows": [{"ref_no": "unique text", "process_type": "IN|BL|CP|DC|RC", "tool_no": "text", "tooling_cost_hkd": "decimal>=0", "description": "text", "sku_no": "text", "cavities": "decimal>0", "up": "decimal>0", "net_weight_g": "decimal>0", "material_code": "decimal>0", "material": "text", "color": "text", "material_cost_hkd": "decimal>0", "machine_size": "text", "cycle_time_seconds": "decimal>0", "process_cost_hkd": "decimal>0"}],
     },
-    "painting": {"rows": [{"item": "text", "operations": "夹模/移印/散枪/边模/油色/浸油/抹油 quantity and unit_price_hkd"}]},
+    "painting": {"rows": [{"item": "text", "operations": "夹模/移印/散枪/边模/油色/浸油/抹油 quantity and unit_price_hkd"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"item": "text", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0"}]},
     "sewing": {"groups": [{"name": "text", "category": "clothes|hair", "materials": "list", "labor_rmb": "decimal>=0"}]},
     "assembly": {"groups": [{"name": "text", "category": "assembly|packaging", "processes": [{"persons": "decimal>=0", "teams": "decimal>=0", "production_qty": "decimal>0"}]}], "labor_base_hkd": "default 310"},
@@ -476,6 +522,61 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
             "material_cost_hkd": decimal_text(material_cost),
             "amount_hkd": decimal_text(line_total),
         })
+
+    caixing_rows = payload.get("caixing_tool_plan_rows", []) or []
+    if not isinstance(caixing_rows, list):
+        raise CalculationInputError("彩星 Tool Plan 必须是数组")
+    if len(caixing_rows) > 51:
+        raise CalculationInputError("彩星 Tool Plan 最多允许 51 行")
+    caixing_refs: set[str] = set()
+    for index, row in enumerate(caixing_rows):
+        label = f"彩星 Tool Plan 第 {index + 1} 行"
+        if not isinstance(row, dict):
+            raise CalculationInputError(f"{label}格式无效")
+        ref_no = str(row.get("ref_no", "")).strip()
+        if not ref_no:
+            raise CalculationInputError(f"{label} Ref 不能为空")
+        if ref_no in caixing_refs:
+            raise CalculationInputError(f"{label} Ref 重复：{ref_no}")
+        caixing_refs.add(ref_no)
+        process_type = str(row.get("process_type", "")).strip().upper()
+        if process_type not in {"IN", "BL", "CP", "DC", "RC"}:
+            raise CalculationInputError(f"{label}工艺必须是 IN、BL、CP、DC 或 RC")
+        description = str(row.get("description", "")).strip()
+        sku_no = str(row.get("sku_no", "")).strip()
+        material = str(row.get("material", "")).strip()
+        machine_size = str(row.get("machine_size", "")).strip()
+        if not description or not sku_no or not material or not machine_size:
+            raise CalculationInputError(f"{label}产品、SKU、物料及机型不能为空")
+        cavities = positive_value(row.get("cavities"), f"{label} Cav")
+        up = positive_value(row.get("up"), f"{label} Up")
+        net_weight = positive_value(row.get("net_weight_g"), f"{label} 净重")
+        material_code = positive_value(row.get("material_code"), f"{label} Material Code")
+        material_cost = positive_value(row.get("material_cost_hkd"), f"{label} Material Cost")
+        cycle_time = positive_value(row.get("cycle_time_seconds"), f"{label} Cycle Time")
+        process_cost = positive_value(row.get("process_cost_hkd"), f"{label} Process Cost")
+        tooling_cost = decimal_value(row.get("tooling_cost_hkd"), f"{label} Tooling Cost")
+        if process_type == "IN":
+            positive_value(machine_size, f"{label} Machine Size")
+        result["line_breakdown"].append({
+            "kind": "caixing_tool_plan",
+            "customer_only": True,
+            "ref_no": ref_no,
+            "process_type": process_type,
+            "item": description,
+            "sku_no": sku_no,
+            "cavities": decimal_text(cavities),
+            "up": decimal_text(up),
+            "net_weight_g": decimal_text(net_weight),
+            "material_code": decimal_text(material_code),
+            "material": material,
+            "machine_size": machine_size,
+            "cycle_time_seconds": decimal_text(cycle_time),
+            "tooling_cost_hkd": decimal_text(tooling_cost),
+            "material_cost_hkd": decimal_text(material_cost),
+            "process_cost_hkd": decimal_text(process_cost),
+            "amount_hkd": "0.0000",
+        })
     total = injection_total + blow_total
     result["currency_totals"]["HKD"] = decimal_text(total)
     result["totals"] = {
@@ -682,7 +783,7 @@ def calculate_section(
             "packaging_hkd",
             "tax_credit_difference_hkd",
         ),
-        "molding": ("injection_lines", "blow_lines"),
+        "molding": ("injection_lines", "blow_lines", "caixing_tool_plan_rows"),
         "painting": ("rows",),
         "slush": ("lines",),
         "sewing": ("groups",),

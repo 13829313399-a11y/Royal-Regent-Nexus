@@ -8,6 +8,7 @@ import {
   type XlsxOutputSheet,
 } from './xlsxLite'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
+import type { P4InternalQuoteArtifact } from './p4Artifact'
 
 export type CaixingProductType = 'plastic' | 'plush'
 
@@ -48,7 +49,16 @@ interface CaixingInjectionRow {
   cycleSeconds: number
   moldCostHkd: number
   customerMoldCostHkd: number
+  processType?: 'IN' | 'BL' | 'CP' | 'DC' | 'RC'
+  toolNo?: string
+  skuNo?: string
+  cavities?: number
+  up?: number
+  materialCode?: number
+  color?: string
 }
+
+export type CaixingCustomerCostGroup = 'special' | 'electronic' | 'purchase' | 'packing' | 'carton' | 'fabric' | 'spraying' | 'tampo' | 'assembly' | 'packout' | 'rooting' | 'sewing' | 'special_offer'
 
 interface CaixingCostRow {
   taxTag: string
@@ -56,6 +66,7 @@ interface CaixingCostRow {
   description: string
   baseCostHkd: number
   customerCostHkd: number
+  customerGroup?: CaixingCustomerCostGroup
 }
 
 interface CaixingMoldingProcessRow {
@@ -254,6 +265,21 @@ function findHeaderRow(rows: XlsxCellValue[][]) {
 }
 
 function findTitle(rows: XlsxCellValue[][], sheetName: string, sourceFileName: string) {
+  const sourceTitle = sourceFileName.replace(/\.[^.]+$/, '')
+  if (/\d{5,}/.test(sourceTitle) && sourceTitle.includes('报价')) {
+    return sourceTitle
+  }
+
+  for (let rowIndex = 0; rowIndex < Math.min(rows.length, 15); rowIndex += 1) {
+    const matched = (rows[rowIndex] ?? [])
+      .map(toText)
+      .find((cell) => /\d{5,}/.test(cell) && cell.includes('报价'))
+
+    if (matched) {
+      return matched
+    }
+  }
+
   for (let rowIndex = 0; rowIndex < Math.min(rows.length, 15); rowIndex += 1) {
     const matched = (rows[rowIndex] ?? [])
       .map(toText)
@@ -442,6 +468,14 @@ function filterCostRows(costRows: CaixingCostRow[], keywords: string[], exclude:
   })
 }
 
+function filterCustomerGroup(costRows: CaixingCostRow[], group: CaixingCustomerCostGroup) {
+  return costRows.filter((row) => row.customerGroup === group)
+}
+
+function sumCustomerGroup(costRows: CaixingCostRow[], group: CaixingCustomerCostGroup) {
+  return sumBy(filterCustomerGroup(costRows, group), costRowAmount)
+}
+
 function isCartonCostRow(row: CaixingCostRow) {
   return /外箱|纸箱|Carton/i.test(`${row.category} ${row.description}`)
 }
@@ -491,32 +525,47 @@ function buildSummary(
   carton: CaixingCartonProfile,
   sprayingDetailTotal?: number | null,
 ): CaixingSummary {
+  const hasExplicitGroups = costRows.some((row) => row.customerGroup)
   const injectionMaterial = injectionTotal?.materialCostHkd || sumBy(injectionRows, (row) => row.materialCostHkd)
   const injectionMolding = injectionTotal?.moldingCostHkd || sumBy(injectionRows, (row) => row.moldingCostHkd)
-  const electronicMaterial = sumCostRows(costRows, ['电子', 'IC', '电池'])
-  const packagingMaterial = productType === 'plastic'
-    ? getPlasticPackingTotal(costRows, carton)
-    : sumCostRows(costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
-  const fabric = sumCostRows(costRows, ['车衣'])
+  const electronicMaterial = hasExplicitGroups
+    ? sumCustomerGroup(costRows, 'electronic')
+    : sumCostRows(costRows, ['电子', 'IC', '电池'])
+  const packagingMaterial = hasExplicitGroups
+    ? roundMoney(
+        sumCustomerGroup(costRows, 'packing') * (productType === 'plastic' ? 1 + CAIXING_PLASTIC_SCRAP_RATE : 1)
+        + (carton.cartonPrice && carton.pcsPerCarton
+          ? carton.cartonPrice / carton.pcsPerCarton * (productType === 'plastic' ? 1 + CAIXING_PLASTIC_SCRAP_RATE : 1)
+          : 0),
+      )
+    : productType === 'plastic'
+      ? getPlasticPackingTotal(costRows, carton)
+      : sumCostRows(costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
+  const fabric = hasExplicitGroups ? sumCustomerGroup(costRows, 'fabric') : sumCostRows(costRows, ['车衣'])
   const purchasePartBase = sumCostRows(
     costRows,
     ['五金', '其它外购', '其他外购', '利宝', '说明书', '马达'],
     ['彩盒', '内咭', '纸箱', '吸塑', '电子', 'IC', '电池'],
   )
+  const explicitPurchasePart = sumCustomerGroup(costRows, 'purchase')
   const purchasePart = productType === 'plastic'
-    ? roundMoney(purchasePartBase * (1 + CAIXING_PLASTIC_SCRAP_RATE))
-    : purchasePartBase
-  const specialMaterial = productType === 'plush' ? sumCostRows(costRows, ['搪胶']) : 0
-  const moldingCasting = roundMoney(injectionMolding + sumBy(getMoldingProcessRows(costRows), (row) => row.costHkd))
+    ? roundMoney((hasExplicitGroups ? explicitPurchasePart : purchasePartBase) * (1 + CAIXING_PLASTIC_SCRAP_RATE))
+    : hasExplicitGroups ? explicitPurchasePart : purchasePartBase
+  const specialMaterial = hasExplicitGroups
+    ? sumCustomerGroup(costRows, 'special')
+    : productType === 'plush' ? sumCostRows(costRows, ['搪胶']) : 0
+  const moldingCasting = hasExplicitGroups
+    ? roundMoney(injectionMolding)
+    : roundMoney(injectionMolding + sumBy(getMoldingProcessRows(costRows), (row) => row.costHkd))
   const spraying = sprayingDetailTotal === null || sprayingDetailTotal === undefined
-    ? sumCostRows(costRows, ['油漆', '喷油'])
+    ? hasExplicitGroups ? sumCustomerGroup(costRows, 'spraying') : sumCostRows(costRows, ['油漆', '喷油'])
     : roundMoney(sprayingDetailTotal)
-  const assemblyLabor = sumCostRows(costRows, ['装配工'], ['包装'])
-  const packoutLabor = sumCostRows(costRows, ['包装人工'])
-  const rootingHair = productType === 'plush' ? sumCostRows(costRows, ['车发']) : 0
-  const sewingHandfinish = 0
-  const specialOffer = 0
-  const tampo = 0
+  const assemblyLabor = hasExplicitGroups ? sumCustomerGroup(costRows, 'assembly') : sumCostRows(costRows, ['装配工'], ['包装'])
+  const packoutLabor = hasExplicitGroups ? sumCustomerGroup(costRows, 'packout') : sumCostRows(costRows, ['包装人工'])
+  const rootingHair = hasExplicitGroups ? sumCustomerGroup(costRows, 'rooting') : productType === 'plush' ? sumCostRows(costRows, ['车发']) : 0
+  const sewingHandfinish = hasExplicitGroups ? sumCustomerGroup(costRows, 'sewing') : 0
+  const specialOffer = hasExplicitGroups ? sumCustomerGroup(costRows, 'special_offer') : 0
+  const tampo = hasExplicitGroups ? sumCustomerGroup(costRows, 'tampo') : 0
   const markupRate = productType === 'plush' ? 0.17 : 0.16
   const materialTotal = roundMoney(injectionMaterial + specialMaterial + electronicMaterial + purchasePart + packagingMaterial + fabric)
   const processTotal = roundMoney(moldingCasting + spraying + tampo + assemblyLabor + packoutLabor + rootingHair + sewingHandfinish + specialOffer)
@@ -794,13 +843,16 @@ interface CaixingTemplateCellMatch {
 }
 
 function getCaixingGroupedCostRows(data: CaixingQuoteData): CaixingGroupedCostRows {
-  const specialRows = filterCostRows(data.costRows, ['搪胶'])
-  const electronicRows = filterCostRows(data.costRows, ['电子', 'IC', '电池'])
-  const packingRows = filterCostRows(data.costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
-  const fabricRows = data.metadata.productType === 'plush'
-    ? filterCostRows(data.costRows, ['车衣', '车发'])
-    : filterCostRows(data.costRows, ['车衣'])
-  const purchaseRows = data.costRows.filter((row) => {
+  const hasExplicitGroups = data.costRows.some((row) => row.customerGroup)
+  const specialRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'special') : filterCostRows(data.costRows, ['搪胶'])
+  const electronicRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'electronic') : filterCostRows(data.costRows, ['电子', 'IC', '电池'])
+  const packingRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'packing') : filterCostRows(data.costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
+  const fabricRows = hasExplicitGroups
+    ? filterCustomerGroup(data.costRows, 'fabric')
+    : data.metadata.productType === 'plush'
+      ? filterCostRows(data.costRows, ['车衣', '车发'])
+      : filterCostRows(data.costRows, ['车衣'])
+  const purchaseRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'purchase') : data.costRows.filter((row) => {
     const haystack = `${row.category} ${row.description}`
     return !includesAny(haystack, ['电子', 'IC', '电池', '彩盒', '内咭', '纸箱', '吸塑', '车衣', '车发', '装配工', '喷油', '油漆', '啤工', '料价', '吹气', '搪胶', '运费', '吊柜'])
   })
@@ -894,7 +946,9 @@ function createTemplateCellMap(sheetXml: string) {
 
 function buildTemplateCellXml(patch: CaixingTemplateCellPatch, existing?: CaixingTemplateCellMatch) {
   const existingStyle = existing ? Number(readTemplateAttr(existing.attrs, 's')) : Number.NaN
-  const style = Number.isFinite(existingStyle) ? existingStyle : patch.style
+  const style = typeof patch.style === 'number'
+    ? patch.style
+    : Number.isFinite(existingStyle) ? existingStyle : undefined
   const styleAttr = typeof style === 'number' ? ` s="${style}"` : ''
   const formula = patch.formula ?? ''
 
@@ -1131,6 +1185,33 @@ function forceTemplateRecalculation(workbookXml: string) {
   return workbookXml.replace('</workbook>', `${calcPr}</workbook>`)
 }
 
+function appendTemplateGeneralNumberStyles(stylesXml: string, sourceStyleIndexes: number[]) {
+  const cellXfsMatch = stylesXml.match(/<cellXfs\b([^>]*)>([\s\S]*?)<\/cellXfs>/)
+  if (!cellXfsMatch) {
+    throw new Error('彩星报客价模板缺少 cellXfs 样式定义')
+  }
+  const stylePattern = /<xf\b[^>]*\/>|<xf\b[^>]*>[\s\S]*?<\/xf>/g
+  const styles = Array.from(cellXfsMatch[2].matchAll(stylePattern), (match) => match[0])
+  const clonedStyles = sourceStyleIndexes.map((sourceIndex) => {
+    const source = styles[sourceIndex]
+    if (!source) {
+      throw new Error(`彩星报客价模板缺少样式索引：${sourceIndex}`)
+    }
+    return source
+      .replace(/\bnumFmtId="\d+"/, 'numFmtId="0"')
+      .replace(/\sapplyNumberFormat="1"/, '')
+  })
+  const indexes = clonedStyles.map((_, index) => styles.length + index)
+  const attrs = cellXfsMatch[1].match(/\bcount="\d+"/)
+    ? cellXfsMatch[1].replace(/\bcount="\d+"/, `count="${styles.length + clonedStyles.length}"`)
+    : `${cellXfsMatch[1]} count="${styles.length + clonedStyles.length}"`
+  const replacement = `<cellXfs${attrs}>${cellXfsMatch[2]}${clonedStyles.join('')}</cellXfs>`
+  return {
+    indexes,
+    stylesXml: stylesXml.replace(cellXfsMatch[0], replacement),
+  }
+}
+
 function toTemplateUint8Array(templateBuffer: ArrayBuffer | Uint8Array) {
   return templateBuffer instanceof Uint8Array ? templateBuffer : new Uint8Array(templateBuffer)
 }
@@ -1250,6 +1331,17 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   formula(summarySheet, 'G32', summary.domesticTransportationHkd, 'IF(B6=""," ",F32*B6/B7)')
   formula(summarySheet, 'G34', summary.fobTransportationHkd, 'IF(B6=""," ",F34*B6/B7)')
 
+  // The supplied plastic template contains five stale external-workbook links
+  // ("[1]Summary"). Rebind them to this workbook so Excel and preview tools do
+  // not show #NAME? after the controlled template is generated.
+  formula(decoSheet, 'E1', 'ITEM No : ', 'Summary!A3')
+  formula(decoSheet, 'N1', 'Vendor : ', 'Summary!F3')
+  formula(decoSheet, 'O1', 'Royal Regent Products (H.K.) Limited', 'Summary!G3')
+  formula(decoSheet, 'E2', 'Item Description : ', 'Summary!A5')
+  formula(decoSheet, 'N2', 'Date : ', 'Summary!F5')
+  patch(decoSheet, 'G1', metadata.itemNo)
+  patch(decoSheet, 'G2', metadata.itemName)
+  patch(decoSheet, 'O2', quoteDateSerial)
   patch(decoSheet, 'C17', metadata.carton.length)
   patch(decoSheet, 'C18', metadata.carton.width)
   patch(decoSheet, 'C19', metadata.carton.height)
@@ -1261,7 +1353,9 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   ]
   const moldingProcessRows = getMoldingProcessRows(data.costRows)
   const toolInjectionRows = data.injectionRows.slice(0, toolRows.length)
-  const toolProcessRows = moldingProcessRows.slice(0, Math.max(toolRows.length - toolInjectionRows.length, 0))
+  const toolProcessRows = data.injectionRows.some((item) => item.processType)
+    ? []
+    : moldingProcessRows.slice(0, Math.max(toolRows.length - toolInjectionRows.length, 0))
   const toolMoldingCosts = [
     ...toolInjectionRows.map((item) => item.moldingCostHkd),
     ...toolProcessRows.map((item) => item.costHkd),
@@ -1278,19 +1372,21 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
 
   toolInjectionRows.forEach((item, index) => {
     const rowNumber = toolRows[index]
-    const lineNo = toNumber(item.lineNo) || index + 1
+    const lineNo = /^\d+$/.test(item.lineNo) ? Number(item.lineNo) : item.lineNo || index + 1
     patch(toolSheet, `A${rowNumber}`, lineNo)
-    patch(toolSheet, `B${rowNumber}`, 'IN')
-    patch(toolSheet, `C${rowNumber}`, item.customerMoldCostHkd || item.moldCostHkd || null)
+    patch(toolSheet, `B${rowNumber}`, item.processType ?? 'IN')
+    patch(toolSheet, `C${rowNumber}`, item.toolNo || null)
+    patch(toolSheet, `E${rowNumber}`, item.customerMoldCostHkd || item.moldCostHkd || null, 508)
     patch(toolSheet, `F${rowNumber}`, item.name)
-    patch(toolSheet, `G${rowNumber}`, metadata.itemNo)
-    patch(toolSheet, `H${rowNumber}`, item.partsPerShot || 1)
-    patch(toolSheet, `I${rowNumber}`, item.setsPerShot || 1)
+    patch(toolSheet, `G${rowNumber}`, item.skuNo || metadata.itemNo)
+    patch(toolSheet, `H${rowNumber}`, item.cavities || item.partsPerShot || 1)
+    patch(toolSheet, `I${rowNumber}`, item.up || item.setsPerShot || 1)
     patch(toolSheet, `J${rowNumber}`, item.weightG || null)
-    patch(toolSheet, `K${rowNumber}`, item.material ? getTemplateMaterialCode(item.material) : null)
+    patch(toolSheet, `K${rowNumber}`, item.materialCode || (item.material ? getTemplateMaterialCode(item.material) : null))
     patch(toolSheet, `L${rowNumber}`, item.displayMaterial || null)
+    patch(toolSheet, `M${rowNumber}`, item.color || null)
     patch(toolSheet, `N${rowNumber}`, item.materialCostHkd)
-    patch(toolSheet, `O${rowNumber}`, item.machineTons || null)
+    patch(toolSheet, `O${rowNumber}`, item.processType && item.processType !== 'IN' ? item.processType : item.machineTons || null)
     patch(toolSheet, `P${rowNumber}`, item.cycleSeconds || null)
     patch(toolSheet, `Q${rowNumber}`, item.moldingCostHkd)
   })
@@ -1399,7 +1495,7 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   return patchesBySheet
 }
 
-function buildPlushTemplatePatches(data: CaixingQuoteData) {
+function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: number[]) {
   const patchesBySheet: Record<string, CaixingTemplateCellPatch[]> = {
     [CAIXING_PLUSH_TEMPLATE_SHEETS.deco]: [],
     [CAIXING_PLUSH_TEMPLATE_SHEETS.summary]: [],
@@ -1505,10 +1601,10 @@ function buildPlushTemplatePatches(data: CaixingQuoteData) {
   formula(summarySheet, 'G38', summary.fobTransportationHkd, 'IF(B6=""," ",F38*B6/B7)')
   formula(summarySheet, 'H38', pct(summary.fobTransportationHkd), 'IF(B6="","",G38/G$33)')
 
-  patch(decoSheet, 'C17', metadata.carton.length)
-  patch(decoSheet, 'C18', metadata.carton.width)
-  patch(decoSheet, 'C19', metadata.carton.height)
-  patch(decoSheet, 'C21', metadata.carton.pcsPerCarton)
+  patch(decoSheet, 'C17', metadata.carton.length, decoNumberStyles?.[0])
+  patch(decoSheet, 'C18', metadata.carton.width, decoNumberStyles?.[1])
+  patch(decoSheet, 'C19', metadata.carton.height, decoNumberStyles?.[2])
+  patch(decoSheet, 'C21', metadata.carton.pcsPerCarton, decoNumberStyles?.[3])
 
   const toolRows = [
     ...Array.from({ length: 45 }, (_, index) => 14 + index),
@@ -1526,19 +1622,21 @@ function buildPlushTemplatePatches(data: CaixingQuoteData) {
 
   data.injectionRows.slice(0, toolRows.length).forEach((item, index) => {
     const rowNumber = toolRows[index]
-    const lineNo = toNumber(item.lineNo) || index + 1
+    const lineNo = /^\d+$/.test(item.lineNo) ? Number(item.lineNo) : item.lineNo || index + 1
     patch(toolSheet, `A${rowNumber}`, lineNo)
-    patch(toolSheet, `B${rowNumber}`, 'IN')
-    patch(toolSheet, `C${rowNumber}`, item.customerMoldCostHkd || item.moldCostHkd || null)
+    patch(toolSheet, `B${rowNumber}`, item.processType ?? 'IN')
+    patch(toolSheet, `C${rowNumber}`, item.toolNo || null)
+    patch(toolSheet, `E${rowNumber}`, item.customerMoldCostHkd || item.moldCostHkd || null, 533)
     patch(toolSheet, `F${rowNumber}`, item.name)
-    patch(toolSheet, `G${rowNumber}`, metadata.itemNo)
-    patch(toolSheet, `H${rowNumber}`, item.partsPerShot || 1)
-    patch(toolSheet, `I${rowNumber}`, item.setsPerShot || 1)
+    patch(toolSheet, `G${rowNumber}`, item.skuNo || metadata.itemNo)
+    patch(toolSheet, `H${rowNumber}`, item.cavities || item.partsPerShot || 1)
+    patch(toolSheet, `I${rowNumber}`, item.up || item.setsPerShot || 1)
     patch(toolSheet, `J${rowNumber}`, item.weightG || null)
-    patch(toolSheet, `K${rowNumber}`, item.material ? getTemplateMaterialCode(item.material, 'plush') : null)
+    patch(toolSheet, `K${rowNumber}`, item.materialCode || (item.material ? getTemplateMaterialCode(item.material, 'plush') : null))
     patch(toolSheet, `L${rowNumber}`, item.displayMaterial || null)
+    patch(toolSheet, `M${rowNumber}`, item.color || null)
     patch(toolSheet, `N${rowNumber}`, item.materialCostHkd)
-    patch(toolSheet, `O${rowNumber}`, item.machineTons || null)
+    patch(toolSheet, `O${rowNumber}`, item.processType && item.processType !== 'IN' ? item.processType : item.machineTons || null)
     patch(toolSheet, `P${rowNumber}`, item.cycleSeconds || null)
     patch(toolSheet, `Q${rowNumber}`, item.moldingCostHkd)
   })
@@ -1858,6 +1956,182 @@ function buildPackingSheet(data: CaixingQuoteData, rowsData: CaixingCostRow[]): 
   return sheet
 }
 
+function p4Object(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function p4Rows(value: unknown) {
+  return Array.isArray(value) ? value.map(p4Object) : []
+}
+
+function p4Text(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function p4Number(value: unknown) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function p4RequiredText(value: unknown, message: string) {
+  const text = p4Text(value)
+  if (!text) throw new Error(`彩星直转被阻断：${message}`)
+  return text
+}
+
+function p4Positive(value: unknown, message: string) {
+  const parsed = p4Number(value)
+  if (parsed <= 0) throw new Error(`彩星直转被阻断：${message}`)
+  return parsed
+}
+
+function p4NonNegative(value: unknown, message: string) {
+  const parsed = p4Number(value)
+  if (parsed < 0) throw new Error(`彩星直转被阻断：${message}`)
+  return parsed
+}
+
+function p4Date(value: unknown) {
+  const text = p4RequiredText(value, '缺少报价日期')
+  const matched = text.match(/^(20\d{2})-(\d{2})-(\d{2})$/)
+  if (!matched) throw new Error('彩星直转被阻断：报价日期必须使用 YYYY-MM-DD')
+  const result = new Date(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]))
+  if (result.getFullYear() !== Number(matched[1]) || result.getMonth() !== Number(matched[2]) - 1 || result.getDate() !== Number(matched[3])) {
+    throw new Error('彩星直转被阻断：报价日期不是有效日期')
+  }
+  return result
+}
+
+export function convertCaixingP4InternalQuote(
+  artifact: P4InternalQuoteArtifact,
+  sourceFileName: string,
+): CaixingConversionResult {
+  const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
+  const caixing = p4Object(customerFields.caixing)
+  const productTypeText = p4RequiredText(caixing.product_type, '缺少塑胶/毛绒产品类型')
+  if (productTypeText !== 'plastic' && productTypeText !== 'plush') {
+    throw new Error('彩星直转被阻断：产品类型必须是 plastic 或 plush')
+  }
+  const productType = productTypeText as CaixingProductType
+  const itemNo = p4RequiredText(caixing.item_number, '缺少 Item No.')
+  const itemName = p4RequiredText(caixing.item_name, '缺少 Item Description')
+  const quoteDate = p4Date(caixing.quote_date)
+  const carton: CaixingCartonProfile = {
+    length: p4Positive(caixing.carton_length_in, '外箱长度必须大于 0'),
+    width: p4Positive(caixing.carton_width_in, '外箱宽度必须大于 0'),
+    height: p4Positive(caixing.carton_height_in, '外箱高度必须大于 0'),
+    cube: p4Positive(caixing.carton_cuft, '外箱 CU.FT 必须大于 0'),
+    cbm: p4Positive(caixing.carton_cbm, '外箱 CBM 必须大于 0'),
+    pcsPerCarton: p4Positive(caixing.pcs_per_carton, 'Pcs / Shipper 必须大于 0'),
+    cartonPrice: p4Positive(caixing.carton_price_hkd, 'Carton Shipper 单价必须大于 0'),
+  }
+
+  const rawToolRows = p4Rows(artifact.sections.molding.payload.caixing_tool_plan_rows)
+  if (rawToolRows.length === 0 || rawToolRows.length > 51) {
+    throw new Error('彩星直转被阻断：Tool Plan 必须完整填写 1–51 行')
+  }
+  const processTypes = new Set(['IN', 'BL', 'CP', 'DC', 'RC'])
+  const refs = new Set<string>()
+  const moldByRef = new Map<string, Record<string, unknown>>()
+  p4Rows(artifact.sections.engineering.payload.molds).forEach((row, index) => {
+    const ref = p4Text(row.caixing_tool_plan_ref)
+    if (!ref) return
+    if (moldByRef.has(ref)) throw new Error(`彩星直转被阻断：工程模具 Tool Plan Ref ${ref} 重复`)
+    p4NonNegative(row.caixing_mold_cost_hkd, `工程模具第 ${index + 1} 行内部模价不得小于 0`)
+    p4Positive(row.caixing_customer_mold_cost_hkd, `工程模具第 ${index + 1} 行客户模价必须大于 0`)
+    moldByRef.set(ref, row)
+  })
+
+  const injectionRows = rawToolRows.map<CaixingInjectionRow>((row, index) => {
+    const ref = p4RequiredText(row.ref_no, `Tool Plan 第 ${index + 1} 行缺少 Ref No.`)
+    if (refs.has(ref)) throw new Error(`彩星直转被阻断：Tool Plan Ref No. ${ref} 重复`)
+    refs.add(ref)
+    const processType = p4RequiredText(row.process_type, `Tool Plan ${ref} 缺少 Type`)
+    if (!processTypes.has(processType)) throw new Error(`彩星直转被阻断：Tool Plan ${ref} Type 必须是 IN/BL/CP/DC/RC`)
+    const customerMoldCostHkd = p4NonNegative(row.tooling_cost_hkd, `Tool Plan ${ref} Tooling Cost 不得小于 0`)
+    const mold = moldByRef.get(ref)
+    if (customerMoldCostHkd > 0) {
+      if (!mold) throw new Error(`彩星直转被阻断：Tool Plan ${ref} 的客户模价未匹配工程模具`)
+      const mapped = p4Positive(mold.caixing_customer_mold_cost_hkd, `工程模具 ${ref} 缺少客户模价`)
+      if (Math.abs(mapped - customerMoldCostHkd) > 0.01) {
+        throw new Error(`彩星直转被阻断：Tool Plan ${ref} 与工程模具客户模价不一致`)
+      }
+    } else if (mold) {
+      throw new Error(`彩星直转被阻断：工程模具 ${ref} 已填写客户模价，但 Tool Plan 对应行为空`)
+    }
+    const machineSize = p4RequiredText(row.machine_size, `Tool Plan ${ref} 缺少 M/C Size`)
+    if (processType === 'IN' && p4Number(machineSize) <= 0) {
+      throw new Error(`彩星直转被阻断：Tool Plan ${ref} 注塑 M/C Size 必须是大于 0 的吨位`)
+    }
+    return {
+      lineNo: ref,
+      name: p4RequiredText(row.description, `Tool Plan ${ref} 缺少 Description`),
+      material: p4RequiredText(row.material, `Tool Plan ${ref} 缺少 Material`),
+      displayMaterial: p4RequiredText(row.material, `Tool Plan ${ref} 缺少 Material`),
+      weightG: p4Positive(row.net_weight_g, `Tool Plan ${ref} Net Wt. 必须大于 0`),
+      machineTons: processType === 'IN' ? p4Positive(machineSize, `Tool Plan ${ref} M/C Size 必须大于 0`) : 0,
+      setsPerShot: p4Positive(row.up, `Tool Plan ${ref} Up 必须大于 0`),
+      partsPerShot: p4Positive(row.cavities, `Tool Plan ${ref} Cav. 必须大于 0`),
+      targetYield: 0,
+      moldingCostHkd: p4Positive(row.process_cost_hkd, `Tool Plan ${ref} Process Cost 必须大于 0`),
+      materialCostHkd: p4Positive(row.material_cost_hkd, `Tool Plan ${ref} Material Cost 必须大于 0`),
+      cycleSeconds: p4Positive(row.cycle_time_seconds, `Tool Plan ${ref} Cycle Time 必须大于 0`),
+      moldCostHkd: mold ? p4NonNegative(mold.caixing_mold_cost_hkd, `工程模具 ${ref} 内部模价不得小于 0`) : 0,
+      customerMoldCostHkd,
+      processType: processType as CaixingInjectionRow['processType'],
+      toolNo: p4Text(row.tool_no),
+      skuNo: p4RequiredText(row.sku_no, `Tool Plan ${ref} 缺少 SKU No.`),
+      cavities: p4Positive(row.cavities, `Tool Plan ${ref} Cav. 必须大于 0`),
+      up: p4Positive(row.up, `Tool Plan ${ref} Up 必须大于 0`),
+      materialCode: p4Positive(row.material_code, `Tool Plan ${ref} Material Code 必须大于 0`),
+      color: p4Text(row.color),
+    }
+  })
+  for (const ref of moldByRef.keys()) {
+    if (!refs.has(ref)) throw new Error(`彩星直转被阻断：工程模具 ${ref} 未匹配 Tool Plan 行`)
+  }
+
+  const allowedGroups = new Set<CaixingCustomerCostGroup>(['special', 'electronic', 'purchase', 'packing', 'carton', 'fabric', 'spraying', 'tampo', 'assembly', 'packout', 'rooting', 'sewing', 'special_offer'])
+  const rawCostRows = p4Rows(caixing.cost_rows)
+  if (rawCostRows.length === 0) throw new Error('彩星直转被阻断：缺少塑胶/毛绒客户模板分组明细')
+  const costRows = rawCostRows.map<CaixingCostRow>((row, index) => {
+    const customerGroup = p4RequiredText(row.group, `客户分组第 ${index + 1} 行缺少 Group`) as CaixingCustomerCostGroup
+    if (!allowedGroups.has(customerGroup)) throw new Error(`彩星直转被阻断：客户分组第 ${index + 1} 行 Group 无效`)
+    const baseCostHkd = p4NonNegative(row.base_cost_hkd, `客户分组第 ${index + 1} 行内部成本不得小于 0`)
+    const customerCostHkd = p4NonNegative(row.customer_cost_hkd, `客户分组第 ${index + 1} 行客户成本不得小于 0`)
+    if (baseCostHkd === 0 && customerCostHkd === 0) throw new Error(`彩星直转被阻断：客户分组第 ${index + 1} 行成本不能同时为 0`)
+    return {
+      taxTag: p4Text(row.tax_tag),
+      category: p4RequiredText(row.category, `客户分组第 ${index + 1} 行缺少 Category`),
+      description: p4RequiredText(row.description, `客户分组第 ${index + 1} 行缺少 Description`),
+      baseCostHkd,
+      customerCostHkd,
+      customerGroup,
+    }
+  })
+
+  const metadata: CaixingQuoteMetadata = {
+    itemNo,
+    itemName,
+    quoteDate,
+    sourceSheetName: 'P4 v2',
+    productType,
+    productTypeName: PRODUCT_TYPE_LABELS[productType],
+    carton,
+  }
+  const quoteData: CaixingQuoteData = {
+    metadata,
+    injectionRows,
+    costRows,
+    summary: buildSummary(productType, injectionRows, null, costRows, carton),
+  }
+  return {
+    sourceFileName,
+    productType,
+    sheets: [convertSheet(quoteData, sourceFileName, 0)],
+  }
+}
+
 export function convertCaixingInternalQuote(
   buffer: ArrayBuffer,
   sourceFileName: string,
@@ -1905,8 +2179,17 @@ export function createCaixingCustomerQuoteWorkbookFromTemplate(
   }
 
   const zip = unzipSync(toTemplateUint8Array(templateBuffer))
+  let plushDecoNumberStyles: number[] | undefined
+  if (result.productType === 'plush' && zip['xl/styles.xml']) {
+    const appended = appendTemplateGeneralNumberStyles(
+      strFromU8(zip['xl/styles.xml']),
+      [920, 923, 925, 929],
+    )
+    zip['xl/styles.xml'] = strToU8(appended.stylesXml)
+    plushDecoNumberStyles = appended.indexes
+  }
   const patchesBySheet = result.productType === 'plush'
-    ? buildPlushTemplatePatches(firstSheet.quoteData)
+    ? buildPlushTemplatePatches(firstSheet.quoteData, plushDecoNumberStyles)
     : buildPlasticTemplatePatches(firstSheet.quoteData)
   const templateSheets = result.productType === 'plush'
     ? CAIXING_PLUSH_TEMPLATE_SHEETS

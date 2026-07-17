@@ -122,6 +122,7 @@ def test_wildcard_superadmin_keeps_scoped_access_in_legacy_without_role_permissi
         AUTHZ_WRITES_ENABLED="false",
     ):
         auth_service = importlib.import_module("app.services.auth")
+        business_authz = importlib.import_module("app.services.business_authz")
         permission = "customer_price:export_customer_quote"
         superadmin = auth_service.AuthContext(
             id="user-admin",
@@ -165,6 +166,12 @@ def test_wildcard_superadmin_keeps_scoped_access_in_legacy_without_role_permissi
             "huaxing",
             "sales-business",
         ) is True
+        assert business_authz.has_permission_for_departments(
+            superadmin,
+            permission,
+            "huaxing",
+            ("sales-business", "engineering"),
+        ) is True
 
         ordinary_user = auth_service.AuthContext(
             id="user-sales",
@@ -193,6 +200,12 @@ def test_wildcard_superadmin_keeps_scoped_access_in_legacy_without_role_permissi
             permission,
             "huaxing",
             "sales-business",
+        ) is False
+        assert business_authz.has_permission_for_departments(
+            ordinary_user,
+            permission,
+            "huaxing",
+            ("sales-business", "engineering"),
         ) is False
 
 

@@ -458,6 +458,21 @@ describe('Dickie customer price converter', () => {
     expect(findSelfReferencingFormulaRefs(outputZip, quotationPath)).toEqual([])
   })
 
+  it('keeps the P4 source filename distinct from the generated customer quotation', () => {
+    const result = convertDickyInternalQuote(
+      createMinimalDickyWorkbook(),
+      'IQ-L5-3-DICKIE-P4-v2.xlsx',
+    )
+    const p4Result = {
+      ...result,
+      p4QuoteData: {} as NonNullable<typeof result.p4QuoteData>,
+    }
+
+    expect(buildDickyCustomerQuoteFileName(p4Result)).toBe(
+      'IQ-L5-3-DICKIE-Customer-Quotation.xlsx',
+    )
+  })
+
   it('translates mold detail cells that come from linked formula references', () => {
     const source = createFormulaLinkedDickyWorkbook()
     const result = convertDickyInternalQuote(source, 'Dickie Cable internal quote.xlsx')

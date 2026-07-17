@@ -617,11 +617,39 @@ function commitP4Artifact(handoffId: string) {
     caixingConversionResult.value = null
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
+  } else if (conversion.customerId === 'disney') {
+    const result = conversion.result
+    const detailCount = result.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+    buzzBeeConversionResult.value = null
+    disneyConversionResult.value = result
+    dickyConversionResult.value = null
+    caixingConversionResult.value = null
+    importedWorkbookSheets.value = result.sheets
+    importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
+  } else if (conversion.customerId === 'dicky') {
+    const result = conversion.result
+    const detailCount = result.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+    buzzBeeConversionResult.value = null
+    disneyConversionResult.value = null
+    dickyConversionResult.value = result
+    caixingConversionResult.value = null
+    importedWorkbookSheets.value = result.sheets
+    importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
+  } else if (conversion.customerId === 'caixing') {
+    const result = conversion.result
+    const detailCount = result.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+    buzzBeeConversionResult.value = null
+    disneyConversionResult.value = null
+    dickyConversionResult.value = null
+    caixingConversionResult.value = result
+    selectedCaixingProductType.value = result.productType
+    importedWorkbookSheets.value = result.sheets
+    importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   }
 
   importedFileName.value = handoff.file_name
   importedCustomerId.value = conversion.customerId
-  importedCaixingProductType.value = ''
+  importedCaixingProductType.value = conversion.customerId === 'caixing' ? conversion.result.productType : ''
   importedAt.value = '刚刚'
   importErrorMessage.value = ''
   selectedSheetId.value = 'all'
