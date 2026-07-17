@@ -380,7 +380,7 @@ export const navigationGroups: NavigationGroup[] = [
     label: 'CONFIG',
     items: [
       { label: '模块配置', to: getDepartmentRoute('production'), icon: Settings2 },
-      { label: '角色权限', to: '/system/users', icon: UserCog, permissions: ['system:user_manage'] },
+      { label: '内置职位权限', to: '/system/iam/roles', icon: UserCog, permissions: ['system:permission_catalog_read'] },
       { label: '流程中心', to: '/workbench', icon: Network },
     ],
   },

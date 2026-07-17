@@ -97,6 +97,7 @@ const authStore = useAuthStore()
 const today = '2026-07-03'
 const PRODUCTION_NOTIFICATION_MODULE = 'production_molding_sample_task'
 const PRODUCTION_TASK_PAGE_SIZE = 10
+const PRODUCTION_TASK_STATUSES = new Set<MoldingSampleStatus>(['待生产', '生产中', '已完成'])
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiNotifications = ref<MoldingSampleNotificationResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
@@ -211,13 +212,6 @@ function canProductionPermission(permission: string, factoryId: string) {
 const canReadSelectedFactory = computed(() =>
   canProductionPermission('molding_sample:production_read', selectedFactoryId.value),
 )
-const canReadSelectedNotifications = computed(() =>
-  canProductionPermission('molding_sample:notification_read', selectedFactoryId.value),
-)
-
-const notificationOrderIds = computed(() =>
-  new Set(apiNotifications.value.map((notification) => notification.order_id)),
-)
 
 const engineeringOrderRoute = computed(() => {
   const params = new URLSearchParams({ factory: selectedFactoryId.value })
@@ -243,9 +237,6 @@ const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
       problems: record.problems ?? [],
       trial_reports: record.trial_reports ?? [],
     }))
-    .filter((record) =>
-      !canReadSelectedNotifications.value || notificationOrderIds.value.has(record.order.id),
-    )
 })
 
 const taskRecords = computed(() =>
@@ -261,7 +252,7 @@ const taskRecords = computed(() =>
 const taskEntries = computed(() => taskRecords.value
   .filter((record) => record.factory_id === selectedFactoryId.value)
   .filter((record) => !isExternalMoldingSampleOrder(record.order))
-  .filter((record) => ['待审核', '待经理审核', '待生产', '生产中', '已完成'].includes(record.order.status))
+  .filter((record) => PRODUCTION_TASK_STATUSES.has(record.order.status))
   .sort((left, right) => getTaskPriority(left.order.status) - getTaskPriority(right.order.status)),
 )
 
@@ -981,17 +972,14 @@ async function loadApiData() {
     apiNotifications.value = notifications
     const formalTaskCount = orders.filter((record) =>
       record.order.factory_id === requestedFactoryId
-      && (
-        !canProductionPermission('molding_sample:notification_read', requestedFactoryId)
-        || notificationOrderIds.value.has(record.order.id)
-      )
-      && !isExternalMoldingSampleOrder(record.order),
+      && !isExternalMoldingSampleOrder(record.order)
+      && PRODUCTION_TASK_STATUSES.has(record.order.status)
     ).length
     apiState.value = formalTaskCount ? 'connected' : 'empty'
     actionMessage.value = canProductionPermission('molding_sample:notification_read', requestedFactoryId)
       ? formalTaskCount
-        ? `已从独立通知表同步 ${notifications.length} 条生产通知。`
-        : '当前独立通知表没有待生产任务通知。'
+        ? `已读取 ${formalTaskCount} 张正式啤办生产任务；同步 ${notifications.length} 条任务通知。`
+        : '当前厂区暂无正式啤办生产任务。'
       : formalTaskCount
         ? `已读取 ${formalTaskCount} 张正式啤办生产任务；当前账号没有通知处理权限。`
         : '当前厂区暂无正式啤办生产任务。'
@@ -1290,7 +1278,7 @@ watchEffect(() => {
               啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料，完成后把状态回传到同一张工程啤办单。
             </p>
             <p class="mt-1 text-xs text-slate-500">
-              任务通知队列来自独立通知表，主管审核通过后进入通知区；啤机部只处理生产执行字段，工程资料回到工程啤办单维护。
+              主管审核通过后任务进入生产队列；铃铛通知独立同步，啤机部只处理生产执行字段，工程资料回到工程啤办单维护。
             </p>
           </div>
 
@@ -1325,7 +1313,7 @@ watchEffect(() => {
             <div class="flex items-center justify-between gap-3">
               <div>
                 <h2 class="text-[13px] font-bold text-slate-950">我的生产队列</h2>
-                <p class="mt-0.5 text-[11px] text-slate-400">独立通知表 · {{ activeFactory.shortName }}</p>
+                <p class="mt-0.5 text-[11px] text-slate-400">正式生产任务 · {{ activeFactory.shortName }}</p>
               </div>
               <span class="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-bold text-teal-700">{{ taskEntries.length }}</span>
             </div>
@@ -1410,7 +1398,7 @@ watchEffect(() => {
                 <p class="truncate text-[11px] text-slate-400">
                   {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 交期 {{ entry.items[0]?.completion_time || entry.order.date }}
                 </p>
-                <p class="mt-1 truncate text-[10px] font-semibold text-teal-700">独立通知表 · {{ getNotificationMeta(entry.order.id) }}</p>
+                <p class="mt-1 truncate text-[10px] font-semibold text-teal-700">任务通知 · {{ getNotificationMeta(entry.order.id) }}</p>
                 <p
                   v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
                   class="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-500"

@@ -63,7 +63,7 @@ function statusTone(status: string) {
           <dd class="mt-1 break-words font-semibold text-slate-900 [overflow-wrap:anywhere]">{{ factoryLabel(access.profile?.primary_factory_id) }} · {{ departmentLabel(access.profile?.primary_department) }}</dd>
         </div>
         <div class="min-w-0 rounded-xl bg-slate-50 px-3 py-2.5 sm:min-w-36">
-          <dt class="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><IdCard class="size-3.5" />职位</dt>
+          <dt class="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><IdCard class="size-3.5" />实际职位</dt>
           <dd class="mt-1 break-words font-semibold text-slate-900 [overflow-wrap:anywhere]">{{ access.profile?.position || '待确认' }}</dd>
         </div>
         <div class="min-w-0 rounded-xl bg-slate-50 px-3 py-2.5 sm:min-w-36">
