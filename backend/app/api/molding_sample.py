@@ -62,6 +62,7 @@ from app.services.molding_sample import (
     list_requisitions,
     list_sensitive_audit_logs,
     load_order,
+    is_production_task_only_access,
     replace_material_prices,
     transition_status,
     update_notification,
@@ -99,11 +100,22 @@ def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResp
             )
             for item in items
         ]
+    production_task_only = is_production_task_only_access(
+        current_user,
+        order.factory_id,
+    )
+    notifications = list(order.notifications)
+    if production_task_only:
+        notifications = [
+            notification
+            for notification in notifications
+            if notification.target_module == "production_molding_sample_task"
+        ]
     return MoldingSampleDetailResponse(
         order=order,
         items=items,
         audit_logs=list(order.audit_logs),
-        notifications=list(order.notifications),
+        notifications=notifications,
         problems=list(order.problems),
         trial_reports=list(order.trial_reports),
         read_source=read_source,

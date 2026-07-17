@@ -44,6 +44,13 @@ READ_PERMISSION_CODES = frozenset(
     }
 )
 
+# Notification access is read-only, but a cross-factory-read position must not
+# inherit another factory's bell feed. Roles that intentionally receive
+# cross-factory notifications use ``cross_factory_operate`` instead.
+CROSS_FACTORY_READ_LOCAL_ONLY_PERMISSION_CODES = frozenset(
+    {"molding_sample:notification_read"}
+)
+
 
 def default_permission_access_kind(permission_code: str) -> AccessKind:
     return READ_ACCESS_KIND if permission_code in READ_PERMISSION_CODES else OPERATE_ACCESS_KIND

@@ -269,6 +269,100 @@ def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
         assert wrong_factory.status_code == 403
 
 
+def test_business_owner_options_include_fixed_sales_positions_but_not_general_manager(monkeypatch):
+    monkeypatch.setenv("AUTHZ_MODE", "enforce")
+    with make_client(monkeypatch) as client:
+        ensure_user(
+            "iq_fixed_sales_owner",
+            "position_sales_business",
+            "sales-business",
+        )
+        ensure_user(
+            "iq_revoked_fixed_sales_owner",
+            "position_sales_business",
+            "sales-business",
+        )
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        revoked_binding_id = (
+            "user-iq_revoked_fixed_sales_owner:position_sales_business:"
+            "huaxing:sales-business"
+        )
+        with db_module.SessionLocal() as db:
+            db.add(
+                auth_models.AuthRoleBindingMetadata(
+                    user_role_id=revoked_binding_id,
+                    state="revoked",
+                )
+            )
+            db.commit()
+        login(
+            client,
+            "iq_general_manager_owner_check",
+            "position_general_manager",
+            "management",
+        )
+
+        owner_options = client.get(
+            "/api/internal-quotes/business-owners?factory_id=huaxing"
+        )
+        assert owner_options.status_code == 200, owner_options.text
+        owner_ids = {item["id"] for item in owner_options.json()}
+        assert "user-iq_fixed_sales_owner" in owner_ids
+        assert "user-iq_revoked_fixed_sales_owner" not in owner_ids
+        assert "user-iq_general_manager_owner_check" not in owner_ids
+
+
+def test_general_manager_can_operate_cross_factory_but_own_factory_position_cannot(monkeypatch):
+    monkeypatch.setenv("AUTHZ_MODE", "enforce")
+    with make_client(monkeypatch) as client:
+        login(
+            client,
+            "iq_general_manager_cross_factory",
+            "position_general_manager",
+            "management",
+        )
+        foreign_payload = create_payload(suffix="GM-CROSS")
+        foreign_payload.update(
+            {
+                "factory_id": "huadeng",
+                "workshop_code": "huadeng-workshop",
+                "workshop_name": "华登",
+            }
+        )
+
+        created = client.post("/api/internal-quotes", json=foreign_payload)
+        assert created.status_code == 201, created.text
+        quote = created.json()
+
+        updated = client.patch(
+            f"/api/internal-quotes/{quote['id']}",
+            json={"revision": 1, "remark": "总经理跨厂维护"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["remark"] == "总经理跨厂维护"
+
+        listed = client.get("/api/internal-quotes?factory_id=huadeng")
+        assert listed.status_code == 200, listed.text
+        assert quote["id"] in {item["id"] for item in listed.json()}
+
+        logout(client)
+        login(
+            client,
+            "iq_own_factory_sales",
+            "position_sales_business",
+            "sales-business",
+        )
+
+        forbidden_read = client.get("/api/internal-quotes?factory_id=huadeng")
+        assert forbidden_read.status_code == 403
+
+        forbidden_payload = dict(foreign_payload)
+        forbidden_payload["quote_no"] = "IQ-TEST-OWN-FACTORY-DENIED"
+        forbidden_create = client.post("/api/internal-quotes", json=forbidden_payload)
+        assert forbidden_create.status_code == 403
+
+
 def test_internal_quote_list_can_opt_in_to_section_progress(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_list_progress", "sales_customer_owner", "sales-business")

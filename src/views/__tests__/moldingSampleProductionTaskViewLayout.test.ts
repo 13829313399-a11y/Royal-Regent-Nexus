@@ -7,9 +7,10 @@ const source = readFileSync(join(process.cwd(), 'src/views/MoldingSampleProducti
 for (const requiredCopy of [
   '啤办生产任务单',
   '接收工程啤办单通知',
-  '主管审核通过后进入通知区',
-  '任务通知队列',
-  '独立通知表',
+  '主管审核通过后任务进入生产队列',
+  '铃铛通知独立同步',
+  '正式生产任务',
+  '任务通知',
   '啤机部只处理生产执行字段',
   '看板',
   '列表',
@@ -91,7 +92,6 @@ for (const requiredImplementation of [
   'selectedProblems',
   'problemSubmitting',
   'appendProblemForOrder',
-  'notificationOrderIds',
   'production_molding_sample_task',
   "'huaxing'",
   'buildCompletionGate',
@@ -114,8 +114,7 @@ for (const requiredImplementation of [
   'setQueuePage',
   'setQueueDisplayMode',
   'aria-label="啤办生产任务队列"',
-  '待审核',
-  '待经理审核',
+  'PRODUCTION_TASK_STATUSES',
   '待生产',
   '生产中',
   '已完成',
@@ -124,6 +123,9 @@ for (const requiredImplementation of [
 }
 
 assert.match(source, /<div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">[\s\S]*<div class="fixed right-4 top-4 z-50 flex items-center gap-2[\s\S]*当前厂区：\{\{ activeFactory\.shortName \}\}[\s\S]*<AccountMenu \/>/)
+assert.match(source, /const PRODUCTION_TASK_STATUSES = new Set<MoldingSampleStatus>\(\['待生产', '生产中', '已完成'\]\)/)
+assert.match(source, /\.filter\(\(record\) => PRODUCTION_TASK_STATUSES\.has\(record\.order\.status\)\)/)
+assert.doesNotMatch(source, /notificationOrderIds/)
 assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
 assert.match(source, /total_material_cost/)
 assert.match(source, /selectedTask\.value\.order\.status === '已完成'[\s\S]*return activeItems\.value/)

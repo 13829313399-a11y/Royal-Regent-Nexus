@@ -214,6 +214,11 @@ class RoleSummaryOut(BaseModel):
     requires_global_factory: bool = False
     scope_guidance: str = ""
     is_system_position: bool = False
+    is_editable: bool = True
+    source: Literal["code", "database"] = "database"
+    scope_mode_locked: bool = False
+    definition_version: str = ""
+    definition_hash: str = ""
     position_department: str = ""
     position_department_name: str = ""
     position_sort_order: int = 0
@@ -234,6 +239,11 @@ class RoleAccessOut(BaseModel):
     requires_global_factory: bool = False
     scope_guidance: str = ""
     is_system_position: bool = False
+    is_editable: bool = True
+    source: Literal["code", "database"] = "database"
+    scope_mode_locked: bool = False
+    definition_version: str = ""
+    definition_hash: str = ""
     position_department: str = ""
     position_department_name: str = ""
     position_sort_order: int = 0

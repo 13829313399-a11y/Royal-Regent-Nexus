@@ -112,6 +112,8 @@ async function mountRuntimeView(
     scopeMode?: AuthGrantScopeMode
     readPermissionCodes?: string[]
     unrestrictedDepartment?: boolean
+    roleId?: string
+    grantFactoryId?: string
   } = {},
 ) {
   const pinia = createPinia()
@@ -142,10 +144,10 @@ async function mountRuntimeView(
     roles: options.roles ?? ['系统管理员'],
     permissions,
     grants: [{
-      role_id: administrator ? 'admin' : 'test-role',
-      role_code: administrator ? 'admin' : 'test-role',
+      role_id: options.roleId ?? (administrator ? 'admin' : 'test-role'),
+      role_code: options.roleId ?? (administrator ? 'admin' : 'test-role'),
       role_name: administrator ? '系统管理员' : '测试角色',
-      factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
+      factory_id: options.grantFactoryId ?? (factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing'),
       department: administrator ? 'system' : options.department ?? '*',
       permissions: options.grantPermissions ?? permissions,
       scope_mode: options.scopeMode,
@@ -1707,6 +1709,107 @@ describe('molding sample runtime error handling', () => {
     expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
     expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('shows only approved external tasks to a molding clerk without foreign notifications or writes', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huadeng', order_id: 'BP-CLERK-FOREIGN-READY' }
+    const readyRecord = createMoldingSampleRecord('待生产', 'BP-CLERK-FOREIGN-READY')
+    const reviewRecord = createMoldingSampleRecord('待审核', 'BP-CLERK-FOREIGN-REVIEW')
+    readyRecord.order.factory_id = 'huadeng'
+    reviewRecord.order.factory_id = 'huadeng'
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([readyRecord, reviewRecord])
+
+    const taskPermissions = [
+      'molding_sample:production_read',
+      'molding_sample:production_start',
+      'molding_sample:production_fillback',
+      'molding_sample:production_complete',
+      'molding_sample:notification_read',
+    ]
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['啤机文员'],
+      permissions: taskPermissions,
+      grantPermissions: taskPermissions,
+      factoryScopes: ['huaxing', '*'],
+      department: 'production',
+      primaryFactoryId: 'huaxing',
+      roleId: 'position_molding_clerk',
+      grantFactoryId: 'huaxing',
+      scopeMode: 'cross_factory_read',
+      readPermissionCodes: [
+        'molding_sample:production_read',
+        'molding_sample:notification_read',
+      ],
+      unrestrictedDepartment: true,
+    })
+
+    expect(wrapper.text()).toContain('BP-CLERK-FOREIGN-READY')
+    expect(wrapper.text()).not.toContain('BP-CLERK-FOREIGN-REVIEW')
+    expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('lets a molding supervisor receive and start an external production task', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huadeng', order_id: 'BP-SUPERVISOR-FOREIGN-READY' }
+    const readyRecord = createMoldingSampleRecord('待生产', 'BP-SUPERVISOR-FOREIGN-READY')
+    readyRecord.order.factory_id = 'huadeng'
+    const runningRecord = {
+      ...readyRecord,
+      order: { ...readyRecord.order, status: '生产中' },
+    } satisfies MoldingSampleDetailResponse
+    const notification = createProductionTaskNotification(readyRecord.order.id)
+    notification.factory_id = 'huadeng'
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([readyRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([notification])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(runningRecord)
+
+    const taskPermissions = [
+      'molding_sample:production_read',
+      'molding_sample:production_start',
+      'molding_sample:production_fillback',
+      'molding_sample:production_complete',
+      'molding_sample:notification_read',
+    ]
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['啤机主管'],
+      permissions: taskPermissions,
+      grantPermissions: taskPermissions,
+      factoryScopes: ['huaxing', '*'],
+      department: 'production',
+      primaryFactoryId: 'huaxing',
+      roleId: 'position_molding_supervisor',
+      grantFactoryId: 'huaxing',
+      scopeMode: 'cross_factory_operate',
+      readPermissionCodes: [
+        'molding_sample:production_read',
+        'molding_sample:notification_read',
+      ],
+      unrestrictedDepartment: true,
+    })
+
+    expect(mockedMoldingSampleApi.listNotifications).toHaveBeenCalledWith({
+      target_module: 'production_molding_sample_task',
+      factory_id: 'huadeng',
+    })
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeUndefined()
+    await getButtonByText(wrapper, '开始生产').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith(
+      'BP-SUPERVISOR-FOREIGN-READY',
+      {
+        action: '开始处理',
+        reason: '啤办生产任务单接收后开始执行。',
+        today: '2026-07-03',
+      },
+    )
 
     wrapper.unmount()
   })
