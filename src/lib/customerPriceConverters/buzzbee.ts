@@ -173,6 +173,16 @@ const MATERIALS: BuzzBeeMaterialRule[] = [
   { name: 'HDPE料', en: 'HDPE', price: 13 },
 ]
 
+const P4_MATERIAL_ALIASES: Record<string, string> = {
+  '1#PP': 'PP料',
+  '透明PP': 'PP料明',
+  '透明ABS': 'C-ABS料',
+  LDPE: 'PE料',
+  PE: 'PE料',
+  HDPE: 'HDPE料',
+  PVC: '环保PVC',
+}
+
 const MACHINES: BuzzBeeMachineRule[] = [
   { maxTons: 6, cost: 1040 },
   { maxTons: 9, cost: 1160 },
@@ -721,6 +731,44 @@ function p4Number(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function p4BuzzBeeMaterial(value: unknown) {
+  const source = String(value ?? '').trim()
+  return P4_MATERIAL_ALIASES[source] ?? `${source.replace(/料$/, '')}料`
+}
+
+function p4BuzzBeeColorBox(artifact: P4InternalQuoteArtifact, pcsPerCarton: number, hasInternalColorBoxCost: boolean): BuzzBeeInternalColorBox {
+  const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
+  const buzzBeeFields = p4Object(customerFields.buzzbee)
+  const tiers = p4Rows(buzzBeeFields.color_box_tiers)
+  if (!hasInternalColorBoxCost && tiers.length === 0) {
+    return { price1: 0, fsc1: 0, moq1: '', price2: 0, fsc2: 0, moq2: '' }
+  }
+  if (tiers.length !== 2) {
+    throw new Error('BuzzBee 直转被阻断：彩盒必须完整填写两档报客价、FSC 与 MOQ')
+  }
+  const normalized = tiers.map((row, index) => {
+    const quotePrice = p4Number(row.quote_price_hkd)
+    const fscPrice = p4Number(row.fsc_price_hkd)
+    const moq = String(row.moq ?? '').trim()
+    if (!quotePrice || !fscPrice || !moq) {
+      throw new Error(`BuzzBee 直转被阻断：彩盒第 ${index + 1} 档缺少报客价、FSC 或 MOQ`)
+    }
+    if (Math.abs(fscPrice - quotePrice * MARKUPS.carton) > 0.02) {
+      throw new Error(`BuzzBee 直转被阻断：彩盒第 ${index + 1} 档 FSC 必须等于报客彩盒价 × 1.03`)
+    }
+    return { quotePrice, fscPrice, moq }
+  })
+  const packCount = pcsPerCarton || 1
+  return {
+    price1: normalized[0].quotePrice,
+    fsc1: round(normalized[0].quotePrice / packCount * MARKUPS.carton, 4),
+    moq1: normalized[0].moq,
+    price2: normalized[1].quotePrice,
+    fsc2: round(normalized[1].quotePrice / packCount * MARKUPS.carton, 4),
+    moq2: normalized[1].moq,
+  }
+}
+
 function p4MachineCodeValue(value: unknown) {
   const matched = String(value ?? '').trim().match(/^(\d+(?:\.\d+)?)A$/i)
   return matched ? Number(matched[1]) : 0
@@ -748,8 +796,24 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
       })
     })
 
-  const electronic = p4Total(artifact, 'electronic')
-  if (electronic > 0) costRows.push({ taxTag: '', category: '电子', description: '电子材料及加工', internalValue: electronic, customerValueHint: 0 })
+  const electronicBreakdown = p4Rows(artifact.sections.electronic.calculation.line_breakdown)
+    .filter((row) => row.kind === 'electronic_component')
+  if (electronicBreakdown.length > 0) {
+    electronicBreakdown.forEach((row, index) => {
+      const internalValue = p4Number(row.line_hkd)
+      if (internalValue <= 0) return
+      costRows.push({
+        taxTag: '',
+        category: '电子',
+        description: String(row.item ?? `电子材料${index + 1}`),
+        internalValue,
+        customerValueHint: 0,
+      })
+    })
+  } else {
+    const electronic = p4Total(artifact, 'electronic')
+    if (electronic > 0) costRows.push({ taxTag: '', category: '电子', description: '电子材料及加工', internalValue: electronic, customerValueHint: 0 })
+  }
 
   let paint = 0
   let spray = 0
@@ -800,7 +864,7 @@ export function convertBuzzBeeP4InternalQuote(
   }
 
   const items = injectionLines.map((row, index): BuzzBeeInternalInjectionItem => {
-    const materialZh = `${String(row.material ?? '').replace(/料$/, '')}料`
+    const materialZh = p4BuzzBeeMaterial(row.material)
     if (!findMaterial(materialZh)) {
       throw new Error(`BuzzBee 直转缺少客户材料价：第 ${index + 1} 行 ${String(row.material ?? '')}`)
     }
@@ -828,13 +892,11 @@ export function convertBuzzBeeP4InternalQuote(
   const engineeringPayload = artifact.sections.engineering.payload
   const packagingMaterials = p4Rows(engineeringPayload.materials)
     .filter((row) => row.category === 'packaging' && /彩盒|color\s*box/i.test(String(row.item ?? '')))
-  if (packagingMaterials.length > 0) {
-    throw new Error('BuzzBee 直转被阻断：P4 只有彩盒内部成本，缺少报客彩盒两档价格、FSC 与 MOQ')
-  }
   const cartons = p4Rows(engineeringPayload.cartons)
   const carton = cartons[0] ?? {}
   const cartonCalculation = p4Rows(artifact.sections.engineering.calculation.line_breakdown)
     .find((row) => row.kind === 'carton') ?? {}
+  const pcsPerCarton = p4Number(carton.qty_per_carton) || 1
   const parsed: BuzzBeeInternalSheet = {
     sheetName: artifact.quoteNo,
     title: artifact.productName,
@@ -845,11 +907,11 @@ export function convertBuzzBeeP4InternalQuote(
       length: p4Number(carton.length_in),
       width: p4Number(carton.width_in),
       height: p4Number(carton.height_in),
-      pcsPerCarton: p4Number(carton.qty_per_carton) || 1,
+      pcsPerCarton,
       cartonPriceInternal: p4Number(cartonCalculation.per_piece_hkd),
       cube: p4Number(cartonCalculation.cuft),
     },
-    colorBox: { price1: 0, fsc1: 0, moq1: '', price2: 0, fsc2: 0, moq2: '' },
+    colorBox: p4BuzzBeeColorBox(artifact, pcsPerCarton, packagingMaterials.length > 0),
   }
   return {
     sourceFileName,

@@ -292,6 +292,11 @@ describe('Caixing customer price converter', () => {
     expect(readSheetPictureCount(templateZip, 'Summary')).toBeGreaterThan(0)
     expect(readSheetPictureCount(outputZip, 'Deco List & Product Image')).toBe(0)
     expect(readSheetPictureCount(outputZip, 'Summary')).toBe(0)
+    const decoXml = strFromU8(outputZip['xl/worksheets/sheet1.xml'])
+    expect(decoXml).not.toContain('[1]Summary!')
+    expect(decoXml).toContain('<f>Summary!A3</f>')
+    expect(parsed.sheets.find((sheet) => sheet.name === 'Deco List & Product Image')?.rows[0][6]).toBe('68963')
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet3.xml', 'E15')).toBe('508')
   })
 
   it('uses plastic process detail sheets and applies the required 2% scrap to purchase and packing rows', () => {
@@ -386,6 +391,7 @@ describe('Caixing customer price converter', () => {
     expect(readSheetPictureCount(templateZip, 'Summary')).toBeGreaterThan(0)
     expect(readSheetPictureCount(outputZip, 'Deco List & Product Image')).toBe(0)
     expect(readSheetPictureCount(outputZip, 'Summary')).toBe(0)
+    expect(readCellStyle(outputZip, 'xl/worksheets/sheet3.xml', 'E15')).toBe('533')
   })
 
   it('reads the real Caixing sample workbooks when they are available locally', () => {

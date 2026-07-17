@@ -1,4 +1,4 @@
-from app.services.internal_quote_calculator import calculate_section
+from app.services.internal_quote_calculator import DEFAULT_MACHINE_PRICES, calculate_section
 
 
 SNAPSHOT = {
@@ -255,3 +255,84 @@ def test_sales_scenario_and_blocking_reference_warnings():
         "material_price_missing",
         "machine_price_missing",
     }
+
+
+def test_real_buzzbee_18a_machine_code_is_present_in_the_authoritative_reference_table():
+    snapshot = {
+        **SNAPSHOT,
+        "machine_prices": [
+            {"range": machine_range, "machine": machine, "shift_price_hkd": price}
+            for machine_range, machine, price in DEFAULT_MACHINE_PRICES
+        ],
+    }
+    result = calculate_section(
+        "molding",
+        {
+            "injection_lines": [{
+                "item": "下---大身面壳+底壳",
+                "material": "ABS",
+                "grade": "750SW",
+                "net_weight_g": "135",
+                "machine_code": "18A",
+                "sets": "1",
+                "target_output": "2800",
+                "quantity": "1",
+            }],
+            "blow_lines": [],
+        },
+        snapshot,
+        "IQREF-BUZZBEE-L5-1",
+    )
+    assert result["status"] == "valid"
+    assert result["line_breakdown"][0]["machine_shift_price_hkd"] == "1890.0000"
+
+
+def test_caixing_tool_plan_is_validated_and_audited_without_changing_internal_cost():
+    result = calculate(
+        "molding",
+        {
+            "injection_lines": [],
+            "blow_lines": [],
+            "caixing_tool_plan_rows": [{
+                "ref_no": "B1",
+                "process_type": "BL",
+                "tool_no": "",
+                "tooling_cost_hkd": "5000",
+                "description": "剑身",
+                "sku_no": "68963",
+                "cavities": "1",
+                "up": "1",
+                "net_weight_g": "50",
+                "material_code": "11",
+                "material": "LDPE",
+                "color": "透明",
+                "material_cost_hkd": "0.722",
+                "machine_size": "BL",
+                "cycle_time_seconds": "45",
+                "process_cost_hkd": "0.718",
+            }],
+        },
+    )
+
+    assert result["status"] == "valid"
+    assert result["warnings"] == []
+    assert result["totals"]["total_hkd"] == "0.0000"
+    assert result["line_breakdown"] == [{
+        "kind": "caixing_tool_plan",
+        "customer_only": True,
+        "ref_no": "B1",
+        "process_type": "BL",
+        "item": "剑身",
+        "sku_no": "68963",
+        "cavities": "1.0000",
+        "up": "1.0000",
+        "net_weight_g": "50.0000",
+        "material_code": "11.0000",
+        "material": "LDPE",
+        "machine_size": "BL",
+        "cycle_time_seconds": "45.0000",
+        "tooling_cost_hkd": "5000.0000",
+        "material_cost_hkd": "0.7220",
+        "process_cost_hkd": "0.7180",
+        "amount_hkd": "0.0000",
+    }]

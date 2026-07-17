@@ -105,6 +105,11 @@ def has_permission_for_departments(
         factory_id,
         normalized_departments,
     )
+    # A wildcard super-admin is authorized canonically even when the protected
+    # admin role template does not persist every newly introduced permission.
+    # Do not let the legacy compatibility fallback downgrade that decision.
+    if canonical_result and is_wildcard_super_admin(user):
+        return True
     if settings.authz_mode == "enforce":
         return canonical_result
 

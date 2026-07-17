@@ -3,6 +3,18 @@ import {
   type BuzzBeeConversionResult,
 } from './buzzbee'
 import {
+  convertDisneyP4InternalQuote,
+  type DisneyConversionResult,
+} from './disney'
+import {
+  convertDickyP4InternalQuote,
+  type DickyConversionResult,
+} from './dicky'
+import {
+  convertCaixingP4InternalQuote,
+  type CaixingConversionResult,
+} from './caixing'
+import {
   parseP4InternalQuoteArtifact,
   type P4InternalQuoteArtifact,
 } from './p4Artifact'
@@ -15,7 +27,25 @@ export interface P4BuzzBeePreparedConversion {
   result: BuzzBeeConversionResult
 }
 
-export type P4PreparedCustomerConversion = P4BuzzBeePreparedConversion
+export interface P4DisneyPreparedConversion {
+  customerId: 'disney'
+  artifact: P4InternalQuoteArtifact
+  result: DisneyConversionResult
+}
+
+export interface P4DickyPreparedConversion {
+  customerId: 'dicky'
+  artifact: P4InternalQuoteArtifact
+  result: DickyConversionResult
+}
+
+export interface P4CaixingPreparedConversion {
+  customerId: 'caixing'
+  artifact: P4InternalQuoteArtifact
+  result: CaixingConversionResult
+}
+
+export type P4PreparedCustomerConversion = P4BuzzBeePreparedConversion | P4DisneyPreparedConversion | P4DickyPreparedConversion | P4CaixingPreparedConversion
 
 export class P4CustomerMappingError extends Error {
   constructor(message: string) {
@@ -53,16 +83,37 @@ export function prepareP4CustomerConversion(
     }
   }
   if (customerId === 'disney') {
-    throw new P4CustomerMappingError(
-      '迪士尼直转被阻断：标准 P4 尚未采集 Item Number、模号/穴数/每啤件数、Cycle Time、装饰工序及 3K/5K/10K MOQ 客户分档；请继续使用迪士尼专用内部报价 Excel。',
-    )
+    try {
+      return {
+        customerId,
+        artifact,
+        result: convertDisneyP4InternalQuote(artifact, sourceFileName),
+      }
+    } catch (error) {
+      if (error instanceof P4CustomerMappingError) throw error
+      throw new P4CustomerMappingError(error instanceof Error ? error.message : '迪士尼 P4 映射失败')
+    }
   }
   if (customerId === 'dicky') {
-    throw new P4CustomerMappingError(
-      'Dickie 直转被阻断：客户模板依赖原“总表”的产品行、Mold #、英文翻译备注、付款/法规条款及单元格公式版式，标准 P4 不包含这些客户专属字段；请继续使用 Dickie 专用内部报价 Excel。',
-    )
+    try {
+      return {
+        customerId,
+        artifact,
+        result: convertDickyP4InternalQuote(artifact, sourceFileName),
+      }
+    } catch (error) {
+      if (error instanceof P4CustomerMappingError) throw error
+      throw new P4CustomerMappingError(error instanceof Error ? error.message : 'Dickie P4 映射失败')
+    }
   }
-  throw new P4CustomerMappingError(
-    '彩星直转被阻断：标准 P4 尚未采集 Tool Plan 所需的 Cycle Time、每啤件数、客户模价/模具对应关系，以及塑胶/毛绒模板的客户专属分组字段；请继续使用对应的彩星专用内部报价 Excel。',
-  )
+  try {
+    return {
+      customerId: 'caixing',
+      artifact,
+      result: convertCaixingP4InternalQuote(artifact, sourceFileName),
+    }
+  } catch (error) {
+    if (error instanceof P4CustomerMappingError) throw error
+    throw new P4CustomerMappingError(error instanceof Error ? error.message : '彩星 P4 映射失败')
+  }
 }

@@ -1,5 +1,6 @@
 import { parseXlsxWorkbook, type XlsxCellValue } from './xlsxLite'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
+import type { P4InternalQuoteArtifact } from './p4Artifact'
 
 type DetailCompareStatus = '上调' | '下调' | '持平'
 
@@ -52,6 +53,24 @@ export interface DickyConvertedSheet {
   details: DickyQuoteDetailRow[]
 }
 
+export interface DickyP4ProductQuoteRow {
+  lineNo: number
+  itemTextEn: string
+  unitsPerCarton: string
+  cartonCbm: number
+  colorBoxSizeCm: string
+  cartonSizeCm: string
+  productionMoq: string
+  price40hHkd: number
+  price20hHkd: number
+  priceLclHkd: number
+}
+
+export interface DickyP4RemarkLine { lineNo: number; textEn: string }
+export interface DickyP4MaterialPrice { material: string; priceHkdLb: number }
+export interface DickyP4MoldRow { projectNameEn: string; moldNo: string; partsEn: string; resin: string; moldSize: string; moldMaterial: string; cavities: number; partsPerShot: number; moldCostHkd: number; remarkEn: string }
+export interface DickyP4QuoteData { clientName: string; quoteDate: string; attention: string; revision: string; fromName: string; projectNameEn: string; firstShotTime: string; finishTime: string; productRows: DickyP4ProductQuoteRow[]; remarkLines: DickyP4RemarkLine[]; materialPricesHkd: DickyP4MaterialPrice[]; moldRows: DickyP4MoldRow[] }
+
 export interface DickyConversionResult {
   sourceFileName: string
   sourceBuffer: ArrayBuffer
@@ -59,6 +78,7 @@ export interface DickyConversionResult {
   clientName: string
   quoteDate: Date
   sheets: DickyConvertedSheet[]
+  p4QuoteData?: DickyP4QuoteData
 }
 
 export const DICKY_CUSTOMER_QUOTE_TEMPLATE_URL = '/templates/dicky-customer-quote-template.bin'
@@ -435,6 +455,141 @@ export function convertDickyInternalQuote(buffer: ArrayBuffer, sourceFileName: s
       totalCustomerHkd,
       details,
     }],
+  }
+}
+
+function p4Object(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function p4Rows(value: unknown) {
+  return Array.isArray(value) ? value.map(p4Object) : []
+}
+
+function p4Text(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function p4Number(value: unknown) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function p4Positive(value: unknown, message: string) {
+  const parsed = p4Number(value)
+  if (parsed <= 0) throw new Error(`Dickie 直转被阻断：${message}`)
+  return parsed
+}
+
+function p4RequiredText(value: unknown, message: string, englishOnly = false) {
+  const text = p4Text(value)
+  if (!text) throw new Error(`Dickie 直转被阻断：${message}`)
+  if (englishOnly && /[\u3400-\u9fff]/u.test(text)) throw new Error(`Dickie 直转被阻断：${message}仍含中文`)
+  return normalizeDickieSpelling(text)
+}
+
+export function convertDickyP4InternalQuote(
+  artifact: P4InternalQuoteArtifact,
+  sourceFileName: string,
+): DickyConversionResult {
+  const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
+  const dickie = p4Object(customerFields.dickie)
+  const clientName = p4RequiredText(dickie.client_name, '缺少 Client')
+  const quoteDateText = p4RequiredText(dickie.quote_date, '缺少 Quote Date')
+  const quoteDate = new Date(`${quoteDateText}T00:00:00`)
+  if (!Number.isFinite(quoteDate.getTime())) throw new Error('Dickie 直转被阻断：Quote Date 格式无效')
+  const attention = p4RequiredText(dickie.attention, '缺少 Attn')
+  const revision = p4Text(dickie.revision)
+  const fromName = p4RequiredText(dickie.from_name, '缺少 From', true)
+  const projectNameEn = p4RequiredText(dickie.project_name_en, '缺少 Project Name 英文字款', true)
+  const firstShotTime = p4RequiredText(dickie.first_shot_time, '缺少 First Shot Time 英文字款', true)
+  const finishTime = p4RequiredText(dickie.finish_time, '缺少 Finish Time 英文字款', true)
+
+  const rawProducts = p4Rows(dickie.product_rows)
+  if (rawProducts.length === 0 || rawProducts.length > 8) {
+    throw new Error('Dickie 直转被阻断：总表产品行必须为 1–8 行')
+  }
+  const productRows = rawProducts.map<DickyP4ProductQuoteRow>((row, index) => ({
+    lineNo: p4Positive(row.line_no, `总表产品第 ${index + 1} 行 NO. 必须大于 0`),
+    itemTextEn: p4RequiredText(row.item_text_en, `总表产品第 ${index + 1} 行缺少 ITEM 英文字款`, true),
+    unitsPerCarton: p4RequiredText(row.units_per_carton, `总表产品第 ${index + 1} 行缺少 Units per Carton`),
+    cartonCbm: p4Positive(row.carton_cbm, `总表产品第 ${index + 1} 行 Carton CBM 必须大于 0`),
+    colorBoxSizeCm: p4RequiredText(row.color_box_size_cm, `总表产品第 ${index + 1} 行缺少 Color Box Size`),
+    cartonSizeCm: p4RequiredText(row.carton_size_cm, `总表产品第 ${index + 1} 行缺少 Carton Size`),
+    productionMoq: p4RequiredText(row.production_moq, `总表产品第 ${index + 1} 行缺少 Production MOQ`),
+    price40hHkd: p4Positive(row.price_40h_hkd, `总表产品第 ${index + 1} 行 40' 报价必须大于 0`),
+    price20hHkd: p4Positive(row.price_20h_hkd, `总表产品第 ${index + 1} 行 20' 报价必须大于 0`),
+    priceLclHkd: p4Positive(row.price_lcl_hkd, `总表产品第 ${index + 1} 行 LCL 报价必须大于 0`),
+  }))
+
+  const remarkLines = p4Rows(dickie.remark_lines).map<DickyP4RemarkLine>((row, index) => ({
+    lineNo: Math.max(0, Math.trunc(p4Number(row.line_no))),
+    textEn: p4RequiredText(row.text_en, `英文备注第 ${index + 1} 行为空`, true),
+  }))
+  const requiredRemarkNumbers = [1, 2, 3, 4, 5, 6, 7, 8]
+  if (remarkLines.length > 12 || !remarkLines.some((row) => row.lineNo === 0) || requiredRemarkNumbers.some((lineNo) => !remarkLines.some((row) => row.lineNo === lineNo))) {
+    throw new Error('Dickie 直转被阻断：英文备注必须完整包含 1–8 项及一项编号 0 的汇率/调价条款')
+  }
+
+  const rawMaterialPrices = p4Rows(dickie.material_prices_hkd)
+  if (rawMaterialPrices.length !== 4) throw new Error('Dickie 直转被阻断：Plastic Quotation 必须完整填写 4 项材料价')
+  const materialPricesHkd = rawMaterialPrices.map<DickyP4MaterialPrice>((row, index) => ({
+    material: p4RequiredText(row.material, `材料价第 ${index + 1} 行缺少 Type`),
+    priceHkdLb: p4Positive(row.price_hkd_lb, `材料价第 ${index + 1} 行 Cost 必须大于 0`),
+  }))
+
+  const rawMolds = p4Rows(artifact.sections.engineering.payload.molds)
+  if (rawMolds.length === 0 || rawMolds.length > 38) throw new Error('Dickie 直转被阻断：工程模具必须为 1–38 行')
+  const moldRows = rawMolds.map<DickyP4MoldRow>((row, index) => ({
+    projectNameEn: p4RequiredText(row.dickie_project_name_en, `工程模具第 ${index + 1} 行缺少 Project Name 英文字款`, true),
+    moldNo: p4RequiredText(row.dickie_mold_no, `工程模具第 ${index + 1} 行缺少 Mold #`),
+    partsEn: p4RequiredText(row.dickie_parts_en, `工程模具第 ${index + 1} 行缺少 Parts 英文字款`, true),
+    resin: p4RequiredText(row.dickie_resin, `工程模具第 ${index + 1} 行缺少 Resin`),
+    moldSize: p4RequiredText(row.dickie_mold_size, `工程模具第 ${index + 1} 行缺少 Mold Size`),
+    moldMaterial: p4RequiredText(row.dickie_mold_material, `工程模具第 ${index + 1} 行缺少 Mold Material`),
+    cavities: p4Positive(row.dickie_cavities, `工程模具第 ${index + 1} 行 Cav. 必须大于 0`),
+    partsPerShot: p4Positive(row.dickie_parts_per_shot, `工程模具第 ${index + 1} 行 Up 必须大于 0`),
+    moldCostHkd: p4Positive(row.dickie_mold_cost_hkd, `工程模具第 ${index + 1} 行 Mold Cost 必须大于 0`),
+    remarkEn: p4Text(row.dickie_remark_en) ? p4RequiredText(row.dickie_remark_en, `工程模具第 ${index + 1} 行 Remark`, true) : '',
+  }))
+  const moldNumbers = moldRows.map((row) => row.moldNo.toLowerCase())
+  if (new Set(moldNumbers).size !== moldNumbers.length) throw new Error('Dickie 直转被阻断：Mold # 不得重复')
+
+  const p4QuoteData: DickyP4QuoteData = {
+    clientName,
+    quoteDate: quoteDateText,
+    attention,
+    revision,
+    fromName,
+    projectNameEn,
+    firstShotTime,
+    finishTime,
+    productRows,
+    remarkLines,
+    materialPricesHkd,
+    moldRows,
+  }
+  const details = [
+    ...productRows.map((row, index) => detailRow('dicky-p4', 'Quotation', `${row.lineNo}-${index + 1}`, row.itemTextEn, 0, row.price40hHkd)),
+    ...moldRows.map((row) => detailRow('dicky-p4', 'Quotation', row.moldNo, row.partsEn, 0, row.moldCostHkd)),
+  ]
+
+  return {
+    sourceFileName,
+    sourceBuffer: new ArrayBuffer(0),
+    summarySheetName: SUMMARY_SHEET_NAME,
+    clientName,
+    quoteDate,
+    sheets: [{
+      id: 'dicky-p4',
+      name: 'Quotation',
+      sourceFileName,
+      rowCount: details.length,
+      totalInternalHkd: 0,
+      totalCustomerHkd: round(details.reduce((sum, row) => sum + row.customerPriceHkd, 0)),
+      details,
+    }],
+    p4QuoteData,
   }
 }
 
@@ -1111,11 +1266,117 @@ function buildQuotationPatches(
   return patches
 }
 
-export function createDickyCustomerQuoteWorkbook(
-  result: DickyConversionResult,
-  _templateBuffer?: ArrayBuffer | Uint8Array,
+function dateToExcelSerial(dateText: string) {
+  const [year, month, day] = dateText.split('-').map(Number)
+  return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86_400_000)
+}
+
+function toArrayBuffer(bytes: Uint8Array) {
+  return new Uint8Array(bytes).buffer
+}
+
+function buildDickyP4SourceWorkbook(data: DickyP4QuoteData, templateBuffer: ArrayBuffer | Uint8Array) {
+  const bytes = templateBuffer instanceof Uint8Array ? templateBuffer : new Uint8Array(templateBuffer)
+  const zip = unzipSync(bytes)
+  const sheets = resolveWorksheetRefs(zip)
+  const summarySheet = findSummarySheetRef(sheets)
+  const summaryXml = getZipText(zip, summarySheet.path)
+  if (!summaryXml) throw new Error('Dickie 报客模板缺少“总表”内容')
+
+  const patches: DickyCellPatch[] = []
+  const patch = (ref: string, value: XlsxCellValue, formula?: string) => patches.push({ ref, value, formula })
+  const clearRange = (columns: string[], startRow: number, endRow: number) => {
+    for (let rowNumber = startRow; rowNumber <= endRow; rowNumber += 1) {
+      columns.forEach((columnName) => patch(`${columnName}${rowNumber}`, null))
+    }
+  }
+  const quoteDateSerial = dateToExcelSerial(data.quoteDate)
+
+  patch('C7', data.clientName)
+  patch('K7', quoteDateSerial)
+  patch('C8', data.attention)
+  patch('K8', data.revision)
+  patch('C9', data.fromName)
+
+  clearRange(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'], 12, 19)
+  data.productRows.forEach((row, index) => {
+    const rowNumber = 12 + index
+    patch(`A${rowNumber}`, row.lineNo)
+    patch(`B${rowNumber}`, row.itemTextEn)
+    patch(`C${rowNumber}`, row.unitsPerCarton)
+    patch(`D${rowNumber}`, row.cartonCbm)
+    patch(`E${rowNumber}`, row.colorBoxSizeCm)
+    patch(`F${rowNumber}`, row.cartonSizeCm)
+    patch(`G${rowNumber}`, row.productionMoq)
+    patch(`H${rowNumber}`, row.price40hHkd)
+    patch(`I${rowNumber}`, row.price20hHkd)
+    patch(`J${rowNumber}`, row.priceLclHkd)
+  })
+
+  clearRange(['A', 'B', 'C', 'D', 'E', 'F'], 22, 34)
+  const remarksByNumber = new Map(data.remarkLines.map((row) => [row.lineNo, row.textEn]))
+  for (let lineNo = 1; lineNo <= 6; lineNo += 1) {
+    patch(`A${21 + lineNo}`, lineNo)
+    patch(`B${21 + lineNo}`, remarksByNumber.get(lineNo) ?? '')
+  }
+  patch('B28', 'Type')
+  patch('C28', 'Cost')
+  patch('E28', 'Type')
+  patch('F28', 'Cost')
+  data.materialPricesHkd.forEach((row, index) => {
+    const rowNumber = 29 + Math.floor(index / 2)
+    const typeColumn = index % 2 === 0 ? 'B' : 'E'
+    const costColumn = index % 2 === 0 ? 'C' : 'F'
+    patch(`${typeColumn}${rowNumber}`, row.material)
+    patch(`${costColumn}${rowNumber}`, row.priceHkdLb)
+  })
+  patch('B31', remarksByNumber.get(0) ?? '')
+  patch('A32', 7)
+  patch('B32', remarksByNumber.get(7) ?? '')
+  patch('A33', 8)
+  patch('B33', remarksByNumber.get(8) ?? '')
+
+  patch('C42', data.clientName)
+  patch('K42', quoteDateSerial)
+  patch('C43', data.attention)
+  patch('K43', data.revision)
+  patch('C44', data.fromName)
+  patch('C46', data.projectNameEn)
+
+  clearRange(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'], 48, 85)
+  data.moldRows.forEach((row, index) => {
+    const rowNumber = 48 + index
+    patch(`A${rowNumber}`, row.projectNameEn)
+    patch(`B${rowNumber}`, row.moldNo)
+    patch(`C${rowNumber}`, row.partsEn)
+    patch(`E${rowNumber}`, row.resin)
+    patch(`F${rowNumber}`, row.moldSize)
+    patch(`G${rowNumber}`, row.moldMaterial)
+    patch(`H${rowNumber}`, row.cavities)
+    patch(`I${rowNumber}`, row.partsPerShot)
+    patch(`J${rowNumber}`, row.moldCostHkd)
+    patch(`K${rowNumber}`, row.remarkEn)
+  })
+  const totalMoldCost = round(data.moldRows.reduce((total, row) => total + row.moldCostHkd, 0))
+  patch('B86', 'TOTAL:HK$')
+  patch('J86', totalMoldCost, 'SUM(J48:J85)')
+  patch('J87', data.firstShotTime)
+  patch('J88', data.finishTime)
+
+  zip[summarySheet.path] = strToU8(refreshDimension(applyCellPatches(summaryXml, patches)))
+  if (zip['xl/workbook.xml']) {
+    zip['xl/workbook.xml'] = strToU8(forceWorkbookRecalculation(getZipText(zip, 'xl/workbook.xml')))
+  }
+  delete zip['xl/calcChain.xml']
+
+  return toArrayBuffer(zipSync(zip, { level: 0 }))
+}
+
+function createDickyCustomerQuoteFromSource(
+  sourceBuffer: ArrayBuffer | Uint8Array,
+  fastP4 = false,
 ) {
-  const zip = unzipSync(new Uint8Array(result.sourceBuffer))
+  const zip = unzipSync(new Uint8Array(sourceBuffer))
   const sheets = resolveWorksheetRefs(zip)
   const summarySheet = findSummarySheetRef(sheets)
   const quotationSheet = findQuotationSheet(sheets) ?? addQuotationWorksheet(zip, sheets, summarySheet)
@@ -1123,9 +1384,14 @@ export function createDickyCustomerQuoteWorkbook(
   copyWorksheetContent(zip, summarySheet.path, quotationSheet.path)
 
   const sharedStrings = readSharedStrings(zip)
-  const workbookCells = createWorkbookCellMaps(zip, sheets)
   const summaryXml = getZipText(zip, summarySheet.path)
   const quotationXml = getZipText(zip, quotationSheet.path)
+  const workbookCells = fastP4
+    ? new Map([
+        [summarySheet.name, createCellMap(summaryXml)],
+        [quotationSheet.name, createCellMap(quotationXml)],
+      ])
+    : createWorkbookCellMaps(zip, sheets)
 
   if (!summaryXml) {
     throw new Error('Dickie 内部报价缺少总表内容')
@@ -1158,9 +1424,33 @@ export function createDickyCustomerQuoteWorkbook(
     ))
   }
 
-  return zipSync(zip)
+  return zipSync(zip, { level: 0 })
+}
+
+export function createDickyCustomerQuoteWorkbook(
+  result: DickyConversionResult,
+  templateBuffer?: ArrayBuffer | Uint8Array,
+) {
+  if (result.p4QuoteData) {
+    if (!templateBuffer) throw new Error('Dickie P4 直转缺少报客模板')
+    return createDickyCustomerQuoteFromSource(
+      buildDickyP4SourceWorkbook(result.p4QuoteData, templateBuffer),
+      true,
+    )
+  }
+
+  return createDickyCustomerQuoteFromSource(result.sourceBuffer)
 }
 
 export function buildDickyCustomerQuoteFileName(result: DickyConversionResult) {
+  if (result.p4QuoteData) {
+    const baseName = result.sourceFileName
+      .trim()
+      .replace(/\.xlsx$/i, '')
+      .replace(/-P4-v2$/i, '')
+
+    return `${baseName || 'Dickie'}-Customer-Quotation.xlsx`
+  }
+
   return result.sourceFileName || 'Dickie.xlsx'
 }

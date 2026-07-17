@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
   prepareP4CustomerConversion,
 } from '@/lib/customerPriceConverters/p4CustomerAdapter'
@@ -11,6 +12,9 @@ import {
 import {
   createBuzzBeeCustomerQuoteWorkbook,
 } from '@/lib/customerPriceConverters/buzzbee'
+import { createDisneyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/disney'
+import { createDickyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/dicky'
+import { strFromU8, unzipSync } from 'fflate'
 import {
   createXlsxWorkbook,
   parseXlsxWorkbook,
@@ -21,10 +25,16 @@ function asArrayBuffer(bytes: Uint8Array) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
-function p4Workbook(templateVersion = P4_ARTIFACT_TEMPLATE_VERSION) {
+function p4Workbook(
+  templateVersion = P4_ARTIFACT_TEMPLATE_VERSION,
+  includeCustomerFields = true,
+  customer: 'BuzzBee' | '迪士尼' | 'Dickie' = 'BuzzBee',
+) {
+  const isDisney = customer === '迪士尼'
+  const isDicky = customer === 'Dickie'
   const summary: XlsxCellInput[][] = Array.from({ length: 6 }, () => [])
-  summary[1] = ['报价编号', 'IQ-P4-BB-001', '版本', 'V1', '客户', 'BuzzBee', '数量', 3000]
-  summary[2] = ['产品', '火堆套装', '厂区/车间', 'huaxing/华兴', '公式版本', 'rr2-2026-v1', '参考快照', 'IQREF-1']
+  summary[1] = ['报价编号', isDisney ? 'IQ-P4-DISNEY-001' : isDicky ? 'IQ-P4-DICKIE-001' : 'IQ-P4-BB-001', '版本', 'V1', '客户', customer, '数量', 3000]
+  summary[2] = ['产品', isDisney ? 'Indiana Jones Vehicle' : isDicky ? 'Disney Cable Car' : '火堆套装', '厂区/车间', 'huaxing/华兴', '公式版本', 'rr2-2026-v1', '参考快照', 'IQREF-1']
 
   const approval: XlsxCellInput[][] = Array.from({ length: 8 }, () => [])
   approval[1] = ['模板版本', templateVersion]
@@ -37,24 +47,68 @@ function p4Workbook(templateVersion = P4_ARTIFACT_TEMPLATE_VERSION) {
   const addRecord = (type: string, code: string, name: string, value: Record<string, unknown>) => {
     structured.push([type, code, name, 'approved', 2, 'valid', 'current', `${code}-hash`, 1, 1, JSON.stringify(value)])
   }
-  addRecord('reference_snapshot', 'quote', '报价参考快照', {})
+  addRecord('reference_snapshot', 'quote', '报价参考快照', { fx: { hkd_usd: 7.8 } })
   P4_SECTION_CODES.forEach((code) => {
     const payload = code === 'molding'
       ? {
           injection_lines: [{
-            item: '大身面壳', material: 'ABS', grade: '750SW', net_weight_g: 135,
-            loss_rate_percent: 3, machine_code: '18A', sets: 1, target_output: 2800, quantity: 1,
+            item: isDisney ? '车面' : '水箱盖', material: isDisney ? 'ABS' : 'LDPE', grade: isDisney ? '750SW' : 'G812', net_weight_g: isDisney ? 28 : 4,
+            loss_rate_percent: 3, machine_code: isDisney ? '14A' : '18A', sets: 1, target_output: 2800, quantity: 1,
+            ...(isDisney ? { disney_mold_no: 'M01', disney_resin_cost_usd_kg: 2.16, disney_cycle_time_seconds: 39, disney_labor_rate_usd_hr: 8.12 } : {}),
           }],
           blow_lines: [],
         }
       : code === 'engineering'
-        ? { materials: [], molds: [], amortization_qty: 0, customer_mold_subsidy_usd: 0, cartons: [] }
+        ? {
+            materials: [{ item: isDisney ? '螺丝' : '彩盒', category: isDisney ? 'hardware' : 'packaging', quantity: 1, unit_price_rmb: 1, ...(isDisney ? { disney_description: 'Screw', disney_section: 'product', disney_unit_price_usd: .02, disney_included: 1 } : {}) }],
+            molds: isDisney
+              ? [{ item: '车面模', quantity: 1, cost_rmb: 1000, disney_mold_no: 'M01', disney_parts: '车面', disney_material: 'ABS', disney_cavities: 1, disney_parts_per_shot: 1, disney_tool_cost_usd: 8900 }]
+              : isDicky
+                ? [{ item: '车底模', quantity: 1, cost_rmb: 44100, dickie_project_name_en: '20 307 3001\nStitch Cable Buggy', dickie_mold_no: 'M01', dickie_parts_en: 'Car Bottom', dickie_resin: 'C-ABS', dickie_mold_size: '30*35*30', dickie_mold_material: 'NAK80', dickie_cavities: 16, dickie_parts_per_shot: 8, dickie_mold_cost_hkd: 49000, dickie_remark_en: '' }]
+                : [],
+            amortization_qty: isDisney ? 3000 : 0, customer_mold_subsidy_usd: 0,
+            cartons: isDisney ? [] : [{ item: '外箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [] }],
+          }
+        : code === 'painting' && isDisney
+          ? { rows: [{ item: 'Whole Item', operations: { spray: { quantity: 34, unit_price_hkd: .0171 } } }], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: .0171, operations: 34 }] }
+        : code === 'assembly' && isDisney
+          ? { labor_base_hkd: 310, groups: [{ name: 'Assembly vehicle', category: 'assembly', processes: [{ name: 'Assembly vehicle', persons: 1, teams: 1, production_qty: 1000 }] }] }
+        : code === 'sales' && includeCustomerFields
+          ? {
+              customer_quote_fields: {
+                ...(isDisney
+                  ? { disney: { item_number: '1000142435', quote_date: '2026-06-03', revision: 0, minimum_order_qty: 3000, moq_prices_usd: { qty_3000: 3.08, qty_5000: 2.84, qty_10000: 2.64 }, transportation_usd: .027, model_cost_usd: 6200, setup_charge_usd: 1500 } }
+                  : isDicky
+                    ? { dickie: {
+                        client_name: 'Simba Dickie toys', quote_date: '2026-05-15', attention: 'Sam', revision: '', from_name: 'Ben / Dickie', project_name_en: 'Disney Cable Car', first_shot_time: '45 Working Days', finish_time: '75 Working Days',
+                        product_rows: [{ line_no: 1, item_text_en: '20 307 3001\nStitch Cable Buggy\n(2xAA-LR6 INCLUDED)', units_per_carton: '0/12', carton_cbm: .047, color_box_size_cm: '24*11*12cm', carton_size_cm: '49.8*35.2*27cm', production_moq: '5K-10K', price_40h_hkd: 25.3, price_20h_hkd: 25.7, price_lcl_hkd: 25.8 }],
+                        remark_lines: [
+                          { line_no: 0, text_en: 'If material cost increases more than 5% or RMB exchange rate increases more than 2%, this quote will be revised.' },
+                          ...Array.from({ length: 8 }, (_, index) => ({ line_no: index + 1, text_en: `Dickie quotation term ${index + 1}.` })),
+                        ],
+                        material_prices_hkd: [{ material: 'PP', price_hkd_lb: 5.8 }, { material: 'C-ABS', price_hkd_lb: 10 }, { material: 'ABS', price_hkd_lb: 7.2 }, { material: 'HIPS', price_hkd_lb: 6.8 }],
+                      } }
+                    : { buzzbee: { color_box_tiers: [{ quote_price_hkd: 6.7, fsc_price_hkd: 6.9, moq: 'MOQ3000' }, { quote_price_hkd: 5.75, fsc_price_hkd: 5.92, moq: 'MOQ20000' }] } }),
+              },
+            }
         : {}
     const calculation = code === 'molding'
       ? {
-          line_breakdown: [{ kind: 'injection', item: '大身面壳', material_cost_hkd: '2.1400', molding_cost_hkd: '0.6750', amount_hkd: '2.8150' }],
+          line_breakdown: [{ kind: 'injection', item: '水箱盖', material_cost_hkd: '0.0560', molding_cost_hkd: '0.6750', amount_hkd: '0.7310' }],
           totals: { injection_hkd: '2.8150', blow_hkd: '0.0000', total_hkd: '2.8150' },
         }
+      : code === 'engineering'
+        ? {
+            line_breakdown: [
+              { kind: 'material', item: '彩盒', category: 'packaging', amount_hkd: '1.1765' },
+              { kind: 'carton', item: '外箱', per_piece_hkd: '2.3265', cuft: '1.7892' },
+            ],
+            totals: { packaging_hkd: '1.1765', carton_hkd: '2.3265', total_hkd: '3.5030' },
+          }
+      : code === 'painting' && isDisney
+        ? { line_breakdown: [{ kind: 'painting', item: 'Whole Item', amount_hkd: '0.5814' }], totals: { total_hkd: '0.5814' } }
+      : code === 'assembly' && isDisney
+        ? { line_breakdown: [{ kind: 'assembly_process', item: 'Assembly vehicle', amount_hkd: '0.3100' }], totals: { assembly_hkd: '0.3100', packaging_hkd: '0.0000', total_hkd: '0.3100' } }
       : { line_breakdown: [], totals: { total_hkd: '0.0000' } }
     Object.assign(calculation, {
       calculation_hash: `${code}-hash`,
@@ -83,9 +137,14 @@ describe('P4 customer price adapter', () => {
     expect(prepared.customerId).toBe('buzzbee')
     expect(prepared.result.sheets[0].name).toBe('火堆套装')
     expect(prepared.result.sheets[0].totalCustomerHkd).toBeGreaterThan(0)
+    expect(prepared.result.sheets[0].quoteData.injectionRows[0].material).toBe('PE')
 
     const exported = createBuzzBeeCustomerQuoteWorkbook(prepared.result)
-    expect(parseXlsxWorkbook(asArrayBuffer(exported)).sheets[0].rows[0][0]).toBe('COST BREAKDOWN SHEET (ROYAL REGENT)')
+    const exportedSheet = parseXlsxWorkbook(asArrayBuffer(exported)).sheets[0]
+    expect(exportedSheet.rows[0][0]).toBe('COST BREAKDOWN SHEET (ROYAL REGENT)')
+    const cartonRow = exportedSheet.rows.find((row) => row?.[0] === 'CARTON SIZE')
+    expect(cartonRow?.[5]).toBe(3.35)
+    expect(cartonRow?.[6]).toBe(3.4505)
   })
 
   it('rejects legacy P4 v1 before one-time consumption', () => {
@@ -94,11 +153,86 @@ describe('P4 customer price adapter', () => {
   })
 
   it('keeps customer-specific incomplete mappings explicit', () => {
-    const disneySource = p4Workbook()
-    const workbook = parseXlsxWorkbook(disneySource)
-    workbook.sheets[0].rows[1][5] = '迪士尼'
-    const rebuilt = asArrayBuffer(createXlsxWorkbook(workbook.sheets))
-    expect(() => prepareP4CustomerConversion(rebuilt, 'disney-p4.xlsx', 'disney'))
+    expect(() => prepareP4CustomerConversion(
+      p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, false, '迪士尼'),
+      'disney-p4.xlsx',
+      'disney',
+    ))
       .toThrow('Item Number')
+  })
+
+  it('drives the Disney customer template from complete P4-only fields', () => {
+    const prepared = prepareP4CustomerConversion(
+      p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, '迪士尼'),
+      'IQ-P4-DISNEY-001.xlsx',
+      'disney',
+    )
+    expect(prepared.customerId).toBe('disney')
+    expect(prepared.result.sheets[0].quoteData.metadata.itemNumber).toBe('1000142435')
+    expect(prepared.result.sheets[0].quoteData.plastics[0]).toMatchObject({
+      toolNo: '1000142435-01',
+      toolCostUsd: 8900,
+      cavities: 1,
+      up: 1,
+      cycleTimeSeconds: 39,
+    })
+    expect(prepared.result.sheets[0].quoteData.decoRows[0]).toMatchObject({ applicationType: 'Whole Item', operations: 34 })
+    expect(prepared.result.sheets[0].quoteData.moq5000Usd).toBe(2.84)
+
+    const output = createDisneyCustomerQuoteWorkbook(
+      prepared.result,
+      readFileSync('public/templates/disney-customer-quote-template.bin'),
+    )
+    const tier = parseXlsxWorkbook(asArrayBuffer(output)).sheets[0]
+    expect(tier.rows[8][2]).toBe(1000142435)
+    expect(tier.rows[18][1]).toBe('1000142435-01')
+    expect(tier.rows[18][2]).toBe(8900)
+    expect(Number(tier.rows[18][12])).toBe(1)
+    expect(Number(tier.rows[18][13])).toBe(1)
+    expect(tier.rows[18][17]).toBe(39)
+    expect(tier.rows[178][1]).toBe('Whole Item')
+    expect(tier.rows[235][5]).toBe(3.08)
+    expect(tier.rows[236][5]).toBe(2.84)
+    expect(tier.rows[237][5]).toBe(2.64)
+  })
+
+  it('drives the Dickie customer template from complete P4-only fields', () => {
+    const prepared = prepareP4CustomerConversion(
+      p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, 'Dickie'),
+      'IQ-P4-DICKIE-001.xlsx',
+      'dicky',
+    )
+    expect(prepared.customerId).toBe('dicky')
+    expect(prepared.result.p4QuoteData?.productRows[0]).toMatchObject({
+      itemTextEn: expect.stringContaining('Stitch Cable Buggy'),
+      price40hHkd: 25.3,
+    })
+    expect(prepared.result.p4QuoteData?.moldRows[0]).toMatchObject({
+      moldNo: 'M01',
+      partsEn: 'Car Bottom',
+      moldCostHkd: 49000,
+    })
+
+    const output = createDickyCustomerQuoteWorkbook(
+      prepared.result,
+      readFileSync('public/templates/dicky-customer-quote-template.bin'),
+    )
+    const worksheets = unzipSync(output)
+    const worksheetXml = Object.entries(worksheets)
+      .filter(([path]) => /^xl\/worksheets\/sheet\d+\.xml$/.test(path))
+      .map(([, bytes]) => strFromU8(bytes))
+      .join('\n')
+    expect(worksheetXml).toContain('Stitch Cable Buggy')
+    expect(worksheetXml).toContain('Car Bottom')
+    expect(worksheetXml).toContain('<v>49000</v>')
+    expect(worksheetXml).toContain('<f>SUM(J48:J85)</f>')
+  }, 30_000)
+
+  it('blocks a BuzzBee color-box cost before consumption when either customer tier is missing', () => {
+    expect(() => prepareP4CustomerConversion(
+      p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, false),
+      'buzzbee-missing-color-box-tiers.xlsx',
+      'buzzbee',
+    )).toThrow('彩盒必须完整填写两档报客价、FSC 与 MOQ')
   })
 })
