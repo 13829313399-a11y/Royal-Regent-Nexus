@@ -221,7 +221,7 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         assert requests[0]["username"] == "zhangsan"
         assert requests[0]["status"] == "pending"
         assert requests[0]["position"] == "工程部技术员"
-        assert requests[0]["recommended_role_ids"] == ["engineer"]
+        assert requests[0]["recommended_role_ids"] == ["position_engineering_engineer"]
         request_id = requests[0]["id"]
 
         blank_position_response = client.post(
@@ -305,6 +305,159 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
             ("molding_production_observer", "huaxing", "production"),
             ("group_molding_readonly", "*", "*"),
         }
+
+
+def test_system_position_catalog_and_simplified_registration_approval(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin")
+
+        catalog_response = client.get("/api/system/positions")
+        assert catalog_response.status_code == 200, catalog_response.text
+        catalog = catalog_response.json()
+        assert len(catalog) == 29
+        assert all(item["is_system_position"] is True for item in catalog)
+        assert all(item["code"] != "admin" for item in catalog)
+        positions_by_department = {
+            item["position_department_name"]: [
+                candidate["name"]
+                for candidate in catalog
+                if candidate["position_department"] == item["position_department"]
+            ]
+            for item in catalog
+        }
+        assert {
+            department_name: positions_by_department[department_name]
+            for department_name in (
+                "总务",
+                "工程部",
+                "业务部",
+                "仓库",
+                "QA部",
+                "QC部",
+                "纸箱部",
+            )
+        } == {
+            "总务": ["总经理"],
+            "工程部": ["经理", "主管", "工程师"],
+            "业务部": ["经理", "主管", "业务"],
+            "仓库": ["经理", "主管", "仓管"],
+            "QA部": ["经理", "主管", "文员"],
+            "QC部": ["经理", "主管", "QC检验员"],
+            "纸箱部": ["经理", "主管", "纸箱仓管", "外部纸箱仓管"],
+        }
+        assert [
+            item["name"]
+            for item in catalog
+            if item["position_department"] == "production"
+        ] == [
+            "生产经理",
+            "生产主管",
+            "生产文员",
+            "喷油经理",
+            "喷油主管",
+            "喷油文员",
+            "啤机经理",
+            "啤机主管",
+            "啤机文员",
+        ]
+        assert {
+            item["position_department_name"]
+            for item in catalog
+            if item["position_department"] == "production"
+        } == {"生产部（啤喷装）"}
+
+        client.post("/api/auth/logout")
+        payload = register_payload("custom-engineering-title")
+        payload["display_name"] = "填错姓名"
+        payload["position"] = "工程部技术员"
+        assert client.post("/api/auth/register", json=payload).status_code == 200
+
+        login(client, "admin")
+        registration = next(
+            item
+            for item in client.get("/api/system/registration-requests?status=pending").json()
+            if item["username"] == "custom-engineering-title"
+        )
+        assert registration["recommended_role_ids"] == ["position_engineering_engineer"]
+
+        corrected_profile = {
+            "display_name": "张三",
+            "phone": "13900000000",
+            "email": "zhangsan@example.com",
+            "factory_id": "huaxing",
+            "department": "engineering",
+            "position": "高级工程技术员",
+        }
+        for field, value in (
+            ("display_name", "姓" * 129),
+            ("phone", "1" * 65),
+            ("email", f"{'a' * 117}@example.com"),
+        ):
+            invalid_profile = {**corrected_profile, field: value}
+            invalid_response = client.post(
+                f"/api/system/registration-requests/{registration['id']}/approve",
+                json={
+                    "system_position_role_id": "position_sales_business",
+                    "profile": invalid_profile,
+                },
+            )
+            assert invalid_response.status_code == 422, (field, invalid_response.text)
+
+        approve_response = client.post(
+            f"/api/system/registration-requests/{registration['id']}/approve",
+            json={
+                "system_position_role_id": "position_sales_business",
+                "profile": corrected_profile,
+                "review_comment": "资料部门保持工程部，权限归类到业务职位",
+            },
+        )
+        assert approve_response.status_code == 200, approve_response.text
+        assert approve_response.json()["display_name"] == "张三"
+        assert approve_response.json()["position"] == "高级工程技术员"
+
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            user = db.get(auth_models.AuthUser, registration["user_id"])
+            profile = db.get(auth_models.EmployeeProfile, registration["user_id"])
+            active_bindings = []
+            for binding in db.query(auth_models.AuthUserRole).filter_by(user_id=registration["user_id"]).all():
+                metadata = db.get(auth_models.AuthRoleBindingMetadata, binding.id)
+                if metadata is None or metadata.state == "active":
+                    active_bindings.append((binding, metadata))
+            assert user.display_name == "张三"
+            assert profile.position == "高级工程技术员"
+            assert profile.primary_department == "engineering"
+            assert profile.phone == "13900000000"
+            assert profile.email == "zhangsan@example.com"
+            assert [
+                (binding.role_id, binding.factory_id, binding.department)
+                for binding, _ in active_bindings
+            ] == [("position_sales_business", "huaxing", "sales-business")]
+            assert active_bindings[0][1].source_type == "system_position"
+
+        client.post("/api/auth/logout")
+        approved_profile = login(client, "custom-engineering-title", "Strong123")
+        assert approved_profile["profile"]["position"] == "高级工程技术员"
+        assert approved_profile["roles"] == ["业务"]
+        assert "customer_price:read" in approved_profile["permissions"]
+        assert "molding_sample:create" not in approved_profile["permissions"]
+        assert "molding_sample:cross_factory_read" not in approved_profile["permissions"]
+
+
+def test_registration_decisions_use_a_postgresql_row_lock(monkeypatch):
+    with make_client(monkeypatch):
+        from sqlalchemy.dialects import postgresql
+
+        system_service = importlib.import_module("app.services.system")
+        statements = [
+            system_service.registration_request_for_update_statement("registration-lock-test"),
+            system_service.role_metadata_for_update_statement(["position_engineering_engineer"]),
+            system_service.authorization_revision_for_update_statement("user-lock-test"),
+        ]
+        for statement in statements:
+            compiled = str(statement.compile(dialect=postgresql.dialect()))
+            assert "FOR UPDATE" in compiled
 
 
 def test_registration_role_catalog_exposes_scope_guidance_and_rejects_wrong_scope(monkeypatch):
@@ -477,7 +630,7 @@ def test_sales_business_supervisor_registration_recommends_quote_supervisor_role
 
         requests = client.get("/api/system/registration-requests?status=pending").json()
         request = next(item for item in requests if item["username"] == "sales-supervisor")
-        assert request["recommended_role_ids"] == ["sales_customer_supervisor"]
+        assert request["recommended_role_ids"] == ["position_sales_supervisor"]
 
         approve_response = client.post(
             f"/api/system/registration-requests/{request['id']}/approve",
@@ -500,11 +653,11 @@ def test_sales_business_supervisor_registration_recommends_quote_supervisor_role
 
 def test_manager_position_recommendations_stay_inside_registration_department_scope(monkeypatch):
     cases = [
-        ("engineering-manager", "engineering", "工程经理", "engineering_supervisor"),
-        ("warehouse-manager", "pmc-warehouse", "仓库经理", "carton_warehouse_keeper"),
-        ("production-manager", "production", "生产经理", "molding_clerk"),
-        ("qa-manager", "qa", "品质经理", "qa_inspector"),
-        ("sales-manager", "sales-business", "销售经理", "sales_customer_supervisor"),
+        ("engineering-manager", "engineering", "工程经理", "position_engineering_manager"),
+        ("warehouse-manager", "pmc-warehouse", "仓库经理", "position_warehouse_manager"),
+        ("production-manager", "production", "生产经理", "position_production_manager"),
+        ("qa-manager", "qa", "品质经理", "position_qa_manager"),
+        ("sales-manager", "sales-business", "销售经理", "position_sales_manager"),
     ]
 
     with make_client(monkeypatch) as client:
@@ -651,8 +804,20 @@ def test_scoped_manager_cannot_bypass_iam_with_registration_approval(monkeypatch
         create_scoped_permission_manager()
         db_module = importlib.import_module("app.db")
         auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
         with db_module.SessionLocal() as db:
             db.add(auth_models.AuthRole(id="basic_reader", code="basic_reader", name="基础查看", description="普通权限测试"))
+            db.flush()
+            now = auth_service.now_text()
+            db.add(
+                auth_models.AuthRoleMetadata(
+                    role_id="basic_reader",
+                    version=1,
+                    protected=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
             read_permission = db.query(auth_models.AuthPermission).filter_by(code="molding_sample:read").one()
             db.add(
                 auth_models.AuthRolePermission(
@@ -690,7 +855,7 @@ def test_scoped_manager_cannot_bypass_iam_with_registration_approval(monkeypatch
             },
         )
         assert high_risk_response.status_code == 403
-        assert "权限申请" in high_risk_response.json()["detail"]
+        assert "集团超级管理员直接操作" in high_risk_response.json()["detail"]
 
         with db_module.SessionLocal() as db:
             remote_request = db.query(auth_models.AuthRegistrationRequest).filter_by(username="scope-huadeng").one()

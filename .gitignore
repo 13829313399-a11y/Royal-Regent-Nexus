@@ -41,6 +41,8 @@ backend/data/*.sqlite3
 !/AGENTS.MD
 !/PROJECT_MEMORY.md
 !/docs/aliyun-docker-deploy.md
+!/docs/business/internal-quote-collaboration-design.md
+!/docs/business/internal-quote-l6-release-readiness.md
 
 # Editor directories and files
 .vscode/*

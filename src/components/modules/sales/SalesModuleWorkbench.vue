@@ -16,9 +16,16 @@ withDefaults(defineProps<{
   description: string
   badge: string
   searchPlaceholder?: string
-  metrics: SalesWorkbenchMetric[]
+  metrics?: SalesWorkbenchMetric[]
+  showPageHeader?: boolean
+  backTo?: string
+  backLabel?: string
 }>(), {
   searchPlaceholder: '',
+  metrics: () => [],
+  showPageHeader: true,
+  backTo: '',
+  backLabel: '返回业务部',
 })
 
 const appStore = useAppStore()
@@ -29,6 +36,11 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
   <div class="sales-workbench min-h-screen text-slate-950">
     <header class="sales-topbar">
       <div class="sales-topbar-inner">
+        <RouterLink v-if="backTo" :to="backTo" class="sales-topbar-back">
+          <ArrowLeft class="size-4" aria-hidden="true" />
+          <span>{{ backLabel }}</span>
+        </RouterLink>
+
         <div class="sales-brand">
           <span class="sales-brand-mark">
             <slot name="icon" />
@@ -52,7 +64,7 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
     </header>
 
     <main class="sales-page">
-      <header class="sales-page-head">
+      <header v-if="showPageHeader" class="sales-page-head">
         <div class="min-w-0">
           <RouterLink to="/modules/sales-business" class="sales-back-link">
             <ArrowLeft class="size-[15px]" aria-hidden="true" />
@@ -65,7 +77,7 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
           <p class="sales-page-description">{{ description }}</p>
         </div>
 
-        <div class="sales-metrics">
+        <div v-if="metrics.length" class="sales-metrics">
           <article v-for="metric in metrics" :key="metric.label" class="sales-metric">
             <p>{{ metric.label }}</p>
             <strong>{{ metric.value }}</strong>
@@ -116,6 +128,40 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
   letter-spacing: -0.02em;
 }
 
+.sales-topbar-back {
+  display: inline-flex;
+  min-height: 38px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 88%);
+  padding: 0 12px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 5%);
+  transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.sales-topbar-back:hover {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+  color: #0f766e;
+  box-shadow: 0 8px 18px rgb(15 118 110 / 10%);
+  transform: translateY(-1px);
+}
+
+.sales-topbar-back:active {
+  transform: translateY(0) scale(.98);
+}
+
+.sales-topbar-back:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(20 184 166 / 16%);
+}
+
 .sales-brand-mark {
   display: grid;
   width: 38px;
@@ -162,7 +208,7 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
   border: 0;
   background: transparent;
   color: #0f172a;
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
 }
 
@@ -177,7 +223,7 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
   background: #fff;
   padding: 0 10px;
   color: #475569;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -316,6 +362,19 @@ const activeFactory = computed(() => appStore.activeProductionFactory)
 
   .sales-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .sales-topbar-back span {
+    max-width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sales-topbar-back {
+    transition: none;
   }
 }
 </style>

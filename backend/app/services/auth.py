@@ -33,6 +33,17 @@ from app.models.auth import (
     SystemNotification,
 )
 from app.schemas.auth import AuthMeResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest, RegisterResponse
+from app.services.iam_scope import (
+    CROSS_FACTORY_OPERATE_SCOPE,
+    CROSS_FACTORY_READ_SCOPE,
+    OPERATE_ACCESS_KIND,
+    OWN_FACTORY_SCOPE,
+    READ_ACCESS_KIND,
+    VALID_ACCESS_KINDS,
+    VALID_SCOPE_MODES,
+    default_permission_access_kind,
+)
+from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS, get_system_position
 
 SESSION_COOKIE_NAME = "rr_session"
 logger = logging.getLogger(__name__)
@@ -43,6 +54,21 @@ LEGACY_EXPORT_COMPAT_PERMISSION = "molding_sample:export"
 RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER = "raw_material_write_default_grant_v1_completed"
 RAW_MATERIAL_WRITE_PERMISSION = "molding_sample:raw_material_write"
 RAW_MATERIAL_WRITE_DEFAULT_ROLE_IDS = ("engineer", "engineering_supervisor", "warehouse_keeper")
+INTERNAL_QUOTE_DEFAULT_GRANT_MARKER = "internal_quote_p1_default_grant_v1_completed"
+INTERNAL_QUOTE_P2_REFERENCE_GRANT_MARKER = "internal_quote_p2_reference_grant_v1_completed"
+INTERNAL_QUOTE_REFERENCE_PERMISSION = "internal_quote:reference_manage"
+INTERNAL_QUOTE_REFERENCE_DEFAULT_ROLE_IDS = ("sales_customer_supervisor", "engineering_supervisor")
+INTERNAL_QUOTE_P3_EXPORT_GRANT_MARKER = "internal_quote_p3_export_grant_v1_completed"
+INTERNAL_QUOTE_EXPORT_PERMISSION = "internal_quote:export"
+INTERNAL_QUOTE_EXPORT_DEFAULT_ROLE_IDS = ("sales_customer_owner", "sales_customer_supervisor")
+INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER = "internal_quote_p4_release_grant_v1_completed"
+INTERNAL_QUOTE_P4_RELEASE_ROLE_PERMISSIONS = {
+    "sales_customer_owner": ("internal_quote:final_submit",),
+    "sales_customer_supervisor": (
+        "internal_quote:final_submit",
+        "internal_quote:final_approve",
+    ),
+}
 DEFAULT_PASSWORD = "123456"
 PASSWORD_HASH_ITERATIONS = 160_000
 SESSION_HOURS = 12
@@ -91,8 +117,6 @@ MOLDING_SAMPLE_PERMISSIONS = [
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
     "customer_price:compare",
-    "internal_pricing:read",
-    "internal_pricing:create",
     "system:user_manage",
     "system:role_manage",
 ]
@@ -110,7 +134,99 @@ IAM_PERMISSIONS = [
     "system:permission_catalog_read",
 ]
 
-APPLICATION_PERMISSIONS = list(dict.fromkeys(MOLDING_SAMPLE_PERMISSIONS + INJECTION_SCHEDULE_PERMISSIONS + IAM_PERMISSIONS))
+INTERNAL_QUOTE_SECTION_CODES = (
+    "sales",
+    "engineering",
+    "electronic",
+    "molding",
+    "painting",
+    "slush",
+    "sewing",
+    "assembly",
+)
+INTERNAL_QUOTE_PERMISSIONS = [
+    "internal_quote:read",
+    "internal_quote:create",
+    "internal_quote:clone",
+    "internal_quote:header_edit",
+    "internal_quote:summary_read",
+    "internal_quote:timeline_read",
+    "internal_quote:archive",
+    "internal_quote:reference_manage",
+    "internal_quote:export",
+    "internal_quote:final_submit",
+    "internal_quote:final_approve",
+    *(
+        permission
+        for section_code in INTERNAL_QUOTE_SECTION_CODES
+        for permission in (
+            f"internal_quote:{section_code}_edit",
+            f"internal_quote:{section_code}_review",
+        )
+    ),
+]
+
+APPLICATION_PERMISSIONS = list(
+    dict.fromkeys(
+        MOLDING_SAMPLE_PERMISSIONS
+        + INJECTION_SCHEDULE_PERMISSIONS
+        + INTERNAL_QUOTE_PERMISSIONS
+        + IAM_PERMISSIONS
+    )
+)
+
+INTERNAL_QUOTE_COMMON_PERMISSIONS = {
+    "internal_quote:read",
+    "internal_quote:summary_read",
+    "internal_quote:timeline_read",
+}
+INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS = {
+    "sales_customer_owner": {
+        *INTERNAL_QUOTE_COMMON_PERMISSIONS,
+        "internal_quote:create",
+        "internal_quote:clone",
+        "internal_quote:header_edit",
+        "internal_quote:sales_edit",
+        "internal_quote:export",
+        "internal_quote:final_submit",
+    },
+    "sales_customer_supervisor": {
+        *INTERNAL_QUOTE_COMMON_PERMISSIONS,
+        "internal_quote:create",
+        "internal_quote:clone",
+        "internal_quote:header_edit",
+        "internal_quote:archive",
+        "internal_quote:sales_edit",
+        "internal_quote:sales_review",
+        "internal_quote:reference_manage",
+        "internal_quote:export",
+        "internal_quote:final_submit",
+        "internal_quote:final_approve",
+    },
+    "engineer": {
+        *INTERNAL_QUOTE_COMMON_PERMISSIONS,
+        "internal_quote:create",
+        "internal_quote:clone",
+        "internal_quote:engineering_edit",
+    },
+    "engineering_supervisor": {
+        *INTERNAL_QUOTE_COMMON_PERMISSIONS,
+        "internal_quote:create",
+        "internal_quote:clone",
+        "internal_quote:engineering_edit",
+        "internal_quote:engineering_review",
+        "internal_quote:reference_manage",
+    },
+    "molding_clerk": {
+        *INTERNAL_QUOTE_COMMON_PERMISSIONS,
+        "internal_quote:molding_edit",
+    },
+    "molding_supervisor": {
+        *INTERNAL_QUOTE_COMMON_PERMISSIONS,
+        "internal_quote:molding_edit",
+        "internal_quote:molding_review",
+    },
+}
 
 DEFAULT_ROLES = [
     ("group_molding_readonly", "集团啤办只读", "跨厂查看啤办单，默认隐藏成本且不可导出或修改"),
@@ -127,6 +243,9 @@ DEFAULT_ROLES = [
     ("factory_permission_admin", "厂区权限管理员", "在授权厂区内管理普通用户权限"),
     ("department_permission_admin", "部门权限管理员", "在授权部门内管理普通用户权限"),
     ("admin", "系统管理员", "系统配置和权限管理"),
+] + [
+    (item.role_id, item.name, item.description)
+    for item in SYSTEM_POSITION_DEFINITIONS
 ]
 
 ROLE_PERMISSIONS = {
@@ -141,6 +260,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:edit_draft",
         "molding_sample:delete_draft",
         "molding_sample:notification_read",
+        *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["engineer"],
     },
     "engineering_supervisor": {
         "molding_sample:read",
@@ -148,6 +268,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:raw_material_write",
         "molding_sample:supervisor_review",
         "molding_sample:notification_read",
+        *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["engineering_supervisor"],
     },
     "manager": {
         "molding_sample:read",
@@ -176,6 +297,13 @@ ROLE_PERMISSIONS = {
         "carton_mark:photo_upload",
         "carton_mark:review",
     },
+    "qa_clerk": {
+        "carton_mark:read",
+        "carton_mark:photo_upload",
+    },
+    "carton_external": {
+        "carton_mark:read",
+    },
     "molding_clerk": {
         "molding_sample:read",
         "molding_sample:export",
@@ -186,6 +314,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:notification_read",
         "injection_schedule:read",
         "injection_schedule:import",
+        *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_clerk"],
     },
     "molding_production_observer": {
         "molding_sample:production_read",
@@ -195,16 +324,14 @@ ROLE_PERMISSIONS = {
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
-        "internal_pricing:read",
-        "internal_pricing:create",
+        *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["sales_customer_owner"],
     },
     "sales_customer_supervisor": {
         "customer_price:read",
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
-        "internal_pricing:read",
-        "internal_pricing:create",
+        *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["sales_customer_supervisor"],
     },
     "factory_permission_admin": {
         "system:user_manage",
@@ -239,9 +366,15 @@ ROLE_PERMISSIONS = {
         "molding_sample:notification_read",
         "injection_schedule:read",
         "injection_schedule:import",
+        *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
     },
     "admin": set(APPLICATION_PERMISSIONS),
 }
+
+for system_position in SYSTEM_POSITION_DEFINITIONS:
+    ROLE_PERMISSIONS[system_position.role_id] = set(
+        ROLE_PERMISSIONS.get(system_position.permission_profile, set())
+    )
 
 DEFAULT_USERS = [
     ("user-admin", "admin", "系统管理员", "admin", "*", "*"),
@@ -274,11 +407,20 @@ RETIRED_DEFAULT_USER_IDS = {
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
 ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huakang-c", "huakang-d", "huadeng", "huaxing"}
 ALLOWED_DEPARTMENTS = {
+    "assembly",
+    "electronic",
     "engineering",
+    "management",
+    "molding",
+    "painting",
     "pmc-warehouse",
     "production",
     "qa",
+    "qc",
+    "carton",
     "sales-business",
+    "sewing",
+    "slush",
 }
 
 
@@ -290,6 +432,9 @@ class AuthGrantContext:
     department: str
     permissions: frozenset[str]
     data_scope: str = "department"
+    scope_mode: str = OWN_FACTORY_SCOPE
+    read_permissions: frozenset[str] = frozenset()
+    unrestricted_department: bool = False
     binding_id: str = ""
     role_code: str = ""
     valid_from: str = ""
@@ -428,6 +573,23 @@ def scope_matches(
     return granted_department in {"*", target_department}
 
 
+def system_position_grant_scope_source(
+    grant: AuthGrantContext,
+    permission: str,
+    factory_id: str,
+) -> str | None:
+    """Resolve a built-in position without trusting wildcard home scopes."""
+    if not grant.unrestricted_department:
+        return None
+    if grant.factory_id != "*" and grant.factory_id == factory_id:
+        return "local"
+    if grant.scope_mode == CROSS_FACTORY_OPERATE_SCOPE:
+        return "cross_operate"
+    if grant.scope_mode == CROSS_FACTORY_READ_SCOPE and permission in grant.read_permissions:
+        return "cross_read"
+    return None
+
+
 def hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac(
         "sha256",
@@ -553,6 +715,7 @@ def permission_catalog_values(code: str, sort_order: int) -> dict[str, str | int
         "module_code": module_code,
         "action": action,
         "risk_level": risk_level,
+        "access_kind": default_permission_access_kind(code),
         "scope_type": "factory_department",
         "status": "active",
         "sort_order": sort_order,
@@ -582,6 +745,7 @@ def seed_iam_sidecars(db: Session, now: str) -> None:
                     role_id=role.id,
                     version=1,
                     protected=1 if role.code == "admin" else 0,
+                    scope_mode=OWN_FACTORY_SCOPE,
                     created_at=now,
                     updated_at=now,
                 )
@@ -699,6 +863,273 @@ def seed_raw_material_write_default_grant_once(db: Session, now: str) -> int:
                     "completed_at": now,
                     "created_role_permission_count": created_count,
                 },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
+def seed_internal_quote_default_grants_once(db: Session, now: str) -> int:
+    """Add the approved P1 module permissions to existing default role templates once."""
+    if db.get(AuthIamState, INTERNAL_QUOTE_DEFAULT_GRANT_MARKER) is not None:
+        return 0
+
+    permissions_by_code = {
+        permission.code: permission
+        for permission in db.scalars(
+            select(AuthPermission).where(AuthPermission.code.in_(INTERNAL_QUOTE_PERMISSIONS))
+        ).all()
+    }
+    created_count = 0
+    updated_role_ids: set[str] = set()
+
+    for role_id, permission_codes in INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS.items():
+        if db.get(AuthRole, role_id) is None:
+            continue
+        for permission_code in permission_codes:
+            permission = permissions_by_code.get(permission_code)
+            if permission is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+    if updated_role_ids:
+        for role_id in updated_role_ids:
+            metadata = db.get(AuthRoleMetadata, role_id)
+            if metadata is not None:
+                metadata.version += 1
+                metadata.updated_at = now
+
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key=INTERNAL_QUOTE_DEFAULT_GRANT_MARKER,
+            value_json=json.dumps(
+                {
+                    "completed_at": now,
+                    "created_role_permission_count": created_count,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
+def seed_internal_quote_reference_grants_once(db: Session, now: str) -> int:
+    """Grant P2 reference-snapshot sync to existing approved supervisor templates once."""
+    if db.get(AuthIamState, INTERNAL_QUOTE_P2_REFERENCE_GRANT_MARKER) is not None:
+        return 0
+    permission = db.scalar(
+        select(AuthPermission).where(AuthPermission.code == INTERNAL_QUOTE_REFERENCE_PERMISSION)
+    )
+    created_count = 0
+    updated_role_ids: set[str] = set()
+    if permission is not None:
+        for role_id in INTERNAL_QUOTE_REFERENCE_DEFAULT_ROLE_IDS:
+            if db.get(AuthRole, role_id) is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+    if updated_role_ids:
+        for role_id in updated_role_ids:
+            metadata = db.get(AuthRoleMetadata, role_id)
+            if metadata is not None:
+                metadata.version += 1
+                metadata.updated_at = now
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key=INTERNAL_QUOTE_P2_REFERENCE_GRANT_MARKER,
+            value_json=json.dumps(
+                {"completed_at": now, "created_role_permission_count": created_count},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
+def seed_internal_quote_export_grants_once(db: Session, now: str) -> int:
+    """Grant P3 controlled-export access to existing approved business templates once."""
+    if db.get(AuthIamState, INTERNAL_QUOTE_P3_EXPORT_GRANT_MARKER) is not None:
+        return 0
+    permission = db.scalar(
+        select(AuthPermission).where(AuthPermission.code == INTERNAL_QUOTE_EXPORT_PERMISSION)
+    )
+    created_count = 0
+    updated_role_ids: set[str] = set()
+    if permission is not None:
+        for role_id in INTERNAL_QUOTE_EXPORT_DEFAULT_ROLE_IDS:
+            if db.get(AuthRole, role_id) is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+    if updated_role_ids:
+        for role_id in updated_role_ids:
+            metadata = db.get(AuthRoleMetadata, role_id)
+            if metadata is not None:
+                metadata.version += 1
+                metadata.updated_at = now
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key=INTERNAL_QUOTE_P3_EXPORT_GRANT_MARKER,
+            value_json=json.dumps(
+                {"completed_at": now, "created_role_permission_count": created_count},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
+def seed_internal_quote_release_grants_once(db: Session, now: str) -> int:
+    """Grant P4 final-submit/review access to existing approved business templates once."""
+    if db.get(AuthIamState, INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER) is not None:
+        return 0
+    permission_codes = {
+        code
+        for codes in INTERNAL_QUOTE_P4_RELEASE_ROLE_PERMISSIONS.values()
+        for code in codes
+    }
+    permissions_by_code = {
+        permission.code: permission
+        for permission in db.scalars(
+            select(AuthPermission).where(AuthPermission.code.in_(permission_codes))
+        ).all()
+    }
+    created_count = 0
+    updated_role_ids: set[str] = set()
+    for role_id, codes in INTERNAL_QUOTE_P4_RELEASE_ROLE_PERMISSIONS.items():
+        if db.get(AuthRole, role_id) is None:
+            continue
+        for code in codes:
+            permission = permissions_by_code.get(code)
+            if permission is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+    if updated_role_ids:
+        for role_id in updated_role_ids:
+            metadata = db.get(AuthRoleMetadata, role_id)
+            if metadata is not None:
+                metadata.version += 1
+                metadata.updated_at = now
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key=INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER,
+            value_json=json.dumps(
+                {"completed_at": now, "created_role_permission_count": created_count},
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -950,6 +1381,9 @@ def ensure_authz_startup_safety(db: Session) -> None:
 def seed_auth_defaults(db: Session) -> None:
     now = now_text()
     created_role_ids: set[str] = set()
+    system_position_names = {
+        item.role_id: item.name for item in SYSTEM_POSITION_DEFINITIONS
+    }
 
     for code in APPLICATION_PERMISSIONS:
         permission_id = f"perm-{code.replace(':', '-')}"
@@ -957,9 +1391,15 @@ def seed_auth_defaults(db: Session) -> None:
             db.add(AuthPermission(id=permission_id, code=code, name=code, description=""))
 
     for role_id, name, description in DEFAULT_ROLES:
-        if db.get(AuthRole, role_id) is None:
+        role = db.get(AuthRole, role_id)
+        if role is None:
             db.add(AuthRole(id=role_id, code=role_id, name=name, description=description))
             created_role_ids.add(role_id)
+        elif role_id in system_position_names:
+            # Built-in position names are part of the fixed catalog and cannot be
+            # edited in IAM. Reconcile display-name fixes without touching the
+            # administrator-owned description or permission mappings.
+            role.name = system_position_names[role_id]
 
     db.flush()
     permissions_by_code = {permission.code: permission for permission in db.scalars(select(AuthPermission)).all()}
@@ -1017,6 +1457,10 @@ def seed_auth_defaults(db: Session) -> None:
     db.flush()
     seed_iam_sidecars(db, now)
     seed_raw_material_write_default_grant_once(db, now)
+    seed_internal_quote_default_grants_once(db, now)
+    seed_internal_quote_reference_grants_once(db, now)
+    seed_internal_quote_export_grants_once(db, now)
+    seed_internal_quote_release_grants_once(db, now)
     seed_legacy_read_compat_once(db, now)
     seed_legacy_export_compat_once(db, now)
     ensure_authz_startup_safety(db)
@@ -1416,7 +1860,16 @@ def authorization_decision(
         grant
         for grant in user.grants
         if permission in grant.permissions
-        and scope_matches(grant.factory_id, grant.department, factory_id, department)
+        and (
+            (
+                grant.unrestricted_department
+                and system_position_grant_scope_source(grant, permission, factory_id) == "local"
+            )
+            or (
+                not grant.unrestricted_department
+                and scope_matches(grant.factory_id, grant.department, factory_id, department)
+            )
+        )
         and time_window_is_active(grant.valid_from, grant.valid_until, at)
     ]
     if matching_grants:
@@ -1425,6 +1878,36 @@ def authorization_decision(
             "role_binding",
             tuple(sorted(grant.binding_id for grant in matching_grants if grant.binding_id)),
             "、".join(sorted({grant.role_name for grant in matching_grants})),
+        )
+
+    # A built-in position is a function bundle, not an organization boundary.
+    # Its binding factory remains the employee's home-factory anchor while the
+    # position template decides whether read-only or operating permissions may
+    # expand to another concrete factory. Department is intentionally ignored
+    # for these grants so administrators can freely combine module permissions.
+    cross_factory_grants = [
+        grant
+        for grant in user.grants
+        if grant.unrestricted_department
+        and permission in grant.permissions
+        and system_position_grant_scope_source(grant, permission, factory_id)
+        in {"cross_read", "cross_operate"}
+        and time_window_is_active(grant.valid_from, grant.valid_until, at)
+    ]
+    if cross_factory_grants:
+        source_type = (
+            "role_binding_cross_operate"
+            if any(
+                system_position_grant_scope_source(grant, permission, factory_id) == "cross_operate"
+                for grant in cross_factory_grants
+            )
+            else "role_binding_cross_read"
+        )
+        return (
+            True,
+            source_type,
+            tuple(sorted(grant.binding_id for grant in cross_factory_grants if grant.binding_id)),
+            "、".join(sorted({grant.role_name for grant in cross_factory_grants})),
         )
 
     return False, "default", (), "默认拒绝"
@@ -1448,6 +1931,14 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     permission_code_by_id = {permission.id: permission.code for permission in all_permissions}
     permission_metadata = list(db.scalars(select(AuthPermissionMetadata)).all())
     permission_status_by_id = {item.permission_id: item.status for item in permission_metadata}
+    permission_access_kind_by_id = {
+        item.permission_id: (
+            item.access_kind
+            if item.access_kind in VALID_ACCESS_KINDS
+            else default_permission_access_kind(permission_code_by_id.get(item.permission_id, ""))
+        )
+        for item in permission_metadata
+    }
     active_permission_codes = frozenset(
         permission.code
         for permission in all_permissions
@@ -1481,8 +1972,18 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     roles = list(db.scalars(select(AuthRole).where(AuthRole.id.in_(role_ids))).all()) if role_ids else []
     role_name_by_id = {role.id: role.name for role in roles}
     role_code_by_id = {role.id: role.code for role in roles}
+    role_metadata = (
+        list(db.scalars(select(AuthRoleMetadata).where(AuthRoleMetadata.role_id.in_(role_ids))).all())
+        if role_ids
+        else []
+    )
+    role_metadata_by_id = {item.role_id: item for item in role_metadata}
+    system_position_role_ids = {
+        role_id for role_id in role_ids if get_system_position(role_id) is not None
+    }
 
     permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
+    read_permissions_by_role_id: dict[str, set[str]] = {role_id: set() for role_id in role_ids}
     if role_ids:
         role_permissions = list(
             db.scalars(select(AuthRolePermission).where(AuthRolePermission.role_id.in_(role_ids))).all()
@@ -1491,6 +1992,19 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
             permission_code = permission_code_by_id.get(role_permission.permission_id)
             if permission_code in active_permission_codes:
                 permissions_by_role_id.setdefault(role_permission.role_id, set()).add(permission_code)
+                access_kind = permission_access_kind_by_id.get(
+                    role_permission.permission_id,
+                    default_permission_access_kind(permission_code),
+                )
+                if access_kind == READ_ACCESS_KIND:
+                    read_permissions_by_role_id.setdefault(role_permission.role_id, set()).add(permission_code)
+
+    def role_scope_mode(role_id: str) -> str:
+        if role_id not in system_position_role_ids:
+            return OWN_FACTORY_SCOPE
+        metadata = role_metadata_by_id.get(role_id)
+        value = metadata.scope_mode if metadata else OWN_FACTORY_SCOPE
+        return value if value in VALID_SCOPE_MODES else OWN_FACTORY_SCOPE
 
     grants = tuple(
         AuthGrantContext(
@@ -1499,7 +2013,16 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
             factory_id=user_role.factory_id,
             department=user_role.department,
             permissions=frozenset(permissions_by_role_id.get(user_role.role_id, set())),
-            data_scope="all" if user_role.factory_id == "*" else "department",
+            data_scope=(
+                "all"
+                if user_role.factory_id == "*" or role_scope_mode(user_role.role_id) != OWN_FACTORY_SCOPE
+                else "factory"
+                if user_role.role_id in system_position_role_ids
+                else "department"
+            ),
+            scope_mode=role_scope_mode(user_role.role_id),
+            read_permissions=frozenset(read_permissions_by_role_id.get(user_role.role_id, set())),
+            unrestricted_department=user_role.role_id in system_position_role_ids,
             binding_id=user_role.id,
             role_code=role_code_by_id.get(user_role.role_id, user_role.role_id),
             valid_from=(binding_metadata_by_id[user_role.id].valid_from if user_role.id in binding_metadata_by_id else ""),
@@ -1551,8 +2074,17 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     revision_row = db.get(AuthUserAuthorizationRevision, user.id)
     role_names = tuple(role_name_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
     role_codes = tuple(role_code_by_id.get(user_role.role_id, user_role.role_id) for user_role in user_roles)
-    factory_scopes = tuple(sorted({user_role.factory_id for user_role in user_roles if user_role.factory_id}))
-    department_scopes = tuple(sorted({user_role.department for user_role in user_roles if user_role.department}))
+    factory_scope_values = {user_role.factory_id for user_role in user_roles if user_role.factory_id}
+    department_scope_values = {user_role.department for user_role in user_roles if user_role.department}
+    if any(
+        grant.unrestricted_department and grant.scope_mode != OWN_FACTORY_SCOPE
+        for grant in grants
+    ):
+        factory_scope_values.add("*")
+    if any(grant.unrestricted_department for grant in grants):
+        department_scope_values.add("*")
+    factory_scopes = tuple(sorted(factory_scope_values))
+    department_scopes = tuple(sorted(department_scope_values))
 
     context = AuthContext(
         id=user.id,
@@ -1611,6 +2143,30 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
                 )
             )
 
+    # ``permissions`` is a flat compatibility union consumed by older guards
+    # and the frontend's target-less checks. A deny at the home factory must
+    # not hide a permission that a cross-scoped built-in position still allows
+    # at another real factory. Keep effective_access anchor-centric, but check
+    # every known concrete factory when calculating that flat union.
+    cross_position_permission_codes = {
+        permission_code
+        for grant in grants
+        if grant.unrestricted_department and grant.scope_mode != OWN_FACTORY_SCOPE
+        for permission_code in grant.permissions
+    }
+    for permission_code in sorted(cross_position_permission_codes - allowed_permission_codes):
+        if any(
+            authorization_decision(
+                context,
+                permission_code,
+                candidate_factory_id,
+                "*",
+                at=checked_at,
+            )[0]
+            for candidate_factory_id in sorted(ALLOWED_FACTORY_IDS)
+        ):
+            allowed_permission_codes.add(permission_code)
+
     return replace(
         context,
         permissions=frozenset(allowed_permission_codes),
@@ -1658,6 +2214,9 @@ def to_auth_response(context: AuthContext) -> AuthMeResponse:
                 "department": grant.department,
                 "permissions": sorted(grant.permissions),
                 "data_scope": grant.data_scope,
+                "scope_mode": grant.scope_mode,
+                "read_permission_codes": sorted(grant.read_permissions),
+                "unrestricted_department": grant.unrestricted_department,
             }
             for grant in context.grants
         ],
@@ -1703,7 +2262,14 @@ def has_permission_in_scope(
     factory_id: str,
     department: str | None = None,
 ) -> bool:
-    canonical_result = can(user, permission, factory_id, department)
+    canonical_result, canonical_source, _, _ = authorization_decision(
+        user,
+        permission,
+        factory_id,
+        department,
+    )
+    if canonical_result and canonical_source == "superadmin":
+        return True
     if settings.authz_mode == "enforce":
         return canonical_result
 
@@ -1729,6 +2295,10 @@ def legacy_has_permission_in_scope(
 ) -> bool:
     for grant in user.grants:
         if permission not in grant.permissions:
+            continue
+        if grant.unrestricted_department:
+            if system_position_grant_scope_source(grant, permission, factory_id) is not None:
+                return True
             continue
         if grant.factory_id != "*" and grant.factory_id != factory_id:
             continue

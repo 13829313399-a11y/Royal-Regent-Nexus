@@ -106,25 +106,43 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/sales-business/internal-pricing',
-    name: 'internal-pricing',
-    component: () => import('@/views/InternalPricingView.vue'),
+    path: '/modules/sales-business/internal-quote-desk',
+    component: () => import('@/views/InternalQuoteDeskView.vue'),
     meta: {
-      title: '内部报价',
+      title: '内部报价台',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['internal_pricing:read'],
-      enforcePermissions: true,
     },
+    children: [
+      {
+        path: '',
+        name: 'internal-quote-desk-home',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteHome.vue'),
+        meta: { title: '内部报价台', fullPage: true, requiresAuth: true },
+      },
+      {
+        path: ':quoteId/collaboration',
+        name: 'internal-quote-collaboration',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteCollaboration.vue'),
+        meta: { title: '内部报价协作', fullPage: true, requiresAuth: true },
+      },
+      {
+        path: ':quoteId/summary',
+        name: 'internal-quote-summary',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteSummary.vue'),
+        meta: { title: '内部报价汇总与放行', fullPage: true, requiresAuth: true },
+      },
+      {
+        path: ':quoteId/export',
+        name: 'internal-quote-export-summary',
+        component: () => import('@/components/modules/sales/internal-quote/InternalQuoteExportSummary.vue'),
+        meta: { title: '内部报价导出汇总', fullPage: true, requiresAuth: true },
+      },
+    ],
   },
   {
     path: '/modules/sales-business/quote-center',
-    redirect: (to) => {
-      const rawSection = Array.isArray(to.query.section) ? to.query.section[0] : to.query.section
-      return rawSection === 'internal-pricing' || rawSection === 'quote-pool'
-        ? '/modules/sales-business/internal-pricing'
-        : '/modules/sales-business/customer-price-conversion'
-    },
+    redirect: '/modules/sales-business/customer-price-conversion',
   },
   {
     path: '/modules/sales-business/quote-center/customer-price-conversion',
@@ -132,7 +150,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/modules/sales-business/order-approval',
-    redirect: '/modules/sales-business/internal-pricing',
+    redirect: '/modules/sales-business',
   },
   {
     path: '/modules/pmc-warehouse/carton-mark-check',
@@ -226,7 +244,7 @@ const routes: RouteRecordRaw[] = [
     name: 'system-user-access',
     component: () => import('@/views/UserAccessManagementView.vue'),
     meta: {
-      title: '用户权限配置',
+      title: '调整权限职位',
       fullPage: true,
       requiresAuth: true,
       permissions: ['system:access_manage'],
@@ -238,7 +256,7 @@ const routes: RouteRecordRaw[] = [
     name: 'iam-role-templates',
     component: () => import('@/views/IamRoleTemplatesView.vue'),
     meta: {
-      title: '角色模板',
+      title: '内置职位权限',
       fullPage: true,
       requiresAuth: true,
       permissions: ['system:permission_catalog_read'],
@@ -247,39 +265,15 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/system/iam/permissions',
-    name: 'iam-permission-catalog',
-    component: () => import('@/views/IamPermissionCatalogView.vue'),
-    meta: {
-      title: '权限目录',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['system:permission_catalog_read'],
-      enforcePermissions: true,
-    },
+    redirect: '/system/iam/roles',
   },
   {
     path: '/system/iam/requests',
-    name: 'iam-access-requests',
-    component: () => import('@/views/IamAccessRequestsView.vue'),
-    meta: {
-      title: '权限申请',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['system:access_request', 'system:access_approve'],
-      enforcePermissions: true,
-    },
+    redirect: '/system/iam/roles',
   },
   {
     path: '/system/iam/audit',
-    name: 'iam-audit-events',
-    component: () => import('@/views/IamAuditView.vue'),
-    meta: {
-      title: '权限操作记录',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['system:audit_read'],
-      enforcePermissions: true,
-    },
+    redirect: '/system/iam/roles',
   },
   {
     path: '/forbidden',

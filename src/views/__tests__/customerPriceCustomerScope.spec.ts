@@ -1,8 +1,17 @@
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
+import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+
+vi.mock('@/api/customerPriceArtifact', () => ({
+  customerPriceArtifactApi: {
+    list: vi.fn(async () => []),
+    consume: vi.fn(),
+    download: vi.fn(),
+  },
+}))
 
 const customerPricePermissions = [
   'customer_price:read',
@@ -47,8 +56,50 @@ function mountPanel(username: string, deniedPermissions: string[] = []) {
   return mount(QuoteCenterPanel)
 }
 
+function mountCrossFactoryPosition(scopeMode: 'cross_factory_read' | 'cross_factory_operate') {
+  useAppStore().setActiveFactory('huadeng')
+  useAuthStore().applySession({
+    id: 'user-cross-factory-sales',
+    username: 'cross-factory-sales',
+    display_name: '跨厂业务',
+    roles: ['业务'],
+    permissions: customerPricePermissions,
+    grants: [{
+      role_id: 'position_sales_business',
+      role_code: 'position_sales_business',
+      role_name: '业务',
+      factory_id: 'huaxing',
+      department: 'sales-business',
+      permissions: customerPricePermissions,
+      data_scope: 'all',
+      scope_mode: scopeMode,
+      read_permission_codes: ['customer_price:read'],
+      unrestricted_department: true,
+    }],
+    factory_scopes: ['*', 'huaxing'],
+    department_scopes: ['*', 'sales-business'],
+    authz_mode: 'enforce',
+    effective_access: customerPricePermissions.map((permissionCode) => ({
+      permission_code: permissionCode,
+      factory_id: 'huaxing',
+      department: 'sales-business',
+      effect: 'allow' as const,
+      allowed: true,
+      source_type: 'role_binding',
+      source_ids: ['position-sales-binding'],
+    })),
+    force_password_change: false,
+  })
+
+  return mount(QuoteCenterPanel)
+}
+
 describe('QuoteCenterPanel customer visibility', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    window.history.replaceState({}, '', '/')
+  })
+  afterEach(() => window.history.replaceState({}, '', '/'))
 
   it('lets an ordinary sales account see and switch every customer', async () => {
     const wrapper = mountPanel('ordinary-sales-user')
@@ -92,5 +143,19 @@ describe('QuoteCenterPanel customer visibility', () => {
     expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('仅可导入')
     expect(wrapper.text()).toContain('当前账号没有输出权限')
+  })
+
+  it('uses the selected factory when a position has cross-factory operation access', () => {
+    const wrapper = mountCrossFactoryPosition('cross_factory_operate')
+
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('可导入/输出')
+  })
+
+  it('keeps cross-factory read positions from importing in the selected factory', () => {
+    const wrapper = mountCrossFactoryPosition('cross_factory_read')
+
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('仅查看')
   })
 })

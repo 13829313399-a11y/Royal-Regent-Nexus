@@ -42,11 +42,6 @@ function stateLabel(value: 'allow' | 'deny' | 'none') {
           <span class="font-bold">变更原因：</span>{{ reason }}
         </div>
 
-        <div v-if="preview.requires_approval" class="mb-4 flex gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
-          <CheckCircle2 class="mt-0.5 size-5 shrink-0" />
-          <p>当前操作者不能直接提交其中部分变更。确认后系统会创建权限申请，由集团超级管理员审批。</p>
-        </div>
-
         <div v-if="preview.diffs.length" class="overflow-hidden rounded-xl border border-slate-200">
           <div v-for="diff in preview.diffs" :key="`${diff.permission_code}:${diff.factory_id}:${diff.department}`" class="flex flex-col gap-3 border-b border-slate-100 p-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -81,7 +76,7 @@ function stateLabel(value: 'allow' | 'deny' | 'none') {
         >
           <LoaderCircle v-if="isCommitting" class="size-4 animate-spin" />
           <CheckCircle2 v-else class="size-4" />
-          {{ preview.requires_approval ? '提交审批申请' : '确认并立即生效' }}
+          确认并立即生效
         </button>
       </footer>
     </section>

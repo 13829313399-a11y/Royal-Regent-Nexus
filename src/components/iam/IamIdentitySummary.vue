@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { Building2, CircleUserRound, IdCard, Mail, Phone } from '@lucide/vue'
 import type { UserAccessResponse } from '@/api/iam'
-import { departmentMap, factoryContexts } from '@/data/enterpriseMock'
+import { factoryContexts } from '@/data/enterpriseMock'
+import { registrationDepartmentLabel } from '@/data/registrationDepartments'
 
 const props = defineProps<{
   access: UserAccessResponse
@@ -16,7 +17,7 @@ function factoryLabel(value?: string) {
 function departmentLabel(value?: string) {
   if (!value) return '待确认'
   if (value === '*') return '全部部门'
-  return departmentMap[value as keyof typeof departmentMap]?.name ?? value
+  return registrationDepartmentLabel(value)
 }
 
 function statusLabel(status: string) {

@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -12,6 +13,11 @@ class Base(DeclarativeBase):
 
 
 def _create_engine():
+    # Alembic offline SQL generation only needs metadata. Avoid importing the
+    # configured PostgreSQL DBAPI so `alembic upgrade --sql` stays portable.
+    if os.getenv("ALEMBIC_OFFLINE_METADATA_ONLY") == "1":
+        return create_engine("sqlite://", future=True)
+
     database_url = settings.database_url
 
     if database_url.startswith("sqlite:///"):
@@ -57,6 +63,80 @@ SQLITE_LEGACY_COLUMNS = {
     "system_notifications": [
         ("target_department", "target_department VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
+    "auth_permission_metadata": [
+        ("access_kind", "access_kind VARCHAR(16) NOT NULL DEFAULT 'operate'"),
+    ],
+    "auth_role_metadata": [
+        ("scope_mode", "scope_mode VARCHAR(32) NOT NULL DEFAULT 'own_factory'"),
+    ],
+    "internal_quotes": [
+        ("initiator_department", "initiator_department VARCHAR(64) NOT NULL DEFAULT 'sales-business'"),
+        ("business_owner_id", "business_owner_id VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("business_owner_name", "business_owner_name VARCHAR(128) NOT NULL DEFAULT ''"),
+        ("target_date", "target_date VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("remark", "remark TEXT NOT NULL DEFAULT ''"),
+        ("module_version", "module_version VARCHAR(32) NOT NULL DEFAULT 'legacy_rr2_compatible'"),
+        ("reference_snapshot_id", "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        ("formula_version", "formula_version VARCHAR(64) NOT NULL DEFAULT 'legacy_rr2_compatible'"),
+        ("header_revision", "header_revision INTEGER NOT NULL DEFAULT 1"),
+        ("cloned_from_quote_id", "cloned_from_quote_id VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("archived_by", "archived_by VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("archived_at", "archived_at VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("archive_reason", "archive_reason TEXT NOT NULL DEFAULT ''"),
+        ("final_release_status", "final_release_status VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("final_submission_revision", "final_submission_revision INTEGER NOT NULL DEFAULT 0"),
+        ("final_submission_manifest_json", "final_submission_manifest_json TEXT NOT NULL DEFAULT '{}'"),
+        ("final_submitted_by", "final_submitted_by VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("final_submitted_by_name", "final_submitted_by_name VARCHAR(128) NOT NULL DEFAULT ''"),
+        ("final_submitted_at", "final_submitted_at VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("final_reviewed_by", "final_reviewed_by VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("final_reviewed_by_name", "final_reviewed_by_name VARCHAR(128) NOT NULL DEFAULT ''"),
+        ("final_reviewed_at", "final_reviewed_at VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("final_review_comment", "final_review_comment TEXT NOT NULL DEFAULT ''"),
+        ("final_release_revision", "final_release_revision INTEGER NOT NULL DEFAULT 0"),
+        ("final_release_invalidated_at", "final_release_invalidated_at VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("final_release_invalidation_reason", "final_release_invalidation_reason TEXT NOT NULL DEFAULT ''"),
+    ],
+    "internal_quote_sections": [
+        ("is_required", "is_required BOOLEAN NOT NULL DEFAULT 1"),
+        ("calculation_status", "calculation_status VARCHAR(32) NOT NULL DEFAULT 'pending'"),
+        ("calculation_hash", "calculation_hash VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("calculation_formula_version", "calculation_formula_version VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("calculation_reference_snapshot_id", "calculation_reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        ("calculated_at", "calculated_at VARCHAR(32) NOT NULL DEFAULT ''"),
+        ("dependency_hash", "dependency_hash VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("dependency_status", "dependency_status VARCHAR(32) NOT NULL DEFAULT 'current'"),
+    ],
+    "internal_quote_audit_logs": [
+        ("factory_id", "factory_id VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("old_revision", "old_revision INTEGER"),
+        ("new_revision", "new_revision INTEGER"),
+        ("reason", "reason TEXT NOT NULL DEFAULT ''"),
+        ("request_id", "request_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        ("ip_address", "ip_address VARCHAR(128) NOT NULL DEFAULT ''"),
+    ],
+    "internal_quote_section_revisions": [
+        ("formula_version", "formula_version VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("input_hash", "input_hash VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("reference_snapshot_id", "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        ("dependency_hash", "dependency_hash VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("warnings_json", "warnings_json TEXT NOT NULL DEFAULT '[]'"),
+    ],
+    "internal_quote_import_batches": [
+        ("source_size_bytes", "source_size_bytes INTEGER NOT NULL DEFAULT 0"),
+        ("preview_schema_version", "preview_schema_version VARCHAR(32) NOT NULL DEFAULT 'p3-v1'"),
+        ("target_revision", "target_revision INTEGER NOT NULL DEFAULT 0"),
+        ("confirm_mode", "confirm_mode VARCHAR(16) NOT NULL DEFAULT ''"),
+        ("confirmed_revision", "confirmed_revision INTEGER NOT NULL DEFAULT 0"),
+    ],
+    "internal_quote_export_files": [
+        ("template_version", "template_version VARCHAR(64) NOT NULL DEFAULT 'internal-quote-p3-v1'"),
+        ("formula_version", "formula_version VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("reference_snapshot_id", "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        ("header_revision", "header_revision INTEGER NOT NULL DEFAULT 0"),
+        ("release_stage", "release_stage VARCHAR(32) NOT NULL DEFAULT 'p3_section_approved'"),
+        ("export_manifest_json", "export_manifest_json TEXT NOT NULL DEFAULT '{}'"),
+    ],
 }
 
 
@@ -85,10 +165,39 @@ def ensure_sqlite_legacy_columns() -> None:
                 if column_name not in existing_columns:
                     connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_ddl}")
 
+        # Adding the column defaults historical rows to the safe ``operate``
+        # kind. Reconcile the known read-only permissions so an upgraded local
+        # database does not silently lose cross-factory viewing access.
+        permission_metadata_columns = {
+            row["name"]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(auth_permission_metadata)"
+            ).mappings()
+        }
+        permission_columns = {
+            row["name"]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(auth_permissions)"
+            ).mappings()
+        }
+        if "access_kind" in permission_metadata_columns and {"id", "code"} <= permission_columns:
+            from app.services.iam_scope import READ_PERMISSION_CODES
+
+            for permission_code in READ_PERMISSION_CODES:
+                connection.exec_driver_sql(
+                    "UPDATE auth_permission_metadata "
+                    "SET access_kind = 'read' "
+                    "WHERE permission_id = ("
+                    "SELECT id FROM auth_permissions WHERE code = ?"
+                    ")",
+                    (permission_code,),
+                )
+
 
 def init_db() -> None:
     from app.models import auth  # noqa: F401
     from app.models import injection_schedule  # noqa: F401
+    from app.models import internal_quote  # noqa: F401
     from app.models import molding_sample  # noqa: F401
     from app.models import pricing  # noqa: F401
     from app.models import raw_material  # noqa: F401

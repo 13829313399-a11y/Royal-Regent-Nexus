@@ -26,12 +26,36 @@ const ACTION_LABELS: Record<string, string> = {
   import_internal_quote: '导入内部报价',
   export_customer_quote: '导出客户报价',
   compare: '比对',
+  clone: '复制报价',
+  header_edit: '编辑报价抬头',
+  summary_read: '查看报价汇总',
+  timeline_read: '查看报价记录',
+  archive: '归档报价',
+  reference_manage: '管理报价参考数据',
+  final_submit: '提交最终报价',
+  final_approve: '批准最终报价',
+  sales_edit: '编辑业务报价',
+  sales_review: '复核业务报价',
+  engineering_edit: '编辑工程报价',
+  engineering_review: '复核工程报价',
+  electronic_edit: '编辑电子报价',
+  electronic_review: '复核电子报价',
+  molding_edit: '编辑啤机报价',
+  molding_review: '复核啤机报价',
+  painting_edit: '编辑喷油报价',
+  painting_review: '复核喷油报价',
+  slush_edit: '编辑搪胶报价',
+  slush_review: '复核搪胶报价',
+  sewing_edit: '编辑车缝报价',
+  sewing_review: '复核车缝报价',
+  assembly_edit: '编辑装配报价',
+  assembly_review: '复核装配报价',
   user_manage: '管理用户',
   role_manage: '管理角色',
   access_manage: '管理用户授权',
   access_request: '提交权限申请',
   access_approve: '审批权限申请',
-  permission_catalog_read: '查看权限目录',
+  permission_catalog_read: '查看内置职位权限',
   cross_factory_read: '跨厂查看',
   cross_factory_cost_read: '跨厂查看成本',
 }
@@ -69,7 +93,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'system:access_manage': '管理用户授权',
   'system:access_request': '提交权限申请',
   'system:audit_read': '查看权限操作记录',
-  'system:permission_catalog_read': '查看权限目录',
+  'system:permission_catalog_read': '查看内置职位权限',
   'system:role_manage': '管理角色模板',
   'system:user_manage': '管理用户账号',
 }
@@ -81,6 +105,14 @@ const SCOPE_LABELS: Record<string, string> = {
   factory_department: '指定厂区与部门',
   business_object: '指定业务对象',
 }
+
+const LEGACY_IAM_PAGE_PERMISSION_CODES = new Set([
+  'system:access_approve',
+  'system:access_request',
+  'system:audit_read',
+  'system:permission_catalog_read',
+  'system:role_manage',
+])
 
 export function permissionActionLabel(action: string) {
   return ACTION_LABELS[action] ?? '自定义操作'
@@ -109,4 +141,8 @@ export function permissionDisplayLabel(permission: PermissionLabelSource) {
 
 export function permissionScopeLabel(scopeType: string) {
   return SCOPE_LABELS[scopeType] ?? '自定义范围'
+}
+
+export function isBuiltInPositionPermissionVisible(permissionCode: string) {
+  return !LEGACY_IAM_PAGE_PERMISSION_CODES.has(permissionCode)
 }

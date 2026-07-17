@@ -1,4 +1,5 @@
 import importlib
+import sqlite3
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -76,8 +77,106 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                 "department": "*",
                 "permissions": sorted(me["permissions"]),
                 "data_scope": "all",
+                "scope_mode": "own_factory",
+                "read_permission_codes": [
+                    code
+                    for code in sorted(me["permissions"])
+                    if code in {
+                        "carton_mark:read",
+                        "customer_price:compare",
+                        "customer_price:read",
+                        "injection_schedule:read",
+                        "internal_quote:read",
+                        "internal_quote:summary_read",
+                        "internal_quote:timeline_read",
+                        "molding_sample:audit_read",
+                        "molding_sample:cross_factory_cost_read",
+                        "molding_sample:cross_factory_read",
+                        "molding_sample:notification_read",
+                        "molding_sample:production_read",
+                        "molding_sample:read",
+                        "system:audit_read",
+                        "system:permission_catalog_read",
+                    }
+                ],
+                "unrestricted_department": False,
             }
         ]
+
+
+def test_sqlite_legacy_iam_columns_are_added_and_read_permissions_are_reconciled(monkeypatch):
+    TEST_TMP_DIR.mkdir(exist_ok=True)
+    database_path = TEST_TMP_DIR / f"legacy_iam_{uuid4().hex}.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            del sys.modules[module_name]
+
+    db_module = importlib.import_module("app.db")
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE auth_permissions (
+              id VARCHAR(64) PRIMARY KEY,
+              code VARCHAR(128) NOT NULL
+            );
+            CREATE TABLE auth_permission_metadata (
+              permission_id VARCHAR(64) PRIMARY KEY
+            );
+            CREATE TABLE auth_role_metadata (
+              role_id VARCHAR(64) PRIMARY KEY
+            );
+            INSERT INTO auth_permissions (id, code) VALUES
+              ('permission-read', 'molding_sample:read'),
+              ('permission-compare', 'customer_price:compare'),
+              ('permission-operate', 'molding_sample:create');
+            INSERT INTO auth_permission_metadata (permission_id) VALUES
+              ('permission-read'),
+              ('permission-compare'),
+              ('permission-operate');
+            INSERT INTO auth_role_metadata (role_id) VALUES ('position_engineering_engineer');
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    db_module.ensure_sqlite_legacy_columns()
+
+    connection = sqlite3.connect(database_path)
+    try:
+        permission_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(auth_permission_metadata)")
+        }
+        role_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(auth_role_metadata)")
+        }
+        access_kinds = dict(
+            connection.execute(
+                "SELECT permission_id, access_kind FROM auth_permission_metadata"
+            )
+        )
+        scope_mode = connection.execute(
+            "SELECT scope_mode FROM auth_role_metadata "
+            "WHERE role_id = 'position_engineering_engineer'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    db_module.engine.dispose()
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            del sys.modules[module_name]
+
+    assert "access_kind" in permission_columns
+    assert "scope_mode" in role_columns
+    assert access_kinds == {
+        "permission-read": "read",
+        "permission-compare": "read",
+        "permission-operate": "operate",
+    }
+    assert scope_mode == "own_factory"
 
 
 @pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
@@ -113,6 +212,100 @@ def test_auth_me_exposes_current_authz_mode_without_removing_existing_fields(mon
                 "authorization_version",
                 "effective_access",
             }.issubset(body)
+
+
+def test_wildcard_superadmin_keeps_scoped_access_in_legacy_without_role_permission(monkeypatch):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE="legacy",
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        business_authz = importlib.import_module("app.services.business_authz")
+        permission = "customer_price:export_customer_quote"
+        superadmin = auth_service.AuthContext(
+            id="user-admin",
+            username="admin",
+            display_name="系统管理员",
+            roles=("系统管理员",),
+            role_codes=("admin",),
+            permissions=frozenset({permission}),
+            factory_scopes=("*",),
+            department_scopes=("system",),
+            grants=(
+                auth_service.AuthGrantContext(
+                    role_id="admin",
+                    role_code="admin",
+                    role_name="系统管理员",
+                    factory_id="*",
+                    department="system",
+                    permissions=frozenset(),
+                    data_scope="all",
+                    binding_id="user-admin:admin:*:system",
+                ),
+            ),
+            active_permission_codes=frozenset({permission}),
+        )
+
+        assert auth_service.legacy_has_permission_in_scope(
+            superadmin,
+            permission,
+            "huaxing",
+            "sales-business",
+        ) is False
+        assert auth_service.authorization_decision(
+            superadmin,
+            permission,
+            "huaxing",
+            "sales-business",
+        )[1] == "superadmin"
+        assert auth_service.has_permission_in_scope(
+            superadmin,
+            permission,
+            "huaxing",
+            "sales-business",
+        ) is True
+        assert business_authz.has_permission_for_departments(
+            superadmin,
+            permission,
+            "huaxing",
+            ("sales-business", "engineering"),
+        ) is True
+
+        ordinary_user = auth_service.AuthContext(
+            id="user-sales",
+            username="sales",
+            display_name="普通业务",
+            roles=("普通业务",),
+            role_codes=("sales",),
+            permissions=frozenset(),
+            factory_scopes=("huaxing",),
+            department_scopes=("sales-business",),
+            grants=(
+                auth_service.AuthGrantContext(
+                    role_id="sales",
+                    role_code="sales",
+                    role_name="普通业务",
+                    factory_id="huaxing",
+                    department="sales-business",
+                    permissions=frozenset(),
+                    binding_id="user-sales:sales:huaxing:sales-business",
+                ),
+            ),
+            active_permission_codes=frozenset({permission}),
+        )
+        assert auth_service.has_permission_in_scope(
+            ordinary_user,
+            permission,
+            "huaxing",
+            "sales-business",
+        ) is False
+        assert business_authz.has_permission_for_departments(
+            ordinary_user,
+            permission,
+            "huaxing",
+            ("sales-business", "engineering"),
+        ) is False
 
 
 def test_login_session_cookie_secure_flag_can_be_enabled_by_env(monkeypatch):
@@ -203,7 +396,7 @@ def test_default_admin_is_not_seeded_without_explicit_password(monkeypatch):
             assert db.query(auth_models.AuthPermission).filter_by(code="system:user_manage").count() == 1
 
 
-def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeypatch):
+def test_sales_customer_supervisor_role_is_seeded_with_customer_price_permissions(monkeypatch):
     with make_client(monkeypatch, SEED_DEFAULT_ACCOUNTS="false"):
         db_module = importlib.import_module("app.db")
         auth_models = importlib.import_module("app.models.auth")
@@ -224,8 +417,19 @@ def test_sales_customer_supervisor_role_is_seeded_with_quote_permissions(monkeyp
                 "customer_price:import_internal_quote",
                 "customer_price:export_customer_quote",
                 "customer_price:compare",
-                "internal_pricing:read",
-                "internal_pricing:create",
+                "internal_quote:read",
+                "internal_quote:create",
+                "internal_quote:clone",
+                "internal_quote:header_edit",
+                "internal_quote:summary_read",
+                "internal_quote:timeline_read",
+                "internal_quote:archive",
+                "internal_quote:export",
+                "internal_quote:final_submit",
+                "internal_quote:final_approve",
+                "internal_quote:sales_edit",
+                "internal_quote:sales_review",
+                "internal_quote:reference_manage",
             }
 
 
@@ -300,6 +504,76 @@ def test_seed_upgrades_existing_engineering_and_warehouse_roles_with_raw_materia
             assert db.get(auth_models.AuthIamState, auth_service.RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER) is not None
 
 
+def test_seed_upgrades_existing_business_roles_with_internal_quote_p4_release_permissions_once(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            marker = db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER,
+            )
+            assert marker is not None
+            db.delete(marker)
+
+            expected_mappings = []
+            for role_id, permission_codes in auth_service.INTERNAL_QUOTE_P4_RELEASE_ROLE_PERMISSIONS.items():
+                for permission_code in permission_codes:
+                    permission = db.scalar(
+                        auth_service.select(auth_models.AuthPermission).where(
+                            auth_models.AuthPermission.code == permission_code
+                        )
+                    )
+                    assert permission is not None
+                    mapping_id = f"{role_id}:{permission.id}"
+                    mapping = db.get(auth_models.AuthRolePermission, mapping_id)
+                    assert mapping is not None
+                    db.delete(mapping)
+                    expected_mappings.append(mapping_id)
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            for mapping_id in expected_mappings:
+                assert db.get(auth_models.AuthRolePermission, mapping_id) is not None
+            assert db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER,
+            ) is not None
+
+            auth_service.seed_auth_defaults(db)
+            assert db.query(auth_models.AuthRolePermission).filter(
+                auth_models.AuthRolePermission.id.in_(expected_mappings)
+            ).count() == len(expected_mappings)
+
+
+def test_seed_reconciles_fixed_system_position_names_without_overwriting_template(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            role = db.get(auth_models.AuthRole, "position_qc_inspector")
+            permission_ids_before = {
+                item.permission_id
+                for item in db.query(auth_models.AuthRolePermission).filter_by(role_id=role.id).all()
+            }
+            role.name = "QC 检验员"
+            role.description = "管理员维护的职位说明"
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            updated = db.get(auth_models.AuthRole, role.id)
+            assert updated.name == "QC检验员"
+            assert updated.description == "管理员维护的职位说明"
+            assert {
+                item.permission_id
+                for item in db.query(auth_models.AuthRolePermission).filter_by(role_id=role.id).all()
+            } == permission_ids_before
+
+
 def test_canonical_can_uses_deny_then_allow_then_role_and_scope(monkeypatch):
     with make_client(monkeypatch):
         auth_service = importlib.import_module("app.services.auth")
@@ -349,6 +623,76 @@ def test_canonical_can_uses_deny_then_allow_then_role_and_scope(monkeypatch):
         ) is True
         assert auth_service.can(context, "module:read", "huaxing", "engineering") is True
         assert auth_service.can(context, "module:read", "huadeng", "engineering") is False
+
+
+@pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
+def test_system_position_scope_contract_is_consistent_across_authz_modes(monkeypatch, authz_mode):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE=authz_mode,
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        read_permission = "molding_sample:read"
+        operate_permission = "molding_sample:create"
+
+        def context_for(grant):
+            return auth_service.AuthContext(
+                id="user-position-scope",
+                username="position-scope",
+                display_name="内置职位范围测试",
+                roles=(grant.role_name,),
+                role_codes=(grant.role_id,),
+                permissions=frozenset({read_permission, operate_permission}),
+                factory_scopes=(grant.factory_id,),
+                department_scopes=("*",),
+                grants=(grant,),
+                active_permission_codes=frozenset({read_permission, operate_permission}),
+            )
+
+        def grant(factory_id, scope_mode):
+            return auth_service.AuthGrantContext(
+                role_id="position_engineering_engineer",
+                role_name="工程师",
+                factory_id=factory_id,
+                department="engineering",
+                permissions=frozenset({read_permission, operate_permission}),
+                scope_mode=scope_mode,
+                read_permissions=frozenset({read_permission}),
+                unrestricted_department=True,
+            )
+
+        anchored = context_for(grant("huaxing", "own_factory"))
+        assert auth_service.has_permission_in_scope(
+            anchored, operate_permission, "huaxing", "sales-business"
+        )
+        assert not auth_service.has_permission_in_scope(
+            anchored, read_permission, "huadeng", "engineering"
+        )
+
+        wildcard_own = context_for(grant("*", "own_factory"))
+        assert not auth_service.has_permission_in_scope(
+            wildcard_own, read_permission, "huadeng", "engineering"
+        )
+        assert not auth_service.has_permission_in_scope(
+            wildcard_own, operate_permission, "huadeng", "engineering"
+        )
+
+        wildcard_read = context_for(grant("*", "cross_factory_read"))
+        assert auth_service.has_permission_in_scope(
+            wildcard_read, read_permission, "huadeng", "engineering"
+        )
+        assert not auth_service.has_permission_in_scope(
+            wildcard_read, operate_permission, "huadeng", "engineering"
+        )
+
+        wildcard_operate = context_for(grant("*", "cross_factory_operate"))
+        assert auth_service.has_permission_in_scope(
+            wildcard_operate, read_permission, "huadeng", "engineering"
+        )
+        assert auth_service.has_permission_in_scope(
+            wildcard_operate, operate_permission, "huadeng", "engineering"
+        )
 
 
 def test_legacy_read_compat_backfills_only_eligible_existing_users_once(monkeypatch):

@@ -9,8 +9,8 @@ const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/module
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
 const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend/app/data/raw_material_baseline.json'), 'utf8')) as Array<Record<string, unknown>>
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
+const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/CustomerPriceArtifactPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
-const internalPricingViewSource = readFileSync(join(process.cwd(), 'src/views/InternalPricingView.vue'), 'utf8')
 const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 
 describe('production module entry', () => {
@@ -128,15 +128,12 @@ describe('production module entry', () => {
     expect(moduleCardSource).toMatch(/@click\.stop/)
   })
 
-  it('registers customer conversion and internal pricing as two independent sales modules', () => {
+  it('registers customer conversion and the remaining sales modules', () => {
     expect(enterpriseSource).toMatch(/id: 'customer-price-conversion'/)
     expect(enterpriseSource).toMatch(/title: '客价转换台'/)
     expect(enterpriseSource).toMatch(/选择客户、导入内部报价、输出报客价 Excel/)
     expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/customer-price-conversion'/)
-    expect(enterpriseSource).toMatch(/id: 'internal-pricing'/)
-    expect(enterpriseSource).toMatch(/title: '内部报价'/)
-    expect(enterpriseSource).toMatch(/按客户规则实时测算，并由服务器复算保存/)
-    expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/internal-pricing'/)
+    expect(enterpriseSource).not.toMatch(/id: 'internal-pricing'/)
     expect(enterpriseSource).not.toMatch(/id: 'quote-center'/)
     expect(enterpriseSource).not.toMatch(/title: '报价与成本中心'/)
     expect(enterpriseSource).not.toMatch(/id: 'order-approval'/)
@@ -158,11 +155,8 @@ describe('production module entry', () => {
     expect(routerSource).toMatch(/name: 'customer-price-conversion'/)
     expect(routerSource).toMatch(/title: '客价转换台'/)
     expect(routerSource).toMatch(/permissions: \['customer_price:read'\]/)
-    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/internal-pricing'/)
-    expect(routerSource).toMatch(/name: 'internal-pricing'/)
-    expect(routerSource).toMatch(/InternalPricingView\.vue/)
-    expect(routerSource).toMatch(/title: '内部报价'/)
-    expect(routerSource).toMatch(/permissions: \['internal_pricing:read'\]/)
+    expect(routerSource).not.toMatch(/\/modules\/sales-business\/internal-pricing/)
+    expect(routerSource).not.toMatch(/InternalPricingView\.vue/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/order-approval'/)
@@ -174,14 +168,9 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
     expect(customerPriceConversionViewSource).not.toMatch(/quoteDeskTabs/)
 
-    expect(internalPricingViewSource).toMatch(/InternalPricingPanel/)
-    expect(internalPricingViewSource).toMatch(/SalesModuleWorkbench/)
-    expect(internalPricingViewSource).toMatch(/title="内部报价"/)
-    expect(internalPricingViewSource).not.toMatch(/QuoteCenterPanel/)
-
     for (const requiredCopy of [
       '导入内部报价',
-      '右上角先点选客户，再把内部报价 Excel 导入到当前客户名下',
+      '优先从上方 P4 v2 交接池直接转换',
       '当前客户：',
       '导入后会锁定客户并生成下方明细对比',
       '输出报客价 Excel',
@@ -210,6 +199,18 @@ describe('production module entry', () => {
     expect(quoteCenterPanelSource).not.toContain('v-for="customer in ownCustomers"')
     expect(quoteCenterPanelSource).not.toContain('writableCustomerIds')
     expect(quoteCenterPanelSource).not.toContain('workshopSalesWorkshopNames')
+
+    for (const requiredArtifactCopy of [
+      '内部报价交接池',
+      'p4_final_approved',
+      '待接收',
+      '已接收',
+      '已撤销',
+      '接收并转换',
+      'customer_price:import_internal_quote',
+    ]) {
+      expect(customerPriceArtifactPanelSource).toContain(requiredArtifactCopy)
+    }
 
     expect(quoteCenterPanelSource).not.toContain('{{ currentAccount }}')
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')

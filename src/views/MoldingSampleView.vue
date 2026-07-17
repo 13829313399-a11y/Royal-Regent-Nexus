@@ -858,6 +858,17 @@ const MOLDING_SAMPLE_WRITE_PERMISSIONS = [
   'molding_sample:manager_review',
   'molding_sample:export',
 ]
+const MOLDING_SAMPLE_OPERATE_PERMISSIONS = new Set([
+  ...MOLDING_SAMPLE_WRITE_PERMISSIONS,
+  'molding_sample:price_update',
+  'molding_sample:raw_material_write',
+  'molding_sample:warehouse_requisition',
+  'molding_sample:inventory_issue',
+  'molding_sample:production_start',
+  'molding_sample:production_fillback',
+  'molding_sample:production_complete',
+  'system:user_manage',
+])
 
 function isWildcardMoldingAdministrator() {
   return authStore.grants.some((grant) =>
@@ -867,7 +878,7 @@ function isWildcardMoldingAdministrator() {
   )
 }
 
-function isLocalMoldingFactory(factoryId: string) {
+function isHomeMoldingFactory(factoryId: string) {
   if (isWildcardMoldingAdministrator() || authStore.authzMode !== 'enforce') {
     return true
   }
@@ -880,11 +891,18 @@ function isLocalMoldingFactory(factoryId: string) {
   return authStore.grants.some((grant) => grant.factory_id === factoryId)
 }
 
+function canOperateMoldingFactory(factoryId: string) {
+  if (isHomeMoldingFactory(factoryId)) return true
+  return authStore.grants.some((grant) =>
+    grant.scope_mode === 'cross_factory_operate'
+    && grant.factory_id !== factoryId,
+  )
+}
+
 function canMoldingSamplePermission(permission: string, factoryId: string) {
-  if (!isLocalMoldingFactory(factoryId)) {
+  if (MOLDING_SAMPLE_OPERATE_PERMISSIONS.has(permission) && !canOperateMoldingFactory(factoryId)) {
     return false
   }
-
   const departments = MOLDING_SAMPLE_PERMISSION_DEPARTMENTS[permission] ?? [ENGINEERING_DEPARTMENT]
   return departments.some((department) => authStore.can(permission, factoryId, department))
 }
@@ -894,7 +912,10 @@ function canCrossFactoryPermission(permission: string, factoryId: string) {
 }
 
 function isRecordReadOnly(record: MoldingSampleWorkflowRecord) {
-  if (record.access?.read_only || record.access?.read_source === 'cross') {
+  if (record.access?.read_only === true) {
+    return true
+  }
+  if (record.access?.read_source === 'cross' && record.access?.read_only !== false) {
     return true
   }
 
@@ -929,7 +950,7 @@ const canViewActiveFactoryCosts = computed(() => {
   }
 
   if (
-    isLocalMoldingFactory(selectedFactoryId.value)
+    isHomeMoldingFactory(selectedFactoryId.value)
     && (
       canMoldingSamplePermission('molding_sample:read', selectedFactoryId.value)
       || canMoldingSamplePermission('molding_sample:production_read', selectedFactoryId.value)
@@ -941,7 +962,8 @@ const canViewActiveFactoryCosts = computed(() => {
   return canCrossFactoryPermission('molding_sample:cross_factory_cost_read', selectedFactoryId.value)
 })
 const isCrossFactoryReadOnly = computed(() =>
-  selectedRecord.value?.access?.read_source === 'cross',
+  selectedRecord.value?.access?.read_source === 'cross'
+  && selectedRecord.value?.access?.read_only !== false,
 )
 const canCreateOrder = computed(() =>
   canManageSelectedFactory.value

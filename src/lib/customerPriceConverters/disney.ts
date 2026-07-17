@@ -8,6 +8,7 @@ import {
   type XlsxOutputSheet,
 } from './xlsxLite'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
+import type { P4InternalQuoteArtifact } from './p4Artifact'
 
 type DetailCompareStatus = '上调' | '下调' | '持平'
 
@@ -886,6 +887,295 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
       vendorPoRate: DEFAULT_VENDOR_PO_RATE,
       productQuoteUsd,
       toolingAndModelUsd: roundMoney(sumBy(plastics, (row) => row.toolCostUsd) + modelCostUsd + setupChargeUsd),
+    },
+  }
+}
+
+function p4Object(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function p4Rows(value: unknown) {
+  return Array.isArray(value) ? value.map(p4Object) : []
+}
+
+function p4Number(value: unknown) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function p4Positive(value: unknown, message: string) {
+  const parsed = p4Number(value)
+  if (parsed <= 0) throw new Error(`迪士尼直转被阻断：${message}`)
+  return parsed
+}
+
+function p4Text(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function p4Date(value: unknown) {
+  const text = p4Text(value)
+  const matched = text.match(/^(20\d{2})-(\d{2})-(\d{2})$/)
+  if (!matched) throw new Error('迪士尼直转被阻断：报价日期必须使用 YYYY-MM-DD')
+  const result = new Date(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]))
+  if (
+    result.getFullYear() !== Number(matched[1])
+    || result.getMonth() !== Number(matched[2]) - 1
+    || result.getDate() !== Number(matched[3])
+  ) {
+    throw new Error('迪士尼直转被阻断：报价日期不是有效日期')
+  }
+  return result
+}
+
+function p4Total(artifact: P4InternalQuoteArtifact, sectionCode: keyof P4InternalQuoteArtifact['sections'], key = 'total_hkd') {
+  return p4Number(p4Object(artifact.sections[sectionCode].calculation.totals)[key])
+}
+
+function p4HkdPerUsd(artifact: P4InternalQuoteArtifact) {
+  return p4Positive(p4Object(artifact.referenceSnapshot.fx).hkd_usd, '参考快照缺少 HKD/USD 汇率')
+}
+
+function p4DisneyMetadata(artifact: P4InternalQuoteArtifact) {
+  const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
+  const disney = p4Object(customerFields.disney)
+  const prices = p4Object(disney.moq_prices_usd)
+  const itemNumber = p4Text(disney.item_number)
+  if (!itemNumber) throw new Error('迪士尼直转被阻断：缺少 Item Number')
+  const moq3000Usd = p4Positive(prices.qty_3000, '缺少 3K 报价 USD')
+  const moq5000Usd = p4Positive(prices.qty_5000, '缺少 5K 报价 USD')
+  const moq10000Usd = p4Positive(prices.qty_10000, '缺少 10K 报价 USD')
+  return {
+    metadata: {
+      itemNumber,
+      itemName: artifact.productName || artifact.quoteNo,
+      quoteDate: p4Date(disney.quote_date),
+      revision: Math.max(0, Math.trunc(p4Number(disney.revision))),
+      moq: p4Positive(disney.minimum_order_qty, '最低 MOQ 必须大于 0'),
+      factoryLocation: FACTORY_LOCATION,
+    } satisfies DisneyMetadata,
+    moq3000Usd,
+    moq5000Usd,
+    moq10000Usd,
+    transportationUsd: Math.max(0, p4Number(disney.transportation_usd)),
+    modelCostUsd: Math.max(0, p4Number(disney.model_cost_usd)),
+    setupChargeUsd: Math.max(0, p4Number(disney.setup_charge_usd)),
+  }
+}
+
+function p4DisneyPlastics(artifact: P4InternalQuoteArtifact, metadata: DisneyMetadata) {
+  const injectionRows = p4Rows(artifact.sections.molding.payload.injection_lines)
+  if (injectionRows.length === 0) throw new Error('迪士尼直转被阻断：啤机分段至少需要一条注塑明细')
+  const injectionCalculations = p4Rows(artifact.sections.molding.calculation.line_breakdown)
+    .filter((row) => row.kind === 'injection')
+  if (injectionCalculations.length !== injectionRows.length) {
+    throw new Error('迪士尼直转被阻断：注塑原始行与权威计算明细数量不一致')
+  }
+
+  const moldQueues = new Map<string, Record<string, unknown>[]>()
+  p4Rows(artifact.sections.engineering.payload.molds).forEach((mold, index) => {
+    const moldNo = p4Text(mold.disney_mold_no)
+    if (!moldNo) throw new Error(`迪士尼直转被阻断：工程模具第 ${index + 1} 行缺少模号`)
+    const queue = moldQueues.get(moldNo) ?? []
+    queue.push(mold)
+    moldQueues.set(moldNo, queue)
+  })
+
+  const hkdPerUsd = p4HkdPerUsd(artifact)
+  let paidToolIndex = 0
+  return injectionRows.map((row, index): DisneyPlasticRow => {
+    const moldNo = p4Text(row.disney_mold_no)
+    if (!moldNo) throw new Error(`迪士尼直转被阻断：注塑第 ${index + 1} 行缺少模号`)
+    const mold = moldQueues.get(moldNo)?.shift()
+    if (!mold) throw new Error(`迪士尼直转被阻断：注塑第 ${index + 1} 行模号 ${moldNo} 未匹配工程模具行`)
+    const cavities = p4Positive(mold.disney_cavities, `工程模具 ${moldNo} 穴数必须大于 0`)
+    const up = p4Positive(mold.disney_parts_per_shot, `工程模具 ${moldNo} 每啤件数必须大于 0`)
+    const toolCostUsd = Math.max(0, p4Number(mold.disney_tool_cost_usd))
+    const resinCostUsdKg = p4Positive(row.disney_resin_cost_usd_kg, `注塑第 ${index + 1} 行缺少 Resin USD/kg`)
+    const cycleTimeSeconds = p4Positive(row.disney_cycle_time_seconds, `注塑第 ${index + 1} 行缺少 Cycle Time`)
+    const laborRateUsdHr = p4Positive(row.disney_labor_rate_usd_hr, `注塑第 ${index + 1} 行缺少 Labor USD/hr`)
+    const shotWeightG = round(p4Positive(row.net_weight_g, `注塑第 ${index + 1} 行净重必须大于 0`), 0)
+    const partsIncluded = safeDivide(cavities, up)
+    const materialCostUsd = resinCostUsdKg * shotWeightG / 1000
+    const moldingLaborCostUsd = safeDivide(laborRateUsdHr * cycleTimeSeconds, 3600 * up)
+    const partSubtotalUsd = safeDivide(materialCostUsd + moldingLaborCostUsd, partsIncluded)
+    const totalCostUsd = partSubtotalUsd * partsIncluded
+    const calculation = injectionCalculations[index]
+    const toolNo = toolCostUsd > 0
+      ? `${metadata.itemNumber}-${String(++paidToolIndex).padStart(2, '0')}`
+      : ''
+
+    return {
+      lineNo: index + 1,
+      toolNo,
+      toolCostUsd,
+      partDescription: translateDescription(p4Text(row.item) || p4Text(mold.disney_parts) || `Plastic part ${index + 1}`),
+      material: normalizeMaterialName(p4Text(row.material) || p4Text(mold.disney_material)),
+      resinCostUsdKg,
+      shotWeightG,
+      partsIncluded,
+      cavities,
+      up,
+      pressSizeTon: findClampForceTons(p4Text(row.machine_code)),
+      cycleTimeSeconds,
+      laborRateUsdHr,
+      materialCostUsd,
+      moldingLaborCostUsd,
+      partSubtotalUsd,
+      totalCostUsd,
+      weeklyCapacity: safeDivide(up * 60 * 60 * 24 * 7 * 0.9, cycleTimeSeconds),
+      internalCostUsd: roundUnit(p4Number(calculation.amount_hkd) / hkdPerUsd),
+    }
+  })
+}
+
+function p4DisneyPurchasedParts(artifact: P4InternalQuoteArtifact) {
+  const materials = p4Rows(artifact.sections.engineering.payload.materials)
+  const materialCalculations = p4Rows(artifact.sections.engineering.calculation.line_breakdown)
+    .filter((row) => row.kind === 'material')
+  const productRows: DisneyPurchasedPartRow[] = []
+  const packageRows: DisneyPurchasedPartRow[] = []
+  const hkdPerUsd = p4HkdPerUsd(artifact)
+
+  materials.forEach((row, index) => {
+    const quantity = p4Number(row.quantity)
+    const internalUnitPrice = p4Number(row.unit_price_rmb)
+    if (quantity <= 0 && internalUnitPrice <= 0) return
+    const perPartCostUsd = p4Positive(row.disney_unit_price_usd, `工程材料第 ${index + 1} 行缺少迪士尼报客单价 USD`)
+    const included = p4Positive(row.disney_included, `工程材料第 ${index + 1} 行 Included 必须大于 0`)
+    const totalCostUsd = perPartCostUsd * included
+    const calculation = materialCalculations[index] ?? {}
+    const result: DisneyPurchasedPartRow = {
+      description: p4Text(row.disney_description) || translateDescription(p4Text(row.item)),
+      perPartCostUsd,
+      included,
+      subtotalUsd: roundUnit(totalCostUsd),
+      totalCostUsd: roundUnit(totalCostUsd),
+      internalCostUsd: roundUnit(p4Number(calculation.amount_hkd) / hkdPerUsd),
+    }
+    if (p4Text(row.disney_section) === 'package') packageRows.push(result)
+    else productRows.push(result)
+  })
+
+  const cartonCalculations = p4Rows(artifact.sections.engineering.calculation.line_breakdown)
+    .filter((row) => row.kind === 'carton')
+  p4Rows(artifact.sections.engineering.payload.cartons).forEach((row, index) => {
+    const perPartCostUsd = p4Positive(row.disney_unit_price_usd, `工程纸箱第 ${index + 1} 行缺少迪士尼报客单价 USD`)
+    const dimensions = [p4Number(row.length_in), p4Number(row.width_in), p4Number(row.height_in)]
+    const dimensionText = dimensions.every((value) => value > 0)
+      ? ` (${dimensions.map(formatDimension).join('"x')}")`
+      : ''
+    const pcsPerCarton = p4Number(row.qty_per_carton)
+    packageRows.unshift({
+      description: `Carton Box 0/${pcsPerCarton || 1}${dimensionText}`,
+      perPartCostUsd,
+      included: 1,
+      subtotalUsd: perPartCostUsd,
+      totalCostUsd: perPartCostUsd,
+      internalCostUsd: roundUnit(p4Number(cartonCalculations[index]?.per_piece_hkd) / hkdPerUsd),
+    })
+  })
+
+  p4Rows(artifact.sections.electronic.calculation.line_breakdown)
+    .filter((row) => row.kind === 'electronic_component' && p4Number(row.line_hkd) > 0)
+    .forEach((row, index) => {
+      const unitPrice = roundUnit(p4Number(row.line_hkd) / hkdPerUsd)
+      productRows.push({
+        description: p4Text(row.item) || `Electronic part ${index + 1}`,
+        perPartCostUsd: unitPrice,
+        included: 1,
+        subtotalUsd: unitPrice,
+        totalCostUsd: unitPrice,
+        internalCostUsd: unitPrice,
+      })
+    })
+  return { productRows: productRows.slice(0, 22), packageRows: packageRows.slice(0, 10) }
+}
+
+function p4DisneyLaborRows(artifact: P4InternalQuoteArtifact): DisneyLaborRow[] {
+  const processes = p4Rows(artifact.sections.assembly.payload.groups)
+    .flatMap((group) => p4Rows(group.processes).map((process) => ({ group, process })))
+  if (p4Total(artifact, 'assembly') > 0 && processes.length === 0) {
+    throw new Error('迪士尼直转被阻断：装配存在内部成本但缺少工序明细')
+  }
+  const defaults: Array<[number, number]> = [[6.5, 4], [6.4, 4], [6, 4]]
+  return processes.slice(0, 10).map(({ group, process }, index) => {
+    const [hourlyRateUsd, timeUsageMinutes] = defaults[index] ?? [6, 4]
+    const subtotalUsd = hourlyRateUsd * timeUsageMinutes / 60
+    return {
+      description: translateDescription(p4Text(process.name) || p4Text(group.name) || `Labor ${index + 1}`),
+      hourlyRateUsd,
+      timeUsageMinutes,
+      subtotalUsd,
+      totalCostUsd: subtotalUsd,
+    }
+  })
+}
+
+function p4DisneyDecoRows(artifact: P4InternalQuoteArtifact): DisneyDecoRow[] {
+  const rows = p4Rows(artifact.sections.painting.payload.disney_decorations)
+  if (p4Total(artifact, 'painting') > 0 && rows.length === 0) {
+    throw new Error('迪士尼直转被阻断：喷油存在内部成本但缺少 Decoration 工序')
+  }
+  return rows.map((row, index) => {
+    const applicationType = p4Text(row.application_type)
+    if (!applicationType) throw new Error(`迪士尼直转被阻断：Decoration 第 ${index + 1} 行缺少 Application Type`)
+    const ratePerOpUsd = p4Positive(row.rate_per_op_usd, `Decoration 第 ${index + 1} 行 Rate per Op 必须大于 0`)
+    const operations = p4Positive(row.operations, `Decoration 第 ${index + 1} 行 # of Ops 必须大于 0`)
+    const subtotalUsd = ratePerOpUsd * operations
+    return { applicationType, ratePerOpUsd, operations, subtotalUsd, totalCostUsd: subtotalUsd }
+  })
+}
+
+function buildDisneyP4QuoteData(artifact: P4InternalQuoteArtifact): DisneyQuoteData {
+  const customer = p4DisneyMetadata(artifact)
+  const plastics = p4DisneyPlastics(artifact, customer.metadata)
+  const { productRows, packageRows } = p4DisneyPurchasedParts(artifact)
+  const laborRows = p4DisneyLaborRows(artifact)
+  const decoRows = p4DisneyDecoRows(artifact)
+  const productPackagingUsd = sumBy(packageRows.slice(0, 2), (row) => row.totalCostUsd)
+  const shipmentPackagingUsd = sumBy(packageRows.slice(2), (row) => row.totalCostUsd)
+  const plasticMaterialUsd = sumBy(plastics, (row) => row.materialCostUsd)
+  const plasticMoldingLaborUsd = sumBy(plastics, (row) => row.moldingLaborCostUsd)
+  const purchasedProductUsd = sumBy(productRows, (row) => row.totalCostUsd)
+  const purchasedPackageUsd = sumBy(packageRows, (row) => row.totalCostUsd)
+  const laborUsd = sumBy(laborRows, (row) => row.totalCostUsd)
+  const decoUsd = sumBy(decoRows, (row) => row.totalCostUsd)
+  const subtotalUsd = plasticMaterialUsd + purchasedProductUsd + productPackagingUsd + shipmentPackagingUsd + laborUsd + plasticMoldingLaborUsd + decoUsd + customer.transportationUsd
+  const plasticToolingUsd = roundMoney(sumBy(plastics, (row) => row.toolCostUsd))
+
+  return {
+    metadata: customer.metadata,
+    plastics,
+    purchasedProductParts: productRows,
+    purchasedPackageParts: packageRows,
+    laborRows,
+    decoRows,
+    transportationUsd: customer.transportationUsd,
+    moq3000Usd: customer.moq3000Usd,
+    moq5000Usd: customer.moq5000Usd,
+    moq10000Usd: customer.moq10000Usd,
+    modelCostUsd: customer.modelCostUsd,
+    setupChargeUsd: customer.setupChargeUsd,
+    totals: {
+      plasticToolingUsd,
+      plasticMaterialUsd,
+      plasticMoldingLaborUsd,
+      plasticTotalUsd: sumBy(plastics, (row) => row.totalCostUsd),
+      purchasedProductUsd,
+      purchasedPackageUsd,
+      productPackagingUsd,
+      shipmentPackagingUsd,
+      laborUsd,
+      decoUsd,
+      miscUsd: customer.transportationUsd,
+      subtotalUsd,
+      vendorPoRate: DEFAULT_VENDOR_PO_RATE,
+      productQuoteUsd: subtotalUsd * (1 + DEFAULT_VENDOR_PO_RATE),
+      toolingAndModelUsd: roundMoney(plasticToolingUsd + customer.modelCostUsd + customer.setupChargeUsd),
     },
   }
 }
@@ -1868,6 +2158,17 @@ function toTemplateUint8Array(templateBuffer: ArrayBuffer | Uint8Array) {
 export function convertDisneyInternalQuote(buffer: ArrayBuffer, sourceFileName: string): DisneyConversionResult {
   const quoteData = buildQuoteData(buffer, sourceFileName)
 
+  return {
+    sourceFileName,
+    sheets: [convertSheet(quoteData, sourceFileName)],
+  }
+}
+
+export function convertDisneyP4InternalQuote(
+  artifact: P4InternalQuoteArtifact,
+  sourceFileName: string,
+): DisneyConversionResult {
+  const quoteData = buildDisneyP4QuoteData(artifact)
   return {
     sourceFileName,
     sheets: [convertSheet(quoteData, sourceFileName)],

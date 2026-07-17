@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,15 @@ NOTIFICATION_DEPARTMENT_MIGRATION_REVISION = "20260712_0012"
 RAW_MATERIAL_MIGRATION_REVISION = "20260714_0013"
 TRIAL_REPORT_MIGRATION_REVISION = "20260714_0014"
 MATERIAL_COMPONENT_MIGRATION_REVISION = "20260715_0015"
+INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION = "20260715_0016"
+INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION = "20260715_0017"
+INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION = "20260716_0018"
+INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION = "20260716_0019"
+INTERNAL_QUOTE_P1_MIGRATION_REVISION = "20260716_0020"
+INTERNAL_QUOTE_P2_MIGRATION_REVISION = "20260716_0021"
+INTERNAL_QUOTE_P3_MIGRATION_REVISION = "20260716_0022"
+INTERNAL_QUOTE_P4_MIGRATION_REVISION = "20260716_0023"
+IAM_POSITION_SCOPE_MIGRATION_REVISION = "20260717_0024"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -73,7 +83,105 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [MATERIAL_COMPONENT_MIGRATION_REVISION]
+    assert script.get_heads() == [IAM_POSITION_SCOPE_MIGRATION_REVISION]
+
+    scope_revision = script.get_revision(IAM_POSITION_SCOPE_MIGRATION_REVISION)
+    assert scope_revision.down_revision == INTERNAL_QUOTE_P4_MIGRATION_REVISION
+    scope_content = Path(scope_revision.path).read_text(encoding="utf-8")
+    assert "access_kind" in scope_content
+    assert "scope_mode" in scope_content
+    assert "cross_factory_read" in scope_content
+    for permission_code in (
+        "internal_quote:read",
+        "internal_quote:summary_read",
+        "internal_quote:timeline_read",
+    ):
+        assert permission_code in scope_content
+
+    p4_revision = script.get_revision(INTERNAL_QUOTE_P4_MIGRATION_REVISION)
+    assert p4_revision.down_revision == INTERNAL_QUOTE_P3_MIGRATION_REVISION
+    p4_content = Path(p4_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "final_release_status",
+        "final_submission_manifest_json",
+        "internal_quote_final_reviews",
+        "internal_quote_artifact_handoffs",
+        "release_manifest_sha256",
+        "consumer_reference",
+        "uq_internal_quote_artifact_handoffs_quote_release",
+    ):
+        assert expected in p4_content
+
+    p3_revision = script.get_revision(INTERNAL_QUOTE_P3_MIGRATION_REVISION)
+    assert p3_revision.down_revision == INTERNAL_QUOTE_P2_MIGRATION_REVISION
+    p3_content = Path(p3_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "source_size_bytes",
+        "preview_schema_version",
+        "target_revision",
+        "confirm_mode",
+        "confirmed_revision",
+        "template_version",
+        "reference_snapshot_id",
+        "export_manifest_json",
+    ):
+        assert expected in p3_content
+
+    p2_revision = script.get_revision(INTERNAL_QUOTE_P2_MIGRATION_REVISION)
+    assert p2_revision.down_revision == INTERNAL_QUOTE_P1_MIGRATION_REVISION
+    p2_content = Path(p2_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "internal_quote_reference_sets",
+        "reference_snapshot_id",
+        "formula_version",
+        "calculation_status",
+        "dependency_hash",
+        "warnings_json",
+    ):
+        assert expected in p2_content
+
+    p1_revision = script.get_revision(INTERNAL_QUOTE_P1_MIGRATION_REVISION)
+    assert p1_revision.down_revision == INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION
+    p1_content = Path(p1_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "header_revision",
+        "business_owner_id",
+        "internal_quote_section_revisions",
+        "internal_quote_reviews",
+        "old_revision",
+        "request_id",
+    ):
+        assert expected in p1_content
+
+    archive_revision = script.get_revision(INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
+    assert archive_revision.down_revision == INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION
+    archive_content = Path(archive_revision.path).read_text(encoding="utf-8")
+    assert "initiator_department" in archive_content
+    assert "is_required" in archive_content
+
+    artifact_revision = script.get_revision(INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION)
+    assert artifact_revision.down_revision == INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION
+    artifact_content = Path(artifact_revision.path).read_text(encoding="utf-8")
+    for table_name in (
+        "internal_quote_import_batches",
+        "internal_quote_attachments",
+        "internal_quote_export_files",
+    ):
+        assert table_name in artifact_content
+
+    workshop_revision = script.get_revision(INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION)
+    assert workshop_revision.down_revision == INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION
+    assert "huaxing-workshop" in Path(workshop_revision.path).read_text(encoding="utf-8")
+
+    workflow_revision = script.get_revision(INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION)
+    assert workflow_revision.down_revision == MATERIAL_COMPONENT_MIGRATION_REVISION
+    workflow_content = Path(workflow_revision.path).read_text(encoding="utf-8")
+    for table_name in (
+        "internal_quotes",
+        "internal_quote_sections",
+        "internal_quote_audit_logs",
+    ):
+        assert table_name in workflow_content
 
     material_component_revision = script.get_revision(MATERIAL_COMPONENT_MIGRATION_REVISION)
     assert material_component_revision.down_revision == TRIAL_REPORT_MIGRATION_REVISION
@@ -214,3 +322,404 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "material_components" in sql
     assert "material_usage_type" in sql
     assert "actual_material_cost_components" in sql
+    assert "create table internal_quotes" in sql
+    assert "create table internal_quote_sections" in sql
+    assert "create table internal_quote_audit_logs" in sql
+    assert "create table internal_quote_import_batches" in sql
+    assert "create table internal_quote_attachments" in sql
+    assert "create table internal_quote_export_files" in sql
+    assert "add column access_kind" in sql
+    assert "add column scope_mode" in sql
+    assert "create table internal_quote_section_revisions" in sql
+    assert "create table internal_quote_reviews" in sql
+    assert "header_revision" in sql
+    assert "business_owner_id" in sql
+    assert "create table internal_quote_reference_sets" in sql
+    assert "calculation_status" in sql
+    assert "dependency_hash" in sql
+    assert "preview_schema_version" in sql
+    assert "export_manifest_json" in sql
+    assert "release_stage" in sql
+    assert "final_release_status" in sql
+    assert "final_submission_manifest_json" in sql
+    assert "create table internal_quote_final_reviews" in sql
+    assert "create table internal_quote_artifact_handoffs" in sql
+    assert "uq_internal_quote_artifact_handoffs_quote_release" in sql
+
+
+def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
+    database_path = tmp_path / "iam_position_scope_0023.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INTERNAL_QUOTE_P4_MIGRATION_REVISION)
+    permission_codes = (
+        "internal_quote:read",
+        "internal_quote:summary_read",
+        "internal_quote:timeline_read",
+        "internal_quote:export",
+    )
+    with sqlite3.connect(database_path) as connection:
+        for sort_order, permission_code in enumerate(permission_codes):
+            permission_id = f"perm-{sort_order}"
+            connection.execute(
+                "INSERT INTO auth_permissions (id, code, name, description) VALUES (?, ?, ?, ?)",
+                (permission_id, permission_code, permission_code, "migration test"),
+            )
+            connection.execute(
+                """
+                INSERT INTO auth_permission_metadata (
+                    permission_id, module_code, action, risk_level, scope_type,
+                    status, sort_order, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    permission_id,
+                    "internal_quote",
+                    permission_code.rsplit(":", 1)[-1],
+                    "normal",
+                    "factory",
+                    "active",
+                    sort_order,
+                    "2026-07-17 00:00:00",
+                    "2026-07-17 00:00:00",
+                ),
+            )
+        connection.commit()
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        access_kinds = dict(
+            connection.execute(
+                """
+                SELECT permissions.code, metadata.access_kind
+                FROM auth_permissions AS permissions
+                JOIN auth_permission_metadata AS metadata
+                  ON metadata.permission_id = permissions.id
+                WHERE permissions.code LIKE 'internal_quote:%'
+                """
+            ).fetchall()
+        )
+        assert access_kinds == {
+            "internal_quote:read": "read",
+            "internal_quote:summary_read": "read",
+            "internal_quote:timeline_read": "read",
+            "internal_quote:export": "operate",
+        }
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+        )
+
+
+def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
+    database_path = tmp_path / "internal_quote_0019.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO internal_quotes (
+                id, factory_id, workshop_code, workshop_name, quote_no,
+                product_name, customer, qty, version_label, status,
+                created_by, created_by_name, created_at, updated_at,
+                initiator_department
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQ-LEGACY-P1",
+                "huaxing",
+                "huaxing-workshop",
+                "华兴",
+                "LEGACY-P1",
+                "历史产品",
+                "历史客户",
+                1000,
+                "V1",
+                "draft",
+                "legacy-user",
+                "历史用户",
+                "2026-07-16 08:00:00",
+                "2026-07-16 08:00:00",
+                "sales",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO internal_quote_sections (
+                id, quote_id, department, department_name, status,
+                payload_json, calculation_json, revision, filled_by, filled_at,
+                submitted_by, submitted_by_id, submitted_at, reviewed_by,
+                reviewed_at, review_comment, updated_at, is_required
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQ-LEGACY-P1-sales",
+                "IQ-LEGACY-P1",
+                "sales",
+                "业务部",
+                "draft",
+                "{}",
+                "{}",
+                1,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "2026-07-16 08:00:00",
+                1,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO internal_quote_audit_logs (
+                id, quote_id, department, actor_id, actor_name, action, detail, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQA-LEGACY-P1",
+                "IQ-LEGACY-P1",
+                "sales",
+                "legacy-user",
+                "历史用户",
+                "create",
+                "历史审计",
+                "2026-07-16 08:00:00",
+            ),
+        )
+        connection.commit()
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        quote = connection.execute(
+            """
+            SELECT quote_no, initiator_department, module_version, header_revision
+            FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'
+            """
+        ).fetchone()
+        assert quote == ("LEGACY-P1", "sales-business", "legacy_rr2_compatible", 1)
+        audit = connection.execute(
+            "SELECT factory_id, action FROM internal_quote_audit_logs WHERE id = 'IQA-LEGACY-P1'"
+        ).fetchone()
+        assert audit == ("huaxing", "create")
+        assert connection.execute(
+            "SELECT COUNT(*) FROM internal_quote_sections WHERE quote_id = 'IQ-LEGACY-P1'"
+        ).fetchone() == (1,)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+        )
+
+    run_alembic("downgrade", INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT quote_no FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'"
+        ).fetchone() == ("LEGACY-P1",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+        )
+
+
+def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
+    database_path = tmp_path / "internal_quote_0018_artifacts.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INTERNAL_QUOTE_ARTIFACT_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO internal_quotes (
+                id, factory_id, workshop_code, workshop_name, quote_no,
+                product_name, customer, qty, version_label, status,
+                created_by, created_by_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQ-LEGACY-P3",
+                "huaxing",
+                "huaxing-workshop",
+                "华兴",
+                "LEGACY-P3",
+                "历史文件产品",
+                "历史客户",
+                1000,
+                "V1",
+                "drafting",
+                "legacy-user",
+                "历史用户",
+                "2026-07-16 08:00:00",
+                "2026-07-16 08:00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO internal_quote_import_batches (
+                id, quote_id, factory_id, import_type, target_department,
+                source_file_name, source_sha256, status, preview_json,
+                created_by, created_by_name, created_at,
+                confirmed_by, confirmed_by_name, confirmed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQIMP-LEGACY",
+                "IQ-LEGACY-P3",
+                "huaxing",
+                "mold",
+                "engineering",
+                "历史模具.xlsx",
+                "a" * 64,
+                "previewed",
+                "{}",
+                "legacy-user",
+                "历史用户",
+                "2026-07-16 08:00:00",
+                "",
+                "",
+                "",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO internal_quote_attachments (
+                id, quote_id, factory_id, department, file_name, content_type,
+                size_bytes, sha256, content, uploaded_by, uploaded_by_name, uploaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQATT-LEGACY",
+                "IQ-LEGACY-P3",
+                "huaxing",
+                "engineering",
+                "历史附件.pdf",
+                "application/pdf",
+                11,
+                "b" * 64,
+                b"%PDF-legacy",
+                "legacy-user",
+                "历史用户",
+                "2026-07-16 08:00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO internal_quote_export_files (
+                id, quote_id, factory_id, file_name, content_type, size_bytes,
+                sha256, section_revisions_json, status, content,
+                exported_by, exported_by_name, exported_at, superseded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQEXP-LEGACY",
+                "IQ-LEGACY-P3",
+                "huaxing",
+                "历史导出.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                6,
+                "c" * 64,
+                "{}",
+                "current",
+                b"PK-old",
+                "legacy-user",
+                "历史用户",
+                "2026-07-16 08:00:00",
+                "",
+            ),
+        )
+        connection.commit()
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        imported = connection.execute(
+            """
+            SELECT source_sha256, source_size_bytes, preview_schema_version,
+                   target_revision, confirm_mode, confirmed_revision
+            FROM internal_quote_import_batches WHERE id = 'IQIMP-LEGACY'
+            """
+        ).fetchone()
+        assert imported == ("a" * 64, 0, "p3-v1", 0, "", 0)
+        exported = connection.execute(
+            """
+            SELECT template_version, formula_version, reference_snapshot_id,
+                   header_revision, release_stage, export_manifest_json, content
+            FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'
+            """
+        ).fetchone()
+        assert exported == (
+            "internal-quote-p3-v1",
+            "",
+            "",
+            0,
+            "p3_section_approved",
+            "{}",
+            b"PK-old",
+        )
+        assert connection.execute(
+            "SELECT content FROM internal_quote_attachments WHERE id = 'IQATT-LEGACY'"
+        ).fetchone() == (b"%PDF-legacy",)
+        assert connection.execute(
+            """
+            SELECT final_release_status, final_submission_revision,
+                   final_submission_manifest_json, final_release_revision
+            FROM internal_quotes WHERE id = 'IQ-LEGACY-P3'
+            """
+        ).fetchone() == ("", 0, "{}", 0)
+        p4_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "internal_quote_final_reviews" in p4_tables
+        assert "internal_quote_artifact_handoffs" in p4_tables
+
+    run_alembic("downgrade", INTERNAL_QUOTE_P2_MIGRATION_REVISION)
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT source_file_name FROM internal_quote_import_batches WHERE id = 'IQIMP-LEGACY'"
+        ).fetchone() == ("历史模具.xlsx",)
+        assert connection.execute(
+            "SELECT file_name FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'"
+        ).fetchone() == ("历史导出.xlsx",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+        )
