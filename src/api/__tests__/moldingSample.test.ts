@@ -10,6 +10,15 @@ assert.deepEqual(resolveMoldingSampleAccess({
   read_only: true,
 })
 
+assert.deepEqual(resolveMoldingSampleAccess({
+  read_source: 'cross_operate',
+  can_view_cost: false,
+}), {
+  read_source: 'cross_operate',
+  can_view_cost: false,
+  read_only: false,
+})
+
 const calls: Array<{ method: string, url: string, data?: unknown, config?: unknown }> = []
 
 const client = {

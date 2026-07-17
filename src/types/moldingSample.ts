@@ -238,7 +238,7 @@ export interface MoldingSampleWorkflowRecord {
   problems: MoldingSampleProblem[]
   trial_reports: MoldingSampleTrialReport[]
   access?: {
-    read_source: 'local' | 'cross'
+    read_source: 'local' | 'cross' | 'cross_operate'
     can_view_cost: boolean
     read_only: boolean
   }

@@ -44,6 +44,13 @@ class AuthGrant(BaseModel):
     department: str
     permissions: list[str]
     data_scope: str = "department"
+    scope_mode: Literal[
+        "own_factory",
+        "cross_factory_read",
+        "cross_factory_operate",
+    ] = "own_factory"
+    read_permission_codes: list[str] = Field(default_factory=list)
+    unrestricted_department: bool = False
 
 
 class AuthProfile(BaseModel):

@@ -44,6 +44,7 @@ describe('iamApi', () => {
       base_version: 2,
       reason: '角色补充查看权限',
       permission_codes: ['maintenance:read'],
+      scope_mode: 'cross_factory_read',
     })
     await api.commitRoleAccess('engineer', 'role-preview', false)
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
@@ -78,5 +79,11 @@ describe('iamApi', () => {
       system_position_role_id: 'engineering_supervisor',
     })
     expect(calls[7].data).toEqual({ preview_token: 'position-preview', confirm_high_risk: false })
+    expect(calls[11].data).toEqual({
+      base_version: 2,
+      reason: '角色补充查看权限',
+      permission_codes: ['maintenance:read'],
+      scope_mode: 'cross_factory_read',
+    })
   })
 })

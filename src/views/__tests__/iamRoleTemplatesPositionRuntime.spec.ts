@@ -28,14 +28,14 @@ vi.mock('@/api/iam', () => ({
 const role = {
   id: 'position-engineer', code: 'position_engineering_engineer', name: '工程师',
   description: '工程部基础权限', version: 1, is_protected: false, binding_count: 4,
-  permission_count: 0, applicable_departments: ['engineering'], requires_global_factory: false,
+  permission_count: 0, scope_mode: 'own_factory', applicable_departments: ['engineering'], requires_global_factory: false,
   scope_guidance: '工程部', is_system_position: true, position_department: 'engineering',
   position_department_name: '工程部', position_sort_order: 220,
 }
 
 const permission = {
   code: 'molding_sample:read', name: '查看啤办单据', description: '',
-  module_code: 'molding_sample', module_name: '啤办管理', action: 'read', risk_level: 'normal',
+  module_code: 'molding_sample', module_name: '啤办管理', action: 'read', access_kind: 'read', risk_level: 'normal',
   scope_type: 'factory_department', status: 'active', sort_order: 1,
   applicable_departments: ['engineering'], requires_global_factory: false, scope_guidance: '本部门',
 }
@@ -44,6 +44,11 @@ const businessPermission = {
   ...permission,
   code: 'customer_price:read', name: '查看报价中心', module_code: 'customer_price',
   module_name: '客户报价', action: 'read', sort_order: 2,
+}
+
+const operationPermission = {
+  ...permission,
+  code: 'molding_sample:create', name: '新建啤办申请', action: 'create', access_kind: 'operate', sort_order: 3,
 }
 
 const supervisorRole = {
@@ -85,6 +90,7 @@ describe('IamRoleTemplatesView fixed position permissions', () => {
       .mockResolvedValueOnce({ ...role, version: 2, permission_count: 1, permission_codes: ['molding_sample:read'] })
     previewRoleAccessMock.mockReset().mockResolvedValue({
       preview_token: 'role-preview-1', base_version: 1,
+      before_scope_mode: 'own_factory', after_scope_mode: 'own_factory',
       diffs: [{ permission_code: 'molding_sample:read', before: false, after: true, risk_level: 'normal' }],
       affected_user_count: 4, high_risk: false,
     })
@@ -107,6 +113,7 @@ describe('IamRoleTemplatesView fixed position permissions', () => {
       base_version: 1,
       reason: '补充工程查看权限',
       permission_codes: ['molding_sample:read'],
+      scope_mode: 'own_factory',
     })
     await wrapper.findAll('button').find((button) => button.text().includes('确认提交'))!.trigger('click')
     await flushPromises()
@@ -137,6 +144,7 @@ describe('IamRoleTemplatesView fixed position permissions', () => {
       base_version: 1,
       reason: '补充工程查看权限',
       permission_codes: ['molding_sample:read'],
+      scope_mode: 'own_factory',
     })
   })
 
@@ -149,7 +157,7 @@ describe('IamRoleTemplatesView fixed position permissions', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.get('input[type="radio"][value="cross_factory_read"]').setValue(true)
     const supervisorButton = wrapper.findAll('button').find((button) => button.text().includes('主管'))!
     await supervisorButton.trigger('click')
     await flushPromises()
@@ -196,6 +204,8 @@ describe('IamRoleTemplatesView fixed position permissions', () => {
     const pendingPreview = deferred<{
       preview_token: string
       base_version: number
+      before_scope_mode: 'own_factory' | 'cross_factory_read' | 'cross_factory_operate'
+      after_scope_mode: 'own_factory' | 'cross_factory_read' | 'cross_factory_operate'
       diffs: Array<{ permission_code: string; before: boolean; after: boolean; risk_level: string }>
       affected_user_count: number
       high_risk: boolean
@@ -219,6 +229,7 @@ describe('IamRoleTemplatesView fixed position permissions', () => {
 
     pendingPreview.resolve({
       preview_token: 'role-preview-pending', base_version: 1,
+      before_scope_mode: 'own_factory', after_scope_mode: 'own_factory',
       diffs: [{ permission_code: 'molding_sample:read', before: false, after: true, risk_level: 'normal' }],
       affected_user_count: 4, high_risk: false,
     })
@@ -226,5 +237,45 @@ describe('IamRoleTemplatesView fixed position permissions', () => {
 
     expect(wrapper.text()).toContain('内置职位影响预览')
     expect(wrapper.get('[data-testid="role-editor-panel"] h2').text()).toBe('工程师')
+  })
+
+  it('edits one role-level scope and derives compact permission scope labels', async () => {
+    listPermissionsMock.mockReset().mockResolvedValue([permission, operationPermission])
+    previewRoleAccessMock.mockReset().mockResolvedValue({
+      preview_token: 'role-scope-preview', base_version: 1,
+      before_scope_mode: 'own_factory', after_scope_mode: 'cross_factory_read',
+      diffs: [], affected_user_count: 4, high_risk: false,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="role-directory-panel"]').text()).toContain('本厂')
+    await wrapper.get('input[type="radio"][value="cross_factory_read"]').setValue(true)
+
+    const readCard = wrapper.get('input[aria-label*="molding_sample:read"]').element.closest('label')!
+    const operationCard = wrapper.get('input[aria-label*="molding_sample:create"]').element.closest('label')!
+    expect(readCard.textContent).toContain('查看')
+    expect(readCard.textContent).toContain('跨厂查看')
+    expect(operationCard.textContent).toContain('操作')
+    expect(operationCard.textContent).toContain('本厂操作')
+    expect(wrapper.get('[data-testid="role-editor-action-bar"]').text()).toContain('范围 跨厂查看')
+
+    await wrapper.get('input[placeholder="说明为什么调整此内置职位权限"]').setValue('扩大职位查看范围')
+    await wrapper.findAll('button').find((button) => button.text().includes('预览职位影响'))!.trigger('click')
+    await flushPromises()
+
+    expect(previewRoleAccessMock).toHaveBeenCalledWith('position-engineer', {
+      base_version: 1,
+      reason: '扩大职位查看范围',
+      permission_codes: [],
+      scope_mode: 'cross_factory_read',
+    })
+    expect(wrapper.text()).toContain('职位数据范围变化')
+    expect(wrapper.text()).toContain('本厂 → 跨厂查看')
+    expect(wrapper.text()).toContain('权限组合未变化，本次仅调整职位数据范围。')
+
+    await wrapper.findAll('button').find((button) => button.text().includes('返回修改'))!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('撤销修改'))!.trigger('click')
+    expect((wrapper.get('input[type="radio"][value="own_factory"]').element as HTMLInputElement).checked).toBe(true)
   })
 })

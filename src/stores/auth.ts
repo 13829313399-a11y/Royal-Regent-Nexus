@@ -12,6 +12,29 @@ function scopeValueMatches(granted: string, requested?: string) {
   return !requested || granted === '*' || granted === requested
 }
 
+function grantUsesScopedPositionContract(grant: AuthGrant) {
+  return grant.unrestricted_department === true
+}
+
+function grantDepartmentMatches(grant: AuthGrant, department?: string) {
+  return grant.unrestricted_department === true
+    || scopeValueMatches(grant.department, department)
+}
+
+function grantFactoryMatches(grant: AuthGrant, permission: string, factoryId?: string) {
+  if (!factoryId) return true
+
+  if (grant.scope_mode === 'cross_factory_operate') return true
+  if (
+    grant.scope_mode === 'cross_factory_read'
+    && (grant.read_permission_codes ?? []).includes(permission)
+  ) {
+    return true
+  }
+
+  return grant.factory_id === factoryId
+}
+
 function responseStatus(error: unknown) {
   if (!error || typeof error !== 'object' || !('response' in error)) return undefined
   const response = (error as { response?: { status?: unknown } }).response
@@ -25,6 +48,20 @@ export function grantMatchesScope(
 ) {
   return scopeValueMatches(grant.factory_id, factoryId)
     && scopeValueMatches(grant.department, department)
+}
+
+export function grantAllowsPermission(
+  grant: AuthGrant,
+  permission: string,
+  factoryId?: string,
+  department?: string,
+) {
+  if (!grant.permissions.includes(permission)) return false
+  if (!grantUsesScopedPositionContract(grant)) {
+    return grantMatchesScope(grant, factoryId, department)
+  }
+  return grantFactoryMatches(grant, permission, factoryId)
+    && grantDepartmentMatches(grant, department)
 }
 
 export function effectiveAccessMatchesScope(
@@ -170,8 +207,7 @@ export const useAuthStore = defineStore('auth', {
     },
     matchingGrants(permission: string, factoryId?: string, department?: string) {
       return this.grants.filter((grant) =>
-        grant.permissions.includes(permission)
-        && grantMatchesScope(grant, factoryId, department),
+        grantAllowsPermission(grant, permission, factoryId, department),
       )
     },
     matchingEffectiveAccess(permission: string, factoryId?: string, department?: string) {
@@ -181,13 +217,6 @@ export const useAuthStore = defineStore('auth', {
       )
     },
     can(permission: string, factoryId?: string, department?: string) {
-      if (this.authzMode !== 'enforce') {
-        const hasLegacyFactoryScope = !factoryId
-          || this.factoryScopes.includes('*')
-          || this.factoryScopes.includes(factoryId)
-        return this.hasPermission(permission) && hasLegacyFactoryScope
-      }
-
       const hasWildcardAdmin = this.grants.some((grant) =>
         (grant.role_code === 'admin' || grant.role_id === 'admin')
         && grant.factory_id === '*'
@@ -197,17 +226,69 @@ export const useAuthStore = defineStore('auth', {
         return true
       }
 
+      if (this.authzMode !== 'enforce') {
+        const scopedPositionGrants = this.grants.filter((grant) =>
+          grantUsesScopedPositionContract(grant)
+          && grant.permissions.includes(permission),
+        )
+        if (scopedPositionGrants.length) {
+          return scopedPositionGrants.some((grant) =>
+            grantAllowsPermission(grant, permission, factoryId, department),
+          )
+        }
+
+        const hasLegacyFactoryScope = !factoryId
+          || this.factoryScopes.includes('*')
+          || this.factoryScopes.includes(factoryId)
+        return this.hasPermission(permission) && hasLegacyFactoryScope
+      }
+
+      if (!this.hasEffectiveAccessSnapshot) return false
+
       const matchingAccess = this.matchingEffectiveAccess(permission, factoryId, department)
       if (!factoryId && !department) {
-        return matchingAccess.some((access) => access.effect === 'allow' && access.allowed !== false)
+        const permissionWasEvaluated = this.effectiveAccess.some((access) =>
+          access.permission_code === permission,
+        )
+        if (!permissionWasEvaluated) return false
+
+        const hasWildcardExplicitDeny = this.effectiveAccess.some((access) =>
+          access.permission_code === permission
+          && access.factory_id === '*'
+          && access.department === '*'
+          && (access.effect === 'deny' || access.allowed === false)
+          && ['override', 'user_override', 'inactive_permission', 'inactive_account'].includes(access.source_type),
+        )
+        return !hasWildcardExplicitDeny && this.hasPermission(permission)
       }
+
       if (matchingAccess.some((access) =>
         (access.effect === 'deny' || access.allowed === false)
         && ['override', 'user_override', 'inactive_permission', 'inactive_account'].includes(access.source_type),
       )) {
         return false
       }
-      return matchingAccess.some((access) => access.effect === 'allow' && access.allowed !== false)
+      if (matchingAccess.some((access) => access.effect === 'allow' && access.allowed !== false)) {
+        return true
+      }
+
+      const hasCanonicalAnchor = this.effectiveAccess.some((access) =>
+        access.permission_code === permission
+        && access.effect === 'allow'
+        && access.allowed !== false,
+      )
+      const hasEvaluatedScopedGrantAnchor = this.effectiveAccess.some((access) =>
+        access.permission_code === permission,
+      ) && this.grants.some((grant) =>
+        grantUsesScopedPositionContract(grant)
+        && grant.permissions.includes(permission),
+      )
+      if (!hasCanonicalAnchor && !hasEvaluatedScopedGrantAnchor) return false
+
+      return this.grants.some((grant) =>
+        grantUsesScopedPositionContract(grant)
+        && grantAllowsPermission(grant, permission, factoryId, department),
+      )
     },
     canAny(permissions: string[], factoryId?: string, department?: string) {
       return permissions.some((permission) => this.can(permission, factoryId, department))

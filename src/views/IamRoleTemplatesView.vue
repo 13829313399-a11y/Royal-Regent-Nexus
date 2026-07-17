@@ -6,6 +6,7 @@ import {
   type PermissionCatalogItem,
   type RoleAccessPreviewResponse,
   type RoleAccessResponse,
+  type RoleScopeMode,
   type RoleSummary,
 } from '@/api/iam'
 import IamNavigation from '@/components/iam/IamNavigation.vue'
@@ -23,6 +24,7 @@ const selectedRoleId = ref('')
 const canManageRoleTemplates = ref(false)
 const roleAccess = ref<RoleAccessResponse | null>(null)
 const selectedPermissionCodes = ref<string[]>([])
+const selectedScopeMode = ref<RoleScopeMode>('own_factory')
 const roleSearchQuery = ref('')
 const permissionSearchQuery = ref('')
 const selectedModuleCode = ref('all')
@@ -31,6 +33,11 @@ const permissionViewOptions: Array<{ value: 'all' | 'selected' | 'changed'; labe
   { value: 'all', label: '全部' },
   { value: 'selected', label: '已选' },
   { value: 'changed', label: '有变更' },
+]
+const roleScopeOptions: Array<{ value: RoleScopeMode; label: string; description: string }> = [
+  { value: 'own_factory', label: '本厂', description: '查看和操作均只在员工所属厂区生效。' },
+  { value: 'cross_factory_read', label: '跨厂查看', description: '查看类权限可跨厂，操作类权限仍限本厂。' },
+  { value: 'cross_factory_operate', label: '跨厂操作', description: '查看和操作类权限均可跨厂，提交时按高风险变更核对。' },
 ]
 const permissionScrollContainer = ref<HTMLElement | null>(null)
 const reason = ref('')
@@ -86,6 +93,7 @@ const activePermissionCount = computed(() => permissions.value.filter((item) => 
 const templatePermissionCount = computed(() => roleAccess.value?.permission_codes.length ?? 0)
 const permissionLabels = computed(() => new Map(permissions.value.map((permission) => [permission.code, permissionDisplayLabel(permission)])))
 const originalPermissionCodes = computed(() => new Set(roleAccess.value?.permission_codes ?? []))
+const originalScopeMode = computed<RoleScopeMode>(() => roleAccess.value?.scope_mode ?? 'own_factory')
 const selectedPermissionCodeSet = computed(() => new Set(selectedPermissionCodes.value))
 const addedPermissionCount = computed(() => selectedPermissionCodes.value.filter((code) => !originalPermissionCodes.value.has(code)).length)
 const removedPermissionCount = computed(() => [...originalPermissionCodes.value].filter((code) => !selectedPermissionCodeSet.value.has(code)).length)
@@ -109,11 +117,31 @@ const filteredPermissionGroups = computed(() => {
 })
 const filteredPermissionCount = computed(() => filteredPermissionGroups.value.reduce((total, group) => total + group.permissions.length, 0))
 const editablePermissionCount = computed(() => groupedPermissions.value.reduce((total, group) => total + group.permissions.length, 0))
+const scopeModeChanged = computed(() => selectedScopeMode.value !== originalScopeMode.value)
+const selectedScopeDescription = computed(() => roleScopeOptions.find((option) => option.value === selectedScopeMode.value)?.description ?? '')
 
 const hasChanges = computed(() => {
   if (!roleAccess.value) return false
-  return [...selectedPermissionCodes.value].sort().join('|') !== [...roleAccess.value.permission_codes].sort().join('|')
+  return scopeModeChanged.value
+    || [...selectedPermissionCodes.value].sort().join('|') !== [...roleAccess.value.permission_codes].sort().join('|')
 })
+
+function roleScopeLabel(scopeMode?: RoleScopeMode) {
+  return roleScopeOptions.find((option) => option.value === (scopeMode ?? 'own_factory'))?.label ?? '本厂'
+}
+
+function permissionAccessKindLabel(permission: PermissionCatalogItem) {
+  return permission.access_kind === 'read' ? '查看' : '操作'
+}
+
+function permissionEffectiveScopeLabel(permission: PermissionCatalogItem) {
+  if (permission.scope_type === 'global') return '全局生效'
+  if (selectedScopeMode.value === 'own_factory') return '本厂'
+  if (selectedScopeMode.value === 'cross_factory_read') {
+    return permission.access_kind === 'read' ? '跨厂查看' : '本厂操作'
+  }
+  return permission.access_kind === 'read' ? '跨厂查看' : '跨厂操作'
+}
 
 function isSelected(permissionCode: string) {
   return selectedPermissionCodes.value.includes(permissionCode)
@@ -128,9 +156,17 @@ function togglePermission(permissionCode: string) {
   successMessage.value = ''
 }
 
+function selectScopeMode(scopeMode: RoleScopeMode) {
+  if (roleAccess.value?.is_protected || !canManageRoleTemplates.value || isSaving.value) return
+  selectedScopeMode.value = scopeMode
+  preview.value = null
+  successMessage.value = ''
+}
+
 function resetChanges() {
   if (!roleAccess.value) return
   selectedPermissionCodes.value = [...roleAccess.value.permission_codes]
+  selectedScopeMode.value = originalScopeMode.value
   reason.value = ''
   preview.value = null
   confirmedHighRisk.value = false
@@ -149,6 +185,7 @@ async function loadRoleAccess(roleId: string, resetPermissionScroll = true) {
     if (requestSequence !== roleAccessRequestSequence) return false
     roleAccess.value = result
     selectedPermissionCodes.value = [...result.permission_codes]
+    selectedScopeMode.value = result.scope_mode ?? 'own_factory'
     reason.value = ''
     confirmedHighRisk.value = false
     isRoleLoading.value = false
@@ -214,6 +251,7 @@ async function previewChanges() {
       base_version: roleAccess.value.version,
       reason: reason.value.trim(),
       permission_codes: selectedPermissionCodes.value,
+      scope_mode: selectedScopeMode.value,
     })
     confirmedHighRisk.value = false
   } catch (error) {
@@ -230,7 +268,7 @@ async function commitChanges() {
   errorMessage.value = ''
   try {
     await iamApi.commitRoleAccess(roleAccess.value.id, preview.value.preview_token, confirmedHighRisk.value)
-    const message = `内置职位“${roleAccess.value.name}”的权限已更新，绑定用户的有效权限已重新计算。`
+    const message = `内置职位“${roleAccess.value.name}”的权限已更新，数据范围设置已同步，绑定用户的有效权限已重新计算。`
     preview.value = null
     roles.value = await iamApi.listSystemPositions()
     await loadRoleAccess(roleId, false)
@@ -271,7 +309,11 @@ onMounted(() => void loadData())
           <section v-for="group in visibleSystemPositionGroups" :key="group.department" class="mt-2 border-t border-slate-100 pt-2 first:mt-0 first:border-t-0">
             <h3 class="px-2 py-1 text-xs font-bold text-slate-400">{{ group.name }}</h3>
             <button v-for="role in group.roles" :key="role.id" type="button" class="mt-1 min-w-0 w-full rounded-xl px-3 py-2.5 text-left transition focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:cursor-wait disabled:opacity-60" :class="selectedRoleId === role.id ? 'bg-emerald-50 text-emerald-900' : 'hover:bg-slate-50'" :aria-pressed="selectedRoleId === role.id" :aria-current="selectedRoleId === role.id ? 'true' : undefined" :disabled="isSaving" @click="requestRoleChange(role.id)">
-              <span class="flex items-center justify-between gap-2"><b class="text-sm">{{ role.name }}</b><ShieldCheck v-if="role.is_protected" class="size-4 text-amber-600" aria-label="受保护职位" /></span>
+              <span class="flex min-w-0 items-center gap-2">
+                <b class="min-w-0 flex-1 truncate text-sm">{{ role.name }}</b>
+                <span class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{{ roleScopeLabel(role.scope_mode) }}</span>
+                <ShieldCheck v-if="role.is_protected" class="size-4 shrink-0 text-amber-600" aria-label="受保护职位" />
+              </span>
               <span class="mt-1 block text-xs text-slate-500">{{ role.permission_count ? `已配置 ${role.permission_count} 项权限` : '权限待配置' }} · {{ role.binding_count }} 位用户</span>
             </button>
           </section>
@@ -284,7 +326,7 @@ onMounted(() => void loadData())
           选择内置职位
           <select :value="selectedRoleId" class="h-11 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:cursor-wait disabled:opacity-60" :disabled="isSaving" @change="handleMobileRoleSelect">
             <optgroup v-for="group in groupedSystemPositions" :key="group.department" :label="group.name">
-              <option v-for="role in group.roles" :key="role.id" :value="role.id">{{ role.name }}（{{ role.permission_count }} 项权限）</option>
+              <option v-for="role in group.roles" :key="role.id" :value="role.id">{{ role.name }} · {{ roleScopeLabel(role.scope_mode) }}（{{ role.permission_count }} 项权限）</option>
             </optgroup>
           </select>
         </label>
@@ -306,7 +348,31 @@ onMounted(() => void loadData())
                   <span v-else class="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">影响 {{ roleAccess.binding_count }} 位绑定用户</span>
                 </div>
 
-                <div class="mt-3 grid gap-3 border-t border-slate-100 pt-3 lg:grid-cols-[minmax(0,1fr)_210px_auto] lg:items-end">
+                <fieldset class="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3" :disabled="roleAccess.is_protected || !canManageRoleTemplates || isSaving">
+                  <legend class="sr-only">职位数据范围</legend>
+                  <span class="mr-1 text-xs font-semibold text-slate-600" aria-hidden="true">数据范围</span>
+                  <label
+                    v-for="option in roleScopeOptions"
+                    :key="option.value"
+                    class="inline-flex h-9 cursor-pointer items-center gap-2 rounded-xl border px-3 text-xs font-bold transition has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
+                    :class="selectedScopeMode === option.value ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'"
+                  >
+                    <input
+                      type="radio"
+                      name="role-scope-mode"
+                      class="size-3.5 accent-emerald-700"
+                      :value="option.value"
+                      :checked="selectedScopeMode === option.value"
+                      :disabled="roleAccess.is_protected || !canManageRoleTemplates || isSaving"
+                      aria-describedby="role-scope-description"
+                      @change="selectScopeMode(option.value)"
+                    >
+                    {{ option.label }}
+                  </label>
+                  <p id="role-scope-description" class="min-w-[240px] flex-1 text-xs leading-5 text-slate-500">{{ selectedScopeDescription }}</p>
+                </fieldset>
+
+                <div class="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_210px_auto] lg:items-end">
                   <label class="grid gap-1.5 text-xs font-semibold text-slate-600">
                     搜索权限
                     <span class="relative block">
@@ -356,7 +422,11 @@ onMounted(() => void loadData())
                     <span class="min-w-0 flex-1">
                       <b class="block text-sm text-slate-900">{{ permissionDisplayLabel(permission) }}</b>
                       <code class="block break-all text-xs text-slate-400">{{ permission.code }}</code>
-                      <span v-if="permission.scope_guidance" class="mt-1.5 block text-xs leading-5 text-slate-500">适用范围：{{ permission.scope_guidance }}</span>
+                      <span class="mt-2 flex flex-wrap gap-1.5">
+                        <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{{ permissionAccessKindLabel(permission) }}</span>
+                        <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">{{ permissionEffectiveScopeLabel(permission) }}</span>
+                      </span>
+                      <span v-if="permission.description" class="mt-1.5 block text-xs leading-5 text-slate-500">{{ permission.description }}</span>
                       <span v-if="roleAccess.is_protected" class="mt-1 block text-xs font-semibold" :class="isSelected(permission.code) ? 'text-emerald-700' : 'text-amber-700'">{{ isSelected(permission.code) ? '模板已记录' : '系统自动拥有' }}</span>
                     </span>
                     <span v-if="permission.risk_level === 'high'" class="ml-auto inline-flex shrink-0 items-center gap-1 text-xs font-bold text-amber-700"><AlertTriangle class="size-4" aria-hidden="true" />高风险</span>
@@ -371,6 +441,7 @@ onMounted(() => void loadData())
                 <span class="rounded-full bg-slate-100 px-2.5 py-1.5 text-slate-600">已选 {{ selectedPermissionCodes.length }}</span>
                 <span class="rounded-full bg-emerald-50 px-2.5 py-1.5 text-emerald-700">新增 {{ addedPermissionCount }}</span>
                 <span class="rounded-full bg-rose-50 px-2.5 py-1.5 text-rose-700">移除 {{ removedPermissionCount }}</span>
+                <span class="rounded-full px-2.5 py-1.5" :class="scopeModeChanged ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'">范围 {{ roleScopeLabel(selectedScopeMode) }}</span>
               </div>
               <label class="grid gap-1.5 text-xs font-semibold text-slate-700">变更原因（必填）<input v-model="reason" class="h-10 rounded-xl border border-slate-200 px-3 text-sm font-normal outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" placeholder="说明为什么调整此内置职位权限"></label>
               <div class="flex flex-wrap justify-end gap-2">
@@ -387,8 +458,13 @@ onMounted(() => void loadData())
       <section class="w-full min-w-0 max-w-2xl rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="role-preview-title">
         <header class="flex items-start justify-between border-b border-slate-200 p-5"><div><h2 id="role-preview-title" class="text-lg font-bold">内置职位影响预览</h2><p class="mt-1 text-sm text-slate-500">将影响 {{ preview.affected_user_count }} 位当前绑定用户。</p></div><button type="button" aria-label="关闭内置职位影响预览" class="rounded-lg p-2 hover:bg-slate-100" @click="preview = null"><X class="size-5" /></button></header>
         <div class="max-h-[55vh] overflow-y-auto p-5">
+          <div v-if="preview.before_scope_mode !== preview.after_scope_mode" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+            <b class="block">职位数据范围变化</b>
+            <span class="mt-1 block font-semibold">{{ roleScopeLabel(preview.before_scope_mode) }} → {{ roleScopeLabel(preview.after_scope_mode) }}</span>
+          </div>
           <div v-for="diff in preview.diffs" :key="diff.permission_code" class="flex items-center justify-between gap-4 border-b border-slate-100 py-3 text-sm"><span class="min-w-0"><b class="block text-slate-900">{{ permissionLabels.get(diff.permission_code) || diff.permission_code }}</b><code class="block break-all text-xs text-slate-400">{{ diff.permission_code }}</code></span><span class="shrink-0 font-bold" :class="diff.after ? 'text-emerald-700' : 'text-rose-700'">{{ diff.before ? '已有' : '无' }} → {{ diff.after ? '授予' : '移除' }}</span></div>
-          <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600"><span>我已核对高风险权限及全部受影响用户。</span></label>
+          <p v-if="!preview.diffs.length" class="rounded-xl border border-dashed border-slate-200 p-4 text-center text-sm text-slate-500">权限组合未变化，本次仅调整职位数据范围。</p>
+          <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600"><span>我已核对高风险权限、数据范围及全部受影响用户。</span></label>
         </div>
         <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4"><button class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" @click="preview = null">返回修改</button><button class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="isSaving || (preview.high_risk && !confirmedHighRisk)" @click="commitChanges"><CheckCircle2 class="size-4" />确认提交</button></footer>
       </section>
