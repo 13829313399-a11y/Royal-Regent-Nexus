@@ -366,3 +366,110 @@ def test_p2_workflow_revision_changes_invalidate_calculated_downstream_sections(
         assert sections["sales"]["revision"] == 3
         assert sections["sales"]["calculation_status"] == "stale"
         assert sections["sales"]["dependency_status"] == "stale"
+
+
+def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p2_notice_creator", "sales_customer_owner", "sales-business")
+        quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="P2-NOTICE-LIFECYCLE"),
+        ).json()
+        quote_id = quote["id"]
+
+        logout(client)
+        login(client, "iq_p2_notice_engineer", "engineer", "engineering")
+        engineering = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/engineering",
+            json={"revision": 1, "payload": ENGINEERING_PAYLOAD},
+        )
+        assert engineering.status_code == 200, engineering.text
+
+        logout(client)
+        login(client, "iq_p2_notice_molding", "molding_clerk", "molding")
+        molding = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/molding",
+            json={"revision": 1, "payload": MOLDING_PAYLOAD},
+        )
+        assert molding.status_code == 200, molding.text
+        submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/molding/submit",
+            json={"revision": 2},
+        )
+        assert submitted.status_code == 200, submitted.text
+
+        logout(client)
+        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        first_review_notification = next(
+            item
+            for item in client.get("/api/system/notifications").json()
+            if item["payload"].get("quote_id") == quote_id
+            and item["payload"].get("event") == "section_submitted"
+            and item["payload"].get("department") == "molding"
+        )
+        assert first_review_notification["status"] == "unread"
+
+        logout(client)
+        login(client, "iq_p2_notice_engineer_update", "engineer", "engineering")
+        engineering_update = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/engineering",
+            json={
+                "revision": 2,
+                "payload": {
+                    **ENGINEERING_PAYLOAD,
+                    "materials": [
+                        {**ENGINEERING_PAYLOAD["materials"][0], "quantity": "3"}
+                    ],
+                },
+                "reason": "工程用量调整",
+            },
+        )
+        assert engineering_update.status_code == 200, engineering_update.text
+
+        logout(client)
+        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        notifications_after_dependency_change = client.get("/api/system/notifications").json()
+        assert next(
+            item
+            for item in notifications_after_dependency_change
+            if item["id"] == first_review_notification["id"]
+        )["status"] == "handled"
+
+        logout(client)
+        login(client, "iq_p2_notice_molding_retry", "molding_clerk", "molding")
+        recalculated = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/molding",
+            json={"revision": 4, "payload": MOLDING_PAYLOAD},
+        )
+        assert recalculated.status_code == 200, recalculated.text
+        resubmitted = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/molding/submit",
+            json={"revision": 5},
+        )
+        assert resubmitted.status_code == 200, resubmitted.text
+
+        logout(client)
+        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        second_review_notification = next(
+            item
+            for item in client.get("/api/system/notifications").json()
+            if item["payload"].get("quote_id") == quote_id
+            and item["payload"].get("event") == "section_submitted"
+            and item["payload"].get("department") == "molding"
+            and item["status"] == "unread"
+        )
+
+        logout(client)
+        login(client, "iq_p2_notice_reference_manager", "sales_customer_supervisor", "sales-business")
+        synced = client.post(
+            f"/api/internal-quotes/{quote_id}/reference-snapshot/sync",
+            json={"revision": 1, "reason": "参考快照更新"},
+        )
+        assert synced.status_code == 200, synced.text
+
+        logout(client)
+        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        notifications_after_sync = client.get("/api/system/notifications").json()
+        assert next(
+            item for item in notifications_after_sync if item["id"] == second_review_notification["id"]
+        )["status"] == "handled"

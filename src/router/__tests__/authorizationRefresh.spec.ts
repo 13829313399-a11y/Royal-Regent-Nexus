@@ -14,13 +14,28 @@ function route(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function defaultReadOnlyRoute() {
+type ProtectedSystemPath =
+  | '/system/users'
+  | '/system/users/user-1/access'
+  | '/system/iam/roles'
+
+function systemRoute(path: ProtectedSystemPath) {
+  const permission = path === '/system/users'
+    ? 'system:user_manage'
+    : path.includes('/access')
+      ? 'system:access_manage'
+      : 'system:permission_catalog_read'
   return route({
+    name: path === '/system/users'
+      ? 'system-users'
+      : path.includes('/access')
+        ? 'user-access-management'
+        : 'iam-role-templates',
+    fullPath: path,
     meta: {
       requiresAuth: true,
       enforcePermissions: true,
-      allowAuthenticatedReadOnly: true,
-      permissions: ['molding_sample:read', 'molding_sample:cross_factory_read'],
+      permissions: [permission],
     },
   })
 }
@@ -33,29 +48,56 @@ function routerFor(currentRoute = route()) {
 }
 
 describe('authorization snapshot route revalidation', () => {
-  it('redirects to forbidden after a successful refresh removes the current route permission', async () => {
+  it.each([
+    '/system/users',
+    '/system/users/user-1/access',
+    '/system/iam/roles',
+  ] as const)(
+    'keeps %s directly accessible to a logged-in general manager without page permission',
+    async (path) => {
+      const generalManagerStore = {
+        isAuthenticated: true,
+        refreshSession: vi.fn(async () => true),
+        canAny: vi.fn(() => false),
+      }
+      const router = routerFor(systemRoute(path))
+
+      await expect(
+        refreshAndRevalidateAuthorization(generalManagerStore, router),
+      ).resolves.toBe('refreshed')
+      expect(generalManagerStore.canAny).not.toHaveBeenCalled()
+      expect(router.replace).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    '/system/users',
+    '/system/users/user-1/access',
+    '/system/iam/roles',
+  ] as const)(
+    'keeps the wildcard administrator on the authorized %s route',
+    async (path) => {
+      const administratorStore = {
+        isAuthenticated: true,
+        refreshSession: vi.fn(async () => true),
+        canAny: vi.fn(() => true),
+      }
+      const router = routerFor(systemRoute(path))
+
+      await expect(
+        refreshAndRevalidateAuthorization(administratorStore, router),
+      ).resolves.toBe('refreshed')
+      expect(router.replace).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps the current page after refresh even when the account lacks its page permission', async () => {
     const authStore = {
       isAuthenticated: true,
       refreshSession: vi.fn(async () => true),
       canAny: vi.fn(() => false),
     }
     const router = routerFor()
-
-    await expect(refreshAndRevalidateAuthorization(authStore, router)).resolves.toBe('forbidden')
-    expect(authStore.canAny).toHaveBeenCalledWith([
-      'molding_sample:read',
-      'molding_sample:cross_factory_read',
-    ])
-    expect(router.replace).toHaveBeenCalledWith({ name: 'forbidden' })
-  })
-
-  it('keeps a default read-only route available after a refresh without a route permission', async () => {
-    const authStore = {
-      isAuthenticated: true,
-      refreshSession: vi.fn(async () => true),
-      canAny: vi.fn(() => false),
-    }
-    const router = routerFor(defaultReadOnlyRoute())
 
     await expect(refreshAndRevalidateAuthorization(authStore, router)).resolves.toBe('refreshed')
     expect(authStore.canAny).not.toHaveBeenCalled()

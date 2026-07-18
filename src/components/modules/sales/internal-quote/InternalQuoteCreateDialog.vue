@@ -18,14 +18,21 @@ function normalizeParticipation(values: InternalQuoteSectionCode[]) {
   return internalQuoteSectionDefinitions.map((item) => item.code).filter((code) => selected.has(code))
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   open: boolean
   mode: 'create' | 'clone'
   sourceQuote?: InternalQuote
   businessOwners: InternalQuoteBusinessOwner[]
   busy?: boolean
   externalError?: string
-}>()
+  factoryId?: string
+  factoryName?: string
+  allowedInitiatorDepartments?: Array<'sales-business' | 'engineering'>
+}>(), {
+  factoryId: 'huaxing',
+  factoryName: '华兴',
+  allowedInitiatorDepartments: () => ['sales-business', 'engineering'],
+})
 
 const emit = defineEmits<{
   close: []
@@ -77,7 +84,7 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
     productName: '',
     customer: '',
     versionLabel: 'V1.0',
-    initiatorDepartment: 'sales-business',
+    initiatorDepartment: props.allowedInitiatorDepartments[0] ?? 'sales-business',
     businessOwnerId: props.businessOwners[0]?.id ?? '',
     businessOwner: props.businessOwners[0]?.displayName ?? '',
     targetCustomerPrice: '无',
@@ -90,6 +97,10 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
 
 function submit() {
   errorMessage.value = ''
+  if (props.mode === 'create' && !props.allowedInitiatorDepartments.includes(form.initiatorDepartment)) {
+    errorMessage.value = '当前账号不能以所选部门发起内部报价。'
+    return
+  }
   if (!form.quoteNo.trim() || !form.productName.trim() || !form.customer.trim()) {
     errorMessage.value = '请填写报价号、产品名称和客户。'
     return
@@ -148,14 +159,14 @@ function selectBusinessOwner() {
 
             <fieldset class="quote-department-choice">
               <legend>发起部门</legend>
-              <label :class="{ active: form.initiatorDepartment === 'sales-business' }">
-                <input v-model="form.initiatorDepartment" type="radio" value="sales-business">
+              <label :class="{ active: form.initiatorDepartment === 'sales-business', disabled: !allowedInitiatorDepartments.includes('sales-business') }">
+                <input v-model="form.initiatorDepartment" type="radio" value="sales-business" :disabled="!allowedInitiatorDepartments.includes('sales-business')">
                 <span class="quote-choice-check"><CheckCircle2 aria-hidden="true" /></span>
                 <strong>业务部建单</strong>
                 <small>维护单头、业务分段及最终放行</small>
               </label>
-              <label :class="{ active: form.initiatorDepartment === 'engineering' }">
-                <input v-model="form.initiatorDepartment" type="radio" value="engineering">
+              <label :class="{ active: form.initiatorDepartment === 'engineering', disabled: !allowedInitiatorDepartments.includes('engineering') }">
+                <input v-model="form.initiatorDepartment" type="radio" value="engineering" :disabled="!allowedInitiatorDepartments.includes('engineering')">
                 <span class="quote-choice-check"><CheckCircle2 aria-hidden="true" /></span>
                 <strong>工程部建单</strong>
                 <small>发起工程核价，同时指定业务负责人</small>
@@ -214,7 +225,7 @@ function selectBusinessOwner() {
             <section class="quote-create-baseline">
               <div class="quote-baseline-title">
                 <Building2 aria-hidden="true" />
-                <div><strong>当前厂区：华兴</strong><span>统一车间 huaxing-workshop，不在页面内重复切换厂区</span></div>
+                <div><strong>当前厂区：{{ factoryName }}</strong><span>统一车间 {{ factoryId }}-workshop，不在页面内重复切换厂区</span></div>
               </div>
               <div class="quote-participation-heading">
                 <strong>参与部门</strong>
@@ -270,6 +281,7 @@ function selectBusinessOwner() {
 .quote-icon-button{display:grid;width:36px;height:36px;flex:0 0 auto;place-items:center;border:0;border-radius:9px;background:transparent;color:#64748b}.quote-icon-button:hover{background:#e2e8f0;color:#0f172a}
 .quote-dialog-body{display:grid;gap:18px;padding:22px}.quote-copy-note{display:flex;gap:9px;border:1px solid #bfdbfe;border-radius:10px;background:#eff6ff;padding:11px 13px;color:#1e40af;font-size:12px;line-height:1.55}.quote-copy-note svg{width:17px;height:17px;flex:0 0 auto;margin-top:1px}
 .quote-department-choice{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0;padding:0;border:0}.quote-department-choice legend{grid-column:1/-1;margin-bottom:1px;color:#475569;font-size:12px;font-weight:800}.quote-department-choice label{position:relative;display:grid;grid-template-columns:auto 1fr;gap:2px 9px;border:1px solid #dbe5ea;border-radius:11px;padding:13px 14px;cursor:pointer}.quote-department-choice label.active{border-color:#14b8a6;background:#f0fdfa;box-shadow:0 0 0 3px rgb(20 184 166/.09)}.quote-department-choice input{position:absolute;opacity:0}.quote-choice-check{grid-row:1/3;color:#94a3b8}.active .quote-choice-check{color:#0f766e}.quote-choice-check svg{width:18px;height:18px}.quote-department-choice strong{color:#0f172a;font-size:13px}.quote-department-choice small{color:#64748b;font-size:11px;line-height:1.45}
+.quote-department-choice label.disabled{cursor:not-allowed;opacity:.48}.quote-department-choice label.disabled:hover{border-color:#dbe5ea;box-shadow:none}
 .quote-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.quote-form-grid label{display:grid;gap:6px}.quote-form-grid label.wide{grid-column:1/-1}.quote-form-grid label>span{color:#475569;font-size:11px;font-weight:800}.quote-form-grid b{color:#dc2626}.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{width:100%;border:1px solid #dbe5ea;border-radius:9px;background:#fff;padding:9px 11px;color:#0f172a;font-size:13px;outline:none}.quote-form-grid textarea{resize:vertical}
 .quote-create-baseline{display:grid;gap:12px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:15px}.quote-baseline-title{display:flex;align-items:center;gap:9px}.quote-baseline-title>svg{width:20px;color:#0f766e}.quote-baseline-title div{display:grid}.quote-baseline-title strong{color:#0f172a;font-size:13px}.quote-baseline-title span{margin-top:2px;color:#64748b;font-size:11px}.quote-segment-pills{display:flex;flex-wrap:wrap;gap:7px}.quote-segment-pills span{display:inline-flex;align-items:center;gap:4px;border:1px solid #ccfbf1;border-radius:999px;background:#fff;padding:5px 8px;color:#0f766e;font-size:10px;font-weight:800}.quote-segment-pills svg{width:12px;height:12px}.quote-create-baseline p{display:flex;align-items:flex-start;gap:6px;margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-create-baseline p svg{width:15px;height:15px;flex:0 0 auto;color:#0d9488}.quote-form-error{margin:0;border-radius:8px;background:#fef2f2;padding:9px 11px;color:#b91c1c;font-size:12px}
 .quote-primary-button,.quote-secondary-button{display:inline-flex;min-height:38px;align-items:center;justify-content:center;gap:7px;border-radius:9px;padding:0 16px;font-size:12px;font-weight:900}.quote-primary-button{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-primary-button:hover{background:#115e59}.quote-secondary-button{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-primary-button svg{width:16px;height:16px}.quote-dialog-enter-active,.quote-dialog-leave-active{transition:opacity .16s ease}.quote-dialog-enter-active .quote-dialog,.quote-dialog-leave-active .quote-dialog{transition:transform .18s ease}.quote-dialog-enter-from,.quote-dialog-leave-to{opacity:0}.quote-dialog-enter-from .quote-dialog,.quote-dialog-leave-to .quote-dialog{transform:translateY(8px) scale(.985)}

@@ -10,6 +10,7 @@ const ACTION_LABELS: Record<string, string> = {
   delete_draft: '删除草稿',
   supervisor_review: '主管审核',
   manager_review: '经理终审',
+  raw_material_write: '维护原料资料',
   warehouse_requisition: '仓库领料',
   inventory_issue: '库存发料',
   production_read: '查看生产任务',
@@ -88,6 +89,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'molding_sample:production_fillback': '回填啤办生产数据',
   'molding_sample:production_read': '查看啤办生产任务',
   'molding_sample:production_start': '开始啤办生产',
+  'molding_sample:raw_material_write': '维护啤办原料资料',
   'molding_sample:read': '查看啤办单据',
   'molding_sample:supervisor_review': '啤办主管审核',
   'molding_sample:warehouse_requisition': '发起啤办领料',
@@ -107,14 +109,6 @@ const SCOPE_LABELS: Record<string, string> = {
   factory_department: '指定厂区与部门',
   business_object: '指定业务对象',
 }
-
-const LEGACY_IAM_PAGE_PERMISSION_CODES = new Set([
-  'system:access_approve',
-  'system:access_request',
-  'system:audit_read',
-  'system:permission_catalog_read',
-  'system:role_manage',
-])
 
 export function permissionActionLabel(action: string) {
   return ACTION_LABELS[action] ?? '自定义操作'
@@ -145,6 +139,44 @@ export function permissionScopeLabel(scopeType: string) {
   return SCOPE_LABELS[scopeType] ?? '自定义范围'
 }
 
-export function isBuiltInPositionPermissionVisible(permissionCode: string) {
-  return !LEGACY_IAM_PAGE_PERMISSION_CODES.has(permissionCode)
+export function permissionAccessKindLabel(accessKind: string) {
+  return accessKind === 'read' ? '查看' : '操作'
+}
+
+export function permissionRiskLabel(riskLevel: string) {
+  return riskLevel === 'high' ? '高风险' : '普通风险'
+}
+
+export function permissionStatusLabel(status: string) {
+  return status === 'inactive' ? '已停用' : '已启用'
+}
+
+export function roleScopeModeLabel(scopeMode?: string) {
+  const labels: Record<string, string> = {
+    own_factory: '本厂',
+    cross_factory_read: '跨厂查看',
+    cross_factory_operate: '跨厂操作',
+  }
+  return labels[scopeMode ?? 'own_factory'] ?? '本厂'
+}
+
+export function roleScopeModeDescription(scopeMode?: string) {
+  const descriptions: Record<string, string> = {
+    own_factory: '查看和操作均只在员工主厂区生效。',
+    cross_factory_read: '查看类权限可跨厂，操作类权限仍限员工主厂区。',
+    cross_factory_operate: '查看和操作类权限均可跨厂，仍需遵守业务状态与审批规则。',
+  }
+  return descriptions[scopeMode ?? 'own_factory'] ?? descriptions.own_factory
+}
+
+export function permissionEffectiveScopeLabel(
+  permission: { scope_type?: string; access_kind?: string },
+  scopeMode?: string,
+) {
+  if (permission.scope_type === 'global') return '全局生效'
+  if (scopeMode === 'cross_factory_operate') {
+    return permission.access_kind === 'read' ? '跨厂查看' : '跨厂操作'
+  }
+  if (scopeMode === 'cross_factory_read' && permission.access_kind === 'read') return '跨厂查看'
+  return permission.access_kind === 'read' ? '本厂查看' : '本厂操作'
 }

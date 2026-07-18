@@ -43,12 +43,17 @@ describe('internal quote desk frontend layout', () => {
     expect(routerSource).toContain("name: 'internal-quote-export-summary'")
     const routeSource = routerSource.slice(internalQuoteRouteIndex, genericModuleRouteIndex)
     expect(routeSource).not.toContain('requiresAuth: false')
+    expect(routeSource).toContain("permissions: ['internal_quote:read']")
+    expect(routeSource).toContain('enforcePermissions: true')
   })
 
   it('implements the confirmed creation, collaboration, browsing, release and export surfaces', () => {
     for (const text of ['新建内部报价', '复制报价', '业务部', '工程部', '搜索报价号']) expect(homeSource).toContain(text)
     for (const text of ['参与分段进度', '参考快照已冻结', '查看汇总与放行', '添加参与部门']) expect(collaborationSource).toContain(text)
     for (const text of ['业务部、工程部、装配部固定参与', '可选参与部门', '创建后仍可在协作页添加回来', '客人目标价', '没有请填无']) expect(createDialogSource).toContain(text)
+    expect(homeSource).toContain('跨厂只读')
+    expect(homeSource).toContain('canCreateCurrentFactory')
+    expect(homeSource).toContain('canCloneQuote')
     for (const text of ['Excel 预览导入', '预览不会修改正式数据', '申请不适用', '合法重开', '分段附件']) expect(sectionEditorSource).toContain(text)
     for (const text of ['五金', '辅助材料', '五金 Excel 导入', '电子零件与子项', '注塑明细', '七类喷油工序', '搪胶成本明细', '车缝产品组', '装配与包装产品组']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
     for (const text of ['模具资料', '模胚类型', '模具结构', '出模数', '净重 (g)', '周期 (秒)', '模具价格 RMB', '模价 HKD（自动）', '生产模具费用与分摊', '客户补贴模费 USD', '手板费总额 USD', '测试费总额 USD', 'RMB→USD 汇率', '每件分摊合计']) expect(sectionFormSource).toContain(text)

@@ -8,7 +8,9 @@ export interface IamHttpClient {
 export type PermissionRiskLevel = 'normal' | 'high'
 export type PermissionScopeType = 'global' | 'factory' | 'department' | 'factory_department'
 export type PermissionAccessKind = 'read' | 'operate'
+export type PermissionCatalogStatus = 'active' | 'inactive' | 'all'
 export type RoleScopeMode = 'own_factory' | 'cross_factory_read' | 'cross_factory_operate'
+export type RoleDefinitionSource = 'code' | 'database'
 export type PermissionEffect = 'allow' | 'deny'
 export type PermissionDraftEffect = PermissionEffect | 'inherit'
 
@@ -180,6 +182,11 @@ export interface RoleSummary {
   requires_global_factory: boolean
   scope_guidance: string
   is_system_position: boolean
+  is_editable: boolean
+  source: RoleDefinitionSource
+  scope_mode_locked: boolean
+  definition_version: string
+  definition_hash: string
   position_department: string
   position_department_name: string
   position_sort_order: number
@@ -245,7 +252,7 @@ function buildQuery(params: Record<string, string | undefined>) {
 
 export function createIamApi(client: IamHttpClient = http) {
   return {
-    async listPermissions(status = 'active') {
+    async listPermissions(status: PermissionCatalogStatus = 'active') {
       const response = await client.get<PermissionCatalogItem[]>(`/iam/permissions${buildQuery({ status })}`)
       return response.data
     },

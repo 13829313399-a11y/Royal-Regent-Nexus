@@ -300,7 +300,6 @@ export function buildManualMoldingSampleCreateRequest(
     return { payload: null, errors }
   }
 
-  const timestamp = `${orderDate} 09:00`
   const sendTo = draft.send_to === '内部' ? '' : draft.send_to
   const order = createDefaultMoldingSampleOrder({
     id: orderId,
@@ -318,8 +317,8 @@ export function buildManualMoldingSampleCreateRequest(
     eng_name: engineer,
     reason: trimText(draft.reason),
     status: '待审核',
-    created_at: timestamp,
-    updated_at: timestamp,
+    created_at: '',
+    updated_at: '',
   })
 
   return {

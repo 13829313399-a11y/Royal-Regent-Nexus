@@ -1,0 +1,103 @@
+"""Canonical application permission-code catalog.
+
+This module intentionally has no database or authorization-service imports so
+the fixed system-position catalog can depend on it without creating a cycle.
+"""
+
+MOLDING_SAMPLE_PERMISSION_CODES = (
+    "molding_sample:read",
+    "molding_sample:cross_factory_read",
+    "molding_sample:cross_factory_cost_read",
+    "molding_sample:export",
+    "molding_sample:create",
+    "molding_sample:edit_draft",
+    "molding_sample:delete_draft",
+    "molding_sample:supervisor_review",
+    "molding_sample:manager_review",
+    "molding_sample:raw_material_write",
+    "molding_sample:warehouse_requisition",
+    "molding_sample:inventory_issue",
+    "molding_sample:production_read",
+    "molding_sample:production_start",
+    "molding_sample:production_fillback",
+    "molding_sample:production_complete",
+    "molding_sample:price_update",
+    "molding_sample:audit_read",
+    "molding_sample:notification_read",
+)
+
+CARTON_MARK_PERMISSION_CODES = (
+    "carton_mark:read",
+    "carton_mark:template_upload",
+    "carton_mark:photo_upload",
+    "carton_mark:review",
+)
+
+CUSTOMER_PRICE_PERMISSION_CODES = (
+    "customer_price:read",
+    "customer_price:import_internal_quote",
+    "customer_price:export_customer_quote",
+    "customer_price:compare",
+)
+
+INJECTION_SCHEDULE_PERMISSION_CODES = (
+    "injection_schedule:read",
+    "injection_schedule:import",
+)
+
+INTERNAL_QUOTE_SECTION_CODES = (
+    "sales",
+    "engineering",
+    "electronic",
+    "molding",
+    "painting",
+    "slush",
+    "sewing",
+    "assembly",
+)
+
+INTERNAL_QUOTE_PERMISSION_CODES = (
+    "internal_quote:read",
+    "internal_quote:create",
+    "internal_quote:clone",
+    "internal_quote:header_edit",
+    "internal_quote:summary_read",
+    "internal_quote:timeline_read",
+    "internal_quote:archive",
+    "internal_quote:baseline_read",
+    "internal_quote:baseline_manage",
+    "internal_quote:reference_manage",
+    "internal_quote:export",
+    "internal_quote:final_submit",
+    "internal_quote:final_approve",
+    *(
+        permission_code
+        for section_code in INTERNAL_QUOTE_SECTION_CODES
+        for permission_code in (
+            f"internal_quote:{section_code}_edit",
+            f"internal_quote:{section_code}_review",
+        )
+    ),
+)
+
+SYSTEM_MANAGEMENT_PERMISSION_CODES = (
+    "system:user_manage",
+    "system:role_manage",
+    "system:access_manage",
+    "system:access_request",
+    "system:access_approve",
+    "system:audit_read",
+    "system:permission_catalog_read",
+)
+
+BUSINESS_PERMISSION_CODES = (
+    *MOLDING_SAMPLE_PERMISSION_CODES,
+    *CARTON_MARK_PERMISSION_CODES,
+    *CUSTOMER_PRICE_PERMISSION_CODES,
+    *INJECTION_SCHEDULE_PERMISSION_CODES,
+    *INTERNAL_QUOTE_PERMISSION_CODES,
+)
+
+APPLICATION_PERMISSION_CODES = tuple(
+    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES))
+)

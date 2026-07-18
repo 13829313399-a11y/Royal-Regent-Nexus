@@ -1,7 +1,7 @@
 import json
 import re
 import unicodedata
-from datetime import datetime
+from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 from math import isfinite
 from pathlib import Path
@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.time import business_now, business_today
 from app.models.molding_sample import (
     MoldingSampleAuditLog,
     MoldingSampleInventoryBatch,
@@ -41,7 +42,7 @@ from app.schemas.molding_sample import (
     RequisitionCreateRequest,
     RequisitionStatusRequest,
 )
-from app.services.auth import AuthContext, ensure_permission
+from app.services.auth import AuthContext, add_auth_audit, can, ensure_permission
 from app.services.business_authz import (
     CROSS_FACTORY_DEPARTMENTS,
     ENGINEERING_DEPARTMENTS,
@@ -78,6 +79,13 @@ DEFAULT_PRICES = [
 SENSITIVE_AUDIT_LIST_LIMIT = 200
 PRODUCTION_TASK_MODULE = "production_molding_sample_task"
 ENGINEERING_MOLDING_SAMPLE_MODULE = "engineering_molding_sample"
+FIXED_PRODUCTION_TASK_ROLE_IDS = frozenset(
+    {
+        "position_molding_clerk",
+        "position_molding_supervisor",
+        "position_molding_manager",
+    }
+)
 PRODUCTION_TARGET_ROLE = "啤机部"
 ENGINEERING_TARGET_ROLE = "工程部"
 ENGINEERING_SUPERVISOR_TARGET_ROLE = "工程主管"
@@ -123,11 +131,11 @@ ENGINEERING_EDIT_DEPARTMENTS = (*ENGINEERING_DEPARTMENTS, *MANAGEMENT_DEPARTMENT
 
 
 def now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
+    return business_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def now_precise_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    return business_now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
 def round_money(value: float) -> float:
@@ -495,6 +503,96 @@ def ensure_any_local_molding_read(db: Session, current_user: AuthContext) -> Non
     raise AssertionError("unreachable")
 
 
+def is_fixed_production_notification_only_access(
+    current_user: AuthContext,
+    factory_id: str,
+) -> bool:
+    fixed_task_grants = tuple(
+        grant
+        for grant in current_user.grants
+        if grant.role_id in FIXED_PRODUCTION_TASK_ROLE_IDS
+    )
+    if not fixed_task_grants:
+        return False
+
+    fixed_task_context = replace(
+        current_user,
+        grants=fixed_task_grants,
+        overrides=(),
+    )
+    fixed_task_read = any(
+        can(
+            fixed_task_context,
+            "molding_sample:production_read",
+            factory_id,
+            department,
+        )
+        for department in PRODUCTION_DEPARTMENTS
+    )
+    if not fixed_task_read:
+        return False
+
+    nonfixed_context = replace(
+        current_user,
+        grants=tuple(
+            grant
+            for grant in current_user.grants
+            if grant.role_id not in FIXED_PRODUCTION_TASK_ROLE_IDS
+        ),
+    )
+    override_only_context = replace(current_user, grants=())
+    has_independent_production_read = has_permission_for_departments(
+        nonfixed_context,
+        "molding_sample:production_read",
+        factory_id,
+        PRODUCTION_DEPARTMENTS,
+    ) or any(
+        can(
+            override_only_context,
+            "molding_sample:production_read",
+            factory_id,
+            department,
+        )
+        for department in PRODUCTION_DEPARTMENTS
+    )
+    # The fixed molding-position grant now intentionally includes general
+    # engineering-board read access. Ignore that grant here so the existing
+    # production-notification boundary remains intact. Independent custom
+    # grants and explicit overrides stay additive.
+    has_general_read = has_permission_for_departments(
+        nonfixed_context,
+        "molding_sample:read",
+        factory_id,
+        SHARED_MOLDING_DEPARTMENTS,
+    ) or has_permission_for_departments(
+        nonfixed_context,
+        MOLDING_CROSS_FACTORY_READ_PERMISSION,
+        factory_id,
+        CROSS_FACTORY_DEPARTMENTS,
+    ) or any(
+        can(
+            override_only_context,
+            permission,
+            factory_id,
+            department,
+        )
+        for permission, departments in (
+            ("molding_sample:read", SHARED_MOLDING_DEPARTMENTS),
+            (MOLDING_CROSS_FACTORY_READ_PERMISSION, CROSS_FACTORY_DEPARTMENTS),
+        )
+        for department in departments
+    )
+    return not has_independent_production_read and not has_general_read
+
+
+def ensure_order_read_allowed(
+    db: Session,
+    current_user: AuthContext,
+    order: MoldingSampleOrder,
+) -> None:
+    ensure_molding_read(db, current_user, order.factory_id)
+
+
 def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
     order = db.scalar(
         select(MoldingSampleOrder)
@@ -511,7 +609,7 @@ def load_order(db: Session, order_id: str, current_user: AuthContext | None = No
         raise HTTPException(status_code=404, detail="啤办单不存在")
 
     if current_user is not None:
-        ensure_molding_read(db, current_user, order.factory_id)
+        ensure_order_read_allowed(db, current_user, order)
 
     return order
 
@@ -1032,6 +1130,85 @@ def notification_departments(target_module: str, target_role: str) -> tuple[str,
     return ENGINEERING_DEPARTMENTS
 
 
+def notification_module_permission(target_module: str) -> str:
+    if target_module == PRODUCTION_TASK_MODULE:
+        return "molding_sample:production_read"
+    return "molding_sample:read"
+
+
+def has_notification_scope_permission(
+    current_user: AuthContext,
+    permission: str,
+    notification: MoldingSampleNotification,
+) -> bool:
+    if (
+        notification.target_module != PRODUCTION_TASK_MODULE
+        and is_fixed_production_notification_only_access(
+            current_user,
+            notification.factory_id,
+        )
+    ):
+        return False
+
+    fixed_contract_grants = tuple(
+        grant
+        for grant in current_user.grants
+        if grant.unrestricted_department
+        and "molding_sample:notification_read" in grant.permissions
+    )
+    departments = notification_departments(
+        notification.target_module,
+        notification.target_role,
+    )
+    fixed_contract_context = replace(
+        current_user,
+        grants=fixed_contract_grants,
+    )
+    fixed_contract_allowed = bool(fixed_contract_grants) and any(
+        can(
+            fixed_contract_context,
+            permission,
+            notification.factory_id,
+            department,
+        )
+        for department in departments
+    )
+    compatibility_grants = tuple(
+        grant
+        for grant in current_user.grants
+        if grant not in fixed_contract_grants
+    )
+    compatibility_allowed = has_permission_for_departments(
+        replace(current_user, grants=compatibility_grants),
+        permission,
+        notification.factory_id,
+        departments,
+    )
+    return fixed_contract_allowed or compatibility_allowed
+
+
+def ensure_notification_scope_permission(
+    db: Session,
+    current_user: AuthContext,
+    permission: str,
+    notification: MoldingSampleNotification,
+) -> None:
+    if has_notification_scope_permission(current_user, permission, notification):
+        return
+    add_auth_audit(
+        db,
+        "permission_denied",
+        username=current_user.username,
+        user_id=current_user.id,
+        detail=(
+            f"缺少通知范围内权限：{permission}@{notification.factory_id}/"
+            f"{notification.target_module}"
+        ),
+    )
+    db.commit()
+    raise HTTPException(status_code=403, detail="无授权范围内通知权限")
+
+
 def list_notifications(
     db: Session,
     current_user: AuthContext,
@@ -1061,20 +1238,15 @@ def list_notifications(
     )
     return [
         notification for notification in notifications
-        if has_permission_for_departments(
+        if has_notification_scope_permission(
             current_user,
             "molding_sample:notification_read",
-            notification.factory_id,
-            notification_departments(notification.target_module, notification.target_role),
+            notification,
         )
-        and (
-            notification.target_module != PRODUCTION_TASK_MODULE
-            or has_permission_for_departments(
-                current_user,
-                "molding_sample:production_read",
-                notification.factory_id,
-                PRODUCTION_DEPARTMENTS,
-            )
+        and has_notification_scope_permission(
+            current_user,
+            notification_module_permission(notification.target_module),
+            notification,
         )
     ]
 
@@ -1089,15 +1261,24 @@ def update_notification(
     if notification is None:
         raise HTTPException(status_code=404, detail="啤办通知不存在")
     ensure_molding_local_write(db, current_user, notification.factory_id)
-    ensure_permission_for_departments(
+    ensure_notification_scope_permission(
         db,
         current_user,
         "molding_sample:notification_read",
-        notification.factory_id,
-        notification_departments(notification.target_module, notification.target_role),
+        notification,
+    )
+    ensure_notification_scope_permission(
+        db,
+        current_user,
+        notification_module_permission(notification.target_module),
+        notification,
     )
     if payload.status not in NOTIFICATION_STATUSES:
         raise HTTPException(status_code=400, detail="通知状态无效")
+
+    status_rank = {"未读": 0, "已读": 1, "已处理": 2}
+    if status_rank[payload.status] < status_rank.get(notification.status, 0):
+        return notification
 
     timestamp = now_text()
     notification.status = payload.status
@@ -1243,11 +1424,15 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
         raise HTTPException(status_code=409, detail="啤办单编号已存在")
 
     status = INITIAL_ORDER_STATUS
+    created_at = now_text()
     order = MoldingSampleOrder(
-        **payload.order.model_dump(exclude={"status", "created_at", "updated_at"}),
+        **payload.order.model_dump(
+            exclude={"status", "completed_date", "created_at", "updated_at"}
+        ),
         status=status,
-        created_at=payload.order.created_at or now_text(),
-        updated_at=payload.order.updated_at or now_text(),
+        completed_date="",
+        created_at=created_at,
+        updated_at=created_at,
     )
     db.add(order)
 
@@ -1348,6 +1533,7 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
         raise HTTPException(status_code=400, detail="啤办单厂区归属不可通过编辑接口变更")
     current_status = order.status
     current_created_at = order.created_at
+    current_completed_date = order.completed_date
     current_external = is_external_order(order)
     payload_external = payload.order.send_to in {"发至湖南", "发至模厂"} or payload.order.workshop == "模厂"
     existing_items_by_id = {item.id: item for item in order.items}
@@ -1372,11 +1558,14 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
             ]
         prepared_items.append((item_payload, item_data, index))
 
-    order_data = payload.order.model_dump(exclude={"id", "factory_id", "status", "created_at", "updated_at"})
+    order_data = payload.order.model_dump(
+        exclude={"id", "factory_id", "status", "completed_date", "created_at", "updated_at"}
+    )
     for field, value in order_data.items():
         setattr(order, field, value)
 
     order.status = current_status
+    order.completed_date = current_completed_date
     order.created_at = current_created_at
     order.updated_at = now_text()
 
@@ -1965,7 +2154,7 @@ def transition_status(
             raise HTTPException(status_code=403, detail="只有指定主管可以审核待审核单")
         if is_external_order(order):
             next_status = "已完成"
-            order.completed_date = request.today or order.date
+            order.completed_date = business_today()
             recalculate_order_costs(db, order, force_material_amount=True)
         else:
             next_status = "待生产"
@@ -1985,7 +2174,7 @@ def transition_status(
             raise HTTPException(status_code=403, detail="只有经理可以终审待经理审核单")
         if is_external_order(order):
             next_status = "已完成"
-            order.completed_date = request.today or order.date
+            order.completed_date = business_today()
             recalculate_order_costs(db, order, force_material_amount=True)
         else:
             next_status = "待生产"
@@ -2041,7 +2230,7 @@ def transition_status(
             raise HTTPException(status_code=400, detail=f"actual_weight_kg 缺失：{', '.join(missing_ids[:5])}")
 
         next_status = "已完成"
-        order.completed_date = request.today or order.date
+        order.completed_date = business_today()
         recalculate_order_costs(db, order, force_material_amount=True)
     elif action == "撤回完成":
         ensure_permission_for_departments(

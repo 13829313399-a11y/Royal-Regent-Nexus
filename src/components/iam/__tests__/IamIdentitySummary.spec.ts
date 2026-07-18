@@ -45,5 +45,7 @@ describe('IamIdentitySummary department labels', () => {
     })
 
     expect(wrapper.text()).toContain(`华兴 · ${label}`)
+    expect(wrapper.text()).toContain('实际职位')
+    expect(wrapper.text()).toContain('自定义职位')
   })
 })

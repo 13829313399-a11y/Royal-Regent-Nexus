@@ -26,6 +26,7 @@ import { rawMaterialApi, type RawMaterialResponse } from '@/api/rawMaterial'
 import { getApiErrorMessage } from '@/lib/http'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 type RawMaterialTab = 'material' | 'requisition' | 'batch' | 'movement'
 type MaterialStatus = '启用' | '停用'
@@ -53,6 +54,19 @@ interface RawMaterialRow {
   currentStockKg: number | null
   status: MaterialStatus
   notes: string
+}
+
+interface MaterialFormState {
+  materialCode: string
+  materialName: string
+  category: string
+  spec: string
+  unit: string
+  supplier: string
+  safetyStockKg: string | number
+  unitPriceHkdPerLb: string | number
+  notes: string
+  status: MaterialStatus
 }
 
 interface RequisitionRow {
@@ -89,6 +103,7 @@ interface InventoryMovementRow {
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const rawMaterialTabs: RawMaterialTabItem[] = [
   { id: 'material', label: '原料资料', description: '物料主数据', icon: Table2 },
@@ -103,8 +118,9 @@ const materialStatusFilters: Array<'全部状态' | MaterialStatus> = ['全部�
 const rawMaterialRows = reactive<RawMaterialRow[]>([])
 const rawMaterialPageSize = 10
 const isSavingMaterial = ref(false)
+const materialFormError = ref('')
 const editingMaterialId = ref<string | null>(null)
-const materialForm = reactive({
+const materialForm = reactive<MaterialFormState>({
   materialCode: '',
   materialName: '',
   category: 'PVC',
@@ -278,6 +294,16 @@ const activeFactory = computed(() =>
   appStore.activeProductionFactory,
 )
 
+const canManageSelectedFactory = computed(() =>
+  ['engineering', 'pmc-warehouse', 'warehouse'].some((department) =>
+    authStore.can(
+      'molding_sample:raw_material_write',
+      selectedFactoryId.value,
+      department,
+    ),
+  ),
+)
+
 async function loadPersistedRawMaterials(factoryId: string) {
   try {
     const persistedRows = await rawMaterialApi.list(factoryId)
@@ -296,6 +322,7 @@ async function loadPersistedRawMaterials(factoryId: string) {
 }
 
 watch(selectedFactoryId, (factoryId) => {
+  closeModals()
   void loadPersistedRawMaterials(factoryId)
 }, { immediate: true })
 
@@ -589,6 +616,7 @@ function closeModals() {
   showRequisitionModal.value = false
   showBatchModal.value = false
   editingMaterialId.value = null
+  materialFormError.value = ''
 }
 
 function resetMaterialForm() {
@@ -603,14 +631,23 @@ function resetMaterialForm() {
   materialForm.notes = ''
   materialForm.status = '启用'
   editingMaterialId.value = null
+  materialFormError.value = ''
 }
 
 function openMaterialModal() {
+  if (!canManageSelectedFactory.value) {
+    notifyAction('当前厂区为只读，不能新增原料资料。')
+    return
+  }
   resetMaterialForm()
   showMaterialModal.value = true
 }
 
 function openEditMaterialModal(row: RawMaterialRow) {
+  if (!canManageSelectedFactory.value) {
+    notifyAction('当前厂区为只读，不能编辑原料资料。')
+    return
+  }
   materialForm.materialCode = row.code
   materialForm.materialName = row.name
   materialForm.category = row.category
@@ -622,26 +659,45 @@ function openEditMaterialModal(row: RawMaterialRow) {
   materialForm.notes = row.notes
   materialForm.status = row.status
   editingMaterialId.value = row.id
+  materialFormError.value = ''
   showMaterialModal.value = true
 }
 
+function parseOptionalNumber(value: string | number) {
+  const normalized = String(value ?? '').trim()
+  return normalized === '' ? null : Number(normalized)
+}
+
 async function saveMaterial() {
+  if (!canManageSelectedFactory.value) {
+    closeModals()
+    notifyAction('当前厂区为只读，不能保存原料资料。')
+    return
+  }
+  materialFormError.value = ''
   const materialName = materialForm.materialName.trim()
-  const safetyStockValue = materialForm.safetyStockKg.trim()
-  const safetyStockKg = safetyStockValue === '' ? null : Number(safetyStockValue)
-  const unitPriceValue = materialForm.unitPriceHkdPerLb.trim()
-  const unitPriceHkdPerLb = unitPriceValue === '' ? null : Number(unitPriceValue)
+  const safetyStockKg = parseOptionalNumber(materialForm.safetyStockKg)
+  const unitPriceHkdPerLb = parseOptionalNumber(materialForm.unitPriceHkdPerLb)
 
   if (!materialName) {
-    notifyAction('请填写原料名称。')
+    materialFormError.value = '请填写原料名称。'
+    notifyAction(materialFormError.value)
     return
   }
-  if (!Number.isFinite(safetyStockKg ?? 0) || (safetyStockKg ?? 0) < 0) {
-    notifyAction('安全库存必须是大于或等于 0 的数字。')
+  if (
+    safetyStockKg !== null
+    && (!Number.isFinite(safetyStockKg) || safetyStockKg < 0)
+  ) {
+    materialFormError.value = '安全库存必须是大于或等于 0 的数字。'
+    notifyAction(materialFormError.value)
     return
   }
-  if (!Number.isFinite(unitPriceHkdPerLb ?? 0) || (unitPriceHkdPerLb ?? 0) <= 0) {
-    notifyAction('单价必须是大于 0 的数字，或留空表示暂不维护。')
+  if (
+    unitPriceHkdPerLb !== null
+    && (!Number.isFinite(unitPriceHkdPerLb) || unitPriceHkdPerLb <= 0)
+  ) {
+    materialFormError.value = '单价必须是大于 0 的数字，或留空表示暂不维护。'
+    notifyAction(materialFormError.value)
     return
   }
   isSavingMaterial.value = true
@@ -678,7 +734,8 @@ async function saveMaterial() {
     }
   }
   catch (error) {
-    notifyAction(`保存原料失败：${getApiErrorMessage(error)}`)
+    materialFormError.value = `保存原料失败：${getApiErrorMessage(error)}`
+    notifyAction(materialFormError.value)
   }
   finally {
     isSavingMaterial.value = false
@@ -686,12 +743,33 @@ async function saveMaterial() {
 }
 
 function saveSecondaryModal() {
+  if (!canManageSelectedFactory.value) {
+    closeModals()
+    notifyAction('当前厂区为只读，不能新建领料单或库存批次。')
+    return
+  }
   const message = showRequisitionModal.value
     ? '领料单保存动作待接 requisitions 接口。'
     : '批次入库动作待接 inventory-batches 接口。'
 
   closeModals()
   notifyAction(message)
+}
+
+function openRequisitionModal() {
+  if (!canManageSelectedFactory.value) {
+    notifyAction('当前厂区为只读，不能新建领料单。')
+    return
+  }
+  showRequisitionModal.value = true
+}
+
+function openBatchModal() {
+  if (!canManageSelectedFactory.value) {
+    notifyAction('当前厂区为只读，不能新建库存批次。')
+    return
+  }
+  showBatchModal.value = true
 }
 </script>
 
@@ -765,6 +843,14 @@ function saveSecondaryModal() {
           <RotateCcw class="size-4" aria-hidden="true" />
           刷新
         </button>
+      </div>
+
+      <div
+        v-if="!canManageSelectedFactory"
+        class="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] font-semibold text-amber-800"
+      >
+        <AlertTriangle class="size-4 shrink-0 text-amber-600" aria-hidden="true" />
+        当前厂区为只读，可查看原料资料，但不能新增、编辑、领料或调整库存。
       </div>
 
       <section v-if="activeTab === 'material'" class="space-y-4">
@@ -849,7 +935,8 @@ function saveSecondaryModal() {
               </button>
               <button
                 type="button"
-                class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-800"
+                :disabled="!canManageSelectedFactory"
+                class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                 @click="openMaterialModal"
               >
                 <Plus class="size-4" aria-hidden="true" />
@@ -902,9 +989,9 @@ function saveSecondaryModal() {
                     </span>
                   </td>
                   <td class="whitespace-nowrap px-3 py-2.5 text-center">
-                    <button type="button" class="text-[11px] font-semibold text-teal-700 hover:underline" @click="openEditMaterialModal(row)">编辑</button>
+                    <button type="button" :disabled="!canManageSelectedFactory" class="text-[11px] font-semibold text-teal-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-300 disabled:no-underline" @click="openEditMaterialModal(row)">编辑</button>
                     <span class="mx-1 text-slate-200">|</span>
-                    <button type="button" class="text-[11px] font-semibold text-slate-400 hover:text-slate-700" @click="notifyAction(`${materialRowLabel(row)} 状态操作待接入原料主数据接口。`)">
+                    <button type="button" :disabled="!canManageSelectedFactory" class="text-[11px] font-semibold text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300" @click="notifyAction(`${materialRowLabel(row)} 状态操作待接入原料主数据接口。`)">
                       {{ row.status === '启用' ? '停用' : '启用' }}
                     </button>
                   </td>
@@ -1005,8 +1092,9 @@ function saveSecondaryModal() {
               </label>
               <button
                 type="button"
-                class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-800"
-                @click="showRequisitionModal = true"
+                :disabled="!canManageSelectedFactory"
+                class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                @click="openRequisitionModal"
               >
                 <Plus class="size-4" aria-hidden="true" />
                 新建领料单
@@ -1046,13 +1134,13 @@ function saveSecondaryModal() {
                   <td class="px-3 py-2.5 text-slate-500 tabular-nums">{{ row.issuedAt || '—' }}</td>
                   <td class="whitespace-nowrap px-3 py-2.5 text-center">
                     <template v-if="row.status === '待出库'">
-                      <button type="button" class="rounded-md bg-teal-700 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-teal-800" @click="notifyAction(`${row.reqNumber} 确认出库动作待接正式库存扣减。`)">
+                      <button type="button" :disabled="!canManageSelectedFactory" class="rounded-md bg-teal-700 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300" @click="notifyAction(`${row.reqNumber} 确认出库动作待接正式库存扣减。`)">
                         确认出库
                       </button>
-                      <button type="button" class="ml-1 text-[11px] font-semibold text-slate-400 hover:text-red-600" @click="notifyAction(`${row.reqNumber} 删除动作待接权限校验。`)">删除</button>
+                      <button type="button" :disabled="!canManageSelectedFactory" class="ml-1 text-[11px] font-semibold text-slate-400 hover:text-red-600 disabled:cursor-not-allowed disabled:text-slate-300" @click="notifyAction(`${row.reqNumber} 删除动作待接权限校验。`)">删除</button>
                     </template>
                     <template v-else>
-                      <button type="button" class="text-[11px] font-semibold text-slate-500 hover:text-slate-800" @click="notifyAction(`${row.reqNumber} 撤回动作待接库存流水。`)">撤回</button>
+                      <button type="button" :disabled="!canManageSelectedFactory" class="text-[11px] font-semibold text-slate-500 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300" @click="notifyAction(`${row.reqNumber} 撤回动作待接库存流水。`)">撤回</button>
                       <span class="mx-1 text-slate-200">|</span>
                       <button type="button" class="text-[11px] font-semibold text-teal-700 hover:underline" @click="notifyAction(`${row.reqNumber} 详情入口已预留。`)">详情</button>
                     </template>
@@ -1099,8 +1187,9 @@ function saveSecondaryModal() {
               </select>
               <button
                 type="button"
-                class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-800"
-                @click="showBatchModal = true"
+                :disabled="!canManageSelectedFactory"
+                class="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                @click="openBatchModal"
               >
                 <Plus class="size-4" aria-hidden="true" />
                 入库新批次
@@ -1144,7 +1233,7 @@ function saveSecondaryModal() {
                     </div>
                   </td>
                   <td class="whitespace-nowrap px-3 py-2.5 text-center">
-                    <button type="button" class="text-[11px] font-semibold text-teal-700 hover:underline" @click="notifyAction(`${row.batchNo} 调整入口已预留。`)">调整</button>
+                    <button type="button" :disabled="!canManageSelectedFactory" class="text-[11px] font-semibold text-teal-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-300 disabled:no-underline" @click="notifyAction(`${row.batchNo} 调整入口已预留。`)">调整</button>
                     <span class="mx-1 text-slate-200">|</span>
                     <button type="button" class="text-[11px] font-semibold text-slate-400 hover:text-slate-700" @click="setActiveTab('movement')">流水</button>
                   </td>
@@ -1275,7 +1364,7 @@ function saveSecondaryModal() {
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价 (HKD/磅)</span>
               <input v-model="materialForm.unitPriceHkdPerLb" type="number" min="0" step="0.000001" data-testid="raw-material-unit-price" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：4.85">
-              <span class="mt-1 block text-[10px] text-slate-400">工程部维护后会同步用于啤办成本计算。</span>
+              <span class="mt-1 block text-[10px] text-slate-400">单价可留空。工程部维护后会同步用于啤办成本计算。</span>
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">供应商</span>
@@ -1296,9 +1385,13 @@ function saveSecondaryModal() {
             </div>
           </div>
         </div>
+        <div v-if="materialFormError" class="mx-5 mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] leading-5 text-red-700" role="alert">
+          <AlertTriangle class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span>{{ materialFormError }}</span>
+        </div>
         <div class="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
           <button type="button" class="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300" @click="closeModals">取消</button>
-          <button type="button" class="inline-flex h-9 items-center rounded-lg bg-slate-950 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400" :disabled="isSavingMaterial" @click="saveMaterial">{{ isSavingMaterial ? '保存中…' : '保存' }}</button>
+          <button type="button" class="inline-flex h-9 items-center rounded-lg bg-slate-950 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400" :disabled="isSavingMaterial || !canManageSelectedFactory" @click="saveMaterial">{{ isSavingMaterial ? '保存中…' : '保存' }}</button>
         </div>
       </section>
     </div>
@@ -1383,7 +1476,7 @@ function saveSecondaryModal() {
         </div>
         <div class="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
           <button type="button" class="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300" @click="closeModals">取消</button>
-          <button type="button" class="inline-flex h-9 items-center rounded-lg bg-slate-950 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800" @click="saveSecondaryModal">
+          <button type="button" :disabled="!canManageSelectedFactory" class="inline-flex h-9 items-center rounded-lg bg-slate-950 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300" @click="saveSecondaryModal">
             {{ showRequisitionModal ? '保存并创建' : '保存批次' }}
           </button>
         </div>

@@ -71,7 +71,8 @@ assert.equal(result.payload?.order.supervisor, '李主管')
 assert.equal(result.payload?.order.eng_name, '肖科')
 assert.equal(result.payload?.order.reason, '见客样办，枪身不可刮花，颜色要对办，工程订色粉。')
 assert.equal(result.payload?.order.status, '待审核')
-assert.equal(result.payload?.order.created_at, '2026-04-09 09:00')
+assert.equal(result.payload?.order.created_at, '')
+assert.equal(result.payload?.order.updated_at, '')
 assert.deepEqual(result.payload?.items[0]?.material_components, [
   { material: 'HIPS 425', source_type: 'virgin', ratio_percent: 100 },
 ])

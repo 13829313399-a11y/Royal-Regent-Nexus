@@ -84,8 +84,10 @@ from app.services.permission_scope_policy import (
 from app.services.system_positions import (
     SPECIAL_SYSTEM_ROLE_CODES,
     SYSTEM_POSITION_DEFINITIONS,
+    SYSTEM_POSITION_DEFINITION_VERSION,
     get_system_position,
     recommend_system_position_role_id,
+    system_position_definition_hash,
 )
 
 
@@ -128,13 +130,15 @@ MODULE_NAMES = {
 def list_permissions(db: Session, current_user: AuthContext, status: str = "active") -> list[PermissionOut]:
     _ensure_iam_manager(db, current_user)
     _ensure_permission_catalog_reader(db, current_user)
+    if status not in {"active", "inactive", "all"}:
+        raise HTTPException(status_code=400, detail="权限状态仅支持 active、inactive 或 all")
     permissions = list(db.scalars(select(AuthPermission).order_by(AuthPermission.code)).all())
     metadata = {
         item.permission_id: item
         for item in db.scalars(select(AuthPermissionMetadata)).all()
     }
     result = [_permission_out(permission, metadata.get(permission.id)) for permission in permissions]
-    if status:
+    if status != "all":
         result = [item for item in result if item.status == status]
     return sorted(result, key=lambda item: (item.sort_order, item.module_code, item.action, item.code))
 
@@ -721,8 +725,11 @@ def preview_role_access(
     _ensure_role_manager(db, current_user)
     role = _load_role(db, role_id)
     system_position = get_system_position(role.id)
-    if system_position and payload.name not in {None, system_position.name}:
-        raise HTTPException(status_code=400, detail="系统内置职位名称不可修改")
+    if system_position is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="系统内置职位由代码固定维护，不能在线修改",
+        )
     metadata = _get_role_metadata(db, role.id, for_update=True)
     if metadata and metadata.protected:
         raise HTTPException(status_code=400, detail="受保护角色不能修改")
@@ -814,9 +821,14 @@ def commit_role_access(
     payload: AccessCommitRequest,
     request: Request | None = None,
 ) -> RoleAccessCommitResponse:
-    _require_writes_enabled()
     _ensure_role_manager(db, current_user)
     role = _load_role(db, role_id)
+    if get_system_position(role.id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="系统内置职位由代码固定维护，不能在线修改",
+        )
+    _require_writes_enabled()
     preview, preview_payload, summary = _load_preview(
         db, payload.preview_token, current_user.id, "role", role_id
     )
@@ -827,8 +839,6 @@ def commit_role_access(
     if metadata and metadata.protected:
         raise HTTPException(status_code=400, detail="受保护角色不能修改")
     system_position = get_system_position(role.id)
-    if system_position and preview_payload.get("name") not in {None, system_position.name}:
-        raise HTTPException(status_code=409, detail="系统内置职位名称不可修改")
     current_scope_mode = _role_scope_mode(metadata, system_position is not None)
     desired_scope_mode = preview_payload.get("scope_mode", current_scope_mode)
     if desired_scope_mode not in VALID_SCOPE_MODES:
@@ -2200,6 +2210,19 @@ def _role_summary(db: Session, role: AuthRole) -> RoleSummaryOut:
         requires_global_factory=scope_policy.requires_global_factory,
         scope_guidance=scope_policy.guidance,
         is_system_position=system_position is not None,
+        is_editable=system_position is None and not (
+            bool(metadata.protected) if metadata else role.code == "admin"
+        ),
+        source="code" if system_position else "database",
+        scope_mode_locked=system_position is not None,
+        definition_version=(
+            SYSTEM_POSITION_DEFINITION_VERSION if system_position else ""
+        ),
+        definition_hash=(
+            system_position_definition_hash(system_position)
+            if system_position
+            else ""
+        ),
         position_department=system_position.department if system_position else "",
         position_department_name=system_position.department_name if system_position else "",
         position_sort_order=system_position.sort_order if system_position else 0,

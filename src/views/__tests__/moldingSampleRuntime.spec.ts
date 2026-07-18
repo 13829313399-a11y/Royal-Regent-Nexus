@@ -112,6 +112,8 @@ async function mountRuntimeView(
     scopeMode?: AuthGrantScopeMode
     readPermissionCodes?: string[]
     unrestrictedDepartment?: boolean
+    roleId?: string
+    grantFactoryId?: string
   } = {},
 ) {
   const pinia = createPinia()
@@ -142,10 +144,10 @@ async function mountRuntimeView(
     roles: options.roles ?? ['系统管理员'],
     permissions,
     grants: [{
-      role_id: administrator ? 'admin' : 'test-role',
-      role_code: administrator ? 'admin' : 'test-role',
+      role_id: options.roleId ?? (administrator ? 'admin' : 'test-role'),
+      role_code: options.roleId ?? (administrator ? 'admin' : 'test-role'),
       role_name: administrator ? '系统管理员' : '测试角色',
-      factory_id: factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing',
+      factory_id: options.grantFactoryId ?? (factoryScopes.includes('*') ? '*' : factoryScopes[0] ?? 'huaxing'),
       department: administrator ? 'system' : options.department ?? '*',
       permissions: options.grantPermissions ?? permissions,
       scope_mode: options.scopeMode,
@@ -194,13 +196,6 @@ function getButtonByExactText(wrapper: VueWrapper, text: string) {
   expect(button, `button with exact text "${text}"`).toBeTruthy()
 
   return button!
-}
-
-function getCurrentDateText(date = new Date()) {
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-
-  return `${date.getFullYear()}-${month}-${day}`
 }
 
 function createMoldingSampleRecord(
@@ -415,6 +410,45 @@ describe('molding sample runtime error handling', () => {
     expect(text).not.toContain('BP-56206')
     expect(text).not.toContain('软弹枪配色')
     expect(text).not.toContain('Prime Kids')
+  })
+
+  it('separates business dates from Beijing workflow timestamps on both molding pages', async () => {
+    const record = createMoldingSampleRecord('待生产', 'BP-DATETIME-001')
+    record.order.date = '2026-02-03'
+    record.order.created_at = '2026-07-17T16:30:45Z'
+    record.order.updated_at = '2026-07-17T17:15:09Z'
+    record.items = [{
+      ...createKpiRecord('待生产', 'BP-DATETIME-001', null).items[0]!,
+      order_id: record.order.id,
+      completion_time: '2026-07-21',
+    }]
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+    const engineeringWrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(engineeringWrapper.text()).toContain('提交 2026-07-18')
+    await getButtonByText(engineeringWrapper, record.order.id).trigger('click')
+    await flushPromises()
+    expect(engineeringWrapper.text()).toContain('业务开单 2026-02-03')
+    await getButtonByText(engineeringWrapper, '展开完整数据').trigger('click')
+    await nextTick()
+    expect(engineeringWrapper.text()).toContain('系统提交时间（北京时间）')
+    expect(engineeringWrapper.text()).toContain('2026-07-18 00:30:45')
+    expect(engineeringWrapper.text()).toContain('2026-07-18 01:15:09')
+    engineeringWrapper.unmount()
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+    const productionWrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    expect(productionWrapper.text()).toContain('业务交期 2026-07-21')
+    expect(productionWrapper.text()).toContain('提交 2026-07-18')
+    await getButtonByText(productionWrapper, '展开完整数据').trigger('click')
+    await nextTick()
+    expect(productionWrapper.text()).toContain('业务开单日期')
+    expect(productionWrapper.text()).toContain('2026-02-03')
+    expect(productionWrapper.text()).toContain('2026-07-18 00:30:45')
+    expect(productionWrapper.text()).toContain('2026-07-18 01:15:09')
+    productionWrapper.unmount()
   })
 
   it('keeps order reading usable when protected material prices are forbidden', async () => {
@@ -1191,7 +1225,6 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-START-ROLLBACK-001', {
       action: '撤回开始生产',
       reason: '啤机部撤回开始生产，任务回到待生产。',
-      today: '2026-07-03',
     })
     expect(wrapper.text()).toContain('已撤回开始生产，任务回到待生产。')
     expect(wrapper.text()).toContain('待生产')
@@ -1252,7 +1285,6 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-ROLLBACK-001', {
       action: '撤回完成',
       reason: '啤机部撤回完成回传，回到生产中继续修正。',
-      today: '2026-07-03',
     })
     expect(wrapper.text()).toContain('生产完成已撤回，可继续修正回填后重新完成。')
     expect(wrapper.text()).toContain('生产中')
@@ -1306,7 +1338,6 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-START-ROLLBACK-001', {
       action: '撤回开始生产',
       reason: '啤机部撤回开始生产，任务回到待生产。',
-      today: '2026-07-03',
     })
     expect(wrapper.text()).toContain('已撤回开始生产，任务回到待生产。')
     expect(wrapper.text()).toContain('待生产')
@@ -1353,7 +1384,6 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
       action: '工程撤回',
       reason: '测试账号撤回主管审核。',
-      today: getCurrentDateText(),
     })
     expect(wrapper.text()).toContain('已撤回')
 
@@ -1711,6 +1741,106 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('shows only approved external tasks to a molding clerk without foreign notifications or writes', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huadeng', order_id: 'BP-CLERK-FOREIGN-READY' }
+    const readyRecord = createMoldingSampleRecord('待生产', 'BP-CLERK-FOREIGN-READY')
+    const reviewRecord = createMoldingSampleRecord('待审核', 'BP-CLERK-FOREIGN-REVIEW')
+    readyRecord.order.factory_id = 'huadeng'
+    reviewRecord.order.factory_id = 'huadeng'
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([readyRecord, reviewRecord])
+
+    const taskPermissions = [
+      'molding_sample:production_read',
+      'molding_sample:production_start',
+      'molding_sample:production_fillback',
+      'molding_sample:production_complete',
+      'molding_sample:notification_read',
+    ]
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['啤机文员'],
+      permissions: taskPermissions,
+      grantPermissions: taskPermissions,
+      factoryScopes: ['huaxing', '*'],
+      department: 'production',
+      primaryFactoryId: 'huaxing',
+      roleId: 'position_molding_clerk',
+      grantFactoryId: 'huaxing',
+      scopeMode: 'cross_factory_read',
+      readPermissionCodes: [
+        'molding_sample:production_read',
+        'molding_sample:notification_read',
+      ],
+      unrestrictedDepartment: true,
+    })
+
+    expect(wrapper.text()).toContain('BP-CLERK-FOREIGN-READY')
+    expect(wrapper.text()).not.toContain('BP-CLERK-FOREIGN-REVIEW')
+    expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('lets a molding supervisor receive and start an external production task', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huadeng', order_id: 'BP-SUPERVISOR-FOREIGN-READY' }
+    const readyRecord = createMoldingSampleRecord('待生产', 'BP-SUPERVISOR-FOREIGN-READY')
+    readyRecord.order.factory_id = 'huadeng'
+    const runningRecord = {
+      ...readyRecord,
+      order: { ...readyRecord.order, status: '生产中' },
+    } satisfies MoldingSampleDetailResponse
+    const notification = createProductionTaskNotification(readyRecord.order.id)
+    notification.factory_id = 'huadeng'
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([readyRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([notification])
+    mockedMoldingSampleApi.updateStatus.mockResolvedValueOnce(runningRecord)
+
+    const taskPermissions = [
+      'molding_sample:production_read',
+      'molding_sample:production_start',
+      'molding_sample:production_fillback',
+      'molding_sample:production_complete',
+      'molding_sample:notification_read',
+    ]
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['啤机主管'],
+      permissions: taskPermissions,
+      grantPermissions: taskPermissions,
+      factoryScopes: ['huaxing', '*'],
+      department: 'production',
+      primaryFactoryId: 'huaxing',
+      roleId: 'position_molding_supervisor',
+      grantFactoryId: 'huaxing',
+      scopeMode: 'cross_factory_operate',
+      readPermissionCodes: [
+        'molding_sample:production_read',
+        'molding_sample:notification_read',
+      ],
+      unrestrictedDepartment: true,
+    })
+
+    expect(mockedMoldingSampleApi.listNotifications).toHaveBeenCalledWith({
+      target_module: 'production_molding_sample_task',
+      factory_id: 'huadeng',
+    })
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeUndefined()
+    await getButtonByText(wrapper, '开始生产').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith(
+      'BP-SUPERVISOR-FOREIGN-READY',
+      {
+        action: '开始处理',
+        reason: '啤办生产任务单接收后开始执行。',
+      },
+    )
+
+    wrapper.unmount()
+  })
+
   it('keeps the production queue usable when protected material prices are forbidden', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-NO-COST-001' }
@@ -1779,7 +1909,6 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-PROD-OVERRIDE-001', {
       action: '开始处理',
       reason: '啤办生产任务单接收后开始执行。',
-      today: '2026-07-03',
     })
     expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
 
@@ -1833,6 +1962,77 @@ describe('molding sample runtime error handling', () => {
     await getButtonByText(wrapper, '展开完整数据').trigger('click')
     await nextTick()
     expect(wrapper.find('[data-testid="molding-full-item-cost-grid"]').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('loads the engineering board for a fixed molding clerk while keeping engineering actions read-only', async () => {
+    routeState.query = { factory: 'huadeng' }
+    const engineeringRecord = createKpiRecord('待审核', 'BP-MOLDING-CLERK-ENGINEERING-READ', 1.25)
+    engineeringRecord.order.factory_id = 'huadeng'
+    Object.assign(engineeringRecord, {
+      read_source: 'cross',
+      can_view_cost: false,
+      read_only: true,
+    })
+    const records = [engineeringRecord]
+    const getBoardSummaryMock = vi.fn().mockResolvedValue(createRuntimeBoardSummary(records))
+    const listBoardPageMock = vi.fn((request: Parameters<typeof moldingSampleApi.listBoardPage>[0]) =>
+      Promise.resolve(createRuntimeBoardPage(records, request.status, request.page, request.pageSize)),
+    )
+    runtimeMoldingSampleApiMock.getBoardSummary = getBoardSummaryMock
+    runtimeMoldingSampleApiMock.listBoardPage = listBoardPageMock
+
+    const taskPermissions = [
+      'molding_sample:production_read',
+      'molding_sample:production_start',
+      'molding_sample:production_fillback',
+      'molding_sample:production_complete',
+      'molding_sample:notification_read',
+    ]
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['啤机文员'],
+      permissions: taskPermissions,
+      grantPermissions: taskPermissions,
+      factoryScopes: ['huaxing', '*'],
+      department: 'production',
+      primaryFactoryId: 'huaxing',
+      roleId: 'position_molding_clerk',
+      grantFactoryId: 'huaxing',
+      scopeMode: 'cross_factory_read',
+      readPermissionCodes: [
+        'molding_sample:production_read',
+        'molding_sample:notification_read',
+      ],
+      unrestrictedDepartment: true,
+    })
+
+    expect(getBoardSummaryMock).toHaveBeenCalledWith('huadeng')
+    expect(listBoardPageMock).toHaveBeenCalledTimes(6)
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('BP-MOLDING-CLERK-ENGINEERING-READ')
+    expect(wrapper.get('[data-testid="molding-clerk-engineering-readonly-banner"]').text()).toContain(
+      '可切换查看所有厂区正式单据',
+    )
+    expect(wrapper.get('[data-testid="molding-clerk-engineering-readonly-banner"]').text()).toContain(
+      '不能新建、编辑、审核、驳回、删除或导出',
+    )
+
+    for (const hiddenAction of ['工程部 · 新建开单', '打印', '导入Excel', '导出Excel']) {
+      expect(wrapper.findAll('button').some((button) => button.text().includes(hiddenAction))).toBe(false)
+    }
+
+    await getButtonByText(wrapper, engineeringRecord.order.id).trigger('click')
+    await nextTick()
+    for (const hiddenAction of ['撤回审核', '删除啤办单', '通过', '驳回']) {
+      expect(wrapper.findAll('button').some((button) => button.text().trim() === hiddenAction)).toBe(false)
+    }
+    expect(mockedMoldingSampleApi.createOrder).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.editOrder).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.deleteOrder).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.exportOrderExcel).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.exportOrdersExcel).not.toHaveBeenCalled()
 
     wrapper.unmount()
   })
@@ -2094,7 +2294,6 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith('BP-WITHDRAW-UI', {
       action: '工程撤回',
       reason: '测试账号撤回主管审核。',
-      today: getCurrentDateText(),
     })
 
     wrapper.unmount()

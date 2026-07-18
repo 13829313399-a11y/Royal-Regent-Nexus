@@ -11,6 +11,7 @@ describe('UserAccessManagementView contract', () => {
       'iamApi.getUserAccess',
       'iamApi.listSystemPositions',
       'iamApi.listPermissions',
+      "iamApi.listPermissions('all')",
       'iamApi.getRoleAccess',
       'iamApi.previewUserSystemPosition',
       'iamApi.commitUserSystemPosition',
@@ -26,8 +27,14 @@ describe('UserAccessManagementView contract', () => {
       'previewAfterPositionLabel',
       '尚未确认主组织资料',
       'missing-primary-department',
-      '将继承的权限',
-      '这里只展示内置职位结果，不能逐项修改',
+      '将继承的完整权限',
+      '权限和数据范围由代码固定，管理员只能查看，不能逐项修改',
+      '实际职位用于人员资料',
+      '权限职位',
+      '推荐仅用于提示，不会自动选中或授权',
+      'selected-position-fixed-metadata',
+      'permissionStatusLabel(permission.status)',
+      'permissionRiskLabel(permission.risk_level)',
       '检测到历史授权',
       'legacy_role_count',
       'active_override_count',
@@ -42,6 +49,8 @@ describe('UserAccessManagementView contract', () => {
       expect(source).toContain(required)
     }
     expect(source).not.toContain('position.position_department === userDepartment.value')
+    expect(source).not.toContain('isBuiltInPositionPermissionVisible')
+    expect(source).not.toContain("iamApi.listPermissions('active')")
   })
 
   it('does not render scope, multi-role, granular override, or expiry controls', () => {
@@ -68,5 +77,15 @@ describe('UserAccessManagementView contract', () => {
     expect(source).toContain('w-full min-w-0')
     expect(source).toContain('aria-label="选择新的内置权限职位"')
     expect(source).toContain('role="dialog"')
+  })
+
+  it('uses a protected read-only fallback and rechecks every local change handler', () => {
+    expect(source).toContain("const canManageAccess = computed(() => authStore.can('system:access_manage'))")
+    expect(source).toContain('data-testid="user-access-protected-notice"')
+    expect(source).toContain('页面可访问 · 权限资料受保护')
+    expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canManageAccess\.value\) \{[\s\S]*?return\s+\}/)
+    expect(source.match(/if \(!ensureAccessManagementPermission\(\)\) return/g)).toHaveLength(4)
+    expect(source).toContain(':disabled="!canManageAccess || isPreviewing || isCommitting"')
+    expect(source).toContain('v-if="canManageAccess && preview"')
   })
 })

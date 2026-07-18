@@ -17,6 +17,7 @@ describe('iamApi', () => {
     const api = createIamApi(client)
 
     await api.listPermissions()
+    await api.listPermissions('all')
     await api.getManageableScopes()
     await api.searchUsers('张三', 'active')
     await api.getUserAccess('user/1')
@@ -49,6 +50,7 @@ describe('iamApi', () => {
     await api.commitRoleAccess('engineer', 'role-preview', false)
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       'get /iam/permissions?status=active',
+      'get /iam/permissions?status=all',
       'get /iam/manageable-scopes',
       'get /iam/users/search?query=%E5%BC%A0%E4%B8%89&status=active',
       'get /iam/users/user%2F1/access',
@@ -62,7 +64,7 @@ describe('iamApi', () => {
       'post /iam/roles/engineer/access/preview',
       'post /iam/roles/engineer/access/commit',
     ])
-    expect(calls[4].data).toEqual({
+    expect(calls[5].data).toEqual({
       base_revision: 3,
       reason: '开放设备维修模块',
       overrides: [{
@@ -73,13 +75,13 @@ describe('iamApi', () => {
         valid_until: null,
       }],
     })
-    expect(calls[5].data).toEqual({ preview_token: 'preview-1', confirm_high_risk: true })
-    expect(calls[6].data).toEqual({
+    expect(calls[6].data).toEqual({ preview_token: 'preview-1', confirm_high_risk: true })
+    expect(calls[7].data).toEqual({
       base_revision: 3,
       system_position_role_id: 'engineering_supervisor',
     })
-    expect(calls[7].data).toEqual({ preview_token: 'position-preview', confirm_high_risk: false })
-    expect(calls[11].data).toEqual({
+    expect(calls[8].data).toEqual({ preview_token: 'position-preview', confirm_high_risk: false })
+    expect(calls[12].data).toEqual({
       base_version: 2,
       reason: '角色补充查看权限',
       permission_codes: ['maintenance:read'],

@@ -31,7 +31,10 @@ from app.schemas.internal_quote import (
 from app.services.auth import AuthContext, now_text
 from app.services.internal_quote import (
     ALL_QUOTE_DEPARTMENTS,
+    ARTIFACT_NOTIFICATION_EVENTS,
     COMPLETED_SECTION_STATUSES,
+    FINAL_REVIEW_NOTIFICATION_EVENTS,
+    FINAL_SUBMIT_NOTIFICATION_EVENTS,
     SECTION_NAMES,
     _add_audit,
     _add_notification,
@@ -40,6 +43,7 @@ from app.services.internal_quote import (
     _ensure_active,
     _get_quote,
     _json_object,
+    _mark_quote_notifications_handled,
     ensure_quote_permission,
     ensure_quote_read,
     quote_to_out,
@@ -193,6 +197,11 @@ def submit_final_release(
         ),
         request=request,
     )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=FINAL_SUBMIT_NOTIFICATION_EVENTS,
+    )
     _add_notification(
         db,
         quote,
@@ -302,6 +311,11 @@ def review_final_release(
             sort_keys=True,
         ),
         request=request,
+    )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=FINAL_REVIEW_NOTIFICATION_EVENTS,
     )
 
     if payload.decision == "reject":
@@ -546,6 +560,12 @@ def _refresh_handoff(
         handoff.status = "revoked"
         handoff.revoked_at = now_text()
         handoff.revoke_reason = "最终放行 artifact 已失效或被后续版本取代"
+        _mark_quote_notifications_handled(
+            db,
+            quote,
+            events=ARTIFACT_NOTIFICATION_EVENTS,
+            payload_matches={"release_revision": handoff.release_revision},
+        )
     if export is None:
         raise HTTPException(status_code=404, detail="内部报价 artifact 文件不存在")
     return quote, export
@@ -674,6 +694,12 @@ def consume_customer_price_artifact(
             sort_keys=True,
         ),
         request=request,
+    )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=ARTIFACT_NOTIFICATION_EVENTS,
+        payload_matches={"release_revision": handoff.release_revision},
     )
     db.commit()
     db.refresh(handoff)

@@ -156,6 +156,108 @@ describe('authStore scoped permission decisions', () => {
   )
 
   it.each(['legacy', 'shadow', 'enforce'] as const)(
+    'lets fixed sales positions read other factories but initiate quotes only for their home factory and department in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      const permissions = [
+        'internal_quote:read',
+        'internal_quote:create',
+        'internal_quote:clone',
+      ]
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions,
+        factory_scopes: ['*'],
+        department_scopes: ['sales-business'],
+        grants: [{
+          role_id: 'position_sales_business',
+          role_code: 'position_sales_business',
+          role_name: '业务',
+          factory_id: 'huaxing',
+          department: 'sales-business',
+          permissions,
+          scope_mode: 'cross_factory_read',
+          read_permission_codes: ['internal_quote:read'],
+          unrestricted_department: true,
+          data_scope: 'all',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? permissions.map((permission) => ({
+              permission_code: permission,
+              factory_id: 'huaxing',
+              department: 'sales-business',
+              effect: 'allow' as const,
+              allowed: true,
+              source_type: 'role_binding',
+              source_ids: ['sales-position-binding'],
+            }))
+          : undefined,
+      }))
+
+      expect(store.can('internal_quote:read', 'huadeng', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huaxing', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:clone', 'huaxing', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huaxing', 'engineering')).toBe(false)
+      expect(store.can('internal_quote:clone', 'huaxing', 'engineering')).toBe(false)
+      expect(store.can('internal_quote:create', 'huadeng', 'sales-business')).toBe(false)
+      expect(store.can('internal_quote:clone', 'huadeng', 'sales-business')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow'] as const)(
+    'keeps valid custom quote grants additive beside a fixed sales position in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      const permissions = ['internal_quote:read', 'internal_quote:create']
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions,
+        factory_scopes: ['*'],
+        grants: [
+          {
+            role_id: 'position_sales_business',
+            role_code: 'position_sales_business',
+            role_name: '业务',
+            factory_id: 'huaxing',
+            department: 'sales-business',
+            permissions,
+            scope_mode: 'cross_factory_read',
+            read_permission_codes: ['internal_quote:read'],
+            unrestricted_department: true,
+            data_scope: 'all',
+          },
+          {
+            role_id: 'custom-engineering-creator',
+            role_code: 'custom-engineering-creator',
+            role_name: '工程建单补充授权',
+            factory_id: 'huaxing',
+            department: 'engineering',
+            permissions: ['internal_quote:create'],
+            unrestricted_department: false,
+            data_scope: 'department',
+          },
+          {
+            role_id: 'custom-huadeng-sales-creator',
+            role_code: 'custom-huadeng-sales-creator',
+            role_name: '华登业务建单补充授权',
+            factory_id: 'huadeng',
+            department: 'sales-business',
+            permissions: ['internal_quote:create'],
+            unrestricted_department: false,
+            data_scope: 'department',
+          },
+        ],
+      }))
+
+      expect(store.can('internal_quote:create', 'huaxing', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huaxing', 'engineering')).toBe(true)
+      expect(store.can('internal_quote:create', 'huadeng', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huadeng', 'engineering')).toBe(false)
+      expect(store.can('internal_quote:create', 'huakang-c', 'sales-business')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow', 'enforce'] as const)(
     'lets cross-factory-operate positions use every selected permission across factories in %s mode',
     (authzMode) => {
       const store = useAuthStore()
@@ -203,6 +305,78 @@ describe('authStore scoped permission decisions', () => {
       expect(store.can('maintenance:update', 'huadeng', 'qa')).toBe(true)
     },
   )
+
+  it('keeps cross-factory-read position notifications inside the home factory and department', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      permissions: ['molding_sample:read', 'molding_sample:notification_read'],
+      factory_scopes: ['*'],
+      grants: [{
+        role_id: 'position_engineering_engineer',
+        role_code: 'position_engineering_engineer',
+        role_name: '工程师',
+        factory_id: 'huaxing',
+        department: 'engineering',
+        permissions: ['molding_sample:read', 'molding_sample:notification_read'],
+        scope_mode: 'cross_factory_read',
+        read_permission_codes: ['molding_sample:read', 'molding_sample:notification_read'],
+        unrestricted_department: true,
+        data_scope: 'all',
+      }],
+    }))
+
+    expect(store.can('molding_sample:read', 'huadeng', 'engineering')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huaxing', 'engineering')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huaxing', 'production')).toBe(false)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'engineering')).toBe(false)
+  })
+
+  it('lets a molding supervisor receive cross-factory production notifications only', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      permissions: ['molding_sample:production_read', 'molding_sample:notification_read'],
+      factory_scopes: ['*'],
+      grants: [{
+        role_id: 'position_molding_supervisor',
+        role_code: 'position_molding_supervisor',
+        role_name: '啤机主管',
+        factory_id: 'huaxing',
+        department: 'production',
+        permissions: ['molding_sample:production_read', 'molding_sample:notification_read'],
+        scope_mode: 'cross_factory_operate',
+        read_permission_codes: ['molding_sample:production_read', 'molding_sample:notification_read'],
+        unrestricted_department: true,
+        data_scope: 'all',
+      }],
+    }))
+
+    expect(store.can('molding_sample:notification_read', 'huaxing', 'molding')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'production')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'engineering')).toBe(false)
+  })
+
+  it('keeps the general manager notification scope unrestricted', () => {
+    const store = useAuthStore()
+    store.applySession(session({
+      permissions: ['molding_sample:notification_read'],
+      factory_scopes: ['*'],
+      grants: [{
+        role_id: 'position_general_manager',
+        role_code: 'position_general_manager',
+        role_name: '总经理',
+        factory_id: 'huaxing',
+        department: 'management',
+        permissions: ['molding_sample:notification_read'],
+        scope_mode: 'cross_factory_operate',
+        read_permission_codes: ['molding_sample:notification_read'],
+        unrestricted_department: true,
+        data_scope: 'all',
+      }],
+    }))
+
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'engineering')).toBe(true)
+    expect(store.can('molding_sample:notification_read', 'huadeng', 'production')).toBe(true)
+  })
 
   it('does not let a wildcard system-position binding bypass its configured scope mode', () => {
     const store = useAuthStore()

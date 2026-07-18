@@ -86,6 +86,12 @@ describe('production module entry', () => {
     ]) {
       expect(rawMaterialSource).toContain(requiredCopy)
     }
+    expect(rawMaterialSource).toMatch(/const canManageSelectedFactory = computed/)
+    expect(rawMaterialSource).toContain('当前厂区为只读，可查看原料资料，但不能新增、编辑、领料或调整库存。')
+    expect(rawMaterialSource).toMatch(/:disabled="!canManageSelectedFactory"[\s\S]{0,260}@click="openMaterialModal"/)
+    expect(rawMaterialSource).toMatch(/:disabled="!canManageSelectedFactory"[\s\S]{0,260}@click="openRequisitionModal"/)
+    expect(rawMaterialSource).toMatch(/:disabled="!canManageSelectedFactory"[\s\S]{0,260}@click="openBatchModal"/)
+    expect(rawMaterialSource).toMatch(/isSavingMaterial \|\| !canManageSelectedFactory/)
 
     expect(rawMaterialSource).toContain('rawMaterialApi.list(factoryId)')
     expect(rawMaterialSource).toContain('mapPersistedRawMaterialRow')
@@ -154,7 +160,7 @@ describe('production module entry', () => {
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/customer-price-conversion'/)
     expect(routerSource).toMatch(/name: 'customer-price-conversion'/)
     expect(routerSource).toMatch(/title: '客价转换台'/)
-    expect(routerSource).toMatch(/permissions: \['customer_price:read'\]/)
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/customer-price-conversion'[\s\S]{0,360}permissions: \['customer_price:read', 'customer_price:import_internal_quote'\]/)
     expect(routerSource).not.toMatch(/\/modules\/sales-business\/internal-pricing/)
     expect(routerSource).not.toMatch(/InternalPricingView\.vue/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center'/)

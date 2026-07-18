@@ -151,11 +151,13 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         )
         notifications = client.get("/api/system/notifications")
         assert notifications.status_code == 200
-        assert any(
-            item["payload"].get("event") == "final_release_submitted"
-            and item["payload"].get("quote_id") == quote_id
+        final_review_notification = next(
+            item
             for item in notifications.json()
+            if item["payload"].get("event") == "final_release_submitted"
+            and item["payload"].get("quote_id") == quote_id
         )
+        assert final_review_notification["status"] == "unread"
 
         approved = client.post(
             f"/api/internal-quotes/{quote_id}/final-review",
@@ -168,6 +170,17 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         assert result["quote"]["final_release_status"] == "approved"
         assert result["quote"]["final_release_revision"] == 1
         assert result["review"]["decision"] == "approve"
+        notifications_after_review = client.get("/api/system/notifications").json()
+        assert next(
+            item for item in notifications_after_review if item["id"] == final_review_notification["id"]
+        )["status"] == "handled"
+        artifact_notification = next(
+            item
+            for item in notifications_after_review
+            if item["payload"].get("event") == "customer_price_artifact_available"
+            and item["payload"].get("quote_id") == quote_id
+        )
+        assert artifact_notification["status"] == "unread"
         final_export = result["export"]
         assert final_export["template_version"] == "internal-quote-p4-v2"
         assert final_export["release_stage"] == "p4_final_approved"
@@ -244,6 +257,10 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         assert consumed.status_code == 200
         assert consumed.json()["status"] == "consumed"
         assert consumed.json()["consumer_reference"] == "customer-conversion-001"
+        notifications_after_consume = client.get("/api/system/notifications").json()
+        assert next(
+            item for item in notifications_after_consume if item["id"] == artifact_notification["id"]
+        )["status"] == "handled"
         duplicate = client.post(
             f"/api/customer-price/internal-quote-artifacts/{handoff['id']}/consume",
             json={"consumer_reference": "customer-conversion-002"},
@@ -261,6 +278,18 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         )
         assert [item["id"] for item in consumed_artifacts.json()] == [handoff["id"]]
 
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            stale_artifact_notification = db.get(
+                auth_models.SystemNotification,
+                artifact_notification["id"],
+            )
+            stale_artifact_notification.status = "unread"
+            stale_artifact_notification.read_at = ""
+            stale_artifact_notification.handled_at = ""
+            db.commit()
+
         reopened = client.post(
             f"/api/internal-quotes/{quote_id}/sections/sales/reopen",
             json={"revision": 1, "reason": "客户数量变更，重新核价"},
@@ -269,6 +298,10 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         detail = client.get(f"/api/internal-quotes/{quote_id}").json()
         assert detail["status"] == "drafting"
         assert detail["final_release_status"] == "invalidated"
+        notifications_after_reopen = client.get("/api/system/notifications").json()
+        assert next(
+            item for item in notifications_after_reopen if item["id"] == artifact_notification["id"]
+        )["status"] == "handled"
         revoked = client.get(
             "/api/customer-price/internal-quote-artifacts?factory_id=huaxing&status=revoked"
         )

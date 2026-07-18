@@ -674,6 +674,12 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         engineer_id = create_user("role-template-user", "engineer", "huaxing", "engineering")
         login(client, "admin")
         role_access = client.get("/api/iam/roles/engineer/access").json()
+        assert role_access["is_system_position"] is False
+        assert role_access["is_editable"] is True
+        assert role_access["source"] == "database"
+        assert role_access["scope_mode_locked"] is False
+        assert role_access["definition_version"] == ""
+        assert role_access["definition_hash"] == ""
         invalid_preview = client.post(
             "/api/iam/roles/engineer/access/preview",
             json={
@@ -718,146 +724,222 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         assert updated_user["authorization_version"] == 2
 
 
-def test_system_position_template_accepts_cross_department_permissions_and_scope_mode(monkeypatch):
+def test_permission_catalog_supports_active_inactive_and_all(monkeypatch):
     with make_client(monkeypatch) as client:
-        bound_user_id = create_user(
-            "cross-department-position-user",
-            "position_sales_manager",
-            "huaxing",
-            "engineering",
-            display_name="跨部门内置职位用户",
-        )
         login(client, "admin")
-        role_access = client.get(
-            "/api/iam/roles/position_sales_manager/access"
-        ).json()
-        desired_codes = sorted(
-            set(role_access["permission_codes"])
-            | {"molding_sample:create", "molding_sample:read"}
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        inactive_code = "carton_mark:review"
+
+        with db_module.SessionLocal() as db:
+            permission = db.query(models.AuthPermission).filter_by(
+                code=inactive_code
+            ).one()
+            metadata = db.get(models.AuthPermissionMetadata, permission.id)
+            metadata.status = "inactive"
+            db.commit()
+
+        default_active = client.get("/api/iam/permissions")
+        explicit_active = client.get("/api/iam/permissions?status=active")
+        inactive = client.get("/api/iam/permissions?status=inactive")
+        all_permissions = client.get("/api/iam/permissions?status=all")
+        invalid = client.get("/api/iam/permissions?status=unknown")
+
+        assert default_active.status_code == 200, default_active.text
+        assert explicit_active.status_code == 200, explicit_active.text
+        assert inactive.status_code == 200, inactive.text
+        assert all_permissions.status_code == 200, all_permissions.text
+        assert invalid.status_code == 400
+        assert inactive_code not in {item["code"] for item in default_active.json()}
+        assert inactive_code not in {item["code"] for item in explicit_active.json()}
+        assert {item["code"] for item in inactive.json()} == {inactive_code}
+        assert len(all_permissions.json()) == 63
+        inactive_item = next(
+            item for item in all_permissions.json() if item["code"] == inactive_code
+        )
+        assert inactive_item["status"] == "inactive"
+
+        access_kinds = {
+            item["code"]: item["access_kind"] for item in all_permissions.json()
+        }
+        assert access_kinds["molding_sample:read"] == "read"
+        assert access_kinds["molding_sample:create"] == "operate"
+        assert access_kinds["internal_quote:read"] == "read"
+        assert access_kinds["internal_quote:create"] == "operate"
+
+
+def test_system_position_get_contract_is_code_locked(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin")
+        response = client.get("/api/iam/system-positions")
+        assert response.status_code == 200, response.text
+        positions = response.json()
+        assert len(positions) == 29
+        assert all(item["is_system_position"] for item in positions)
+        assert all(item["is_editable"] is False for item in positions)
+        assert all(item["source"] == "code" for item in positions)
+        assert all(item["scope_mode_locked"] is True for item in positions)
+        assert all(item["definition_version"] == "fixed-v2" for item in positions)
+        assert all(len(item["definition_hash"]) == 64 for item in positions)
+
+        general_manager = next(
+            item for item in positions if item["id"] == "position_general_manager"
+        )
+        assert general_manager["scope_mode"] == "cross_factory_operate"
+        assert general_manager["permission_count"] == 56
+
+        detail = client.get(
+            "/api/iam/roles/position_general_manager/access"
+        )
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["is_editable"] is False
+        assert detail.json()["source"] == "code"
+        assert detail.json()["scope_mode_locked"] is True
+        assert detail.json()["definition_hash"] == general_manager["definition_hash"]
+        assert len(detail.json()["permission_codes"]) == 56
+        assert not any(
+            code.startswith("system:") for code in detail.json()["permission_codes"]
         )
 
-        preview = client.post(
-            "/api/iam/roles/position_sales_manager/access/preview",
+
+def test_general_manager_cannot_use_iam_or_system_management_but_admin_can_assign_position(
+    monkeypatch,
+):
+    with make_client(monkeypatch) as client:
+        create_user(
+            "iam-general-manager",
+            "position_general_manager",
+            "huaxing",
+            "management",
+            display_name="集团总经理",
+        )
+        target_user_id = create_user(
+            "iam-position-target",
+            "engineer",
+            "huaxing",
+            "engineering",
+            display_name="职位分配目标",
+        )
+
+        login(client, "iam-general-manager")
+        denied_gets = (
+            "/api/iam/permissions?status=all",
+            "/api/iam/system-positions",
+            "/api/iam/roles/position_general_manager/access",
+            "/api/iam/users/search?query=iam-position-target",
+            f"/api/iam/users/{target_user_id}/access",
+            "/api/iam/audit-events",
+            "/api/system/users?status=active",
+            "/api/system/positions",
+        )
+        for endpoint in denied_gets:
+            response = client.get(endpoint)
+            assert response.status_code == 403, (endpoint, response.text)
+
+        denied_assignment = client.post(
+            f"/api/iam/users/{target_user_id}/system-position/preview",
             json={
-                "base_version": role_access["version"],
-                "reason": "业务经理跨厂查看并自由组合工程权限",
-                "permission_codes": desired_codes,
-                "scope_mode": "cross_factory_read",
+                "base_revision": 1,
+                "system_position_role_id": "position_sales_business",
+                "reason": "总经理不得分配权限职位",
+            },
+        )
+        assert denied_assignment.status_code == 403, denied_assignment.text
+
+        login(client, "admin")
+        for endpoint in denied_gets:
+            response = client.get(endpoint)
+            assert response.status_code == 200, (endpoint, response.text)
+
+        access_before = client.get(f"/api/iam/users/{target_user_id}/access")
+        assert access_before.status_code == 200, access_before.text
+        assert access_before.json()["profile"]["position"] == "测试职位"
+        preview = client.post(
+            f"/api/iam/users/{target_user_id}/system-position/preview",
+            json={
+                "base_revision": access_before.json()["authorization_version"],
+                "system_position_role_id": "position_sales_business",
+                "reason": "管理员分配固定业务权限职位",
             },
         )
         assert preview.status_code == 200, preview.text
-        body = preview.json()
-        assert body["before_scope_mode"] == "own_factory"
-        assert body["after_scope_mode"] == "cross_factory_read"
-        assert body["affected_user_count"] == 1
-        assert body["high_risk"] is True
-        assert any(
-            item["permission_code"] == "molding_sample:create"
-            for item in body["diffs"]
-        )
-
         commit = client.post(
-            "/api/iam/roles/position_sales_manager/access/commit",
+            f"/api/iam/users/{target_user_id}/system-position/commit",
             json={
-                "preview_token": body["preview_token"],
-                "confirm_high_risk": True,
+                "preview_token": preview.json()["preview_token"],
+                "confirm_high_risk": preview.json()["high_risk"],
             },
         )
         assert commit.status_code == 200, commit.text
 
-        updated = client.get(
-            "/api/iam/roles/position_sales_manager/access"
-        ).json()
-        assert updated["scope_mode"] == "cross_factory_read"
-        assert "molding_sample:create" in updated["permission_codes"]
-        updated_user = client.get(f"/api/iam/users/{bound_user_id}/access").json()
-        assert updated_user["authorization_version"] == 2
-        catalog = client.get("/api/iam/permissions").json()
-        access_kinds = {item["code"]: item["access_kind"] for item in catalog}
-        assert access_kinds["molding_sample:read"] == "read"
-        assert access_kinds["molding_sample:create"] == "operate"
-        assert access_kinds["internal_quote:read"] == "read"
-        assert access_kinds["internal_quote:summary_read"] == "read"
-        assert access_kinds["internal_quote:timeline_read"] == "read"
-        assert access_kinds["internal_quote:create"] == "operate"
+        access_after = client.get(f"/api/iam/users/{target_user_id}/access")
+        assert access_after.status_code == 200, access_after.text
+        assert access_after.json()["system_position_role_id"] == "position_sales_business"
+        assert access_after.json()["profile"]["position"] == "测试职位"
 
-        cross_read_codes = sorted(
-            set(updated["permission_codes"]) | {"carton_mark:read"}
-        )
-        cross_read_preview = client.post(
-            "/api/iam/roles/position_sales_manager/access/preview",
+
+@pytest.mark.parametrize(
+    "role_id",
+    ["position_sales_manager", "position_general_manager"],
+)
+def test_system_position_template_preview_and_commit_are_rejected(
+    monkeypatch,
+    role_id,
+):
+    with make_client(monkeypatch) as client:
+        login(client, "admin")
+        role_access = client.get(f"/api/iam/roles/{role_id}/access").json()
+        preview = client.post(
+            f"/api/iam/roles/{role_id}/access/preview",
             json={
-                "base_version": updated["version"],
-                "reason": "跨厂只读职位增加新的读取权限",
-                "permission_codes": cross_read_codes,
+                "base_version": role_access["version"],
+                "reason": "尝试在线修改代码固定职位",
+                "permission_codes": role_access["permission_codes"],
+                "scope_mode": role_access["scope_mode"],
             },
         )
-        assert cross_read_preview.status_code == 200, cross_read_preview.text
-        assert cross_read_preview.json()["high_risk"] is True
-        assert client.post(
-            "/api/iam/roles/position_sales_manager/access/commit",
+        assert preview.status_code == 409, preview.text
+        assert preview.json()["detail"] == "系统内置职位由代码固定维护，不能在线修改"
+
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        iam_service = importlib.import_module("app.services.iam")
+        with db_module.SessionLocal() as db:
+            historical_token, _ = iam_service._store_preview(
+                db,
+                actor_user_id="user-admin",
+                target_type="role",
+                target_id=role_id,
+                base_revision=role_access["version"],
+                payload={
+                    "reason": "历史系统职位编辑预览",
+                    "permission_codes": role_access["permission_codes"],
+                    "permission_security": {},
+                    "scope_mode": role_access["scope_mode"],
+                    "name": None,
+                    "description": None,
+                    "active_binding_ids": [],
+                },
+                summary={"high_risk": False},
+            )
+            db.commit()
+
+        commit = client.post(
+            f"/api/iam/roles/{role_id}/access/commit",
             json={
-                "preview_token": cross_read_preview.json()["preview_token"],
-                "confirm_high_risk": False,
-            },
-        ).status_code == 400
-        confirmed_read = client.post(
-            "/api/iam/roles/position_sales_manager/access/commit",
-            json={
-                "preview_token": cross_read_preview.json()["preview_token"],
+                "preview_token": historical_token,
                 "confirm_high_risk": True,
             },
         )
-        assert confirmed_read.status_code == 200, confirmed_read.text
+        assert commit.status_code == 409, commit.text
+        assert commit.json()["detail"] == "系统内置职位由代码固定维护，不能在线修改"
 
-        updated_read = client.get(
-            "/api/iam/roles/position_sales_manager/access"
-        ).json()
-        assert client.get(
-            f"/api/iam/users/{bound_user_id}/access"
-        ).json()["authorization_version"] == 3
-        operate_scope_preview = client.post(
-            "/api/iam/roles/position_sales_manager/access/preview",
-            json={
-                "base_version": updated_read["version"],
-                "reason": "职位范围升级为跨厂操作",
-                "permission_codes": updated_read["permission_codes"],
-                "scope_mode": "cross_factory_operate",
-            },
-        )
-        assert operate_scope_preview.status_code == 200, operate_scope_preview.text
-        assert operate_scope_preview.json()["high_risk"] is True
-        assert client.post(
-            "/api/iam/roles/position_sales_manager/access/commit",
-            json={
-                "preview_token": operate_scope_preview.json()["preview_token"],
-                "confirm_high_risk": True,
-            },
-        ).status_code == 200
-
-        updated_operate = client.get(
-            "/api/iam/roles/position_sales_manager/access"
-        ).json()
-        operate_permission_preview = client.post(
-            "/api/iam/roles/position_sales_manager/access/preview",
-            json={
-                "base_version": updated_operate["version"],
-                "reason": "跨厂操作职位增加普通操作权限",
-                "permission_codes": sorted(
-                    set(updated_operate["permission_codes"])
-                    | {"carton_mark:photo_upload"}
-                ),
-            },
-        )
-        assert operate_permission_preview.status_code == 200, operate_permission_preview.text
-        assert operate_permission_preview.json()["high_risk"] is True
-        assert client.post(
-            "/api/iam/roles/position_sales_manager/access/commit",
-            json={
-                "preview_token": operate_permission_preview.json()["preview_token"],
-                "confirm_high_risk": False,
-            },
-        ).status_code == 400
+        with db_module.SessionLocal() as db:
+            historical_preview = db.query(models.AuthAuthorizationPreview).filter_by(
+                target_type="role",
+                target_id=role_id,
+            ).one()
+            assert historical_preview.consumed_at == ""
 
 
 def test_flat_permission_union_keeps_foreign_cross_allow_but_respects_global_deny(monkeypatch):
@@ -946,21 +1028,19 @@ def test_role_template_commit_rejects_changed_binding_snapshot(monkeypatch, bind
         if binding_change == "remove":
             changed_user_id = create_user(
                 "binding-snapshot-remove",
-                "position_sales_manager",
+                "engineer",
                 "huaxing",
-                "sales-business",
+                "engineering",
             )
         login(client, "admin")
-        role_access = client.get(
-            "/api/iam/roles/position_sales_manager/access"
-        ).json()
+        role_access = client.get("/api/iam/roles/engineer/access").json()
         preview = client.post(
-            "/api/iam/roles/position_sales_manager/access/preview",
+            "/api/iam/roles/engineer/access/preview",
             json={
                 "base_version": role_access["version"],
                 "reason": "验证绑定用户快照",
                 "permission_codes": sorted(
-                    set(role_access["permission_codes"]) | {"carton_mark:read"}
+                    set(role_access["permission_codes"]) | {"injection_schedule:read"}
                 ),
             },
         )
@@ -969,9 +1049,9 @@ def test_role_template_commit_rejects_changed_binding_snapshot(monkeypatch, bind
         if binding_change == "add":
             create_user(
                 "binding-snapshot-add",
-                "position_sales_manager",
+                "engineer",
                 "huaxing",
-                "sales-business",
+                "engineering",
             )
         else:
             db_module = importlib.import_module("app.db")
@@ -979,13 +1059,13 @@ def test_role_template_commit_rejects_changed_binding_snapshot(monkeypatch, bind
             with db_module.SessionLocal() as db:
                 binding = db.query(models.AuthUserRole).filter_by(
                     user_id=changed_user_id,
-                    role_id="position_sales_manager",
+                    role_id="engineer",
                 ).one()
                 db.delete(binding)
                 db.commit()
 
         commit = client.post(
-            "/api/iam/roles/position_sales_manager/access/commit",
+            "/api/iam/roles/engineer/access/commit",
             json={
                 "preview_token": preview.json()["preview_token"],
                 "confirm_high_risk": preview.json()["high_risk"],

@@ -35,6 +35,7 @@ from app.models.auth import (
 from app.schemas.auth import AuthMeResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest, RegisterResponse
 from app.services.iam_scope import (
     CROSS_FACTORY_OPERATE_SCOPE,
+    CROSS_FACTORY_READ_LOCAL_ONLY_PERMISSION_CODES,
     CROSS_FACTORY_READ_SCOPE,
     OPERATE_ACCESS_KIND,
     OWN_FACTORY_SCOPE,
@@ -43,7 +44,13 @@ from app.services.iam_scope import (
     VALID_SCOPE_MODES,
     default_permission_access_kind,
 )
+from app.services.permission_codes import (
+    APPLICATION_PERMISSION_CODES,
+    INTERNAL_QUOTE_PERMISSION_CODES,
+    INTERNAL_QUOTE_SECTION_CODES,
+)
 from app.services.system_positions import SYSTEM_POSITION_DEFINITIONS, get_system_position
+from app.services.system_position_reconcile import reconcile_system_position_catalog
 
 SESSION_COOKIE_NAME = "rr_session"
 logger = logging.getLogger(__name__)
@@ -97,93 +104,7 @@ CHINESE_CHARACTER_RANGES = (
     ("\uf900", "\ufaff"),
 )
 
-MOLDING_SAMPLE_PERMISSIONS = [
-    "molding_sample:read",
-    "molding_sample:cross_factory_read",
-    "molding_sample:cross_factory_cost_read",
-    "molding_sample:export",
-    "molding_sample:create",
-    "molding_sample:edit_draft",
-    "molding_sample:delete_draft",
-    "molding_sample:supervisor_review",
-    "molding_sample:manager_review",
-    "molding_sample:raw_material_write",
-    "molding_sample:warehouse_requisition",
-    "molding_sample:inventory_issue",
-    "molding_sample:production_read",
-    "molding_sample:production_start",
-    "molding_sample:production_fillback",
-    "molding_sample:production_complete",
-    "molding_sample:price_update",
-    "molding_sample:audit_read",
-    "molding_sample:notification_read",
-    "carton_mark:read",
-    "carton_mark:template_upload",
-    "carton_mark:photo_upload",
-    "carton_mark:review",
-    "customer_price:read",
-    "customer_price:import_internal_quote",
-    "customer_price:export_customer_quote",
-    "customer_price:compare",
-    "system:user_manage",
-    "system:role_manage",
-]
-
-INJECTION_SCHEDULE_PERMISSIONS = [
-    "injection_schedule:read",
-    "injection_schedule:import",
-]
-
-IAM_PERMISSIONS = [
-    "system:access_manage",
-    "system:access_request",
-    "system:access_approve",
-    "system:audit_read",
-    "system:permission_catalog_read",
-]
-
-INTERNAL_QUOTE_SECTION_CODES = (
-    "sales",
-    "engineering",
-    "electronic",
-    "molding",
-    "painting",
-    "slush",
-    "sewing",
-    "assembly",
-)
-INTERNAL_QUOTE_PERMISSIONS = [
-    "internal_quote:read",
-    "internal_quote:create",
-    "internal_quote:clone",
-    "internal_quote:header_edit",
-    "internal_quote:summary_read",
-    "internal_quote:timeline_read",
-    "internal_quote:archive",
-    "internal_quote:baseline_read",
-    "internal_quote:baseline_manage",
-    "internal_quote:reference_manage",
-    "internal_quote:export",
-    "internal_quote:final_submit",
-    "internal_quote:final_approve",
-    *(
-        permission
-        for section_code in INTERNAL_QUOTE_SECTION_CODES
-        for permission in (
-            f"internal_quote:{section_code}_edit",
-            f"internal_quote:{section_code}_review",
-        )
-    ),
-]
-
-APPLICATION_PERMISSIONS = list(
-    dict.fromkeys(
-        MOLDING_SAMPLE_PERMISSIONS
-        + INJECTION_SCHEDULE_PERMISSIONS
-        + INTERNAL_QUOTE_PERMISSIONS
-        + IAM_PERMISSIONS
-    )
-)
+APPLICATION_PERMISSIONS = list(APPLICATION_PERMISSION_CODES)
 
 INTERNAL_QUOTE_COMMON_PERMISSIONS = {
     "internal_quote:read",
@@ -385,9 +306,7 @@ ROLE_PERMISSIONS = {
 }
 
 for system_position in SYSTEM_POSITION_DEFINITIONS:
-    ROLE_PERMISSIONS[system_position.role_id] = set(
-        ROLE_PERMISSIONS.get(system_position.permission_profile, set())
-    )
+    ROLE_PERMISSIONS[system_position.role_id] = set(system_position.permission_codes)
 
 DEFAULT_USERS = [
     ("user-admin", "admin", "系统管理员", "admin", "*", "*"),
@@ -598,9 +517,44 @@ def system_position_grant_scope_source(
         return "local"
     if grant.scope_mode == CROSS_FACTORY_OPERATE_SCOPE:
         return "cross_operate"
-    if grant.scope_mode == CROSS_FACTORY_READ_SCOPE and permission in grant.read_permissions:
+    if (
+        grant.scope_mode == CROSS_FACTORY_READ_SCOPE
+        and permission in grant.read_permissions
+        and permission not in CROSS_FACTORY_READ_LOCAL_ONLY_PERMISSION_CODES
+    ):
         return "cross_read"
     return None
+
+
+POSITION_DEPARTMENT_ALIAS_GROUPS = (
+    frozenset({"production", "molding"}),
+    frozenset({"pmc-warehouse", "warehouse"}),
+)
+POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
+    {
+        "molding_sample:notification_read",
+        "internal_quote:create",
+        "internal_quote:clone",
+    }
+)
+
+
+def system_position_grant_department_matches(
+    grant: AuthGrantContext,
+    permission: str,
+    department: str | None,
+) -> bool:
+    """Keep department-owned actions and feeds inside the bound position department."""
+    if permission not in POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES or department in {None, "*"}:
+        return True
+    if grant.role_id == "position_general_manager" or grant.department == "*":
+        return True
+    if grant.department == department:
+        return True
+    return any(
+        grant.department in aliases and department in aliases
+        for aliases in POSITION_DEPARTMENT_ALIAS_GROUPS
+    )
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -893,7 +847,9 @@ def seed_internal_quote_default_grants_once(db: Session, now: str) -> int:
     permissions_by_code = {
         permission.code: permission
         for permission in db.scalars(
-            select(AuthPermission).where(AuthPermission.code.in_(INTERNAL_QUOTE_PERMISSIONS))
+            select(AuthPermission).where(
+                AuthPermission.code.in_(INTERNAL_QUOTE_PERMISSION_CODES)
+            )
         ).all()
     }
     created_count = 0
@@ -1466,8 +1422,8 @@ def ensure_authz_startup_safety(db: Session) -> None:
 def seed_auth_defaults(db: Session) -> None:
     now = now_text()
     created_role_ids: set[str] = set()
-    system_position_names = {
-        item.role_id: item.name for item in SYSTEM_POSITION_DEFINITIONS
+    system_position_role_ids = {
+        item.role_id for item in SYSTEM_POSITION_DEFINITIONS
     }
 
     for code in APPLICATION_PERMISSIONS:
@@ -1476,21 +1432,20 @@ def seed_auth_defaults(db: Session) -> None:
             db.add(AuthPermission(id=permission_id, code=code, name=code, description=""))
 
     for role_id, name, description in DEFAULT_ROLES:
+        if role_id in system_position_role_ids:
+            # Fixed positions are created and fully reconciled after the shared
+            # permission catalog and IAM sidecars are ready.
+            continue
         role = db.get(AuthRole, role_id)
         if role is None:
             db.add(AuthRole(id=role_id, code=role_id, name=name, description=description))
             created_role_ids.add(role_id)
-        elif role_id in system_position_names:
-            # Built-in position names are part of the fixed catalog and cannot be
-            # edited in IAM. Reconcile display-name fixes without touching the
-            # administrator-owned description or permission mappings.
-            role.name = system_position_names[role_id]
 
     db.flush()
     permissions_by_code = {permission.code: permission for permission in db.scalars(select(AuthPermission)).all()}
 
-    # Default mappings initialize brand-new roles only. Existing role templates are
-    # administrator-owned data and must never be restored or trimmed on startup.
+    # Legacy and special roles retain their existing compatibility behavior.
+    # Fixed system positions are projected separately from code below.
     for role_id in created_role_ids:
         for permission_code in ROLE_PERMISSIONS.get(role_id, set()):
             permission = permissions_by_code.get(permission_code)
@@ -1549,6 +1504,7 @@ def seed_auth_defaults(db: Session) -> None:
     seed_internal_quote_baseline_grants_once(db, now)
     seed_legacy_read_compat_once(db, now)
     seed_legacy_export_compat_once(db, now)
+    reconcile_system_position_catalog(db, now=now)
     ensure_authz_startup_safety(db)
     db.commit()
 
@@ -1950,6 +1906,7 @@ def authorization_decision(
             (
                 grant.unrestricted_department
                 and system_position_grant_scope_source(grant, permission, factory_id) == "local"
+                and system_position_grant_department_matches(grant, permission, department)
             )
             or (
                 not grant.unrestricted_department
@@ -1969,8 +1926,9 @@ def authorization_decision(
     # A built-in position is a function bundle, not an organization boundary.
     # Its binding factory remains the employee's home-factory anchor while the
     # position template decides whether read-only or operating permissions may
-    # expand to another concrete factory. Department is intentionally ignored
-    # for these grants so administrators can freely combine module permissions.
+    # expand to another concrete factory. Most module permissions may be
+    # combined across departments; explicitly department-owned actions such as
+    # internal-quote initiation still have to match the bound position.
     cross_factory_grants = [
         grant
         for grant in user.grants
@@ -1978,6 +1936,7 @@ def authorization_decision(
         and permission in grant.permissions
         and system_position_grant_scope_source(grant, permission, factory_id)
         in {"cross_read", "cross_operate"}
+        and system_position_grant_department_matches(grant, permission, department)
         and time_window_is_active(grant.valid_from, grant.valid_until, at)
     ]
     if cross_factory_grants:
@@ -2383,7 +2342,10 @@ def legacy_has_permission_in_scope(
         if permission not in grant.permissions:
             continue
         if grant.unrestricted_department:
-            if system_position_grant_scope_source(grant, permission, factory_id) is not None:
+            if (
+                system_position_grant_scope_source(grant, permission, factory_id) is not None
+                and system_position_grant_department_matches(grant, permission, department)
+            ):
                 return True
             continue
         if grant.factory_id != "*" and grant.factory_id != factory_id:

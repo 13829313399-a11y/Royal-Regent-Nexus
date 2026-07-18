@@ -301,5 +301,10 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
 
         logout(client)
         login(client, "iq_p3_export_forbidden", "engineer", "engineering")
-        forbidden = client.get(f"/api/internal-quotes/{quote_id}/exports")
-        assert forbidden.status_code == 403
+        history_only = client.get(f"/api/internal-quotes/{quote_id}/exports")
+        assert history_only.status_code == 200
+        assert len(history_only.json()) == 2
+        forbidden_download = client.get(
+            f"/api/internal-quotes/{quote_id}/exports/{second['id']}/download"
+        )
+        assert forbidden_download.status_code == 403

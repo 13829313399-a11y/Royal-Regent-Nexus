@@ -7,6 +7,7 @@ from io import BytesIO
 from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from app.core.time import business_now
 from app.models.molding_sample import MoldingSampleMaterialPrice, MoldingSampleOrder
 from app.schemas.molding_sample import MoldingSampleCreateRequest, MoldingSampleItemIn, MoldingSampleOrderIn
 from app.services.molding_sample import (
@@ -726,15 +727,16 @@ def parse_order_excel(
     if order_id_override:
         order_data["id"] = order_id_override
 
+    import_time = business_now()
     order_id = str(order_data.get("id") or "").strip()
     if not order_id:
-        order_id = f"BP-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        order_id = f"BP-{import_time.strftime('%Y%m%d%H%M%S')}"
         order_data["id"] = order_id
 
     if not str(order_data.get("product_name") or "").strip():
         raise ValueError("Excel 缺少产品名称")
     if not str(order_data.get("date") or "").strip():
-        order_data["date"] = datetime.now().strftime("%Y-%m-%d")
+        order_data["date"] = import_time.date().isoformat()
 
     headers = [str(value or "").strip() for value in rows[detail_header_index]]
     uses_current_engineering_detail_contract = any(

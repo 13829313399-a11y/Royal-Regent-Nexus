@@ -7,9 +7,10 @@ const source = readFileSync(join(process.cwd(), 'src/views/MoldingSampleProducti
 for (const requiredCopy of [
   '啤办生产任务单',
   '接收工程啤办单通知',
-  '主管审核通过后进入通知区',
-  '任务通知队列',
-  '独立通知表',
+  '主管审核通过后任务进入生产队列',
+  '铃铛通知独立同步',
+  '正式生产任务',
+  '任务通知',
   '啤机部只处理生产执行字段',
   '看板',
   '列表',
@@ -91,7 +92,6 @@ for (const requiredImplementation of [
   'selectedProblems',
   'problemSubmitting',
   'appendProblemForOrder',
-  'notificationOrderIds',
   'production_molding_sample_task',
   "'huaxing'",
   'buildCompletionGate',
@@ -114,8 +114,7 @@ for (const requiredImplementation of [
   'setQueuePage',
   'setQueueDisplayMode',
   'aria-label="啤办生产任务队列"',
-  '待审核',
-  '待经理审核',
+  'PRODUCTION_TASK_STATUSES',
   '待生产',
   '生产中',
   '已完成',
@@ -124,6 +123,9 @@ for (const requiredImplementation of [
 }
 
 assert.match(source, /<div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">[\s\S]*<div class="fixed right-4 top-4 z-50 flex items-center gap-2[\s\S]*当前厂区：\{\{ activeFactory\.shortName \}\}[\s\S]*<AccountMenu \/>/)
+assert.match(source, /const PRODUCTION_TASK_STATUSES = new Set<MoldingSampleStatus>\(\['待生产', '生产中', '已完成'\]\)/)
+assert.match(source, /\.filter\(\(record\) => PRODUCTION_TASK_STATUSES\.has\(record\.order\.status\)\)/)
+assert.doesNotMatch(source, /notificationOrderIds/)
 assert.doesNotMatch(source, /<div class="sticky top-14 z-40/)
 assert.match(source, /total_material_cost/)
 assert.match(source, /selectedTask\.value\.order\.status === '已完成'[\s\S]*return activeItems\.value/)
@@ -211,6 +213,16 @@ assert.match(source, /molding-sample-task-print-table tr \{ break-inside: avoid-
 assert.match(source, /taskPrintDensityClass/)
 assert.match(source, /molding-sample-task-print-page\.is-compact/)
 assert.match(source, /molding-sample-task-print-page\.is-dense/)
+assert.match(source, /min-w-\[720px\] w-full border-collapse text-left text-\[14px\] leading-5/)
+assert.match(source, /molding-sample-task-print-root \{[\s\S]*font-size: 10pt; line-height: 1\.35;/)
+assert.match(source, /molding-sample-task-print-meta \{[\s\S]*font-size: 10pt;/)
+assert.match(source, /molding-sample-task-print-reason \{[\s\S]*font-size: 10pt;/)
+assert.match(source, /molding-sample-task-print-table \{[\s\S]*font-size: 10pt; line-height: 1\.35;/)
+assert.match(source, /molding-sample-task-print-table th \{[\s\S]*font-size: 9\.5pt;/)
+assert.match(source, /molding-sample-task-print-table td > span \{[\s\S]*font-size: 9pt;/)
+assert.match(source, /is-compact \.molding-sample-task-print-table \{[\s\S]*font-size: 9\.25pt;/)
+assert.match(source, /is-dense \.molding-sample-task-print-table \{[\s\S]*font-size: 8\.5pt;/)
+assert.match(source, /is-dense \.molding-sample-task-print-table td > span \{ font-size: 8pt; \}/)
 assert.doesNotMatch(source, /molding-sample-task-print-footer/)
 assert.match(source, /formatMaterialComposition\(resolveMaterialComponents\(item\)\)/)
 assert.match(source, /试料 · 不计结余/)

@@ -27,7 +27,7 @@ from app.schemas.internal_quote import (
     InternalQuoteImportConfirmRequest,
     InternalQuoteImportPreviewOut,
 )
-from app.services.auth import AuthContext, now_text
+from app.services.auth import AuthContext, has_permission_in_scope, now_text
 from app.services.internal_quote import (
     MUTABLE_SECTION_STATUSES,
     _add_audit,
@@ -861,15 +861,24 @@ def list_export_files(
     user: AuthContext,
 ) -> list[InternalQuoteExportFileOut]:
     quote = _get_quote(db, quote_id)
-    _ensure_export_permission(db, quote, user)
-    sections = _export_sections(db, quote)
-    _supersede_outdated_exports(db, quote, sections)
+    ensure_quote_read(db, user, quote.factory_id)
+    # Export history is read-only quote metadata. Keep legacy status
+    # reconciliation for local exporters, but never mutate foreign data while
+    # serving a cross-factory read-only request.
+    if has_permission_in_scope(
+        user,
+        "internal_quote:export",
+        quote.factory_id,
+        "sales-business",
+    ):
+        sections = _export_sections(db, quote)
+        _supersede_outdated_exports(db, quote, sections)
+        db.commit()
     records = db.scalars(
         select(InternalQuoteExportFile)
         .where(InternalQuoteExportFile.quote_id == quote.id)
         .order_by(InternalQuoteExportFile.exported_at.desc(), InternalQuoteExportFile.id.desc())
     ).all()
-    db.commit()
     return [_export_out(record) for record in records]
 
 

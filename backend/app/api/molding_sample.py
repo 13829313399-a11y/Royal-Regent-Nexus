@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
+from app.core.time import parse_business_timestamp
 from app.db import get_db
 from app.schemas.molding_sample import (
     InventoryBatchCreateRequest,
@@ -18,6 +19,7 @@ from app.schemas.molding_sample import (
     MoldingSampleItemsPatchRequest,
     MoldingSampleNotificationOut,
     MoldingSampleNotificationUpdateRequest,
+    MoldingSampleOrderOut,
     MoldingSampleProblemCreateRequest,
     MoldingSampleProblemOut,
     MoldingSampleProblemStatusRequest,
@@ -62,6 +64,7 @@ from app.services.molding_sample import (
     list_requisitions,
     list_sensitive_audit_logs,
     load_order,
+    is_fixed_production_notification_only_access,
     replace_material_prices,
     transition_status,
     update_notification,
@@ -82,6 +85,30 @@ from app.services.molding_sample_excel import (
 router = APIRouter()
 
 
+def serialize_order_timing(order) -> MoldingSampleOrderOut:
+    order_out = MoldingSampleOrderOut.model_validate(order)
+    parsed_audits = [
+        (parsed, audit)
+        for audit in order.audit_logs
+        if (parsed := parse_business_timestamp(audit.created_at)) is not None
+    ]
+    updates: dict[str, str] = {}
+
+    if parsed_audits:
+        _, first_audit = min(parsed_audits, key=lambda entry: entry[0])
+        updates["created_at"] = first_audit.created_at
+
+    if order.status == "已完成":
+        completion_audits = [
+            entry for entry in parsed_audits if entry[1].to_status == "已完成"
+        ]
+        if completion_audits:
+            completed_at, _ = max(completion_audits, key=lambda entry: entry[0])
+            updates["completed_date"] = completed_at.date().isoformat()
+
+    return order_out.model_copy(update=updates) if updates else order_out
+
+
 def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResponse:
     read_source = molding_read_access(current_user, order.factory_id) or "local"
     can_view_cost = can_view_molding_cost(current_user, order.factory_id, read_source)
@@ -99,11 +126,22 @@ def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResp
             )
             for item in items
         ]
+    production_notification_only = is_fixed_production_notification_only_access(
+        current_user,
+        order.factory_id,
+    )
+    notifications = list(order.notifications)
+    if production_notification_only:
+        notifications = [
+            notification
+            for notification in notifications
+            if notification.target_module == "production_molding_sample_task"
+        ]
     return MoldingSampleDetailResponse(
-        order=order,
+        order=serialize_order_timing(order),
         items=items,
         audit_logs=list(order.audit_logs),
-        notifications=list(order.notifications),
+        notifications=notifications,
         problems=list(order.problems),
         trial_reports=list(order.trial_reports),
         read_source=read_source,

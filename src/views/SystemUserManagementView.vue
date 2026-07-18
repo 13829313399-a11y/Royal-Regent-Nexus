@@ -42,9 +42,12 @@ import {
   registrationDepartmentLabel,
   registrationDepartments,
 } from '@/data/registrationDepartments'
+import { formatBusinessDateTime, parseBusinessTimestamp } from '@/lib/dateTime'
 import { getApiErrorMessage } from '@/lib/http'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const authStore = useAuthStore()
 const activeTab = ref<'pending' | 'password-reset' | 'users'>('pending')
 const requests = ref<RegistrationRequestResponse[]>([])
 const users = ref<UserResponse[]>([])
@@ -62,6 +65,9 @@ const actionKey = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 
+const canManageUsers = computed(() => authStore.can('system:user_manage'))
+const currentAccountName = computed(() => authStore.currentUser?.display_name?.trim() || authStore.currentUser?.username || '当前账号')
+const currentAccountCode = computed(() => authStore.currentUser?.username || '已登录')
 const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active'))
 const pendingUsers = computed(() => users.value.filter((user) => user.status === 'pending'))
@@ -107,6 +113,12 @@ const selectedApprovalSystemPosition = computed(() => {
   const selectedRoleId = getSelectedSystemPositionId(selectedRequest.value)
   return systemPositions.value.find((role) => role.id === selectedRoleId) ?? null
 })
+const recommendedApprovalSystemPosition = computed(() => {
+  if (!selectedRequest.value) return null
+  const recommendedRoleId = selectedRequest.value.recommended_role_ids
+    .find((roleId) => allSystemPositions.value.some((role) => role.id === roleId))
+  return allSystemPositions.value.find((role) => role.id === recommendedRoleId) ?? null
+})
 const filteredUsers = computed(() => {
   const keyword = userSearch.value.trim().toLowerCase()
   return users.value.filter((user) => {
@@ -126,9 +138,13 @@ const filteredUsers = computed(() => {
 })
 
 const pendingFootText = computed(() => {
-  const first = requests.value[0]
-  if (!first?.submitted_at) return requests.value.length ? '请及时处理新的账号申请' : '暂无待处理申请'
-  return `最早提交于 ${formatDateTime(first.submitted_at)}`
+  const earliestSubmission = requests.value.reduce<{ value: string; timestamp: number } | null>((earliest, request) => {
+    const timestamp = parseBusinessTimestamp(request.submitted_at)
+    if (timestamp === null || (earliest && earliest.timestamp <= timestamp)) return earliest
+    return { value: request.submitted_at, timestamp }
+  }, null)
+  if (!earliestSubmission) return requests.value.length ? '请及时处理新的账号申请' : '暂无待处理申请'
+  return `最早提交于 ${formatBusinessDateTime(earliestSubmission.value, { includeSeconds: true })}`
 })
 
 function factoryLabel(factoryId: string) {
@@ -150,11 +166,6 @@ const userStatusPresentations: Record<string, { label: string; toneClass: string
 
 function userStatusPresentation(status: string) {
   return userStatusPresentations[status] ?? { label: '未知状态', toneClass: 'pill-slate' }
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) return '-'
-  return value.replace('T', ' ').slice(0, 16)
 }
 
 function avatarText(name: string | null | undefined, username: string) {
@@ -209,9 +220,7 @@ function getSelectedSystemPositionId(request: RegistrationRequestResponse) {
   const available = allSystemPositions.value
   const current = selectedSystemPositions.value[request.id]
   if (current && available.some((role) => role.id === current)) return current
-  if (Object.prototype.hasOwnProperty.call(selectedSystemPositions.value, request.id)) return ''
-  const recommended = request.recommended_role_ids.find((roleId) => available.some((role) => role.id === roleId))
-  return recommended ?? ''
+  return ''
 }
 
 function setSelectedSystemPosition(requestId: string, roleId: string) {
@@ -257,7 +266,26 @@ function ensureSelectedRequest() {
   }
 }
 
+function ensureUserManagementPermission() {
+  if (canManageUsers.value) return true
+  errorMessage.value = '当前账号没有账号管理权限，无法执行该操作。'
+  successMessage.value = ''
+  return false
+}
+
 async function loadData() {
+  if (!canManageUsers.value) {
+    requests.value = []
+    users.value = []
+    systemPositions.value = []
+    systemNotifications.value = []
+    selectedRequestId.value = ''
+    isLoading.value = false
+    actionKey.value = ''
+    errorMessage.value = ''
+    successMessage.value = ''
+    return
+  }
   isLoading.value = true
   errorMessage.value = ''
   try {
@@ -281,6 +309,7 @@ async function loadData() {
 }
 
 async function approveRequest(request: RegistrationRequestResponse) {
+  if (!ensureUserManagementPermission()) return
   const source = approvalProfile(request)
   const profile: RegistrationProfileRequest = {
     display_name: source.display_name.trim(),
@@ -336,6 +365,7 @@ async function approveRequest(request: RegistrationRequestResponse) {
 }
 
 async function rejectRequest(request: RegistrationRequestResponse) {
+  if (!ensureUserManagementPermission()) return
   const comment = (rejectComments.value[request.id] || approvalComments.value[request.id] || '').trim()
   if (!comment) {
     errorMessage.value = '拒绝申请时需要填写原因'
@@ -356,6 +386,7 @@ async function rejectRequest(request: RegistrationRequestResponse) {
 }
 
 async function updateStatus(user: UserResponse, status: 'active' | 'suspended') {
+  if (!ensureUserManagementPermission()) return
   actionKey.value = `status:${user.id}:${status}`
   errorMessage.value = ''
   successMessage.value = ''
@@ -371,6 +402,7 @@ async function updateStatus(user: UserResponse, status: 'active' | 'suspended') 
 }
 
 async function resetPasswordFromNotification(notification: SystemNotificationResponse) {
+  if (!ensureUserManagementPermission()) return
   const user = resetRequestUser(notification)
   if (!user) {
     errorMessage.value = '未匹配到系统账号，请人工核验后再处理'
@@ -394,6 +426,7 @@ async function resetPasswordFromNotification(notification: SystemNotificationRes
 }
 
 async function markPasswordResetHandled(notification: SystemNotificationResponse) {
+  if (!ensureUserManagementPermission()) return
   actionKey.value = `reset-handled:${notification.id}`
   errorMessage.value = ''
   successMessage.value = ''
@@ -437,34 +470,45 @@ onMounted(() => {
         </div>
         <div class="topbar-actions">
           <nav class="view-tabs" aria-label="账号管理视图">
-            <button type="button" :class="{ active: activeTab === 'pending' }" @click="activeTab = 'pending'">
+            <button type="button" :class="{ active: activeTab === 'pending' }" :disabled="!canManageUsers" @click="activeTab = 'pending'">
               待审批
               <span>{{ requests.length }}</span>
             </button>
-            <button type="button" :class="{ active: activeTab === 'password-reset' }" @click="activeTab = 'password-reset'">
+            <button type="button" :class="{ active: activeTab === 'password-reset' }" :disabled="!canManageUsers" @click="activeTab = 'password-reset'">
               密码重置
               <span>{{ passwordResetRequests.length }}</span>
             </button>
-            <button type="button" :class="{ active: activeTab === 'users' }" @click="activeTab = 'users'">
+            <button type="button" :class="{ active: activeTab === 'users' }" :disabled="!canManageUsers" @click="activeTab = 'users'">
               用户列表
             </button>
           </nav>
-          <RouterLink class="ghost-link iam-console-entry" to="/system/iam/roles">
+          <RouterLink
+            class="ghost-link iam-console-entry"
+            to="/system/iam/roles"
+          >
             <SlidersHorizontal class="size-4" aria-hidden="true" />
             内置职位权限
           </RouterLink>
-          <button type="button" class="ghost-link" :disabled="isLoading" @click="loadData">
+          <button type="button" class="ghost-link" :disabled="!canManageUsers || isLoading" @click="loadData">
             <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
             刷新
           </button>
           <div class="admin">
-            <div class="t">系统管理员<small>集团数字化中心 · 超级管理员</small></div>
-            <span class="av">管</span>
+            <div class="t">{{ currentAccountName }}<small>{{ currentAccountCode }} · {{ canManageUsers ? '账号管理' : '只读访问' }}</small></div>
+            <span class="av">{{ avatarText(currentAccountName, currentAccountCode) }}</span>
           </div>
         </div>
       </header>
 
-      <div class="stats">
+      <section v-if="!canManageUsers" class="protected-access-notice" data-testid="system-users-protected-notice" role="status">
+        <span class="protected-access-icon"><ShieldCheck class="size-5" aria-hidden="true" /></span>
+        <div>
+          <strong>页面可访问 · 敏感账号资料受保护</strong>
+          <p>当前账号没有账号管理权限。申请、用户、审批及密码重置明细不会在此模式下读取或展示，也不能执行任何账号变更。</p>
+        </div>
+      </section>
+
+      <div v-if="canManageUsers" class="stats">
         <article class="stat">
           <div class="row">
             <span class="ic amber"><Clock3 class="size-5" aria-hidden="true" /></span>
@@ -508,13 +552,16 @@ onMounted(() => {
         <span>{{ successMessage }}</span>
       </div>
 
-    <section v-if="activeTab === 'pending'" class="grid approval-workspace">
+    <section v-if="canManageUsers && activeTab === 'pending'" class="grid approval-workspace">
       <div v-if="isLoading" class="empty-card">正在加载账号申请...</div>
       <div v-else-if="!requests.length" class="empty-card">当前没有待审批账号。</div>
       <template v-else>
         <aside class="panel">
           <div class="panel-head">
-            <h2>待审批账号</h2>
+            <div class="panel-heading-copy">
+              <h2>待审批账号</h2>
+              <p>{{ pendingFootText }}</p>
+            </div>
             <span class="cnt">{{ requests.length }} 待处理</span>
           </div>
           <div class="queue">
@@ -536,7 +583,7 @@ onMounted(() => {
                 <span class="meta">{{ factoryLabel(request.factory_id) }} · {{ departmentLabel(request.department) }}</span>
                 <span class="pos">申请职位：{{ request.position }}</span>
               </span>
-              <span class="time">{{ formatDateTime(request.submitted_at) }}</span>
+              <span class="time">{{ formatBusinessDateTime(request.submitted_at, { includeSeconds: true }) }}</span>
             </button>
           </div>
         </aside>
@@ -612,6 +659,14 @@ onMounted(() => {
             <p class="system-position-department-label">
               员工资料部门：<strong>{{ departmentLabel(approvalProfile(selectedRequest).department) }}</strong>；可从全部内置职位中选择权限职位
             </p>
+            <div
+              v-if="recommendedApprovalSystemPosition && !selectedApprovalSystemPosition"
+              class="position-role-note"
+              data-testid="registration-position-recommendation"
+            >
+              <strong>推荐：{{ recommendedApprovalSystemPosition.position_department_name }} · {{ recommendedApprovalSystemPosition.name }}</strong>
+              <span>推荐仅用于提示，不会自动选中或授权；请管理员核对后主动选择。</span>
+            </div>
             <template v-if="allSystemPositions.length">
               <label class="system-position-picker">
                 <span>选择内置权限职位</span>
@@ -674,7 +729,7 @@ onMounted(() => {
       </template>
     </section>
 
-    <section v-else-if="activeTab === 'password-reset'" class="panel">
+    <section v-else-if="canManageUsers && activeTab === 'password-reset'" class="panel">
       <div v-if="isLoading" class="empty-card">正在加载密码重置申请...</div>
       <div v-else-if="!passwordResetRequests.length" class="empty-card">当前没有待处理密码重置申请。</div>
       <div v-else class="request-grid">
@@ -704,7 +759,7 @@ onMounted(() => {
             <div class="meta-wide">
               <Clock3 class="size-4" aria-hidden="true" />
               <span>提交</span>
-              <b>{{ formatDateTime(notification.created_at) }}</b>
+              <b>{{ formatBusinessDateTime(notification.created_at, { includeSeconds: true }) }}</b>
             </div>
             <div class="meta-wide">
               <LifeBuoy class="size-4" aria-hidden="true" />
@@ -748,7 +803,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <section v-else class="panel users-panel">
+    <section v-else-if="canManageUsers" class="panel users-panel">
       <div class="table-tools">
         <label class="search-box">
           <Search class="size-4" aria-hidden="true" />
@@ -818,11 +873,11 @@ onMounted(() => {
                   <span></span>{{ userStatusPresentation(user.status).label }}
                 </span>
               </td>
-              <td class="muted">{{ formatDateTime(user.last_login_at) }}</td>
+              <td class="muted">{{ formatBusinessDateTime(user.last_login_at, { includeSeconds: true }) }}</td>
               <td>
                 <div class="row-ops">
                   <RouterLink
-                    v-if="user.status === 'active' || user.status === 'suspended'"
+                    v-if="authStore.can('system:access_manage') && (user.status === 'active' || user.status === 'suspended')"
                     class="btn btn-sm iam-access-link"
                     :to="`/system/users/${encodeURIComponent(user.id)}/access`"
                   >
@@ -1043,6 +1098,42 @@ onMounted(() => {
   border: 1px solid #a7f3d0;
   background: #ecfdf5;
   color: #047857;
+}
+
+.protected-access-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #fff;
+  padding: 18px 20px;
+  color: #334155;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.protected-access-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  border-radius: 11px;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.protected-access-notice strong {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.protected-access-notice p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .tabs {
@@ -2462,6 +2553,12 @@ onMounted(() => {
   color: var(--slate-900);
   font-size: 14px;
   font-weight: 800;
+}
+
+.panel-heading-copy p {
+  margin: 3px 0 0;
+  color: var(--slate-500);
+  font-size: 11px;
 }
 
 .panel-head .cnt {

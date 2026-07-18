@@ -16,9 +16,37 @@ function grantUsesScopedPositionContract(grant: AuthGrant) {
   return grant.unrestricted_department === true
 }
 
-function grantDepartmentMatches(grant: AuthGrant, department?: string) {
-  return grant.unrestricted_department === true
-    || scopeValueMatches(grant.department, department)
+const crossFactoryReadLocalOnlyPermissions = new Set([
+  'molding_sample:notification_read',
+])
+
+const positionDepartmentAliasGroups = [
+  new Set(['production', 'molding']),
+  new Set(['pmc-warehouse', 'warehouse']),
+]
+
+const positionDepartmentSensitivePermissions = new Set([
+  'molding_sample:notification_read',
+  'internal_quote:create',
+  'internal_quote:clone',
+])
+
+function grantDepartmentMatches(grant: AuthGrant, permission: string, department?: string) {
+  if (!grant.unrestricted_department) {
+    return scopeValueMatches(grant.department, department)
+  }
+  if (!positionDepartmentSensitivePermissions.has(permission) || !department || department === '*') {
+    return true
+  }
+  if (grant.role_id === 'position_general_manager' || grant.department === '*') {
+    return true
+  }
+  if (grant.department === department) {
+    return true
+  }
+  return positionDepartmentAliasGroups.some((aliases) =>
+    aliases.has(grant.department) && aliases.has(department),
+  )
 }
 
 function grantFactoryMatches(grant: AuthGrant, permission: string, factoryId?: string) {
@@ -28,6 +56,7 @@ function grantFactoryMatches(grant: AuthGrant, permission: string, factoryId?: s
   if (
     grant.scope_mode === 'cross_factory_read'
     && (grant.read_permission_codes ?? []).includes(permission)
+    && !crossFactoryReadLocalOnlyPermissions.has(permission)
   ) {
     return true
   }
@@ -61,7 +90,7 @@ export function grantAllowsPermission(
     return grantMatchesScope(grant, factoryId, department)
   }
   return grantFactoryMatches(grant, permission, factoryId)
-    && grantDepartmentMatches(grant, department)
+    && grantDepartmentMatches(grant, permission, department)
 }
 
 export function effectiveAccessMatchesScope(
@@ -232,7 +261,13 @@ export const useAuthStore = defineStore('auth', {
           && grant.permissions.includes(permission),
         )
         if (scopedPositionGrants.length) {
+          const regularScopedGrants = this.grants.filter((grant) =>
+            !grantUsesScopedPositionContract(grant)
+            && grant.permissions.includes(permission),
+          )
           return scopedPositionGrants.some((grant) =>
+            grantAllowsPermission(grant, permission, factoryId, department),
+          ) || regularScopedGrants.some((grant) =>
             grantAllowsPermission(grant, permission, factoryId, department),
           )
         }

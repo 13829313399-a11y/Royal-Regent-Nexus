@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle, RefreshCw, Save, ShieldCheck, X } from '@lucide/vue'
+import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle, LockKeyhole, RefreshCw, Save, ShieldCheck, X } from '@lucide/vue'
 import { useRoute } from 'vue-router'
 import {
   iamApi,
@@ -13,8 +13,13 @@ import {
 import IamIdentitySummary from '@/components/iam/IamIdentitySummary.vue'
 import IamNavigation from '@/components/iam/IamNavigation.vue'
 import {
-  isBuiltInPositionPermissionVisible,
+  permissionAccessKindLabel,
   permissionDisplayLabel,
+  permissionEffectiveScopeLabel,
+  permissionRiskLabel,
+  permissionStatusLabel,
+  roleScopeModeDescription,
+  roleScopeModeLabel,
 } from '@/components/iam/permissionCatalogLabels'
 import { registrationDepartments } from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
@@ -22,6 +27,8 @@ import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const authStore = useAuthStore()
+
+type DisplayPermission = PermissionCatalogItem & { catalog_missing?: boolean }
 
 const access = ref<UserAccessResponse | null>(null)
 const systemPositions = ref<RoleSummary[]>([])
@@ -36,7 +43,10 @@ const isPreviewing = ref(false)
 const isCommitting = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
+let selectedPositionAccessRequestSequence = 0
+let previewRequestSequence = 0
 
+const canManageAccess = computed(() => authStore.can('system:access_manage'))
 const userId = computed(() => String(route.params.userId ?? ''))
 const userFactory = computed(() => access.value?.profile?.primary_factory_id ?? '')
 const userDepartment = computed(() => access.value?.profile?.primary_department ?? '')
@@ -48,6 +58,10 @@ const assignableSystemPositions = computed(() => hasPrimaryOrganization.value
 const selectedSystemPosition = computed(() =>
   systemPositions.value.find((position) => position.id === selectedSystemPositionRoleId.value) ?? null,
 )
+const recommendedSystemPosition = computed(() =>
+  systemPositions.value.find((position) => position.id === access.value?.recommended_system_position_role_id) ?? null,
+)
+const isSelectedGeneralManager = computed(() => selectedPositionAccess.value?.id === 'position_general_manager')
 const hasPositionChange = computed(() =>
   Boolean(selectedSystemPositionRoleId.value)
   && selectedSystemPositionRoleId.value !== (access.value?.system_position_role_id ?? ''),
@@ -55,7 +69,15 @@ const hasPositionChange = computed(() =>
 const hasHistoricalAuthorization = computed(() =>
   Boolean((access.value?.cleanup_role_count ?? 0) || (access.value?.cleanup_override_count ?? 0)),
 )
-const hasSystemPositionAction = computed(() => hasPrimaryOrganization.value
+const hasVerifiedSelectedPositionAccess = computed(() =>
+  !isLoadingPosition.value
+  && Boolean(selectedSystemPositionRoleId.value)
+  && selectedPositionAccess.value?.id === selectedSystemPositionRoleId.value,
+)
+const hasSystemPositionAction = computed(() => canManageAccess.value
+  && hasPrimaryOrganization.value
+  && Boolean(selectedSystemPositionRoleId.value)
+  && hasVerifiedSelectedPositionAccess.value
   && (hasPositionChange.value || hasHistoricalAuthorization.value))
 const groupedSystemPositions = computed(() => {
   const sorted = [...assignableSystemPositions.value]
@@ -79,14 +101,32 @@ const groupedSystemPositions = computed(() => {
   }
   return [...groups.values()]
 })
-const groupedInheritedPermissions = computed(() => {
+const inheritedPermissionItems = computed<DisplayPermission[]>(() => {
   const enabledCodes = new Set(selectedPositionAccess.value?.permission_codes ?? [])
-  const groups = new Map<string, { moduleCode: string; moduleName: string; items: PermissionCatalogItem[] }>()
-  permissions.value
-    .filter((permission) => permission.status === 'active'
-      && enabledCodes.has(permission.code)
-      && isBuiltInPositionPermissionVisible(permission.code))
+  const catalog = new Map(permissions.value.map((permission) => [permission.code, permission]))
+  return [...enabledCodes]
+    .map<DisplayPermission>((code, index) => catalog.get(code) ?? {
+      code,
+      name: code,
+      description: '职位定义引用了权限目录中不存在的代码，请检查系统同步状态。',
+      module_code: 'catalog_error',
+      module_name: '权限目录异常',
+      action: code.split(':').at(-1) ?? code,
+      access_kind: 'operate',
+      risk_level: 'high',
+      scope_type: 'factory_department',
+      status: 'inactive',
+      sort_order: Number.MAX_SAFE_INTEGER - index,
+      applicable_departments: [],
+      requires_global_factory: false,
+      scope_guidance: '权限目录缺失',
+      catalog_missing: true,
+    })
     .sort((left, right) => left.sort_order - right.sort_order || left.code.localeCompare(right.code))
+})
+const groupedInheritedPermissions = computed(() => {
+  const groups = new Map<string, { moduleCode: string; moduleName: string; items: DisplayPermission[] }>()
+  inheritedPermissionItems.value
     .forEach((permission) => {
       const group = groups.get(permission.module_code)
       if (group) group.items.push(permission)
@@ -100,6 +140,9 @@ const groupedInheritedPermissions = computed(() => {
 })
 const visibleInheritedPermissionCount = computed(() => groupedInheritedPermissions.value
   .reduce((total, group) => total + group.items.length, 0))
+const selectedPositionScopeSummary = computed(() => isSelectedGeneralManager.value
+  ? '跨厂操作 · 全业务部门'
+  : roleScopeModeLabel(selectedPositionAccess.value?.scope_mode))
 const permissionLabels = computed(() => new Map(
   permissions.value.map((permission) => [permission.code, permissionDisplayLabel(permission)]),
 ))
@@ -119,34 +162,80 @@ function initialSystemPosition(userAccess: UserAccessResponse, positions: RoleSu
   if (!userAccess.profile?.primary_factory_id || !userAccess.profile.primary_department) return ''
   const existing = positions.find((position) => position.id === userAccess.system_position_role_id)
   if (existing) return existing.id
-  const recommended = positions.find((position) => position.id === userAccess.recommended_system_position_role_id)
-  if (recommended) return recommended.id
   return ''
 }
 
+function isRecommendedPosition(roleId: string) {
+  return roleId === access.value?.recommended_system_position_role_id
+}
+
+function roleSourceLabel(source?: string) {
+  return source === 'code' ? '代码固定' : '数据库配置'
+}
+
+function ensureAccessManagementPermission() {
+  if (canManageAccess.value) return true
+  errorMessage.value = '当前账号没有权限职位调整权限，无法执行该操作。'
+  successMessage.value = ''
+  preview.value = null
+  return false
+}
+
 async function loadSelectedPositionAccess() {
+  if (!ensureAccessManagementPermission()) return
+  const requestSequence = ++selectedPositionAccessRequestSequence
+  const roleId = selectedSystemPositionRoleId.value
+  previewRequestSequence += 1
+  isPreviewing.value = false
   preview.value = null
   successMessage.value = ''
   selectedPositionAccess.value = null
-  if (!selectedSystemPositionRoleId.value) return
+  if (!roleId) {
+    isLoadingPosition.value = false
+    return
+  }
   isLoadingPosition.value = true
   try {
-    selectedPositionAccess.value = await iamApi.getRoleAccess(selectedSystemPositionRoleId.value)
+    const result = await iamApi.getRoleAccess(roleId)
+    if (
+      requestSequence !== selectedPositionAccessRequestSequence
+      || roleId !== selectedSystemPositionRoleId.value
+    ) return
+    selectedPositionAccess.value = result
   } catch (error) {
-    errorMessage.value = getApiErrorMessage(error)
+    if (requestSequence === selectedPositionAccessRequestSequence) {
+      errorMessage.value = getApiErrorMessage(error)
+    }
   } finally {
-    isLoadingPosition.value = false
+    if (requestSequence === selectedPositionAccessRequestSequence) {
+      isLoadingPosition.value = false
+    }
   }
 }
 
 async function loadData() {
+  if (!canManageAccess.value) {
+    access.value = null
+    systemPositions.value = []
+    permissions.value = []
+    selectedSystemPositionRoleId.value = ''
+    selectedPositionAccess.value = null
+    preview.value = null
+    isLoading.value = false
+    isLoadingPosition.value = false
+    isPreviewing.value = false
+    isCommitting.value = false
+    errorMessage.value = ''
+    successMessage.value = ''
+    return
+  }
   isLoading.value = true
   errorMessage.value = ''
   try {
     const [userAccess, positions, catalog] = await Promise.all([
       iamApi.getUserAccess(userId.value),
       iamApi.listSystemPositions(),
-      iamApi.listPermissions('active'),
+      iamApi.listPermissions('all'),
     ])
     access.value = userAccess
     systemPositions.value = positions.filter((position) => position.is_system_position)
@@ -165,6 +254,7 @@ async function loadData() {
 }
 
 function discardChange() {
+  if (!ensureAccessManagementPermission()) return
   selectedSystemPositionRoleId.value = access.value
     ? initialSystemPosition(access.value, systemPositions.value)
     : ''
@@ -174,30 +264,50 @@ function discardChange() {
 }
 
 async function previewChange() {
+  if (!ensureAccessManagementPermission()) return
+  if (!selectedSystemPositionRoleId.value) {
+    errorMessage.value = '请先主动选择一个内置权限职位。'
+    return
+  }
+  if (!hasVerifiedSelectedPositionAccess.value) {
+    errorMessage.value = '请等待固定权限和数据范围加载完成后再预览。'
+    return
+  }
   if (!hasSystemPositionAction.value) {
     errorMessage.value = '当前权限职位和历史授权都不需要调整。'
     return
   }
+  const roleId = selectedSystemPositionRoleId.value
+  const requestSequence = ++previewRequestSequence
   isPreviewing.value = true
   errorMessage.value = ''
   successMessage.value = ''
   try {
-    preview.value = await iamApi.previewUserSystemPosition(userId.value, {
+    const result = await iamApi.previewUserSystemPosition(userId.value, {
       base_revision: access.value?.authorization_version ?? 0,
-      system_position_role_id: selectedSystemPositionRoleId.value,
+      system_position_role_id: roleId,
     })
+    if (
+      requestSequence !== previewRequestSequence
+      || roleId !== selectedSystemPositionRoleId.value
+    ) return
+    preview.value = result
     confirmedHighRisk.value = false
   } catch (error) {
+    if (requestSequence !== previewRequestSequence) return
     const status = (error as { response?: { status?: number } })?.response?.status
     errorMessage.value = status === 409 ? '授权版本已变化，页面已刷新，请重新选择。' : getApiErrorMessage(error)
     if (status === 409) await loadData()
     if (status === 403) await authStore.refreshSession()
   } finally {
-    isPreviewing.value = false
+    if (requestSequence === previewRequestSequence) {
+      isPreviewing.value = false
+    }
   }
 }
 
 async function commitChange() {
+  if (!ensureAccessManagementPermission()) return
   if (!preview.value) return
   isCommitting.value = true
   errorMessage.value = ''
@@ -231,12 +341,20 @@ onMounted(() => void loadData())
 
 <template>
   <main class="min-h-screen min-w-0 max-w-full overflow-x-clip bg-slate-100 text-slate-950">
-    <IamNavigation title="调整权限职位" subtitle="员工只绑定一个内置权限职位；具体权限统一在内置职位权限中维护。" />
+    <IamNavigation title="调整权限职位" subtitle="实际职位用于人员资料；权限职位由管理员主动选择，并固定继承代码定义的权限和范围。" />
 
     <div class="mx-auto grid w-full min-w-0 max-w-[1480px] gap-5 px-4 py-5 sm:px-5 sm:py-6 xl:px-8">
       <RouterLink class="inline-flex w-fit items-center gap-2 text-sm font-bold text-slate-600 hover:text-emerald-800" to="/system/users?tab=users">
         <ArrowLeft class="size-4" aria-hidden="true" />返回用户列表
       </RouterLink>
+
+      <section v-if="!canManageAccess" data-testid="user-access-protected-notice" role="status" class="flex items-start gap-3 rounded-2xl border border-slate-300 bg-white p-5 text-sm text-slate-700 shadow-sm">
+        <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><LockKeyhole class="size-5" aria-hidden="true" /></span>
+        <div>
+          <h2 class="font-bold text-slate-950">页面可访问 · 权限资料受保护</h2>
+          <p class="mt-1 leading-6 text-slate-500">当前账号没有权限职位调整权限。用户授权明细不会在此模式下读取或展示，职位选择、变更预览及提交操作均不可用。</p>
+        </div>
+      </section>
 
       <div v-if="errorMessage" role="alert" class="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
         <AlertTriangle class="mt-0.5 size-4 shrink-0" aria-hidden="true" />{{ errorMessage }}
@@ -247,7 +365,7 @@ onMounted(() => void loadData())
         <div class="text-center text-slate-500"><LoaderCircle class="mx-auto mb-3 size-7 animate-spin text-emerald-700" /><p>正在读取用户权限职位…</p></div>
       </div>
 
-      <template v-else-if="access">
+      <template v-else-if="canManageAccess && access">
         <IamIdentitySummary :access="access" />
 
         <section class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
@@ -261,8 +379,13 @@ onMounted(() => void loadData())
             </div>
 
             <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-              <span class="text-xs font-semibold text-slate-500">当前权限职位</span>
+              <span class="text-xs font-semibold text-slate-500">权限职位</span>
               <strong class="mt-1 block text-slate-950">{{ access.system_position_role_name || '尚未分配' }}</strong>
+            </div>
+
+            <div v-if="recommendedSystemPosition && !access.system_position_role_id" data-testid="recommended-position-hint" class="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+              <b>推荐：{{ recommendedSystemPosition.position_department_name }} · {{ recommendedSystemPosition.name }}</b>
+              <p class="mt-1 leading-5 text-blue-700">推荐仅用于提示，不会自动选中或授权；请管理员核对后主动选择。</p>
             </div>
 
             <div v-if="!hasPrimaryOrganization" data-testid="missing-primary-department" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
@@ -275,11 +398,11 @@ onMounted(() => void loadData())
 
             <label v-else class="mt-4 grid gap-1.5 text-sm font-semibold text-slate-700">
               选择新的内置权限职位
-              <select v-model="selectedSystemPositionRoleId" aria-label="选择新的内置权限职位" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" @change="loadSelectedPositionAccess">
+              <select v-model="selectedSystemPositionRoleId" aria-label="选择新的内置权限职位" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500" :disabled="!canManageAccess || isPreviewing || isCommitting" @change="loadSelectedPositionAccess">
                 <option value="" disabled>请选择内置权限职位</option>
                 <optgroup v-for="group in groupedSystemPositions" :key="group.department" :label="group.name">
                   <option v-for="position in group.positions" :key="position.id" :value="position.id">
-                    {{ position.name }}（{{ position.permission_count }} 项权限）
+                    {{ position.name }}（{{ position.permission_count }} 项权限）{{ isRecommendedPosition(position.id) ? ' · 推荐' : '' }}
                   </option>
                 </optgroup>
               </select>
@@ -287,8 +410,19 @@ onMounted(() => void loadData())
             </label>
 
             <div v-if="selectedSystemPosition" class="mt-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-sm text-emerald-950">
-              <b>{{ selectedSystemPosition.position_department_name }} · {{ selectedSystemPosition.name }}</b>
-              <p class="mt-1 leading-6 text-emerald-800">{{ selectedSystemPosition.description || '该职位的权限由管理员统一维护。' }}</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <b>{{ selectedSystemPosition.position_department_name }} · {{ selectedSystemPosition.name }}</b>
+                <span v-if="isRecommendedPosition(selectedSystemPosition.id)" class="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-bold text-blue-700">推荐</span>
+              </div>
+              <p class="mt-1 leading-6 text-emerald-800">{{ selectedSystemPosition.description || '该职位的权限由系统代码固定维护。' }}</p>
+              <dl v-if="selectedPositionAccess" data-testid="selected-position-fixed-metadata" class="mt-3 grid gap-2 sm:grid-cols-2">
+                <div class="rounded-lg bg-white/75 p-2.5"><dt class="text-xs text-emerald-700">权限来源</dt><dd class="mt-0.5 font-bold">{{ roleSourceLabel(selectedPositionAccess.source) }}</dd></div>
+                <div class="rounded-lg bg-white/75 p-2.5"><dt class="text-xs text-emerald-700">固定数据范围</dt><dd class="mt-0.5 font-bold">{{ selectedPositionScopeSummary }}</dd></div>
+                <div class="rounded-lg bg-white/75 p-2.5"><dt class="text-xs text-emerald-700">定义版本</dt><dd class="mt-0.5 font-mono text-xs font-bold">{{ selectedPositionAccess.definition_version || '待同步' }}</dd></div>
+                <div class="min-w-0 rounded-lg bg-white/75 p-2.5"><dt class="text-xs text-emerald-700">定义哈希</dt><dd class="mt-0.5 break-all font-mono text-[11px] font-bold">{{ selectedPositionAccess.definition_hash || '待同步' }}</dd></div>
+              </dl>
+              <p v-if="selectedPositionAccess" class="mt-2 inline-flex items-start gap-1.5 text-xs leading-5 text-emerald-800"><LockKeyhole class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{{ roleScopeModeDescription(selectedPositionAccess.scope_mode) }}</p>
+              <p v-if="isSelectedGeneralManager" data-testid="selected-general-manager-boundary" class="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-2.5 text-xs font-semibold leading-5 text-blue-800">跨厂操作 · 全业务部门；不包含账号与权限管理。</p>
             </div>
 
             <div v-if="hasHistoricalAuthorization" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
@@ -299,11 +433,11 @@ onMounted(() => void loadData())
               </div>
             </div>
 
-            <div v-if="hasPrimaryOrganization" data-testid="system-position-action-panel" class="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
-              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" :disabled="isPreviewing" @click="discardChange">
+            <div v-if="canManageAccess && hasPrimaryOrganization" data-testid="system-position-action-panel" class="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" :disabled="!canManageAccess || isPreviewing" @click="discardChange">
                 <RefreshCw class="size-4" />取消修改
               </button>
-              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!hasSystemPositionAction || isPreviewing" @click="previewChange">
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!canManageAccess || !hasSystemPositionAction || isPreviewing" @click="previewChange">
                 <LoaderCircle v-if="isPreviewing" class="size-4 animate-spin" /><Save v-else class="size-4" />{{ hasPositionChange ? '预览职位调整' : '预览历史授权清理' }}
               </button>
             </div>
@@ -312,7 +446,7 @@ onMounted(() => void loadData())
           <article class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <header class="border-b border-slate-200 px-5 py-4">
               <div class="flex flex-wrap items-start justify-between gap-3">
-                <div><h2 class="font-bold">将继承的权限</h2><p class="mt-1 text-sm text-slate-500">这里只展示内置职位结果，不能逐项修改。</p></div>
+                <div><h2 class="font-bold">将继承的完整权限</h2><p class="mt-1 text-sm text-slate-500">权限和数据范围由代码固定，管理员只能查看，不能逐项修改。</p></div>
                 <span class="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{{ visibleInheritedPermissionCount }} 项</span>
               </div>
             </header>
@@ -321,21 +455,32 @@ onMounted(() => void loadData())
               <section v-for="group in groupedInheritedPermissions" :key="group.moduleCode" class="p-5">
                 <div class="mb-3"><h3 class="font-bold text-slate-900">{{ group.moduleName }}</h3><code class="text-xs text-slate-400">{{ group.moduleCode }}</code></div>
                 <ul class="grid gap-2 sm:grid-cols-2">
-                  <li v-for="permission in group.items" :key="permission.code" class="flex min-w-0 items-start gap-2 rounded-xl bg-slate-50 p-3">
+                  <li v-for="permission in group.items" :key="permission.code" class="flex min-w-0 items-start gap-2 rounded-xl border p-3" :class="permission.catalog_missing ? 'border-rose-200 bg-rose-50' : 'border-slate-100 bg-slate-50'">
                     <CheckCircle2 class="mt-0.5 size-4 shrink-0 text-emerald-600" aria-hidden="true" />
-                    <span class="min-w-0"><b class="block text-sm">{{ permissionDisplayLabel(permission) }}</b><code class="block break-all text-xs text-slate-400">{{ permission.code }}</code></span>
+                    <span class="min-w-0 flex-1">
+                      <span class="flex items-start justify-between gap-2"><span class="min-w-0"><b class="block text-sm">{{ permissionDisplayLabel(permission) }}</b><code class="block break-all text-xs text-slate-400">{{ permission.code }}</code></span><span class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-800">已包含</span></span>
+                      <span class="mt-2 flex flex-wrap gap-1.5">
+                        <span class="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-600">{{ permissionAccessKindLabel(permission.access_kind) }}</span>
+                        <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">{{ permissionEffectiveScopeLabel(permission, selectedPositionAccess?.scope_mode) }}</span>
+                        <span class="rounded-full px-2 py-0.5 text-[11px] font-bold" :class="permission.risk_level === 'high' ? 'bg-amber-50 text-amber-700' : 'bg-white text-slate-600'">{{ permissionRiskLabel(permission.risk_level) }}</span>
+                        <span class="rounded-full px-2 py-0.5 text-[11px] font-bold" :class="permission.status === 'inactive' ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'">{{ permissionStatusLabel(permission.status) }}</span>
+                      </span>
+                      <span class="mt-1.5 block text-xs leading-5 text-slate-500">{{ permission.description || '暂无说明。' }}</span>
+                      <span v-if="permission.catalog_missing" class="mt-1 block text-xs font-semibold text-rose-700">权限目录缺失，当前定义异常。</span>
+                    </span>
                   </li>
                 </ul>
               </section>
             </div>
-            <p v-else class="p-8 text-center text-sm text-slate-500">该内置职位尚未配置权限，当前将保持默认拒绝。</p>
+            <p v-else-if="!selectedPositionAccess" class="p-8 text-center text-sm text-slate-500">请先主动选择一个内置权限职位，再核对固定权限和数据范围。</p>
+            <p v-else class="p-8 text-center text-sm text-slate-500">该内置职位固定为空权限，当前保持默认拒绝。</p>
           </article>
         </section>
 
       </template>
     </div>
 
-    <div v-if="preview" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" @click.self="preview = null">
+    <div v-if="canManageAccess && preview" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" @click.self="preview = null">
       <section class="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="system-position-preview-title">
         <header class="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
           <div><h2 id="system-position-preview-title" class="text-lg font-bold">确认权限职位调整</h2><p class="mt-1 text-sm text-slate-500">系统会以一次事务完成旧授权清理和新职位绑定。</p></div>
@@ -357,9 +502,9 @@ onMounted(() => void loadData())
               <span class="shrink-0 font-bold" :class="diff.after === 'allow' ? 'text-emerald-700' : 'text-rose-700'">{{ diffStateLabel(diff.before) }} → {{ diffStateLabel(diff.after) }}</span>
             </div>
           </div>
-          <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600"><span>我已核对高风险权限和历史授权清理范围。</span></label>
+          <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600" :disabled="!canManageAccess"><span>我已核对高风险权限和历史授权清理范围。</span></label>
         </div>
-        <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4"><button type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" :disabled="isCommitting" @click="preview = null">返回修改</button><button type="button" class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="isCommitting || (preview.high_risk && !confirmedHighRisk)" @click="commitChange"><LoaderCircle v-if="isCommitting" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" />确认并立即生效</button></footer>
+        <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4"><button type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" :disabled="!canManageAccess || isCommitting" @click="preview = null">返回修改</button><button type="button" class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="!canManageAccess || isCommitting || (preview.high_risk && !confirmedHighRisk)" @click="commitChange"><LoaderCircle v-if="isCommitting" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" />确认并立即生效</button></footer>
       </section>
     </div>
   </main>

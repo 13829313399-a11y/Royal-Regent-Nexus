@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.auth import AuthRole, AuthUser, AuthUserRole, SystemNotification
+from app.models.auth import AuthUser, AuthUserRole, SystemNotification
 from app.models.internal_quote import (
     InternalQuote,
     InternalQuoteArtifactHandoff,
@@ -41,15 +41,13 @@ from app.schemas.internal_quote import (
 )
 from app.services.auth import (
     AuthContext,
-    add_auth_audit,
+    build_auth_context,
+    can,
     ensure_permission_in_scope,
     has_permission_in_scope,
     now_text,
 )
-from app.services.business_authz import (
-    ensure_permission_for_departments,
-    is_local_factory,
-)
+from app.services.business_authz import ensure_permission_for_departments
 from app.services.internal_quote_calculator import (
     FORMULA_VERSION,
     CalculationInputError,
@@ -82,6 +80,28 @@ MUTABLE_SECTION_STATUSES = {"draft", "rejected"}
 REVIEWABLE_SECTION_STATUSES = {"pending_review", "na_pending"}
 COMPLETED_SECTION_STATUSES = {"approved", "not_applicable"}
 VIEW_DEDUP_MINUTES = 5
+SECTION_EDIT_NOTIFICATION_EVENTS = {
+    "quote_created",
+    "quote_cloned",
+    "section_rejected",
+    "section_reopened",
+    "reference_snapshot_updated",
+}
+SECTION_REVIEW_NOTIFICATION_EVENTS = {"section_submitted", "section_na_requested"}
+FINAL_SUBMIT_NOTIFICATION_EVENTS = {
+    "ready_for_final_review",
+    "final_release_rejected",
+    "final_release_invalidated",
+}
+FINAL_REVIEW_NOTIFICATION_EVENTS = {"final_release_submitted"}
+ARTIFACT_NOTIFICATION_EVENTS = {"customer_price_artifact_available"}
+ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS = (
+    SECTION_EDIT_NOTIFICATION_EVENTS
+    | SECTION_REVIEW_NOTIFICATION_EVENTS
+    | FINAL_SUBMIT_NOTIFICATION_EVENTS
+    | FINAL_REVIEW_NOTIFICATION_EVENTS
+    | ARTIFACT_NOTIFICATION_EVENTS
+)
 
 
 def _json_object(value: str) -> dict[str, object]:
@@ -108,22 +128,7 @@ def _request_metadata(request: Request | None) -> tuple[str, str]:
     return request_id[:96], ip_address[:128]
 
 
-def _ensure_local_factory(db: Session, user: AuthContext, factory_id: str) -> None:
-    if is_local_factory(user, factory_id):
-        return
-    add_auth_audit(
-        db,
-        "permission_denied",
-        username=user.username,
-        user_id=user.id,
-        detail=f"内部报价台禁止跨厂访问：{factory_id}",
-    )
-    db.commit()
-    raise HTTPException(status_code=403, detail="内部报价台仅允许访问本厂数据")
-
-
 def ensure_quote_read(db: Session, user: AuthContext, factory_id: str) -> None:
-    _ensure_local_factory(db, user, factory_id)
     ensure_permission_for_departments(
         db,
         user,
@@ -140,7 +145,6 @@ def ensure_quote_permission(
     factory_id: str,
     departments: tuple[str, ...],
 ) -> None:
-    _ensure_local_factory(db, user, factory_id)
     ensure_permission_for_departments(db, user, permission, factory_id, departments)
 
 
@@ -397,6 +401,37 @@ def _add_notification(
     return notification
 
 
+def _mark_quote_notifications_handled(
+    db: Session,
+    quote: InternalQuote,
+    *,
+    events: set[str] | None = None,
+    department: str = "",
+    payload_matches: dict[str, object] | None = None,
+) -> None:
+    timestamp = now_text()
+    notifications = db.scalars(
+        select(SystemNotification).where(
+            SystemNotification.type == "internal_quote",
+            SystemNotification.target_factory_id == quote.factory_id,
+            SystemNotification.status != "handled",
+        )
+    ).all()
+    for notification in notifications:
+        payload = _json_object(notification.payload_json)
+        if payload.get("quote_id") != quote.id:
+            continue
+        if events is not None and payload.get("event") not in events:
+            continue
+        if department and payload.get("department") != department:
+            continue
+        if payload_matches and any(payload.get(key) != value for key, value in payload_matches.items()):
+            continue
+        notification.status = "handled"
+        notification.read_at = notification.read_at or timestamp
+        notification.handled_at = notification.handled_at or timestamp
+
+
 def _invalidate_final_release(
     db: Session,
     quote: InternalQuote,
@@ -413,6 +448,11 @@ def _invalidate_final_release(
     quote.final_release_status = "invalidated"
     quote.final_release_invalidated_at = timestamp
     quote.final_release_invalidation_reason = reason
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=FINAL_REVIEW_NOTIFICATION_EVENTS,
+    )
     exports = db.scalars(
         select(InternalQuoteExportFile).where(
             InternalQuoteExportFile.quote_id == quote.id,
@@ -432,6 +472,12 @@ def _invalidate_final_release(
         handoff.status = "revoked"
         handoff.revoked_at = timestamp
         handoff.revoke_reason = reason
+        _mark_quote_notifications_handled(
+            db,
+            quote,
+            events=ARTIFACT_NOTIFICATION_EVENTS,
+            payload_matches={"release_revision": handoff.release_revision},
+        )
 
 
 def _add_revision(
@@ -537,15 +583,53 @@ def _create_reference_set(
     return reference
 
 
+def _find_reference_set(
+    db: Session,
+    quote: InternalQuote,
+) -> InternalQuoteReferenceSet | None:
+    if quote.reference_snapshot_id:
+        reference = db.get(InternalQuoteReferenceSet, quote.reference_snapshot_id)
+        if reference is not None:
+            return reference
+    return db.scalar(
+        select(InternalQuoteReferenceSet)
+        .where(
+            InternalQuoteReferenceSet.quote_id == quote.id,
+            InternalQuoteReferenceSet.is_current.is_(True),
+        )
+        .order_by(InternalQuoteReferenceSet.source_revision.desc())
+    )
+
+
 def _ensure_reference_set(
     db: Session,
     quote: InternalQuote,
     user: AuthContext,
 ) -> InternalQuoteReferenceSet:
-    if quote.reference_snapshot_id:
-        reference = db.get(InternalQuoteReferenceSet, quote.reference_snapshot_id)
-        if reference is not None:
-            return reference
+    reference = _find_reference_set(db, quote)
+    if reference is not None:
+        return reference
+    return _create_reference_set(db, quote, user, source_type="legacy_lazy_init")
+
+
+def _ensure_reference_set_for_read(
+    db: Session,
+    quote: InternalQuote,
+    user: AuthContext,
+) -> InternalQuoteReferenceSet:
+    reference = _find_reference_set(db, quote)
+    if reference is not None:
+        return reference
+    # Legacy quotes may predate reference snapshots. A GET may repair that
+    # state only for a user who can manage references in the quote's factory;
+    # cross-factory read access must never mutate foreign business data.
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:reference_manage",
+        quote.factory_id,
+        ("sales-business", "engineering"),
+    )
     return _create_reference_set(db, quote, user, source_type="legacy_lazy_init")
 
 
@@ -685,6 +769,13 @@ def _invalidate_engineering_dependents(
         if section.calculation_status == "stale" and section.dependency_status == "stale":
             continue
         old_revision = section.revision
+        if section.status in REVIEWABLE_SECTION_STATUSES:
+            _mark_quote_notifications_handled(
+                db,
+                quote,
+                events=SECTION_REVIEW_NOTIFICATION_EVENTS,
+                department=section.department,
+            )
         section.revision += 1
         section.calculation_status = "stale"
         section.dependency_status = "stale"
@@ -729,6 +820,13 @@ def _invalidate_sales_dependency(
     if sales.calculation_status == "stale" and sales.dependency_status == "stale":
         return
     old_revision = sales.revision
+    if sales.status in REVIEWABLE_SECTION_STATUSES:
+        _mark_quote_notifications_handled(
+            db,
+            quote,
+            events=SECTION_REVIEW_NOTIFICATION_EVENTS,
+            department="sales",
+        )
     sales.revision += 1
     sales.calculation_status = "stale"
     sales.dependency_status = "stale"
@@ -828,7 +926,6 @@ def create_quote(
     user: AuthContext,
     request: Request | None = None,
 ) -> InternalQuoteOut:
-    _ensure_local_factory(db, user, payload.factory_id)
     ensure_permission_in_scope(
         db,
         user,
@@ -938,6 +1035,25 @@ def list_quotes(
     ]
 
 
+def _has_business_owner_binding(
+    db: Session,
+    user: AuthUser,
+    factory_id: str,
+) -> bool:
+    context = build_auth_context(db, user)
+    return can(
+        context,
+        "internal_quote:sales_edit",
+        factory_id,
+        "sales-business",
+    ) and any(
+        grant.factory_id in {factory_id, "*"}
+        and grant.department in {"sales-business", "*"}
+        and "internal_quote:sales_edit" in grant.permissions
+        for grant in context.grants
+    )
+
+
 def list_business_owners(
     db: Session,
     user: AuthContext,
@@ -947,10 +1063,8 @@ def list_business_owners(
     users = db.scalars(
         select(AuthUser)
         .join(AuthUserRole, AuthUserRole.user_id == AuthUser.id)
-        .join(AuthRole, AuthRole.id == AuthUserRole.role_id)
         .where(
             AuthUser.status == "active",
-            AuthRole.code.in_(("sales_customer_owner", "sales_customer_supervisor")),
             AuthUserRole.factory_id.in_((factory_id, "*")),
             AuthUserRole.department.in_(("sales-business", "*")),
         )
@@ -964,6 +1078,7 @@ def list_business_owners(
             display_name=item.display_name or item.username,
         )
         for item in users
+        if _has_business_owner_binding(db, item, factory_id)
     ]
 
 
@@ -1381,6 +1496,12 @@ def submit_section(
         new_revision=section.revision,
         request=request,
     )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=SECTION_EDIT_NOTIFICATION_EVENTS,
+        department=section_code,
+    )
     _add_notification(
         db,
         quote,
@@ -1436,6 +1557,12 @@ def request_section_na(
         new_revision=section.revision,
         reason=payload.reason,
         request=request,
+    )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=SECTION_EDIT_NOTIFICATION_EVENTS,
+        department=section_code,
     )
     _add_notification(
         db,
@@ -1531,6 +1658,12 @@ def review_section(
         reason=payload.reason,
         request=request,
     )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=SECTION_REVIEW_NOTIFICATION_EVENTS,
+        department=section_code,
+    )
     if payload.decision == "reject":
         _add_notification(
             db,
@@ -1613,6 +1746,11 @@ def reopen_section(
         reason=payload.reason,
         request=request,
     )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=FINAL_SUBMIT_NOTIFICATION_EVENTS,
+    )
     _add_notification(
         db,
         quote,
@@ -1689,7 +1827,7 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
     ).all()
     participating_sections = [section for section in sections if section.is_required]
-    reference = _ensure_reference_set(db, quote, user)
+    reference = _ensure_reference_set_for_read(db, quote, user)
     counts: dict[str, int] = {}
     for section in participating_sections:
         counts[section.status] = counts.get(section.status, 0) + 1
@@ -1762,7 +1900,7 @@ def get_quote_reference_set(
 ) -> InternalQuoteReferenceSetOut:
     quote = _get_quote(db, quote_id)
     ensure_quote_read(db, user, quote.factory_id)
-    reference = _ensure_reference_set(db, quote, user)
+    reference = _ensure_reference_set_for_read(db, quote, user)
     db.commit()
     return _reference_out(reference)
 
@@ -1821,6 +1959,13 @@ def _replace_quote_reference_set(
             section.dependency_status = "current"
             continue
         old_revision = section.revision
+        if section.status in REVIEWABLE_SECTION_STATUSES:
+            _mark_quote_notifications_handled(
+                db,
+                quote,
+                events=SECTION_REVIEW_NOTIFICATION_EVENTS,
+                department=section.department,
+            )
         section.revision += 1
         try:
             _calculate_and_apply(db, quote, section, user)
@@ -1889,6 +2034,11 @@ def _replace_quote_reference_set(
         reason=reason,
         detail=f"{reference.id} | {audit_detail}" if audit_detail else reference.id,
         request=request,
+    )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=FINAL_SUBMIT_NOTIFICATION_EVENTS,
     )
     if had_final_release:
         _add_notification(
@@ -2062,6 +2212,11 @@ def archive_quote(
         new_revision=quote.header_revision,
         reason=payload.reason,
         request=request,
+    )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
     )
     db.commit()
     db.refresh(quote)
