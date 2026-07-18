@@ -46,6 +46,7 @@ const successMessage = ref('')
 let selectedPositionAccessRequestSequence = 0
 let previewRequestSequence = 0
 
+const canManageAccess = computed(() => authStore.can('system:access_manage'))
 const userId = computed(() => String(route.params.userId ?? ''))
 const userFactory = computed(() => access.value?.profile?.primary_factory_id ?? '')
 const userDepartment = computed(() => access.value?.profile?.primary_department ?? '')
@@ -73,7 +74,8 @@ const hasVerifiedSelectedPositionAccess = computed(() =>
   && Boolean(selectedSystemPositionRoleId.value)
   && selectedPositionAccess.value?.id === selectedSystemPositionRoleId.value,
 )
-const hasSystemPositionAction = computed(() => hasPrimaryOrganization.value
+const hasSystemPositionAction = computed(() => canManageAccess.value
+  && hasPrimaryOrganization.value
   && Boolean(selectedSystemPositionRoleId.value)
   && hasVerifiedSelectedPositionAccess.value
   && (hasPositionChange.value || hasHistoricalAuthorization.value))
@@ -171,7 +173,16 @@ function roleSourceLabel(source?: string) {
   return source === 'code' ? '代码固定' : '数据库配置'
 }
 
+function ensureAccessManagementPermission() {
+  if (canManageAccess.value) return true
+  errorMessage.value = '当前账号没有权限职位调整权限，无法执行该操作。'
+  successMessage.value = ''
+  preview.value = null
+  return false
+}
+
 async function loadSelectedPositionAccess() {
+  if (!ensureAccessManagementPermission()) return
   const requestSequence = ++selectedPositionAccessRequestSequence
   const roleId = selectedSystemPositionRoleId.value
   previewRequestSequence += 1
@@ -203,6 +214,21 @@ async function loadSelectedPositionAccess() {
 }
 
 async function loadData() {
+  if (!canManageAccess.value) {
+    access.value = null
+    systemPositions.value = []
+    permissions.value = []
+    selectedSystemPositionRoleId.value = ''
+    selectedPositionAccess.value = null
+    preview.value = null
+    isLoading.value = false
+    isLoadingPosition.value = false
+    isPreviewing.value = false
+    isCommitting.value = false
+    errorMessage.value = ''
+    successMessage.value = ''
+    return
+  }
   isLoading.value = true
   errorMessage.value = ''
   try {
@@ -228,6 +254,7 @@ async function loadData() {
 }
 
 function discardChange() {
+  if (!ensureAccessManagementPermission()) return
   selectedSystemPositionRoleId.value = access.value
     ? initialSystemPosition(access.value, systemPositions.value)
     : ''
@@ -237,6 +264,7 @@ function discardChange() {
 }
 
 async function previewChange() {
+  if (!ensureAccessManagementPermission()) return
   if (!selectedSystemPositionRoleId.value) {
     errorMessage.value = '请先主动选择一个内置权限职位。'
     return
@@ -279,6 +307,7 @@ async function previewChange() {
 }
 
 async function commitChange() {
+  if (!ensureAccessManagementPermission()) return
   if (!preview.value) return
   isCommitting.value = true
   errorMessage.value = ''
@@ -319,6 +348,14 @@ onMounted(() => void loadData())
         <ArrowLeft class="size-4" aria-hidden="true" />返回用户列表
       </RouterLink>
 
+      <section v-if="!canManageAccess" data-testid="user-access-protected-notice" role="status" class="flex items-start gap-3 rounded-2xl border border-slate-300 bg-white p-5 text-sm text-slate-700 shadow-sm">
+        <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><LockKeyhole class="size-5" aria-hidden="true" /></span>
+        <div>
+          <h2 class="font-bold text-slate-950">页面可访问 · 权限资料受保护</h2>
+          <p class="mt-1 leading-6 text-slate-500">当前账号没有权限职位调整权限。用户授权明细不会在此模式下读取或展示，职位选择、变更预览及提交操作均不可用。</p>
+        </div>
+      </section>
+
       <div v-if="errorMessage" role="alert" class="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
         <AlertTriangle class="mt-0.5 size-4 shrink-0" aria-hidden="true" />{{ errorMessage }}
       </div>
@@ -328,7 +365,7 @@ onMounted(() => void loadData())
         <div class="text-center text-slate-500"><LoaderCircle class="mx-auto mb-3 size-7 animate-spin text-emerald-700" /><p>正在读取用户权限职位…</p></div>
       </div>
 
-      <template v-else-if="access">
+      <template v-else-if="canManageAccess && access">
         <IamIdentitySummary :access="access" />
 
         <section class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
@@ -361,7 +398,7 @@ onMounted(() => void loadData())
 
             <label v-else class="mt-4 grid gap-1.5 text-sm font-semibold text-slate-700">
               选择新的内置权限职位
-              <select v-model="selectedSystemPositionRoleId" aria-label="选择新的内置权限职位" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:cursor-wait disabled:bg-slate-100 disabled:text-slate-500" :disabled="isPreviewing || isCommitting" @change="loadSelectedPositionAccess">
+              <select v-model="selectedSystemPositionRoleId" aria-label="选择新的内置权限职位" class="h-11 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500" :disabled="!canManageAccess || isPreviewing || isCommitting" @change="loadSelectedPositionAccess">
                 <option value="" disabled>请选择内置权限职位</option>
                 <optgroup v-for="group in groupedSystemPositions" :key="group.department" :label="group.name">
                   <option v-for="position in group.positions" :key="position.id" :value="position.id">
@@ -396,11 +433,11 @@ onMounted(() => void loadData())
               </div>
             </div>
 
-            <div v-if="hasPrimaryOrganization" data-testid="system-position-action-panel" class="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
-              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" :disabled="isPreviewing" @click="discardChange">
+            <div v-if="canManageAccess && hasPrimaryOrganization" data-testid="system-position-action-panel" class="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" :disabled="!canManageAccess || isPreviewing" @click="discardChange">
                 <RefreshCw class="size-4" />取消修改
               </button>
-              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!hasSystemPositionAction || isPreviewing" @click="previewChange">
+              <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!canManageAccess || !hasSystemPositionAction || isPreviewing" @click="previewChange">
                 <LoaderCircle v-if="isPreviewing" class="size-4 animate-spin" /><Save v-else class="size-4" />{{ hasPositionChange ? '预览职位调整' : '预览历史授权清理' }}
               </button>
             </div>
@@ -443,7 +480,7 @@ onMounted(() => void loadData())
       </template>
     </div>
 
-    <div v-if="preview" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" @click.self="preview = null">
+    <div v-if="canManageAccess && preview" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" @click.self="preview = null">
       <section class="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="system-position-preview-title">
         <header class="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
           <div><h2 id="system-position-preview-title" class="text-lg font-bold">确认权限职位调整</h2><p class="mt-1 text-sm text-slate-500">系统会以一次事务完成旧授权清理和新职位绑定。</p></div>
@@ -465,9 +502,9 @@ onMounted(() => void loadData())
               <span class="shrink-0 font-bold" :class="diff.after === 'allow' ? 'text-emerald-700' : 'text-rose-700'">{{ diffStateLabel(diff.before) }} → {{ diffStateLabel(diff.after) }}</span>
             </div>
           </div>
-          <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600"><span>我已核对高风险权限和历史授权清理范围。</span></label>
+          <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600" :disabled="!canManageAccess"><span>我已核对高风险权限和历史授权清理范围。</span></label>
         </div>
-        <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4"><button type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" :disabled="isCommitting" @click="preview = null">返回修改</button><button type="button" class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="isCommitting || (preview.high_risk && !confirmedHighRisk)" @click="commitChange"><LoaderCircle v-if="isCommitting" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" />确认并立即生效</button></footer>
+        <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4"><button type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" :disabled="!canManageAccess || isCommitting" @click="preview = null">返回修改</button><button type="button" class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="!canManageAccess || isCommitting || (preview.high_risk && !confirmedHighRisk)" @click="commitChange"><LoaderCircle v-if="isCommitting" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" />确认并立即生效</button></footer>
       </section>
     </div>
   </main>

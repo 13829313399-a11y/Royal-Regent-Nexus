@@ -43,6 +43,7 @@ describe('IAM management view semantics and accessibility', () => {
       'permissionStatusLabel(permission.status)',
       'permissionRiskLabel(permission.risk_level)',
       'data-testid="role-templates-sticky-navigation"',
+      'data-testid="role-catalog-protected-notice"',
       'data-testid="role-viewer-workspace"',
       'data-testid="role-directory-scroll-region"',
       'data-testid="role-summary-panel"',
@@ -76,6 +77,8 @@ describe('IAM management view semantics and accessibility', () => {
     expect(source).not.toContain('xl:h-dvh')
     expect(source).not.toContain('xl:overflow-hidden')
     expect(source).not.toContain('xl:overflow-y-auto')
+    expect(source).toContain("const canReadPermissionCatalog = computed(() => authStore.can('system:permission_catalog_read'))")
+    expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canReadPermissionCatalog\.value\) \{[\s\S]*?return\s+\}/)
     expect(source).toContain('@media (min-width: 1280px) and (min-height: 820px)')
     expect(source).toContain('@media (max-width: 1279px), (max-height: 819px)')
   })

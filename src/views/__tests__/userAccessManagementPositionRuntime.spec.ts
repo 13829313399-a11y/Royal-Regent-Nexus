@@ -9,13 +9,14 @@ const getRoleAccessMock = vi.hoisted(() => vi.fn())
 const previewUserSystemPositionMock = vi.hoisted(() => vi.fn())
 const commitUserSystemPositionMock = vi.hoisted(() => vi.fn())
 const refreshSessionMock = vi.hoisted(() => vi.fn())
+const canMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { userId: 'user-1' } }),
 }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ can: () => true, refreshSession: refreshSessionMock }),
+  useAuthStore: () => ({ can: canMock, refreshSession: refreshSessionMock }),
 }))
 
 vi.mock('@/api/iam', () => ({
@@ -117,6 +118,7 @@ function mountView() {
 
 describe('UserAccessManagementView system position change', () => {
   beforeEach(() => {
+    canMock.mockReset().mockReturnValue(true)
     getUserAccessMock.mockReset().mockResolvedValue(access)
     listSystemPositionsMock.mockReset().mockResolvedValue(positions)
     listPermissionsMock.mockReset().mockResolvedValue([permission, formerlyHiddenInactivePermission])
@@ -140,6 +142,25 @@ describe('UserAccessManagementView system position change', () => {
       status: 'committed', authorization_version: 3,
     })
     refreshSessionMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('keeps the page available without reading protected authorization data when access management is denied', async () => {
+    canMock.mockReturnValue(false)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="user-access-protected-notice"]').text()).toContain('权限资料受保护')
+    expect(wrapper.text()).toContain('职位选择、变更预览及提交操作均不可用')
+    expect(getUserAccessMock).not.toHaveBeenCalled()
+    expect(listSystemPositionsMock).not.toHaveBeenCalled()
+    expect(listPermissionsMock).not.toHaveBeenCalled()
+    expect(getRoleAccessMock).not.toHaveBeenCalled()
+    expect(previewUserSystemPositionMock).not.toHaveBeenCalled()
+    expect(commitUserSystemPositionMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="identity-summary"]').exists()).toBe(false)
+    expect(wrapper.find('select[aria-label="选择新的内置权限职位"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="system-position-action-panel"]').exists()).toBe(false)
   })
 
   it('previews and commits one selected position while showing historical cleanup', async () => {

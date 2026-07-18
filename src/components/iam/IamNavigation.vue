@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Home, ShieldCheck, UsersRound } from '@lucide/vue'
 import { computed } from 'vue'
+import { shouldShowPageNavigation } from '@/config/pageAccessPolicy'
 import { useAuthStore } from '@/stores/auth'
 
 withDefaults(defineProps<{
@@ -15,7 +16,10 @@ const authStore = useAuthStore()
 const items = computed(() => [
   { to: '/system/users', label: '用户与授权', icon: UsersRound, permissions: ['system:user_manage'] },
   { to: '/system/iam/roles', label: '内置职位权限', icon: ShieldCheck, permissions: ['system:permission_catalog_read'] },
-].filter((item) => item.permissions.some((permission) => authStore.can(permission))))
+].filter((item) => shouldShowPageNavigation(
+  item.permissions,
+  (permission) => authStore.can(permission),
+)))
 </script>
 
 <template>

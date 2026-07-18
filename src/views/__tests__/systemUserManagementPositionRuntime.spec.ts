@@ -11,11 +11,15 @@ const rejectRegistrationRequestMock = vi.hoisted(() => vi.fn())
 const updateUserStatusMock = vi.hoisted(() => vi.fn())
 const resetUserPasswordMock = vi.hoisted(() => vi.fn())
 const updateNotificationMock = vi.hoisted(() => vi.fn())
+const canMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ can: () => true }),
+  useAuthStore: () => ({
+    can: canMock,
+    currentUser: { username: 'admin', display_name: '系统管理员' },
+  }),
 }))
 
 vi.mock('@/api/system', () => ({
@@ -75,6 +79,7 @@ function mountView() {
 
 describe('SystemUserManagementView registration approval', () => {
   beforeEach(() => {
+    canMock.mockReset().mockReturnValue(true)
     listRegistrationRequestsMock.mockReset().mockResolvedValue([pendingRequest])
     listUsersMock.mockReset().mockResolvedValue([])
     listSystemPositionsMock.mockReset().mockResolvedValue(positions)
@@ -84,6 +89,26 @@ describe('SystemUserManagementView registration approval', () => {
     updateUserStatusMock.mockReset()
     resetUserPasswordMock.mockReset()
     updateNotificationMock.mockReset()
+  })
+
+  it('keeps the page available without reading or exposing protected account data', async () => {
+    canMock.mockImplementation((permission: string) => permission !== 'system:user_manage')
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="system-users-protected-notice"]').text()).toContain('敏感账号资料受保护')
+    expect(wrapper.text()).toContain('只读访问')
+    expect(wrapper.text()).toContain('内置职位权限')
+    expect(listRegistrationRequestsMock).not.toHaveBeenCalled()
+    expect(listUsersMock).not.toHaveBeenCalled()
+    expect(listSystemPositionsMock).not.toHaveBeenCalled()
+    expect(listNotificationsMock).not.toHaveBeenCalled()
+    expect(wrapper.find('.stats').exists()).toBe(false)
+    expect(wrapper.find('.approval-workspace').exists()).toBe(false)
+    expect(wrapper.find('.users-panel').exists()).toBe(false)
+    const refreshButton = wrapper.findAll('button').find((button) => button.text().includes('刷新'))
+    expect(refreshButton?.attributes('disabled')).toBeDefined()
   })
 
   it('submits corrected profile data and one system position without role assignments', async () => {
