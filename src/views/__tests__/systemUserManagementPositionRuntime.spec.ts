@@ -111,6 +111,45 @@ describe('SystemUserManagementView registration approval', () => {
     expect(refreshButton?.attributes('disabled')).toBeDefined()
   })
 
+  it('shows system timestamps in Beijing time and reports the oldest pending submission', async () => {
+    listRegistrationRequestsMock.mockResolvedValue([
+      { ...pendingRequest, submitted_at: '2026-07-14T10:00:00+08:00' },
+      {
+        ...pendingRequest,
+        id: 'registration-older',
+        user_id: 'user-older',
+        username: 'older-user',
+        submitted_at: '2026-07-13T23:30:00Z',
+      },
+    ])
+    listUsersMock.mockResolvedValue([{
+      id: 'user-1', username: 'tech-001', display_name: '张三', phone: '13800000000', email: '',
+      status: 'active', force_password_change: false, last_login_at: '2026-07-18T08:00:00Z',
+      created_at: '2026-07-14T02:00:00Z', updated_at: '2026-07-18T08:00:00Z', roles: [],
+      primary_factory_id: 'huaxing', primary_department: 'engineering', position: '工程师',
+    }])
+    listNotificationsMock.mockResolvedValue([{
+      id: 'password-reset-1', target_user_id: 'user-1', target_permission: 'system:user_manage',
+      target_factory_id: 'huaxing', target_department: 'engineering', type: 'password_reset',
+      title: '密码重置待处理', message: '用户申请重置密码', payload: { matched_user_id: 'user-1' },
+      status: 'unread', created_at: '2026-07-18T08:05:00Z', read_at: '', handled_at: '',
+    }])
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('最早提交于 2026-07-14 07:30:00')
+    expect(wrapper.text()).toContain('2026-07-14 07:30:00')
+
+    const passwordResetTab = wrapper.findAll('button').find((button) => button.text().includes('密码重置'))
+    await passwordResetTab!.trigger('click')
+    expect(wrapper.text()).toContain('2026-07-18 16:05:00')
+
+    const usersTab = wrapper.findAll('button').find((button) => button.text().includes('用户列表'))
+    await usersTab!.trigger('click')
+    expect(wrapper.text()).toContain('2026-07-18 16:00:00')
+  })
+
   it('submits corrected profile data and one system position without role assignments', async () => {
     const wrapper = mountView()
     await flushPromises()

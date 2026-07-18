@@ -2,7 +2,7 @@ import { defineComponent, h } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useNotificationCenter } from '@/composables/useNotificationCenter'
+import { formatNotificationTime, useNotificationCenter } from '@/composables/useNotificationCenter'
 import { useAuthStore } from '@/stores/auth'
 import type { MoldingSampleNotificationResponse } from '@/api/moldingSample'
 import type { SystemNotificationResponse } from '@/api/system'
@@ -169,6 +169,16 @@ describe('useNotificationCenter', () => {
     expect(center().items.value.map((item) => item.title)).toEqual(['历史未读消息'])
     expect(center().currentToast.value).toBeNull()
     expect(soundMock.play).not.toHaveBeenCalled()
+  })
+
+  it('interprets legacy and explicit-offset notification times in the business timezone', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-18T08:30:00Z'))
+
+    expect(formatNotificationTime('2026-07-18 16:29:30')).toBe('刚刚')
+    expect(formatNotificationTime('2026-07-18T08:00:00Z')).toBe('30 分钟前')
+    expect(formatNotificationTime('2026-07-17T07:59:00Z')).toBe('2026-07-17 15:59')
+    expect(formatNotificationTime('not-a-date')).toBe('not-a-date')
   })
 
   it('keeps an oversized same-timestamp baseline silent and announces the next boundary item once', async () => {

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.time import serialize_process_local_timestamp
 from app.models.auth import (
     AuthAuthorizationEvent,
     AuthPermission,
@@ -1220,10 +1221,10 @@ def registration_request_to_out(registration_request: AuthRegistrationRequest) -
         status=registration_request.status,
         reviewer_user_id=registration_request.reviewer_user_id,
         review_comment=registration_request.review_comment,
-        submitted_at=registration_request.submitted_at,
-        reviewed_at=registration_request.reviewed_at,
-        created_at=registration_request.created_at,
-        updated_at=registration_request.updated_at,
+        submitted_at=serialize_process_local_timestamp(registration_request.submitted_at),
+        reviewed_at=serialize_process_local_timestamp(registration_request.reviewed_at),
+        created_at=serialize_process_local_timestamp(registration_request.created_at),
+        updated_at=serialize_process_local_timestamp(registration_request.updated_at),
         recommended_role_ids=recommend_role_ids(registration_request),
     )
 
@@ -1262,9 +1263,9 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
         email=email,
         status=user.status,
         force_password_change=bool(user.force_password_change),
-        last_login_at=user.last_login_at,
-        created_at=user.created_at,
-        updated_at=user.updated_at,
+        last_login_at=serialize_process_local_timestamp(user.last_login_at),
+        created_at=serialize_process_local_timestamp(user.created_at),
+        updated_at=serialize_process_local_timestamp(user.updated_at),
         avatar_url=(
             f"/api/system/users/{user.id}/avatar?v={user.avatar_version}"
             if user.avatar_png and user.avatar_version
@@ -1312,9 +1313,9 @@ def notification_to_out(notification: SystemNotification) -> SystemNotificationO
         message=notification.message,
         payload=parse_payload(notification.payload_json),
         status=notification.status,
-        created_at=notification.created_at,
-        read_at=notification.read_at,
-        handled_at=notification.handled_at,
+        created_at=serialize_process_local_timestamp(notification.created_at),
+        read_at=serialize_process_local_timestamp(notification.read_at),
+        handled_at=serialize_process_local_timestamp(notification.handled_at),
     )
 
 

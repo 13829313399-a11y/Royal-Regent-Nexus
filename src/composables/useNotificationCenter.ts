@@ -1,6 +1,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { moldingSampleApi, type MoldingSampleNotificationResponse } from '@/api/moldingSample'
 import { systemApi, type SystemNotificationResponse } from '@/api/system'
+import { formatBusinessDateTime, parseBusinessTimestamp } from '@/lib/dateTime'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationSound } from '@/composables/useNotificationSound'
@@ -103,8 +104,7 @@ function normalizeSystemStatus(status: string): NotificationCenterStatus {
 }
 
 function notificationTimestamp(value: string) {
-  const timestamp = Date.parse(value.replace(' ', 'T'))
-  return Number.isFinite(timestamp) ? timestamp : 0
+  return parseBusinessTimestamp(value) ?? 0
 }
 
 export function formatNotificationTime(value: string) {
@@ -114,13 +114,7 @@ export function formatNotificationTime(value: string) {
   if (elapsed >= 0 && elapsed < 60_000) return '刚刚'
   if (elapsed >= 60_000 && elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)} 分钟前`
   if (elapsed >= 60 * 60_000 && elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / (60 * 60_000))} 小时前`
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(timestamp)
+  return formatBusinessDateTime(value, { fallback: value })
 }
 
 export function useNotificationCenter() {

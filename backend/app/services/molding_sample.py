@@ -2,7 +2,6 @@ import json
 import re
 import unicodedata
 from dataclasses import replace
-from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from math import isfinite
 from pathlib import Path
@@ -13,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.time import business_now, business_today
 from app.models.molding_sample import (
     MoldingSampleAuditLog,
     MoldingSampleInventoryBatch,
@@ -79,7 +79,6 @@ DEFAULT_PRICES = [
 SENSITIVE_AUDIT_LIST_LIMIT = 200
 PRODUCTION_TASK_MODULE = "production_molding_sample_task"
 ENGINEERING_MOLDING_SAMPLE_MODULE = "engineering_molding_sample"
-PRODUCTION_TASK_VISIBLE_STATUSES = frozenset({"待生产", "生产中", "已完成"})
 FIXED_PRODUCTION_TASK_ROLE_IDS = frozenset(
     {
         "position_molding_clerk",
@@ -132,11 +131,11 @@ ENGINEERING_EDIT_DEPARTMENTS = (*ENGINEERING_DEPARTMENTS, *MANAGEMENT_DEPARTMENT
 
 
 def now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M")
+    return business_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def now_precise_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    return business_now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
 def round_money(value: float) -> float:
@@ -504,7 +503,7 @@ def ensure_any_local_molding_read(db: Session, current_user: AuthContext) -> Non
     raise AssertionError("unreachable")
 
 
-def is_production_task_only_access(
+def is_fixed_production_notification_only_access(
     current_user: AuthContext,
     factory_id: str,
 ) -> bool:
@@ -556,13 +555,17 @@ def is_production_task_only_access(
         )
         for department in PRODUCTION_DEPARTMENTS
     )
+    # The fixed molding-position grant now intentionally includes general
+    # engineering-board read access. Ignore that grant here so the existing
+    # production-notification boundary remains intact. Independent custom
+    # grants and explicit overrides stay additive.
     has_general_read = has_permission_for_departments(
-        current_user,
+        nonfixed_context,
         "molding_sample:read",
         factory_id,
         SHARED_MOLDING_DEPARTMENTS,
     ) or has_permission_for_departments(
-        current_user,
+        nonfixed_context,
         MOLDING_CROSS_FACTORY_READ_PERMISSION,
         factory_id,
         CROSS_FACTORY_DEPARTMENTS,
@@ -588,11 +591,6 @@ def ensure_order_read_allowed(
     order: MoldingSampleOrder,
 ) -> None:
     ensure_molding_read(db, current_user, order.factory_id)
-    if (
-        is_production_task_only_access(current_user, order.factory_id)
-        and order.status not in PRODUCTION_TASK_VISIBLE_STATUSES
-    ):
-        raise HTTPException(status_code=403, detail="啤机职位只能查看已进入生产流程的任务")
 
 
 def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
@@ -646,10 +644,6 @@ def list_orders(
     return [
         order for order in orders
         if molding_read_access(current_user, order.factory_id) is not None
-        and (
-            not is_production_task_only_access(current_user, order.factory_id)
-            or order.status in PRODUCTION_TASK_VISIBLE_STATUSES
-        )
     ]
 
 
@@ -838,8 +832,6 @@ def list_board_page(
     page_size: int,
 ) -> tuple[list[MoldingSampleOrder], int, int, int]:
     ensure_molding_read(db, current_user, factory_id)
-    if is_production_task_only_access(current_user, factory_id):
-        raise HTTPException(status_code=403, detail="啤机职位不能读取工程啤办看板")
     source_statuses = BOARD_SOURCE_STATUSES[board_status]
     tokens = tokenize_board_search_keyword(keyword)
 
@@ -900,8 +892,6 @@ def get_board_summary(
     keyword: str,
 ) -> dict[str, Any]:
     ensure_molding_read(db, current_user, factory_id)
-    if is_production_task_only_access(current_user, factory_id):
-        raise HTTPException(status_code=403, detail="啤机职位不能读取工程啤办看板")
     tokens = tokenize_board_search_keyword(keyword)
     status_counts = _empty_board_status_counts()
 
@@ -1151,6 +1141,15 @@ def has_notification_scope_permission(
     permission: str,
     notification: MoldingSampleNotification,
 ) -> bool:
+    if (
+        notification.target_module != PRODUCTION_TASK_MODULE
+        and is_fixed_production_notification_only_access(
+            current_user,
+            notification.factory_id,
+        )
+    ):
+        return False
+
     fixed_contract_grants = tuple(
         grant
         for grant in current_user.grants
@@ -1425,11 +1424,15 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
         raise HTTPException(status_code=409, detail="啤办单编号已存在")
 
     status = INITIAL_ORDER_STATUS
+    created_at = now_text()
     order = MoldingSampleOrder(
-        **payload.order.model_dump(exclude={"status", "created_at", "updated_at"}),
+        **payload.order.model_dump(
+            exclude={"status", "completed_date", "created_at", "updated_at"}
+        ),
         status=status,
-        created_at=payload.order.created_at or now_text(),
-        updated_at=payload.order.updated_at or now_text(),
+        completed_date="",
+        created_at=created_at,
+        updated_at=created_at,
     )
     db.add(order)
 
@@ -1530,6 +1533,7 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
         raise HTTPException(status_code=400, detail="啤办单厂区归属不可通过编辑接口变更")
     current_status = order.status
     current_created_at = order.created_at
+    current_completed_date = order.completed_date
     current_external = is_external_order(order)
     payload_external = payload.order.send_to in {"发至湖南", "发至模厂"} or payload.order.workshop == "模厂"
     existing_items_by_id = {item.id: item for item in order.items}
@@ -1554,11 +1558,14 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
             ]
         prepared_items.append((item_payload, item_data, index))
 
-    order_data = payload.order.model_dump(exclude={"id", "factory_id", "status", "created_at", "updated_at"})
+    order_data = payload.order.model_dump(
+        exclude={"id", "factory_id", "status", "completed_date", "created_at", "updated_at"}
+    )
     for field, value in order_data.items():
         setattr(order, field, value)
 
     order.status = current_status
+    order.completed_date = current_completed_date
     order.created_at = current_created_at
     order.updated_at = now_text()
 
@@ -2147,7 +2154,7 @@ def transition_status(
             raise HTTPException(status_code=403, detail="只有指定主管可以审核待审核单")
         if is_external_order(order):
             next_status = "已完成"
-            order.completed_date = request.today or order.date
+            order.completed_date = business_today()
             recalculate_order_costs(db, order, force_material_amount=True)
         else:
             next_status = "待生产"
@@ -2167,7 +2174,7 @@ def transition_status(
             raise HTTPException(status_code=403, detail="只有经理可以终审待经理审核单")
         if is_external_order(order):
             next_status = "已完成"
-            order.completed_date = request.today or order.date
+            order.completed_date = business_today()
             recalculate_order_costs(db, order, force_material_amount=True)
         else:
             next_status = "待生产"
@@ -2223,7 +2230,7 @@ def transition_status(
             raise HTTPException(status_code=400, detail=f"actual_weight_kg 缺失：{', '.join(missing_ids[:5])}")
 
         next_status = "已完成"
-        order.completed_date = request.today or order.date
+        order.completed_date = business_today()
         recalculate_order_costs(db, order, force_material_amount=True)
     elif action == "撤回完成":
         ensure_permission_for_departments(

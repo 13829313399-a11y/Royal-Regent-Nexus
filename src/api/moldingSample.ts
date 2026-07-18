@@ -93,7 +93,6 @@ export function resolveMoldingSampleAccess(response: Pick<
 export interface MoldingSampleStatusRequest {
   action: string
   reason?: string
-  today?: string
 }
 
 export interface MoldingSampleItemsPatchRequest {
