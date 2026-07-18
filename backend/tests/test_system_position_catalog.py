@@ -102,6 +102,7 @@ def test_fixed_system_position_definition_contract():
     molding_supervisor = positions.get_system_position("position_molding_supervisor")
     molding_manager = positions.get_system_position("position_molding_manager")
     expected_task_permissions = {
+        "molding_sample:read",
         "molding_sample:production_read",
         "molding_sample:production_start",
         "molding_sample:production_fillback",

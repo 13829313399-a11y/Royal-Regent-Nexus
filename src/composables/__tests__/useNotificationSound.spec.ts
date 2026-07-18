@@ -10,14 +10,23 @@ const audioSpies = {
   close: vi.fn(),
   createGain: vi.fn(),
   createOscillator: vi.fn(),
+  gainSetValueAtTime: vi.fn(),
+  gainExponentialRampToValueAtTime: vi.fn(),
+  oscillatorFrequencySetValueAtTime: vi.fn(),
   oscillatorStart: vi.fn(),
   oscillatorStop: vi.fn(),
 }
+
+let latestAudioContext: MockAudioContext | undefined
 
 class MockAudioContext {
   state: AudioContextState = 'suspended'
   currentTime = 0
   destination = {} as AudioDestinationNode
+
+  constructor() {
+    latestAudioContext = this
+  }
 
   resume = audioSpies.resume.mockImplementation(async () => {
     this.state = 'running'
@@ -28,14 +37,14 @@ class MockAudioContext {
   createGain = audioSpies.createGain.mockImplementation(() => ({
     connect: vi.fn(),
     gain: {
-      setValueAtTime: vi.fn(),
-      exponentialRampToValueAtTime: vi.fn(),
+      setValueAtTime: audioSpies.gainSetValueAtTime,
+      exponentialRampToValueAtTime: audioSpies.gainExponentialRampToValueAtTime,
     },
   }))
 
   createOscillator = audioSpies.createOscillator.mockImplementation(() => ({
     type: 'sine',
-    frequency: { setValueAtTime: vi.fn() },
+    frequency: { setValueAtTime: audioSpies.oscillatorFrequencySetValueAtTime },
     connect: vi.fn(),
     start: audioSpies.oscillatorStart,
     stop: audioSpies.oscillatorStop,
@@ -60,6 +69,7 @@ describe('useNotificationSound', () => {
 
   beforeEach(() => {
     window.localStorage.clear()
+    latestAudioContext = undefined
     vi.clearAllMocks()
     Object.defineProperty(window, 'AudioContext', { configurable: true, value: MockAudioContext })
     Reflect.deleteProperty(window as typeof window & { webkitAudioContext?: typeof AudioContext }, 'webkitAudioContext')
@@ -76,7 +86,7 @@ describe('useNotificationSound', () => {
     }
   })
 
-  it('unlocks after a user gesture and plays a restrained two-tone sound', async () => {
+  it('unlocks after a user gesture and plays a clearly audible, non-overlapping two-tone sound', async () => {
     const { wrapper, sound } = mountSound()
 
     expect(sound().soundReady.value).toBe(false)
@@ -85,10 +95,47 @@ describe('useNotificationSound', () => {
 
     expect(sound().soundReady.value).toBe(true)
     await expect(sound().playNotificationSound()).resolves.toBe(true)
-    expect(audioSpies.createGain).toHaveBeenCalledTimes(1)
+    expect(audioSpies.createGain).toHaveBeenCalledTimes(2)
     expect(audioSpies.createOscillator).toHaveBeenCalledTimes(2)
     expect(audioSpies.oscillatorStart).toHaveBeenCalledTimes(2)
     expect(audioSpies.oscillatorStop).toHaveBeenCalledTimes(2)
+
+    const peakGainCalls = audioSpies.gainExponentialRampToValueAtTime.mock.calls
+      .filter(([gain]) => gain > 0.0001)
+    expect(peakGainCalls).toHaveLength(2)
+    expect(peakGainCalls[0]?.[0]).toBeCloseTo(0.16)
+    expect(peakGainCalls[1]?.[0]).toBeCloseTo(0.20)
+    peakGainCalls.forEach(([gain]) => {
+      expect(gain).toBeGreaterThanOrEqual(0.14)
+      expect(gain).toBeLessThanOrEqual(0.24)
+    })
+    expect(audioSpies.gainSetValueAtTime).toHaveBeenNthCalledWith(1, 0.0001, 0)
+    expect(audioSpies.gainSetValueAtTime).toHaveBeenNthCalledWith(2, 0.0001, 0.24)
+    expect(peakGainCalls[0]?.[1]).toBeCloseTo(0.025)
+    expect(peakGainCalls[1]?.[1]).toBeCloseTo(0.265)
+    expect(audioSpies.gainExponentialRampToValueAtTime).toHaveBeenNthCalledWith(2, 0.0001, 0.18)
+    expect(audioSpies.gainExponentialRampToValueAtTime).toHaveBeenNthCalledWith(4, 0.0001, 0.48)
+    expect(audioSpies.oscillatorFrequencySetValueAtTime).toHaveBeenNthCalledWith(1, 620, 0)
+    expect(audioSpies.oscillatorFrequencySetValueAtTime).toHaveBeenNthCalledWith(2, 760, 0.24)
+    expect(audioSpies.oscillatorStart).toHaveBeenNthCalledWith(1, 0)
+    expect(audioSpies.oscillatorStart).toHaveBeenNthCalledWith(2, 0.24)
+    expect(audioSpies.oscillatorStop).toHaveBeenNthCalledWith(1, 0.18)
+    expect(audioSpies.oscillatorStop).toHaveBeenNthCalledWith(2, 0.48)
+    wrapper.unmount()
+  })
+
+  it('resumes a suspended audio context before playing a notification', async () => {
+    const { wrapper, sound } = mountSound()
+    await sound().unlockSound()
+    expect(latestAudioContext).toBeTruthy()
+    latestAudioContext!.state = 'suspended'
+    audioSpies.resume.mockClear()
+
+    await expect(sound().playNotificationSound()).resolves.toBe(true)
+
+    expect(audioSpies.resume).toHaveBeenCalledTimes(1)
+    expect(sound().soundReady.value).toBe(true)
+    expect(audioSpies.createOscillator).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 

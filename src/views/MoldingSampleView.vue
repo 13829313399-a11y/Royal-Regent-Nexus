@@ -63,6 +63,7 @@ import {
   tokenizeMoldingSampleSearchKeyword,
 } from '@/lib/moldingSampleSearch'
 import { getApiErrorMessage } from '@/lib/http'
+import { formatBusinessDate, formatBusinessDateTime } from '@/lib/dateTime'
 import {
   MOLDING_SAMPLE_XLSX_MIME,
   moldingSampleApi,
@@ -229,13 +230,9 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 
 function getTodayText(date = new Date()) {
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-
-  return `${date.getFullYear()}-${month}-${day}`
+  return formatBusinessDate(date.toISOString(), '')
 }
 
-const today = getTodayText()
 const activeView = ref<ViewKey>('overview')
 const overviewDisplayMode = ref<OverviewDisplayMode>('board')
 const materialBalancePeriodMode = ref<MaterialBalancePeriodMode>('day')
@@ -961,6 +958,12 @@ const canViewActiveFactoryCosts = computed(() => {
 
   return canCrossFactoryPermission('molding_sample:cross_factory_cost_read', selectedFactoryId.value)
 })
+const isFixedMoldingClerkPosition = computed(() =>
+  authStore.grants.some((grant) =>
+    grant.role_id === 'position_molding_clerk'
+    || grant.role_code === 'position_molding_clerk',
+  ),
+)
 const isCrossFactoryReadOnly = computed(() =>
   selectedRecord.value?.access?.read_source === 'cross'
   && selectedRecord.value?.access?.read_only !== false,
@@ -1080,7 +1083,7 @@ function createEmptySelectedOrder(): MoldingSampleOrder {
 function createEmptyCreateDraft() {
   return createManualMoldingSampleOrderDraft({
     factory_id: selectedFactoryId.value,
-    order_date: today,
+    order_date: getTodayText(),
     stage: 'T0',
     order_type: '啤办',
     workshop: '工程部',
@@ -1143,7 +1146,7 @@ function isBlankCreateDraft(draft: ManualMoldingSampleOrderDraft) {
     draft.eng_name,
     draft.reason,
   ].some(hasDraftText)
-  const hasChangedDefault = draft.order_date !== today
+  const hasChangedDefault = draft.order_date !== getTodayText()
     || draft.stage !== 'T0'
     || draft.order_type !== '啤办'
     || draft.workshop !== '工程部'
@@ -2257,7 +2260,6 @@ async function resubmitRejectedOrder(payload: NonNullable<ReturnType<typeof buil
   return moldingSampleApi.updateStatus(orderId, {
     action: '工程重提',
     reason: `${authStore.currentUser?.display_name ?? '工程部'}修改后重提。`,
-    today,
   })
 }
 
@@ -2312,7 +2314,6 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
   const payload: MoldingSampleStatusRequest = {
     action: decision === '通过' ? actor.passAction : actor.rejectAction,
     reason: reason || `${authStore.currentUser?.display_name ?? actor.actorName}${decision}`,
-    today,
   }
 
   try {
@@ -2353,7 +2354,6 @@ async function withdrawSelectedOrder() {
     const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, {
       action: '工程撤回',
       reason: `${actorName}撤回主管审核。`,
-      today,
     })
     replaceApiRecord(updated)
     selectedOrderId.value = updated.order.id
@@ -2480,7 +2480,7 @@ function getFlowSummary(record: MoldingSampleWorkflowRecord) {
     return missingCount ? `待回填 ${missingCount} 项实际用料` : '生产数据已补齐'
   }
   if (record.order.status === '已完成') {
-    return record.order.completed_date ? `${record.order.completed_date} 完成` : '已完成'
+    return record.order.completed_date ? `${formatWorkflowDate(record.order.completed_date)} 完成` : '已完成'
   }
 
   if (record.order.status === '已撤回') {
@@ -2591,6 +2591,27 @@ function setMaterialBalanceDetailPage(page: number) {
 
 function formatBlank(value: string | number | null | undefined, fallback = '待填写') {
   return value === null || value === undefined || value === '' ? fallback : String(value)
+}
+
+function formatWorkflowDate(value: string | null | undefined, fallback = '待填写') {
+  return formatBusinessDate(value, fallback)
+}
+
+function formatWorkflowTime(value: string | null | undefined, fallback = '待生成') {
+  return formatBusinessDateTime(value, { includeSeconds: true, fallback })
+}
+
+function getWorkflowDateLabel(record: MoldingSampleWorkflowRecord) {
+  const completedDate = formatWorkflowDate(record.order.completed_date, '')
+  if (record.order.status === '已完成' && completedDate) {
+    return `完成 ${completedDate}`
+  }
+  const submittedDate = formatWorkflowDate(record.order.created_at, '')
+  if (submittedDate) {
+    return `提交 ${submittedDate}`
+  }
+
+  return `业务 ${formatWorkflowDate(record.order.date)}`
 }
 
 function formatMoldPresenceStatus(value: string | undefined) {
@@ -2966,8 +2987,9 @@ function getMaterialBalancePeriodKey(
   record: MoldingSampleWorkflowRecord,
   materialBalancePeriodMode: MaterialBalancePeriodMode,
 ): MaterialBalancePeriodKey {
-  const date = parseMaterialBalanceDate(readMaterialBalanceDate(record)) ?? parseMaterialBalanceDate(today)
-  const safeDate = date ?? new Date(Date.UTC(2026, 6, 3))
+  const date = parseMaterialBalanceDate(readMaterialBalanceDate(record))
+    ?? parseMaterialBalanceDate(getTodayText())
+  const safeDate = date ?? new Date()
 
   if (materialBalancePeriodMode === 'day') {
     const dayKey = formatMaterialBalanceDate(safeDate)
@@ -3022,7 +3044,7 @@ function readMaterialBalanceDate(record: MoldingSampleWorkflowRecord) {
     || record.order.date
     || record.order.updated_at
     || record.order.created_at
-    || today
+    || getTodayText()
 }
 
 function parseMaterialBalanceDate(value: string) {
@@ -3640,8 +3662,8 @@ onUnmounted(() => {
                     <strong class="text-slate-800">{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong>
                   </div>
                   <div class="rounded-md bg-slate-50 px-3 py-2">
-                    <span class="block text-[11px] text-slate-400">开单 / 更新</span>
-                    <strong class="text-slate-800">{{ formatBlank(record.order.date) }} / {{ formatBlank(record.order.updated_at) }}</strong>
+                    <span class="block text-[11px] text-slate-400">业务开单 / 系统更新</span>
+                    <strong class="text-slate-800">{{ formatWorkflowDate(record.order.date) }} / {{ formatWorkflowTime(record.order.updated_at) }}</strong>
                   </div>
                 </div>
 
@@ -3719,7 +3741,13 @@ onUnmounted(() => {
         class="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-800"
       >
         <TriangleAlert class="mt-0.5 size-4 shrink-0 text-amber-600" aria-hidden="true" />
-        <span v-if="isCrossFactoryReadOnly">
+        <span
+          v-if="isFixedMoldingClerkPosition"
+          data-testid="molding-clerk-engineering-readonly-banner"
+        >
+          工程啤办看板只读：可切换查看所有厂区正式单据，但不能新建、编辑、审核、驳回、删除或导出；生产操作请前往“啤办生产任务单”。
+        </span>
+        <span v-else-if="isCrossFactoryReadOnly">
           跨厂只读：仅可查看啤办单，不能修改、审批、删除或导出；{{ canViewSelectedOrderCost ? '已额外授权查看成本' : '成本信息已隐藏' }}
         </span>
         <span v-else>当前厂区为只读，仅可查看数据</span>
@@ -3997,7 +4025,7 @@ onUnmounted(() => {
                     <div class="mt-0.5 truncate text-[11px] text-slate-500">{{ record.order.client_name }} · {{ record.items.length }} 项明细</div>
                     <div class="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px]">
                       <span class="truncate text-slate-500">{{ getFlowSummary(record) }}</span>
-                      <span class="shrink-0 text-slate-400">{{ record.order.date }}</span>
+                      <span class="shrink-0 text-slate-400">{{ getWorkflowDateLabel(record) }}</span>
                     </div>
                   </button>
                 </div>
@@ -4096,7 +4124,7 @@ onUnmounted(() => {
                   <th class="px-3 py-2 text-left font-medium">明细</th>
                   <th class="px-3 py-2 text-left font-medium">工程 / 主管</th>
                   <th class="px-3 py-2 text-left font-medium">进度</th>
-                  <th class="px-3 py-2 text-right font-medium">日期</th>
+                  <th class="px-3 py-2 text-right font-medium">流程日期</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-50">
@@ -4151,7 +4179,7 @@ onUnmounted(() => {
                     <div v-if="record.problems.length" class="mt-0.5 text-[11px] font-semibold text-red-500">{{ record.problems.length }} 个问题</div>
                   </td>
                   <td class="px-3 py-2.5 text-right align-top tabular-nums text-slate-500">
-                    {{ record.order.completed_date || record.order.date || record.order.updated_at }}
+                    {{ getWorkflowDateLabel(record) }}
                   </td>
                 </tr>
                 <tr v-if="!visibleRecords.length">
@@ -4836,7 +4864,7 @@ onUnmounted(() => {
                 <span>{{ selectedOrder.workshop }}</span>
                 <span>工程 {{ selectedOrder.eng_name }}</span>
                 <span>主管 {{ selectedOrder.supervisor }}</span>
-                <span>开单 {{ selectedOrder.date }}</span>
+                <span>业务开单 {{ formatWorkflowDate(selectedOrder.date) }}</span>
               </div>
             </div>
 
@@ -4997,7 +5025,7 @@ onUnmounted(() => {
                           </div>
                           <div class="col-span-2 flex min-w-0 items-baseline justify-between gap-2 border-t border-slate-200/70 pt-2">
                             <dt class="text-[9px] font-semibold text-slate-400">需办日期</dt>
-                            <dd class="mt-0.5 whitespace-nowrap font-medium text-slate-700">{{ formatBlank(item.completion_time) }}</dd>
+                            <dd class="mt-0.5 whitespace-nowrap font-medium text-slate-700">{{ formatWorkflowDate(item.completion_time) }}</dd>
                           </div>
                         </dl>
                       </td>
@@ -5148,12 +5176,20 @@ onUnmounted(() => {
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.eng_name) }} / {{ formatBlank(selectedOrder.supervisor) }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                      <div class="text-[10px] font-semibold text-slate-400">开单 / 完成</div>
-                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.date) }} / {{ formatBlank(selectedOrder.completed_date) }}</div>
+                      <div class="text-[10px] font-semibold text-slate-400">业务开单日期</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowDate(selectedOrder.date) }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                      <div class="text-[10px] font-semibold text-slate-400">更新时间</div>
-                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.updated_at) }}</div>
+                      <div class="text-[10px] font-semibold text-slate-400">流程完成日期</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowDate(selectedOrder.completed_date, '未完成') }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">系统提交时间（北京时间）</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowTime(selectedOrder.created_at) }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">系统更新时间（北京时间）</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowTime(selectedOrder.updated_at) }}</div>
                     </div>
                   </div>
 
@@ -5274,7 +5310,7 @@ onUnmounted(() => {
                               </div>
                               <div>
                                 <dt class="text-[10px] font-medium text-slate-500">需办日期</dt>
-                                <dd class="mt-0.5 text-[12px] font-semibold tabular-nums text-slate-900">{{ formatBlank(selectedFullItem.completion_time) }}</dd>
+                                <dd class="mt-0.5 text-[12px] font-semibold tabular-nums text-slate-900">{{ formatWorkflowDate(selectedFullItem.completion_time) }}</dd>
                               </div>
                               <div>
                                 <dt class="text-[10px] font-medium text-slate-500">数量 / 啤数</dt>
@@ -5415,7 +5451,7 @@ onUnmounted(() => {
                       ·
                       {{ selectedItems.find((item) => item.id === report.item_id)?.mold_name || '未填模具名称' }}
                     </p>
-                    <p class="mt-0.5 text-[11px] text-slate-500">啤机部 {{ report.updated_by || report.created_by || '已保存' }} · {{ report.updated_at || report.created_at }}</p>
+                    <p class="mt-0.5 text-[11px] text-slate-500">啤机部 {{ report.updated_by || report.created_by || '已保存' }} · {{ formatWorkflowTime(report.updated_at || report.created_at) }}</p>
                   </div>
                   <button
                     type="button"
@@ -5458,7 +5494,7 @@ onUnmounted(() => {
                 >
                   <div class="flex flex-wrap items-center justify-between gap-2">
                     <span class="font-semibold">{{ problem.status }} · {{ problem.reported_by }}</span>
-                    <span class="text-[11px] text-red-500">{{ problem.created_at }}</span>
+                    <span class="text-[11px] text-red-500">{{ formatWorkflowTime(problem.created_at) }}</span>
                   </div>
                   <p class="mt-1 leading-5">{{ problem.description }}</p>
                 </article>
@@ -5522,7 +5558,7 @@ onUnmounted(() => {
                 <li v-for="log in selectedAuditLogs" :key="log.id" class="relative">
                   <span class="absolute -left-[21px] top-0.5 flex h-3.5 w-3.5 rounded-full bg-teal-400 ring-4 ring-white" />
                   <div class="text-[12px] font-semibold">{{ log.action }}</div>
-                  <div class="text-[11px] text-slate-400">{{ log.actor_name }} · {{ log.actor_role }} · {{ log.created_at }}</div>
+                  <div class="text-[11px] text-slate-400">{{ log.actor_name }} · {{ log.actor_role }} · {{ formatWorkflowTime(log.created_at) }}</div>
                   <div class="mt-1 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">{{ log.reason }}</div>
                 </li>
                 <li v-if="!selectedAuditLogs.length" class="relative">
@@ -5616,12 +5652,12 @@ onUnmounted(() => {
               <tr>
                 <th>工程 / 主管</th>
                 <td>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</td>
-                <th>开单 / 完成</th>
-                <td>{{ formatBlank(record.order.date) }} / {{ formatBlank(record.order.completed_date) }}</td>
+                <th>业务开单 / 流程完成</th>
+                <td>{{ formatWorkflowDate(record.order.date) }} / {{ formatWorkflowDate(record.order.completed_date, '未完成') }}</td>
               </tr>
               <tr>
-                <th>最近更新</th>
-                <td colspan="3">{{ formatBlank(record.order.updated_at) }}</td>
+                <th>系统更新时间（北京时间）</th>
+                <td colspan="3">{{ formatWorkflowTime(record.order.updated_at) }}</td>
               </tr>
             </tbody>
           </table>
@@ -5685,7 +5721,7 @@ onUnmounted(() => {
                   <span>{{ formatWeight(item.required_material_kg) }}</span>
                   <span v-if="canViewRecordCost(record)">预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
                 </td>
-                <td>{{ formatBlank(item.completion_time) }}</td>
+                <td>{{ formatWorkflowDate(item.completion_time) }}</td>
                 <td>
                   <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
                   <span v-if="canViewRecordCost(record)">实际料费 {{ formatMoney(item.actual_amount_hkd) }}</span>

@@ -42,6 +42,7 @@ import {
   registrationDepartmentLabel,
   registrationDepartments,
 } from '@/data/registrationDepartments'
+import { formatBusinessDateTime, parseBusinessTimestamp } from '@/lib/dateTime'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -137,9 +138,13 @@ const filteredUsers = computed(() => {
 })
 
 const pendingFootText = computed(() => {
-  const first = requests.value[0]
-  if (!first?.submitted_at) return requests.value.length ? '请及时处理新的账号申请' : '暂无待处理申请'
-  return `最早提交于 ${formatDateTime(first.submitted_at)}`
+  const earliestSubmission = requests.value.reduce<{ value: string; timestamp: number } | null>((earliest, request) => {
+    const timestamp = parseBusinessTimestamp(request.submitted_at)
+    if (timestamp === null || (earliest && earliest.timestamp <= timestamp)) return earliest
+    return { value: request.submitted_at, timestamp }
+  }, null)
+  if (!earliestSubmission) return requests.value.length ? '请及时处理新的账号申请' : '暂无待处理申请'
+  return `最早提交于 ${formatBusinessDateTime(earliestSubmission.value, { includeSeconds: true })}`
 })
 
 function factoryLabel(factoryId: string) {
@@ -161,11 +166,6 @@ const userStatusPresentations: Record<string, { label: string; toneClass: string
 
 function userStatusPresentation(status: string) {
   return userStatusPresentations[status] ?? { label: '未知状态', toneClass: 'pill-slate' }
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) return '-'
-  return value.replace('T', ' ').slice(0, 16)
 }
 
 function avatarText(name: string | null | undefined, username: string) {
@@ -558,7 +558,10 @@ onMounted(() => {
       <template v-else>
         <aside class="panel">
           <div class="panel-head">
-            <h2>待审批账号</h2>
+            <div class="panel-heading-copy">
+              <h2>待审批账号</h2>
+              <p>{{ pendingFootText }}</p>
+            </div>
             <span class="cnt">{{ requests.length }} 待处理</span>
           </div>
           <div class="queue">
@@ -580,7 +583,7 @@ onMounted(() => {
                 <span class="meta">{{ factoryLabel(request.factory_id) }} · {{ departmentLabel(request.department) }}</span>
                 <span class="pos">申请职位：{{ request.position }}</span>
               </span>
-              <span class="time">{{ formatDateTime(request.submitted_at) }}</span>
+              <span class="time">{{ formatBusinessDateTime(request.submitted_at, { includeSeconds: true }) }}</span>
             </button>
           </div>
         </aside>
@@ -756,7 +759,7 @@ onMounted(() => {
             <div class="meta-wide">
               <Clock3 class="size-4" aria-hidden="true" />
               <span>提交</span>
-              <b>{{ formatDateTime(notification.created_at) }}</b>
+              <b>{{ formatBusinessDateTime(notification.created_at, { includeSeconds: true }) }}</b>
             </div>
             <div class="meta-wide">
               <LifeBuoy class="size-4" aria-hidden="true" />
@@ -870,7 +873,7 @@ onMounted(() => {
                   <span></span>{{ userStatusPresentation(user.status).label }}
                 </span>
               </td>
-              <td class="muted">{{ formatDateTime(user.last_login_at) }}</td>
+              <td class="muted">{{ formatBusinessDateTime(user.last_login_at, { includeSeconds: true }) }}</td>
               <td>
                 <div class="row-ops">
                   <RouterLink
@@ -2550,6 +2553,12 @@ onMounted(() => {
   color: var(--slate-900);
   font-size: 14px;
   font-weight: 800;
+}
+
+.panel-heading-copy p {
+  margin: 3px 0 0;
+  color: var(--slate-500);
+  font-size: 11px;
 }
 
 .panel-head .cnt {

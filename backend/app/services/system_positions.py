@@ -185,10 +185,11 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
     "internal_quote:molding_edit",
 )
 
-# 啤机职位只操作“啤办生产任务单”。范围模式负责区分文员的
-# “跨厂查看 / 本厂操作”和主管、经理的“跨厂操作”，避免把排产导入、
-# 工程啤办导出或内部报价编辑一并扩大到外厂。
+# 啤机职位可跨厂只读查看正式工程啤办看板与明细，但只操作
+# “啤办生产任务单”。范围模式负责区分文员的“跨厂查看 / 本厂操作”
+# 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
 MOLDING_CLERK_PERMISSION_CODES = (
+    "molding_sample:read",
     "molding_sample:production_read",
     "molding_sample:production_start",
     "molding_sample:production_fillback",
@@ -351,7 +352,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=460,
-        description="跨厂查看并操作啤办生产任务；暂与啤机主管权限一致",
+        description="跨厂只读查看工程啤办；跨厂查看并操作生产任务，暂与啤机主管一致",
         scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=MOLDING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -361,7 +362,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=470,
-        description="跨厂查看并操作啤办生产任务",
+        description="跨厂只读查看工程啤办；跨厂查看并操作生产任务",
         scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=MOLDING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -371,7 +372,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=480,
-        description="跨厂查看啤办生产任务；仅操作本厂任务，通知仅限本厂",
+        description="跨厂只读查看工程啤办与生产任务；仅操作本厂任务，通知仅限本厂",
         scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=MOLDING_CLERK_PERMISSION_CODES,
     ),

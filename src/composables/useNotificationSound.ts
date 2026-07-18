@@ -3,6 +3,8 @@ import { onMounted, onUnmounted, ref } from 'vue'
 const SOUND_ENABLED_STORAGE_KEY = 'rr.notification.sound.enabled'
 const LAST_SOUND_STORAGE_KEY = 'rr.notification.sound.last-played-at'
 const SOUND_COOLDOWN_MS = 3_000
+const SOUND_FLOOR_GAIN = 0.0001
+const SOUND_ATTACK_SECONDS = 0.025
 
 type BrowserAudioContext = AudioContext & {
   createGain(): GainNode
@@ -87,26 +89,31 @@ export function useNotificationSound() {
     const now = Date.now()
     const sharedLastPlayedAt = Math.max(lastPlayedAt, readSharedLastSoundAt())
     if (!ignoreCooldown && now - sharedLastPlayedAt < SOUND_COOLDOWN_MS) return false
-    if (!soundReady.value || !audioContext) return false
+    if (!audioContext || !soundReady.value || audioContext.state !== 'running') {
+      if (!await unlockSound() || !audioContext) return false
+    }
 
     try {
-      const gain = audioContext.createGain()
-      gain.connect(audioContext.destination)
-      gain.gain.setValueAtTime(0.0001, audioContext.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.018, audioContext.currentTime + 0.035)
-      gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.54)
-
       const toneSchedule = [
-        { frequency: 620, start: 0, duration: 0.18 },
-        { frequency: 760, start: 0.24, duration: 0.24 },
+        { frequency: 620, start: 0, duration: 0.18, peakGain: 0.16 },
+        { frequency: 760, start: 0.24, duration: 0.24, peakGain: 0.20 },
       ]
-      toneSchedule.forEach(({ frequency, start, duration }) => {
+      const cueStartTime = audioContext.currentTime
+      toneSchedule.forEach(({ frequency, start, duration, peakGain }) => {
+        const noteStartTime = cueStartTime + start
+        const noteEndTime = noteStartTime + duration
+        const gain = audioContext!.createGain()
+        gain.connect(audioContext!.destination)
+        gain.gain.setValueAtTime(SOUND_FLOOR_GAIN, noteStartTime)
+        gain.gain.exponentialRampToValueAtTime(peakGain, noteStartTime + SOUND_ATTACK_SECONDS)
+        gain.gain.exponentialRampToValueAtTime(SOUND_FLOOR_GAIN, noteEndTime)
+
         const oscillator = audioContext!.createOscillator()
         oscillator.type = 'sine'
-        oscillator.frequency.setValueAtTime(frequency, audioContext!.currentTime + start)
+        oscillator.frequency.setValueAtTime(frequency, noteStartTime)
         oscillator.connect(gain)
-        oscillator.start(audioContext!.currentTime + start)
-        oscillator.stop(audioContext!.currentTime + start + duration)
+        oscillator.start(noteStartTime)
+        oscillator.stop(noteEndTime)
       })
 
       lastPlayedAt = now
