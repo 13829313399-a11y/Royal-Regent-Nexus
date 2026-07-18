@@ -927,6 +927,11 @@ def update_system_notification(
     status = payload.status.strip()
     if status not in {"read", "handled"}:
         raise HTTPException(status_code=400, detail="通知状态只能设置为 read 或 handled")
+    if notification.type == "internal_quote" and status == "handled" and notification.status != "handled":
+        raise HTTPException(status_code=409, detail="内部报价通知由对应业务流程自动处理")
+
+    if notification.status == "handled":
+        return notification_to_out(notification)
 
     now = now_text()
     notification.status = status
@@ -1111,11 +1116,22 @@ def can_access_notification(
         matched_user_id = str(payload.get("matched_user_id") or "").strip()
         unmatched_password_reset = not matched_user_id or target_scope is None or target_scope[0] == "*"
 
-    canonical_result = bool(target_scope) and not unmatched_password_reset and can(
-        current_user,
-        notification.target_permission,
-        target_scope[0],
-        target_scope[1],
+    target_departments = [target_scope[1]] if target_scope else []
+    if (
+        notification.type == "internal_quote"
+        and payload.get("department") == "molding"
+        and target_scope
+        and target_scope[1] in {"production", "molding"}
+    ):
+        target_departments = ["production", "molding"]
+    canonical_result = bool(target_scope) and not unmatched_password_reset and any(
+        can(
+            current_user,
+            notification.target_permission,
+            target_scope[0],
+            department,
+        )
+        for department in target_departments
     )
     if settings.authz_mode == "enforce":
         return canonical_result

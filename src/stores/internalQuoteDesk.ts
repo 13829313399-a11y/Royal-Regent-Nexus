@@ -311,6 +311,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     errorMessage: '',
     conflictMessage: '',
     currentFactoryId: '',
+    businessOwnerFactoryId: '',
+    quoteListRequestSequence: 0,
+    businessOwnerRequestSequence: 0,
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
     versionComparisons: {} as Record<string, ApiInternalQuoteVersionComparison>,
@@ -326,27 +329,42 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       else this.quotes.unshift(quote)
     },
     async loadQuotes(factoryId: string) {
+      const requestSequence = ++this.quoteListRequestSequence
+      if (this.currentFactoryId !== factoryId) this.quotes = []
       this.listLoading = true
       this.errorMessage = ''
       this.currentFactoryId = factoryId
       try {
-        this.quotes = (await internalQuoteApi.list(factoryId)).map((item) => toQuote(item))
+        const quotes = (await internalQuoteApi.list(factoryId)).map((item) => toQuote(item))
+        if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
+        this.quotes = quotes
       } catch (error) {
+        if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
         this.errorMessage = getApiErrorMessage(error)
         this.quotes = []
       } finally {
-        this.listLoading = false
+        if (requestSequence === this.quoteListRequestSequence && this.currentFactoryId === factoryId) {
+          this.listLoading = false
+        }
       }
     },
     async loadBusinessOwners(factoryId: string) {
+      const requestSequence = ++this.businessOwnerRequestSequence
+      if (this.businessOwnerFactoryId !== factoryId) this.businessOwners = []
       this.ownerLoading = true
+      this.businessOwnerFactoryId = factoryId
       try {
-        this.businessOwners = (await internalQuoteApi.listBusinessOwners(factoryId)).map((item) => ({ id: item.id, username: item.username, displayName: item.display_name }))
+        const businessOwners = (await internalQuoteApi.listBusinessOwners(factoryId)).map((item) => ({ id: item.id, username: item.username, displayName: item.display_name }))
+        if (requestSequence !== this.businessOwnerRequestSequence || this.businessOwnerFactoryId !== factoryId) return
+        this.businessOwners = businessOwners
       } catch (error) {
+        if (requestSequence !== this.businessOwnerRequestSequence || this.businessOwnerFactoryId !== factoryId) return
         this.businessOwners = []
         this.errorMessage = getApiErrorMessage(error)
       } finally {
-        this.ownerLoading = false
+        if (requestSequence === this.businessOwnerRequestSequence && this.businessOwnerFactoryId === factoryId) {
+          this.ownerLoading = false
+        }
       }
     },
     async loadQuote(quoteId: string) {
@@ -355,15 +373,20 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.errorMessage = ''
       try {
         const detail = await internalQuoteApi.get(quoteId)
+        let exportHistoryError = ''
         const [timeline, reference, summary, attachments, exports] = await Promise.all([
           internalQuoteApi.getTimeline(quoteId).catch(() => undefined),
           internalQuoteApi.getReferenceSnapshot(quoteId).catch(() => undefined),
           internalQuoteApi.getSummary(quoteId).catch(() => undefined),
           internalQuoteApi.listAttachments(quoteId).catch(() => []),
-          internalQuoteApi.listExports(quoteId).catch(() => []),
+          internalQuoteApi.listExports(quoteId).catch((error) => {
+            exportHistoryError = getApiErrorMessage(error)
+            return []
+          }),
         ])
         const quote = toQuote(detail, { timeline, reference, summary, attachments, exports })
         this.upsertQuote(quote)
+        if (exportHistoryError) this.errorMessage = `导出历史读取失败：${exportHistoryError}`
         return quote
       } catch (error) {
         this.errorMessage = getApiErrorMessage(error)
@@ -392,8 +415,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     async createQuote(payload: InternalQuoteCreatePayload) {
       if (!payload.businessOwnerId || !payload.businessOwner.trim()) throw new Error('新建内部报价必须指定业务负责人。')
       const appStore = useAppStore()
-      const factoryId = appStore.activeProductionFactory?.id ?? 'huaxing'
-      const factoryName = appStore.activeProductionFactory?.name ?? '华兴'
+      const activeFactory = appStore.activeFactory.id === 'group'
+        ? appStore.activeProductionFactory
+        : appStore.activeFactory
+      const factoryId = activeFactory?.id ?? 'huaxing'
+      const factoryName = activeFactory?.name ?? '华兴'
       this.submitting = true
       try {
         const created = await internalQuoteApi.create({

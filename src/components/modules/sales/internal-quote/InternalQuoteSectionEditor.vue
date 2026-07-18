@@ -37,13 +37,19 @@ const editable = computed(() => props.canEdit && mutable.value && !quoteStore.su
 const reviewable = computed(() => props.canReview && ['pending_review', 'na_pending'].includes(props.section.status) && !quoteStore.submitting)
 const canReopen = computed(() => props.canEdit && ['approved', 'not_applicable'].includes(props.section.status) && !quoteStore.submitting)
 const isDirty = computed(() => JSON.stringify(draftPayload.value) !== baselinePayload.value)
+const reasonActionAllowed = computed(() => {
+  if (reasonAction.value === 'reject') return reviewable.value
+  if (reasonAction.value === 'na') return editable.value
+  if (reasonAction.value === 'reopen') return canReopen.value
+  return false
+})
 const importMeta = computed(() => ({
   engineering: { type: 'mold', label: '模具报价单 / 合同' }, electronic: { type: 'electronic', label: '电子报价单' },
   painting: { type: 'painting', label: '喷油核价表' }, sewing: { type: 'sewing', label: '车缝报价单' },
   assembly: { type: 'assembly', label: '生产排拉工序表' },
 } as Partial<Record<InternalQuoteSectionCode, { type: ApiInternalQuoteImportPreview['import_type']; label: string }>>)[props.section.code])
 
-watch(() => [props.section.code, props.section.revision, props.section.updatedAt] as const, () => {
+watch(() => [props.quote.id, props.section.code, props.section.revision, props.section.updatedAt, props.canEdit, props.canReview] as const, () => {
   draftPayload.value = normalizeInternalQuotePayload(props.section.code, props.section.payload)
   baselinePayload.value = JSON.stringify(draftPayload.value)
   importPreview.value = undefined
@@ -94,6 +100,12 @@ function openReason(action: 'reject' | 'na' | 'reopen') { reasonAction.value = a
 
 async function confirmReasonAction() {
   if (!reasonAction.value || !actionReason.value.trim()) return
+  if (!reasonActionAllowed.value) {
+    reasonAction.value = undefined
+    actionReason.value = ''
+    localError.value = '当前账号没有执行该操作的权限。'
+    return
+  }
   const reason = actionReason.value.trim()
   resetFeedback()
   try {
@@ -110,7 +122,7 @@ async function handleImportFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || !importMeta.value) return
+  if (!file || !importMeta.value || !editable.value) return
   resetFeedback()
   try {
     importPreview.value = await quoteStore.previewImport(props.quote.id, importMeta.value.type, file)
@@ -119,7 +131,11 @@ async function handleImportFile(event: Event) {
 }
 
 async function confirmImport() {
-  if (!importPreview.value) return
+  if (!importPreview.value || !editable.value) {
+    importPreview.value = undefined
+    localError.value = '当前账号没有确认导入该分段的权限。'
+    return
+  }
   resetFeedback()
   try {
     await quoteStore.confirmImport(props.quote.id, importPreview.value.batch_id, importPreview.value.target_revision, importMode.value)
@@ -132,7 +148,7 @@ async function handleAttachment(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file) return
+  if (!file || !props.canEdit) return
   resetFeedback()
   try {
     await quoteStore.uploadAttachment(props.quote.id, props.section.code, file)
@@ -163,11 +179,11 @@ async function downloadAttachment(id: string, fileName: string) {
     <div class="quote-dependency-strip"><span><Info />依赖数据</span><b v-for="dependency in section.dependencies" :key="dependency">{{ dependency }}</b><em>公式：{{ quote.formulaVersion }} · 计算 {{ section.calculationStatus }} · 依赖 {{ section.dependencyStatus }}</em></div>
     <div v-if="section.warnings.length" class="quote-warning-list"><p v-for="warning in section.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
 
-    <section v-if="importPreview" class="quote-import-preview">
+    <section v-if="importPreview && editable" class="quote-import-preview">
       <header><div><FileSpreadsheet /><span><strong>{{ importMeta?.label }} · {{ importPreview.source_file_name }}</strong><small>{{ importPreview.sheet_name }} · 表头第 {{ importPreview.header_row }} 行 · 识别 {{ importPreview.row_count }} 行 · 预览不会修改正式数据</small></span></div><button type="button" aria-label="关闭导入预览" @click="importPreview = undefined"><XCircle /></button></header>
       <div class="preview-metrics"><span>当前 {{ Number(importPreview.diff_summary.existing_rows ?? 0) }} 行</span><span>导入 {{ Number(importPreview.diff_summary.imported_rows ?? 0) }} 行</span><span>追加后 {{ Number(importPreview.diff_summary.append_result_rows ?? 0) }} 行</span><span>替换后 {{ Number(importPreview.diff_summary.replace_result_rows ?? 0) }} 行</span></div>
       <div v-if="importPreview.warnings.length" class="preview-warnings"><p v-for="warning in importPreview.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
-      <footer><label><input v-model="importMode" type="radio" value="append">追加</label><label><input v-model="importMode" type="radio" value="replace">替换</label><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting" @click="confirmImport">确认{{ importMode === 'append' ? '追加' : '替换' }}</button></footer>
+      <footer><label><input v-model="importMode" type="radio" value="append">追加</label><label><input v-model="importMode" type="radio" value="replace">替换</label><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable" @click="confirmImport">确认{{ importMode === 'append' ? '追加' : '替换' }}</button></footer>
     </section>
 
     <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :customer="quote.customer" :disabled="!editable" />
@@ -179,7 +195,7 @@ async function downloadAttachment(id: string, fileName: string) {
     <p v-if="localMessage" class="quote-local-message"><CheckCircle2 />{{ localMessage }}</p>
     <p v-if="localError" class="quote-local-error"><AlertCircle />{{ localError }}</p>
 
-    <section v-if="reasonAction" class="quote-reason-panel"><div><strong>{{ reasonAction === 'reject' ? '填写退回原因' : reasonAction === 'na' ? '填写不适用原因' : '填写重开原因' }}</strong><span>原因将进入业务操作时间线和不可变审核记录。</span></div><textarea v-model="actionReason" rows="2" placeholder="必须填写原因" /><button type="button" class="secondary" @click="reasonAction = undefined">取消</button><button type="button" class="primary" :disabled="!actionReason.trim() || quoteStore.submitting" @click="confirmReasonAction">确认</button></section>
+    <section v-if="reasonAction && reasonActionAllowed" class="quote-reason-panel"><div><strong>{{ reasonAction === 'reject' ? '填写退回原因' : reasonAction === 'na' ? '填写不适用原因' : '填写重开原因' }}</strong><span>原因将进入业务操作时间线和不可变审核记录。</span></div><textarea v-model="actionReason" rows="2" placeholder="必须填写原因" /><button type="button" class="secondary" @click="reasonAction = undefined">取消</button><button type="button" class="primary" :disabled="!actionReason.trim() || quoteStore.submitting || !reasonActionAllowed" @click="confirmReasonAction">确认</button></section>
 
     <footer class="quote-editor-actions"><div><span>最后更新 {{ section.updatedAt }}</span><b>所有写入均携带 revision；409 时保留当前表单，不覆盖他人修改</b></div><div>
       <button v-if="editable" type="button" class="secondary" @click="openReason('na')">申请不适用</button>

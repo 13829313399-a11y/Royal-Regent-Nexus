@@ -86,6 +86,18 @@ def test_fixed_system_position_definition_contract():
         for definition in (engineer, engineering_supervisor, engineering_manager)
     )
 
+    sales_business = positions.get_system_position("position_sales_business")
+    sales_supervisor = positions.get_system_position("position_sales_supervisor")
+    sales_manager = positions.get_system_position("position_sales_manager")
+    assert all(
+        definition.scope_mode == positions.CROSS_FACTORY_READ_SCOPE
+        for definition in (sales_business, sales_supervisor, sales_manager)
+    )
+    assert "internal_quote:read" in sales_business.permission_codes
+    assert "internal_quote:create" in sales_business.permission_codes
+    assert sales_manager.permission_codes == sales_supervisor.permission_codes
+    assert set(sales_business.permission_codes) < set(sales_supervisor.permission_codes)
+
     molding_clerk = positions.get_system_position("position_molding_clerk")
     molding_supervisor = positions.get_system_position("position_molding_supervisor")
     molding_manager = positions.get_system_position("position_molding_manager")

@@ -3,10 +3,13 @@ import { Home, ShieldCheck, UsersRound } from '@lucide/vue'
 import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
-defineProps<{
+withDefaults(defineProps<{
   title: string
   subtitle?: string
-}>()
+  compact?: boolean
+}>(), {
+  compact: false,
+})
 
 const authStore = useAuthStore()
 const items = computed(() => [
@@ -17,17 +20,20 @@ const items = computed(() => [
 
 <template>
   <header class="border-b border-slate-200 bg-white">
-    <div class="mx-auto flex max-w-[1480px] flex-col gap-4 px-5 py-5 xl:px-8">
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div class="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">
-            <ShieldCheck class="size-4" aria-hidden="true" />
+    <div
+      class="mx-auto flex max-w-[1600px] flex-col px-5 xl:px-6"
+      :class="compact ? 'gap-1 py-2' : 'gap-4 py-5'"
+    >
+      <div class="flex flex-wrap items-start justify-between" :class="compact ? 'gap-3' : 'gap-4'">
+        <div :class="compact ? 'flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3' : ''">
+          <div class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.17em] text-emerald-700" :class="compact ? 'mb-0' : 'mb-0.5'">
+            <ShieldCheck class="size-3.5" aria-hidden="true" />
             Identity &amp; Access Management
           </div>
-          <h1 class="text-2xl font-bold tracking-tight text-slate-950">{{ title }}</h1>
-          <p v-if="subtitle" class="mt-1 text-sm text-slate-500">{{ subtitle }}</p>
+          <h1 class="font-bold tracking-tight text-slate-950" :class="compact ? 'text-[22px] leading-7' : 'text-2xl'">{{ title }}</h1>
+          <p v-if="subtitle" class="text-slate-500" :class="compact ? 'w-full text-[13px] leading-5' : 'mt-0.5 text-sm'">{{ subtitle }}</p>
         </div>
-        <RouterLink class="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50" to="/">
+        <RouterLink class="inline-flex h-9 items-center gap-2 rounded-[10px] border border-slate-200 px-3 text-[13px] font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50" to="/">
           <Home class="size-4" aria-hidden="true" />返回首页
         </RouterLink>
       </div>
@@ -37,7 +43,7 @@ const items = computed(() => [
           v-for="item in items"
           :key="item.to"
           :to="item.to"
-          class="flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
+          class="flex h-9 shrink-0 items-center gap-2 rounded-[10px] px-3 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
           active-class="bg-emerald-50 text-emerald-800"
         >
           <component :is="item.icon" class="size-4" aria-hidden="true" />

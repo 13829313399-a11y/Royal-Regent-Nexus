@@ -25,11 +25,17 @@ const positionDepartmentAliasGroups = [
   new Set(['pmc-warehouse', 'warehouse']),
 ]
 
+const positionDepartmentSensitivePermissions = new Set([
+  'molding_sample:notification_read',
+  'internal_quote:create',
+  'internal_quote:clone',
+])
+
 function grantDepartmentMatches(grant: AuthGrant, permission: string, department?: string) {
   if (!grant.unrestricted_department) {
     return scopeValueMatches(grant.department, department)
   }
-  if (permission !== 'molding_sample:notification_read' || !department || department === '*') {
+  if (!positionDepartmentSensitivePermissions.has(permission) || !department || department === '*') {
     return true
   }
   if (grant.role_id === 'position_general_manager' || grant.department === '*') {
@@ -255,7 +261,13 @@ export const useAuthStore = defineStore('auth', {
           && grant.permissions.includes(permission),
         )
         if (scopedPositionGrants.length) {
+          const regularScopedGrants = this.grants.filter((grant) =>
+            !grantUsesScopedPositionContract(grant)
+            && grant.permissions.includes(permission),
+          )
           return scopedPositionGrants.some((grant) =>
+            grantAllowsPermission(grant, permission, factoryId, department),
+          ) || regularScopedGrants.some((grant) =>
             grantAllowsPermission(grant, permission, factoryId, department),
           )
         }

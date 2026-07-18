@@ -63,7 +63,7 @@ function deferred<T>() {
 
 function mountView() {
   return mount(IamRoleTemplatesView, {
-    global: { stubs: { IamNavigation: { props: ['title', 'subtitle'], template: '<header>{{ title }} · {{ subtitle }}</header>' } } },
+    global: { stubs: { IamNavigation: { props: ['title', 'subtitle', 'compact'], template: '<header>{{ title }} · {{ subtitle }}</header>' } } },
   })
 }
 
@@ -87,10 +87,21 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
     await flushPromises()
 
     expect(listPermissionsMock).toHaveBeenCalledWith('all')
-    expect(wrapper.text()).toContain('内置职位由系统代码固定维护；管理员可以查看，但不能在线修改。')
-    expect(wrapper.get('[data-testid="fixed-role-metadata"]').text()).toContain('代码固定')
+    expect(wrapper.get('[data-testid="role-summary-panel"]').text()).toContain('代码固定 · 只读')
     expect(wrapper.get('[data-testid="fixed-role-metadata"]').text()).toContain('system-positions-v1')
-    expect(wrapper.get('[data-testid="fixed-role-metadata"]').text()).toContain('general-manager-definition-hash')
+    expect(wrapper.get('[data-testid="fixed-role-metadata"]').text()).not.toContain('general-manager-definition-hash')
+
+    const summary = wrapper.get('[data-testid="role-summary-panel"]')
+    const toolbar = wrapper.get('[data-testid="permission-filter-toolbar"]')
+    const permissionList = wrapper.get('[data-testid="role-permission-scroll-region"]')
+    expect(summary.element.compareDocumentPosition(toolbar.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(toolbar.element.compareDocumentPosition(permissionList.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(summary.find('[data-testid="permission-filter-toolbar"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="definition-details-trigger"]').trigger('click')
+    const definitionPanel = wrapper.get('[data-testid="definition-details-panel"]')
+    expect(definitionPanel.text()).toContain('内置职位由系统代码固定维护；管理员可以查看，但不能在线修改。')
+    expect(definitionPanel.text()).toContain('general-manager-definition-hash')
     expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false)
     expect(wrapper.find('input[type="radio"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('变更原因')
@@ -103,6 +114,9 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
     const wrapper = mountView()
     await flushPromises()
 
+    expect(wrapper.text()).not.toContain('molding_sample:create')
+    const allButton = wrapper.findAll('button').find((button) => button.text().startsWith('全部权限'))!
+    await allButton.trigger('click')
     expect(wrapper.text()).toContain('system:access_approve')
     expect(wrapper.text()).toContain('审批权限申请')
     expect(wrapper.text()).toContain('已停用')
@@ -111,7 +125,7 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
     expect(wrapper.text()).toContain('已包含')
     expect(wrapper.text()).toContain('未包含')
 
-    const configuredButton = wrapper.findAll('button').find((button) => button.text() === '已配置')!
+    const configuredButton = wrapper.findAll('button').find((button) => button.text().startsWith('已包含'))!
     await configuredButton.trigger('click')
     expect(wrapper.text()).toContain('molding_sample:read')
     expect(wrapper.text()).toContain('system:access_approve')
@@ -123,9 +137,11 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.get('input[placeholder="权限名称、模块或代码"]').setValue('客户不存在')
-    expect(wrapper.text()).toContain('当前筛选条件下没有权限')
-    await wrapper.get('input[placeholder="权限名称、模块或代码"]').setValue('新建啤办')
+    const searchInput = wrapper.get('input[placeholder="搜索权限名称、模块或代码"]')
+    await searchInput.setValue('客户不存在')
+    expect(wrapper.text()).toContain('没有找到匹配的权限')
+    await wrapper.findAll('button').find((button) => button.text().startsWith('全部权限'))!.trigger('click')
+    await searchInput.setValue('新建啤办')
     expect(wrapper.text()).toContain('molding_sample:create')
     expect(wrapper.text()).not.toContain('system:access_approve')
   })
@@ -141,6 +157,27 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
     expect(wrapper.text()).toContain('跨厂操作')
   })
 
+  it('copies the definition hash and closes the details panel with Escape', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="definition-details-trigger"]').trigger('click')
+    const copyButton = wrapper.get('[data-testid="definition-details-panel"]')
+      .findAll('button')
+      .find((button) => button.text().includes('复制'))!
+    await copyButton.trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('general-manager-definition-hash')
+    expect(wrapper.text()).toContain('已复制定义哈希')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="definition-details-panel"]').exists()).toBe(false)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+  })
+
   it('surfaces a configured permission missing from the catalog as an error card', async () => {
     listSystemPositionsMock.mockResolvedValue([engineerRole])
     getRoleAccessMock.mockResolvedValue(roleAccess(engineerRole, ['missing_module:operate']))
@@ -148,7 +185,7 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('missing_module:operate')
-    expect(wrapper.text()).toContain('权限目录缺失，当前定义异常')
+    expect(wrapper.text()).toContain('定义异常：权限目录缺失')
   })
 
   it('ignores an older role response after a faster later switch', async () => {
