@@ -26,6 +26,7 @@ const confirmChecked = ref(false)
 const message = ref('')
 const errorMessage = ref('')
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
+const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const eligible = computed(() => ['released', 'exported'].includes(quote.value.status))
 const canExport = computed(() => authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
 const componentLabels: Record<string, string> = { molding_hkd: '啤机', painting_hkd: '喷油', electronic_hkd: '电子', hardware_hkd: '五金', auxiliary_hkd: '辅料', packaging_material_hkd: '包装材料', assembly_hkd: '组装人工', packing_labor_hkd: '包装人工', indonesia_freight_hkd: '印尼运费', slush_hkd: '搪胶', sewing_hkd: '车缝', carton_hkd: '纸箱' }
@@ -81,16 +82,16 @@ watch(quoteId, loadQuote)
       <article class="quote-export-preview">
         <header><div><FileSpreadsheet aria-hidden="true" /><span><strong>工作簿内容预览</strong><small>导出内容严格绑定最终放行时的 revision 集合与参考快照</small></span></div><em>{{ quote.formulaVersion }}</em></header>
         <div class="quote-workbook-card">
-          <div class="quote-workbook-title"><span><Files aria-hidden="true" /></span><div><strong>{{ quote.quoteNo }}_{{ quote.versionLabel }}_内部报价.xlsx</strong><small>内部报价台 · 华兴 · {{ selectedTemplate }}</small></div></div>
+          <div class="quote-workbook-title"><span><Files aria-hidden="true" /></span><div><strong>{{ quote.quoteNo }}_{{ quote.versionLabel }}_内部报价.xlsx</strong><small>统一内部格式：Huaxing Demo · {{ selectedTemplate }}</small></div></div>
           <div class="quote-sheet-list"><span v-for="(sheet, index) in workbookSheets" :key="sheet"><b>{{ index + 1 }}</b><strong>{{ sheet }}</strong><CheckCircle2 aria-hidden="true" /></span></div>
         </div>
-        <section class="quote-revision-matrix"><h2>审批 revision 矩阵</h2><div><article v-for="section in quote.sections" :key="section.code"><span><strong>{{ section.label }}</strong><small>{{ section.status === 'approved' ? section.reviewer : '不适用已批准' }}</small></span><b>r{{ section.revision }}</b><CheckCircle2 aria-hidden="true" /></article></div></section>
+        <section class="quote-revision-matrix"><h2>审批 revision 矩阵</h2><div><article v-for="section in participatingSections" :key="section.code"><span><strong>{{ section.label }}</strong><small>{{ section.status === 'approved' ? section.reviewer : '不适用已批准' }}</small></span><b>r{{ section.revision }}</b><CheckCircle2 aria-hidden="true" /></article></div></section>
       </article>
 
       <aside class="quote-export-controls">
         <section class="quote-integrity-card"><ShieldCheck aria-hidden="true" /><div><span>完整性校验</span><strong>{{ eligible ? '放行版本一致' : '未通过' }}</strong><small>{{ quote.referenceSnapshotId }}</small></div></section>
-        <label><span>导出模板（服务端固定）</span><select v-model="selectedTemplate" disabled><option value="internal-quote-p4-v2">internal-quote-p4-v2</option></select><small>P4 v2 额外封装八段原始参数供客价转换预检；客户折扣、返点、对客税项仍由客户转换规则处理。</small></label>
-        <section class="quote-export-checklist"><h2><FileCheck2 aria-hidden="true" />导出前检查</h2><p><CheckCircle2 aria-hidden="true" />八个分段均已审批或获批不适用</p><p><CheckCircle2 aria-hidden="true" />业务最终放行完成</p><p><CheckCircle2 aria-hidden="true" />参考快照与公式版本已锁定</p><p><CheckCircle2 aria-hidden="true" />无阻断级计算警告</p></section>
+        <label><span>导出模板（服务端固定）</span><select v-model="selectedTemplate" disabled><option value="internal-quote-p4-v2">internal-quote-p4-v2</option></select><small>P4 v2 封装实际参与分段的原始参数供客价转换预检；客户折扣、返点、对客税项仍由客户转换规则处理。</small></label>
+        <section class="quote-export-checklist"><h2><FileCheck2 aria-hidden="true" />导出前检查</h2><p><CheckCircle2 aria-hidden="true" />所有参与分段均已审批或获批不适用</p><p><CheckCircle2 aria-hidden="true" />业务最终放行完成</p><p><CheckCircle2 aria-hidden="true" />参考快照与公式版本已锁定</p><p><CheckCircle2 aria-hidden="true" />无阻断级计算警告</p></section>
         <label class="quote-confirm-check"><input v-model="confirmChecked" type="checkbox"><span>确认当前分段 revision 集合与最终放行时一致</span></label>
         <button type="button" class="quote-export-button" :disabled="!eligible || !canExport || quoteStore.submitting" @click="confirmExport"><Download aria-hidden="true" />确认生成受控 XLSX</button>
         <p class="quote-backend-note">生成、复用、SHA-256、放行阶段和历史留存均由后端控制；最终放行版本不会重复产生 artifact。</p>

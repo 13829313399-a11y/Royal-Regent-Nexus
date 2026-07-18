@@ -1060,10 +1060,15 @@ function p4DisneyPurchasedParts(artifact: P4InternalQuoteArtifact) {
     else productRows.push(result)
   })
 
-  const cartonCalculations = p4Rows(artifact.sections.engineering.calculation.line_breakdown)
+  const salesCartons = p4Rows(artifact.sections.sales.payload.cartons)
+  const cartonOwner = salesCartons.length > 0 ? artifact.sections.sales : artifact.sections.engineering
+  const cartons = salesCartons.length > 0
+    ? salesCartons
+    : p4Rows(artifact.sections.engineering.payload.cartons)
+  const cartonCalculations = p4Rows(cartonOwner.calculation.line_breakdown)
     .filter((row) => row.kind === 'carton')
-  p4Rows(artifact.sections.engineering.payload.cartons).forEach((row, index) => {
-    const perPartCostUsd = p4Positive(row.disney_unit_price_usd, `工程纸箱第 ${index + 1} 行缺少迪士尼报客单价 USD`)
+  cartons.forEach((row, index) => {
+    const perPartCostUsd = p4Positive(row.disney_unit_price_usd, `纸箱第 ${index + 1} 行缺少迪士尼报客单价 USD`)
     const dimensions = [p4Number(row.length_in), p4Number(row.width_in), p4Number(row.height_in)]
     const dimensionText = dimensions.every((value) => value > 0)
       ? ` (${dimensions.map(formatDimension).join('"x')}")`

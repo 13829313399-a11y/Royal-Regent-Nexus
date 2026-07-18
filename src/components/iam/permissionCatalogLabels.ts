@@ -31,6 +31,8 @@ const ACTION_LABELS: Record<string, string> = {
   summary_read: '查看报价汇总',
   timeline_read: '查看报价记录',
   archive: '归档报价',
+  baseline_read: '查看报价基数',
+  baseline_manage: '调整报价基数',
   reference_manage: '管理报价参考数据',
   final_submit: '提交最终报价',
   final_approve: '批准最终报价',

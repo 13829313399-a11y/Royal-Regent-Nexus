@@ -2,7 +2,21 @@
 import { Building2, CheckCircle2, Copy, FilePlus2, Snowflake, X } from '@lucide/vue'
 import { computed, reactive, ref, watch } from 'vue'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
-import type { InternalQuote, InternalQuoteBusinessOwner, InternalQuoteCreatePayload } from '@/types/internalQuoteDesk'
+import type {
+  InternalQuote,
+  InternalQuoteBusinessOwner,
+  InternalQuoteCreatePayload,
+  InternalQuoteSectionCode,
+} from '@/types/internalQuoteDesk'
+
+const mandatorySectionCodes: InternalQuoteSectionCode[] = ['sales', 'engineering', 'assembly']
+const mandatorySectionDefinitions = internalQuoteSectionDefinitions.filter((item) => mandatorySectionCodes.includes(item.code))
+const optionalSectionDefinitions = internalQuoteSectionDefinitions.filter((item) => !mandatorySectionCodes.includes(item.code))
+
+function normalizeParticipation(values: InternalQuoteSectionCode[]) {
+  const selected = new Set([...mandatorySectionCodes, ...values])
+  return internalQuoteSectionDefinitions.map((item) => item.code).filter((code) => selected.has(code))
+}
 
 const props = defineProps<{
   open: boolean
@@ -27,9 +41,11 @@ const form = reactive<InternalQuoteCreatePayload>({
   initiatorDepartment: 'sales-business',
   businessOwnerId: '',
   businessOwner: '',
+  targetCustomerPrice: '无',
   quantity: 10000,
   targetDate: '2026-08-30',
   remark: '',
+  participatingSections: [...mandatorySectionCodes],
 })
 
 const title = computed(() => props.mode === 'clone' ? '复制内部报价' : '新建内部报价')
@@ -46,9 +62,13 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
       initiatorDepartment: props.sourceQuote.initiatorDepartment,
       businessOwnerId: props.sourceQuote.businessOwnerId,
       businessOwner: props.sourceQuote.businessOwner,
+      targetCustomerPrice: props.sourceQuote.targetCustomerPrice,
       quantity: props.sourceQuote.quantity,
       targetDate: props.sourceQuote.targetDate,
       remark: `复制自 ${props.sourceQuote.quoteNo} ${props.sourceQuote.versionLabel}`,
+      participatingSections: normalizeParticipation(
+        props.sourceQuote.sections.filter((section) => section.isRequired).map((section) => section.code),
+      ),
     })
     return
   }
@@ -60,9 +80,11 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
     initiatorDepartment: 'sales-business',
     businessOwnerId: props.businessOwners[0]?.id ?? '',
     businessOwner: props.businessOwners[0]?.displayName ?? '',
+    targetCustomerPrice: '无',
     quantity: 10000,
     targetDate: '2026-08-30',
     remark: '',
+    participatingSections: [...mandatorySectionCodes],
   })
 }, { immediate: true })
 
@@ -76,11 +98,19 @@ function submit() {
     errorMessage.value = '业务部和工程部建单时都必须指定业务负责人。'
     return
   }
+  if (!form.targetCustomerPrice.trim()) {
+    errorMessage.value = '请填写客人目标价；客人未提供时请填写“无”。'
+    return
+  }
   if (!Number.isFinite(Number(form.quantity)) || Number(form.quantity) <= 0) {
     errorMessage.value = '出货数量必须大于 0。'
     return
   }
-  emit('confirm', { ...form, quantity: Number(form.quantity) })
+  emit('confirm', {
+    ...form,
+    quantity: Number(form.quantity),
+    participatingSections: normalizeParticipation(form.participatingSections),
+  })
 }
 
 function selectBusinessOwner() {
@@ -102,7 +132,7 @@ function selectBusinessOwner() {
               </span>
               <div>
                 <h2>{{ title }}</h2>
-                <p>业务部与工程部均可发起；创建时冻结参考快照并生成八个责任分段。</p>
+                <p>业务部与工程部均可发起；固定部门自动参与，其余部门按本次报价范围选择。</p>
               </div>
             </div>
             <button type="button" class="quote-icon-button" aria-label="关闭" @click="emit('close')">
@@ -168,6 +198,10 @@ function selectBusinessOwner() {
                 <input v-model.number="form.quantity" type="number" min="1" step="1">
               </label>
               <label>
+                <span>客人目标价 <b>*</b></span>
+                <input v-model="form.targetCustomerPrice" type="text" maxlength="128" placeholder="例如 USD 3.50；没有请填无">
+              </label>
+              <label>
                 <span>预计完成日期</span>
                 <input v-model="form.targetDate" type="date">
               </label>
@@ -182,11 +216,30 @@ function selectBusinessOwner() {
                 <Building2 aria-hidden="true" />
                 <div><strong>当前厂区：华兴</strong><span>统一车间 huaxing-workshop，不在页面内重复切换厂区</span></div>
               </div>
-              <div class="quote-segment-pills">
-                <span v-for="segment in internalQuoteSectionDefinitions" :key="segment.code">
-                  <CheckCircle2 aria-hidden="true" />{{ segment.label }}
+              <div class="quote-participation-heading">
+                <strong>参与部门</strong>
+                <span>业务部、工程部、装配部固定参与</span>
+              </div>
+              <div class="quote-segment-pills mandatory">
+                <span v-for="segment in mandatorySectionDefinitions" :key="segment.code">
+                  <CheckCircle2 aria-hidden="true" />{{ segment.label }} · 固定
                 </span>
               </div>
+              <div class="quote-optional-segments" aria-label="可选参与部门">
+                <label
+                  v-for="segment in optionalSectionDefinitions"
+                  :key="segment.code"
+                  :class="{ active: form.participatingSections.includes(segment.code) }"
+                >
+                  <input v-model="form.participatingSections" type="checkbox" :value="segment.code">
+                  <CheckCircle2 aria-hidden="true" />
+                  <span>
+                    <strong>{{ segment.label }}</strong>
+                    <small>{{ form.participatingSections.includes(segment.code) ? '已选择参与' : '本次不参与' }}</small>
+                  </span>
+                </label>
+              </div>
+              <p class="quote-participation-note">未选择的部门不会收到填写任务，也不计入协作进度和最终放行；创建后仍可在协作页添加回来。</p>
               <p><Snowflake aria-hidden="true" />创建后冻结汇率、材料价与机型价参考快照；同步新参考表会产生新 revision。</p>
             </section>
 
@@ -221,6 +274,8 @@ function selectBusinessOwner() {
 .quote-create-baseline{display:grid;gap:12px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:15px}.quote-baseline-title{display:flex;align-items:center;gap:9px}.quote-baseline-title>svg{width:20px;color:#0f766e}.quote-baseline-title div{display:grid}.quote-baseline-title strong{color:#0f172a;font-size:13px}.quote-baseline-title span{margin-top:2px;color:#64748b;font-size:11px}.quote-segment-pills{display:flex;flex-wrap:wrap;gap:7px}.quote-segment-pills span{display:inline-flex;align-items:center;gap:4px;border:1px solid #ccfbf1;border-radius:999px;background:#fff;padding:5px 8px;color:#0f766e;font-size:10px;font-weight:800}.quote-segment-pills svg{width:12px;height:12px}.quote-create-baseline p{display:flex;align-items:flex-start;gap:6px;margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-create-baseline p svg{width:15px;height:15px;flex:0 0 auto;color:#0d9488}.quote-form-error{margin:0;border-radius:8px;background:#fef2f2;padding:9px 11px;color:#b91c1c;font-size:12px}
 .quote-primary-button,.quote-secondary-button{display:inline-flex;min-height:38px;align-items:center;justify-content:center;gap:7px;border-radius:9px;padding:0 16px;font-size:12px;font-weight:900}.quote-primary-button{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-primary-button:hover{background:#115e59}.quote-secondary-button{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-primary-button svg{width:16px;height:16px}.quote-dialog-enter-active,.quote-dialog-leave-active{transition:opacity .16s ease}.quote-dialog-enter-active .quote-dialog,.quote-dialog-leave-active .quote-dialog{transition:transform .18s ease}.quote-dialog-enter-from,.quote-dialog-leave-to{opacity:0}.quote-dialog-enter-from .quote-dialog,.quote-dialog-leave-to .quote-dialog{transform:translateY(8px) scale(.985)}
 .quote-department-choice small,.quote-form-grid label>span,.quote-baseline-title span,.quote-create-baseline p{font-size:12px}.quote-segment-pills span{font-size:11px}.quote-primary-button,.quote-secondary-button{font-size:13px}.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label{transition:color .18s ease,background-color .18s ease,border-color .18s ease,box-shadow .18s ease,transform .18s ease}.quote-icon-button:hover,.quote-primary-button:hover,.quote-secondary-button:hover{transform:translateY(-1px)}.quote-icon-button:active,.quote-primary-button:active,.quote-secondary-button:active{transform:translateY(0) scale(.98)}.quote-secondary-button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-department-choice label:hover{border-color:#99f6e4;box-shadow:0 8px 18px rgb(15 118 110/.08)}.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:border-color .18s ease,box-shadow .18s ease,background-color .18s ease}.quote-form-grid input:hover,.quote-form-grid select:hover,.quote-form-grid textarea:hover{border-color:#94a3b8}.quote-form-grid input:focus,.quote-form-grid select:focus,.quote-form-grid textarea:focus{border-color:#14b8a6;box-shadow:0 0 0 3px rgb(20 184 166/.1)}
-@media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}}
-@media(prefers-reduced-motion:reduce){.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label,.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:none}}
+.quote-participation-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.quote-participation-heading strong{color:#0f172a;font-size:13px}.quote-participation-heading span{color:#64748b;font-size:12px}.quote-segment-pills.mandatory span{border-color:#99f6e4;background:#f0fdfa;padding:6px 9px;font-size:11px}.quote-optional-segments{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px}.quote-optional-segments label{position:relative;display:flex;align-items:center;gap:7px;min-width:0;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:9px;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,box-shadow .18s ease,transform .18s ease}.quote-optional-segments label:hover{border-color:#5eead4;box-shadow:0 7px 16px rgb(15 118 110/.08);transform:translateY(-1px)}.quote-optional-segments label.active{border-color:#14b8a6;background:#f0fdfa;box-shadow:0 0 0 2px rgb(20 184 166/.08)}.quote-optional-segments input{position:absolute;opacity:0}.quote-optional-segments>label>svg{width:16px;height:16px;flex:0 0 auto;color:#cbd5e1}.quote-optional-segments label.active>svg{color:#0f766e}.quote-optional-segments label span{display:grid;min-width:0}.quote-optional-segments strong{overflow:hidden;color:#0f172a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.quote-optional-segments small{margin-top:2px;color:#64748b;font-size:10px;white-space:nowrap}.quote-create-baseline .quote-participation-note{border-radius:8px;background:#fff7ed;padding:8px 10px;color:#9a3412;font-size:12px}
+@media(max-width:760px){.quote-optional-segments{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}.quote-participation-heading{align-items:flex-start;flex-direction:column;gap:3px}}
+@media(prefers-reduced-motion:reduce){.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label,.quote-optional-segments label,.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:none}}
 </style>

@@ -29,6 +29,7 @@ class InternalQuote(Base):
     initiator_department: Mapped[str] = mapped_column(String(64), default="sales-business", index=True)
     business_owner_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     business_owner_name: Mapped[str] = mapped_column(String(128), default="")
+    target_customer_price: Mapped[str] = mapped_column(String(128), default="无")
     target_date: Mapped[str] = mapped_column(String(32), default="")
     remark: Mapped[str] = mapped_column(Text, default="")
     module_version: Mapped[str] = mapped_column(String(32), default="v2", index=True)
@@ -195,6 +196,31 @@ class InternalQuoteReferenceSet(Base):
     created_by_name: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[str] = mapped_column(String(32))
     superseded_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class InternalQuotePricingBaseline(Base):
+    __tablename__ = "internal_quote_pricing_baselines"
+    __table_args__ = (
+        UniqueConstraint(
+            "factory_id",
+            "workshop_code",
+            name="uq_internal_quote_pricing_baselines_factory_workshop",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    workshop_code: Mapped[str] = mapped_column(String(64), index=True)
+    workshop_name: Mapped[str] = mapped_column(String(128), default="")
+    material_prices_json: Mapped[str] = mapped_column(Text, default="[]")
+    machine_prices_json: Mapped[str] = mapped_column(Text, default="[]")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64), index=True)
+    created_by_name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[str] = mapped_column(String(32))
+    updated_by: Mapped[str] = mapped_column(String(64), index=True)
+    updated_by_name: Mapped[str] = mapped_column(String(128))
+    updated_at: Mapped[str] = mapped_column(String(32))
 
 
 class InternalQuoteImportBatch(Base):

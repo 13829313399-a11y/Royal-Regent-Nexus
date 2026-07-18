@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
@@ -47,6 +48,7 @@ export interface ApiInternalQuote {
   initiator_department: string
   business_owner_id: string
   business_owner_name: string
+  target_customer_price?: string
   target_date: string
   remark: string
   module_version: string
@@ -161,7 +163,7 @@ export interface ApiInternalQuoteExport {
 export interface ApiInternalQuoteImportPreview {
   batch_id: string
   quote_id: string
-  import_type: 'mold' | 'electronic' | 'painting' | 'sewing' | 'assembly'
+  import_type: 'mold' | 'hardware' | 'electronic' | 'painting' | 'sewing' | 'assembly'
   target_department: string
   source_file_name: string
   source_sha256: string
@@ -241,6 +243,38 @@ export interface ApiInternalQuoteBusinessOwner {
   display_name: string
 }
 
+export interface ApiInternalQuoteMaterialBaselineRow {
+  material: string
+  grade: string
+  price_hkd_lb: string
+}
+
+export interface ApiInternalQuoteMachineBaselineRow {
+  machine_range: string
+  machine: string
+  shift_price_hkd: string
+}
+
+export interface ApiInternalQuotePricingBaseline {
+  factory_id: string
+  workshop_code: string
+  workshop_name: string
+  revision: number
+  source_type: 'default' | 'custom'
+  material_prices: ApiInternalQuoteMaterialBaselineRow[]
+  machine_prices: ApiInternalQuoteMachineBaselineRow[]
+  updated_by: string
+  updated_by_name: string
+  updated_at: string
+}
+
+export interface InternalQuotePricingBaselineUpdateRequest {
+  revision: number
+  workshop_name: string
+  material_prices: ApiInternalQuoteMaterialBaselineRow[]
+  machine_prices: ApiInternalQuoteMachineBaselineRow[]
+}
+
 export interface InternalQuoteCreateRequest {
   factory_id: string
   workshop_code: string
@@ -253,8 +287,10 @@ export interface InternalQuoteCreateRequest {
   initiator_department: 'sales-business' | 'engineering'
   business_owner_id: string
   business_owner_name: string
+  target_customer_price: string
   target_date: string
   remark: string
+  participating_sections: InternalQuoteSectionCode[]
 }
 
 export interface InternalQuoteCloneRequest {
@@ -262,8 +298,10 @@ export interface InternalQuoteCloneRequest {
   version_label: string
   business_owner_id: string
   business_owner_name: string
+  target_customer_price?: string
   target_date: string
   remark?: string
+  participating_sections?: InternalQuoteSectionCode[]
 }
 
 export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
@@ -291,9 +329,32 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/clone`, payload)
       return response.data
     },
+    async addParticipation(quoteId: string, revision: number, addSections: InternalQuoteSectionCode[]) {
+      const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/participation`, {
+        revision,
+        add_sections: addSections,
+      })
+      return response.data
+    },
     async listBusinessOwners(factoryId: string) {
       const response = await client.get<ApiInternalQuoteBusinessOwner[]>('/internal-quotes/business-owners', {
         params: { factory_id: factoryId },
+      })
+      return response.data
+    },
+    async getPricingBaseline(factoryId: string, workshopCode = 'huaxing-workshop') {
+      const response = await client.get<ApiInternalQuotePricingBaseline>('/internal-quotes/pricing-baseline', {
+        params: { factory_id: factoryId, workshop_code: workshopCode },
+      })
+      return response.data
+    },
+    async updatePricingBaseline(
+      factoryId: string,
+      workshopCode: string,
+      payload: InternalQuotePricingBaselineUpdateRequest,
+    ) {
+      const response = await client.put<ApiInternalQuotePricingBaseline>('/internal-quotes/pricing-baseline', payload, {
+        params: { factory_id: factoryId, workshop_code: workshopCode },
       })
       return response.data
     },
@@ -347,6 +408,14 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     },
     async syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/reference-snapshot/sync`, { revision, reason })
+      return response.data
+    },
+    async updateReferenceFx(quoteId: string, revision: number, rmbHkd: string, hkdUsd: string) {
+      const response = await client.put<ApiInternalQuote>(`/internal-quotes/${quoteId}/reference-snapshot/fx`, {
+        revision,
+        rmb_hkd: rmbHkd,
+        hkd_usd: hkdUsd,
+      })
       return response.data
     },
     async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File) {

@@ -136,6 +136,10 @@ def test_l5_3_real_dickie_full_release_preflight_consume_and_output(monkeypatch)
                 "business_owner_name": submitter["display_name"],
                 "target_date": "2026-08-31",
                 "remark": "L5.3 Dickie Disney Cable 真实样表验收",
+                "participating_sections": [
+                    "sales", "engineering", "electronic", "molding",
+                    "painting", "slush", "sewing", "assembly",
+                ],
             },
         )
         assert created.status_code == 201, created.text

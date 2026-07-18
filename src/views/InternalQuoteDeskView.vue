@@ -32,7 +32,7 @@ watch(() => route.fullPath, async () => {
 <template>
   <SalesModuleWorkbench
     title="内部报价台"
-    description="业务部与工程部建单，八个责任分段协作核价，主管审核后由业务部最终放行并受控导出。"
+    description="业务部与工程部建单，按项目启用责任分段协作核价，主管审核后由业务部最终放行并受控导出。"
     badge="内部成本协作"
     :show-page-header="false"
     :back-to="backNavigation.to"

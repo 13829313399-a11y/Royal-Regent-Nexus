@@ -240,6 +240,10 @@ def test_l5_4_real_caixing_plastic_and_plush_release_consume_and_output(monkeypa
                     "business_owner_name": submitter["display_name"],
                     "target_date": "2026-08-31",
                     "remark": f"L5.4 彩星{case['product_type']}真实样表验收",
+                    "participating_sections": [
+                        "sales", "engineering", "electronic", "molding",
+                        "painting", "slush", "sewing", "assembly",
+                    ],
                 },
             )
             assert created.status_code == 201, created.text

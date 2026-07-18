@@ -227,6 +227,10 @@ def test_l5_2_real_disney_full_release_preflight_consume_and_output(monkeypatch)
             "business_owner_name": submitter["display_name"],
             "target_date": "2026-08-31",
             "remark": "L5.2 真实迪士尼样表验收",
+            "participating_sections": [
+                "sales", "engineering", "electronic", "molding",
+                "painting", "slush", "sewing", "assembly",
+            ],
         }
         created = client.post("/api/internal-quotes", json=create)
         assert created.status_code == 201, created.text

@@ -8,6 +8,7 @@ import {
   P4_SECTION_CODES,
   P4_STRUCTURED_DATA_SCHEMA_VERSION,
   parseP4InternalQuoteArtifact,
+  type P4SectionCode,
 } from '@/lib/customerPriceConverters/p4Artifact'
 import {
   createBuzzBeeCustomerQuoteWorkbook,
@@ -29,6 +30,7 @@ function p4Workbook(
   templateVersion = P4_ARTIFACT_TEMPLATE_VERSION,
   includeCustomerFields = true,
   customer: 'BuzzBee' | '迪士尼' | 'Dickie' = 'BuzzBee',
+  inactiveCodes: P4SectionCode[] = [],
 ) {
   const isDisney = customer === '迪士尼'
   const isDicky = customer === 'Dickie'
@@ -43,12 +45,13 @@ function p4Workbook(
 
   const structured: XlsxCellInput[][] = Array.from({ length: 4 }, () => [])
   structured[1] = ['结构版本', P4_STRUCTURED_DATA_SCHEMA_VERSION]
-  structured[2] = ['记录类型', '分段代码', '分段名称', '状态', 'revision', '计算状态', '依赖状态', '计算hash', '分片序号', '分片总数', 'JSON分片']
-  const addRecord = (type: string, code: string, name: string, value: Record<string, unknown>) => {
-    structured.push([type, code, name, 'approved', 2, 'valid', 'current', `${code}-hash`, 1, 1, JSON.stringify(value)])
+  structured[2] = ['记录类型', '分段代码', '分段名称', '状态', 'revision', '计算状态', '依赖状态', '计算hash', '分片序号', '分片总数', 'JSON分片', '是否参与']
+  const addRecord = (type: string, code: string, name: string, value: Record<string, unknown>, isRequired = true) => {
+    structured.push([type, code, name, isRequired ? 'approved' : 'draft', 2, isRequired ? 'valid' : 'pending', 'current', isRequired ? `${code}-hash` : '', 1, 1, JSON.stringify(value), isRequired ? '是' : '否'])
   }
   addRecord('reference_snapshot', 'quote', '报价参考快照', { fx: { hkd_usd: 7.8 } })
   P4_SECTION_CODES.forEach((code) => {
+    const isRequired = !inactiveCodes.includes(code)
     const payload = code === 'molding'
       ? {
           injection_lines: [{
@@ -60,22 +63,26 @@ function p4Workbook(
         }
       : code === 'engineering'
         ? {
-            materials: [{ item: isDisney ? '螺丝' : '彩盒', category: isDisney ? 'hardware' : 'packaging', quantity: 1, unit_price_rmb: 1, ...(isDisney ? { disney_description: 'Screw', disney_section: 'product', disney_unit_price_usd: .02, disney_included: 1 } : {}) }],
+            materials: isDisney ? [{ item: '螺丝', category: 'hardware', quantity: 1, unit_price_rmb: 1, disney_description: 'Screw', disney_section: 'product', disney_unit_price_usd: .02, disney_included: 1 }] : [],
             molds: isDisney
               ? [{ item: '车面模', quantity: 1, cost_rmb: 1000, disney_mold_no: 'M01', disney_parts: '车面', disney_material: 'ABS', disney_cavities: 1, disney_parts_per_shot: 1, disney_tool_cost_usd: 8900 }]
               : isDicky
                 ? [{ item: '车底模', quantity: 1, cost_rmb: 44100, dickie_project_name_en: '20 307 3001\nStitch Cable Buggy', dickie_mold_no: 'M01', dickie_parts_en: 'Car Bottom', dickie_resin: 'C-ABS', dickie_mold_size: '30*35*30', dickie_mold_material: 'NAK80', dickie_cavities: 16, dickie_parts_per_shot: 8, dickie_mold_cost_hkd: 49000, dickie_remark_en: '' }]
                 : [],
             amortization_qty: isDisney ? 3000 : 0, customer_mold_subsidy_usd: 0,
-            cartons: isDisney ? [] : [{ item: '外箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [] }],
           }
         : code === 'painting' && isDisney
           ? { rows: [{ item: 'Whole Item', operations: { spray: { quantity: 34, unit_price_hkd: .0171 } } }], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: .0171, operations: 34 }] }
         : code === 'assembly' && isDisney
           ? { labor_base_hkd: 310, groups: [{ name: 'Assembly vehicle', category: 'assembly', processes: [{ name: 'Assembly vehicle', persons: 1, teams: 1, production_qty: 1000 }] }] }
-        : code === 'sales' && includeCustomerFields
+        : code === 'sales'
           ? {
-              customer_quote_fields: {
+              paper_price_factor: 2.75,
+              packaging_materials: isDisney ? [] : [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '' }],
+              product_size_cm: { length: 12, width: 8, height: 4 },
+              color_box_size_cm: { length: 13, width: 9, height: 5 },
+              cartons: [{ item: '外箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [], ...(isDisney ? { disney_unit_price_usd: .062 } : {}) }],
+              ...(includeCustomerFields ? { customer_quote_fields: {
                 ...(isDisney
                   ? { disney: { item_number: '1000142435', quote_date: '2026-06-03', revision: 0, minimum_order_qty: 3000, moq_prices_usd: { qty_3000: 3.08, qty_5000: 2.84, qty_10000: 2.64 }, transportation_usd: .027, model_cost_usd: 6200, setup_charge_usd: 1500 } }
                   : isDicky
@@ -89,7 +96,7 @@ function p4Workbook(
                         material_prices_hkd: [{ material: 'PP', price_hkd_lb: 5.8 }, { material: 'C-ABS', price_hkd_lb: 10 }, { material: 'ABS', price_hkd_lb: 7.2 }, { material: 'HIPS', price_hkd_lb: 6.8 }],
                       } }
                     : { buzzbee: { color_box_tiers: [{ quote_price_hkd: 6.7, fsc_price_hkd: 6.9, moq: 'MOQ3000' }, { quote_price_hkd: 5.75, fsc_price_hkd: 5.92, moq: 'MOQ20000' }] } }),
-              },
+              } } : {}),
             }
         : {}
     const calculation = code === 'molding'
@@ -99,24 +106,29 @@ function p4Workbook(
         }
       : code === 'engineering'
         ? {
-            line_breakdown: [
-              { kind: 'material', item: '彩盒', category: 'packaging', amount_hkd: '1.1765' },
-              { kind: 'carton', item: '外箱', per_piece_hkd: '2.3265', cuft: '1.7892' },
-            ],
-            totals: { packaging_hkd: '1.1765', carton_hkd: '2.3265', total_hkd: '3.5030' },
+            line_breakdown: isDisney ? [{ kind: 'material', item: '螺丝', category: 'hardware', amount_hkd: '1.1765' }] : [],
+            totals: { hardware_hkd: isDisney ? '1.1765' : '0.0000', packaging_hkd: '0.0000', carton_hkd: '0.0000', total_hkd: isDisney ? '1.1765' : '0.0000' },
           }
       : code === 'painting' && isDisney
         ? { line_breakdown: [{ kind: 'painting', item: 'Whole Item', amount_hkd: '0.5814' }], totals: { total_hkd: '0.5814' } }
       : code === 'assembly' && isDisney
         ? { line_breakdown: [{ kind: 'assembly_process', item: 'Assembly vehicle', amount_hkd: '0.3100' }], totals: { assembly_hkd: '0.3100', packaging_hkd: '0.0000', total_hkd: '0.3100' } }
+      : code === 'sales'
+        ? {
+            line_breakdown: [
+              ...(!isDisney ? [{ kind: 'packaging_material', owner: 'sales', item: '彩盒', category: 'color_box_inner_card', tax_rate_percent: '10.0000', amount_hkd: '1.1765' }] : []),
+              { kind: 'carton', owner: 'sales', item: '外箱', per_piece_hkd: '2.3265', cuft: '1.7892' },
+            ],
+            totals: { packaging_material_hkd: isDisney ? '0.0000' : '1.1765', carton_hkd: '2.3265', carton_cuft: '1.7892', total_hkd: isDisney ? '2.3265' : '3.5030' },
+          }
       : { line_breakdown: [], totals: { total_hkd: '0.0000' } }
     Object.assign(calculation, {
       calculation_hash: `${code}-hash`,
       formula_version: 'rr2-2026-v1',
       reference_snapshot_id: 'IQREF-1',
     })
-    addRecord('payload', code, code, payload)
-    addRecord('calculation', code, code, calculation)
+    addRecord('payload', code, code, payload, isRequired)
+    addRecord('calculation', code, code, calculation, isRequired)
   })
 
   return asArrayBuffer(createXlsxWorkbook([
@@ -150,6 +162,15 @@ describe('P4 customer price adapter', () => {
   it('rejects legacy P4 v1 before one-time consumption', () => {
     expect(() => parseP4InternalQuoteArtifact(p4Workbook('internal-quote-p4-v1')))
       .toThrow('旧 P4 v1 没有完整原始参数')
+  })
+
+  it('accepts inactive optional sections without treating their draft state as a release blocker', () => {
+    const artifact = parseP4InternalQuoteArtifact(
+      p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, 'BuzzBee', ['electronic', 'painting']),
+    )
+    expect(artifact.sections.electronic).toMatchObject({ isRequired: false, status: 'draft' })
+    expect(artifact.sections.painting).toMatchObject({ isRequired: false, calculationStatus: 'pending' })
+    expect(artifact.sections.sales.isRequired).toBe(true)
   })
 
   it('keeps customer-specific incomplete mappings explicit', () => {

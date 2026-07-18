@@ -9,6 +9,16 @@ from fastapi.testclient import TestClient
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 ADMIN_TEST_PASSWORD = "AdminSeed123!"
+ALL_SECTION_CODES = [
+    "sales",
+    "engineering",
+    "electronic",
+    "molding",
+    "painting",
+    "slush",
+    "sewing",
+    "assembly",
+]
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -81,8 +91,13 @@ def logout(client: TestClient) -> None:
     assert response.status_code == 204
 
 
-def create_payload(*, initiator_department: str = "sales-business", suffix: str = "001") -> dict:
-    return {
+def create_payload(
+    *,
+    initiator_department: str = "sales-business",
+    suffix: str = "001",
+    participating_sections: list[str] | None = None,
+) -> dict:
+    payload = {
         "factory_id": "huaxing",
         "workshop_code": "huaxing-workshop",
         "workshop_name": "华兴",
@@ -94,24 +109,34 @@ def create_payload(*, initiator_department: str = "sales-business", suffix: str 
         "initiator_department": initiator_department,
         "business_owner_id": "owner-001",
         "business_owner_name": "业务负责人",
+        "target_customer_price": "USD 3.50",
         "target_date": "2026-08-01",
         "remark": "P1 回归",
     }
+    if participating_sections is not None:
+        payload["participating_sections"] = participating_sections
+    return payload
 
 
-def test_sales_create_generates_eight_sections_and_keeps_deduplicated_views(monkeypatch):
+def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_participate(monkeypatch):
     with make_client(monkeypatch) as client:
         anonymous = client.get("/api/internal-quotes?factory_id=huaxing")
         assert anonymous.status_code == 401
 
         profile = login(client, "iq_sales_create", "sales_customer_owner", "sales-business")
         assert "internal_quote:create" in profile["permissions"]
+        missing_target = create_payload(suffix="NO-TARGET")
+        missing_target["target_customer_price"] = "   "
+        rejected = client.post("/api/internal-quotes", json=missing_target)
+        assert rejected.status_code == 422
+
         response = client.post("/api/internal-quotes", json=create_payload())
         assert response.status_code == 201, response.text
         quote = response.json()
         assert quote["status"] == "drafting"
         assert quote["initiator_department"] == "sales-business"
         assert quote["business_owner_name"] == "业务负责人"
+        assert quote["target_customer_price"] == "USD 3.50"
         assert len(quote["sections"]) == 8
         assert [section["department"] for section in quote["sections"]] == [
             "sales",
@@ -124,6 +149,9 @@ def test_sales_create_generates_eight_sections_and_keeps_deduplicated_views(monk
             "assembly",
         ]
         assert all(section["status"] == "draft" and section["revision"] == 1 for section in quote["sections"])
+        assert {
+            section["department"] for section in quote["sections"] if section["is_required"]
+        } == {"sales", "engineering", "assembly"}
 
         quote_id = quote["id"]
         assert client.get(f"/api/internal-quotes/{quote_id}").status_code == 200
@@ -137,6 +165,209 @@ def test_sales_create_generates_eight_sections_and_keeps_deduplicated_views(monk
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()] == [quote_id]
         assert listed.json()[0]["sections"] == []
+
+
+def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_supervisor(monkeypatch):
+    with make_client(monkeypatch) as client:
+        owner_profile = login(client, "iq_baseline_owner", "sales_customer_owner", "sales-business")
+        assert "internal_quote:baseline_read" in owner_profile["permissions"]
+        assert "internal_quote:baseline_manage" not in owner_profile["permissions"]
+
+        initial = client.get(
+            "/api/internal-quotes/pricing-baseline",
+            params={"factory_id": "huaxing", "workshop_code": "huaxing-workshop"},
+        )
+        assert initial.status_code == 200, initial.text
+        assert initial.json()["source_type"] == "custom"
+        assert initial.json()["revision"] == 1
+        assert initial.json()["updated_by_name"] == "系统导入"
+        assert len(initial.json()["material_prices"]) == 18
+        assert len(initial.json()["machine_prices"]) == 14
+        assert initial.json()["material_prices"][0] == {
+            "material": "ABS",
+            "grade": "750SW",
+            "price_hkd_lb": "8.50",
+        }
+        assert initial.json()["material_prices"][-1] == {
+            "material": "PC料",
+            "grade": "2605",
+            "price_hkd_lb": "12.50",
+        }
+        assert initial.json()["machine_prices"][0] == {
+            "machine_range": "4A-6A",
+            "machine": "80T",
+            "shift_price_hkd": "940",
+        }
+        assert initial.json()["machine_prices"][-1] == {
+            "machine_range": "105A",
+            "machine": "800T",
+            "shift_price_hkd": "4500",
+        }
+
+        forbidden = client.put(
+            "/api/internal-quotes/pricing-baseline",
+            params={"factory_id": "huaxing", "workshop_code": "huaxing-workshop"},
+            json={
+                "revision": 1,
+                "workshop_name": "华兴",
+                "material_prices": [{"material": "ABS", "grade": "750SW", "price_hkd_lb": "9.25"}],
+                "machine_prices": [{"machine_range": "4A-6A", "machine": "80T", "shift_price_hkd": "999"}],
+            },
+        )
+        assert forbidden.status_code == 403
+
+        logout(client)
+        supervisor_profile = login(
+            client,
+            "iq_baseline_supervisor",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        assert "internal_quote:baseline_read" in supervisor_profile["permissions"]
+        assert "internal_quote:baseline_manage" in supervisor_profile["permissions"]
+
+        saved = client.put(
+            "/api/internal-quotes/pricing-baseline",
+            params={"factory_id": "huaxing", "workshop_code": "huaxing-workshop"},
+            json={
+                "revision": 1,
+                "workshop_name": "华兴",
+                "material_prices": [{"material": "ABS", "grade": "750SW", "price_hkd_lb": "9.25"}],
+                "machine_prices": [{"machine_range": "4A-6A", "machine": "80T", "shift_price_hkd": "999"}],
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["source_type"] == "custom"
+        assert saved.json()["revision"] == 2
+        assert saved.json()["updated_by_name"] == "iq_baseline_supervisor"
+
+        db_module = importlib.import_module("app.db")
+        baseline_service = importlib.import_module("app.services.internal_quote_baseline")
+        with db_module.SessionLocal() as db:
+            baseline_service.seed_internal_quote_pricing_baseline_defaults(db)
+        preserved = client.get(
+            "/api/internal-quotes/pricing-baseline",
+            params={"factory_id": "huaxing", "workshop_code": "huaxing-workshop"},
+        )
+        assert preserved.status_code == 200, preserved.text
+        assert preserved.json()["revision"] == 2
+        assert preserved.json()["updated_by_name"] == "iq_baseline_supervisor"
+        assert preserved.json()["material_prices"][0]["price_hkd_lb"] == "9.25"
+
+        stale = client.put(
+            "/api/internal-quotes/pricing-baseline",
+            params={"factory_id": "huaxing", "workshop_code": "huaxing-workshop"},
+            json={
+                "revision": 1,
+                "workshop_name": "华兴",
+                "material_prices": [{"material": "ABS", "grade": "750SW", "price_hkd_lb": "10"}],
+                "machine_prices": [{"machine_range": "4A-6A", "machine": "80T", "shift_price_hkd": "1000"}],
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["current_revision"] == 2
+
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="BASELINE-SNAPSHOT"),
+        )
+        assert created.status_code == 201, created.text
+        snapshot = client.get(
+            f"/api/internal-quotes/{created.json()['id']}/reference-snapshot"
+        )
+        assert snapshot.status_code == 200, snapshot.text
+        assert snapshot.json()["snapshot"]["pricing_baseline_revision"] == 2
+        assert snapshot.json()["snapshot"]["material_prices"]["ABS|750SW"] == "9.25"
+        assert snapshot.json()["snapshot"]["machine_prices"][0]["shift_price_hkd"] == "999"
+
+        logout(client)
+        engineering_profile = login(
+            client,
+            "iq_baseline_engineering",
+            "engineering_supervisor",
+            "engineering",
+        )
+        assert "internal_quote:reference_manage" in engineering_profile["permissions"]
+        denied_engineering = client.get(
+            "/api/internal-quotes/pricing-baseline",
+            params={"factory_id": "huaxing", "workshop_code": "huaxing-workshop"},
+        )
+        assert denied_engineering.status_code == 403
+
+
+def test_create_validates_mandatory_sections_and_can_select_optional_departments(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_optional_create", "sales_customer_owner", "sales-business")
+        missing_assembly = client.post(
+            "/api/internal-quotes",
+            json=create_payload(
+                suffix="MISSING-ASSEMBLY",
+                participating_sections=["sales", "engineering", "electronic"],
+            ),
+        )
+        assert missing_assembly.status_code == 422
+
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(
+                suffix="OPTIONAL",
+                participating_sections=["sales", "engineering", "electronic", "assembly"],
+            ),
+        )
+        assert created.status_code == 201, created.text
+        required = {
+            section["department"] for section in created.json()["sections"] if section["is_required"]
+        }
+        assert required == {"sales", "engineering", "electronic", "assembly"}
+
+
+def test_business_or_engineering_can_add_optional_participation_later(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_participation_admin", "admin", "*", "*")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="ADD-PARTICIPATION"),
+        )
+        assert created.status_code == 201, created.text
+        quote = created.json()
+
+        inactive_save = client.put(
+            f"/api/internal-quotes/{quote['id']}/sections/electronic",
+            json={"revision": 1, "payload": {"items": []}},
+        )
+        assert inactive_save.status_code == 409
+        assert "未参与" in inactive_save.json()["detail"]
+
+        added = client.post(
+            f"/api/internal-quotes/{quote['id']}/participation",
+            json={"revision": 1, "add_sections": ["electronic"]},
+        )
+        assert added.status_code == 200, added.text
+        result = added.json()
+        assert result["header_revision"] == 2
+        electronic = next(
+            section for section in result["sections"] if section["department"] == "electronic"
+        )
+        assert electronic["is_required"] is True
+        assert electronic["status"] == "draft"
+        assert electronic["revision"] == 2
+
+        stale = client.post(
+            f"/api/internal-quotes/{quote['id']}/participation",
+            json={"revision": 1, "add_sections": ["painting"]},
+        )
+        assert stale.status_code == 409
+
+        summary = client.get(f"/api/internal-quotes/{quote['id']}/summary")
+        assert summary.status_code == 200
+        assert summary.json()["required_sections"] == 4
+        assert len(summary.json()["sections"]) == 4
+
+        timeline = client.get(f"/api/internal-quotes/{quote['id']}/timeline")
+        assert any(
+            event["action"] == "participation_added"
+            for event in timeline.json()["business_events"]
+        )
 
 
 def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monkeypatch):
@@ -263,7 +494,11 @@ def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
         cloned = clone.json()
         assert cloned["cloned_from_quote_id"] == quote_id
         assert cloned["initiator_department"] == "engineering"
+        assert cloned["target_customer_price"] == "USD 3.50"
         assert all(section["status"] == "draft" and section["revision"] == 1 for section in cloned["sections"])
+        assert {
+            section["department"] for section in cloned["sections"] if section["is_required"]
+        } == {"sales", "engineering", "assembly"}
 
         wrong_factory = client.get("/api/internal-quotes?factory_id=huadeng")
         assert wrong_factory.status_code == 403

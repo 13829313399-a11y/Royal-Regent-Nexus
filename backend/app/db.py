@@ -73,6 +73,7 @@ SQLITE_LEGACY_COLUMNS = {
         ("initiator_department", "initiator_department VARCHAR(64) NOT NULL DEFAULT 'sales-business'"),
         ("business_owner_id", "business_owner_id VARCHAR(64) NOT NULL DEFAULT ''"),
         ("business_owner_name", "business_owner_name VARCHAR(128) NOT NULL DEFAULT ''"),
+        ("target_customer_price", "target_customer_price VARCHAR(128) NOT NULL DEFAULT '无'"),
         ("target_date", "target_date VARCHAR(32) NOT NULL DEFAULT ''"),
         ("remark", "remark TEXT NOT NULL DEFAULT ''"),
         ("module_version", "module_version VARCHAR(32) NOT NULL DEFAULT 'legacy_rr2_compatible'"),
@@ -202,6 +203,9 @@ def init_db() -> None:
     from app.models import pricing  # noqa: F401
     from app.models import raw_material  # noqa: F401
     from app.services.auth import seed_auth_defaults
+    from app.services.internal_quote_baseline import (
+        seed_internal_quote_pricing_baseline_defaults,
+    )
     from app.services.molding_sample import seed_molding_sample_defaults
     from app.services.raw_material import seed_raw_material_defaults
 
@@ -210,5 +214,6 @@ def init_db() -> None:
 
     with SessionLocal() as db:
         seed_auth_defaults(db)
+        seed_internal_quote_pricing_baseline_defaults(db)
         seed_molding_sample_defaults(db)
         seed_raw_material_defaults(db)

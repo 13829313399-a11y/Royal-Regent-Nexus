@@ -145,6 +145,7 @@ def _build_summary_sheet(workbook: Workbook, quote: InternalQuote, sections: lis
     info = (
         ("报价编号", quote.quote_no, "版本", quote.version_label, "客户", quote.customer, "数量", quote.qty),
         ("产品", quote.product_name, "厂区/车间", f"{quote.factory_id}/{quote.workshop_name}", "公式版本", quote.formula_version, "参考快照", quote.reference_snapshot_id),
+        ("客人目标价", quote.target_customer_price, "预计完成日期", quote.target_date, "建单部门", quote.initiator_department, "备注", quote.remark),
     )
     for row_index, values in enumerate(info, start=2):
         _body_row(sheet, row_index, (_safe_text(value) for value in values))
@@ -167,13 +168,7 @@ def _build_summary_sheet(workbook: Workbook, quote: InternalQuote, sections: lis
             for mold in molds if isinstance(molds, list) else []:
                 if not isinstance(mold, dict):
                     continue
-                quantity = _number(mold.get("quantity"))
-                unit_cost = _number(mold.get("cost_rmb"))
-                amount = (
-                    quantity * unit_cost
-                    if isinstance(quantity, float) and isinstance(unit_cost, float)
-                    else ""
-                )
+                amount = _number(mold.get("cost_rmb"))
                 _body_row(
                     sheet,
                     current_row,
@@ -192,6 +187,10 @@ def _build_summary_sheet(workbook: Workbook, quote: InternalQuote, sections: lis
                 current_row += 1
         for line in breakdown:
             if not isinstance(line, dict):
+                continue
+            if section.department == "engineering" and line.get("kind") == "mold_quote":
+                # The full mold-detail payload is already emitted above; avoid a
+                # second, less-detailed copy of the same quote line.
                 continue
             label = line.get("item") or line.get("group") or line.get("name") or ""
             amount = _line_amount(line)
@@ -344,7 +343,7 @@ def _build_structured_data_sheet(
     reference_snapshot: dict[str, Any],
 ) -> None:
     sheet = workbook.create_sheet("结构化数据")
-    _style_title(sheet, "P4 客价转换结构化数据", 11)
+    _style_title(sheet, "P4 客价转换结构化数据", 12)
     _body_row(
         sheet,
         2,
@@ -370,6 +369,7 @@ def _build_structured_data_sheet(
             "分片序号",
             "分片总数",
             "JSON分片",
+            "是否参与",
         ),
     )
     row_index = 4
@@ -390,6 +390,7 @@ def _build_structured_data_sheet(
                 chunk_index,
                 len(snapshot_chunks),
                 chunk,
+                "是",
             ),
             text_columns={11},
         )
@@ -421,11 +422,12 @@ def _build_structured_data_sheet(
                         chunk_index,
                         len(chunks),
                         chunk,
+                        "是" if section.is_required else "否",
                     ),
                     text_columns={11},
                 )
                 row_index += 1
-    _finish_sheet(sheet, (16, 16, 20, 18, 10, 16, 16, 66, 10, 10, 76))
+    _finish_sheet(sheet, (16, 16, 20, 18, 10, 16, 16, 66, 10, 10, 76, 12))
 
 
 def _build_approval_sheet(
