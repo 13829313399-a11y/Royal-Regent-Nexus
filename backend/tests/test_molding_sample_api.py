@@ -2,10 +2,12 @@ import importlib
 import json
 import sqlite3
 import sys
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -16,6 +18,8 @@ from sqlalchemy import select
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 ADMIN_TEST_PASSWORD = "AdminSeed123!"
+TEST_BUSINESS_NOW = datetime(2026, 7, 18, 16, 30, 45, tzinfo=ZoneInfo("Asia/Shanghai"))
+TEST_BUSINESS_DATE = TEST_BUSINESS_NOW.date().isoformat()
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -32,6 +36,19 @@ def make_client(monkeypatch):
             del sys.modules[module_name]
 
     main = importlib.import_module("app.main")
+    molding_sample_service = importlib.import_module("app.services.molding_sample")
+    molding_sample_excel_service = importlib.import_module("app.services.molding_sample_excel")
+    business_tick = 0
+
+    def ticking_business_now():
+        nonlocal business_tick
+        value = TEST_BUSINESS_NOW + timedelta(microseconds=business_tick)
+        business_tick += 1
+        return value
+
+    monkeypatch.setattr(molding_sample_service, "business_now", ticking_business_now)
+    monkeypatch.setattr(molding_sample_service, "business_today", lambda: TEST_BUSINESS_DATE)
+    monkeypatch.setattr(molding_sample_excel_service, "business_now", lambda: TEST_BUSINESS_NOW)
     return TestClient(main.app)
 
 
@@ -44,6 +61,19 @@ def make_client_with_database(monkeypatch, database_path: Path):
             del sys.modules[module_name]
 
     main = importlib.import_module("app.main")
+    molding_sample_service = importlib.import_module("app.services.molding_sample")
+    molding_sample_excel_service = importlib.import_module("app.services.molding_sample_excel")
+    business_tick = 0
+
+    def ticking_business_now():
+        nonlocal business_tick
+        value = TEST_BUSINESS_NOW + timedelta(microseconds=business_tick)
+        business_tick += 1
+        return value
+
+    monkeypatch.setattr(molding_sample_service, "business_now", ticking_business_now)
+    monkeypatch.setattr(molding_sample_service, "business_today", lambda: TEST_BUSINESS_DATE)
+    monkeypatch.setattr(molding_sample_excel_service, "business_now", lambda: TEST_BUSINESS_NOW)
     return TestClient(main.app, raise_server_exceptions=False)
 
 
@@ -598,6 +628,114 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
         "material_usage_type",
         "actual_material_cost_components",
     } <= item_columns
+
+
+def test_molding_sample_create_and_edit_keep_timing_fields_server_owned(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-SERVER-TIME-001")
+    payload["order"].update(
+        {
+            "completed_date": "2099-01-01",
+            "created_at": "2000-01-01 00:00:00",
+            "updated_at": "2000-01-01 00:00:00",
+        }
+    )
+
+    created_response = client.post("/api/injection", json=payload)
+
+    assert created_response.status_code == 201
+    assert created_response.json()["order"]["created_at"].startswith("2026-07-18 16:30:45.")
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, "BP-SERVER-TIME-001")
+        assert order is not None
+        assert order.completed_date == ""
+        assert order.created_at == "2026-07-18 16:30:45"
+        assert order.updated_at == "2026-07-18 16:30:45"
+        order.completed_date = "2026-07-17"
+        db.commit()
+
+    edit_payload = sample_order_payload("BP-SERVER-TIME-001")
+    edit_payload["order"].update(
+        {
+            "completed_date": "2099-12-31",
+            "created_at": "1999-12-31 23:59:59",
+            "updated_at": "1999-12-31 23:59:59",
+        }
+    )
+    edit_payload["order"]["product_name"] = "服务端时间字段保护"
+    edited_response = client.put("/api/injection/BP-SERVER-TIME-001", json=edit_payload)
+
+    assert edited_response.status_code == 200
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, "BP-SERVER-TIME-001")
+        assert order is not None
+        assert order.product_name == "服务端时间字段保护"
+        assert order.completed_date == "2026-07-17"
+        assert order.created_at == "2026-07-18 16:30:45"
+        assert order.updated_at == "2026-07-18 16:30:45"
+
+
+def test_molding_sample_response_derives_legacy_dates_from_audits_without_writing_database(client):
+    login_as(client, "engineer")
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-LEGACY-TIME-DERIVE-001"),
+    ).status_code == 201
+
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, "BP-LEGACY-TIME-DERIVE-001")
+        assert order is not None
+        order.status = "已完成"
+        order.created_at = "2026-02-03 09:00:00"
+        order.completed_date = "2026-07-03"
+
+        initial_audit = db.scalar(
+            select(molding_models.MoldingSampleAuditLog).where(
+                molding_models.MoldingSampleAuditLog.order_id == order.id,
+            )
+        )
+        assert initial_audit is not None
+        initial_audit.created_at = "2026-07-14 08:00:00"
+        db.add_all(
+            [
+                molding_models.MoldingSampleAuditLog(
+                    id="BP-LEGACY-TIME-DERIVE-001-complete-old",
+                    order_id=order.id,
+                    action="标记完成",
+                    actor_name="华兴啤机部文员",
+                    actor_role="啤机部文员",
+                    from_status="生产中",
+                    to_status="已完成",
+                    created_at="2026-07-15T15:30:00Z",
+                ),
+                molding_models.MoldingSampleAuditLog(
+                    id="BP-LEGACY-TIME-DERIVE-001-complete-latest",
+                    order_id=order.id,
+                    action="标记完成",
+                    actor_name="华兴啤机部文员",
+                    actor_role="啤机部文员",
+                    from_status="生产中",
+                    to_status="已完成",
+                    created_at="2026-07-15T16:30:00Z",
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get("/api/injection/BP-LEGACY-TIME-DERIVE-001")
+
+    assert response.status_code == 200
+    assert response.json()["order"]["created_at"] == "2026-07-14 08:00:00"
+    assert response.json()["order"]["completed_date"] == "2026-07-16"
+    with db_module.SessionLocal() as db:
+        order = db.get(molding_models.MoldingSampleOrder, "BP-LEGACY-TIME-DERIVE-001")
+        assert order is not None
+        assert order.created_at == "2026-02-03 09:00:00"
+        assert order.completed_date == "2026-07-03"
 
 
 def test_server_side_material_price_seed_is_additive_once_and_never_overwrites_existing_rows(client):
@@ -1756,6 +1894,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         ).status_code == 403
 
     task_permissions = {
+        "molding_sample:read",
         "molding_sample:production_read",
         "molding_sample:production_start",
         "molding_sample:production_fillback",
@@ -1771,16 +1910,20 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
     assert clerk_grant["scope_mode"] == "cross_factory_read"
     assert set(clerk_grant["permissions"]) == task_permissions
     assert client.get("/api/injection/BP-FIXED-CLERK-FOREIGN").status_code == 200
-    assert client.get("/api/injection/BP-FIXED-ENGINEER-FOREIGN").status_code == 403
+    foreign_engineering_detail = client.get(
+        "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
+    )
+    assert foreign_engineering_detail.status_code == 200
+    assert foreign_engineering_detail.json()["notifications"] == []
     foreign_tasks = client.get(
         "/api/injection",
         params={"factory_id": "huadeng"},
     )
     assert foreign_tasks.status_code == 200
     assert {
-        row["order"]["status"] for row in foreign_tasks.json()
-    } <= {"待生产", "生产中", "已完成"}
-    assert "BP-FIXED-ENGINEER-FOREIGN" not in {
+        "BP-FIXED-ENGINEER-FOREIGN",
+        "BP-FIXED-CLERK-FOREIGN",
+    } <= {
         row["order"]["id"] for row in foreign_tasks.json()
     }
     foreign_task_detail = client.get("/api/injection/BP-FIXED-CLERK-FOREIGN")
@@ -1790,13 +1933,44 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         notification["target_module"]
         for notification in foreign_task_detail.json()["notifications"]
     } == {"production_molding_sample_task"}
-    assert client.get(
+    board_page = client.get(
         "/api/injection/board/page",
         params={"factory_id": "huadeng", "status": "待审核"},
-    ).status_code == 403
-    assert client.get(
+    )
+    assert board_page.status_code == 200
+    assert "BP-FIXED-ENGINEER-FOREIGN" in {
+        row["order"]["id"] for row in board_page.json()["rows"]
+    }
+    board_summary = client.get(
         "/api/injection/board/summary",
         params={"factory_id": "huadeng"},
+    )
+    assert board_summary.status_code == 200
+    assert board_summary.json()["total"] >= 2
+    assert client.post(
+        "/api/injection",
+        json=sample_order_payload("BP-FIXED-CLERK-CREATE-BLOCKED"),
+    ).status_code == 403
+    clerk_edit_payload = sample_order_payload("BP-FIXED-ENGINEER-HOME")
+    clerk_edit_payload["order"]["product_name"] = "啤机文员不得修改工程单"
+    assert client.put(
+        "/api/injection/BP-FIXED-ENGINEER-HOME",
+        json=clerk_edit_payload,
+    ).status_code == 403
+    assert client.delete(
+        "/api/injection/BP-FIXED-ENGINEER-HOME"
+    ).status_code == 403
+    assert client.patch(
+        "/api/injection/BP-FIXED-ENGINEER-HOME/status",
+        json={"action": "主管通过"},
+    ).status_code == 403
+    assert client.patch(
+        "/api/injection/BP-FIXED-ENGINEER-HOME/status",
+        json={"action": "主管驳回", "reason": "权限边界验证"},
+    ).status_code == 403
+    assert client.get(
+        "/api/injection/export-excel",
+        params={"order_ids": ["BP-FIXED-ENGINEER-HOME"]},
     ).status_code == 403
     assert client.patch(
         f"/api/molding-sample-notifications/"
@@ -1812,6 +1986,13 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         "/api/injection/BP-FIXED-CLERK-HOME/status",
         json={"action": "开始处理"},
     ).status_code == 200
+    handled_notification_response = client.patch(
+        f"/api/molding-sample-notifications/"
+        f"{production_notification_ids['BP-FIXED-CLERK-HOME']}",
+        json={"status": "已读"},
+    )
+    assert handled_notification_response.status_code == 200
+    assert handled_notification_response.json()["status"] == "已处理"
     assert client.patch(
         "/api/injection/BP-FIXED-CLERK-FOREIGN/status",
         json={"action": "开始处理"},
@@ -1848,6 +2029,34 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         assert set(grant["permissions"]) == task_permissions
         assert client.get(
             "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
+        ).status_code == 200
+        assert client.post(
+            "/api/injection",
+            json=sample_order_payload(f"BP-{role_id}-CREATE-BLOCKED"),
+        ).status_code == 403
+        blocked_edit_payload = sample_order_payload(
+            "BP-FIXED-ENGINEER-FOREIGN"
+        )
+        blocked_edit_payload["order"]["factory_id"] = "huadeng"
+        blocked_edit_payload["order"]["product_name"] = "啤机职位不得修改工程单"
+        assert client.put(
+            "/api/injection/BP-FIXED-ENGINEER-FOREIGN",
+            json=blocked_edit_payload,
+        ).status_code == 403
+        assert client.delete(
+            "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
+        ).status_code == 403
+        assert client.patch(
+            "/api/injection/BP-FIXED-ENGINEER-FOREIGN/status",
+            json={"action": "主管通过"},
+        ).status_code == 403
+        assert client.patch(
+            "/api/injection/BP-FIXED-ENGINEER-FOREIGN/status",
+            json={"action": "主管驳回", "reason": "权限边界验证"},
+        ).status_code == 403
+        assert client.get(
+            "/api/injection/export-excel",
+            params={"order_ids": ["BP-FIXED-ENGINEER-FOREIGN"]},
         ).status_code == 403
         assert client.patch(
             f"/api/molding-sample-notifications/"
@@ -2364,7 +2573,7 @@ def test_workflow_uses_logged_in_roles_without_pin(client):
     )
     assert completed_response.status_code == 200
     assert completed_response.json()["order"]["status"] == "已完成"
-    assert completed_response.json()["order"]["completed_date"] == "2026-07-01"
+    assert completed_response.json()["order"]["completed_date"] == TEST_BUSINESS_DATE
 
     completed_fillback_response = client.patch(
         "/api/injection/BP-WORKFLOW-001/items",
@@ -2542,7 +2751,7 @@ def test_molding_clerk_can_withdraw_completed_production_handoff(client):
     )
     assert completed_response.status_code == 200
     assert completed_response.json()["order"]["status"] == "已完成"
-    assert completed_response.json()["order"]["completed_date"] == "2026-07-03"
+    assert completed_response.json()["order"]["completed_date"] == TEST_BUSINESS_DATE
 
     rollback_response = client.patch(
         "/api/injection/BP-PROD-ROLLBACK-001/status",
@@ -2713,7 +2922,7 @@ def test_external_order_auto_completes_after_supervisor_approval(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["order"]["status"] == "已完成"
-    assert payload["order"]["completed_date"] == "2026-07-01"
+    assert payload["order"]["completed_date"] == TEST_BUSINESS_DATE
     assert payload["items"][0]["actual_weight_kg"] == 2.46
     assert payload["items"][0]["actual_amount_hkd"] == 29.83
 
@@ -3194,6 +3403,36 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
     assert parsed.items[0].machine_type == ""
     assert parsed.items[0].gross_weight_g is None
     assert parsed.items[0].material_usage_type == "trial"
+
+
+def test_parse_molding_sample_excel_uses_business_time_for_generated_id_and_missing_date(monkeypatch):
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    import_time = datetime(2026, 7, 19, 0, 1, 2, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr(excel_service, "business_now", lambda: import_time)
+    current_rows = [
+        ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
+        ["客户", "ShuShuPaPa", "产品编号", "P50002008", "产品名称", "日期缺省测试"],
+        ["开单日期", "", "阶段", "T0", "填写部", "工程部"],
+        ["发至", "内部", "审核主管", "杨敬作", "落单人", "工程A"],
+        ["注意事项", "测试业务时区默认值"],
+        [],
+        [],
+        [
+            "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
+            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "用料用途", "备注",
+        ],
+        [
+            "P50002008-01-01", "日期缺省模具", "PP（AV161）", "黑色", "", "", "1", 1,
+            1, "", "", "在厂", "试料", "",
+        ],
+    ]
+
+    parsed = excel_service.parse_order_excel(
+        excel_service._build_workbook(excel_service._sheet_xml(current_rows, header_row_index=8))
+    )
+
+    assert parsed.order.id == "BP-20260719000102"
+    assert parsed.order.date == "2026-07-19"
 
 
 def test_parse_molding_sample_excel_builds_and_canonicalizes_multi_material_components():

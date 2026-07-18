@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { X } from '@lucide/vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { shouldShowPageNavigation } from '@/config/pageAccessPolicy'
 import { isModuleDepartmentId, navigationGroups, type NavigationItem } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -25,7 +26,10 @@ const mobileCloseButtonRef = ref<HTMLButtonElement | null>(null)
 const visibleNavigationGroups = computed(() => navigationGroups
   .map((group) => ({
     ...group,
-    items: group.items.filter((item) => !item.permissions?.length || item.permissions.some((permission) => authStore.can(permission))),
+    items: group.items.filter((item) => shouldShowPageNavigation(
+      item.permissions,
+      (permission) => authStore.can(permission),
+    )),
   }))
   .filter((group) => group.items.length))
 

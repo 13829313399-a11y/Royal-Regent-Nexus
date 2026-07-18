@@ -1,5 +1,9 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import DashboardView from '@/views/DashboardView.vue'
+import {
+  shouldEnforcePagePermissions,
+  shouldRedirectForbiddenPageToHome,
+} from '@/config/pageAccessPolicy'
 import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
@@ -101,7 +105,7 @@ const routes: RouteRecordRaw[] = [
       title: '客价转换台',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['customer_price:read'],
+      permissions: ['customer_price:read', 'customer_price:import_internal_quote'],
       enforcePermissions: true,
     },
   },
@@ -112,6 +116,8 @@ const routes: RouteRecordRaw[] = [
       title: '内部报价台',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['internal_quote:read'],
+      enforcePermissions: true,
     },
     children: [
       {
@@ -284,6 +290,9 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
     },
+    beforeEnter: () => shouldRedirectForbiddenPageToHome()
+      ? { name: 'dashboard', replace: true }
+      : true,
   },
   {
     path: '/:pathMatch(.*)*',
@@ -344,12 +353,9 @@ export async function refreshAndRevalidateAuthorization(
   const permissions = Array.isArray(currentRoute.meta.permissions)
     ? currentRoute.meta.permissions.filter((permission): permission is string => typeof permission === 'string')
     : []
-  const shouldEnforcePermissions = currentRoute.meta.enforcePermissions === true
-  const allowAuthenticatedReadOnly = currentRoute.meta.allowAuthenticatedReadOnly === true
   if (
     currentRoute.name !== 'forbidden'
-    && shouldEnforcePermissions
-    && !allowAuthenticatedReadOnly
+    && shouldEnforcePagePermissions(currentRoute.meta)
     && permissions.length
     && !authStore.canAny(permissions)
   ) {
@@ -414,11 +420,8 @@ router.beforeEach(async (to) => {
   }
 
   const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []
-  const shouldEnforcePermissions = to.meta.enforcePermissions === true
-  const allowAuthenticatedReadOnly = to.meta.allowAuthenticatedReadOnly === true
   if (
-    shouldEnforcePermissions
-    && !allowAuthenticatedReadOnly
+    shouldEnforcePagePermissions(to.meta)
     && permissions.length
     && !authStore.canAny(permissions)
   ) {

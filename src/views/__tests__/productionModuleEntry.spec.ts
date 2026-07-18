@@ -160,7 +160,7 @@ describe('production module entry', () => {
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/customer-price-conversion'/)
     expect(routerSource).toMatch(/name: 'customer-price-conversion'/)
     expect(routerSource).toMatch(/title: '客价转换台'/)
-    expect(routerSource).toMatch(/permissions: \['customer_price:read'\]/)
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/customer-price-conversion'[\s\S]{0,360}permissions: \['customer_price:read', 'customer_price:import_internal_quote'\]/)
     expect(routerSource).not.toMatch(/\/modules\/sales-business\/internal-pricing/)
     expect(routerSource).not.toMatch(/InternalPricingView\.vue/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center'/)

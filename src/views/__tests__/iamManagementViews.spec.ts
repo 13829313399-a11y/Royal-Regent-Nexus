@@ -31,21 +31,25 @@ describe('IAM management view semantics and accessibility', () => {
       '内置职位目录',
       '内置职位由系统代码固定维护；管理员可以查看，但不能在线修改。',
       '权限来源',
-      '代码固定 · 不可在线修改',
+      '代码固定 · 只读',
       '数据范围',
       '修改方式',
       '定义版本',
       '定义哈希',
-      '提交明确需求，由代码变更和发布生效',
+      '提交明确需求，通过代码变更、测试和发布流程生效',
       '跨厂操作 · 全业务部门',
       '不包含账号与权限管理',
-      '已配置',
       '已包含',
       'permissionStatusLabel(permission.status)',
       'permissionRiskLabel(permission.risk_level)',
       'data-testid="role-templates-sticky-navigation"',
+      'data-testid="role-catalog-protected-notice"',
       'data-testid="role-viewer-workspace"',
       'data-testid="role-directory-scroll-region"',
+      'data-testid="role-summary-panel"',
+      'data-testid="permission-filter-toolbar"',
+      'data-testid="definition-details-trigger"',
+      'data-testid="definition-details-panel"',
       'data-testid="role-permission-scroll-region"',
       '搜索职位',
       '搜索权限',
@@ -69,6 +73,14 @@ describe('IAM management view semantics and accessibility', () => {
     ]) {
       expect(source).not.toContain(removed)
     }
+
+    expect(source).not.toContain('xl:h-dvh')
+    expect(source).not.toContain('xl:overflow-hidden')
+    expect(source).not.toContain('xl:overflow-y-auto')
+    expect(source).toContain("const canReadPermissionCatalog = computed(() => authStore.can('system:permission_catalog_read'))")
+    expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canReadPermissionCatalog\.value\) \{[\s\S]*?return\s+\}/)
+    expect(source).toContain('@media (min-width: 1280px) and (min-height: 820px)')
+    expect(source).toContain('@media (max-width: 1279px), (max-height: 819px)')
   })
 
   it('provides complete business labels, status, risk, and fixed-scope presentation', () => {

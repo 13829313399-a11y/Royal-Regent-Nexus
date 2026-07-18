@@ -185,10 +185,11 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
     "internal_quote:molding_edit",
 )
 
-# 啤机职位只操作“啤办生产任务单”。范围模式负责区分文员的
-# “跨厂查看 / 本厂操作”和主管、经理的“跨厂操作”，避免把排产导入、
-# 工程啤办导出或内部报价编辑一并扩大到外厂。
+# 啤机职位可跨厂只读查看正式工程啤办看板与明细，但只操作
+# “啤办生产任务单”。范围模式负责区分文员的“跨厂查看 / 本厂操作”
+# 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
 MOLDING_CLERK_PERMISSION_CODES = (
+    "molding_sample:read",
     "molding_sample:production_read",
     "molding_sample:production_start",
     "molding_sample:production_fillback",
@@ -270,7 +271,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="sales-business",
         department_name="业务部",
         sort_order=300,
-        description="业务报价与客户协同管理",
+        description="跨厂查看业务数据；仅在本厂业务部管理报价、复核与最终放行",
+        scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=SALES_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -279,7 +281,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="sales-business",
         department_name="业务部",
         sort_order=310,
-        description="业务报价复核与客户协同",
+        description="跨厂查看业务数据；仅在本厂业务部复核报价、审核与最终放行",
+        scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=SALES_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -288,7 +291,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="sales-business",
         department_name="业务部",
         sort_order=320,
-        description="客户报价转换和内部报价协同",
+        description="跨厂查看业务数据；仅在本厂业务部维护客户转换与内部报价",
+        scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=SALES_BUSINESS_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -348,7 +352,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=460,
-        description="跨厂查看并操作啤办生产任务；暂与啤机主管权限一致",
+        description="跨厂只读查看工程啤办；跨厂查看并操作生产任务，暂与啤机主管一致",
         scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=MOLDING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -358,7 +362,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=470,
-        description="跨厂查看并操作啤办生产任务",
+        description="跨厂只读查看工程啤办；跨厂查看并操作生产任务",
         scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=MOLDING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -368,7 +372,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=480,
-        description="跨厂查看啤办生产任务；仅操作本厂任务，通知仅限本厂",
+        description="跨厂只读查看工程啤办与生产任务；仅操作本厂任务，通知仅限本厂",
         scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=MOLDING_CLERK_PERMISSION_CODES,
     ),
@@ -601,6 +605,20 @@ def validate_system_position_definitions() -> None:
         and "molding_sample:manager_review" not in engineer.permission_codes
     ):
         raise RuntimeError("工程师、主管、经理的审核继承关系无效")
+
+    sales_business = definitions_by_id["position_sales_business"]
+    sales_supervisor = definitions_by_id["position_sales_supervisor"]
+    sales_manager = definitions_by_id["position_sales_manager"]
+    if not all(
+        definition.scope_mode == CROSS_FACTORY_READ_SCOPE
+        for definition in (sales_business, sales_supervisor, sales_manager)
+    ):
+        raise RuntimeError("业务部内置职位必须跨厂查看、本厂操作")
+    if not (
+        set(sales_business.permission_codes) < set(sales_supervisor.permission_codes)
+        and sales_manager.permission_codes == sales_supervisor.permission_codes
+    ):
+        raise RuntimeError("业务、主管、经理的审核继承关系无效")
 
     molding_clerk = definitions_by_id["position_molding_clerk"]
     molding_supervisor = definitions_by_id["position_molding_supervisor"]

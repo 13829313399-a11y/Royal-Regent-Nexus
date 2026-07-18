@@ -519,6 +519,13 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
     frozenset({"production", "molding"}),
     frozenset({"pmc-warehouse", "warehouse"}),
 )
+POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
+    {
+        "molding_sample:notification_read",
+        "internal_quote:create",
+        "internal_quote:clone",
+    }
+)
 
 
 def system_position_grant_department_matches(
@@ -526,8 +533,8 @@ def system_position_grant_department_matches(
     permission: str,
     department: str | None,
 ) -> bool:
-    """Keep department-bound feeds local without narrowing other position permissions."""
-    if permission != "molding_sample:notification_read" or department in {None, "*"}:
+    """Keep department-owned actions and feeds inside the bound position department."""
+    if permission not in POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES or department in {None, "*"}:
         return True
     if grant.role_id == "position_general_manager" or grant.department == "*":
         return True
@@ -1835,8 +1842,9 @@ def authorization_decision(
     # A built-in position is a function bundle, not an organization boundary.
     # Its binding factory remains the employee's home-factory anchor while the
     # position template decides whether read-only or operating permissions may
-    # expand to another concrete factory. Department is intentionally ignored
-    # for these grants so administrators can freely combine module permissions.
+    # expand to another concrete factory. Most module permissions may be
+    # combined across departments; explicitly department-owned actions such as
+    # internal-quote initiation still have to match the bound position.
     cross_factory_grants = [
         grant
         for grant in user.grants

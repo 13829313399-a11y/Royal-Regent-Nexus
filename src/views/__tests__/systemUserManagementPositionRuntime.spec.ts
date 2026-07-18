@@ -11,11 +11,15 @@ const rejectRegistrationRequestMock = vi.hoisted(() => vi.fn())
 const updateUserStatusMock = vi.hoisted(() => vi.fn())
 const resetUserPasswordMock = vi.hoisted(() => vi.fn())
 const updateNotificationMock = vi.hoisted(() => vi.fn())
+const canMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ can: () => true }),
+  useAuthStore: () => ({
+    can: canMock,
+    currentUser: { username: 'admin', display_name: '系统管理员' },
+  }),
 }))
 
 vi.mock('@/api/system', () => ({
@@ -75,6 +79,7 @@ function mountView() {
 
 describe('SystemUserManagementView registration approval', () => {
   beforeEach(() => {
+    canMock.mockReset().mockReturnValue(true)
     listRegistrationRequestsMock.mockReset().mockResolvedValue([pendingRequest])
     listUsersMock.mockReset().mockResolvedValue([])
     listSystemPositionsMock.mockReset().mockResolvedValue(positions)
@@ -84,6 +89,65 @@ describe('SystemUserManagementView registration approval', () => {
     updateUserStatusMock.mockReset()
     resetUserPasswordMock.mockReset()
     updateNotificationMock.mockReset()
+  })
+
+  it('keeps the page available without reading or exposing protected account data', async () => {
+    canMock.mockImplementation((permission: string) => permission !== 'system:user_manage')
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="system-users-protected-notice"]').text()).toContain('敏感账号资料受保护')
+    expect(wrapper.text()).toContain('只读访问')
+    expect(wrapper.text()).toContain('内置职位权限')
+    expect(listRegistrationRequestsMock).not.toHaveBeenCalled()
+    expect(listUsersMock).not.toHaveBeenCalled()
+    expect(listSystemPositionsMock).not.toHaveBeenCalled()
+    expect(listNotificationsMock).not.toHaveBeenCalled()
+    expect(wrapper.find('.stats').exists()).toBe(false)
+    expect(wrapper.find('.approval-workspace').exists()).toBe(false)
+    expect(wrapper.find('.users-panel').exists()).toBe(false)
+    const refreshButton = wrapper.findAll('button').find((button) => button.text().includes('刷新'))
+    expect(refreshButton?.attributes('disabled')).toBeDefined()
+  })
+
+  it('shows system timestamps in Beijing time and reports the oldest pending submission', async () => {
+    listRegistrationRequestsMock.mockResolvedValue([
+      { ...pendingRequest, submitted_at: '2026-07-14T10:00:00+08:00' },
+      {
+        ...pendingRequest,
+        id: 'registration-older',
+        user_id: 'user-older',
+        username: 'older-user',
+        submitted_at: '2026-07-13T23:30:00Z',
+      },
+    ])
+    listUsersMock.mockResolvedValue([{
+      id: 'user-1', username: 'tech-001', display_name: '张三', phone: '13800000000', email: '',
+      status: 'active', force_password_change: false, last_login_at: '2026-07-18T08:00:00Z',
+      created_at: '2026-07-14T02:00:00Z', updated_at: '2026-07-18T08:00:00Z', roles: [],
+      primary_factory_id: 'huaxing', primary_department: 'engineering', position: '工程师',
+    }])
+    listNotificationsMock.mockResolvedValue([{
+      id: 'password-reset-1', target_user_id: 'user-1', target_permission: 'system:user_manage',
+      target_factory_id: 'huaxing', target_department: 'engineering', type: 'password_reset',
+      title: '密码重置待处理', message: '用户申请重置密码', payload: { matched_user_id: 'user-1' },
+      status: 'unread', created_at: '2026-07-18T08:05:00Z', read_at: '', handled_at: '',
+    }])
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('最早提交于 2026-07-14 07:30:00')
+    expect(wrapper.text()).toContain('2026-07-14 07:30:00')
+
+    const passwordResetTab = wrapper.findAll('button').find((button) => button.text().includes('密码重置'))
+    await passwordResetTab!.trigger('click')
+    expect(wrapper.text()).toContain('2026-07-18 16:05:00')
+
+    const usersTab = wrapper.findAll('button').find((button) => button.text().includes('用户列表'))
+    await usersTab!.trigger('click')
+    expect(wrapper.text()).toContain('2026-07-18 16:00:00')
   })
 
   it('submits corrected profile data and one system position without role assignments', async () => {

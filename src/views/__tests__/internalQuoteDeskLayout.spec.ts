@@ -41,10 +41,15 @@ describe('internal quote desk frontend layout', () => {
     expect(routerSource).toContain("name: 'internal-quote-export-summary'")
     const routeSource = routerSource.slice(internalQuoteRouteIndex, genericModuleRouteIndex)
     expect(routeSource).not.toContain('requiresAuth: false')
+    expect(routeSource).toContain("permissions: ['internal_quote:read']")
+    expect(routeSource).toContain('enforcePermissions: true')
   })
 
   it('implements the confirmed creation, collaboration, browsing, release and export surfaces', () => {
     for (const text of ['新建内部报价', '复制报价', '业务部', '工程部', '搜索报价号']) expect(homeSource).toContain(text)
+    expect(homeSource).toContain('跨厂只读')
+    expect(homeSource).toContain('canCreateCurrentFactory')
+    expect(homeSource).toContain('canCloneQuote')
     for (const text of ['责任分段进度', '参考快照已冻结', '查看汇总与放行']) expect(collaborationSource).toContain(text)
     for (const text of ['Excel 预览导入', '预览不会修改正式数据', '申请不适用', '合法重开', '分段附件']) expect(sectionEditorSource).toContain(text)
     for (const text of ['材料与外购', '电子零件与子项', '注塑明细', '七类喷油工序', '搪胶成本明细', '车缝产品组', '装配与包装产品组', '出货场景']) expect(sectionFormSource).toContain(text)

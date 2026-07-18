@@ -35,6 +35,7 @@ watch(() => route.fullPath, async () => {
     description="业务部与工程部建单，八个责任分段协作核价，主管审核后由业务部最终放行并受控导出。"
     badge="内部成本协作"
     :show-page-header="false"
+    factory-context="all"
     :back-to="backNavigation.to"
     :back-label="backNavigation.label"
   >
@@ -42,7 +43,7 @@ watch(() => route.fullPath, async () => {
     <div class="internal-quote-desk">
       <RouterView v-slot="{ Component, route: childRoute }">
         <Transition name="quote-route" mode="out-in" appear>
-          <div :key="String(childRoute.name ?? childRoute.path)" class="quote-route-page">
+          <div :key="`${String(childRoute.name ?? childRoute.path)}:${String(childRoute.params.quoteId ?? '')}`" class="quote-route-page">
             <component :is="Component" />
           </div>
         </Transition>

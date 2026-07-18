@@ -14,17 +14,6 @@ function route(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function defaultReadOnlyRoute() {
-  return route({
-    meta: {
-      requiresAuth: true,
-      enforcePermissions: true,
-      allowAuthenticatedReadOnly: true,
-      permissions: ['molding_sample:read', 'molding_sample:cross_factory_read'],
-    },
-  })
-}
-
 type ProtectedSystemPath =
   | '/system/users'
   | '/system/users/user-1/access'
@@ -64,7 +53,7 @@ describe('authorization snapshot route revalidation', () => {
     '/system/users/user-1/access',
     '/system/iam/roles',
   ] as const)(
-    'redirects the general manager from a directly entered %s URL to forbidden',
+    'keeps %s directly accessible to a logged-in general manager without page permission',
     async (path) => {
       const generalManagerStore = {
         isAuthenticated: true,
@@ -75,8 +64,9 @@ describe('authorization snapshot route revalidation', () => {
 
       await expect(
         refreshAndRevalidateAuthorization(generalManagerStore, router),
-      ).resolves.toBe('forbidden')
-      expect(router.replace).toHaveBeenCalledWith({ name: 'forbidden' })
+      ).resolves.toBe('refreshed')
+      expect(generalManagerStore.canAny).not.toHaveBeenCalled()
+      expect(router.replace).not.toHaveBeenCalled()
     },
   )
 
@@ -101,29 +91,13 @@ describe('authorization snapshot route revalidation', () => {
     },
   )
 
-  it('redirects to forbidden after a successful refresh removes the current route permission', async () => {
+  it('keeps the current page after refresh even when the account lacks its page permission', async () => {
     const authStore = {
       isAuthenticated: true,
       refreshSession: vi.fn(async () => true),
       canAny: vi.fn(() => false),
     }
     const router = routerFor()
-
-    await expect(refreshAndRevalidateAuthorization(authStore, router)).resolves.toBe('forbidden')
-    expect(authStore.canAny).toHaveBeenCalledWith([
-      'molding_sample:read',
-      'molding_sample:cross_factory_read',
-    ])
-    expect(router.replace).toHaveBeenCalledWith({ name: 'forbidden' })
-  })
-
-  it('keeps a default read-only route available after a refresh without a route permission', async () => {
-    const authStore = {
-      isAuthenticated: true,
-      refreshSession: vi.fn(async () => true),
-      canAny: vi.fn(() => false),
-    }
-    const router = routerFor(defaultReadOnlyRoute())
 
     await expect(refreshAndRevalidateAuthorization(authStore, router)).resolves.toBe('refreshed')
     expect(authStore.canAny).not.toHaveBeenCalled()

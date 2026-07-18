@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { AuthMeResponse } from '@/api/auth'
 import IamNavigation from '@/components/iam/IamNavigation.vue'
+import { shouldShowPageNavigation } from '@/config/pageAccessPolicy'
 import { navigationGroups } from '@/data/enterpriseMock'
 import { useAuthStore } from '@/stores/auth'
 
@@ -37,9 +40,9 @@ function session(
   }
 }
 
-function mountNavigation() {
+function mountNavigation(compact = false) {
   return mount(IamNavigation, {
-    props: { title: '权限管理' },
+    props: { title: '权限管理', compact },
     global: {
       stubs: {
         RouterLink: {
@@ -54,7 +57,17 @@ function mountNavigation() {
 describe('IAM navigation authorization', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
-  it('hides every account and permission-management entry from the general manager', () => {
+  it('uses the shared page-access policy for the global sidebar', () => {
+    const sidebarSource = readFileSync(
+      join(process.cwd(), 'src/components/layout/SidebarNav.vue'),
+      'utf8',
+    )
+
+    expect(sidebarSource).toContain("from '@/config/pageAccessPolicy'")
+    expect(sidebarSource).toContain('shouldShowPageNavigation(')
+  })
+
+  it('shows account and permission-management pages to the general manager as read-only destinations', () => {
     const authStore = useAuthStore()
     authStore.applySession(session('position_general_manager', [
       'molding_sample:read',
@@ -63,16 +76,21 @@ describe('IAM navigation authorization', () => {
     ]))
 
     const wrapper = mountNavigation()
-    expect(wrapper.text()).not.toContain('用户与授权')
-    expect(wrapper.text()).not.toContain('内置职位权限')
+    expect(wrapper.text()).toContain('用户与授权')
+    expect(wrapper.text()).toContain('内置职位权限')
 
     const visibleSystemPaths = navigationGroups
       .flatMap((group) => group.items)
-      .filter((item) => !item.permissions?.length
-        || item.permissions.some((permission) => authStore.can(permission)))
+      .filter((item) => shouldShowPageNavigation(
+        item.permissions,
+        (permission) => authStore.can(permission),
+      ))
       .map((item) => item.to)
       .filter((path) => path.startsWith('/system/'))
-    expect(visibleSystemPaths).toEqual([])
+    expect(visibleSystemPaths).toEqual([
+      '/system/users',
+      '/system/iam/roles',
+    ])
   })
 
   it('keeps account and fixed-position navigation available to the wildcard administrator', () => {
@@ -89,13 +107,26 @@ describe('IAM navigation authorization', () => {
 
     const visibleSystemPaths = navigationGroups
       .flatMap((group) => group.items)
-      .filter((item) => !item.permissions?.length
-        || item.permissions.some((permission) => authStore.can(permission)))
+      .filter((item) => shouldShowPageNavigation(
+        item.permissions,
+        (permission) => authStore.can(permission),
+      ))
       .map((item) => item.to)
       .filter((path) => path.startsWith('/system/'))
     expect(visibleSystemPaths).toEqual([
       '/system/users',
       '/system/iam/roles',
     ])
+  })
+
+  it('uses the compact workspace header without changing authorization visibility', () => {
+    const authStore = useAuthStore()
+    authStore.applySession(session('admin', ['system:user_manage', 'system:access_manage']))
+
+    const wrapper = mountNavigation(true)
+    expect(wrapper.get('header > div').classes()).toContain('py-2')
+    expect(wrapper.get('header > div').classes()).toContain('gap-1')
+    expect(wrapper.text()).toContain('用户与授权')
+    expect(wrapper.text()).toContain('内置职位权限')
   })
 })
