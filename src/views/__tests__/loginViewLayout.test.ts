@@ -52,8 +52,15 @@ for (const requiredImplementation of [
   'password-help-body',
   'max-height: 720px',
   'showPassword',
+  'AuthAmbientGrid',
+  'variant="login"',
   'brand-grid',
   'brand-glow',
+  'w-\\[56%\\]',
+  'lg:w-\\[44%\\]',
+  'isolation: isolate',
+  '@media \\(hover: hover\\) and \\(pointer: fine\\)',
+  'translateY\\(-1px\\)',
   '/brand/huadeng_group_dynamic_logo.svg',
   'size-20 shrink-0',
 ]) {
@@ -62,6 +69,20 @@ for (const requiredImplementation of [
 
 assert.match(source, /text-\[21px\] font-semibold leading-tight/)
 assert.match(source, /text-\[13px\] text-slate-400/)
+assert.match(
+  source,
+  /<aside class="brand-panel relative hidden w-\[56%\] flex-col overflow-hidden bg-slate-950 text-white lg:flex">/,
+)
+assert.match(source, /<section class="flex w-full flex-col lg:w-\[44%\]">/)
+assert.match(
+  source,
+  /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.login-feature-card:hover \{[\s\S]*?translateY\(-1px\)/,
+)
+assert.match(
+  source,
+  /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.login-feature-card,[\s\S]*?\.login-feature-icon \{[\s\S]*?transform: none;[\s\S]*?transition: none;/,
+)
+assert.doesNotMatch(source, /login-feature-card[^"\n]*hover:/)
 assert.doesNotMatch(source, /size-14 shrink-0/)
 assert.doesNotMatch(source, /华兴试点账号/)
 assert.doesNotMatch(source, /默认密码 123456/)

@@ -22,6 +22,7 @@ import {
 } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
+import AuthAmbientGrid from '@/components/auth/AuthAmbientGrid.vue'
 import { getApiErrorMessage } from '@/lib/http'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAuthStore } from '@/stores/auth'
@@ -307,7 +308,7 @@ onMounted(() => {
 <template>
   <main class="flex min-h-screen bg-white font-sans text-slate-950">
     <aside class="brand-panel relative hidden w-[56%] flex-col overflow-hidden bg-slate-950 text-white lg:flex">
-      <div class="brand-grid absolute inset-0" aria-hidden="true"></div>
+      <AuthAmbientGrid class="brand-grid" variant="login" />
       <div class="brand-glow absolute inset-0" aria-hidden="true"></div>
 
       <div class="relative z-10 flex items-center gap-4 px-14 pt-12">
@@ -340,9 +341,9 @@ onMounted(() => {
           <div
             v-for="feature in brandFeatures"
             :key="feature.title"
-            class="login-feature-card rounded-xl border border-white/10 bg-white/[0.045] p-4 transition hover:border-white/20 hover:bg-white/[0.065]"
+            class="login-feature-card rounded-xl border border-white/10 bg-white/[0.045] p-4"
           >
-            <span class="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-teal-300/20 bg-teal-400/10 text-teal-300">
+            <span class="login-feature-icon flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-teal-300/20 bg-teal-400/10 text-teal-300">
               <component :is="feature.icon" class="size-4" aria-hidden="true" />
             </span>
             <div>
@@ -637,17 +638,48 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.brand-grid {
-  background-image:
-    linear-gradient(rgb(255 255 255 / 3.5%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 3.5%) 1px, transparent 1px);
-  background-size: 46px 46px;
+.brand-panel {
+  isolation: isolate;
+}
+
+.brand-panel::after {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 1;
+  width: 96px;
+  background: linear-gradient(90deg, transparent, rgb(2 6 23 / 22%));
+  content: '';
+  pointer-events: none;
 }
 
 .brand-glow {
+  z-index: 0;
   background:
     radial-gradient(680px circle at 18% 12%, rgb(13 148 136 / 28%), transparent 55%),
     radial-gradient(560px circle at 88% 92%, rgb(5 207 99 / 16%), transparent 52%);
+}
+
+.login-feature-card,
+.login-feature-icon {
+  transition:
+    transform 190ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 190ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 190ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 190ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .login-feature-card:hover {
+    transform: translateY(-1px);
+    border-color: rgb(255 255 255 / 18%);
+    background: rgb(255 255 255 / 6%);
+  }
+
+  .login-feature-card:hover .login-feature-icon {
+    border-color: rgb(94 234 212 / 28%);
+    background: rgb(45 212 191 / 13%);
+    box-shadow: inset 0 0 14px rgb(45 212 191 / 8%);
+  }
 }
 
 .fade-in {
@@ -673,6 +705,13 @@ onMounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .fade-in {
     animation: none;
+  }
+
+  .login-feature-card,
+  .login-feature-card:hover,
+  .login-feature-icon {
+    transform: none;
+    transition: none;
   }
 }
 
