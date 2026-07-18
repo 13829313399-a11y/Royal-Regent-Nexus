@@ -27,8 +27,12 @@ describe('RegisterView source contract', () => {
       '管理员会在审批时核验或修正',
       '账号申请已提交',
       'router.replace',
+      'AuthAmbientGrid',
+      'variant="register"',
+      'class="aside-grid"',
       'register-wrap',
       'register-note',
+      'isolation: isolate',
       'radial-gradient(circle at 82% 8%',
       'grid-template-columns: 0.82fr 1fr',
       'class="control select-control"',
@@ -41,6 +45,10 @@ describe('RegisterView source contract', () => {
     }
     expect(source).toMatch(/password\.value\s*!==\s*confirmPassword\.value/)
     expect(source).toMatch(/!phone\.value\.trim\(\)\s*&&\s*!email\.value\.trim\(\)/)
+    expect(source).toMatch(/\.register-aside \{[\s\S]*?display: none;/)
+    expect(source).toMatch(
+      /@media \(min-width: 992px\) \{[\s\S]*?\.register-card \{[\s\S]*?grid-template-columns: 0\.82fr 1fr;[\s\S]*?\.register-aside \{[\s\S]*?display: flex;/,
+    )
     expect(source).not.toContain('registration-position-suggestions')
     expect(source).not.toContain('<datalist')
   })
