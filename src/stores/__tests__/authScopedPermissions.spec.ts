@@ -156,6 +156,108 @@ describe('authStore scoped permission decisions', () => {
   )
 
   it.each(['legacy', 'shadow', 'enforce'] as const)(
+    'lets fixed sales positions read other factories but initiate quotes only for their home factory and department in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      const permissions = [
+        'internal_quote:read',
+        'internal_quote:create',
+        'internal_quote:clone',
+      ]
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions,
+        factory_scopes: ['*'],
+        department_scopes: ['sales-business'],
+        grants: [{
+          role_id: 'position_sales_business',
+          role_code: 'position_sales_business',
+          role_name: '业务',
+          factory_id: 'huaxing',
+          department: 'sales-business',
+          permissions,
+          scope_mode: 'cross_factory_read',
+          read_permission_codes: ['internal_quote:read'],
+          unrestricted_department: true,
+          data_scope: 'all',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? permissions.map((permission) => ({
+              permission_code: permission,
+              factory_id: 'huaxing',
+              department: 'sales-business',
+              effect: 'allow' as const,
+              allowed: true,
+              source_type: 'role_binding',
+              source_ids: ['sales-position-binding'],
+            }))
+          : undefined,
+      }))
+
+      expect(store.can('internal_quote:read', 'huadeng', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huaxing', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:clone', 'huaxing', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huaxing', 'engineering')).toBe(false)
+      expect(store.can('internal_quote:clone', 'huaxing', 'engineering')).toBe(false)
+      expect(store.can('internal_quote:create', 'huadeng', 'sales-business')).toBe(false)
+      expect(store.can('internal_quote:clone', 'huadeng', 'sales-business')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow'] as const)(
+    'keeps valid custom quote grants additive beside a fixed sales position in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      const permissions = ['internal_quote:read', 'internal_quote:create']
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions,
+        factory_scopes: ['*'],
+        grants: [
+          {
+            role_id: 'position_sales_business',
+            role_code: 'position_sales_business',
+            role_name: '业务',
+            factory_id: 'huaxing',
+            department: 'sales-business',
+            permissions,
+            scope_mode: 'cross_factory_read',
+            read_permission_codes: ['internal_quote:read'],
+            unrestricted_department: true,
+            data_scope: 'all',
+          },
+          {
+            role_id: 'custom-engineering-creator',
+            role_code: 'custom-engineering-creator',
+            role_name: '工程建单补充授权',
+            factory_id: 'huaxing',
+            department: 'engineering',
+            permissions: ['internal_quote:create'],
+            unrestricted_department: false,
+            data_scope: 'department',
+          },
+          {
+            role_id: 'custom-huadeng-sales-creator',
+            role_code: 'custom-huadeng-sales-creator',
+            role_name: '华登业务建单补充授权',
+            factory_id: 'huadeng',
+            department: 'sales-business',
+            permissions: ['internal_quote:create'],
+            unrestricted_department: false,
+            data_scope: 'department',
+          },
+        ],
+      }))
+
+      expect(store.can('internal_quote:create', 'huaxing', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huaxing', 'engineering')).toBe(true)
+      expect(store.can('internal_quote:create', 'huadeng', 'sales-business')).toBe(true)
+      expect(store.can('internal_quote:create', 'huadeng', 'engineering')).toBe(false)
+      expect(store.can('internal_quote:create', 'huakang-c', 'sales-business')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow', 'enforce'] as const)(
     'lets cross-factory-operate positions use every selected permission across factories in %s mode',
     (authzMode) => {
       const store = useAuthStore()

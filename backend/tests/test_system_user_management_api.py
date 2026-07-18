@@ -943,6 +943,30 @@ def test_system_notification_access_is_limited_to_targeted_accounts(monkeypatch)
         assert update_response.status_code == 403
 
 
+def test_handled_system_notification_cannot_be_downgraded_to_read(monkeypatch):
+    with make_client(monkeypatch) as client:
+        client.post("/api/auth/register", json=register_payload("terminal-system-notification"))
+        login(client, "admin")
+        notification = client.get("/api/system/notifications").json()[0]
+
+        handled_response = client.patch(
+            f"/api/system/notifications/{notification['id']}",
+            json={"status": "handled"},
+        )
+        assert handled_response.status_code == 200
+        handled_payload = handled_response.json()
+        assert handled_payload["status"] == "handled"
+        assert handled_payload["handled_at"]
+
+        read_response = client.patch(
+            f"/api/system/notifications/{notification['id']}",
+            json={"status": "read"},
+        )
+        assert read_response.status_code == 200
+        assert read_response.json()["status"] == "handled"
+        assert read_response.json()["handled_at"] == handled_payload["handled_at"]
+
+
 def test_registration_notifications_are_isolated_by_factory_and_department(monkeypatch):
     with make_client(monkeypatch) as client:
         huaxing_engineering = register_payload("registration-hx-engineering")

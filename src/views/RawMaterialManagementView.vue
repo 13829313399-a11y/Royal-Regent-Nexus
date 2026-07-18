@@ -56,6 +56,19 @@ interface RawMaterialRow {
   notes: string
 }
 
+interface MaterialFormState {
+  materialCode: string
+  materialName: string
+  category: string
+  spec: string
+  unit: string
+  supplier: string
+  safetyStockKg: string | number
+  unitPriceHkdPerLb: string | number
+  notes: string
+  status: MaterialStatus
+}
+
 interface RequisitionRow {
   reqNumber: string
   date: string
@@ -105,8 +118,9 @@ const materialStatusFilters: Array<'全部状态' | MaterialStatus> = ['全部�
 const rawMaterialRows = reactive<RawMaterialRow[]>([])
 const rawMaterialPageSize = 10
 const isSavingMaterial = ref(false)
+const materialFormError = ref('')
 const editingMaterialId = ref<string | null>(null)
-const materialForm = reactive({
+const materialForm = reactive<MaterialFormState>({
   materialCode: '',
   materialName: '',
   category: 'PVC',
@@ -602,6 +616,7 @@ function closeModals() {
   showRequisitionModal.value = false
   showBatchModal.value = false
   editingMaterialId.value = null
+  materialFormError.value = ''
 }
 
 function resetMaterialForm() {
@@ -616,6 +631,7 @@ function resetMaterialForm() {
   materialForm.notes = ''
   materialForm.status = '启用'
   editingMaterialId.value = null
+  materialFormError.value = ''
 }
 
 function openMaterialModal() {
@@ -643,7 +659,13 @@ function openEditMaterialModal(row: RawMaterialRow) {
   materialForm.notes = row.notes
   materialForm.status = row.status
   editingMaterialId.value = row.id
+  materialFormError.value = ''
   showMaterialModal.value = true
+}
+
+function parseOptionalNumber(value: string | number) {
+  const normalized = String(value ?? '').trim()
+  return normalized === '' ? null : Number(normalized)
 }
 
 async function saveMaterial() {
@@ -652,22 +674,30 @@ async function saveMaterial() {
     notifyAction('当前厂区为只读，不能保存原料资料。')
     return
   }
+  materialFormError.value = ''
   const materialName = materialForm.materialName.trim()
-  const safetyStockValue = materialForm.safetyStockKg.trim()
-  const safetyStockKg = safetyStockValue === '' ? null : Number(safetyStockValue)
-  const unitPriceValue = materialForm.unitPriceHkdPerLb.trim()
-  const unitPriceHkdPerLb = unitPriceValue === '' ? null : Number(unitPriceValue)
+  const safetyStockKg = parseOptionalNumber(materialForm.safetyStockKg)
+  const unitPriceHkdPerLb = parseOptionalNumber(materialForm.unitPriceHkdPerLb)
 
   if (!materialName) {
-    notifyAction('请填写原料名称。')
+    materialFormError.value = '请填写原料名称。'
+    notifyAction(materialFormError.value)
     return
   }
-  if (!Number.isFinite(safetyStockKg ?? 0) || (safetyStockKg ?? 0) < 0) {
-    notifyAction('安全库存必须是大于或等于 0 的数字。')
+  if (
+    safetyStockKg !== null
+    && (!Number.isFinite(safetyStockKg) || safetyStockKg < 0)
+  ) {
+    materialFormError.value = '安全库存必须是大于或等于 0 的数字。'
+    notifyAction(materialFormError.value)
     return
   }
-  if (!Number.isFinite(unitPriceHkdPerLb ?? 0) || (unitPriceHkdPerLb ?? 0) <= 0) {
-    notifyAction('单价必须是大于 0 的数字，或留空表示暂不维护。')
+  if (
+    unitPriceHkdPerLb !== null
+    && (!Number.isFinite(unitPriceHkdPerLb) || unitPriceHkdPerLb <= 0)
+  ) {
+    materialFormError.value = '单价必须是大于 0 的数字，或留空表示暂不维护。'
+    notifyAction(materialFormError.value)
     return
   }
   isSavingMaterial.value = true
@@ -704,7 +734,8 @@ async function saveMaterial() {
     }
   }
   catch (error) {
-    notifyAction(`保存原料失败：${getApiErrorMessage(error)}`)
+    materialFormError.value = `保存原料失败：${getApiErrorMessage(error)}`
+    notifyAction(materialFormError.value)
   }
   finally {
     isSavingMaterial.value = false
@@ -1333,7 +1364,7 @@ function openBatchModal() {
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">单价 (HKD/磅)</span>
               <input v-model="materialForm.unitPriceHkdPerLb" type="number" min="0" step="0.000001" data-testid="raw-material-unit-price" class="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100" placeholder="如：4.85">
-              <span class="mt-1 block text-[10px] text-slate-400">工程部维护后会同步用于啤办成本计算。</span>
+              <span class="mt-1 block text-[10px] text-slate-400">单价可留空。工程部维护后会同步用于啤办成本计算。</span>
             </label>
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-slate-500">供应商</span>
@@ -1353,6 +1384,10 @@ function openBatchModal() {
               <label class="inline-flex items-center gap-1 text-[12px]"><input v-model="materialForm.status" type="radio" name="material-status" value="停用" class="accent-teal-700"> 停用</label>
             </div>
           </div>
+        </div>
+        <div v-if="materialFormError" class="mx-5 mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] leading-5 text-red-700" role="alert">
+          <AlertTriangle class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span>{{ materialFormError }}</span>
         </div>
         <div class="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
           <button type="button" class="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300" @click="closeModals">取消</button>

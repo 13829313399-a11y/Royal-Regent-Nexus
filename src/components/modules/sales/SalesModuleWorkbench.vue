@@ -11,7 +11,7 @@ interface SalesWorkbenchMetric {
   detail: string
 }
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   title: string
   description: string
   badge: string
@@ -20,16 +20,22 @@ withDefaults(defineProps<{
   showPageHeader?: boolean
   backTo?: string
   backLabel?: string
+  factoryContext?: 'production' | 'all'
 }>(), {
   searchPlaceholder: '',
   metrics: () => [],
   showPageHeader: true,
   backTo: '',
   backLabel: '返回业务部',
+  factoryContext: 'production',
 })
 
 const appStore = useAppStore()
-const activeFactory = computed(() => appStore.activeProductionFactory)
+const activeFactory = computed(() => (
+  props.factoryContext === 'production' || appStore.activeFactory.id === 'group'
+    ? appStore.activeProductionFactory
+    : appStore.activeFactory
+))
 </script>
 
 <template>

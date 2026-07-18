@@ -1812,6 +1812,13 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         "/api/injection/BP-FIXED-CLERK-HOME/status",
         json={"action": "开始处理"},
     ).status_code == 200
+    handled_notification_response = client.patch(
+        f"/api/molding-sample-notifications/"
+        f"{production_notification_ids['BP-FIXED-CLERK-HOME']}",
+        json={"status": "已读"},
+    )
+    assert handled_notification_response.status_code == 200
+    assert handled_notification_response.json()["status"] == "已处理"
     assert client.patch(
         "/api/injection/BP-FIXED-CLERK-FOREIGN/status",
         json={"action": "开始处理"},

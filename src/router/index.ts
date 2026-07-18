@@ -101,7 +101,7 @@ const routes: RouteRecordRaw[] = [
       title: '客价转换台',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['customer_price:read'],
+      permissions: ['customer_price:read', 'customer_price:import_internal_quote'],
       enforcePermissions: true,
     },
   },
@@ -112,6 +112,8 @@ const routes: RouteRecordRaw[] = [
       title: '内部报价台',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['internal_quote:read'],
+      enforcePermissions: true,
     },
     children: [
       {

@@ -117,6 +117,7 @@ export interface SystemNotificationResponse {
   target_user_id: string
   target_permission: string
   target_factory_id: string
+  target_department?: string
   type: string
   title: string
   message: string

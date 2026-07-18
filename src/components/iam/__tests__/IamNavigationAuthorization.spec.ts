@@ -37,9 +37,9 @@ function session(
   }
 }
 
-function mountNavigation() {
+function mountNavigation(compact = false) {
   return mount(IamNavigation, {
-    props: { title: '权限管理' },
+    props: { title: '权限管理', compact },
     global: {
       stubs: {
         RouterLink: {
@@ -97,5 +97,16 @@ describe('IAM navigation authorization', () => {
       '/system/users',
       '/system/iam/roles',
     ])
+  })
+
+  it('uses the compact workspace header without changing authorization visibility', () => {
+    const authStore = useAuthStore()
+    authStore.applySession(session('admin', ['system:user_manage', 'system:access_manage']))
+
+    const wrapper = mountNavigation(true)
+    expect(wrapper.get('header > div').classes()).toContain('py-2')
+    expect(wrapper.get('header > div').classes()).toContain('gap-1')
+    expect(wrapper.text()).toContain('用户与授权')
+    expect(wrapper.text()).toContain('内置职位权限')
   })
 })

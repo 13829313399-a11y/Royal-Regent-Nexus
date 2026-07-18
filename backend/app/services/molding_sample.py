@@ -1277,6 +1277,10 @@ def update_notification(
     if payload.status not in NOTIFICATION_STATUSES:
         raise HTTPException(status_code=400, detail="通知状态无效")
 
+    status_rank = {"未读": 0, "已读": 1, "已处理": 2}
+    if status_rank[payload.status] < status_rank.get(notification.status, 0):
+        return notification
+
     timestamp = now_text()
     notification.status = payload.status
     notification.actor_name = current_user.display_name
