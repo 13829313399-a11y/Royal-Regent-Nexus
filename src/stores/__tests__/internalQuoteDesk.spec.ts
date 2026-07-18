@@ -2,13 +2,17 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiInternalQuote, ApiInternalQuoteSection } from '@/api/internalQuote'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
+import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 const apiMock = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
   create: vi.fn(),
   clone: vi.fn(),
+  addParticipation: vi.fn(),
   listBusinessOwners: vi.fn(),
+  getPricingBaseline: vi.fn(),
+  updatePricingBaseline: vi.fn(),
   getTimeline: vi.fn(),
   getReferenceSnapshot: vi.fn(),
   getSummary: vi.fn(),
@@ -20,6 +24,7 @@ const apiMock = vi.hoisted(() => ({
   requestSectionNa: vi.fn(),
   reopenSection: vi.fn(),
   syncReferenceSnapshot: vi.fn(),
+  updateReferenceFx: vi.fn(),
   previewImport: vi.fn(),
   confirmImport: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -122,6 +127,18 @@ describe('internal quote desk real API state', () => {
     vi.clearAllMocks()
     apiMock.list.mockResolvedValue([quote()])
     apiMock.listBusinessOwners.mockResolvedValue([{ id: 'owner-1', username: 'owner', display_name: '业务负责人' }])
+    apiMock.getPricingBaseline.mockResolvedValue({
+      factory_id: 'huaxing', workshop_code: 'huaxing-workshop', workshop_name: '华兴', revision: 0,
+      source_type: 'default', updated_by: '', updated_by_name: '', updated_at: '',
+      material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '8.50' }],
+      machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '940' }],
+    })
+    apiMock.updatePricingBaseline.mockResolvedValue({
+      factory_id: 'huaxing', workshop_code: 'huaxing-workshop', workshop_name: '华兴', revision: 1,
+      source_type: 'custom', updated_by: 'supervisor', updated_by_name: '业务主管', updated_at: '2026-07-18 14:00',
+      material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '9.25' }],
+      machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '999' }],
+    })
     apiMock.get.mockResolvedValue(quote())
     apiMock.getTimeline.mockResolvedValue({
       business_events: [{ id: 'audit-1', department: 'sales', actor_id: 'u1', actor_name: '业务经办', action: 'create', detail: '', old_revision: null, new_revision: 1, reason: '', created_at: '2026-07-16 09:00' }],
@@ -134,6 +151,8 @@ describe('internal quote desk real API state', () => {
     apiMock.create.mockResolvedValue(quote({ id: 'created-1', quote_no: 'IQ-CREATED' }))
     apiMock.clone.mockResolvedValue(quote({ id: 'clone-1', quote_no: 'IQ-CLONE', status: 'drafting', sections: sectionCodes.map((code, index) => ({ ...section(code, index), status: 'draft', revision: 1 })) }))
     apiMock.saveSection.mockResolvedValue({ ...section('engineering', 1), revision: 2, payload: { molds: [{ item: '模具A' }] } })
+    apiMock.addParticipation.mockResolvedValue(quote())
+    apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
   })
 
   it('loads the factory list with real section progress and owner choices', async () => {
@@ -163,23 +182,52 @@ describe('internal quote desk real API state', () => {
     const payload = {
       quoteNo: 'IQ-CREATED', productName: '产品', customer: 'Disney', versionLabel: 'V1',
       initiatorDepartment: 'engineering' as const, businessOwnerId: 'owner-1', businessOwner: '业务负责人',
-      quantity: 1000, targetDate: '2026-08-31', remark: '',
+      targetCustomerPrice: 'USD 3.50', quantity: 1000, targetDate: '2026-08-31', remark: '',
+      participatingSections: ['sales', 'engineering', 'electronic', 'assembly'] as InternalQuoteSectionCode[],
     }
     const created = await store.createQuote(payload)
     const cloned = await store.cloneQuote(created.id, { ...payload, quoteNo: 'IQ-CLONE' })
 
-    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1' })
-    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人' }))
+    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] })
+    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] }))
     expect(cloned.id).toBe('clone-1')
+  })
+
+  it('loads and saves the pricing baseline with its optimistic revision', async () => {
+    const store = useInternalQuoteDeskStore()
+    const loaded = await store.loadPricingBaseline('huaxing', 'huaxing-workshop')
+    const payload = {
+      revision: loaded?.revision ?? 0,
+      workshop_name: '华兴',
+      material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '9.25' }],
+      machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '999' }],
+    }
+    const saved = await store.updatePricingBaseline('huaxing', 'huaxing-workshop', payload)
+
+    expect(apiMock.getPricingBaseline).toHaveBeenCalledWith('huaxing', 'huaxing-workshop')
+    expect(apiMock.updatePricingBaseline).toHaveBeenCalledWith('huaxing', 'huaxing-workshop', payload)
+    expect(saved.revision).toBe(1)
+    expect(store.pricingBaseline?.material_prices[0].price_hkd_lb).toBe('9.25')
   })
 
   it('writes section payloads through the revision-safe API and keeps comments server-only', async () => {
     const store = useInternalQuoteDeskStore()
     await store.saveSection('quote-1', 'engineering', 1, { molds: [{ item: '模具A' }] }, '修正模具')
+    await store.addParticipation('quote-1', 2, ['painting'])
 
     expect(store.sectionEditingEnabled).toBe(true)
     expect(apiMock.saveSection).toHaveBeenCalledWith('quote-1', 'engineering', 1, { molds: [{ item: '模具A' }] }, '修正模具')
+    expect(apiMock.addParticipation).toHaveBeenCalledWith('quote-1', 2, ['painting'])
     expect(apiMock.get).toHaveBeenCalledWith('quote-1')
     expect(() => store.addComment('quote-1', '本地评论')).toThrow('尚未提供协作评论接口')
+  })
+
+  it('updates quote-scoped FX through the optimistic header revision and reloads the snapshot', async () => {
+    const store = useInternalQuoteDeskStore()
+    await store.updateReferenceFx('quote-1', 2, '0.9', '7.9')
+
+    expect(apiMock.updateReferenceFx).toHaveBeenCalledWith('quote-1', 2, '0.9', '7.9')
+    expect(apiMock.get).toHaveBeenCalledWith('quote-1')
+    expect(apiMock.getReferenceSnapshot).toHaveBeenCalledWith('quote-1')
   })
 })

@@ -24,6 +24,7 @@ export interface P4InternalQuoteSection {
   calculationStatus: string
   dependencyStatus: string
   calculationHash: string
+  isRequired: boolean
   payload: Record<string, unknown>
   calculation: Record<string, unknown>
 }
@@ -52,6 +53,7 @@ interface StructuredChunkRow {
   calculationStatus: string
   dependencyStatus: string
   calculationHash: string
+  isRequired: boolean
   chunkIndex: number
   chunkTotal: number
   chunk: string
@@ -126,6 +128,7 @@ function parseStructuredRows(rows: XlsxCellValue[][]) {
       calculationStatus: text(read(row, '计算状态')),
       dependencyStatus: text(read(row, '依赖状态')),
       calculationHash: text(read(row, '计算hash')),
+      isRequired: indexes.has('是否参与') ? text(read(row, '是否参与')) !== '否' : true,
       chunkIndex: numberValue(read(row, '分片序号')),
       chunkTotal: numberValue(read(row, '分片总数')),
       chunk: String(read(row, 'JSON分片') ?? ''),
@@ -207,24 +210,25 @@ export function parseP4InternalQuoteArtifact(buffer: ArrayBuffer): P4InternalQuo
       || row.calculationStatus !== metadata.calculationStatus
       || row.dependencyStatus !== metadata.dependencyStatus
       || row.calculationHash !== metadata.calculationHash
+      || row.isRequired !== metadata.isRequired
     ))) {
       throw new P4ArtifactValidationError(`${metadata.name || code} 的结构化分片元数据不一致`)
     }
-    if (!['approved', 'not_applicable'].includes(metadata.status)) {
+    if (metadata.isRequired && !['approved', 'not_applicable'].includes(metadata.status)) {
       throw new P4ArtifactValidationError(`${metadata.name || code} 尚未最终通过`)
     }
-    if (metadata.dependencyStatus !== 'current') {
+    if (metadata.isRequired && metadata.dependencyStatus !== 'current') {
       throw new P4ArtifactValidationError(`${metadata.name || code} 依赖状态不是 current`)
     }
-    if (metadata.status === 'approved' && metadata.calculationStatus !== 'valid') {
+    if (metadata.isRequired && metadata.status === 'approved' && metadata.calculationStatus !== 'valid') {
       throw new P4ArtifactValidationError(`${metadata.name || code} 计算状态不是 valid`)
     }
-    if (metadata.status === 'not_applicable' && metadata.calculationStatus !== 'not_applicable') {
+    if (metadata.isRequired && metadata.status === 'not_applicable' && metadata.calculationStatus !== 'not_applicable') {
       throw new P4ArtifactValidationError(`${metadata.name || code} 的不适用计算状态无效`)
     }
     const payload = reconstructJson(chunkRows, 'payload', code)
     const calculation = reconstructJson(chunkRows, 'calculation', code)
-    if (metadata.status === 'approved') {
+    if (metadata.isRequired && metadata.status === 'approved') {
       if (text(calculation.calculation_hash as XlsxCellValue) !== metadata.calculationHash) {
         throw new P4ArtifactValidationError(`${metadata.name || code} 计算 hash 与结构化清单不一致`)
       }
@@ -243,6 +247,7 @@ export function parseP4InternalQuoteArtifact(buffer: ArrayBuffer): P4InternalQuo
       calculationStatus: metadata.calculationStatus,
       dependencyStatus: metadata.dependencyStatus,
       calculationHash: metadata.calculationHash,
+      isRequired: metadata.isRequired,
       payload,
       calculation,
     }

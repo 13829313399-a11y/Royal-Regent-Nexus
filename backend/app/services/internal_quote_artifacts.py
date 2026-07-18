@@ -36,6 +36,7 @@ from app.services.internal_quote import (
     _check_revision,
     _derive_quote_status,
     _ensure_active,
+    _ensure_section_participates,
     _get_quote,
     _get_section,
     _invalidate_downstream_dependencies,
@@ -174,6 +175,7 @@ def create_import_preview(
     target_department = IMPORT_TYPE_DEPARTMENTS[import_type]
     ensure_section_permission(db, user, quote.factory_id, target_department, "edit")
     section = _get_section(db, quote.id, target_department)
+    _ensure_section_participates(section)
     clean_name = safe_file_name(file_name)
     _validate_import_file(clean_name, content)
 
@@ -190,6 +192,24 @@ def create_import_preview(
     except (ValueError, ArithmeticError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
+    existing_payload = _json_object(section.payload_json)
+    list_field = {
+        "mold": "molds",
+        "hardware": "materials",
+        "electronic": "components",
+        "painting": "rows",
+        "sewing": "groups",
+        "assembly": "groups",
+    }[import_type]
+    existing_list = existing_payload.get(list_field, [])
+    if not isinstance(existing_list, list):
+        existing_list = []
+    if import_type == "hardware":
+        existing_list = [
+            row for row in existing_list
+            if isinstance(row, dict) and row.get("category") == "hardware"
+        ]
+
     preview = {
         "sheet_name": parsed.sheet_name,
         "header_row": parsed.header_row,
@@ -197,19 +217,7 @@ def create_import_preview(
         "payload_fragment": parsed.payload_fragment,
         "diff_summary": {
             "target_revision": section.revision,
-            "existing_rows": len(
-                _json_object(section.payload_json).get(
-                    {
-                        "mold": "molds",
-                        "electronic": "components",
-                        "painting": "rows",
-                        "sewing": "groups",
-                        "assembly": "groups",
-                    }[import_type],
-                    [],
-                )
-                or []
-            ),
+            "existing_rows": len(existing_list),
             "imported_rows": parsed.row_count,
             "replace_result_rows": parsed.row_count,
         },
@@ -298,6 +306,7 @@ def _merge_import_payload(
     merged = json.loads(json.dumps(current, ensure_ascii=False))
     list_field = {
         "mold": "molds",
+        "hardware": "materials",
         "electronic": "components",
         "painting": "rows",
         "sewing": "groups",
@@ -309,7 +318,14 @@ def _merge_import_payload(
     existing_rows = merged.get(list_field, [])
     if not isinstance(existing_rows, list):
         existing_rows = []
-    merged[list_field] = imported_rows if mode == "replace" else [*existing_rows, *imported_rows]
+    if import_type == "hardware" and mode == "replace":
+        retained_rows = [
+            row for row in existing_rows
+            if not isinstance(row, dict) or row.get("category") != "hardware"
+        ]
+        merged[list_field] = [*retained_rows, *imported_rows]
+    else:
+        merged[list_field] = imported_rows if mode == "replace" else [*existing_rows, *imported_rows]
 
     if import_type == "mold" and fragment.get("amortization_qty"):
         if mode == "replace" or not merged.get("amortization_qty"):
@@ -358,6 +374,7 @@ def confirm_import_batch(
         raise HTTPException(status_code=409, detail="该导入批次已确认，不能重复写入")
 
     section = _get_section(db, quote.id, batch.target_department)
+    _ensure_section_participates(section)
     _check_revision(section.revision, payload.revision)
     if section.status not in MUTABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="目标分段当前状态不可导入，请先重新打开")
@@ -450,7 +467,8 @@ def upload_attachment(
     quote = _get_quote(db, quote_id)
     _ensure_active(quote)
     ensure_section_permission(db, user, quote.factory_id, department, "edit")
-    _get_section(db, quote.id, department)
+    section = _get_section(db, quote.id, department)
+    _ensure_section_participates(section)
     clean_name = safe_file_name(file_name)
     _extension, content_type = _validate_attachment(clean_name, content)
     sha256 = digest(content)
@@ -648,6 +666,7 @@ def _create_artifact_handoff(
         "customer": quote.customer,
         "product_name": quote.product_name,
         "qty": quote.qty,
+        "target_customer_price": quote.target_customer_price,
         "release_revision": quote.final_release_revision,
         "release_manifest_sha256": export_manifest.get("final_release_manifest_sha256", ""),
         "export_id": record.id,
@@ -740,6 +759,7 @@ def create_controlled_export(
         "formula_version": quote.formula_version,
         "reference_snapshot_id": quote.reference_snapshot_id,
         "header_revision": quote.header_revision,
+        "target_customer_price": quote.target_customer_price,
         "section_revisions": section_revisions,
         "section_calculation_hashes": {
             section.department: section.calculation_hash for section in sections

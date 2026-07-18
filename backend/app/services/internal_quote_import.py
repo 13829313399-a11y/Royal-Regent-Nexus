@@ -13,6 +13,7 @@ from openpyxl import load_workbook
 
 IMPORT_TYPE_DEPARTMENTS = {
     "mold": "engineering",
+    "hardware": "engineering",
     "electronic": "electronic",
     "painting": "painting",
     "sewing": "sewing",
@@ -135,6 +136,7 @@ def find_header(
 ) -> tuple[str, list[list[object]], int]:
     patterns = {
         "mold": ("模号|模具编号|MOLDNO|产品名称", "名称|模价|总价|材质|材料|AMOUNT"),
+        "hardware": ("零件名称", "规格", "用量", "单价"),
         "electronic": ("零件名称", "规格", "用量"),
         "sewing": ("物料名称", "裁片部位", "用量", "价钱"),
         "assembly": ("工序名称", "人数"),
@@ -147,6 +149,7 @@ def find_header(
     raise ValueError(
         {
             "mold": "未找到模具编号/名称/价格表头",
+            "hardware": "未找到零件名称/规格/用量/单价表头，请使用五金1.xlsx格式",
             "electronic": "未找到零件名称/规格/用量表头",
             "sewing": "未找到物料名称/裁片部位/用量/价钱表头",
             "assembly": "未找到工序名称/人数表头",
@@ -194,9 +197,12 @@ def _parse_mold(
         "price": column_index(header, ("含税模价", "总价", "模价", "TOTAL AMOUNT", "AMOUNT")),
         "machine": column_index(header, ("机型(TON)", "INJECTION MACHINE TYPE", "机型")),
         "target": column_index(header, ("模具预计日啤数", "目标数", "CYCLES/DAY")),
+        "mold_base_type": column_index(header, ("模胚类型", "模胚型号", "模胚")),
         "structure": column_index(header, ("模具结构", "滑块", "行位", "加工内容")),
-        "mold_size": column_index(header, ("模具尺寸", "模胚尺寸", "模胚型号")),
+        "cycle": column_index(header, ("周期(秒)", "周期", "啤塑周期", "CYCLE TIME", "CYCLE")),
+        "mold_size": column_index(header, ("模具尺寸", "模胚尺寸")),
         "color": column_index(header, ("颜色", "COLOR")),
+        "image": column_index(header, ("图片", "图  片", "IMAGE")),
         "note": column_index(header, ("备注", "说明", "REMARK")),
     }
     warnings: list[str] = []
@@ -247,10 +253,13 @@ def _parse_mold(
                 "cavity": text(value_at(row, columns["cavity"])),
                 "machine_code": text(value_at(row, columns["machine"])),
                 "target_output": decimal_text(number(value_at(row, columns["target"]), Decimal("0"))),
+                "mold_base_type": text(value_at(row, columns["mold_base_type"])),
                 "structure": text(value_at(row, columns["structure"])),
+                "cycle_time_seconds": decimal_text(number(value_at(row, columns["cycle"]), Decimal("0"))),
                 "mold_size": text(value_at(row, columns["mold_size"])),
                 "color": text(value_at(row, columns["color"])),
-                "note": text(value_at(row, columns["note"])),
+                "image_reference": text(value_at(row, columns["image"])),
+                "remark": text(value_at(row, columns["note"])),
                 "source_row": source_row,
             }
         )
@@ -265,6 +274,77 @@ def _parse_mold(
         warnings.append(f"未识别模具分摊数量，预览按报价数量 {decimal_text(amortization_qty)} 填入")
     warnings.append("嵌入模具图片不自动写入报价，请在对应工程分段上传图片附件")
     return {"molds": molds, "amortization_qty": decimal_text(amortization_qty)}, len(molds), warnings
+
+
+def _parse_hardware(
+    rows: list[list[object]],
+    header_index: int,
+    *,
+    rmb_hkd: Decimal,
+    **_: object,
+) -> tuple[dict[str, Any], int, list[str]]:
+    header = rows[header_index]
+    columns = {
+        "name": column_index(header, ("零件名称", "配件名称", "名称")),
+        "specification": column_index(header, ("规格", "型号")),
+        "material_category": column_index(header, ("类别", "分类")),
+        "quantity": column_index(header, ("用量", "数量")),
+        "unit_price": column_index(header, ("单价RMB", "单价人民币", "人民币单价", "单价")),
+        "tax_rate": column_index(header, ("税点%", "税点", "税率")),
+        "remark": column_index(header, ("备注", "说明")),
+    }
+    unit_header = normalized(value_at(header, columns["unit_price"]))
+    source_is_hkd = "HKD" in unit_header or "港币" in unit_header
+    if source_is_hkd and rmb_hkd <= 0:
+        raise ValueError("报价参考快照的 RMB/HKD 汇率无效")
+
+    output: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for source_row, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        name = text(value_at(row, columns["name"]))
+        specification = text(value_at(row, columns["specification"]))
+        row_label = "".join(text(cell) for cell in row)
+        if re.search(r"^(合计|小计|总计|说明|备注|附[:：])", row_label):
+            continue
+        if not name and not specification:
+            continue
+        quantity = number(value_at(row, columns["quantity"]))
+        unit_price = number(value_at(row, columns["unit_price"]))
+        tax_rate = number(value_at(row, columns["tax_rate"]), Decimal("0")) or Decimal("0")
+        material_category = text(value_at(row, columns["material_category"]))
+        if material_category not in {"吸塑", "胶袋", "彩盒/内卡", "电池", "利宝", "电镀", "其他外购"}:
+            if material_category:
+                warnings.append(f"第 {source_row} 行 {name or specification} 的类别不在允许列表，已按其他外购预览")
+            material_category = "其他外购"
+        if quantity is None:
+            quantity = Decimal("0")
+            warnings.append(f"第 {source_row} 行 {name or specification} 未识别用量，已按 0 预览")
+        if unit_price is None:
+            unit_price = Decimal("0")
+            warnings.append(f"第 {source_row} 行 {name or specification} 未识别人民币单价，已按 0 预览")
+        if quantity < 0 or unit_price < 0 or tax_rate < 0:
+            raise ValueError(f"第 {source_row} 行 {name or specification} 的用量、单价或税点不能小于 0")
+        unit_price_rmb = unit_price * rmb_hkd if source_is_hkd else unit_price
+        output.append(
+            {
+                "item": name,
+                "category": "hardware",
+                "specification": specification,
+                "quantity": decimal_text(quantity),
+                "unit_price_rmb": decimal_text(unit_price_rmb),
+                "auxiliary_category": material_category,
+                "tax_rate_percent": decimal_text(tax_rate),
+                "remark": text(value_at(row, columns["remark"])),
+                "source_row": source_row,
+            }
+        )
+    if not output:
+        raise ValueError("已识别五金表头，但没有解析到五金明细")
+    if source_is_hkd:
+        warnings.append(f"五金表使用 HKD 单价，已按快照 RMB/HKD={decimal_text(rmb_hkd)} 反算为人民币单价")
+    warnings.append("五金导入仅映射零件名称、规格、类别、用量、单价 RMB、税点和备注；模板其他列不写入报价字段")
+    warnings.append("模板内嵌图片不自动写入明细；如需保留，请在工程部分段上传原表或图片附件")
+    return {"materials": output}, len(output), warnings
 
 
 def _parse_electronic(
@@ -565,6 +645,7 @@ def _parse_assembly(
 
 PARSERS: dict[str, Callable[..., tuple[dict[str, Any], int, list[str]]]] = {
     "mold": _parse_mold,
+    "hardware": _parse_hardware,
     "electronic": _parse_electronic,
     "painting": _parse_painting,
     "sewing": _parse_sewing,

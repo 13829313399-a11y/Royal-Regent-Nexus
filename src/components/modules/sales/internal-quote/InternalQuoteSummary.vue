@@ -34,7 +34,8 @@ const comparison = ref<ApiInternalQuoteVersionComparison>()
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const quote = computed(() => quoteStore.getQuoteById(quoteId.value) ?? quoteStore.placeholderQuote)
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
-const missingSections = computed(() => quote.value.sections.filter((section) => !['approved', 'not_applicable'].includes(section.status)))
+const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
+const missingSections = computed(() => participatingSections.value.filter((section) => !['approved', 'not_applicable'].includes(section.status)))
 const allSectionsReady = computed(() => missingSections.value.length === 0)
 const isReleased = computed(() => ['released', 'exported'].includes(quote.value.status))
 const canExport = computed(() => authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
@@ -160,7 +161,7 @@ watch([quoteId, canFinalApprove], () => {
         <div class="quote-summary-table-scroll">
           <table>
             <thead><tr><th>责任分段</th><th>权威分段合计 HKD</th><th>计算状态</th><th>依赖状态</th><th>审批状态</th><th>revision</th></tr></thead>
-            <tbody><tr v-for="section in quote.sections" :key="section.code"><td><strong>{{ section.label }}</strong><span>{{ section.owner }}</span></td><td class="money">{{ section.totalHkd.toFixed(4) }}</td><td>{{ section.calculationStatus }}</td><td>{{ section.dependencyStatus }}</td><td><span class="section-status" :class="`tone-${statusMeta[section.status].tone}`"><i />{{ statusMeta[section.status].label }}</span></td><td>r{{ section.revision }}</td></tr></tbody>
+            <tbody><tr v-for="section in participatingSections" :key="section.code"><td><strong>{{ section.label }}</strong><span>{{ section.owner }}</span></td><td class="money">{{ section.totalHkd.toFixed(4) }}</td><td>{{ section.calculationStatus }}</td><td>{{ section.dependencyStatus }}</td><td><span class="section-status" :class="`tone-${statusMeta[section.status].tone}`"><i />{{ statusMeta[section.status].label }}</span></td><td>r{{ section.revision }}</td></tr></tbody>
             <tfoot><tr><td>整单工厂成本</td><td class="money">{{ totalHkd.toFixed(4) }}</td><td colspan="4">参考快照已冻结</td></tr></tfoot>
           </table>
         </div>
@@ -182,8 +183,8 @@ watch([quoteId, canFinalApprove], () => {
     <section v-if="versionCandidates.length" class="quote-version-panel"><header><div><FileClock aria-hidden="true" /><span><strong>报价版本对比</strong><small>仅允许同报价或复制版本链，金额差异由服务端计算</small></span></div><div><select v-model="versionBaseId"><option value="">选择基准版本</option><option v-for="candidate in versionCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.quote_no }} · {{ candidate.version_label }} · {{ candidate.updated_at }}</option></select><button type="button" :disabled="!versionBaseId" @click="compareSelectedVersion">开始对比</button></div></header><div v-if="comparison" class="quote-comparison"><article><span>基准成本</span><strong>HKD {{ Number(comparison.total_before_hkd).toFixed(4) }}</strong></article><article><span>当前成本</span><strong>HKD {{ Number(comparison.total_after_hkd).toFixed(4) }}</strong></article><article><span>金额差异</span><strong>HKD {{ Number(comparison.total_delta_hkd).toFixed(4) }}</strong></article><div><p v-for="section in comparison.sections" :key="section.section_code"><span>{{ section.section_name }} · r{{ section.before_revision }} → r{{ section.after_revision }}</span><b>{{ Number(section.delta_hkd).toFixed(4) }}</b></p></div></div></section>
 
     <section class="quote-release-status">
-      <header><div><CheckCircle2 aria-hidden="true" /><span><strong>分段放行状态</strong><small>{{ allSectionsReady ? '八个责任分段已完成' : `还有 ${missingSections.length} 个分段未完成` }}</small></span></div><RouterLink :to="`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`">返回协作页</RouterLink></header>
-      <div class="quote-release-grid"><article v-for="section in quote.sections" :key="section.code" :class="section.status"><span><Check v-if="['approved','not_applicable'].includes(section.status)" aria-hidden="true" /><AlertTriangle v-else aria-hidden="true" /></span><div><strong>{{ section.label }}</strong><small>{{ statusMeta[section.status].label }} · {{ section.reviewer ?? section.submittedBy ?? '尚未提交' }}</small></div><em>r{{ section.revision }}</em></article></div>
+      <header><div><CheckCircle2 aria-hidden="true" /><span><strong>分段放行状态</strong><small>{{ allSectionsReady ? `${participatingSections.length} 个参与分段已完成` : `还有 ${missingSections.length} 个参与分段未完成` }}</small></span></div><RouterLink :to="`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`">返回协作页</RouterLink></header>
+      <div class="quote-release-grid"><article v-for="section in participatingSections" :key="section.code" :class="section.status"><span><Check v-if="['approved','not_applicable'].includes(section.status)" aria-hidden="true" /><AlertTriangle v-else aria-hidden="true" /></span><div><strong>{{ section.label }}</strong><small>{{ statusMeta[section.status].label }} · {{ section.reviewer ?? section.submittedBy ?? '尚未提交' }}</small></div><em>r{{ section.revision }}</em></article></div>
       <div v-if="missingSections.length" class="quote-release-warning"><AlertTriangle aria-hidden="true" /><span><strong>暂不可最终放行或导出</strong>{{ missingSections.map((section) => `${section.label}（${statusMeta[section.status].label}）`).join('、') }}</span></div>
     </section>
 

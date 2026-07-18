@@ -135,6 +135,7 @@ export interface InternalQuote {
   initiatorName: string
   businessOwnerId: string
   businessOwner: string
+  targetCustomerPrice: string
   quantity: number
   targetDate: string
   remark: string
@@ -170,9 +171,11 @@ export interface InternalQuoteCreatePayload {
   initiatorDepartment: InternalQuoteInitiatorDepartment
   businessOwnerId: string
   businessOwner: string
+  targetCustomerPrice: string
   quantity: number
   targetDate: string
   remark: string
+  participatingSections: InternalQuoteSectionCode[]
 }
 
 export interface InternalQuoteBusinessOwner {

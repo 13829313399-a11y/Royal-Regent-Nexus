@@ -31,7 +31,7 @@ function statusIcon(status: InternalQuoteSectionStatus) {
 <template>
   <aside class="quote-section-rail" aria-label="责任分段">
     <header>
-      <div><strong>责任分段</strong><span>八部门协作进度</span></div>
+      <div><strong>责任分段</strong><span>已参与部门协作进度</span></div>
       <span class="quote-rail-count">{{ sections.filter((section) => ['approved', 'not_applicable'].includes(section.status)).length }}/{{ sections.length }}</span>
     </header>
     <nav>

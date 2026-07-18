@@ -1,4 +1,6 @@
-from app.services.internal_quote_calculator import DEFAULT_MACHINE_PRICES, calculate_section
+import pytest
+
+from app.services.internal_quote_calculator import CalculationInputError, DEFAULT_MACHINE_PRICES, calculate_section
 
 
 SNAPSHOT = {
@@ -12,7 +14,7 @@ SNAPSHOT = {
     "injection_loss_rate_percent": "3",
     "blow_profit_multiplier": "1.05",
     "electronic_profit_rate_percent": "10",
-    "assembly_labor_base_hkd": "310",
+    "assembly_labor_base_hkd": "260",
     "tax_rates": {"carton": "0.10"},
     "freight_share": "0.48",
     "lift_share": "0.52",
@@ -61,13 +63,24 @@ def test_engineering_electronic_and_molding_decimal_vectors():
         },
     )
     assert engineering["status"] == "valid"
+    assert engineering["line_breakdown"][0]["unit_price_hkd"] == "10.0000"
+    assert engineering["line_breakdown"][0]["formula"].startswith("用量 × 单价 RMB")
     assert engineering["totals"] == {
         "hardware_hkd": "20.0000",
         "auxiliary_hkd": "0.0000",
         "packaging_hkd": "0.0000",
         "carton_hkd": "0.1115",
         "carton_cuft": "0.1157",
+        "mold_quote_total_rmb": "1000.0000",
+        "mold_quote_total_hkd": "1176.4706",
         "mold_total_rmb": "1000.0000",
+        "mold_fx_rmb_usd": "7.7500",
+        "mold_share_rmb": "10.0000",
+        "mold_share_usd": "1.2403",
+        "prototype_share_rmb": "0.0000",
+        "prototype_share_usd": "0.0000",
+        "testing_share_rmb": "0.0000",
+        "testing_share_usd": "0.0000",
         "mold_amortization_rmb": "10.0000",
         "mold_amortization_usd": "1.2403",
         "total_hkd": "20.1115",
@@ -206,10 +219,259 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
         },
     )
     assert assembly["totals"] == {
-        "assembly_hkd": "3.1000",
-        "packaging_hkd": "2.3250",
-        "total_hkd": "5.4250",
+        "assembly_hkd": "2.6000",
+        "packaging_hkd": "1.9500",
+        "total_hkd": "4.5500",
     }
+
+
+def test_engineering_mold_detail_and_production_allocations_follow_rr2_fields_and_formulas():
+    engineering = calculate(
+        "engineering",
+        {
+            "materials": [],
+            "molds": [
+                {
+                    "item": "主体模",
+                    "mold_no": "M-01",
+                    "mold_base_type": "CI 3040",
+                    "quantity": "2",
+                    "cost_rmb": "5000",
+                    "net_weight_g": "120",
+                    "cycle_time_seconds": "35",
+                }
+            ],
+            "production_mold_costs": [
+                {"item": "模具费用", "cost_rmb": "1000"},
+                {"item": "超声模费用", "cost_rmb": "550"},
+            ],
+            "mold_fx_rmb_usd": "7.75",
+            "customer_mold_subsidy_usd": "10",
+            "amortization_qty": "100",
+            "prototype_total_usd": "500",
+            "prototype_amortization_qty": "50000",
+            "testing_total_usd": "100",
+            "testing_amortization_qty": "2000",
+        },
+    )
+
+    assert engineering["status"] == "valid"
+    assert engineering["totals"]["mold_quote_total_rmb"] == "5000.0000"
+    assert engineering["totals"]["mold_quote_total_hkd"] == "5882.3529"
+    assert engineering["totals"]["mold_total_rmb"] == "1550.0000"
+    assert engineering["totals"]["mold_share_rmb"] == "15.5000"
+    assert engineering["totals"]["mold_share_usd"] == "1.9000"
+    assert engineering["totals"]["prototype_share_rmb"] == "0.0775"
+    assert engineering["totals"]["prototype_share_usd"] == "0.0100"
+    assert engineering["totals"]["testing_share_rmb"] == "0.3875"
+    assert engineering["totals"]["testing_share_usd"] == "0.0500"
+    assert engineering["totals"]["mold_amortization_rmb"] == "15.9650"
+    assert engineering["totals"]["mold_amortization_usd"] == "1.9600"
+    assert [row["item"] for row in engineering["line_breakdown"] if row["kind"] == "mold_allocation"] == [
+        "生产模费分摊",
+        "手板费分摊",
+        "测试费分摊",
+    ]
+
+    with pytest.raises(CalculationInputError, match="客户模费补贴不能大于"):
+        calculate(
+            "engineering",
+            {
+                "materials": [],
+                "molds": [],
+                "production_mold_costs": [{"item": "模具费用", "cost_rmb": "7.75"}],
+                "mold_fx_rmb_usd": "7.75",
+                "customer_mold_subsidy_usd": "2",
+                "amortization_qty": "100",
+            },
+        )
+
+    adjusted_assembly = calculate(
+        "assembly",
+        {
+            "labor_base_hkd": "310",
+            "groups": [
+                {
+                    "name": "组装",
+                    "category": "assembly",
+                    "processes": [
+                        {"name": "锁螺丝", "persons": "4", "teams": "2", "production_qty": "800"}
+                    ],
+                }
+            ],
+        },
+    )
+    assert adjusted_assembly["totals"]["assembly_hkd"] == "3.1000"
+
+
+def test_sales_owns_carton_flat_card_and_cuft_calculation():
+    sales = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.75",
+            "packaging_materials": [{
+                "item": "彩盒",
+                "specification": "四彩印刷",
+                "category": "color_box_inner_card",
+                "quantity": "2",
+                "unit_price_rmb": "3.4",
+                "tax_rate_percent": "10",
+                "remark": "FSC",
+            }],
+            "product_size_cm": {"length": "12", "width": "8", "height": "4"},
+            "color_box_size_cm": {"length": "13", "width": "9", "height": "5"},
+            "cartons": [
+                {
+                    "item": "主纸箱",
+                    "length_in": "10",
+                    "width_in": "5",
+                    "height_in": "4",
+                    "qty_per_carton": "10",
+                    "flat_cards": [
+                        {"name": "主平卡", "length_in": "8", "width_in": "4", "quantity": "2"}
+                    ],
+                }
+            ],
+        },
+        factory_price_hkd="20",
+        mold_amortization_usd="0",
+    )
+    assert sales["status"] == "valid"
+    assert sales["totals"]["base_factory_price_hkd"] == "20.0000"
+    assert sales["totals"]["packaging_material_hkd"] == "8.0000"
+    assert sales["totals"]["packaging_material_rmb"] == "6.8000"
+    assert sales["totals"]["carton_hkd"] == "0.1430"
+    assert sales["totals"]["carton_cuft"] == "0.1157"
+    assert sales["totals"]["factory_price_hkd"] == "28.1430"
+    assert sales["totals"]["total_hkd"] == "8.1430"
+    assert sales["line_breakdown"][0] == {
+        "kind": "packaging_material",
+        "owner": "sales",
+        "item": "彩盒",
+        "specification": "四彩印刷",
+        "category": "color_box_inner_card",
+        "quantity": "2.0000",
+        "unit_price_rmb": "3.4000",
+        "unit_price_hkd": "4.0000",
+        "tax_rate_percent": "10.0000",
+        "amount_rmb": "6.8000",
+        "amount_hkd": "8.0000",
+        "remark": "FSC",
+    }
+    assert sales["line_breakdown"][1] == {
+        "kind": "carton",
+        "owner": "sales",
+        "item": "主纸箱",
+        "paper_price_factor": "2.7500",
+        "flat_card_price_factor": "2.7500",
+        "carton_price_hkd": "0.9350",
+        "flat_card_price_hkd": "0.4950",
+        "per_piece_hkd": "0.1430",
+        "cuft": "0.1157",
+        "qty_per_carton": "10.0000",
+    }
+
+    adjusted = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.75",
+            "flat_card_price_factor": "1.5",
+            "product_size_cm": {"length": "12", "width": "8", "height": "4"},
+            "color_box_size_cm": {"length": "13", "width": "9", "height": "5"},
+            "cartons": [{
+                "item": "主纸箱", "length_in": "10", "width_in": "5", "height_in": "4",
+                "qty_per_carton": "10",
+                "flat_cards": [{"name": "主平卡", "length_in": "8", "width_in": "4", "quantity": "2"}],
+            }],
+        },
+        factory_price_hkd="20",
+    )
+    assert adjusted["line_breakdown"][0]["flat_card_price_factor"] == "1.5000"
+    assert adjusted["line_breakdown"][0]["flat_card_price_hkd"] == "0.2700"
+    assert adjusted["totals"]["carton_hkd"] == "0.1205"
+
+    optional_product_dimensions = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.7",
+            "flat_card_price_factor": "2.7",
+            "freight_calc": {
+                "cap_10t": "1166", "cap_5t": "750", "cap_40": "1980", "cap_20": "883",
+                "hk40": "8000", "hk20": "7100", "yt40": "7200", "yt20": "6000",
+                "hk10t": "14900", "yt10t": "11500", "hk5t": "12500", "yt5t": "11000",
+            },
+            "product_size_cm": {"length": 0, "width": 0, "height": 0},
+            "color_box_size_cm": {"length": "13.375", "width": "13.375", "height": "4.25"},
+            "cartons": [{
+                "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                "qty_per_carton": "2",
+                "flat_cards": [{"name": "平卡1", "length_in": "14", "width_in": "9.25", "quantity": "1"}],
+            }],
+        },
+        factory_price_hkd="0",
+    )
+    assert optional_product_dimensions["status"] == "valid"
+    assert optional_product_dimensions["totals"]["carton_hkd"] == "2.7416"
+    assert optional_product_dimensions["line_breakdown"][0]["per_piece_hkd"] == "2.7416"
+    freight_options = optional_product_dimensions["totals"]["freight_options"]
+    assert len(freight_options) == 8
+    assert freight_options[0]["kind"] == "freight_reference"
+    assert freight_options[0]["reference_only"] is True
+    assert freight_options[0]["item"] == "HK 40 柜"
+    assert freight_options[0]["capacity_cuft"] == "1980"
+    assert freight_options[0]["carton_cuft"] == "1.7892"
+    assert freight_options[0]["qty_per_carton"] == "2.0000"
+    assert freight_options[0]["total_cartons"] == "1107.0000"
+    assert freight_options[0]["per_piece_hkd"] == "3.6134"
+    assert freight_options[-1]["item"] == "YT 5 吨车"
+    assert optional_product_dimensions["totals"]["total_hkd"] == "2.7416"
+    assert len(optional_product_dimensions["line_breakdown"]) == 9
+
+    self_pickup = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.7",
+            "freight_calc": {"enabled": False},
+            "product_size_cm": {"length": 0, "width": 0, "height": 0},
+            "color_box_size_cm": {"length": 0, "width": 0, "height": 0},
+            "cartons": [{
+                "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                "qty_per_carton": "2", "flat_cards": [],
+            }],
+        },
+        factory_price_hkd="0",
+    )
+    assert self_pickup["totals"]["freight_options"] == []
+    assert len(self_pickup["line_breakdown"]) == 1
+
+    with pytest.raises(CalculationInputError, match="容量必须为整数"):
+        calculate(
+            "sales",
+            {
+                "paper_price_factor": "2.7",
+                "freight_calc": {"enabled": True, "cap_40": "1980.5"},
+                "product_size_cm": {"length": 0, "width": 0, "height": 0},
+                "color_box_size_cm": {"length": 0, "width": 0, "height": 0},
+                "cartons": [{
+                    "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                    "qty_per_carton": "2", "flat_cards": [],
+                }],
+            },
+            factory_price_hkd="0",
+        )
+
+    missing = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.75",
+            "product_size_cm": {"length": 0, "width": 0, "height": 0},
+            "color_box_size_cm": {"length": 0, "width": 0, "height": 0},
+            "cartons": [],
+        },
+        factory_price_hkd="20",
+    )
+    assert missing["status"] == "blocked"
+    assert missing["warnings"][0]["code"] == "sales_carton_missing"
 
 
 def test_sales_scenario_and_blocking_reference_warnings():

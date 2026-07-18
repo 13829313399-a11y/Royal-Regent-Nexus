@@ -3,7 +3,7 @@ import { AlertCircle, CheckCircle2, ChevronDown, Download, FileSpreadsheet, File
 import { computed, ref, watch } from 'vue'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/api/internalQuote'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
-import { normalizeInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, normalizeInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
 
@@ -25,6 +25,7 @@ const localMessage = ref('')
 const localError = ref('')
 const importInput = ref<HTMLInputElement>()
 const attachmentInput = ref<HTMLInputElement>()
+const selectedImportType = ref<ApiInternalQuoteImportPreview['import_type']>()
 
 const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: string }> = {
   draft: { label: '草稿', tone: 'slate' }, pending_review: { label: '待主管审核', tone: 'amber' },
@@ -37,22 +38,39 @@ const editable = computed(() => props.canEdit && mutable.value && !quoteStore.su
 const reviewable = computed(() => props.canReview && ['pending_review', 'na_pending'].includes(props.section.status) && !quoteStore.submitting)
 const canReopen = computed(() => props.canEdit && ['approved', 'not_applicable'].includes(props.section.status) && !quoteStore.submitting)
 const isDirty = computed(() => JSON.stringify(draftPayload.value) !== baselinePayload.value)
+type ImportOption = { type: ApiInternalQuoteImportPreview['import_type']; label: string; buttonLabel: string }
+const importOptions = computed<ImportOption[]>(() => ({
+  engineering: [
+    { type: 'hardware', label: '五金报价单', buttonLabel: '五金 Excel 导入' },
+    { type: 'mold', label: '模具报价单 / 合同', buttonLabel: '模具 Excel 导入' },
+  ],
+  electronic: [{ type: 'electronic', label: '电子报价单', buttonLabel: 'Excel 预览导入' }],
+  painting: [{ type: 'painting', label: '喷油核价表', buttonLabel: 'Excel 预览导入' }],
+  sewing: [{ type: 'sewing', label: '车缝报价单', buttonLabel: 'Excel 预览导入' }],
+  assembly: [{ type: 'assembly', label: '生产排拉工序表', buttonLabel: 'Excel 预览导入' }],
+} as Partial<Record<InternalQuoteSectionCode, ImportOption[]>>)[props.section.code] ?? [])
+
+function importOption(type: ApiInternalQuoteImportPreview['import_type']) {
+  return importOptions.value.find((option) => option.type === type)
+}
+
+function openImport(option: ImportOption) {
+  selectedImportType.value = option.type
+  importInput.value?.click()
+}
+
 const reasonActionAllowed = computed(() => {
   if (reasonAction.value === 'reject') return reviewable.value
   if (reasonAction.value === 'na') return editable.value
   if (reasonAction.value === 'reopen') return canReopen.value
   return false
 })
-const importMeta = computed(() => ({
-  engineering: { type: 'mold', label: '模具报价单 / 合同' }, electronic: { type: 'electronic', label: '电子报价单' },
-  painting: { type: 'painting', label: '喷油核价表' }, sewing: { type: 'sewing', label: '车缝报价单' },
-  assembly: { type: 'assembly', label: '生产排拉工序表' },
-} as Partial<Record<InternalQuoteSectionCode, { type: ApiInternalQuoteImportPreview['import_type']; label: string }>>)[props.section.code])
 
 watch(() => [props.quote.id, props.section.code, props.section.revision, props.section.updatedAt, props.canEdit, props.canReview] as const, () => {
   draftPayload.value = normalizeInternalQuotePayload(props.section.code, props.section.payload)
   baselinePayload.value = JSON.stringify(draftPayload.value)
   importPreview.value = undefined
+  selectedImportType.value = undefined
   reasonAction.value = undefined
   actionReason.value = ''
   localMessage.value = ''
@@ -65,7 +83,7 @@ function errorText(error: unknown) { return error instanceof Error ? error.messa
 async function saveDraft(showMessage = true) {
   resetFeedback()
   try {
-    const result = await quoteStore.saveSection(props.quote.id, props.section.code, props.section.revision, structuredClone(draftPayload.value)) as ApiInternalQuoteSection
+    const result = await quoteStore.saveSection(props.quote.id, props.section.code, props.section.revision, cloneInternalQuotePayload(props.section.code, draftPayload.value)) as ApiInternalQuoteSection
     baselinePayload.value = JSON.stringify(draftPayload.value)
     if (showMessage) localMessage.value = `${props.section.label}草稿已保存，服务端已生成 revision ${result.revision} 并重新计算。`
     return result
@@ -80,7 +98,7 @@ async function submitSection() {
   try {
     let revision = props.section.revision
     if (isDirty.value) {
-      const saved = await quoteStore.saveSection(props.quote.id, props.section.code, revision, structuredClone(draftPayload.value)) as ApiInternalQuoteSection
+      const saved = await quoteStore.saveSection(props.quote.id, props.section.code, revision, cloneInternalQuotePayload(props.section.code, draftPayload.value)) as ApiInternalQuoteSection
       revision = saved.revision
     }
     await quoteStore.submitSection(props.quote.id, props.section.code, revision)
@@ -121,11 +139,13 @@ async function confirmReasonAction() {
 async function handleImportFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
+  const importType = selectedImportType.value
   input.value = ''
-  if (!file || !importMeta.value || !editable.value) return
+  selectedImportType.value = undefined
+  if (!file || !importType || !editable.value) return
   resetFeedback()
   try {
-    importPreview.value = await quoteStore.previewImport(props.quote.id, importMeta.value.type, file)
+    importPreview.value = await quoteStore.previewImport(props.quote.id, importType, file)
     localMessage.value = `${file.name} 已完成预览；尚未写入正式分段。`
   } catch (error) { localError.value = errorText(error) }
 }
@@ -168,7 +188,7 @@ async function downloadAttachment(id: string, fileName: string) {
     <header class="quote-editor-head">
       <div><div class="quote-editor-title-row"><h2>{{ section.label }}核价明细</h2><span class="quote-editor-status" :class="`tone-${statusMeta[section.status].tone}`"><i />{{ statusMeta[section.status].label }}</span><span class="quote-revision">revision {{ section.revision }}</span><span v-if="isDirty" class="dirty">有未保存修改</span></div><p>{{ section.formulaHint }}</p></div>
       <div class="quote-editor-tools">
-        <button v-if="importMeta" type="button" :disabled="!editable || quoteStore.fileBusy" @click="importInput?.click()"><FileUp />Excel 预览导入<ChevronDown /></button>
+        <button v-for="option in importOptions" :key="option.type" type="button" :disabled="!editable || quoteStore.fileBusy" @click="openImport(option)"><FileUp />{{ option.buttonLabel }}<ChevronDown /></button>
         <button type="button" :disabled="!props.canEdit || quoteStore.fileBusy" @click="attachmentInput?.click()"><Paperclip />上传附件</button>
         <input ref="importInput" class="sr-only" type="file" accept=".xlsx,.xlsm" @change="handleImportFile">
         <input ref="attachmentInput" class="sr-only" type="file" accept=".xlsx,.xlsm,.xls,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp" @change="handleAttachment">
@@ -180,13 +200,13 @@ async function downloadAttachment(id: string, fileName: string) {
     <div v-if="section.warnings.length" class="quote-warning-list"><p v-for="warning in section.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
 
     <section v-if="importPreview && editable" class="quote-import-preview">
-      <header><div><FileSpreadsheet /><span><strong>{{ importMeta?.label }} · {{ importPreview.source_file_name }}</strong><small>{{ importPreview.sheet_name }} · 表头第 {{ importPreview.header_row }} 行 · 识别 {{ importPreview.row_count }} 行 · 预览不会修改正式数据</small></span></div><button type="button" aria-label="关闭导入预览" @click="importPreview = undefined"><XCircle /></button></header>
+      <header><div><FileSpreadsheet /><span><strong>{{ importOption(importPreview.import_type)?.label }} · {{ importPreview.source_file_name }}</strong><small>{{ importPreview.sheet_name }} · 表头第 {{ importPreview.header_row }} 行 · 识别 {{ importPreview.row_count }} 行 · 预览不会修改正式数据</small></span></div><button type="button" aria-label="关闭导入预览" @click="importPreview = undefined"><XCircle /></button></header>
       <div class="preview-metrics"><span>当前 {{ Number(importPreview.diff_summary.existing_rows ?? 0) }} 行</span><span>导入 {{ Number(importPreview.diff_summary.imported_rows ?? 0) }} 行</span><span>追加后 {{ Number(importPreview.diff_summary.append_result_rows ?? 0) }} 行</span><span>替换后 {{ Number(importPreview.diff_summary.replace_result_rows ?? 0) }} 行</span></div>
       <div v-if="importPreview.warnings.length" class="preview-warnings"><p v-for="warning in importPreview.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
       <footer><label><input v-model="importMode" type="radio" value="append">追加</label><label><input v-model="importMode" type="radio" value="replace">替换</label><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable" @click="confirmImport">确认{{ importMode === 'append' ? '追加' : '替换' }}</button></footer>
     </section>
 
-    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :customer="quote.customer" :disabled="!editable" />
+    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :disabled="!editable" />
 
     <section class="calculation-snapshot"><header><strong>服务端权威计算快照</strong><span>保存后由 {{ quote.formulaVersion }} 重算；前端不生成正式金额</span></header><div class="snapshot-table-scroll"><table><thead><tr><th>项目</th><th>类型</th><th>公式口径</th><th>金额 HKD</th></tr></thead><tbody><tr v-for="line in section.lines" :key="line.id"><td>{{ line.item }}</td><td>{{ line.specification }}</td><td>{{ line.formula }}</td><td>{{ line.amountHkd.toFixed(4) }}</td></tr><tr v-if="!section.lines.length"><td colspan="4" class="empty">保存有效明细后显示服务端计算结果</td></tr></tbody><tfoot><tr><td colspan="3">{{ section.label }}权威小计</td><td>HKD {{ section.totalHkd.toFixed(4) }}</td></tr></tfoot></table></div></section>
 

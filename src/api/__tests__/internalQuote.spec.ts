@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createInternalQuoteApi, type InternalQuoteHttpClient } from '@/api/internalQuote'
+import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 function client() {
   return {
@@ -37,13 +38,14 @@ describe('internal quote API adapter', () => {
       factory_id: 'huaxing', workshop_code: 'huaxing-workshop', workshop_name: '华兴',
       quote_no: 'IQ-1', product_name: '产品', customer: 'Disney', qty: 1000,
       version_label: 'V1', initiator_department: 'engineering' as const,
-      business_owner_id: 'owner-1', business_owner_name: '负责人', target_date: '', remark: '',
+      business_owner_id: 'owner-1', business_owner_name: '负责人', target_customer_price: 'USD 3.50', target_date: '', remark: '',
+      participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] as InternalQuoteSectionCode[],
     }
 
     await api.create(createPayload)
     await api.clone('quote-1', {
       quote_no: 'IQ-2', version_label: 'V2', business_owner_id: 'owner-1',
-      business_owner_name: '负责人', target_date: '', remark: '',
+      business_owner_name: '负责人', target_customer_price: 'USD 3.50', target_date: '', remark: '',
     })
     await api.get('quote-1')
     await api.getTimeline('quote-1')
@@ -74,6 +76,8 @@ describe('internal quote API adapter', () => {
     await api.reviewSection('quote-1', 'engineering', 6, 'reject', '资料不全')
     await api.requestSectionNa('quote-1', 'engineering', 7, '无需工程')
     await api.reopenSection('quote-1', 'engineering', 8, '成本变化')
+    await api.addParticipation('quote-1', 3, ['painting', 'sewing'])
+    await api.updateReferenceFx('quote-1', 3, '0.9', '7.9')
     await api.previewImport('quote-1', 'mold', file)
     await api.confirmImport('quote-1', 'batch-1', 9, 'replace')
     await api.uploadAttachment('quote-1', 'engineering', file)
@@ -84,11 +88,34 @@ describe('internal quote API adapter', () => {
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering', { revision: 4, payload: { molds: [] }, reason: '修正' })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/submit', { revision: 5 })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/review', { revision: 6, decision: 'reject', reason: '资料不全' })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation', { revision: 3, add_sections: ['painting', 'sewing'] })
+    expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/reference-snapshot/fx', { revision: 3, rmb_hkd: '0.9', hkd_usd: '7.9' })
     const formCalls = http.post.mock.calls.filter(([, data]) => data instanceof FormData)
     expect(formCalls).toHaveLength(2)
     expect((formCalls[0][1] as FormData).get('file')).toBe(file)
     expect((formCalls[1][1] as FormData).get('department')).toBe('engineering')
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/final-submit', { revision: 3 })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/final-review', { revision: 4, decision: 'approve', reason: '' })
+  })
+
+  it('uses the factory-scoped pricing-baseline read and revision-safe update endpoints', async () => {
+    const http = client()
+    const api = createInternalQuoteApi(http)
+    const payload = {
+      revision: 3,
+      workshop_name: '华兴',
+      material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '8.50' }],
+      machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '940' }],
+    }
+
+    await api.getPricingBaseline('huaxing', 'huaxing-workshop')
+    await api.updatePricingBaseline('huaxing', 'huaxing-workshop', payload)
+
+    expect(http.get).toHaveBeenCalledWith('/internal-quotes/pricing-baseline', {
+      params: { factory_id: 'huaxing', workshop_code: 'huaxing-workshop' },
+    })
+    expect(http.put).toHaveBeenCalledWith('/internal-quotes/pricing-baseline', payload, {
+      params: { factory_id: 'huaxing', workshop_code: 'huaxing-workshop' },
+    })
   })
 })

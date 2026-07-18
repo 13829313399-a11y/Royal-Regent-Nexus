@@ -11,16 +11,19 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Settings2,
   ShieldCheck,
   TriangleAlert,
 } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import InternalQuoteCreateDialog from './InternalQuoteCreateDialog.vue'
-import { useAuthStore } from '@/stores/auth'
+import InternalQuoteBaselineDialog from './InternalQuoteBaselineDialog.vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
+import type { InternalQuotePricingBaselineUpdateRequest } from '@/api/internalQuote'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import type { InternalQuote, InternalQuoteCreatePayload, InternalQuoteStatus } from '@/types/internalQuoteDesk'
 
@@ -35,6 +38,8 @@ const createDialogOpen = ref(false)
 const dialogMode = ref<'create' | 'clone'>('create')
 const cloneSource = ref<InternalQuote>()
 const dialogError = ref('')
+const baselineDialogOpen = ref(false)
+const baselineDialogError = ref('')
 const activeFactory = computed(() => (
   appStore.activeFactory.id === 'group'
     ? appStore.activeProductionFactory
@@ -42,6 +47,9 @@ const activeFactory = computed(() => (
 ))
 const activeFactoryId = computed(() => activeFactory.value?.id ?? 'huaxing')
 const activeFactoryName = computed(() => activeFactory.value?.name ?? '华兴')
+const activeWorkshopCode = computed(() => `${activeFactoryId.value}-workshop`)
+const canViewPricingBaseline = computed(() => authStore.can('internal_quote:baseline_read', activeFactoryId.value, 'sales-business'))
+const canManagePricingBaseline = computed(() => authStore.can('internal_quote:baseline_manage', activeFactoryId.value, 'sales-business'))
 const initiatorDepartments = ['sales-business', 'engineering'] as const
 const allowedInitiatorDepartments = computed(() => initiatorDepartments.filter((department) => (
   authStore.can('internal_quote:create', activeFactoryId.value, department)
@@ -89,7 +97,7 @@ const filteredQuotes = computed(() => {
 
 const kpis = computed(() => [
   { label: '协作中', value: quoteStore.quotes.filter((quote) => ['drafting', 'pending_review'].includes(quote.status)).length, detail: '草稿与分段待审', icon: Clock3, tone: 'blue' },
-  { label: isCurrentFactoryReadOnly.value ? '待审核' : '待我审核', value: quoteStore.quotes.reduce((sum, quote) => sum + quote.sections.filter((section) => ['pending_review', 'na_pending'].includes(section.status)).length, 0), detail: isCurrentFactoryReadOnly.value ? (isCurrentFactoryForeign.value ? '跨厂只读进度' : '只读进度') : '按责任分段进入', icon: FileCheck2, tone: 'amber' },
+  { label: isCurrentFactoryReadOnly.value ? '待审核' : '待我审核', value: quoteStore.quotes.reduce((sum, quote) => sum + quote.sections.filter((section) => section.isRequired && ['pending_review', 'na_pending'].includes(section.status)).length, 0), detail: isCurrentFactoryReadOnly.value ? (isCurrentFactoryForeign.value ? '跨厂只读进度' : '只读进度') : '按参与分段进入', icon: FileCheck2, tone: 'amber' },
   { label: '退回 / 重开', value: quoteStore.quotes.filter((quote) => quote.status === 'rejected').length, detail: '需要补充原因或资料', icon: TriangleAlert, tone: 'red' },
   { label: '待最终放行', value: quoteStore.quotes.filter((quote) => ['fully_approved', 'final_pending'].includes(quote.status)).length, detail: '业务部两人复核', icon: CheckCircle2, tone: 'teal' },
   { label: '已导出', value: quoteStore.quotes.filter((quote) => quote.status === 'exported').length, detail: '受控 XLSX 已留存', icon: CircleDollarSign, tone: 'green' },
@@ -152,7 +160,31 @@ function openQuote(quote: InternalQuote) {
 }
 
 function approvedCount(quote: InternalQuote) {
-  return quote.sections.filter((section) => ['approved', 'not_applicable'].includes(section.status)).length
+  return quote.sections.filter((section) => section.isRequired && ['approved', 'not_applicable'].includes(section.status)).length
+}
+
+async function openPricingBaseline() {
+  baselineDialogOpen.value = true
+  baselineDialogError.value = ''
+  try {
+    await quoteStore.loadPricingBaseline(activeFactoryId.value, activeWorkshopCode.value)
+  } catch (error) {
+    baselineDialogError.value = getApiErrorMessage(error)
+  }
+}
+
+async function savePricingBaseline(payload: InternalQuotePricingBaselineUpdateRequest) {
+  baselineDialogError.value = ''
+  try {
+    await quoteStore.updatePricingBaseline(activeFactoryId.value, activeWorkshopCode.value, payload)
+    baselineDialogOpen.value = false
+  } catch (error) {
+    baselineDialogError.value = getApiErrorMessage(error)
+  }
+}
+
+function requiredCount(quote: InternalQuote) {
+  return quote.sections.filter((section) => section.isRequired).length
 }
 
 function clearFilters() {
@@ -183,17 +215,16 @@ watch(activeFactoryId, () => {
       <div>
         <div class="quote-eyebrow"><span />业务部 · 内部成本协作</div>
         <h1>内部报价台</h1>
-        <p>业务部与工程部均可新建或复制报价，八个责任分段协同核价，主管逐段审核后由业务部最终放行。</p>
+        <p>业务部与工程部均可新建或复制报价，业务部、工程部、装配部固定参与，其余部门按项目需要选择。</p>
       </div>
-      <button
-        type="button"
-        class="quote-new-button"
-        :disabled="!canOpenCreate"
-        :title="canOpenCreate ? '新建内部报价' : createUnavailableMessage"
-        @click="openCreate"
-      >
-        <Plus aria-hidden="true" />新建内部报价
-      </button>
+      <div class="quote-heading-actions">
+        <button v-if="canViewPricingBaseline" type="button" class="quote-baseline-button" :disabled="quoteStore.baselineLoading" @click="openPricingBaseline">
+          <Settings2 aria-hidden="true" />调整报价基数
+        </button>
+        <button type="button" class="quote-new-button" :disabled="!canOpenCreate" :title="canOpenCreate ? '新建内部报价' : createUnavailableMessage" @click="openCreate">
+          <Plus aria-hidden="true" />新建内部报价
+        </button>
+      </div>
     </section>
 
     <div class="quote-stage-notice">
@@ -249,7 +280,7 @@ watch(activeFactoryId, () => {
               <td><span class="quote-version">{{ quote.versionLabel }}</span></td>
               <td><span class="quote-status" :class="`tone-${statusMeta[quote.status].tone}`"><i />{{ statusMeta[quote.status].label }}</span></td>
               <td>
-                <div class="quote-progress-cell"><div><span :style="{ width: `${approvedCount(quote) / quote.sections.length * 100}%` }" /></div><strong>{{ approvedCount(quote) }}/{{ quote.sections.length }}</strong></div>
+                <div class="quote-progress-cell"><div><span :style="{ width: `${requiredCount(quote) ? approvedCount(quote) / requiredCount(quote) * 100 : 0}%` }" /></div><strong>{{ approvedCount(quote) }}/{{ requiredCount(quote) }}</strong></div>
               </td>
               <td><span class="quote-date">{{ quote.updatedAt }}</span></td>
               <td>
@@ -290,11 +321,21 @@ watch(activeFactoryId, () => {
       @close="createDialogOpen = false"
       @confirm="handleConfirm"
     />
+    <InternalQuoteBaselineDialog
+      :open="baselineDialogOpen"
+      :baseline="quoteStore.pricingBaseline"
+      :busy="quoteStore.baselineLoading || quoteStore.baselineSaving"
+      :can-edit="canManagePricingBaseline"
+      :external-error="baselineDialogError"
+      @close="baselineDialogOpen = false"
+      @save="savePricingBaseline"
+    />
   </div>
 </template>
 
 <style scoped>
-.quote-home{display:grid;gap:18px;padding-bottom:28px}.quote-home-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-top:5px}.quote-home-heading h1{margin:6px 0 0;color:#0f172a;font-size:clamp(30px,3vw,46px);font-weight:950;letter-spacing:-.045em}.quote-home-heading p{max-width:820px;margin:10px 0 0;color:#64748b;font-size:13px;line-height:1.75}.quote-eyebrow{display:flex;align-items:center;gap:7px;color:#0f766e;font-size:11px;font-weight:900;letter-spacing:.08em}.quote-eyebrow span{width:22px;height:2px;border-radius:2px;background:#0d9488}.quote-new-button{display:inline-flex;min-height:44px;flex:0 0 auto;align-items:center;gap:8px;border:1px solid #0f766e;border-radius:11px;background:#0f766e;padding:0 18px;color:#fff;font-size:13px;font-weight:900;box-shadow:0 10px 24px rgb(15 118 110/.2)}.quote-new-button:hover{background:#115e59}.quote-new-button:disabled{cursor:not-allowed;border-color:#cbd5e1;background:#e2e8f0;color:#64748b;box-shadow:none}.quote-new-button svg{width:18px}
+.quote-home{display:grid;gap:18px;padding-bottom:28px}.quote-home-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-top:5px}.quote-home-heading h1{margin:6px 0 0;color:#0f172a;font-size:clamp(30px,3vw,46px);font-weight:950;letter-spacing:-.045em}.quote-home-heading p{max-width:820px;margin:10px 0 0;color:#64748b;font-size:13px;line-height:1.75}.quote-eyebrow{display:flex;align-items:center;gap:7px;color:#0f766e;font-size:11px;font-weight:900;letter-spacing:.08em}.quote-eyebrow span{width:22px;height:2px;border-radius:2px;background:#0d9488}.quote-heading-actions{display:flex;flex:0 0 auto;align-items:center;gap:10px}.quote-new-button,.quote-baseline-button{display:inline-flex;min-height:44px;align-items:center;gap:8px;border-radius:11px;padding:0 18px;font-size:13px;font-weight:900}.quote-new-button{border:1px solid #0f766e;background:#0f766e;color:#fff;box-shadow:0 10px 24px rgb(15 118 110/.2)}.quote-new-button:hover{background:#115e59}.quote-baseline-button{border:1px solid #99f6e4;background:#fff;color:#0f766e;box-shadow:0 8px 20px rgb(15 118 110/.08)}.quote-baseline-button:hover{border-color:#2dd4bf;background:#f0fdfa}.quote-new-button svg,.quote-baseline-button svg{width:18px}
+.quote-home{display:grid;gap:18px;padding-bottom:28px}.quote-home-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-top:5px}.quote-home-heading h1{margin:6px 0 0;color:#0f172a;font-size:clamp(30px,3vw,46px);font-weight:950;letter-spacing:-.045em}.quote-home-heading p{max-width:820px;margin:10px 0 0;color:#64748b;font-size:13px;line-height:1.75}.quote-eyebrow{display:flex;align-items:center;gap:7px;color:#0f766e;font-size:11px;font-weight:900;letter-spacing:.08em}.quote-eyebrow span{width:22px;height:2px;border-radius:2px;background:#0d9488}.quote-heading-actions{display:flex;flex:0 0 auto;align-items:center;gap:10px}.quote-new-button,.quote-baseline-button{display:inline-flex;min-height:44px;align-items:center;gap:8px;border-radius:11px;padding:0 18px;font-size:13px;font-weight:900}.quote-new-button{border:1px solid #0f766e;background:#0f766e;color:#fff;box-shadow:0 10px 24px rgb(15 118 110/.2)}.quote-new-button:hover{background:#115e59}.quote-baseline-button{border:1px solid #99f6e4;background:#fff;color:#0f766e;box-shadow:0 8px 20px rgb(15 118 110/.08)}.quote-baseline-button:hover{border-color:#2dd4bf;background:#f0fdfa}.quote-new-button:disabled,.quote-baseline-button:disabled{cursor:not-allowed;border-color:#cbd5e1;background:#e2e8f0;color:#64748b;box-shadow:none}.quote-new-button svg,.quote-baseline-button svg{width:18px}
 .quote-stage-notice{display:flex;align-items:center;gap:8px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:8px 11px;color:#0369a1;font-size:11px}.quote-stage-notice span{border-radius:999px;background:#0284c7;padding:3px 7px;color:#fff;font-size:9px;font-weight:900;letter-spacing:.08em}
 .quote-readonly-notice{display:flex;align-items:flex-start;gap:10px;border:1px solid #99f6e4;border-radius:11px;background:#f0fdfa;padding:11px 13px;color:#115e59}.quote-readonly-notice>svg{width:18px;flex:0 0 auto;margin-top:1px}.quote-readonly-notice>div{display:grid;gap:3px}.quote-readonly-notice strong{font-size:12px}.quote-readonly-notice span{color:#0f766e;font-size:11px;line-height:1.55}
 .quote-page-message{margin:0;border-radius:9px;padding:9px 12px;font-size:11px}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}
@@ -302,5 +343,5 @@ watch(activeFactoryId, () => {
 .quote-list-panel{overflow:hidden;border:1px solid #dbe5ea;border-radius:14px;background:#fff;box-shadow:0 16px 38px rgb(15 23 42/.05)}.quote-list-toolbar{display:flex;align-items:center;gap:14px;padding:13px;border-bottom:1px solid #e2e8f0}.quote-search-box{display:flex;min-width:280px;flex:1;align-items:center;gap:8px;border:1px solid #dbe5ea;border-radius:9px;background:#f8fafc;padding:0 11px;color:#94a3b8}.quote-search-box:focus-within{border-color:#14b8a6;background:#fff;box-shadow:0 0 0 3px rgb(20 184 166/.08)}.quote-search-box svg{width:16px}.quote-search-box input{min-width:0;flex:1;border:0;background:transparent;padding:9px 0;color:#0f172a;font-size:12px;outline:0}.quote-filters{display:flex;align-items:center;gap:8px;color:#94a3b8}.quote-filters>svg{width:16px}.quote-filters select{height:36px;border:1px solid #dbe5ea;border-radius:9px;background:#fff;padding:0 28px 0 10px;color:#475569;font-size:11px;font-weight:700}.quote-clear-filter{display:grid;width:36px;height:36px;place-items:center;border:1px solid #dbe5ea;border-radius:9px;background:#fff;color:#64748b}.quote-clear-filter:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-clear-filter svg{width:15px}
 .quote-table-scroll{overflow:auto}.quote-table{width:100%;min-width:1080px;border-collapse:collapse;text-align:left}.quote-table th{background:#f1f5f9;padding:10px 12px;color:#64748b;font-size:9px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.quote-table td{border-top:1px solid #eef2f6;padding:11px 12px;color:#334155;font-size:11px;vertical-align:middle}.quote-table tbody tr{transition:background .15s}.quote-table tbody tr:hover{background:#f8fafc}.quote-table td:nth-child(2) strong{display:block;color:#0f172a;font-size:12px}.quote-table td:nth-child(2) span,.quote-table small{display:block;margin-top:3px;color:#94a3b8;font-size:10px}.quote-number{border:0;background:transparent;padding:0;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;font-weight:900}.quote-number:hover{text-decoration:underline}.quote-initiator,.quote-version{display:inline-flex;border-radius:999px;background:#f1f5f9;padding:4px 7px;color:#475569;font-size:9px;font-weight:900}.quote-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:color-mix(in srgb,var(--tone) 10%,white);padding:5px 8px;color:var(--tone);font-size:9px;font-weight:900;white-space:nowrap}.quote-status i{width:6px;height:6px;border-radius:99px;background:currentColor}.quote-progress-cell{display:flex;min-width:120px;align-items:center;gap:8px}.quote-progress-cell>div{height:6px;flex:1;overflow:hidden;border-radius:99px;background:#e2e8f0}.quote-progress-cell>div span{display:block;height:100%;border-radius:99px;background:#0d9488}.quote-progress-cell strong{color:#475569;font-size:10px}.quote-date{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;white-space:nowrap}.quote-row-actions{display:flex;justify-content:flex-end;gap:5px}.quote-row-actions button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b}.quote-row-actions button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-row-actions button:disabled{cursor:not-allowed;border-color:#e2e8f0;background:#f8fafc;color:#cbd5e1}.quote-row-actions button.primary{border-color:#0f766e;background:#0f766e;color:#fff}.quote-row-actions svg{width:14px}.quote-empty{padding:40px!important;text-align:center;color:#94a3b8!important}.quote-table-footer{display:flex;justify-content:space-between;gap:12px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 13px;color:#64748b;font-size:10px}
 @media(max-width:1100px){.quote-kpi-grid{grid-template-columns:repeat(3,1fr)}.quote-list-toolbar{align-items:stretch;flex-direction:column}.quote-filters{flex-wrap:wrap}.quote-filters select{flex:1}.quote-clear-filter{flex:0 0 auto}}
-@media(max-width:700px){.quote-home-heading{align-items:stretch;flex-direction:column}.quote-new-button{justify-content:center}.quote-kpi-grid{grid-template-columns:repeat(2,1fr)}.quote-search-box{min-width:0}.quote-filters>svg{display:none}.quote-table-footer{flex-direction:column}.quote-stage-notice{align-items:flex-start}}
+@media(max-width:700px){.quote-home-heading{align-items:stretch;flex-direction:column}.quote-heading-actions{display:grid;grid-template-columns:1fr 1fr}.quote-new-button,.quote-baseline-button{justify-content:center}.quote-kpi-grid{grid-template-columns:repeat(2,1fr)}.quote-search-box{min-width:0}.quote-filters>svg{display:none}.quote-table-footer{flex-direction:column}.quote-stage-notice{align-items:flex-start}}
 </style>
