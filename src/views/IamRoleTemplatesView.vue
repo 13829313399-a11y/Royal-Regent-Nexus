@@ -30,10 +30,12 @@ import {
   roleScopeModeLabel,
 } from '@/components/iam/permissionCatalogLabels'
 import { getApiErrorMessage } from '@/lib/http'
+import { useAuthStore } from '@/stores/auth'
 
 type PermissionViewMode = 'all' | 'configured'
 type DisplayPermission = PermissionCatalogItem & { catalog_missing?: boolean }
 
+const authStore = useAuthStore()
 const roles = ref<RoleSummary[]>([])
 const permissions = ref<PermissionCatalogItem[]>([])
 const selectedRoleId = ref('')
@@ -57,6 +59,7 @@ const isRoleLoading = ref(false)
 const errorMessage = ref('')
 let roleAccessRequestSequence = 0
 
+const canReadPermissionCatalog = computed(() => authStore.can('system:permission_catalog_read'))
 const configuredPermissionCodes = computed(() => new Set(roleAccess.value?.permission_codes ?? []))
 const configuredPermissionCount = computed(() => roleAccess.value?.permission_codes.length ?? 0)
 const isGeneralManager = computed(() => roleAccess.value?.id === 'position_general_manager')
@@ -271,6 +274,7 @@ function handleWindowKeydown(event: KeyboardEvent) {
 }
 
 async function loadRoleAccess(roleId: string, resetPermissionScroll = true) {
+  if (!canReadPermissionCatalog.value) return false
   const requestSequence = ++roleAccessRequestSequence
   selectedRoleId.value = roleId
   isRoleLoading.value = true
@@ -310,6 +314,16 @@ async function handleMobileRoleSelect(event: Event) {
 }
 
 async function loadData() {
+  if (!canReadPermissionCatalog.value) {
+    roles.value = []
+    permissions.value = []
+    selectedRoleId.value = ''
+    roleAccess.value = null
+    isLoading.value = false
+    isRoleLoading.value = false
+    errorMessage.value = ''
+    return
+  }
   isLoading.value = true
   errorMessage.value = ''
   try {
@@ -344,7 +358,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleWindowKeydown)
       subtitle="查看系统内置职位的权限范围与定义状态。"
     />
 
-    <div data-testid="role-viewer-workspace" class="iam-workspace mx-auto grid min-w-0 max-w-[1600px] gap-4 px-4 py-4 sm:px-5 xl:w-full xl:grid-cols-[280px_minmax(0,1fr)] xl:px-6">
+    <section v-if="!canReadPermissionCatalog" data-testid="role-catalog-protected-notice" role="status" class="mx-auto mt-5 flex w-[calc(100%-2rem)] max-w-[1568px] items-start gap-3 rounded-[14px] border border-slate-300 bg-white p-5 text-sm text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><LockKeyhole class="size-5" aria-hidden="true" /></span>
+      <div>
+        <h2 class="font-bold text-slate-950">页面可访问 · 权限目录受保护</h2>
+        <p class="mt-1 leading-6 text-slate-500">当前账号没有权限目录查看权限。内置职位及其权限定义不会在此模式下读取或展示；此页面本身没有在线修改入口。</p>
+      </div>
+    </section>
+
+    <div v-else data-testid="role-viewer-workspace" class="iam-workspace mx-auto grid min-w-0 max-w-[1600px] gap-4 px-4 py-4 sm:px-5 xl:w-full xl:grid-cols-[280px_minmax(0,1fr)] xl:px-6">
       <aside data-testid="role-directory-panel" class="iam-directory-panel hidden min-w-0 overflow-hidden rounded-[14px] border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_4px_12px_rgba(15,23,42,0.03)] xl:flex xl:flex-col">
         <div class="shrink-0 border-b border-slate-100 p-3">
           <div class="flex items-center justify-between gap-3 px-1 py-1">

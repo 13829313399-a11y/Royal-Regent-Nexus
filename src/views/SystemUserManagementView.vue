@@ -64,6 +64,9 @@ const actionKey = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 
+const canManageUsers = computed(() => authStore.can('system:user_manage'))
+const currentAccountName = computed(() => authStore.currentUser?.display_name?.trim() || authStore.currentUser?.username || '当前账号')
+const currentAccountCode = computed(() => authStore.currentUser?.username || '已登录')
 const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active'))
 const pendingUsers = computed(() => users.value.filter((user) => user.status === 'pending'))
@@ -263,7 +266,26 @@ function ensureSelectedRequest() {
   }
 }
 
+function ensureUserManagementPermission() {
+  if (canManageUsers.value) return true
+  errorMessage.value = '当前账号没有账号管理权限，无法执行该操作。'
+  successMessage.value = ''
+  return false
+}
+
 async function loadData() {
+  if (!canManageUsers.value) {
+    requests.value = []
+    users.value = []
+    systemPositions.value = []
+    systemNotifications.value = []
+    selectedRequestId.value = ''
+    isLoading.value = false
+    actionKey.value = ''
+    errorMessage.value = ''
+    successMessage.value = ''
+    return
+  }
   isLoading.value = true
   errorMessage.value = ''
   try {
@@ -287,6 +309,7 @@ async function loadData() {
 }
 
 async function approveRequest(request: RegistrationRequestResponse) {
+  if (!ensureUserManagementPermission()) return
   const source = approvalProfile(request)
   const profile: RegistrationProfileRequest = {
     display_name: source.display_name.trim(),
@@ -342,6 +365,7 @@ async function approveRequest(request: RegistrationRequestResponse) {
 }
 
 async function rejectRequest(request: RegistrationRequestResponse) {
+  if (!ensureUserManagementPermission()) return
   const comment = (rejectComments.value[request.id] || approvalComments.value[request.id] || '').trim()
   if (!comment) {
     errorMessage.value = '拒绝申请时需要填写原因'
@@ -362,6 +386,7 @@ async function rejectRequest(request: RegistrationRequestResponse) {
 }
 
 async function updateStatus(user: UserResponse, status: 'active' | 'suspended') {
+  if (!ensureUserManagementPermission()) return
   actionKey.value = `status:${user.id}:${status}`
   errorMessage.value = ''
   successMessage.value = ''
@@ -377,6 +402,7 @@ async function updateStatus(user: UserResponse, status: 'active' | 'suspended') 
 }
 
 async function resetPasswordFromNotification(notification: SystemNotificationResponse) {
+  if (!ensureUserManagementPermission()) return
   const user = resetRequestUser(notification)
   if (!user) {
     errorMessage.value = '未匹配到系统账号，请人工核验后再处理'
@@ -400,6 +426,7 @@ async function resetPasswordFromNotification(notification: SystemNotificationRes
 }
 
 async function markPasswordResetHandled(notification: SystemNotificationResponse) {
+  if (!ensureUserManagementPermission()) return
   actionKey.value = `reset-handled:${notification.id}`
   errorMessage.value = ''
   successMessage.value = ''
@@ -443,38 +470,45 @@ onMounted(() => {
         </div>
         <div class="topbar-actions">
           <nav class="view-tabs" aria-label="账号管理视图">
-            <button type="button" :class="{ active: activeTab === 'pending' }" @click="activeTab = 'pending'">
+            <button type="button" :class="{ active: activeTab === 'pending' }" :disabled="!canManageUsers" @click="activeTab = 'pending'">
               待审批
               <span>{{ requests.length }}</span>
             </button>
-            <button type="button" :class="{ active: activeTab === 'password-reset' }" @click="activeTab = 'password-reset'">
+            <button type="button" :class="{ active: activeTab === 'password-reset' }" :disabled="!canManageUsers" @click="activeTab = 'password-reset'">
               密码重置
               <span>{{ passwordResetRequests.length }}</span>
             </button>
-            <button type="button" :class="{ active: activeTab === 'users' }" @click="activeTab = 'users'">
+            <button type="button" :class="{ active: activeTab === 'users' }" :disabled="!canManageUsers" @click="activeTab = 'users'">
               用户列表
             </button>
           </nav>
           <RouterLink
-            v-if="authStore.can('system:permission_catalog_read')"
             class="ghost-link iam-console-entry"
             to="/system/iam/roles"
           >
             <SlidersHorizontal class="size-4" aria-hidden="true" />
             内置职位权限
           </RouterLink>
-          <button type="button" class="ghost-link" :disabled="isLoading" @click="loadData">
+          <button type="button" class="ghost-link" :disabled="!canManageUsers || isLoading" @click="loadData">
             <RefreshCw class="size-4" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
             刷新
           </button>
           <div class="admin">
-            <div class="t">系统管理员<small>集团数字化中心 · 超级管理员</small></div>
-            <span class="av">管</span>
+            <div class="t">{{ currentAccountName }}<small>{{ currentAccountCode }} · {{ canManageUsers ? '账号管理' : '只读访问' }}</small></div>
+            <span class="av">{{ avatarText(currentAccountName, currentAccountCode) }}</span>
           </div>
         </div>
       </header>
 
-      <div class="stats">
+      <section v-if="!canManageUsers" class="protected-access-notice" data-testid="system-users-protected-notice" role="status">
+        <span class="protected-access-icon"><ShieldCheck class="size-5" aria-hidden="true" /></span>
+        <div>
+          <strong>页面可访问 · 敏感账号资料受保护</strong>
+          <p>当前账号没有账号管理权限。申请、用户、审批及密码重置明细不会在此模式下读取或展示，也不能执行任何账号变更。</p>
+        </div>
+      </section>
+
+      <div v-if="canManageUsers" class="stats">
         <article class="stat">
           <div class="row">
             <span class="ic amber"><Clock3 class="size-5" aria-hidden="true" /></span>
@@ -518,7 +552,7 @@ onMounted(() => {
         <span>{{ successMessage }}</span>
       </div>
 
-    <section v-if="activeTab === 'pending'" class="grid approval-workspace">
+    <section v-if="canManageUsers && activeTab === 'pending'" class="grid approval-workspace">
       <div v-if="isLoading" class="empty-card">正在加载账号申请...</div>
       <div v-else-if="!requests.length" class="empty-card">当前没有待审批账号。</div>
       <template v-else>
@@ -692,7 +726,7 @@ onMounted(() => {
       </template>
     </section>
 
-    <section v-else-if="activeTab === 'password-reset'" class="panel">
+    <section v-else-if="canManageUsers && activeTab === 'password-reset'" class="panel">
       <div v-if="isLoading" class="empty-card">正在加载密码重置申请...</div>
       <div v-else-if="!passwordResetRequests.length" class="empty-card">当前没有待处理密码重置申请。</div>
       <div v-else class="request-grid">
@@ -766,7 +800,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <section v-else class="panel users-panel">
+    <section v-else-if="canManageUsers" class="panel users-panel">
       <div class="table-tools">
         <label class="search-box">
           <Search class="size-4" aria-hidden="true" />
@@ -1061,6 +1095,42 @@ onMounted(() => {
   border: 1px solid #a7f3d0;
   background: #ecfdf5;
   color: #047857;
+}
+
+.protected-access-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #fff;
+  padding: 18px 20px;
+  color: #334155;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.protected-access-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  border-radius: 11px;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.protected-access-notice strong {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.protected-access-notice p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .tabs {

@@ -77,4 +77,14 @@ describe('SystemUserManagementView source contract', () => {
       expect(source).toContain(requiredSource)
     }
   })
+
+  it('degrades to a protected read-only page without relying on backend 403 responses', () => {
+    expect(source).toContain("const canManageUsers = computed(() => authStore.can('system:user_manage'))")
+    expect(source).toContain('data-testid="system-users-protected-notice"')
+    expect(source).toContain('页面可访问 · 敏感账号资料受保护')
+    expect(source).toContain("canManageUsers ? '账号管理' : '只读访问'")
+    expect(source).not.toContain("v-if=\"authStore.can('system:permission_catalog_read')\"")
+    expect(source.match(/if \(!ensureUserManagementPermission\(\)\) return/g)).toHaveLength(5)
+    expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canManageUsers\.value\) \{[\s\S]*?return\s+\}/)
+  })
 })

@@ -78,4 +78,14 @@ describe('UserAccessManagementView contract', () => {
     expect(source).toContain('aria-label="选择新的内置权限职位"')
     expect(source).toContain('role="dialog"')
   })
+
+  it('uses a protected read-only fallback and rechecks every local change handler', () => {
+    expect(source).toContain("const canManageAccess = computed(() => authStore.can('system:access_manage'))")
+    expect(source).toContain('data-testid="user-access-protected-notice"')
+    expect(source).toContain('页面可访问 · 权限资料受保护')
+    expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canManageAccess\.value\) \{[\s\S]*?return\s+\}/)
+    expect(source.match(/if \(!ensureAccessManagementPermission\(\)\) return/g)).toHaveLength(4)
+    expect(source).toContain(':disabled="!canManageAccess || isPreviewing || isCommitting"')
+    expect(source).toContain('v-if="canManageAccess && preview"')
+  })
 })

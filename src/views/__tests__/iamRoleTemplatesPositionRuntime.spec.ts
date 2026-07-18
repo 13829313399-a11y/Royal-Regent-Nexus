@@ -5,6 +5,11 @@ import IamRoleTemplatesView from '../IamRoleTemplatesView.vue'
 const listSystemPositionsMock = vi.hoisted(() => vi.fn())
 const listPermissionsMock = vi.hoisted(() => vi.fn())
 const getRoleAccessMock = vi.hoisted(() => vi.fn())
+const canMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ can: canMock }),
+}))
 
 vi.mock('@/api/iam', () => ({
   iamApi: {
@@ -69,6 +74,7 @@ function mountView() {
 
 describe('IamRoleTemplatesView fixed position viewer', () => {
   beforeEach(() => {
+    canMock.mockReset().mockReturnValue(true)
     listSystemPositionsMock.mockReset().mockResolvedValue([generalManagerRole, engineerRole])
     listPermissionsMock.mockReset().mockResolvedValue([
       readPermission,
@@ -80,6 +86,20 @@ describe('IamRoleTemplatesView fixed position viewer', () => {
         ? roleAccess(generalManagerRole, ['molding_sample:read', 'molding_sample:create'])
         : roleAccess()
     ))
+  })
+
+  it('keeps the page available without requesting the protected catalog when read permission is denied', async () => {
+    canMock.mockReturnValue(false)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="role-catalog-protected-notice"]').text()).toContain('权限目录受保护')
+    expect(wrapper.text()).toContain('此页面本身没有在线修改入口')
+    expect(listSystemPositionsMock).not.toHaveBeenCalled()
+    expect(listPermissionsMock).not.toHaveBeenCalled()
+    expect(getRoleAccessMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="role-viewer-workspace"]').exists()).toBe(false)
   })
 
   it('loads the complete catalog and renders fixed metadata without any edit control', async () => {
