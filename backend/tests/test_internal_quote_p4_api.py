@@ -5,7 +5,7 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from test_internal_quote_api import create_payload, login, logout, make_client
+from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
 
 
 def mark_all_sections_not_applicable(quote_id: str) -> None:
@@ -22,6 +22,69 @@ def mark_all_sections_not_applicable(quote_id: str) -> None:
         db.commit()
 
 
+def mark_required_sections_not_applicable(quote_id: str) -> None:
+    db_module = importlib.import_module("app.db")
+    quote_models = importlib.import_module("app.models.internal_quote")
+    with db_module.SessionLocal() as db:
+        quote = db.get(quote_models.InternalQuote, quote_id)
+        sections = db.query(quote_models.InternalQuoteSection).filter_by(quote_id=quote_id).all()
+        for section in sections:
+            if not section.is_required:
+                continue
+            section.status = "not_applicable"
+            section.calculation_status = "not_applicable"
+            section.dependency_status = "current"
+        quote.status = "ready_for_final_review"
+        db.commit()
+
+
+def test_p4_release_ignores_inactive_optional_sections_and_marks_them_in_structured_data(monkeypatch):
+    with make_client(monkeypatch) as client:
+        submitter = login(
+            client,
+            "iq_p4_optional_submitter",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        payload = create_payload(suffix="P4-OPTIONAL")
+        payload["business_owner_id"] = submitter["id"]
+        payload["business_owner_name"] = submitter["display_name"]
+        created = client.post("/api/internal-quotes", json=payload)
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        mark_required_sections_not_applicable(quote_id)
+
+        submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/final-submit",
+            json={"revision": 1},
+        )
+        assert submitted.status_code == 200, submitted.text
+        logout(client)
+        login(
+            client,
+            "iq_p4_optional_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        approved = client.post(
+            f"/api/internal-quotes/{quote_id}/final-review",
+            json={"revision": 2, "decision": "approve", "reason": "参与分段均已完成"},
+        )
+        assert approved.status_code == 200, approved.text
+        export = approved.json()["export"]
+        downloaded = client.get(
+            f"/api/internal-quotes/{quote_id}/exports/{export['id']}/download"
+        )
+        workbook = load_workbook(BytesIO(downloaded.content), read_only=True, data_only=False)
+        rows = list(workbook["结构化数据"].iter_rows(min_row=4, values_only=True))
+        payload_rows = {row[1]: row for row in rows if row[0] == "payload"}
+        assert payload_rows["sales"][3] == "not_applicable"
+        assert payload_rows["sales"][11] == "是"
+        assert payload_rows["electronic"][3] == "draft"
+        assert payload_rows["electronic"][11] == "否"
+        workbook.close()
+
+
 def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact(monkeypatch):
     with make_client(monkeypatch) as client:
         submitter = login(
@@ -32,7 +95,7 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         )
         assert "internal_quote:final_submit" in submitter["permissions"]
         assert "internal_quote:final_approve" in submitter["permissions"]
-        payload = create_payload(suffix="P4-RELEASE")
+        payload = create_payload(suffix="P4-RELEASE", participating_sections=ALL_SECTION_CODES)
         payload["business_owner_id"] = submitter["id"]
         payload["business_owner_name"] = submitter["display_name"]
         quote = client.post("/api/internal-quotes", json=payload).json()
@@ -252,7 +315,7 @@ def test_p4_final_rejection_is_immutable_and_can_be_resubmitted(monkeypatch):
         login(client, "iq_p4_reject_submitter", "sales_customer_supervisor", "sales-business")
         quote = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P4-REJECT"),
+            json=create_payload(suffix="P4-REJECT", participating_sections=ALL_SECTION_CODES),
         ).json()
         quote_id = quote["id"]
         mark_all_sections_not_applicable(quote_id)
@@ -299,7 +362,7 @@ def test_p4_quote_version_comparison_uses_clone_lineage_and_section_snapshots(mo
         login(client, "iq_p4_compare", "sales_customer_supervisor", "sales-business")
         base = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P4-COMPARE-BASE"),
+            json=create_payload(suffix="P4-COMPARE-BASE", participating_sections=ALL_SECTION_CODES),
         ).json()
         target = client.post(
             f"/api/internal-quotes/{base['id']}/clone",
@@ -313,7 +376,7 @@ def test_p4_quote_version_comparison_uses_clone_lineage_and_section_snapshots(mo
         ).json()
         unrelated = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P4-COMPARE-OTHER"),
+            json=create_payload(suffix="P4-COMPARE-OTHER", participating_sections=ALL_SECTION_CODES),
         ).json()
 
         db_module = importlib.import_module("app.db")

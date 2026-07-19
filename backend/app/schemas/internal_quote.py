@@ -1,3 +1,4 @@
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -5,7 +6,45 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 InitiatorDepartment = Literal["sales-business", "engineering"]
 ReviewDecision = Literal["approve", "reject"]
-InternalQuoteImportType = Literal["mold", "electronic", "painting", "sewing", "assembly"]
+InternalQuoteImportType = Literal["mold", "hardware", "electronic", "painting", "sewing", "assembly"]
+InternalQuoteSectionCode = Literal[
+    "sales",
+    "engineering",
+    "electronic",
+    "molding",
+    "painting",
+    "slush",
+    "sewing",
+    "assembly",
+]
+MANDATORY_SECTION_CODES = ("sales", "engineering", "assembly")
+OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing")
+SECTION_CODE_ORDER = MANDATORY_SECTION_CODES[:2] + OPTIONAL_SECTION_CODES + MANDATORY_SECTION_CODES[2:]
+
+
+def _normalize_section_codes(values: list[InternalQuoteSectionCode]) -> list[InternalQuoteSectionCode]:
+    selected = set(values)
+    return [code for code in SECTION_CODE_ORDER if code in selected]
+
+
+def _validate_participating_sections(
+    values: list[InternalQuoteSectionCode],
+) -> list[InternalQuoteSectionCode]:
+    missing = [code for code in MANDATORY_SECTION_CODES if code not in values]
+    if missing:
+        raise ValueError("业务部、工程部、装配部必须参与内部报价")
+    return _normalize_section_codes(values)
+
+
+def _positive_decimal_text(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    try:
+        parsed = Decimal(normalized)
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError(f"{field_name}必须是有效数字") from error
+    if not parsed.is_finite() or parsed <= 0:
+        raise ValueError(f"{field_name}必须大于 0")
+    return format(parsed, "f")
 
 
 class InternalQuoteCreateRequest(BaseModel):
@@ -20,8 +59,12 @@ class InternalQuoteCreateRequest(BaseModel):
     initiator_department: InitiatorDepartment
     business_owner_id: str = Field(min_length=1, max_length=64)
     business_owner_name: str = Field(min_length=1, max_length=128)
+    target_customer_price: str = Field(default="无", min_length=1, max_length=128)
     target_date: str = Field(default="", max_length=32)
     remark: str = Field(default="", max_length=4000)
+    participating_sections: list[InternalQuoteSectionCode] = Field(
+        default_factory=lambda: list(MANDATORY_SECTION_CODES)
+    )
 
     @field_validator(
         "factory_id",
@@ -40,6 +83,21 @@ class InternalQuoteCreateRequest(BaseModel):
     def strip_text(cls, value: str) -> str:
         return value.strip()
 
+    @field_validator("target_customer_price")
+    @classmethod
+    def validate_target_customer_price(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("客人目标价不能为空，客人未提供时请填写‘无’")
+        return normalized
+
+    @field_validator("participating_sections")
+    @classmethod
+    def validate_participating_sections(
+        cls, values: list[InternalQuoteSectionCode]
+    ) -> list[InternalQuoteSectionCode]:
+        return _validate_participating_sections(values)
+
 
 class InternalQuoteBusinessOwnerOut(BaseModel):
     id: str
@@ -47,13 +105,84 @@ class InternalQuoteBusinessOwnerOut(BaseModel):
     display_name: str
 
 
+class InternalQuoteMaterialBaselineRow(BaseModel):
+    material: str = Field(min_length=1, max_length=64)
+    grade: str = Field(min_length=1, max_length=128)
+    price_hkd_lb: str = Field(min_length=1, max_length=32)
+
+    @field_validator("material", "grade")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("price_hkd_lb")
+    @classmethod
+    def validate_price(cls, value: str) -> str:
+        return _positive_decimal_text(value, "材料价")
+
+
+class InternalQuoteMachineBaselineRow(BaseModel):
+    machine_range: str = Field(min_length=1, max_length=64)
+    machine: str = Field(min_length=1, max_length=128)
+    shift_price_hkd: str = Field(min_length=1, max_length=32)
+
+    @field_validator("machine_range", "machine")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("shift_price_hkd")
+    @classmethod
+    def validate_price(cls, value: str) -> str:
+        return _positive_decimal_text(value, "机型价")
+
+
+class InternalQuotePricingBaselineUpdateRequest(BaseModel):
+    revision: int = Field(ge=0)
+    workshop_name: str = Field(default="华兴", min_length=1, max_length=128)
+    material_prices: list[InternalQuoteMaterialBaselineRow] = Field(min_length=1, max_length=200)
+    machine_prices: list[InternalQuoteMachineBaselineRow] = Field(min_length=1, max_length=100)
+
+    @field_validator("workshop_name")
+    @classmethod
+    def strip_workshop_name(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_unique_rows(self):
+        material_keys = [
+            (row.material.casefold(), row.grade.casefold()) for row in self.material_prices
+        ]
+        if len(material_keys) != len(set(material_keys)):
+            raise ValueError("初始材料价存在重复的材质和料型")
+        machine_ranges = [row.machine_range.casefold() for row in self.machine_prices]
+        if len(machine_ranges) != len(set(machine_ranges)):
+            raise ValueError("初始机型价存在重复的机型范围")
+        return self
+
+
+class InternalQuotePricingBaselineOut(BaseModel):
+    factory_id: str
+    workshop_code: str
+    workshop_name: str
+    revision: int
+    source_type: Literal["default", "custom"]
+    material_prices: list[InternalQuoteMaterialBaselineRow]
+    machine_prices: list[InternalQuoteMachineBaselineRow]
+    updated_by: str
+    updated_by_name: str
+    updated_at: str
+
+
 class InternalQuoteCloneRequest(BaseModel):
     quote_no: str = Field(min_length=1, max_length=128)
     version_label: str = Field(min_length=1, max_length=64)
     business_owner_id: str = Field(min_length=1, max_length=64)
     business_owner_name: str = Field(min_length=1, max_length=128)
+    target_customer_price: str | None = Field(default=None, min_length=1, max_length=128)
     target_date: str = Field(default="", max_length=32)
     remark: str | None = Field(default=None, max_length=4000)
+    participating_sections: list[InternalQuoteSectionCode] | None = None
 
     @field_validator(
         "quote_no",
@@ -67,6 +196,23 @@ class InternalQuoteCloneRequest(BaseModel):
     def strip_optional_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
 
+    @field_validator("target_customer_price")
+    @classmethod
+    def validate_target_customer_price(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("客人目标价不能为空，客人未提供时请填写‘无’")
+        return normalized
+
+    @field_validator("participating_sections")
+    @classmethod
+    def validate_participating_sections(
+        cls, values: list[InternalQuoteSectionCode] | None
+    ) -> list[InternalQuoteSectionCode] | None:
+        return _validate_participating_sections(values) if values is not None else None
+
 
 class InternalQuoteHeaderUpdateRequest(BaseModel):
     revision: int = Field(ge=1)
@@ -75,6 +221,7 @@ class InternalQuoteHeaderUpdateRequest(BaseModel):
     qty: int | None = Field(default=None, gt=0)
     business_owner_id: str | None = Field(default=None, min_length=1, max_length=64)
     business_owner_name: str | None = Field(default=None, min_length=1, max_length=128)
+    target_customer_price: str | None = Field(default=None, min_length=1, max_length=128)
     target_date: str | None = Field(default=None, max_length=32)
     remark: str | None = Field(default=None, max_length=4000)
 
@@ -90,6 +237,16 @@ class InternalQuoteHeaderUpdateRequest(BaseModel):
     def strip_optional_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
 
+    @field_validator("target_customer_price")
+    @classmethod
+    def validate_target_customer_price(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("客人目标价不能为空，客人未提供时请填写‘无’")
+        return normalized
+
     @model_validator(mode="after")
     def require_change(self):
         fields = self.model_dump(exclude={"revision"}, exclude_none=True)
@@ -98,6 +255,21 @@ class InternalQuoteHeaderUpdateRequest(BaseModel):
         if (self.business_owner_id is None) != (self.business_owner_name is None):
             raise ValueError("业务负责人编号和姓名必须同时提交")
         return self
+
+
+class InternalQuoteParticipationUpdateRequest(BaseModel):
+    revision: int = Field(ge=1)
+    add_sections: list[InternalQuoteSectionCode] = Field(min_length=1)
+
+    @field_validator("add_sections")
+    @classmethod
+    def validate_add_sections(
+        cls, values: list[InternalQuoteSectionCode]
+    ) -> list[InternalQuoteSectionCode]:
+        invalid = [code for code in values if code not in OPTIONAL_SECTION_CODES]
+        if invalid:
+            raise ValueError("只能追加电子部、啤机部、喷油部、搪胶部或车缝部")
+        return _normalize_section_codes(values)
 
 
 class InternalQuoteSectionSaveRequest(BaseModel):
@@ -176,6 +348,24 @@ class InternalQuoteReferenceSyncRequest(BaseModel):
         return value.strip()
 
 
+class InternalQuoteReferenceFxUpdateRequest(BaseModel):
+    revision: int = Field(ge=1)
+    rmb_hkd: str = Field(min_length=1, max_length=32)
+    hkd_usd: str = Field(min_length=1, max_length=32)
+
+    @field_validator("rmb_hkd", "hkd_usd")
+    @classmethod
+    def validate_fx(cls, value: str, info) -> str:
+        label = "RMB→HKD 汇率" if info.field_name == "rmb_hkd" else "HKD→USD 汇率"
+        normalized = _positive_decimal_text(value, label)
+        parsed = Decimal(normalized).normalize()
+        if parsed > Decimal("1000"):
+            raise ValueError(f"{label}不能大于 1000")
+        if parsed.as_tuple().exponent < -2:
+            raise ValueError(f"{label}最多保留 2 位小数")
+        return format(parsed, "f")
+
+
 class InternalQuoteSectionOut(BaseModel):
     id: str
     department: str
@@ -217,6 +407,7 @@ class InternalQuoteOut(BaseModel):
     initiator_department: str
     business_owner_id: str
     business_owner_name: str
+    target_customer_price: str
     target_date: str
     remark: str
     module_version: str

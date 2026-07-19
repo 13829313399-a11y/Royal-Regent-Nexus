@@ -782,9 +782,12 @@ function p4Total(artifact: P4InternalQuoteArtifact, sectionCode: keyof P4Interna
 function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[] {
   const costRows: BuzzBeeInternalCostRow[] = []
   const engineering = artifact.sections.engineering
+  const salesPackagingBreakdown = p4Rows(artifact.sections.sales.calculation.line_breakdown)
+    .filter((row) => row.kind === 'packaging_material')
   const engineeringBreakdown = p4Rows(engineering.calculation.line_breakdown)
   engineeringBreakdown
     .filter((row) => row.kind === 'material')
+    .filter((row) => !(salesPackagingBreakdown.length > 0 && row.category === 'packaging'))
     .forEach((row) => {
       const category = String(row.category ?? '')
       costRows.push({
@@ -795,6 +798,22 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
         customerValueHint: 0,
       })
     })
+
+  const packagingCategoryLabels: Record<string, string> = {
+    blister: '吸塑',
+    color_box_inner_card: '彩盒/内卡',
+    leaflet_manual: '利宝/说明书',
+    other_purchase: '其他外购',
+  }
+  salesPackagingBreakdown.forEach((row) => {
+    costRows.push({
+      taxTag: p4Number(row.tax_rate_percent) > 0 ? `${p4Number(row.tax_rate_percent)}%` : '',
+      category: packagingCategoryLabels[String(row.category ?? '')] ?? '包装材料',
+      description: String(row.item ?? ''),
+      internalValue: p4Number(row.amount_hkd),
+      customerValueHint: 0,
+    })
+  })
 
   const electronicBreakdown = p4Rows(artifact.sections.electronic.calculation.line_breakdown)
     .filter((row) => row.kind === 'electronic_component')
@@ -890,11 +909,17 @@ export function convertBuzzBeeP4InternalQuote(
   })
 
   const engineeringPayload = artifact.sections.engineering.payload
-  const packagingMaterials = p4Rows(engineeringPayload.materials)
-    .filter((row) => row.category === 'packaging' && /彩盒|color\s*box/i.test(String(row.item ?? '')))
-  const cartons = p4Rows(engineeringPayload.cartons)
+  const salesPayload = artifact.sections.sales.payload
+  const salesPackagingMaterials = p4Rows(salesPayload.packaging_materials)
+  const packagingMaterials = salesPackagingMaterials.length > 0
+    ? salesPackagingMaterials.filter((row) => row.category === 'color_box_inner_card' || /彩盒|color\s*box/i.test(String(row.item ?? '')))
+    : p4Rows(engineeringPayload.materials)
+      .filter((row) => row.category === 'packaging' && /彩盒|color\s*box/i.test(String(row.item ?? '')))
+  const salesCartons = p4Rows(salesPayload.cartons)
+  const cartons = salesCartons.length > 0 ? salesCartons : p4Rows(engineeringPayload.cartons)
+  const cartonOwner = salesCartons.length > 0 ? artifact.sections.sales : artifact.sections.engineering
   const carton = cartons[0] ?? {}
-  const cartonCalculation = p4Rows(artifact.sections.engineering.calculation.line_breakdown)
+  const cartonCalculation = p4Rows(cartonOwner.calculation.line_breakdown)
     .find((row) => row.kind === 'carton') ?? {}
   const pcsPerCarton = p4Number(carton.qty_per_carton) || 1
   const parsed: BuzzBeeInternalSheet = {

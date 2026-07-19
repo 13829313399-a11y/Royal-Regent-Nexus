@@ -4,7 +4,7 @@ from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
 
-from test_internal_quote_api import create_payload, login, logout, make_client
+from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
 
 
 def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> bytes:
@@ -24,7 +24,7 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
         login(client, "iq_p3_creator", "sales_customer_owner", "sales-business")
         created = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P3-IMPORT"),
+            json=create_payload(suffix="P3-IMPORT", participating_sections=ALL_SECTION_CODES),
         ).json()
         quote_id = created["id"]
         source = workbook_bytes(
@@ -92,12 +92,93 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
         assert batches.json()[0]["confirmed_revision"] == 2
 
 
+def test_hardware_template_preview_maps_only_shared_material_fields_and_replace_keeps_auxiliary(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p3_hardware_creator", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="P3-HARDWARE", participating_sections=ALL_SECTION_CODES),
+        ).json()
+        quote_id = created["id"]
+
+        logout(client)
+        login(client, "iq_p3_hardware_engineer", "engineer", "engineering")
+        saved = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/engineering",
+            json={
+                "revision": 1,
+                "payload": {
+                    "materials": [
+                        {"item": "旧五金", "category": "hardware", "quantity": 1, "unit_price_rmb": 1},
+                        {"item": "胶水", "category": "auxiliary", "quantity": 2, "unit_price_rmb": 3},
+                    ],
+                    "molds": [],
+                    "amortization_qty": 0,
+                    "customer_mold_subsidy_usd": 0,
+                },
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+        source = workbook_bytes(
+            [
+                ["(五金电子部分)"],
+                ["货号", "HW-01"],
+                ["产品名称", "测试产品"],
+                [],
+                [],
+                ["零件名称", "配件用处", "规格", "用量", "单位", "单价RMB", "总价", "质料", "表面处理", "供应商", "联系人/电话", "备注", "图片"],
+                [],
+                ["螺丝", "尿兜", "2.6*8PB", 3, "pcs", 0.0044, 0.0132, "铁", "镀镍", "港正", "张/13800000000", "样板", ""],
+                ["合计", "", "", "", "", "", 0.0132],
+                ["附：五金尺寸标准表（其它配件及包装物料请参照客签板）"],
+            ],
+            title="外购",
+        )
+        preview_response = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/hardware/preview",
+            files={"file": ("五金1.xlsx", source, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        assert preview_response.status_code == 201, preview_response.text
+        preview = preview_response.json()
+        assert preview["header_row"] == 6
+        assert preview["row_count"] == 1
+        assert preview["diff_summary"]["existing_rows"] == 1
+        imported = preview["payload_fragment"]["materials"][0]
+        assert imported == {
+            "item": "螺丝",
+            "category": "hardware",
+            "specification": "2.6*8PB",
+            "quantity": "3.0000",
+            "unit_price_rmb": "0.0044",
+            "auxiliary_category": "其他外购",
+            "tax_rate_percent": "0.0000",
+            "remark": "样板",
+            "source_row": 8,
+        }
+        assert not {"purpose", "unit", "material", "surface_treatment", "supplier", "contact"}.intersection(imported)
+        assert any("模板其他列不写入报价字段" in warning for warning in preview["warnings"])
+
+        confirmed = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/{preview['batch_id']}/confirm",
+            json={"revision": 2, "mode": "replace"},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        section = confirmed.json()["section"]
+        materials = section["payload"]["materials"]
+        assert [row["item"] for row in materials] == ["胶水", "螺丝"]
+        assert section["calculation"]["totals"]["hardware_hkd"] == "0.0155"
+        hardware_line = next(row for row in section["calculation"]["line_breakdown"] if row["category"] == "hardware")
+        assert hardware_line["unit_price_hkd"] == "0.0052"
+        assert "冻结 RMB→HKD 汇率" in hardware_line["formula"]
+
+
 def test_p3_attachment_validates_magic_deduplicates_and_downloads(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_p3_attachment_creator", "sales_customer_owner", "sales-business")
         quote = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P3-ATTACHMENT"),
+            json=create_payload(suffix="P3-ATTACHMENT", participating_sections=ALL_SECTION_CODES),
         ).json()
         quote_id = quote["id"]
 
@@ -153,7 +234,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert "internal_quote:export" in profile["permissions"]
         quote = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P3-EXPORT"),
+            json=create_payload(suffix="P3-EXPORT", participating_sections=ALL_SECTION_CODES),
         ).json()
         quote_id = quote["id"]
 

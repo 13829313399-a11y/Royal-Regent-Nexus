@@ -20,6 +20,7 @@ from app.models.internal_quote import (
     InternalQuoteSectionRevision,
 )
 from app.schemas.internal_quote import (
+    MANDATORY_SECTION_CODES,
     InternalQuoteArchiveRequest,
     InternalQuoteAuditOut,
     InternalQuoteBusinessOwnerOut,
@@ -27,7 +28,9 @@ from app.schemas.internal_quote import (
     InternalQuoteCreateRequest,
     InternalQuoteHeaderUpdateRequest,
     InternalQuoteOut,
+    InternalQuoteParticipationUpdateRequest,
     InternalQuoteReasonRequest,
+    InternalQuoteReferenceFxUpdateRequest,
     InternalQuoteReferenceSetOut,
     InternalQuoteReferenceSyncRequest,
     InternalQuoteRevisionOut,
@@ -205,6 +208,14 @@ def _ensure_active(quote: InternalQuote) -> None:
         raise HTTPException(status_code=409, detail="已归档报价不可继续修改")
 
 
+def _ensure_section_participates(section: InternalQuoteSection) -> None:
+    if not section.is_required:
+        raise HTTPException(
+            status_code=409,
+            detail="该部门未参与当前内部报价，请先由业务部或工程部添加参与部门",
+        )
+
+
 def _check_revision(current: int, supplied: int, resource: str = "分段") -> None:
     if current == supplied:
         return
@@ -276,6 +287,7 @@ def quote_to_out(
         initiator_department=quote.initiator_department,
         business_owner_id=quote.business_owner_id,
         business_owner_name=quote.business_owner_name,
+        target_customer_price=quote.target_customer_price,
         target_date=quote.target_date,
         remark=quote.remark,
         module_version=quote.module_version,
@@ -542,7 +554,11 @@ def _create_reference_set(
             item.is_current = False
             item.superseded_at = timestamp
     source_revision = (existing[0].source_revision + 1) if existing else 1
-    snapshot_data = snapshot or build_reference_snapshot(db)
+    snapshot_data = snapshot or build_reference_snapshot(
+        db,
+        factory_id=quote.factory_id,
+        workshop_code=quote.workshop_code,
+    )
     snapshot_json = canonical_json(snapshot_data)
     reference = InternalQuoteReferenceSet(
         id=f"IQREF-{uuid4().hex}",
@@ -631,11 +647,13 @@ def _cost_context(db: Session, quote: InternalQuote) -> dict[str, Decimal]:
 
     def value(section_code: str, key: str = "total_hkd") -> Decimal:
         section = by_code.get(section_code)
-        if section is None or section.calculation_status != "valid":
+        if section is None or not section.is_required or section.calculation_status != "valid":
             return Decimal("0")
         return decimal_value(_section_totals(section).get(key), f"{section_code}.{key}")
 
     sales_payload = _json_object(by_code["sales"].payload_json) if "sales" in by_code else {}
+    sales_has_cartons = bool(sales_payload.get("cartons"))
+    sales_has_packaging_materials = bool(sales_payload.get("packaging_materials"))
     indonesia_freight = decimal_value(sales_payload.get("indonesia_freight_hkd"), "印尼运费")
     components = {
         "molding_hkd": value("molding"),
@@ -643,13 +661,13 @@ def _cost_context(db: Session, quote: InternalQuote) -> dict[str, Decimal]:
         "electronic_hkd": value("electronic"),
         "hardware_hkd": value("engineering", "hardware_hkd"),
         "auxiliary_hkd": value("engineering", "auxiliary_hkd"),
-        "packaging_material_hkd": value("engineering", "packaging_hkd"),
+        "packaging_material_hkd": value("sales", "packaging_material_hkd") if sales_has_packaging_materials else value("engineering", "packaging_hkd"),
         "assembly_hkd": value("assembly", "assembly_hkd"),
         "packing_labor_hkd": value("assembly", "packaging_hkd"),
         "indonesia_freight_hkd": indonesia_freight,
         "slush_hkd": value("slush"),
         "sewing_hkd": value("sewing"),
-        "carton_hkd": value("engineering", "carton_hkd"),
+        "carton_hkd": value("sales", "carton_hkd") if sales_has_cartons else value("engineering", "carton_hkd"),
         "mold_amortization_usd": value("engineering", "mold_amortization_usd"),
     }
     components["factory_price_hkd"] = sum(
@@ -686,7 +704,7 @@ def _calculation_dependencies(
                 "calculation_status": section.calculation_status,
             }
             for code, section in by_code.items()
-            if code != "sales"
+            if code != "sales" and section.is_required
         }
     return {}
 
@@ -701,13 +719,19 @@ def _calculate_and_apply(
     snapshot = _json_object(reference.snapshot_json)
     cost_context = _cost_context(db, quote)
     dependencies = _calculation_dependencies(db, quote, section.department)
+    section_payload = _json_object(section.payload_json)
+    factory_price_hkd = cost_context["factory_price_hkd"]
+    if section.department == "sales" and section_payload.get("cartons"):
+        factory_price_hkd -= cost_context["carton_hkd"]
+    if section.department == "sales" and section_payload.get("packaging_materials"):
+        factory_price_hkd -= cost_context["packaging_material_hkd"]
     calculation = calculate_section(
         section.department,
-        _json_object(section.payload_json),
+        section_payload,
         snapshot,
         reference.id,
         context={
-            "factory_price_hkd": decimal_text(cost_context["factory_price_hkd"]),
+            "factory_price_hkd": decimal_text(factory_price_hkd),
             "mold_amortization_usd": decimal_text(cost_context["mold_amortization_usd"]),
             "dependencies": dependencies,
         },
@@ -736,6 +760,8 @@ def _invalidate_engineering_dependents(
         )
     ).all()
     for section in dependents:
+        if not section.is_required:
+            continue
         if section.status == "not_applicable":
             continue
         if not _json_object(section.payload_json) and section.status == "draft":
@@ -856,17 +882,19 @@ def _create_sections(
     db: Session,
     quote: InternalQuote,
     user: AuthContext,
+    participating_sections: set[str],
     payloads: dict[str, str] | None = None,
 ) -> None:
     timestamp = now_text()
     for code, name, _ in SECTION_DEFINITIONS:
+        is_required = code in participating_sections
         section = InternalQuoteSection(
             id=f"{quote.id}-{code}",
             quote_id=quote.id,
             department=code,
             department_name=name,
             status="draft",
-            payload_json=(payloads or {}).get(code, "{}"),
+            payload_json=(payloads or {}).get(code, "{}") if is_required else "{}",
             calculation_json="{}",
             calculation_status="pending",
             calculation_hash="",
@@ -876,7 +904,7 @@ def _create_sections(
             dependency_hash="",
             dependency_status="current",
             revision=1,
-            is_required=True,
+            is_required=is_required,
             filled_by="",
             filled_at="",
             submitted_by="",
@@ -920,6 +948,7 @@ def create_quote(
         initiator_department=payload.initiator_department,
         business_owner_id=payload.business_owner_id,
         business_owner_name=payload.business_owner_name,
+        target_customer_price=payload.target_customer_price,
         target_date=payload.target_date,
         remark=payload.remark,
         module_version="v2",
@@ -939,7 +968,8 @@ def create_quote(
     try:
         db.flush()
         _create_reference_set(db, quote, user, source_type="create")
-        _create_sections(db, quote, user)
+        participating_sections = set(payload.participating_sections)
+        _create_sections(db, quote, user, participating_sections)
         _add_audit(
             db,
             quote,
@@ -947,13 +977,19 @@ def create_quote(
             "create",
             department=payload.initiator_department,
             detail=json.dumps(
-                {"quote_no": quote.quote_no, "version_label": quote.version_label},
+                {
+                    "quote_no": quote.quote_no,
+                    "version_label": quote.version_label,
+                    "target_customer_price": quote.target_customer_price,
+                },
                 ensure_ascii=False,
             ),
             new_revision=1,
             request=request,
         )
         for section_code, section_name, departments in SECTION_DEFINITIONS:
+            if section_code not in participating_sections:
+                continue
             _add_notification(
                 db,
                 quote,
@@ -1123,6 +1159,115 @@ def update_quote_header(
     return quote_to_out(db, quote)
 
 
+def add_quote_participation(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteParticipationUpdateRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:create",
+        quote.factory_id,
+        ("sales-business", "engineering"),
+    )
+    _ensure_active(quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+
+    sections = db.scalars(
+        select(InternalQuoteSection).where(
+            InternalQuoteSection.quote_id == quote.id,
+            InternalQuoteSection.department.in_(payload.add_sections),
+        )
+    ).all()
+    newly_active = [section for section in sections if not section.is_required]
+    if not newly_active:
+        raise HTTPException(status_code=409, detail="所选部门已参与当前内部报价")
+
+    had_final_release = quote.final_release_status in {"pending", "approved"} or quote.status in {
+        "final_reviewing",
+        "fully_approved",
+        "exported",
+    }
+    added_names = "、".join(section.department_name for section in newly_active)
+    _invalidate_final_release(db, quote, reason=f"新增参与部门：{added_names}")
+
+    old_header_revision = quote.header_revision
+    timestamp = now_text()
+    for section in newly_active:
+        section.is_required = True
+        section.status = "draft"
+        section.payload_json = "{}"
+        section.calculation_json = "{}"
+        section.calculation_status = "pending"
+        section.calculation_hash = ""
+        section.calculation_formula_version = quote.formula_version
+        section.calculation_reference_snapshot_id = quote.reference_snapshot_id
+        section.calculated_at = ""
+        section.dependency_hash = ""
+        section.dependency_status = "current"
+        section.revision += 1
+        section.filled_by = ""
+        section.filled_at = ""
+        section.submitted_by = ""
+        section.submitted_by_id = ""
+        section.submitted_at = ""
+        section.reviewed_by = ""
+        section.reviewed_at = ""
+        section.review_comment = ""
+        section.updated_at = timestamp
+        _add_revision(db, quote, section, user, reason="participation_added")
+        _add_notification(
+            db,
+            quote,
+            title=f"内部报价新增{section.department_name}协作",
+            message=f"{quote.quote_no} 已追加{section.department_name}参与，请进入分段填写",
+            event="participation_added",
+            target_permission=f"internal_quote:{section.department}_edit",
+            target_department=SECTION_DEPARTMENTS[section.department][0],
+            department=section.department,
+            extra={"section_revision": section.revision},
+        )
+
+    quote.header_revision += 1
+    quote.updated_at = timestamp
+    _derive_quote_status(db, quote)
+    _add_audit(
+        db,
+        quote,
+        user,
+        "participation_added",
+        department=quote.initiator_department,
+        detail=json.dumps(
+            {
+                "added_sections": [section.department for section in newly_active],
+                "added_names": [section.department_name for section in newly_active],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        old_revision=old_header_revision,
+        new_revision=quote.header_revision,
+        request=request,
+    )
+    if had_final_release:
+        _add_notification(
+            db,
+            quote,
+            title="内部报价最终放行已失效",
+            message=f"{quote.quote_no} 因新增{added_names}参与，需重新完成分段审批和最终放行",
+            event="final_release_invalidated",
+            target_user_id=quote.business_owner_id,
+            department="sales",
+        )
+    db.commit()
+    db.refresh(quote)
+    return quote_to_out(db, quote)
+
+
 def clone_quote(
     db: Session,
     quote_id: str,
@@ -1159,6 +1304,11 @@ def clone_quote(
         initiator_department=initiator_department,
         business_owner_id=payload.business_owner_id,
         business_owner_name=payload.business_owner_name,
+        target_customer_price=(
+            source.target_customer_price
+            if payload.target_customer_price is None
+            else payload.target_customer_price
+        ),
         target_date=payload.target_date,
         remark=source.remark if payload.remark is None else payload.remark,
         module_version="v2",
@@ -1185,7 +1335,11 @@ def clone_quote(
         source_snapshot = (
             _json_object(source_reference.snapshot_json)
             if source_reference is not None
-            else build_reference_snapshot(db)
+            else build_reference_snapshot(
+                db,
+                factory_id=source.factory_id,
+                workshop_code=source.workshop_code,
+            )
         )
         _create_reference_set(
             db,
@@ -1194,7 +1348,13 @@ def clone_quote(
             source_type="clone",
             snapshot=source_snapshot,
         )
-        _create_sections(db, target, user, payloads)
+        participating_sections = (
+            set(payload.participating_sections)
+            if payload.participating_sections is not None
+            else {section.department for section in source_sections if section.is_required}
+        )
+        participating_sections.update(MANDATORY_SECTION_CODES)
+        _create_sections(db, target, user, participating_sections, payloads)
         _add_audit(
             db,
             source,
@@ -1215,6 +1375,8 @@ def clone_quote(
             request=request,
         )
         for section_code, section_name, departments in SECTION_DEFINITIONS:
+            if section_code not in participating_sections:
+                continue
             _add_notification(
                 db,
                 target,
@@ -1246,6 +1408,7 @@ def save_section(
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
+    _ensure_section_participates(section)
     _check_revision(section.revision, payload.revision)
     if section.status not in MUTABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="当前状态不可编辑，请先重新打开")
@@ -1292,6 +1455,7 @@ def submit_section(
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
+    _ensure_section_participates(section)
     _check_revision(section.revision, revision)
     if section.status not in MUTABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="当前状态不可提交审核")
@@ -1366,6 +1530,7 @@ def request_section_na(
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
+    _ensure_section_participates(section)
     _check_revision(section.revision, payload.revision)
     if section.status not in MUTABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="当前状态不可申请不适用")
@@ -1428,6 +1593,7 @@ def review_section(
     ensure_section_permission(db, user, quote.factory_id, section_code, "review")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
+    _ensure_section_participates(section)
     _check_revision(section.revision, payload.revision)
     if section.status not in REVIEWABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="当前状态不在审核中")
@@ -1515,7 +1681,7 @@ def review_section(
             db,
             quote,
             title="内部报价已具备最终提交条件",
-            message=f"{quote.quote_no} 八个责任分段均已完成，请提交最终业务放行",
+            message=f"{quote.quote_no} 所有参与分段均已完成，请提交最终业务放行",
             event="ready_for_final_review",
             target_user_id=quote.business_owner_id,
             department="sales",
@@ -1538,6 +1704,7 @@ def reopen_section(
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
+    _ensure_section_participates(section)
     _check_revision(section.revision, payload.revision)
     if section.status not in COMPLETED_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="仅已通过或不适用分段可重新打开")
@@ -1659,14 +1826,15 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
     sections = db.scalars(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
     ).all()
+    participating_sections = [section for section in sections if section.is_required]
     reference = _ensure_reference_set_for_read(db, quote, user)
     counts: dict[str, int] = {}
-    for section in sections:
+    for section in participating_sections:
         counts[section.status] = counts.get(section.status, 0) + 1
     cost_context = _cost_context(db, quote)
     section_summaries: list[dict[str, object]] = []
     warnings: list[dict[str, object]] = []
-    for section in sections:
+    for section in participating_sections:
         calculation = _json_object(section.calculation_json)
         calculation_warnings = calculation.get("warnings", [])
         if isinstance(calculation_warnings, list):
@@ -1707,9 +1875,9 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
         "formula_version": quote.formula_version,
         "reference_snapshot_id": reference.id,
         "reference_snapshot_sha256": reference.sha256,
-        "required_sections": sum(1 for section in sections if section.is_required),
+        "required_sections": len(participating_sections),
         "completed_sections": sum(
-            1 for section in sections if section.is_required and section.status in COMPLETED_SECTION_STATUSES
+            1 for section in participating_sections if section.status in COMPLETED_SECTION_STATUSES
         ),
         "status_counts": counts,
         "calculation_phase": "blocked" if any(item.get("severity") == "blocking" for item in warnings) else "calculated",
@@ -1737,31 +1905,33 @@ def get_quote_reference_set(
     return _reference_out(reference)
 
 
-def sync_quote_reference_set(
+def _replace_quote_reference_set(
     db: Session,
-    quote_id: str,
-    payload: InternalQuoteReferenceSyncRequest,
+    quote: InternalQuote,
     user: AuthContext,
+    *,
+    source_type: str,
+    snapshot: dict[str, object] | None,
+    reason: str,
+    audit_action: str,
+    change_description: str,
+    audit_detail: str = "",
     request: Request | None = None,
 ) -> InternalQuoteOut:
-    quote = _get_quote(db, quote_id)
-    ensure_quote_permission(
-        db,
-        user,
-        "internal_quote:reference_manage",
-        quote.factory_id,
-        ("sales-business", "engineering"),
-    )
-    _ensure_active(quote)
-    _check_revision(quote.header_revision, payload.revision, "报价头")
     had_final_release = quote.final_release_status in {"pending", "approved"} or quote.status in {
         "final_reviewing",
         "fully_approved",
         "exported",
     }
-    _invalidate_final_release(db, quote, reason=f"参考快照已同步：{payload.reason}")
+    _invalidate_final_release(db, quote, reason=f"{change_description}：{reason}")
     old_header_revision = quote.header_revision
-    reference = _create_reference_set(db, quote, user, source_type="manual_sync")
+    reference = _create_reference_set(
+        db,
+        quote,
+        user,
+        source_type=source_type,
+        snapshot=snapshot,
+    )
     quote.header_revision += 1
     quote.updated_at = now_text()
 
@@ -1780,7 +1950,7 @@ def sync_quote_reference_set(
         "sales",
     ):
         section = by_code.get(section_code)
-        if section is None:
+        if section is None or not section.is_required:
             continue
         section.calculation_reference_snapshot_id = reference.id
         section.calculation_formula_version = FORMULA_VERSION
@@ -1824,11 +1994,11 @@ def sync_quote_reference_set(
             section.dependency_status = "current"
         if section.status in {"approved", "pending_review", "na_pending"}:
             section.status = "rejected"
-            section.review_comment = "参考数据快照已同步，请重新核价并提交"
+            section.review_comment = f"{change_description}，请重新核价并提交"
         else:
             section.status = "draft"
         section.updated_at = now_text()
-        _add_revision(db, quote, section, user, reason=payload.reason)
+        _add_revision(db, quote, section, user, reason=reason)
         _add_audit(
             db,
             quote,
@@ -1837,19 +2007,19 @@ def sync_quote_reference_set(
             department=section.department,
             old_revision=old_revision,
             new_revision=section.revision,
-            reason=payload.reason,
+            reason=reason,
             request=request,
         )
         _add_notification(
             db,
             quote,
             title=f"{section.department_name}参考数据已更新",
-            message=f"{quote.quote_no} 已同步最新参考快照，请重新核价并提交{section.department_name}分段",
+            message=f"{quote.quote_no} {change_description}，请重新核价并提交{section.department_name}分段",
             event="reference_snapshot_updated",
             target_permission=f"internal_quote:{section.department}_edit",
             target_department=SECTION_DEPARTMENTS[section.department][0],
             department=section.department,
-            reason=payload.reason,
+            reason=reason,
             extra={"section_revision": section.revision, "reference_snapshot_id": reference.id},
         )
 
@@ -1858,11 +2028,11 @@ def sync_quote_reference_set(
         db,
         quote,
         user,
-        "reference_sync",
+        audit_action,
         old_revision=old_header_revision,
         new_revision=quote.header_revision,
-        reason=payload.reason,
-        detail=reference.id,
+        reason=reason,
+        detail=f"{reference.id} | {audit_detail}" if audit_detail else reference.id,
         request=request,
     )
     _mark_quote_notifications_handled(
@@ -1879,11 +2049,94 @@ def sync_quote_reference_set(
             event="final_release_invalidated",
             target_user_id=quote.business_owner_id,
             department="sales",
-            reason=payload.reason,
+            reason=reason,
         )
     db.commit()
     db.refresh(quote)
     return quote_to_out(db, quote)
+
+
+def sync_quote_reference_set(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteReferenceSyncRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:reference_manage",
+        quote.factory_id,
+        ("sales-business", "engineering"),
+    )
+    _ensure_active(quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+    return _replace_quote_reference_set(
+        db,
+        quote,
+        user,
+        source_type="manual_sync",
+        snapshot=None,
+        reason=payload.reason,
+        audit_action="reference_sync",
+        change_description="参考数据快照已同步",
+        request=request,
+    )
+
+
+def update_quote_reference_fx(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteReferenceFxUpdateRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:sales_edit",
+        quote.factory_id,
+        ("sales-business",),
+    )
+    _ensure_active(quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+
+    current_reference = _ensure_reference_set(db, quote, user)
+    snapshot = _json_object(current_reference.snapshot_json)
+    existing_fx = snapshot.get("fx", {})
+    fx = dict(existing_fx) if isinstance(existing_fx, dict) else {}
+    old_rmb_hkd = decimal_value(fx.get("rmb_hkd"), "RMB→HKD 汇率")
+    old_hkd_usd = decimal_value(fx.get("hkd_usd"), "HKD→USD 汇率")
+    new_rmb_hkd = decimal_value(payload.rmb_hkd, "RMB→HKD 汇率")
+    new_hkd_usd = decimal_value(payload.hkd_usd, "HKD→USD 汇率")
+    if old_rmb_hkd == new_rmb_hkd and old_hkd_usd == new_hkd_usd:
+        return quote_to_out(db, quote)
+
+    fx["rmb_hkd"] = payload.rmb_hkd
+    fx["hkd_usd"] = payload.hkd_usd
+    snapshot["fx"] = fx
+    reason = (
+        f"业务汇率调整：RMB→HKD {format(old_rmb_hkd, 'f')}→{payload.rmb_hkd}；"
+        f"HKD→USD {format(old_hkd_usd, 'f')}→{payload.hkd_usd}"
+    )
+    return _replace_quote_reference_set(
+        db,
+        quote,
+        user,
+        source_type="manual_fx",
+        snapshot=snapshot,
+        reason=reason,
+        audit_action="reference_fx_update",
+        change_description="参考汇率已调整",
+        audit_detail=(
+            f"rmb_hkd={payload.rmb_hkd};hkd_usd={payload.hkd_usd};"
+            f"previous_reference={current_reference.id}"
+        ),
+        request=request,
+    )
 
 
 def get_quote_timeline(

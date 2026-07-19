@@ -20,6 +20,7 @@ import {
 } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
+import AuthAmbientGrid from '@/components/auth/AuthAmbientGrid.vue'
 import { factoryContexts } from '@/data/enterpriseMock'
 import { registrationDepartments } from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
@@ -120,7 +121,7 @@ async function submitRegistration() {
     <div class="register-wrap">
       <section class="register-card">
         <aside class="register-aside">
-          <div class="aside-grid" aria-hidden="true"></div>
+          <AuthAmbientGrid class="aside-grid" variant="register" />
           <div class="aside-glow aside-glow-top" aria-hidden="true"></div>
           <div class="aside-glow aside-glow-bottom" aria-hidden="true"></div>
 
@@ -345,6 +346,7 @@ async function submitRegistration() {
 
 .register-aside {
   position: relative;
+  isolation: isolate;
   display: none;
   min-height: 660px;
   flex-direction: column;
@@ -354,17 +356,9 @@ async function submitRegistration() {
   color: white;
 }
 
-.aside-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgb(255 255 255 / 3%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 3%) 1px, transparent 1px);
-  background-size: 42px 42px;
-}
-
 .aside-glow {
   position: absolute;
+  z-index: 0;
   border-radius: 999px;
   filter: blur(80px);
   pointer-events: none;

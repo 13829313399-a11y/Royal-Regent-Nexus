@@ -45,10 +45,13 @@ def test_mold_import_maps_rr2_fields_to_p2_engineering_contract():
         "cavity": "",
         "machine_code": "4A",
         "target_output": "8000.0000",
+        "mold_base_type": "",
         "structure": "",
+        "cycle_time_seconds": "0.0000",
         "mold_size": "",
         "color": "",
-        "note": "客户模",
+        "image_reference": "",
+        "remark": "客户模",
         "source_row": 2,
     }
     assert any("图片附件" in warning for warning in parsed.warnings)

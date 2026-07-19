@@ -21,7 +21,11 @@ from app.schemas.internal_quote import (
     InternalQuoteFinalReviewOut,
     InternalQuoteFinalReviewRequest,
     InternalQuoteOut,
+    InternalQuoteParticipationUpdateRequest,
+    InternalQuotePricingBaselineOut,
+    InternalQuotePricingBaselineUpdateRequest,
     InternalQuoteReasonRequest,
+    InternalQuoteReferenceFxUpdateRequest,
     InternalQuoteReferenceSetOut,
     InternalQuoteReferenceSyncRequest,
     InternalQuoteRevisionOut,
@@ -35,6 +39,7 @@ from app.schemas.internal_quote import (
 )
 from app.services.auth import AuthContext, get_current_user
 from app.services.internal_quote import (
+    add_quote_participation,
     archive_quote,
     clone_quote,
     create_quote,
@@ -52,9 +57,11 @@ from app.services.internal_quote import (
     save_section,
     submit_section,
     sync_quote_reference_set,
+    update_quote_reference_fx,
     update_quote_header,
 )
 from app.services.internal_quote_calculator import FORMULA_VERSION, SECTION_INPUT_CONTRACTS
+from app.services.internal_quote_baseline import get_pricing_baseline, update_pricing_baseline
 from app.services.internal_quote_artifacts import (
     confirm_import_batch,
     create_controlled_export,
@@ -133,6 +140,35 @@ def get_internal_quote_calculation_contracts(
     return {"formula_version": FORMULA_VERSION, "sections": SECTION_INPUT_CONTRACTS}
 
 
+@router.get("/pricing-baseline", response_model=InternalQuotePricingBaselineOut)
+def get_internal_quote_pricing_baseline(
+    factory_id: str = Query(min_length=1, max_length=64),
+    workshop_code: str = Query(default="huaxing-workshop", min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return get_pricing_baseline(db, factory_id, workshop_code, current_user)
+
+
+@router.put("/pricing-baseline", response_model=InternalQuotePricingBaselineOut)
+def put_internal_quote_pricing_baseline(
+    payload: InternalQuotePricingBaselineUpdateRequest,
+    request: Request,
+    factory_id: str = Query(min_length=1, max_length=64),
+    workshop_code: str = Query(default="huaxing-workshop", min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return update_pricing_baseline(
+        db,
+        factory_id,
+        workshop_code,
+        payload,
+        current_user,
+        request,
+    )
+
+
 @router.get("/{quote_id}", response_model=InternalQuoteOut)
 def get_internal_quote(
     quote_id: str,
@@ -154,6 +190,17 @@ def patch_internal_quote(
     return update_quote_header(db, quote_id, payload, current_user, request)
 
 
+@router.post("/{quote_id}/participation", response_model=InternalQuoteOut)
+def post_internal_quote_participation(
+    quote_id: str,
+    payload: InternalQuoteParticipationUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return add_quote_participation(db, quote_id, payload, current_user, request)
+
+
 @router.get("/{quote_id}/reference-snapshot", response_model=InternalQuoteReferenceSetOut)
 def get_internal_quote_reference_snapshot(
     quote_id: str,
@@ -172,6 +219,17 @@ def post_internal_quote_reference_snapshot_sync(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return sync_quote_reference_set(db, quote_id, payload, current_user, request)
+
+
+@router.put("/{quote_id}/reference-snapshot/fx", response_model=InternalQuoteOut)
+def put_internal_quote_reference_snapshot_fx(
+    quote_id: str,
+    payload: InternalQuoteReferenceFxUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return update_quote_reference_fx(db, quote_id, payload, current_user, request)
 
 
 @router.post("/{quote_id}/clone", response_model=InternalQuoteOut, status_code=status.HTTP_201_CREATED)

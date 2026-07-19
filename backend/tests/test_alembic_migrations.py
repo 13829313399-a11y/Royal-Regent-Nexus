@@ -34,6 +34,8 @@ INTERNAL_QUOTE_P2_MIGRATION_REVISION = "20260716_0021"
 INTERNAL_QUOTE_P3_MIGRATION_REVISION = "20260716_0022"
 INTERNAL_QUOTE_P4_MIGRATION_REVISION = "20260716_0023"
 IAM_POSITION_SCOPE_MIGRATION_REVISION = "20260717_0024"
+INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION = "20260718_0025"
+INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION = "20260718_0026"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -83,7 +85,21 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [IAM_POSITION_SCOPE_MIGRATION_REVISION]
+    assert script.get_heads() == [INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION]
+
+    pricing_baseline_revision = script.get_revision(
+        INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION
+    )
+    assert pricing_baseline_revision.down_revision == INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION
+    pricing_baseline_content = Path(pricing_baseline_revision.path).read_text(encoding="utf-8")
+    assert "internal_quote_pricing_baselines" in pricing_baseline_content
+    assert "material_prices_json" in pricing_baseline_content
+    assert "machine_prices_json" in pricing_baseline_content
+
+    target_price_revision = script.get_revision(INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION)
+    assert target_price_revision.down_revision == IAM_POSITION_SCOPE_MIGRATION_REVISION
+    target_price_content = Path(target_price_revision.path).read_text(encoding="utf-8")
+    assert "target_customer_price" in target_price_content
 
     scope_revision = script.get_revision(IAM_POSITION_SCOPE_MIGRATION_REVISION)
     assert scope_revision.down_revision == INTERNAL_QUOTE_P4_MIGRATION_REVISION
@@ -345,6 +361,8 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "create table internal_quote_final_reviews" in sql
     assert "create table internal_quote_artifact_handoffs" in sql
     assert "uq_internal_quote_artifact_handoffs_quote_release" in sql
+    assert "target_customer_price" in sql
+    assert "create table internal_quote_pricing_baselines" in sql
 
 
 def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
@@ -418,7 +436,7 @@ def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
             "internal_quote:export": "operate",
         }
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
         )
 
 
@@ -520,11 +538,12 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
     with sqlite3.connect(database_path) as connection:
         quote = connection.execute(
             """
-            SELECT quote_no, initiator_department, module_version, header_revision
+            SELECT quote_no, initiator_department, module_version, header_revision,
+                   target_customer_price
             FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'
             """
         ).fetchone()
-        assert quote == ("LEGACY-P1", "sales-business", "legacy_rr2_compatible", 1)
+        assert quote == ("LEGACY-P1", "sales-business", "legacy_rr2_compatible", 1, "无")
         audit = connection.execute(
             "SELECT factory_id, action FROM internal_quote_audit_logs WHERE id = 'IQA-LEGACY-P1'"
         ).fetchone()
@@ -533,7 +552,7 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
             "SELECT COUNT(*) FROM internal_quote_sections WHERE quote_id = 'IQ-LEGACY-P1'"
         ).fetchone() == (1,)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
         )
 
     run_alembic("downgrade", INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
@@ -543,7 +562,7 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
             "SELECT quote_no FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'"
         ).fetchone() == ("LEGACY-P1",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
         )
 
 
@@ -721,5 +740,5 @@ def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
             "SELECT file_name FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'"
         ).fetchone() == ("历史导出.xlsx",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            IAM_POSITION_SCOPE_MIGRATION_REVISION,
+            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
         )

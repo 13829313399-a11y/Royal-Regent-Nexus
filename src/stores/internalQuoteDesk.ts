@@ -6,12 +6,14 @@ import {
   type ApiInternalQuoteAudit,
   type ApiInternalQuoteExport,
   type ApiInternalQuoteImportPreview,
+  type ApiInternalQuotePricingBaseline,
   type ApiInternalQuoteReferenceSet,
   type ApiInternalQuoteSection,
   type ApiInternalQuoteSummary,
   type ApiInternalQuoteTimeline,
   type ApiInternalQuoteVersionCandidate,
   type ApiInternalQuoteVersionComparison,
+  type InternalQuotePricingBaselineUpdateRequest,
 } from '@/api/internalQuote'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { getApiErrorMessage } from '@/lib/http'
@@ -35,9 +37,11 @@ const actionTitles: Record<string, string> = {
   submit: '提交分段审核', approve: '分段审核通过', reject: '分段审核退回', request_na: '申请分段不适用',
   approve_na: '批准分段不适用', reopen: '合法重开分段', import_preview: '预览导入文件',
   import_confirm: '确认导入文件', upload_attachment: '上传分段附件', download_attachment: '下载分段附件',
-  reference_sync: '同步参考快照', final_submit: '提交最终放行', final_approve: '最终放行通过',
+  reference_sync: '同步参考快照', reference_fx_update: '调整报价汇率', reference_recalculated: '按新参考重算',
+  final_submit: '提交最终放行', final_approve: '最终放行通过',
   final_reject: '最终放行退回', export: '生成受控导出', download_export: '下载受控导出', archive: '归档报价',
   dependency_invalidated: '下游依赖失效', final_release_invalidated: '最终放行失效',
+  participation_added: '添加参与部门',
 }
 
 function numberValue(value: unknown, fallback = 0) {
@@ -80,12 +84,14 @@ function calculationLines(section: ApiInternalQuoteSection): InternalQuoteCostLi
     return {
       id: `${section.id}-calculation-${index}`,
       item: String(row.item ?? row.group ?? row.name ?? row.kind ?? `计算明细 ${index + 1}`),
-      specification: String(row.kind ?? '后端计算快照'),
+      specification: row.reference_only
+        ? `${String(row.kind ?? '后端计算快照')}（备选参考）`
+        : String(row.kind ?? '后端计算快照'),
       quantity: 1,
       unit: '项',
       unitPrice: amount,
       currency: 'HKD',
-      formula: '服务端权威计算结果',
+      formula: String(row.formula ?? '服务端权威计算结果'),
       amountHkd: amount,
     }
   })
@@ -225,6 +231,7 @@ function toQuote(
     initiatorName: source.created_by_name || source.created_by,
     businessOwnerId: source.business_owner_id,
     businessOwner: source.business_owner_name,
+    targetCustomerPrice: source.target_customer_price?.trim() || '无',
     quantity: source.qty,
     targetDate: source.target_date,
     remark: source.remark,
@@ -257,7 +264,7 @@ function emptyQuote(): InternalQuote {
   return {
     id: '', quoteNo: '', productName: '正在读取内部报价…', customer: '', versionLabel: '', factoryId: '', factoryName: '',
     workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', initiatorName: '', businessOwnerId: '',
-    businessOwner: '', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
+    businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
     fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', formulaVersion: '', headerRevision: 1,
     finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [],
     sections: internalQuoteSectionDefinitions.map((definition) => ({
@@ -302,10 +309,13 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
   state: () => ({
     quotes: [] as InternalQuote[],
     businessOwners: [] as InternalQuoteBusinessOwner[],
+    pricingBaseline: null as ApiInternalQuotePricingBaseline | null,
     placeholderQuote: emptyQuote(),
     listLoading: false,
     detailLoading: false,
     ownerLoading: false,
+    baselineLoading: false,
+    baselineSaving: false,
     submitting: false,
     fileBusy: false,
     errorMessage: '',
@@ -367,6 +377,38 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
     },
+    async loadPricingBaseline(factoryId: string, workshopCode = 'huaxing-workshop') {
+      this.baselineLoading = true
+      this.errorMessage = ''
+      try {
+        this.pricingBaseline = await internalQuoteApi.getPricingBaseline(factoryId, workshopCode)
+        return this.pricingBaseline
+      } catch (error) {
+        this.pricingBaseline = null
+        this.errorMessage = getApiErrorMessage(error)
+        throw error
+      } finally {
+        this.baselineLoading = false
+      }
+    },
+    async updatePricingBaseline(
+      factoryId: string,
+      workshopCode: string,
+      payload: InternalQuotePricingBaselineUpdateRequest,
+    ) {
+      this.baselineSaving = true
+      this.errorMessage = ''
+      try {
+        this.pricingBaseline = await internalQuoteApi.updatePricingBaseline(factoryId, workshopCode, payload)
+        return this.pricingBaseline
+      } catch (error) {
+        const message = mutationMessage(error)
+        this.errorMessage = message
+        throw new Error(message)
+      } finally {
+        this.baselineSaving = false
+      }
+    },
     async loadQuote(quoteId: string) {
       if (!quoteId) return undefined
       this.detailLoading = true
@@ -426,7 +468,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           factory_id: factoryId, workshop_code: `${factoryId}-workshop`, workshop_name: factoryName,
           quote_no: payload.quoteNo.trim(), product_name: payload.productName.trim(), customer: payload.customer.trim(),
           qty: payload.quantity, version_label: payload.versionLabel.trim(), initiator_department: payload.initiatorDepartment,
-          business_owner_id: payload.businessOwnerId, business_owner_name: payload.businessOwner.trim(), target_date: payload.targetDate, remark: payload.remark,
+          business_owner_id: payload.businessOwnerId, business_owner_name: payload.businessOwner.trim(),
+          target_customer_price: payload.targetCustomerPrice.trim(), target_date: payload.targetDate,
+          remark: payload.remark, participating_sections: payload.participatingSections,
         })
         const quote = toQuote(created)
         this.upsertQuote(quote)
@@ -441,7 +485,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       try {
         const cloned = await internalQuoteApi.clone(sourceQuoteId, {
           quote_no: payload.quoteNo.trim(), version_label: payload.versionLabel.trim(), business_owner_id: payload.businessOwnerId,
-          business_owner_name: payload.businessOwner.trim(), target_date: payload.targetDate, remark: payload.remark,
+          business_owner_name: payload.businessOwner.trim(), target_customer_price: payload.targetCustomerPrice.trim(),
+          target_date: payload.targetDate, remark: payload.remark,
+          participating_sections: payload.participatingSections,
         })
         const quote = toQuote(cloned)
         this.upsertQuote(quote)
@@ -465,8 +511,14 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     reopenSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.reopenSection(quoteId, sectionCode, revision, reason))
     },
+    addParticipation(quoteId: string, revision: number, sectionCodes: InternalQuoteSectionCode[]) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.addParticipation(quoteId, revision, sectionCodes))
+    },
     syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.syncReferenceSnapshot(quoteId, revision, reason))
+    },
+    updateReferenceFx(quoteId: string, revision: number, rmbHkd: string, hkdUsd: string) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.updateReferenceFx(quoteId, revision, rmbHkd, hkdUsd))
     },
     async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File) {
       this.fileBusy = true

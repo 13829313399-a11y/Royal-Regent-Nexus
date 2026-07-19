@@ -16,7 +16,7 @@ function artifact(productType: 'plastic' | 'plush' = 'plastic'): P4InternalQuote
   const toolCost = productType === 'plastic' ? 53_623.53 : 14_220
   const processType = productType === 'plastic' ? 'IN' : 'RC'
   const section = (code: P4SectionCode, payload: Record<string, unknown>) => ({
-    code, name: code, status: 'approved', revision: 2, calculationStatus: 'valid', dependencyStatus: 'current', calculationHash: `${code}-hash`, payload,
+    code, name: code, status: 'approved', revision: 2, calculationStatus: 'valid', dependencyStatus: 'current', calculationHash: `${code}-hash`, isRequired: true, payload,
     calculation: { calculation_hash: `${code}-hash`, formula_version: 'rr2-2026-v1', reference_snapshot_id: 'IQREF-L5-4' },
   })
   return {
