@@ -211,28 +211,64 @@ function shippingScenarios(source: ApiInternalQuote) {
   })
 }
 
+const rr2T1Fields = [
+  ['base_price', '货价'], ['imp_mat', '进口料'], ['dom_mat', '国内料'], ['blow', '吹气'],
+  ['slush', '搪胶'], ['sewing_hair', '车发'], ['sewing_cloth', '车衣'], ['hardware', '五金'],
+  ['electronic', '电子'], ['motor', '马达'], ['suction', '吸塑'], ['glue_bag', '胶袋'],
+] as const
+const rr2T2Fields = [
+  ['color_box', '彩盒/内咭'], ['code_before', '未减税前码数'], ['code_after', '减税后码数'],
+  ['battery', '电池'], ['libao', '利宝'], ['plating', '电镀'], ['other_buy', '其他外购'],
+  ['carton', '纸箱'], ['freight', '运费'], ['cabinet', '吊柜费'], ['misc', '杂项'],
+] as const
+const rr2T3Fields = [
+  ['injection_labor', '啤工', undefined], ['painting_labor', '喷油工', undefined],
+  ['paint_material', '油漆', undefined], ['assembly_labor', '装配工', undefined],
+  ['no_labor_cost', '不含人工成本', undefined], ['labor_ratio', '人工比例', 'percent'],
+  ['gross', '毛利', undefined], ['gross_ratio', '毛利率', 'percent'],
+  ['profit', '利润', undefined], ['profit_ratio', '利润率', 'percent'],
+  ['total_cost', '总成本', undefined],
+] as const
+const rr2T4Fields = [
+  ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', 10],
+  ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类13%', 11.5],
+  ['sewcloth13', '车衣类13%', 11.5], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
+  ['tax13b', '含税13%类', 11.5],
+] as const
+
 function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
   const source = summary?.rr2_cost_summary
   const shipping = source?.shipping_pricing
-  const values = (rows: Array<{ key: string; label: string; value: string; format?: string }> | undefined) => (rows ?? []).map((row) => ({
-    key: row.key,
-    label: row.label,
-    value: numberValue(row.value),
-    format: row.format,
-  }))
+  const fixedValues = (
+    rows: Array<{ key: string; label: string; value: string; format?: string }> | undefined,
+    fields: readonly (readonly [string, string, string?])[],
+  ) => {
+    const rowsByKey = new Map((rows ?? []).map((row) => [row.key, row]))
+    return fields.map(([key, label, format]) => ({
+      key,
+      label,
+      value: numberValue(rowsByKey.get(key)?.value),
+      format,
+    }))
+  }
+  const taxRowsByKey = new Map((source?.t4 ?? []).map((row) => [row.key, row]))
   return {
     currency: source?.currency || 'HKD',
     indonesiaFreightHkd: numberValue(source?.indonesia_freight_hkd),
-    t1: values(source?.t1),
-    t2: values(source?.t2),
-    t3: values(source?.t3),
-    t4: (source?.t4 ?? []).map((row) => ({
-      key: row.key,
-      label: row.label,
-      amountHkd: numberValue(row.amount_hkd),
-      ratePercent: row.rate_percent == null ? null : numberValue(row.rate_percent),
-      deductionHkd: row.deduction_hkd == null ? null : numberValue(row.deduction_hkd),
-    })),
+    t1: fixedValues(source?.t1, rr2T1Fields),
+    t2: fixedValues(source?.t2, rr2T2Fields),
+    t3: fixedValues(source?.t3, rr2T3Fields),
+    t4: rr2T4Fields.map(([key, label, defaultRate]) => {
+      const row = taxRowsByKey.get(key)
+      const ratePercent = row?.rate_percent == null ? defaultRate : numberValue(row.rate_percent)
+      return {
+        key,
+        label,
+        amountHkd: numberValue(row?.amount_hkd),
+        ratePercent,
+        deductionHkd: row?.deduction_hkd == null ? (ratePercent == null ? null : 0) : numberValue(row.deduction_hkd),
+      }
+    }),
     rmbPurchaseCostHkd: numberValue(source?.totals.rmb_purchase_cost_hkd),
     totalDeductionHkd: numberValue(source?.totals.total_deduction_hkd),
     afterDeductionCostHkd: numberValue(source?.totals.after_deduction_cost_hkd),
