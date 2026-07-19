@@ -19,6 +19,7 @@ const exportSource = read('src/components/modules/sales/internal-quote/InternalQ
 const apiSource = read('src/api/internalQuote.ts')
 const storeSource = read('src/stores/internalQuoteDesk.ts')
 const payloadSource = read('src/lib/internalQuoteSectionPayload.ts')
+const backendSummarySource = read('backend/app/services/internal_quote.py')
 
 describe('internal quote desk frontend layout', () => {
   it('registers the new module under the business department without replacing customer conversion', () => {
@@ -49,13 +50,23 @@ describe('internal quote desk frontend layout', () => {
 
   it('implements the confirmed creation, collaboration, browsing, release and export surfaces', () => {
     for (const text of ['新建内部报价', '复制报价', '业务部', '工程部', '搜索报价号']) expect(homeSource).toContain(text)
+    for (const text of ['报价经营概览', '总报价数', '进行中报价数', '已完成报价数', '已取消报价数', '本周统计', '本月统计', '本年统计', '报价状态占比', '各客户报价数量', '客户报价速度对比', '建单至最终放行的平均时长', '进行中报价进度', '横向点图']) expect(homeSource).toContain(text)
+    expect(homeSource).toContain('statusDonutStyle')
+    expect(homeSource).toContain('customerBarWidth')
+    expect(homeSource).toContain('speedDotPosition')
+    expect(homeSource).toContain('quoteStore.loadDashboard')
     for (const text of ['参与分段进度', '参考快照已冻结', '查看汇总与放行', '添加参与部门']) expect(collaborationSource).toContain(text)
     for (const text of ['业务部、工程部、装配部固定参与', '可选参与部门', '创建后仍可在协作页添加回来', '客人目标价', '没有请填无']) expect(createDialogSource).toContain(text)
     expect(homeSource).toContain('跨厂只读')
     expect(homeSource).toContain('canCreateCurrentFactory')
     expect(homeSource).toContain('canCloneQuote')
     for (const text of ['Excel 预览导入', '预览不会修改正式数据', '申请不适用', '合法重开', '分段附件']) expect(sectionEditorSource).toContain(text)
-    for (const text of ['五金', '辅助材料', '五金 Excel 导入', '电子零件与子项', '注塑明细', '七类喷油工序', '搪胶成本明细', '车缝产品组', '装配与包装产品组']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
+    for (const text of ['五金', '辅助材料', '五金 Excel 导入', '电子零件明细', '电子报价单 Excel 导入', '注塑部分', '二次加工（印喷报价）', '喷油报价单 Excel 导入', '二-C、搪胶产品报价', '搪胶报价单 Excel 导入', '车缝产品报价（按产品分组）', '车缝报价单 Excel 导入', '装配与包装产品组']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
+    for (const text of ['布料名称', '部位', '工艺', '裁片数', '用量/码', '物料价 (RMB)', '价钱 (RMB，自动)', '码点', '总价钱 (RMB，自动)', '含电绣', '裁片数和工艺只作记录']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
+    for (const text of ['产品编号', '胶件名称', '材料', '料重 (g)', '日产量 24H', '用量 (PC)', '单价 HKD', '总价 HKD（自动）', '合计 RMB', '源表总价与合计只用于核对']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
+    for (const text of ['图片 / 附件引用', '名称', '位置', '夹模', '移印', '散枪', '边模', '油色', '浸油', '抹油', '擦PP水', '报价 HKD', '备注', '二、二次加工成本汇总']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
+    for (const text of ['啤机报价单 Excel 导入', '注塑部分', '模具名称', '模号', '含损耗重量 (g，自动)', '料价 HKD/g（快照）', '原料单价 HKD（自动）', '啤价 HKD/啤（自动）', '出模数', '机型 A码', '目标数', '周期 (秒)', '吹气部分', '日产量 / 22H', '产品料价 HKD（自动）', '吹工 HKD', '披锋 HKD', '利润 ×', '出数', '模价 RMB']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
+    expect(sectionEditorSource).toContain(':calculation="section.calculation"')
     for (const text of ['模具资料', '模胚类型', '模具结构', '出模数', '净重 (g)', '周期 (秒)', '模具价格 RMB', '模价 HKD（自动）', '生产模具费用与分摊', '客户补贴模费 USD', '手板费总额 USD', '测试费总额 USD', 'RMB→USD 汇率', '每件分摊合计']) expect(sectionFormSource).toContain(text)
     for (const text of ['附加税与印尼运费', '减税分类', '出货场景']) expect(sectionFormSource).not.toContain(text)
     for (const text of ['纸箱计算与包装尺寸', '产品尺寸 (cm)', '彩盒尺寸 (cm)', '纸价系数（箱价基数）', '平卡纸价系数（默认同箱价）', '一箱装的个数', '平卡价 HKD（自动）']) expect(sectionFormSource).toContain(text)
@@ -78,6 +89,9 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).not.toContain('addEngineeringCarton')
     expect(sectionFormSource).toContain('统一填入格式：Huaxing Demo')
     expect(sectionFormSource).toContain('客户名称仅决定最终报客价的输出模板')
+    for (const text of ['板块导航', '点击圆点直达对应范围', '已完成', '填写中', '必填未开始', '可不填', 'scrollIntoView', 'getInternalQuoteFormBlocks']) expect(sectionFormSource).toContain(text)
+    expect(sectionFormSource).toContain('linear-gradient(105deg,#134e4a')
+    expect(sectionFormSource).toContain('position:sticky;top:88px')
     for (const customerFlag of ['isBuzzBee', 'isDisney', 'isDickie', 'isCaixing']) {
       expect(sectionFormSource).toContain(`const ${customerFlag} = computed(() => false)`)
     }
@@ -85,7 +99,11 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['调整汇率', '保存汇率', '保存会生成新 revision', 'updateFx']) expect(activitySource).toContain(text)
     expect(collaborationSource).toContain("internal_quote:sales_edit")
     expect(collaborationSource).toContain('updateReferenceFx')
-    for (const text of ['汇总与最终放行', '分段放行状态', '最终提交人与最终放行人不得相同']) expect(summarySource).toContain(text)
+    for (const text of ['汇总与最终放行', '权威成本分布', '紧凑清单', '出货价算价', '客户自提时本板块完全隐藏', '减税明细 / 成本汇总', '一、出厂货价核', '二、包装 / 外购', '三、人工 &amp; 成本汇总', '四、减税明细', '减税后成本', '分段放行状态', '最终提交人与最终放行人不得相同']) expect(summarySource).toContain(text)
+    for (const text of ['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣类13%', '吸塑类6%', '运费类9%', '含税13%类']) expect(backendSummarySource).toContain(text)
+    expect(summarySource).toContain('v-if="shippingPricing.enabled"')
+    expect(summarySource).toContain('减税额 = 金额 × 税率')
+    expect(summarySource).not.toContain('责任分段成本汇总')
     for (const text of ['内部报价导出汇总', '审批 revision 矩阵', '均由后端控制']) expect(exportSource).toContain(text)
     expect(exportSource).toContain('统一内部格式：Huaxing Demo')
     for (const text of ['调整报价基数', '初始材料价', '初始机型价', '业务主管可修改', '跟客只读查看']) {
@@ -119,6 +137,7 @@ describe('internal quote desk frontend layout', () => {
     expect(combined).not.toMatch(/cdn\.tailwindcss|fonts\.googleapis|material-symbols|lh3\.googleusercontent/)
     expect(apiSource).toContain("'/internal-quotes'")
     expect(apiSource).toContain("'/internal-quotes/business-owners'")
+    expect(apiSource).toContain("'/internal-quotes/dashboard'")
     expect(apiSource).toContain("'/internal-quotes/pricing-baseline'")
     expect(apiSource).toContain('include_sections: true')
     expect(apiSource).toContain('saveSection(quoteId')
@@ -127,6 +146,7 @@ describe('internal quote desk frontend layout', () => {
     expect(apiSource).toContain('addParticipation(quoteId')
     expect(apiSource).toContain('/participation`')
     expect(storeSource).toContain('internalQuoteApi.list')
+    expect(storeSource).toContain('internalQuoteApi.getDashboard')
     expect(storeSource).not.toContain('createInitialInternalQuotes')
   })
 })

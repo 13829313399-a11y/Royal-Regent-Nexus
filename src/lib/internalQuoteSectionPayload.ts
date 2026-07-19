@@ -91,10 +91,67 @@ export interface EngineeringPayload {
   cartons?: EngineeringCartonRow[]
 }
 
-export interface ElectronicComponentRow { item: string; quantity: number; unit_price_hkd: number; children: ElectronicComponentRow[] }
-export interface ElectronicPayload { components: ElectronicComponentRow[]; bonding_hkd: number; smt_hkd: number; labor_hkd: number; testing_hkd: number; packaging_hkd: number; profit_rate_percent: number; tax_credit_difference_hkd: number }
+export interface ElectronicComponentRow {
+  item: string
+  specification: string
+  quantity: number
+  unit_price_rmb?: number
+  unit_price_hkd?: number
+  tax_rate_percent: number
+  remark: string
+  source_currency?: string
+  source_row?: number
+  children: ElectronicComponentRow[]
+}
+export interface ElectronicPayload {
+  pricing_currency?: 'RMB'
+  components: ElectronicComponentRow[]
+  bonding_rmb?: number
+  smt_rmb?: number
+  labor_rmb?: number
+  testing_rmb?: number
+  packaging_rmb?: number
+  profit_rate_percent: number
+  // 兼容历史报价；新报价统一用上面的 RMB 字段，HKD 由冻结汇率自动换算。
+  bonding_hkd?: number
+  smt_hkd?: number
+  labor_hkd?: number
+  testing_hkd?: number
+  packaging_hkd?: number
+  tax_credit_difference_hkd?: number
+}
+export interface ElectronicSummary {
+  componentCostRmb: number
+  deductibleInputTaxRmb: number
+  preTaxCostRmb: number
+  withProfitRmb: number
+  taxDifferenceRmb: number
+  taxPayableRmb: number
+  quoteRmb: number
+  quoteHkd: number
+}
 
-export interface InjectionRow { item: string; material: string; grade: string; net_weight_g: number; loss_rate_percent: number; machine_code: string; sets: number; target_output: number; quantity: number; disney_mold_no: string; disney_resin_cost_usd_kg: number; disney_cycle_time_seconds: number; disney_labor_rate_usd_hr: number }
+export interface InjectionRow {
+  item: string
+  mold_no: string
+  material: string
+  grade: string
+  color: string
+  net_weight_g: number
+  loss_rate_percent: number
+  machine_name: string
+  machine_code: string
+  cavity: string
+  sets: number
+  target_output: number
+  cycle_time_seconds: number
+  quantity: number
+  remark: string
+  disney_mold_no: string
+  disney_resin_cost_usd_kg: number
+  disney_cycle_time_seconds: number
+  disney_labor_rate_usd_hr: number
+}
 export type CaixingToolProcessType = 'IN' | 'BL' | 'CP' | 'DC' | 'RC'
 export interface CaixingToolPlanRow {
   ref_no: string
@@ -114,20 +171,61 @@ export interface CaixingToolPlanRow {
   cycle_time_seconds: number
   process_cost_hkd: number
 }
-export interface BlowRow { item: string; material: string; grade: string; estimated_weight_g: number; labor_hkd: number; burr_hkd: number; profit_multiplier: number; quantity: number }
-export interface MoldingPayload { injection_lines: InjectionRow[]; blow_lines: BlowRow[]; caixing_tool_plan_rows: CaixingToolPlanRow[] }
+export interface BlowRow {
+  item: string
+  daily_capacity: string
+  material: string
+  grade: string
+  estimated_weight_g: number
+  labor_hkd: number
+  burr_hkd: number
+  profit_multiplier: number
+  quantity: number
+  output_count: string
+  mold_price_rmb: number
+  remark: string
+}
+export interface MoldingPayload { injection_loss_rate_percent: number; injection_lines: InjectionRow[]; blow_lines: BlowRow[]; caixing_tool_plan_rows: CaixingToolPlanRow[] }
 
-export type PaintingOperationCode = 'clamp' | 'pad_print' | 'spray' | 'edge' | 'paint' | 'dip' | 'wipe'
+export type PaintingOperationCode = 'clamp' | 'pad_print' | 'spray' | 'edge' | 'paint' | 'dip' | 'wipe' | 'pp_water'
 export interface PaintingOperationValue { quantity: number; unit_price_hkd: number }
 export type PaintingOperations = Record<PaintingOperationCode, PaintingOperationValue>
-export interface PaintingRow { item: string; operations: PaintingOperations }
+export interface PaintingRow {
+  image_reference: string
+  name: string
+  position: string
+  operations: PaintingOperations
+  remark: string
+  source_row?: number
+}
 export interface DisneyDecorationRow { application_type: string; rate_per_op_usd: number; operations: number }
 export interface PaintingPayload { rows: PaintingRow[]; disney_decorations: DisneyDecorationRow[] }
 
-export interface SlushRow { item: string; quantity: number; unit_price_hkd: number }
+export interface SlushRow {
+  product_code: string
+  item: string
+  material: string
+  weight_g: number
+  daily_output_24h: number
+  quantity: number
+  unit_price_hkd: number
+  remark: string
+  source_row?: number
+}
 export interface SlushPayload { lines: SlushRow[] }
 
-export interface SewingMaterialRow { item: string; usage: number; unit_price_rmb: number; markup: number }
+export interface SewingMaterialRow {
+  item: string
+  part: string
+  craft: '' | '电绣'
+  pieces: number
+  usage: number
+  unit_price_rmb: number
+  markup: number
+  remark: string
+  supplier?: string
+  source_row?: number
+}
 export interface SewingGroup { name: string; category: 'clothes' | 'hair'; materials: SewingMaterialRow[]; labor_rmb: number }
 export interface SewingPayload { groups: SewingGroup[] }
 
@@ -221,7 +319,7 @@ export interface SalesPayload {
 
 export type InternalQuoteSectionPayload = SalesPayload | EngineeringPayload | ElectronicPayload | MoldingPayload | PaintingPayload | SlushPayload | SewingPayload | AssemblyPayload
 
-const operationCodes: PaintingOperationCode[] = ['clamp', 'pad_print', 'spray', 'edge', 'paint', 'dip', 'wipe']
+const operationCodes: PaintingOperationCode[] = ['clamp', 'pad_print', 'spray', 'edge', 'paint', 'dip', 'wipe', 'pp_water']
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -406,6 +504,71 @@ export function calculateSalesFreightOptions(
   })
 }
 
+export function calculateElectronicUnitPriceRmb(row: ElectronicComponentRow, rmbHkdRate: unknown) {
+  if (Object.prototype.hasOwnProperty.call(row, 'unit_price_rmb')) return positivePreviewNumber(row.unit_price_rmb)
+  const rate = positivePreviewNumber(rmbHkdRate)
+  return positivePreviewNumber(row.unit_price_hkd) * rate
+}
+
+export function calculateElectronicUnitPriceHkd(row: ElectronicComponentRow, rmbHkdRate: unknown) {
+  const rate = positivePreviewNumber(rmbHkdRate)
+  return rate ? calculateElectronicUnitPriceRmb(row, rate) / rate : positivePreviewNumber(row.unit_price_hkd)
+}
+
+export function calculateElectronicAmountRmb(row: ElectronicComponentRow, rmbHkdRate: unknown) {
+  return positivePreviewNumber(row.quantity) * calculateElectronicUnitPriceRmb(row, rmbHkdRate)
+}
+
+export function calculateElectronicAmountHkd(row: ElectronicComponentRow, rmbHkdRate: unknown) {
+  const rate = positivePreviewNumber(rmbHkdRate)
+  return rate ? calculateElectronicAmountRmb(row, rate) / rate : positivePreviewNumber(row.quantity) * positivePreviewNumber(row.unit_price_hkd)
+}
+
+function electronicRowsSummary(rows: ElectronicComponentRow[], rmbHkdRate: unknown) {
+  return rows.reduce((summary, row) => {
+    const amountRmb = calculateElectronicAmountRmb(row, rmbHkdRate)
+    const taxRate = positivePreviewNumber(row.tax_rate_percent)
+    const children = electronicRowsSummary(row.children, rmbHkdRate)
+    summary.componentCostRmb += amountRmb + children.componentCostRmb
+    summary.deductibleInputTaxRmb += (taxRate ? amountRmb * taxRate / (100 + taxRate) : 0) + children.deductibleInputTaxRmb
+    return summary
+  }, { componentCostRmb: 0, deductibleInputTaxRmb: 0 })
+}
+
+export function electronicExtraRmb(
+  payload: ElectronicPayload,
+  rmbField: 'bonding_rmb' | 'smt_rmb' | 'labor_rmb' | 'testing_rmb' | 'packaging_rmb',
+  hkdField: 'bonding_hkd' | 'smt_hkd' | 'labor_hkd' | 'testing_hkd' | 'packaging_hkd',
+  rmbHkdRate: unknown,
+) {
+  if (Object.prototype.hasOwnProperty.call(payload, rmbField)) return positivePreviewNumber(payload[rmbField])
+  return positivePreviewNumber(payload[hkdField]) * positivePreviewNumber(rmbHkdRate)
+}
+
+export function calculateElectronicSummary(payload: ElectronicPayload, rmbHkdRate: unknown): ElectronicSummary {
+  const rate = positivePreviewNumber(rmbHkdRate)
+  const component = electronicRowsSummary(payload.components, rate)
+  const extras = electronicExtraRmb(payload, 'bonding_rmb', 'bonding_hkd', rate)
+    + electronicExtraRmb(payload, 'smt_rmb', 'smt_hkd', rate)
+    + electronicExtraRmb(payload, 'labor_rmb', 'labor_hkd', rate)
+    + electronicExtraRmb(payload, 'testing_rmb', 'testing_hkd', rate)
+    + electronicExtraRmb(payload, 'packaging_rmb', 'packaging_hkd', rate)
+  const preTaxCostRmb = component.componentCostRmb + extras
+  const withProfitRmb = preTaxCostRmb * (1 + positivePreviewNumber(payload.profit_rate_percent) / 100)
+  const taxDifferenceRmb = withProfitRmb * .13 - component.deductibleInputTaxRmb
+  const taxPayableRmb = taxDifferenceRmb * .10
+  const quoteRmb = withProfitRmb + taxDifferenceRmb + taxPayableRmb
+  return {
+    ...component,
+    preTaxCostRmb,
+    withProfitRmb,
+    taxDifferenceRmb,
+    taxPayableRmb,
+    quoteRmb,
+    quoteHkd: rate ? quoteRmb / rate : 0,
+  }
+}
+
 function textValue(value: unknown) {
   return value == null ? '' : String(value)
 }
@@ -413,8 +576,14 @@ function textValue(value: unknown) {
 function electronicRows(value: unknown): ElectronicComponentRow[] {
   return rows(value).map((row) => ({
     item: textValue(row.item),
+    specification: textValue(row.specification ?? row.spec),
     quantity: numberValue(row.quantity),
-    unit_price_hkd: numberValue(row.unit_price_hkd),
+    ...(Object.prototype.hasOwnProperty.call(row, 'unit_price_rmb') ? { unit_price_rmb: numberValue(row.unit_price_rmb) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(row, 'unit_price_hkd') ? { unit_price_hkd: numberValue(row.unit_price_hkd) } : {}),
+    tax_rate_percent: numberValue(row.tax_rate_percent, 13),
+    remark: textValue(row.remark ?? row.note),
+    ...(Object.prototype.hasOwnProperty.call(row, 'source_currency') ? { source_currency: textValue(row.source_currency) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
     children: electronicRows(row.children),
   }))
 }
@@ -425,6 +594,62 @@ function paintingOperations(value: unknown): PaintingOperations {
     const operation = objectValue(source[code])
     return [code, { quantity: numberValue(operation.quantity), unit_price_hkd: numberValue(operation.unit_price_hkd) }]
   })) as PaintingOperations
+}
+
+export function calculatePaintingOperationAmount(row: PaintingRow, code: PaintingOperationCode) {
+  const operation = row.operations[code]
+  if (!operation) return 0
+  return Math.max(Number(operation.quantity) || 0, 0) * Math.max(Number(operation.unit_price_hkd) || 0, 0)
+}
+
+export function calculatePaintingRowAmount(row: PaintingRow) {
+  return operationCodes.reduce((total, code) => total + calculatePaintingOperationAmount(row, code), 0)
+}
+
+export function calculatePaintingOperationTotals(payload: PaintingPayload) {
+  return Object.fromEntries(operationCodes.map((code) => [
+    code,
+    payload.rows.reduce((total, row) => total + calculatePaintingOperationAmount(row, code), 0),
+  ])) as Record<PaintingOperationCode, number>
+}
+
+export function calculateSlushRowAmount(row: SlushRow) {
+  return Math.max(Number(row.quantity) || 0, 0) * Math.max(Number(row.unit_price_hkd) || 0, 0)
+}
+
+export function calculateSlushTotalHkd(payload: SlushPayload) {
+  return payload.lines.reduce((total, row) => total + calculateSlushRowAmount(row), 0)
+}
+
+export function calculateSlushTotalRmb(payload: SlushPayload, rmbHkdRate: unknown) {
+  return calculateSlushTotalHkd(payload) * positivePreviewNumber(rmbHkdRate)
+}
+
+export function calculateSewingBasePriceRmb(row: SewingMaterialRow) {
+  return Math.max(Number(row.usage) || 0, 0) * Math.max(Number(row.unit_price_rmb) || 0, 0)
+}
+
+export function calculateSewingRowTotalRmb(row: SewingMaterialRow) {
+  const markup = Math.max(Number(row.markup) || 0, 0) || 1
+  return calculateSewingBasePriceRmb(row) * markup
+}
+
+export function sewingGroupHasLaborLine(group: SewingGroup) {
+  return group.materials.some((row) => `${row.item}${row.part}`.includes('人工'))
+}
+
+export function calculateSewingGroupTotalRmb(group: SewingGroup) {
+  const materialTotal = group.materials.reduce((total, row) => total + calculateSewingRowTotalRmb(row), 0)
+  return materialTotal + (sewingGroupHasLaborLine(group) ? 0 : Math.max(Number(group.labor_rmb) || 0, 0))
+}
+
+export function calculateSewingTotalRmb(payload: SewingPayload) {
+  return payload.groups.reduce((total, group) => total + calculateSewingGroupTotalRmb(group), 0)
+}
+
+export function calculateSewingTotalHkd(payload: SewingPayload, rmbHkdRate: unknown) {
+  const rate = positivePreviewNumber(rmbHkdRate)
+  return rate ? calculateSewingTotalRmb(payload) / rate : 0
 }
 
 export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, value: Record<string, unknown>): Record<string, unknown> {
@@ -478,23 +703,93 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     }
   }
   if (code === 'electronic') {
+    const usesRmbContract = source.pricing_currency === 'RMB'
+      || ['bonding_rmb', 'smt_rmb', 'labor_rmb', 'testing_rmb', 'packaging_rmb'].some((key) => Object.prototype.hasOwnProperty.call(source, key))
+      || rows(source.components).some((row) => Object.prototype.hasOwnProperty.call(row, 'unit_price_rmb'))
+      || !Object.keys(source).length
     return {
-      components: electronicRows(source.components), bonding_hkd: numberValue(source.bonding_hkd), smt_hkd: numberValue(source.smt_hkd), labor_hkd: numberValue(source.labor_hkd), testing_hkd: numberValue(source.testing_hkd), packaging_hkd: numberValue(source.packaging_hkd), profit_rate_percent: numberValue(source.profit_rate_percent, 10), tax_credit_difference_hkd: numberValue(source.tax_credit_difference_hkd),
+      components: electronicRows(source.components),
+      ...(usesRmbContract
+        ? {
+            pricing_currency: 'RMB',
+            bonding_rmb: numberValue(source.bonding_rmb), smt_rmb: numberValue(source.smt_rmb), labor_rmb: numberValue(source.labor_rmb),
+            testing_rmb: numberValue(source.testing_rmb), packaging_rmb: numberValue(source.packaging_rmb),
+          }
+        : {
+            bonding_hkd: numberValue(source.bonding_hkd), smt_hkd: numberValue(source.smt_hkd), labor_hkd: numberValue(source.labor_hkd),
+            testing_hkd: numberValue(source.testing_hkd), packaging_hkd: numberValue(source.packaging_hkd),
+            tax_credit_difference_hkd: numberValue(source.tax_credit_difference_hkd),
+          }),
+      profit_rate_percent: numberValue(source.profit_rate_percent, 10),
     }
   }
   if (code === 'molding') {
+    const injectionLossRate = numberValue(source.injection_loss_rate_percent, 3)
     return {
-      injection_lines: rows(source.injection_lines).map((row) => ({ item: textValue(row.item), material: textValue(row.material), grade: textValue(row.grade), net_weight_g: numberValue(row.net_weight_g), loss_rate_percent: numberValue(row.loss_rate_percent, 3), machine_code: textValue(row.machine_code), sets: numberValue(row.sets, 1), target_output: numberValue(row.target_output), quantity: numberValue(row.quantity, 1), disney_mold_no: textValue(row.disney_mold_no), disney_resin_cost_usd_kg: numberValue(row.disney_resin_cost_usd_kg), disney_cycle_time_seconds: numberValue(row.disney_cycle_time_seconds), disney_labor_rate_usd_hr: numberValue(row.disney_labor_rate_usd_hr) })),
-      blow_lines: rows(source.blow_lines).map((row) => ({ item: textValue(row.item), material: textValue(row.material), grade: textValue(row.grade), estimated_weight_g: numberValue(row.estimated_weight_g), labor_hkd: numberValue(row.labor_hkd), burr_hkd: numberValue(row.burr_hkd), profit_multiplier: numberValue(row.profit_multiplier, 1.05), quantity: numberValue(row.quantity, 1) })),
+      injection_loss_rate_percent: injectionLossRate,
+      injection_lines: rows(source.injection_lines).map((row) => ({
+        item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), material: textValue(row.material), grade: textValue(row.grade ?? row.material_grade), color: textValue(row.color),
+        net_weight_g: numberValue(row.net_weight_g ?? row.weight_g), loss_rate_percent: numberValue(row.loss_rate_percent, injectionLossRate),
+        machine_name: textValue(row.machine_name ?? row.machine), machine_code: textValue(row.machine_code ?? row.machine_model), cavity: textValue(row.cavity),
+        sets: numberValue(row.sets, 1), target_output: numberValue(row.target_output ?? row.target), cycle_time_seconds: numberValue(row.cycle_time_seconds ?? row.cycle_sec),
+        quantity: numberValue(row.quantity, 1), remark: textValue(row.remark ?? row.note),
+        disney_mold_no: textValue(row.disney_mold_no), disney_resin_cost_usd_kg: numberValue(row.disney_resin_cost_usd_kg), disney_cycle_time_seconds: numberValue(row.disney_cycle_time_seconds), disney_labor_rate_usd_hr: numberValue(row.disney_labor_rate_usd_hr),
+      })),
+      blow_lines: rows(source.blow_lines).map((row) => ({
+        item: textValue(row.item ?? row.name), daily_capacity: textValue(row.daily_capacity ?? row.capacity), material: textValue(row.material), grade: textValue(row.grade),
+        estimated_weight_g: numberValue(row.estimated_weight_g ?? row.weight_g), labor_hkd: numberValue(row.labor_hkd ?? row.blow_labor), burr_hkd: numberValue(row.burr_hkd ?? row.flash),
+        profit_multiplier: numberValue(row.profit_multiplier ?? row.profit_x, 1.05), quantity: numberValue(row.quantity, 1),
+        output_count: textValue(row.output_count ?? row.cavity_note), mold_price_rmb: numberValue(row.mold_price_rmb ?? row.mold_price_note), remark: textValue(row.remark ?? row.note),
+      })),
       caixing_tool_plan_rows: rows(source.caixing_tool_plan_rows).map((row) => ({
         ref_no: textValue(row.ref_no), process_type: ['BL', 'CP', 'DC', 'RC'].includes(textValue(row.process_type)) ? textValue(row.process_type) : 'IN', tool_no: textValue(row.tool_no), tooling_cost_hkd: numberValue(row.tooling_cost_hkd), description: textValue(row.description), sku_no: textValue(row.sku_no), cavities: numberValue(row.cavities), up: numberValue(row.up), net_weight_g: numberValue(row.net_weight_g), material_code: numberValue(row.material_code), material: textValue(row.material), color: textValue(row.color), material_cost_hkd: numberValue(row.material_cost_hkd), machine_size: textValue(row.machine_size), cycle_time_seconds: numberValue(row.cycle_time_seconds), process_cost_hkd: numberValue(row.process_cost_hkd),
       })),
     }
   }
-  if (code === 'painting') return { rows: rows(source.rows).map((row) => ({ item: textValue(row.item), operations: paintingOperations(row.operations) })), disney_decorations: rows(source.disney_decorations).map((row) => ({ application_type: textValue(row.application_type), rate_per_op_usd: numberValue(row.rate_per_op_usd), operations: numberValue(row.operations) })) }
-  if (code === 'slush') return { lines: rows(source.lines).map((row) => ({ item: textValue(row.item), quantity: numberValue(row.quantity), unit_price_hkd: numberValue(row.unit_price_hkd) })) }
+  if (code === 'painting') return {
+    rows: rows(source.rows).map((row) => ({
+      image_reference: textValue(row.image_reference ?? row.image),
+      name: textValue(row.name ?? row.item),
+      position: textValue(row.position),
+      operations: paintingOperations(row.operations),
+      remark: textValue(row.remark ?? row.note),
+      ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
+    })),
+    disney_decorations: rows(source.disney_decorations).map((row) => ({ application_type: textValue(row.application_type), rate_per_op_usd: numberValue(row.rate_per_op_usd), operations: numberValue(row.operations) })),
+  }
+  if (code === 'slush') return {
+    lines: rows(source.lines).map((row) => ({
+      product_code: textValue(row.product_code ?? row.product_no),
+      item: textValue(row.item ?? row.name),
+      material: textValue(row.material),
+      weight_g: numberValue(row.weight_g ?? row.net_weight_g),
+      daily_output_24h: numberValue(row.daily_output_24h ?? row.daily_output),
+      quantity: numberValue(row.quantity ?? row.usage),
+      unit_price_hkd: numberValue(row.unit_price_hkd),
+      remark: textValue(row.remark ?? row.note),
+      ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
+    })),
+  }
   if (code === 'sewing') {
-    return { groups: rows(source.groups).map((group) => ({ name: textValue(group.name), category: textValue(group.category) === 'hair' ? 'hair' : 'clothes', labor_rmb: numberValue(group.labor_rmb), materials: rows(group.materials).map((row) => ({ item: textValue(row.item), usage: numberValue(row.usage), unit_price_rmb: numberValue(row.unit_price_rmb), markup: numberValue(row.markup, 1) })) })) }
+    return {
+      groups: rows(source.groups).map((group) => ({
+        name: textValue(group.name),
+        category: ['hair', '车发'].includes(textValue(group.category)) ? 'hair' : 'clothes',
+        labor_rmb: numberValue(group.labor_rmb ?? group.labor_amount),
+        materials: rows(group.materials ?? group.items).map((row) => ({
+          item: textValue(row.item ?? row.fabric ?? row.material),
+          part: textValue(row.part),
+          craft: textValue(row.craft) === '电绣' ? '电绣' : '',
+          pieces: numberValue(row.pieces),
+          usage: numberValue(row.usage ?? row.qty),
+          unit_price_rmb: numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
+          markup: numberValue(row.markup, 1),
+          remark: textValue(row.remark ?? row.note),
+          ...(Object.prototype.hasOwnProperty.call(row, 'supplier') ? { supplier: textValue(row.supplier) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
+        })),
+      })),
+    }
   }
   if (code === 'assembly') {
     return { labor_base_hkd: numberValue(source.labor_base_hkd, 260), groups: rows(source.groups).map((group) => ({ name: textValue(group.name), category: textValue(group.category) === 'packaging' ? 'packaging' : 'assembly', processes: rows(group.processes).map((row) => ({ name: textValue(row.name), persons: numberValue(row.persons), teams: numberValue(row.teams), production_qty: numberValue(row.production_qty) })) })) }
@@ -594,5 +889,5 @@ export function cloneInternalQuotePayload(code: InternalQuoteSectionCode, value:
 }
 
 export const paintingOperationLabels: Record<PaintingOperationCode, string> = {
-  clamp: '夹模', pad_print: '移印', spray: '散枪', edge: '边模', paint: '油色', dip: '浸油', wipe: '抹油',
+  clamp: '夹模', pad_print: '移印', spray: '散枪', edge: '边模', paint: '油色', dip: '浸油', wipe: '抹油', pp_water: '擦PP水',
 }

@@ -173,6 +173,54 @@ def test_hardware_template_preview_maps_only_shared_material_fields_and_replace_
         assert "冻结 RMB→HKD 汇率" in hardware_line["formula"]
 
 
+def test_molding_quote_preview_and_confirm_recalculate_from_frozen_reference(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p3_molding_creator", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="P3-MOLDING", participating_sections=ALL_SECTION_CODES),
+        ).json()
+        quote_id = created["id"]
+
+        logout(client)
+        login(client, "iq_p3_molding_clerk", "molding_clerk", "molding")
+        source = workbook_bytes(
+            [
+                ["模具名称", "模号", "材质", "料型", "颜色", "啤净重(g)", "料损耗 3%", "料价 HK$/g", "原料单价 HK$", "机台", "啤价(HK$/啤)", "出模数", "套数", "机型", "目标数", "周期(秒)", "成品金额 HK$"],
+                ["主体模", "M-01", "ABS", "750SW", "黑色", 100, 103, 999, 999, "80T", 999, "2", 1, "5A", 5000, 24, 999],
+                [],
+                ["货名", "日产量/22H", "用料", "预估料重 g", "料价 HK$/lb", "产品料价", "吹工", "披锋", "小计", "利润 ×", "合计 HK$", "出数", "模价 (¥)"],
+                ["吹气瓶", "12000", "ABS 750SW", 45, 999, 999, 0.2, 0.1, 999, 1.05, 999, "1出2", 5000],
+            ],
+            title="啤机报价",
+        )
+        preview_response = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/molding/preview",
+            files={"file": ("啤机报价.xlsx", source, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        assert preview_response.status_code == 201, preview_response.text
+        preview = preview_response.json()
+        assert preview["target_department"] == "molding"
+        assert preview["row_count"] == 2
+        assert preview["diff_summary"]["existing_rows"] == 0
+        assert any("不直接写入" in warning for warning in preview["warnings"])
+
+        confirmed = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/{preview['batch_id']}/confirm",
+            json={"revision": 1, "mode": "replace"},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        section = confirmed.json()["section"]
+        assert section["revision"] == 2
+        assert section["calculation_status"] == "valid"
+        assert section["payload"]["injection_lines"][0]["mold_no"] == "M-01"
+        assert section["payload"]["blow_lines"][0]["daily_capacity"] == "12000"
+        injection = section["calculation"]["line_breakdown"][0]
+        assert injection["material_price_hkd_lb"] == "8.5000"
+        assert injection["machine_shift_price_hkd"] == "940.0000"
+        assert injection["unit_amount_hkd"] != "999.0000"
+
+
 def test_p3_attachment_validates_magic_deduplicates_and_downloads(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_p3_attachment_creator", "sales_customer_owner", "sales-business")
@@ -277,6 +325,15 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert hashlib.sha256(download.content).hexdigest() == first["sha256"]
         workbook = load_workbook(BytesIO(download.content), data_only=False, read_only=True)
         assert workbook.sheetnames == ["报价明细", "电子明细", "车缝明细", "装配明细", "审批与版本"]
+        electronic_sheet = workbook["电子明细"]
+        assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [
+            "父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源",
+        ]
+        assert [electronic_sheet.cell(5, column).value for column in range(1, 5)] == ["电子成本汇总", "RMB", "HKD", "公式口径"]
+        assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 15)] == [
+            "产品组", "类型", "#", "布料名称", "部位", "工艺", "裁片数", "用量/码",
+            "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注", "来源行",
+        ]
         assert workbook["审批与版本"]["B5"].value == "最终业务放行与客价交接在 P4 实施"
         workbook.close()
 

@@ -122,6 +122,28 @@ export interface ApiInternalQuoteSummary {
   factory_price_hkd: string
   mold_amortization_usd: string
   components_hkd: Record<string, string>
+  rr2_cost_summary?: {
+    currency: string
+    indonesia_freight_hkd: string
+    t1: Array<{ key: string; label: string; value: string; format?: string }>
+    t2: Array<{ key: string; label: string; value: string; format?: string }>
+    t3: Array<{ key: string; label: string; value: string; format?: string }>
+    t4: Array<{ key: string; label: string; amount_hkd: string; rate_percent: string | null; deduction_hkd: string | null }>
+    totals: { rmb_purchase_cost_hkd: string; total_deduction_hkd: string; after_deduction_cost_hkd: string }
+    shipping_pricing: {
+      enabled: boolean
+      freight_share_percent: string
+      lift_share_percent: string
+      markup: string
+      settlement: string
+      factory_price_hkd: string
+      additional_tax_hkd: string
+      shipping_floor_hkd: string
+      hkd_usd: string
+      mold_amortization_usd: string
+      rows: Array<Record<string, string>>
+    }
+  }
   sections: Array<Record<string, unknown>>
   warnings: Array<Record<string, unknown>>
 }
@@ -163,7 +185,7 @@ export interface ApiInternalQuoteExport {
 export interface ApiInternalQuoteImportPreview {
   batch_id: string
   quote_id: string
-  import_type: 'mold' | 'hardware' | 'electronic' | 'painting' | 'sewing' | 'assembly'
+  import_type: 'mold' | 'hardware' | 'electronic' | 'molding' | 'painting' | 'slush' | 'sewing' | 'assembly'
   target_department: string
   source_file_name: string
   source_sha256: string
@@ -243,6 +265,68 @@ export interface ApiInternalQuoteBusinessOwner {
   display_name: string
 }
 
+export interface ApiInternalQuoteSectionPreview {
+  quote_id: string
+  section_code: InternalQuoteSectionCode
+  section_revision: number
+  calculation_status: string
+  calculation: Record<string, unknown>
+  warnings: Array<Record<string, unknown>>
+  saved_factory_price_hkd: string
+  preview_factory_price_hkd: string
+  delta_hkd: string
+  components_hkd: Record<string, string>
+  formula_version: string
+  reference_snapshot_id: string
+  generated_at: string
+}
+
+export type InternalQuoteDashboardPeriod = 'week' | 'month' | 'year'
+
+export interface ApiInternalQuoteDashboard {
+  factory_id: string
+  period: InternalQuoteDashboardPeriod
+  period_label: string
+  period_start: string
+  period_end: string
+  totals: {
+    total: number
+    in_progress: number
+    completed: number
+    canceled: number
+  }
+  status_distribution: Array<{
+    key: 'in_progress' | 'completed' | 'canceled'
+    label: string
+    count: number
+    percentage: number
+  }>
+  customer_quote_counts: Array<{
+    customer: string
+    count: number
+    percentage: number
+  }>
+  progress_items: Array<{
+    quote_id: string
+    quote_no: string
+    product_name: string
+    customer: string
+    status: string
+    approved_sections: number
+    required_sections: number
+    percentage: number
+    updated_at: string
+  }>
+  customer_speed: Array<{
+    customer: string
+    completed_count: number
+    average_hours: number
+    average_days: number
+    fastest_hours: number
+    slowest_hours: number
+  }>
+}
+
 export interface ApiInternalQuoteMaterialBaselineRow {
   material: string
   grade: string
@@ -317,6 +401,12 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       })
       return response.data
     },
+    async getDashboard(factoryId: string, period: InternalQuoteDashboardPeriod) {
+      const response = await client.get<ApiInternalQuoteDashboard>('/internal-quotes/dashboard', {
+        params: { factory_id: factoryId, period },
+      })
+      return response.data
+    },
     async get(quoteId: string) {
       const response = await client.get<ApiInternalQuote>(`/internal-quotes/${quoteId}`)
       return response.data
@@ -383,6 +473,18 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
         revision,
         payload,
         reason,
+      })
+      return response.data
+    },
+    async previewSection(
+      quoteId: string,
+      sectionCode: InternalQuoteSectionCode,
+      revision: number,
+      payload: Record<string, unknown>,
+    ) {
+      const response = await client.post<ApiInternalQuoteSectionPreview>(`/internal-quotes/${quoteId}/sections/${sectionCode}/preview`, {
+        revision,
+        payload,
       })
       return response.data
     },

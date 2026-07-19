@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 InitiatorDepartment = Literal["sales-business", "engineering"]
 ReviewDecision = Literal["approve", "reject"]
-InternalQuoteImportType = Literal["mold", "hardware", "electronic", "painting", "sewing", "assembly"]
+InternalQuoteImportType = Literal["mold", "hardware", "electronic", "molding", "painting", "slush", "sewing", "assembly"]
 InternalQuoteSectionCode = Literal[
     "sales",
     "engineering",
@@ -103,6 +103,60 @@ class InternalQuoteBusinessOwnerOut(BaseModel):
     id: str
     username: str
     display_name: str
+
+
+class InternalQuoteDashboardTotalsOut(BaseModel):
+    total: int
+    in_progress: int
+    completed: int
+    canceled: int
+
+
+class InternalQuoteDashboardStatusOut(BaseModel):
+    key: Literal["in_progress", "completed", "canceled"]
+    label: str
+    count: int
+    percentage: float
+
+
+class InternalQuoteDashboardCustomerCountOut(BaseModel):
+    customer: str
+    count: int
+    percentage: float
+
+
+class InternalQuoteDashboardProgressOut(BaseModel):
+    quote_id: str
+    quote_no: str
+    product_name: str
+    customer: str
+    status: str
+    approved_sections: int
+    required_sections: int
+    percentage: float
+    updated_at: str
+
+
+class InternalQuoteDashboardSpeedOut(BaseModel):
+    customer: str
+    completed_count: int
+    average_hours: float
+    average_days: float
+    fastest_hours: float
+    slowest_hours: float
+
+
+class InternalQuoteDashboardOut(BaseModel):
+    factory_id: str
+    period: Literal["week", "month", "year"]
+    period_label: str
+    period_start: str
+    period_end: str
+    totals: InternalQuoteDashboardTotalsOut
+    status_distribution: list[InternalQuoteDashboardStatusOut]
+    customer_quote_counts: list[InternalQuoteDashboardCustomerCountOut]
+    progress_items: list[InternalQuoteDashboardProgressOut]
+    customer_speed: list[InternalQuoteDashboardSpeedOut]
 
 
 class InternalQuoteMaterialBaselineRow(BaseModel):
@@ -281,6 +335,27 @@ class InternalQuoteSectionSaveRequest(BaseModel):
     @classmethod
     def strip_reason(cls, value: str) -> str:
         return value.strip()
+
+
+class InternalQuoteSectionPreviewRequest(BaseModel):
+    revision: int = Field(ge=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class InternalQuoteSectionPreviewOut(BaseModel):
+    quote_id: str
+    section_code: InternalQuoteSectionCode
+    section_revision: int
+    calculation_status: str
+    calculation: dict[str, Any]
+    warnings: list[dict[str, Any]]
+    saved_factory_price_hkd: str
+    preview_factory_price_hkd: str
+    delta_hkd: str
+    components_hkd: dict[str, str]
+    formula_version: str
+    reference_snapshot_id: str
+    generated_at: str
 
 
 class InternalQuoteRevisionRequest(BaseModel):

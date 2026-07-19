@@ -181,23 +181,26 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "cartons": "legacy compatibility only; new carton and flat-card input belongs to sales",
     },
     "electronic": {
-        "components": [{"item": "text", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "children": "recursive list"}],
-        "bonding_hkd": "decimal>=0",
-        "smt_hkd": "decimal>=0",
-        "labor_hkd": "decimal>=0",
-        "testing_hkd": "decimal>=0",
-        "packaging_hkd": "decimal>=0",
+        "pricing_currency": "RMB for the current contract; legacy HKD payloads remain readable",
+        "components": [{"item": "text", "specification": "text", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "default 13", "remark": "text", "children": "recursive list"}],
+        "bonding_rmb": "decimal>=0",
+        "smt_rmb": "decimal>=0",
+        "labor_rmb": "decimal>=0",
+        "testing_rmb": "decimal>=0",
+        "packaging_rmb": "decimal>=0",
         "profit_rate_percent": "default 10",
-        "tax_credit_difference_hkd": "decimal>=0",
+        "formula": "tax difference = profit-inclusive price * 13% - component input-tax credit; tax payable = tax difference * 10%",
+        "legacy_fields": "unit_price_hkd, *_hkd and tax_credit_difference_hkd remain readable",
     },
     "molding": {
-        "injection_lines": [{"material": "exact text", "grade": "exact text", "net_weight_g": "decimal>=0", "loss_rate_percent": "default 3", "machine_code": "A-code", "sets": "decimal>0", "target_output": "decimal>0", "quantity": "default 1", "disney_mold_no": "text", "disney_resin_cost_usd_kg": "decimal>0", "disney_cycle_time_seconds": "decimal>0", "disney_labor_rate_usd_hr": "decimal>0"}],
-        "blow_lines": [{"material": "exact text", "grade": "exact text", "estimated_weight_g": "decimal>=0", "labor_hkd": "decimal>=0", "burr_hkd": "decimal>=0", "profit_multiplier": "default 1.05", "quantity": "default 1"}],
+        "injection_loss_rate_percent": "default 3; changing it applies to newly normalized rows",
+        "injection_lines": [{"item": "mold name", "mold_no": "text", "material": "exact text", "grade": "exact text", "color": "text", "net_weight_g": "decimal>=0", "loss_rate_percent": "default from section or snapshot", "machine_name": "record only", "machine_code": "A-code", "cavity": "record only", "sets": "decimal>0", "target_output": "decimal>0", "cycle_time_seconds": "record only", "quantity": "default 1", "remark": "text", "disney_mold_no": "text", "disney_resin_cost_usd_kg": "decimal>0", "disney_cycle_time_seconds": "decimal>0", "disney_labor_rate_usd_hr": "decimal>0"}],
+        "blow_lines": [{"item": "text", "daily_capacity": "record only", "material": "exact text", "grade": "exact text", "estimated_weight_g": "decimal>=0", "labor_hkd": "decimal>=0", "burr_hkd": "decimal>=0", "profit_multiplier": "default 1.05", "quantity": "default 1", "output_count": "record only", "mold_price_rmb": "record only", "remark": "text"}],
         "caixing_tool_plan_rows": [{"ref_no": "unique text", "process_type": "IN|BL|CP|DC|RC", "tool_no": "text", "tooling_cost_hkd": "decimal>=0", "description": "text", "sku_no": "text", "cavities": "decimal>0", "up": "decimal>0", "net_weight_g": "decimal>0", "material_code": "decimal>0", "material": "text", "color": "text", "material_cost_hkd": "decimal>0", "machine_size": "text", "cycle_time_seconds": "decimal>0", "process_cost_hkd": "decimal>0"}],
     },
-    "painting": {"rows": [{"item": "text", "operations": "夹模/移印/散枪/边模/油色/浸油/抹油 quantity and unit_price_hkd"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
-    "slush": {"lines": [{"item": "text", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0"}]},
-    "sewing": {"groups": [{"name": "text", "category": "clothes|hair", "materials": "list", "labor_rmb": "decimal>=0"}]},
+    "painting": {"rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
+    "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
+    "sewing": {"groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "price RMB = usage * material price; total RMB = price * markup; HKD = RMB / frozen RMB/HKD rate"},
     "assembly": {"groups": [{"name": "text", "category": "assembly|packaging", "processes": [{"persons": "decimal>=0", "teams": "decimal>=0", "production_qty": "decimal>0"}]}], "labor_base_hkd": "default 260; adjustable"},
 }
 
@@ -408,6 +411,7 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
             "kind": "material",
             "item": str(row.get("item", "")),
             "category": category,
+            "auxiliary_category": str(row.get("auxiliary_category", "其他外购")),
             "specification": str(row.get("specification", row.get("spec", ""))),
             "quantity": decimal_text(quantity),
             "unit": str(row.get("unit", "")),
@@ -590,7 +594,127 @@ def _component_cost(rows: Any, path: str, breakdown: list[dict[str, Any]]) -> De
     return total
 
 
+def _has_electronic_rmb_rows(rows: Any) -> bool:
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if "unit_price_rmb" in row or _has_electronic_rmb_rows(row.get("children", [])):
+            return True
+    return False
+
+
+def _component_cost_rmb(
+    rows: Any,
+    path: str,
+    fx: Decimal,
+    breakdown: list[dict[str, Any]],
+) -> tuple[Decimal, Decimal]:
+    total_rmb = ZERO
+    deductible_input_tax_rmb = ZERO
+    for index, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            raise CalculationInputError(f"{path}第 {index + 1} 行格式无效")
+        quantity = decimal_value(row.get("quantity"), f"{path}第 {index + 1} 行用量")
+        if "unit_price_rmb" in row:
+            unit_price_rmb = decimal_value(row.get("unit_price_rmb"), f"{path}第 {index + 1} 行人民币单价")
+        else:
+            unit_price_rmb = decimal_value(row.get("unit_price_hkd"), f"{path}第 {index + 1} 行港币单价") * fx
+        tax_rate = decimal_value(row.get("tax_rate_percent"), f"{path}第 {index + 1} 行税点", "13")
+        if tax_rate > 100:
+            raise CalculationInputError(f"{path}第 {index + 1} 行税点不能大于 100%")
+        line_rmb = quantity * unit_price_rmb
+        line_input_tax_rmb = line_rmb * tax_rate / (100 + tax_rate) if tax_rate else ZERO
+        child_rmb, child_input_tax_rmb = _component_cost_rmb(
+            row.get("children", []),
+            f"{path}第 {index + 1} 行子项",
+            fx,
+            breakdown,
+        )
+        total_rmb += line_rmb + child_rmb
+        deductible_input_tax_rmb += line_input_tax_rmb + child_input_tax_rmb
+        breakdown.append({
+            "kind": "electronic_component",
+            "item": str(row.get("item", "")),
+            "specification": str(row.get("specification", "")),
+            "quantity": decimal_text(quantity),
+            "unit_price_rmb": decimal_text(unit_price_rmb),
+            "unit_price_hkd": decimal_text(unit_price_rmb / fx),
+            "tax_rate_percent": decimal_text(tax_rate),
+            "amount_rmb": decimal_text(line_rmb),
+            "amount_hkd": decimal_text(line_rmb / fx),
+            "line_hkd": decimal_text(line_rmb / fx),
+            "formula": "用量 × 单价 RMB ÷ 冻结 RMB/HKD 汇率",
+            "input_tax_credit_rmb": decimal_text(line_input_tax_rmb),
+            "children_rmb": decimal_text(child_rmb),
+            "children_hkd": decimal_text(child_rmb / fx),
+        })
+    return total_rmb, deductible_input_tax_rmb
+
+
 def _electronic(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
+    uses_rmb_contract = payload.get("pricing_currency") == "RMB" or any(
+        field in payload
+        for field in ("bonding_rmb", "smt_rmb", "labor_rmb", "testing_rmb", "packaging_rmb")
+    ) or _has_electronic_rmb_rows(payload.get("components", []))
+    if uses_rmb_contract:
+        fx = positive_value(snapshot.get("fx", {}).get("rmb_hkd"), "RMB/HKD 汇率")
+        component_rmb, deductible_input_tax_rmb = _component_cost_rmb(
+            payload.get("components", []),
+            "电子零件",
+            fx,
+            result["line_breakdown"],
+        )
+        extras_rmb = sum(
+            (
+                decimal_value(payload.get(rmb_field), label)
+                if rmb_field in payload
+                else decimal_value(payload.get(hkd_field), label) * fx
+                for rmb_field, hkd_field, label in (
+                    ("bonding_rmb", "bonding_hkd", "邦定成本"),
+                    ("smt_rmb", "smt_hkd", "贴片成本"),
+                    ("labor_rmb", "labor_hkd", "电子人工成本"),
+                    ("testing_rmb", "testing_hkd", "测试费用"),
+                    ("packaging_rmb", "packaging_hkd", "包装运输"),
+                )
+            ),
+            ZERO,
+        )
+        pre_tax_rmb = component_rmb + extras_rmb
+        profit_rate = decimal_value(
+            payload.get("profit_rate_percent"),
+            "电子利润率",
+            str(snapshot.get("electronic_profit_rate_percent", "10")),
+        )
+        with_profit_rmb = pre_tax_rmb * (1 + profit_rate / 100)
+        output_tax_rmb = with_profit_rmb * Decimal("0.13")
+        tax_difference_rmb = output_tax_rmb - deductible_input_tax_rmb
+        tax_payable_rmb = tax_difference_rmb * Decimal("0.10")
+        total_rmb = with_profit_rmb + tax_difference_rmb + tax_payable_rmb
+        total_hkd = total_rmb / fx
+        result["currency_totals"] = {
+            "HKD": decimal_text(total_hkd),
+            "RMB": decimal_text(total_rmb),
+            "USD": "0.0000",
+        }
+        result["totals"] = {
+            "component_rmb": decimal_text(component_rmb),
+            "component_hkd": decimal_text(component_rmb / fx),
+            "extras_rmb": decimal_text(extras_rmb),
+            "pre_tax_rmb": decimal_text(pre_tax_rmb),
+            "pre_tax_hkd": decimal_text(pre_tax_rmb / fx),
+            "with_profit_rmb": decimal_text(with_profit_rmb),
+            "with_profit_hkd": decimal_text(with_profit_rmb / fx),
+            "deductible_input_tax_rmb": decimal_text(deductible_input_tax_rmb),
+            "output_tax_rmb": decimal_text(output_tax_rmb),
+            "tax_credit_difference_rmb": decimal_text(tax_difference_rmb),
+            "tax_credit_difference_hkd": decimal_text(tax_difference_rmb / fx),
+            "tax_payable_rmb": decimal_text(tax_payable_rmb),
+            "tax_payable_hkd": decimal_text(tax_payable_rmb / fx),
+            "total_rmb": decimal_text(total_rmb),
+            "total_hkd": decimal_text(total_hkd),
+        }
+        return
+
     component = _component_cost(payload.get("components", []), "电子零件", result["line_breakdown"])
     extras = sum(
         (
@@ -648,23 +772,39 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         loss_rate = decimal_value(
             row.get("loss_rate_percent"),
             "注塑损耗率",
-            str(snapshot.get("injection_loss_rate_percent", "3")),
+            str(payload.get("injection_loss_rate_percent", snapshot.get("injection_loss_rate_percent", "3"))),
         )
         sets = positive_value(row.get("sets"), "套数")
         target_output = positive_value(row.get("target_output"), "目标数")
         quantity = decimal_value(row.get("quantity"), "成品用量", "1")
         material_cost = net_weight * (1 + loss_rate / 100) * material_price / 454
         molding_cost = machine_price / sets / target_output
-        line_total = (material_cost + molding_cost) * quantity
+        unit_total = material_cost + molding_cost
+        line_total = unit_total * quantity
         injection_total += line_total
         result["line_breakdown"].append({
             "kind": "injection",
             "item": str(row.get("item", "")),
+            "mold_no": str(row.get("mold_no", "")),
+            "material": material,
+            "grade": grade,
+            "color": str(row.get("color", "")),
+            "loss_rate_percent": decimal_text(loss_rate),
+            "loss_weight_g": decimal_text(net_weight * (1 + loss_rate / 100)),
             "material_price_hkd_lb": decimal_text(material_price),
+            "material_price_hkd_g": decimal_text(material_price / 454),
             "machine_shift_price_hkd": decimal_text(machine_price),
+            "machine_name": str(row.get("machine_name", "")),
+            "machine_code": machine_code,
+            "cavity": str(row.get("cavity", "")),
+            "sets": decimal_text(sets),
+            "target_output": decimal_text(target_output),
             "material_cost_hkd": decimal_text(material_cost),
             "molding_cost_hkd": decimal_text(molding_cost),
+            "unit_amount_hkd": decimal_text(unit_total),
+            "quantity": decimal_text(quantity),
             "amount_hkd": decimal_text(line_total),
+            "formula": "啤净重 × (1 + 损耗%) × 冻结材料价 HKD/lb ÷ 454 + 冻结机型台班价 ÷ 套数 ÷ 目标数",
         })
 
     for index, row in enumerate(payload.get("blow_lines", []) or []):
@@ -687,13 +827,26 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         )
         quantity = decimal_value(row.get("quantity"), "吹气成品用量", "1")
         material_cost = weight * material_price / 454
-        line_total = (material_cost + labor + burr) * multiplier * quantity
+        subtotal = material_cost + labor + burr
+        unit_total = subtotal * multiplier
+        line_total = unit_total * quantity
         blow_total += line_total
         result["line_breakdown"].append({
             "kind": "blow",
             "item": str(row.get("item", "")),
+            "daily_capacity": str(row.get("daily_capacity", "")),
+            "material": material,
+            "grade": grade,
+            "material_price_hkd_lb": decimal_text(material_price),
             "material_cost_hkd": decimal_text(material_cost),
+            "labor_hkd": decimal_text(labor),
+            "burr_hkd": decimal_text(burr),
+            "subtotal_hkd": decimal_text(subtotal),
+            "profit_multiplier": decimal_text(multiplier),
+            "unit_amount_hkd": decimal_text(unit_total),
+            "quantity": decimal_text(quantity),
             "amount_hkd": decimal_text(line_total),
+            "formula": "(预估料重 × 冻结材料价 HKD/lb ÷ 454 + 吹工 + 披锋) × 利润倍率",
         })
 
     caixing_rows = payload.get("caixing_tool_plan_rows", []) or []
@@ -760,7 +913,7 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
 
 
 def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
-    operation_names = ("clamp", "pad_print", "spray", "edge", "paint", "dip", "wipe")
+    operation_names = ("clamp", "pad_print", "spray", "edge", "paint", "dip", "wipe", "pp_water")
     total = ZERO
     for index, row in enumerate(payload.get("rows", []) or []):
         if not isinstance(row, dict):
@@ -778,21 +931,51 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
             line_total += operation_total
             operation_breakdown[operation] = decimal_text(operation_total)
         total += line_total
-        result["line_breakdown"].append({"kind": "painting", "item": str(row.get("item", "")), "operations": operation_breakdown, "amount_hkd": decimal_text(line_total)})
+        name = str(row.get("name") or row.get("item") or "")
+        position = str(row.get("position") or "")
+        result["line_breakdown"].append({
+            "kind": "painting",
+            "item": position or name,
+            "name": name,
+            "position": position,
+            "image_reference": str(row.get("image_reference") or ""),
+            "remark": str(row.get("remark") or row.get("note") or ""),
+            "operations": operation_breakdown,
+            "amount_hkd": decimal_text(line_total),
+        })
     result["currency_totals"]["HKD"] = decimal_text(total)
     result["totals"] = {"total_hkd": decimal_text(total)}
 
 
-def _slush(payload: dict[str, Any], result: dict[str, Any]) -> None:
+def _slush(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
+    fx = positive_value(snapshot.get("fx", {}).get("rmb_hkd"), "RMB/HKD 汇率")
     total = ZERO
     for index, row in enumerate(payload.get("lines", []) or []):
         if not isinstance(row, dict):
             raise CalculationInputError(f"搪胶第 {index + 1} 行格式无效")
-        line_total = decimal_value(row.get("quantity"), "搪胶数量") * decimal_value(row.get("unit_price_hkd"), "搪胶单价")
+        quantity = decimal_value(row.get("quantity"), "搪胶用量")
+        unit_price = decimal_value(row.get("unit_price_hkd"), "搪胶单价")
+        weight_g = decimal_value(row.get("weight_g"), "搪胶料重")
+        daily_output = decimal_value(row.get("daily_output_24h"), "搪胶日产量")
+        line_total = quantity * unit_price
         total += line_total
-        result["line_breakdown"].append({"kind": "slush", "item": str(row.get("item", "")), "amount_hkd": decimal_text(line_total)})
+        result["line_breakdown"].append({
+            "kind": "slush",
+            "product_code": str(row.get("product_code", "")),
+            "item": str(row.get("item", "")),
+            "material": str(row.get("material", "")),
+            "weight_g": decimal_text(weight_g),
+            "daily_output_24h": decimal_text(daily_output),
+            "quantity": decimal_text(quantity),
+            "unit_price_hkd": decimal_text(unit_price),
+            "remark": str(row.get("remark", "")),
+            "formula": "quantity * unit_price_hkd",
+            "amount_hkd": decimal_text(line_total),
+        })
+    total_rmb = total * fx
     result["currency_totals"]["HKD"] = decimal_text(total)
-    result["totals"] = {"total_hkd": decimal_text(total)}
+    result["currency_totals"]["RMB"] = decimal_text(total_rmb)
+    result["totals"] = {"total_hkd": decimal_text(total), "total_rmb": decimal_text(total_rmb)}
 
 
 def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
@@ -810,14 +993,34 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
             if not isinstance(row, dict):
                 raise CalculationInputError(f"车缝第 {group_index + 1} 组第 {row_index + 1} 行格式无效")
             item = str(row.get("item", ""))
-            contains_labor_line = contains_labor_line or "人工" in item
-            line_total = (
-                decimal_value(row.get("usage"), "车缝用量")
-                * decimal_value(row.get("unit_price_rmb"), "车缝物料价")
-                * decimal_value(row.get("markup"), "车缝码点", "1")
-            )
+            part = str(row.get("part", ""))
+            contains_labor_line = contains_labor_line or "人工" in f"{item}{part}"
+            pieces = decimal_value(row.get("pieces"), "车缝裁片数")
+            usage = decimal_value(row.get("usage"), "车缝用量")
+            unit_price = decimal_value(row.get("unit_price_rmb"), "车缝物料价")
+            markup = decimal_value(row.get("markup"), "车缝码点", "1")
+            if markup <= ZERO:
+                markup = Decimal("1")
+            price_rmb = usage * unit_price
+            line_total = price_rmb * markup
             group_total += line_total
-            result["line_breakdown"].append({"kind": "sewing_material", "group": str(group.get("name", "")), "item": item, "amount_rmb": decimal_text(line_total)})
+            result["line_breakdown"].append({
+                "kind": "sewing_material",
+                "group": str(group.get("name", "")),
+                "category": category,
+                "item": item,
+                "part": part,
+                "craft": str(row.get("craft", "")),
+                "pieces": decimal_text(pieces),
+                "usage": decimal_text(usage),
+                "unit_price_rmb": decimal_text(unit_price),
+                "price_rmb": decimal_text(price_rmb),
+                "markup": decimal_text(markup),
+                "remark": str(row.get("remark") or row.get("note") or ""),
+                "source_row": row.get("source_row", ""),
+                "formula": "usage * unit_price_rmb * markup",
+                "amount_rmb": decimal_text(line_total),
+            })
         labor = ZERO if contains_labor_line else decimal_value(group.get("labor_rmb"), "车缝产品组人工")
         group_total += labor
         category_rmb[category] += group_total
@@ -829,6 +1032,7 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
         "hair_rmb": decimal_text(category_rmb["hair"]),
         "clothes_hkd": decimal_text(category_rmb["clothes"] / fx),
         "hair_hkd": decimal_text(category_rmb["hair"] / fx),
+        "total_rmb": decimal_text(total_rmb),
         "total_hkd": decimal_text(total_hkd),
     }
 
@@ -1174,6 +1378,11 @@ def calculate_section(
         "engineering": ("materials", "molds", "cartons"),
         "electronic": (
             "components",
+            "bonding_rmb",
+            "smt_rmb",
+            "labor_rmb",
+            "testing_rmb",
+            "packaging_rmb",
             "bonding_hkd",
             "smt_hkd",
             "labor_hkd",
@@ -1210,7 +1419,7 @@ def calculate_section(
     elif section_code == "painting":
         _painting(payload, result)
     elif section_code == "slush":
-        _slush(payload, result)
+        _slush(payload, snapshot, result)
     elif section_code == "sewing":
         _sewing(payload, snapshot, result)
     elif section_code == "assembly":

@@ -35,7 +35,7 @@ def _painting_operations(quantity: float, unit_price_hkd: float) -> dict:
             "quantity": quantity if code == "spray" else 0,
             "unit_price_hkd": unit_price_hkd if code == "spray" else 0,
         }
-        for code in ("clamp", "pad_print", "spray", "edge", "paint", "dip", "wipe")
+        for code in ("clamp", "pad_print", "spray", "edge", "paint", "dip", "wipe", "pp_water")
     }
 
 
