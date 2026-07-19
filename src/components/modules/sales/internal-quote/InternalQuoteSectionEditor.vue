@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertCircle, CheckCircle2, ChevronDown, Download, FileSpreadsheet, FileUp, Info, LockKeyhole, Paperclip, RefreshCw, Save, Send, XCircle } from '@lucide/vue'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/api/internalQuote'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
 import { cloneInternalQuotePayload, normalizeInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
@@ -26,6 +26,7 @@ const localError = ref('')
 const importInput = ref<HTMLInputElement>()
 const attachmentInput = ref<HTMLInputElement>()
 const selectedImportType = ref<ApiInternalQuoteImportPreview['import_type']>()
+let livePreviewTimer: ReturnType<typeof setTimeout> | undefined
 
 const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: string }> = {
   draft: { label: '草稿', tone: 'slate' }, pending_review: { label: '待主管审核', tone: 'amber' },
@@ -44,9 +45,11 @@ const importOptions = computed<ImportOption[]>(() => ({
     { type: 'hardware', label: '五金报价单', buttonLabel: '五金 Excel 导入' },
     { type: 'mold', label: '模具报价单 / 合同', buttonLabel: '模具 Excel 导入' },
   ],
-  electronic: [{ type: 'electronic', label: '电子报价单', buttonLabel: 'Excel 预览导入' }],
-  painting: [{ type: 'painting', label: '喷油核价表', buttonLabel: 'Excel 预览导入' }],
-  sewing: [{ type: 'sewing', label: '车缝报价单', buttonLabel: 'Excel 预览导入' }],
+  electronic: [{ type: 'electronic', label: '电子报价单', buttonLabel: '电子报价单 Excel 导入' }],
+  molding: [{ type: 'molding', label: '啤机报价单', buttonLabel: '啤机报价单 Excel 导入' }],
+  painting: [{ type: 'painting', label: '喷油报价单', buttonLabel: '喷油报价单 Excel 导入' }],
+  slush: [{ type: 'slush', label: '搪胶报价单', buttonLabel: '搪胶报价单 Excel 导入' }],
+  sewing: [{ type: 'sewing', label: '车缝报价单', buttonLabel: '车缝报价单 Excel 导入' }],
   assembly: [{ type: 'assembly', label: '生产排拉工序表', buttonLabel: 'Excel 预览导入' }],
 } as Partial<Record<InternalQuoteSectionCode, ImportOption[]>>)[props.section.code] ?? [])
 
@@ -66,7 +69,30 @@ const reasonActionAllowed = computed(() => {
   return false
 })
 
+function cancelLivePreviewTimer() {
+  if (livePreviewTimer) clearTimeout(livePreviewTimer)
+  livePreviewTimer = undefined
+}
+
+function scheduleLivePreview() {
+  cancelLivePreviewTimer()
+  if (!editable.value || !isDirty.value) {
+    quoteStore.clearLiveCostPreview(props.quote.id, props.section.code)
+    return
+  }
+  livePreviewTimer = setTimeout(() => {
+    void quoteStore.previewSectionCost(
+      props.quote.id,
+      props.section.code,
+      props.section.revision,
+      cloneInternalQuotePayload(props.section.code, draftPayload.value),
+    )
+  }, 450)
+}
+
 watch(() => [props.quote.id, props.section.code, props.section.revision, props.section.updatedAt, props.canEdit, props.canReview] as const, () => {
+  cancelLivePreviewTimer()
+  quoteStore.clearLiveCostPreview()
   draftPayload.value = normalizeInternalQuotePayload(props.section.code, props.section.payload)
   baselinePayload.value = JSON.stringify(draftPayload.value)
   importPreview.value = undefined
@@ -76,6 +102,12 @@ watch(() => [props.quote.id, props.section.code, props.section.revision, props.s
   localMessage.value = ''
   localError.value = ''
 }, { immediate: true })
+watch(draftPayload, scheduleLivePreview, { deep: true })
+watch([editable, isDirty], scheduleLivePreview)
+onBeforeUnmount(() => {
+  cancelLivePreviewTimer()
+  quoteStore.clearLiveCostPreview(props.quote.id, props.section.code)
+})
 
 function resetFeedback() { localMessage.value = ''; localError.value = '' }
 function errorText(error: unknown) { return error instanceof Error ? error.message : '操作失败。' }
@@ -206,7 +238,7 @@ async function downloadAttachment(id: string, fileName: string) {
       <footer><label><input v-model="importMode" type="radio" value="append">追加</label><label><input v-model="importMode" type="radio" value="replace">替换</label><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable" @click="confirmImport">确认{{ importMode === 'append' ? '追加' : '替换' }}</button></footer>
     </section>
 
-    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :disabled="!editable" />
+    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :calculation="section.calculation" :disabled="!editable" />
 
     <section class="calculation-snapshot"><header><strong>服务端权威计算快照</strong><span>保存后由 {{ quote.formulaVersion }} 重算；前端不生成正式金额</span></header><div class="snapshot-table-scroll"><table><thead><tr><th>项目</th><th>类型</th><th>公式口径</th><th>金额 HKD</th></tr></thead><tbody><tr v-for="line in section.lines" :key="line.id"><td>{{ line.item }}</td><td>{{ line.specification }}</td><td>{{ line.formula }}</td><td>{{ line.amountHkd.toFixed(4) }}</td></tr><tr v-if="!section.lines.length"><td colspan="4" class="empty">保存有效明细后显示服务端计算结果</td></tr></tbody><tfoot><tr><td colspan="3">{{ section.label }}权威小计</td><td>HKD {{ section.totalHkd.toFixed(4) }}</td></tr></tfoot></table></div></section>
 

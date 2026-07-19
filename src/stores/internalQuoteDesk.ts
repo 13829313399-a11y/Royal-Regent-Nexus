@@ -4,15 +4,18 @@ import {
   type ApiInternalQuote,
   type ApiInternalQuoteAttachment,
   type ApiInternalQuoteAudit,
+  type ApiInternalQuoteDashboard,
   type ApiInternalQuoteExport,
   type ApiInternalQuoteImportPreview,
   type ApiInternalQuotePricingBaseline,
   type ApiInternalQuoteReferenceSet,
   type ApiInternalQuoteSection,
+  type ApiInternalQuoteSectionPreview,
   type ApiInternalQuoteSummary,
   type ApiInternalQuoteTimeline,
   type ApiInternalQuoteVersionCandidate,
   type ApiInternalQuoteVersionComparison,
+  type InternalQuoteDashboardPeriod,
   type InternalQuotePricingBaselineUpdateRequest,
 } from '@/api/internalQuote'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
@@ -139,6 +142,7 @@ function toSection(section: ApiInternalQuoteSection, attachments: ApiInternalQuo
     lines: calculationLines(section),
     attachments: attachments.filter((item) => item.department === section.department).map(toAttachment),
     payload: section.payload,
+    calculation: section.calculation,
     calculationStatus: section.calculation_status,
     dependencyStatus: section.dependency_status,
   }
@@ -207,6 +211,60 @@ function shippingScenarios(source: ApiInternalQuote) {
   })
 }
 
+function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
+  const source = summary?.rr2_cost_summary
+  const shipping = source?.shipping_pricing
+  const values = (rows: Array<{ key: string; label: string; value: string; format?: string }> | undefined) => (rows ?? []).map((row) => ({
+    key: row.key,
+    label: row.label,
+    value: numberValue(row.value),
+    format: row.format,
+  }))
+  return {
+    currency: source?.currency || 'HKD',
+    indonesiaFreightHkd: numberValue(source?.indonesia_freight_hkd),
+    t1: values(source?.t1),
+    t2: values(source?.t2),
+    t3: values(source?.t3),
+    t4: (source?.t4 ?? []).map((row) => ({
+      key: row.key,
+      label: row.label,
+      amountHkd: numberValue(row.amount_hkd),
+      ratePercent: row.rate_percent == null ? null : numberValue(row.rate_percent),
+      deductionHkd: row.deduction_hkd == null ? null : numberValue(row.deduction_hkd),
+    })),
+    rmbPurchaseCostHkd: numberValue(source?.totals.rmb_purchase_cost_hkd),
+    totalDeductionHkd: numberValue(source?.totals.total_deduction_hkd),
+    afterDeductionCostHkd: numberValue(source?.totals.after_deduction_cost_hkd),
+    shippingPricing: {
+      enabled: shipping?.enabled ?? false,
+      freightSharePercent: numberValue(shipping?.freight_share_percent),
+      liftSharePercent: numberValue(shipping?.lift_share_percent),
+      markup: numberValue(shipping?.markup),
+      settlement: numberValue(shipping?.settlement),
+      factoryPriceHkd: numberValue(shipping?.factory_price_hkd),
+      additionalTaxHkd: numberValue(shipping?.additional_tax_hkd),
+      shippingFloorHkd: numberValue(shipping?.shipping_floor_hkd),
+      hkdUsd: numberValue(shipping?.hkd_usd, 7.8),
+      moldAmortizationUsd: numberValue(shipping?.mold_amortization_usd),
+      rows: (shipping?.rows ?? []).map((item) => ({
+        name: String(item.name ?? '出货场景'),
+        totalCartons: numberValue(item.total_cartons),
+        shippingFloorHkd: numberValue(item.shipping_floor_hkd),
+        freightHkd: numberValue(item.freight_hkd),
+        liftHkd: numberValue(item.lift_hkd),
+        withFreightHkd: numberValue(item.with_freight_hkd),
+        afterMarkupHkd: numberValue(item.after_markup_hkd),
+        afterSettlementHkd: numberValue(item.after_settlement_hkd),
+        totalHkd: numberValue(item.total_hkd),
+        totalUsd: numberValue(item.total_usd),
+        moldAmortizationUsd: numberValue(item.mold_amortization_usd),
+        totalWithMoldUsd: numberValue(item.total_with_mold_usd),
+      })),
+    },
+  }
+}
+
 function summaryWarnings(summary?: ApiInternalQuoteSummary) {
   return (summary?.warnings ?? []).map((item) => String(item.message ?? '')).filter(Boolean)
 }
@@ -249,6 +307,7 @@ function toQuote(
     summaryComponents: Object.fromEntries(Object.entries(extras.summary?.components_hkd ?? {}).map(([key, value]) => [key, numberValue(value)])),
     summaryWarnings: summaryWarnings(extras.summary),
     shippingScenarios: shippingScenarios(source),
+    rr2CostSummary: rr2CostSummary(extras.summary),
     finalSubmittedBy: source.final_submitted_by_name || undefined,
     finalApprovedBy: source.final_reviewed_by_name || undefined,
     finalApprovedAt: source.final_reviewed_at || undefined,
@@ -266,10 +325,10 @@ function emptyQuote(): InternalQuote {
     workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', initiatorName: '', businessOwnerId: '',
     businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
     fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', formulaVersion: '', headerRevision: 1,
-    finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [],
+    finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [], rr2CostSummary: rr2CostSummary(),
     sections: internalQuoteSectionDefinitions.map((definition) => ({
       ...definition, status: 'draft', isRequired: true, revision: 1, totalHkd: 0, updatedAt: '', warnings: [], lines: [],
-      attachments: [], payload: {}, calculationStatus: 'pending', dependencyStatus: 'current',
+      attachments: [], payload: {}, calculation: {}, calculationStatus: 'pending', dependencyStatus: 'current',
     })),
     activities: [], comments: [], viewRecords: [], exports: [],
   }
@@ -310,8 +369,12 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     quotes: [] as InternalQuote[],
     businessOwners: [] as InternalQuoteBusinessOwner[],
     pricingBaseline: null as ApiInternalQuotePricingBaseline | null,
+    dashboard: null as ApiInternalQuoteDashboard | null,
+    liveCostPreview: null as ApiInternalQuoteSectionPreview | null,
     placeholderQuote: emptyQuote(),
     listLoading: false,
+    dashboardLoading: false,
+    livePreviewLoading: false,
     detailLoading: false,
     ownerLoading: false,
     baselineLoading: false,
@@ -319,10 +382,18 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     submitting: false,
     fileBusy: false,
     errorMessage: '',
+    dashboardErrorMessage: '',
+    livePreviewErrorMessage: '',
     conflictMessage: '',
     currentFactoryId: '',
     businessOwnerFactoryId: '',
     quoteListRequestSequence: 0,
+    dashboardRequestSequence: 0,
+    livePreviewRequestSequence: 0,
+    livePreviewQuoteId: '',
+    livePreviewSectionCode: '' as InternalQuoteSectionCode | '',
+    dashboardFactoryId: '',
+    dashboardPeriod: 'month' as InternalQuoteDashboardPeriod,
     businessOwnerRequestSequence: 0,
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
@@ -358,6 +429,37 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
     },
+    async loadDashboard(factoryId: string, period: InternalQuoteDashboardPeriod) {
+      const requestSequence = ++this.dashboardRequestSequence
+      if (this.dashboardFactoryId !== factoryId || this.dashboardPeriod !== period) this.dashboard = null
+      this.dashboardLoading = true
+      this.dashboardErrorMessage = ''
+      this.dashboardFactoryId = factoryId
+      this.dashboardPeriod = period
+      try {
+        const dashboard = await internalQuoteApi.getDashboard(factoryId, period)
+        if (
+          requestSequence !== this.dashboardRequestSequence
+          || this.dashboardFactoryId !== factoryId
+          || this.dashboardPeriod !== period
+        ) return
+        this.dashboard = dashboard
+      } catch (error) {
+        if (
+          requestSequence !== this.dashboardRequestSequence
+          || this.dashboardFactoryId !== factoryId
+          || this.dashboardPeriod !== period
+        ) return
+        this.dashboard = null
+        this.dashboardErrorMessage = getApiErrorMessage(error)
+      } finally {
+        if (
+          requestSequence === this.dashboardRequestSequence
+          && this.dashboardFactoryId === factoryId
+          && this.dashboardPeriod === period
+        ) this.dashboardLoading = false
+      }
+    },
     async loadBusinessOwners(factoryId: string) {
       const requestSequence = ++this.businessOwnerRequestSequence
       if (this.businessOwnerFactoryId !== factoryId) this.businessOwners = []
@@ -375,6 +477,42 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         if (requestSequence === this.businessOwnerRequestSequence && this.businessOwnerFactoryId === factoryId) {
           this.ownerLoading = false
         }
+      }
+    },
+    clearLiveCostPreview(quoteId = '', sectionCode: InternalQuoteSectionCode | '' = '') {
+      if (quoteId && this.livePreviewQuoteId && this.livePreviewQuoteId !== quoteId) return
+      if (sectionCode && this.livePreviewSectionCode && this.livePreviewSectionCode !== sectionCode) return
+      this.livePreviewRequestSequence += 1
+      this.liveCostPreview = null
+      this.livePreviewLoading = false
+      this.livePreviewErrorMessage = ''
+      this.livePreviewQuoteId = ''
+      this.livePreviewSectionCode = ''
+    },
+    async previewSectionCost(
+      quoteId: string,
+      sectionCode: InternalQuoteSectionCode,
+      revision: number,
+      payload: Record<string, unknown>,
+    ) {
+      const requestSequence = ++this.livePreviewRequestSequence
+      const contextChanged = this.livePreviewQuoteId !== quoteId || this.livePreviewSectionCode !== sectionCode
+      if (contextChanged) this.liveCostPreview = null
+      this.livePreviewQuoteId = quoteId
+      this.livePreviewSectionCode = sectionCode
+      this.livePreviewLoading = true
+      this.livePreviewErrorMessage = ''
+      try {
+        const preview = await internalQuoteApi.previewSection(quoteId, sectionCode, revision, payload)
+        if (requestSequence !== this.livePreviewRequestSequence) return undefined
+        this.liveCostPreview = preview
+        return preview
+      } catch (error) {
+        if (requestSequence !== this.livePreviewRequestSequence) return undefined
+        this.livePreviewErrorMessage = getApiErrorMessage(error)
+        return undefined
+      } finally {
+        if (requestSequence === this.livePreviewRequestSequence) this.livePreviewLoading = false
       }
     },
     async loadPricingBaseline(factoryId: string, workshopCode = 'huaxing-workshop') {
@@ -438,6 +576,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       }
     },
     async executeMutation(quoteId: string, operation: () => Promise<unknown>) {
+      this.clearLiveCostPreview(quoteId)
       this.submitting = true
       this.errorMessage = ''
       this.conflictMessage = ''

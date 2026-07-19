@@ -1,4 +1,5 @@
 from urllib.parse import quote as url_quote
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from app.schemas.internal_quote import (
     InternalQuoteBusinessOwnerOut,
     InternalQuoteCloneRequest,
     InternalQuoteCreateRequest,
+    InternalQuoteDashboardOut,
     InternalQuoteHeaderUpdateRequest,
     InternalQuoteExportFileOut,
     InternalQuoteImportConfirmOut,
@@ -32,6 +34,8 @@ from app.schemas.internal_quote import (
     InternalQuoteReviewRequest,
     InternalQuoteRevisionRequest,
     InternalQuoteSectionOut,
+    InternalQuoteSectionPreviewOut,
+    InternalQuoteSectionPreviewRequest,
     InternalQuoteSectionSaveRequest,
     InternalQuoteTimelineOut,
     InternalQuoteVersionCandidateOut,
@@ -45,12 +49,14 @@ from app.services.internal_quote import (
     create_quote,
     ensure_quote_read,
     get_quote_detail,
+    get_quote_dashboard,
     get_quote_reference_set,
     get_quote_summary,
     get_quote_timeline,
     list_quotes,
     list_business_owners,
     list_section_revisions,
+    preview_section_cost,
     reopen_section,
     request_section_na,
     review_section,
@@ -118,6 +124,16 @@ def get_internal_quote_business_owners(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return list_business_owners(db, current_user, factory_id)
+
+
+@router.get("/dashboard", response_model=InternalQuoteDashboardOut)
+def get_internal_quote_dashboard(
+    factory_id: str = Query(min_length=1, max_length=64),
+    period: Literal["week", "month", "year"] = Query(default="month"),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return get_quote_dashboard(db, current_user, factory_id, period=period)
 
 
 @router.post("", response_model=InternalQuoteOut, status_code=status.HTTP_201_CREATED)
@@ -264,6 +280,20 @@ def put_internal_quote_section(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return save_section(db, quote_id, section_code, payload, current_user, request)
+
+
+@router.post(
+    "/{quote_id}/sections/{section_code}/preview",
+    response_model=InternalQuoteSectionPreviewOut,
+)
+def post_internal_quote_section_preview(
+    quote_id: str,
+    section_code: str,
+    payload: InternalQuoteSectionPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return preview_section_cost(db, quote_id, section_code, payload, current_user)
 
 
 @router.post("/{quote_id}/sections/{section_code}/submit", response_model=InternalQuoteSectionOut)

@@ -15,7 +15,9 @@ IMPORT_TYPE_DEPARTMENTS = {
     "mold": "engineering",
     "hardware": "engineering",
     "electronic": "electronic",
+    "molding": "molding",
     "painting": "painting",
+    "slush": "slush",
     "sewing": "sewing",
     "assembly": "assembly",
 }
@@ -32,6 +34,7 @@ PAINTING_PROCESSES = (
     ("油色", "paint"),
     ("浸油", "dip"),
     ("抹油", "wipe"),
+    ("擦PP水", "pp_water"),
 )
 
 
@@ -138,9 +141,11 @@ def find_header(
         "mold": ("模号|模具编号|MOLDNO|产品名称", "名称|模价|总价|材质|材料|AMOUNT"),
         "hardware": ("零件名称", "规格", "用量", "单价"),
         "electronic": ("零件名称", "规格", "用量"),
-        "sewing": ("物料名称", "裁片部位", "用量", "价钱"),
+        "molding": ("模具名称|货名", "啤净重|日产量|预估料重", "材质|用料"),
+        "sewing": ("物料名称|布料名称", "裁片部位|部位", "用量|用量/码", "价钱|总价钱"),
         "assembly": ("工序名称", "人数"),
-        "painting": ("位置", "夹模|移印|散枪|边模|抹油"),
+        "painting": ("名称|位置", "夹模|移印|散枪|边模|抹油|擦PP水"),
+        "slush": ("产品编号|产品编码|货号", "胶件名称|零件名称|产品名称", "材料|材质", "用量|数量"),
     }[import_type]
     for sheet_name, rows in sheets:
         for index, row in enumerate(rows[:40]):
@@ -151,9 +156,11 @@ def find_header(
             "mold": "未找到模具编号/名称/价格表头",
             "hardware": "未找到零件名称/规格/用量/单价表头，请使用五金1.xlsx格式",
             "electronic": "未找到零件名称/规格/用量表头",
-            "sewing": "未找到物料名称/裁片部位/用量/价钱表头",
+            "molding": "未找到注塑的模具名称/啤净重表头或吹气的货名/日产量表头",
+            "sewing": "未找到布料名称/部位/用量/价钱表头",
             "assembly": "未找到工序名称/人数表头",
-            "painting": "未找到位置及喷油工序表头",
+            "painting": "未找到名称/位置及喷油工序表头",
+            "slush": "未找到产品编号/胶件名称/材料/用量表头",
         }[import_type]
     )
 
@@ -165,6 +172,15 @@ def column_index(header: list[object], aliases: tuple[str, ...]) -> int | None:
         if header_token and any(alias in header_token for alias in tokens):
             return index
     return None
+
+
+def preferred_column_index(header: list[object], aliases: tuple[str, ...]) -> int | None:
+    """Prefer an exact normalized header before falling back to a contains match."""
+    tokens = tuple(normalized(alias) for alias in aliases)
+    for index, value in enumerate(header):
+        if normalized(value) in tokens:
+            return index
+    return column_index(header, aliases)
 
 
 def value_at(row: list[object], index: int | None) -> object:
@@ -361,6 +377,7 @@ def _parse_electronic(
         "qty": column_index(header, ("用量", "数量")),
         "unit": column_index(header, ("单价",)),
         "amount": column_index(header, ("合计", "金额")),
+        "tax": column_index(header, ("税点", "税率")),
         "note": column_index(header, ("备注",)),
     }
     unit_header = normalized(value_at(header, columns["unit"]))
@@ -370,43 +387,54 @@ def _parse_electronic(
         raise ValueError("报价参考快照的 RMB/HKD 汇率无效")
 
     scalar_labels = {
-        "邦定": "bonding_hkd",
-        "贴片": "smt_hkd",
-        "SMT": "smt_hkd",
-        "人工成本": "labor_hkd",
-        "测试": "testing_hkd",
-        "包装运输": "packaging_hkd",
-        "抵税差额": "tax_credit_difference_hkd",
+        "邦定": ("bonding_rmb", "bonding_hkd"),
+        "邦定成本": ("bonding_rmb", "bonding_hkd"),
+        "贴片": ("smt_rmb", "smt_hkd"),
+        "贴片成本": ("smt_rmb", "smt_hkd"),
+        "SMT": ("smt_rmb", "smt_hkd"),
+        "SMT成本": ("smt_rmb", "smt_hkd"),
+        "人工成本": ("labor_rmb", "labor_hkd"),
+        "测试": ("testing_rmb", "testing_hkd"),
+        "测试费用": ("testing_rmb", "testing_hkd"),
+        "包装运输": ("packaging_rmb", "packaging_hkd"),
+        "抵税差额": ("tax_credit_difference_rmb", "tax_credit_difference_hkd"),
     }
-    fragment: dict[str, Any] = {"components": []}
+    fragment: dict[str, Any] = {"pricing_currency": "RMB", "components": []}
     for row in rows:
         row_text = "|".join(text(cell) for cell in row)
         for index, cell in enumerate(row):
-            label = text(cell)
-            for keyword, target in scalar_labels.items():
-                if keyword in label and target not in fragment:
-                    parsed = _next_number(row, index)
-                    if parsed is not None:
-                        fragment[target] = decimal_text(parsed / divisor)
+            targets = scalar_labels.get(normalized(cell).rstrip(":："))
+            if targets is not None and targets[0] not in fragment:
+                parsed = _next_number(row, index)
+                if parsed is not None:
+                    amount_rmb = parsed * rmb_hkd if source_is_hkd else parsed
+                    amount_hkd = parsed if source_is_hkd else parsed / divisor
+                    fragment[targets[0]] = decimal_text(amount_rmb)
+                    fragment[targets[1]] = decimal_text(amount_hkd)
         profit = re.search(r"(\d{1,3}(?:\.\d+)?)%\s*利润", row_text)
         if profit:
             fragment["profit_rate_percent"] = decimal_text(Decimal(profit.group(1)))
 
     warnings: list[str] = []
     last_parent: dict[str, Any] | None = None
-    stop_words = tuple(scalar_labels) + ("零件成本", "含税报价", "合计成本", "报价人", "审核", "核准")
+    parsed_count = 0
+    stop_labels = set(scalar_labels) | {
+        "零件成本", "含税报价", "合计成本", "成本合计", "含利润价", "应交税负",
+        "报价人", "审核", "核准",
+    }
     for source_row, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
         name = text(value_at(row, columns["name"]))
         spec = text(value_at(row, columns["spec"]))
         qty = number(value_at(row, columns["qty"]))
         unit = number(value_at(row, columns["unit"]))
         amount_value = number(value_at(row, columns["amount"]))
-        row_text = "|".join(text(cell) for cell in row)
-        if any(keyword in row_text for keyword in stop_words):
+        if any(normalized(cell).rstrip(":：") in stop_labels for cell in row if text(cell)):
             continue
         if unit is None and amount_value is not None and qty and qty > 0:
             unit = amount_value / qty
         if not name and not spec:
+            continue
+        if qty is None and unit is None and amount_value is None:
             continue
         if qty is None:
             qty = Decimal("1")
@@ -417,13 +445,16 @@ def _parse_electronic(
             "item": name,
             "specification": spec,
             "quantity": decimal_text(max(qty, Decimal("0"))),
+            "unit_price_rmb": decimal_text(max(unit * rmb_hkd if source_is_hkd else unit, Decimal("0"))),
             "unit_price_hkd": decimal_text(max(unit / divisor, Decimal("0"))),
+            "tax_rate_percent": decimal_text(number(value_at(row, columns["tax"]), Decimal("13"))),
             "source_unit_price": decimal_text(unit),
             "source_currency": "HKD" if source_is_hkd else "RMB",
-            "note": text(value_at(row, columns["note"])),
+            "remark": text(value_at(row, columns["note"])),
             "source_row": source_row,
             "children": [],
         }
+        parsed_count += 1
         if not name and spec and last_parent is not None:
             last_parent["children"].append(component)
             continue
@@ -433,8 +464,168 @@ def _parse_electronic(
     if not fragment["components"]:
         raise ValueError("已识别电子表头，但没有解析到电子零件明细")
     if not source_is_hkd:
-        warnings.append(f"电子表未标明 HKD，已按快照 RMB/HKD={decimal_text(rmb_hkd)} 将人民币单价换算为港币")
-    return fragment, len(fragment["components"]), warnings
+        warnings.append(f"电子表人民币单价已原值导入，并按快照 RMB/HKD={decimal_text(rmb_hkd)} 自动换算港币预览")
+    else:
+        warnings.append(f"电子表港币单价已按快照 RMB/HKD={decimal_text(rmb_hkd)} 反算人民币单价")
+    warnings.append("税点未填写的电子零件按 13% 导入；抵税差额、税负及含税报价由服务端按模板公式重算")
+    return fragment, parsed_count, warnings
+
+
+def _molding_header_kind(row: list[object]) -> str:
+    if row_has(row, "模具名称|模号", "啤净重|净重", "材质|材料"):
+        return "injection"
+    if row_has(row, "货名", "日产量|预估料重", "吹工|披锋|利润"):
+        return "blow"
+    return ""
+
+
+def _split_material_grade(material: str, grade: str) -> tuple[str, str]:
+    if grade or not material:
+        return material, grade
+    parts = material.split()
+    if len(parts) >= 2:
+        return parts[0], " ".join(parts[1:])
+    return material, grade
+
+
+def _molding_loss_rate(header: list[object]) -> Decimal:
+    for value in header:
+        match = re.search(r"料损耗\s*(\d+(?:\.\d+)?)\s*%", text(value))
+        if match:
+            return Decimal(match.group(1))
+    return Decimal("3")
+
+
+def _parse_molding(
+    rows: list[list[object]],
+    header_index: int,
+    **_: object,
+) -> tuple[dict[str, Any], int, list[str]]:
+    headers = [
+        (index, _molding_header_kind(row))
+        for index, row in enumerate(rows)
+        if _molding_header_kind(row)
+    ]
+    if not headers:
+        raise ValueError("未找到可识别的注塑或吹气报价表头")
+
+    injection_lines: list[dict[str, Any]] = []
+    blow_lines: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    section_loss_rate = Decimal("3")
+    for header_position, (section_header_index, kind) in enumerate(headers):
+        header = rows[section_header_index]
+        end_index = headers[header_position + 1][0] if header_position + 1 < len(headers) else len(rows)
+        if kind == "injection":
+            section_loss_rate = _molding_loss_rate(header)
+            columns = {
+                "item": preferred_column_index(header, ("模具名称", "项目", "零件名称")),
+                "mold_no": preferred_column_index(header, ("模号", "模具编号", "MOLD NO")),
+                "material": preferred_column_index(header, ("材质", "材料")),
+                "grade": preferred_column_index(header, ("料型", "牌号", "材料型号")),
+                "color": preferred_column_index(header, ("颜色",)),
+                "weight": preferred_column_index(header, ("啤净重(G)", "啤净重", "净重(G)", "净重")),
+                "machine_name": preferred_column_index(header, ("机台", "普通机")),
+                "machine_code": preferred_column_index(header, ("机型A码", "A码", "机型")),
+                "cavity": preferred_column_index(header, ("出模数", "穴数", "CAVITY")),
+                "sets": preferred_column_index(header, ("套数",)),
+                "target": preferred_column_index(header, ("目标数", "目标产量")),
+                "cycle": preferred_column_index(header, ("周期(秒)", "周期", "CYCLE TIME")),
+                "quantity": preferred_column_index(header, ("成品用量", "数量", "用量")),
+                "remark": preferred_column_index(header, ("备注", "说明")),
+            }
+            for source_row, row in enumerate(rows[section_header_index + 1 : end_index], start=section_header_index + 2):
+                item = text(value_at(row, columns["item"]))
+                if not item or re.search(r"合计|汇总|参考表|料价表|机型价表", item):
+                    continue
+                material = text(value_at(row, columns["material"]))
+                grade = text(value_at(row, columns["grade"]))
+                material, grade = _split_material_grade(material, grade)
+                weight = number(value_at(row, columns["weight"]))
+                machine_code = text(value_at(row, columns["machine_code"]))
+                target = number(value_at(row, columns["target"]), Decimal("0")) or Decimal("0")
+                if not material and weight is None and not machine_code:
+                    continue
+                if not grade:
+                    warnings.append(f"第 {source_row} 行 {item} 未识别料型；保存后需补齐材质 + 料型才能匹配冻结材料价")
+                if not machine_code:
+                    warnings.append(f"第 {source_row} 行 {item} 未识别机型 A 码")
+                if target <= 0:
+                    warnings.append(f"第 {source_row} 行 {item} 未识别目标数；保存前必须填写大于 0 的目标数")
+                injection_lines.append({
+                    "item": item,
+                    "mold_no": text(value_at(row, columns["mold_no"])),
+                    "material": material,
+                    "grade": grade,
+                    "color": text(value_at(row, columns["color"])),
+                    "net_weight_g": decimal_text(max(weight or Decimal("0"), Decimal("0"))),
+                    "loss_rate_percent": decimal_text(section_loss_rate),
+                    "machine_name": text(value_at(row, columns["machine_name"])),
+                    "machine_code": machine_code,
+                    "cavity": text(value_at(row, columns["cavity"])),
+                    "sets": decimal_text(max(number(value_at(row, columns["sets"]), Decimal("1")) or Decimal("1"), Decimal("0"))),
+                    "target_output": decimal_text(max(target, Decimal("0"))),
+                    "cycle_time_seconds": decimal_text(max(number(value_at(row, columns["cycle"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
+                    "quantity": decimal_text(max(number(value_at(row, columns["quantity"]), Decimal("1")) or Decimal("1"), Decimal("0"))),
+                    "remark": text(value_at(row, columns["remark"])),
+                    "source_row": source_row,
+                })
+        else:
+            columns = {
+                "item": preferred_column_index(header, ("货名", "项目", "产品名称")),
+                "daily_capacity": preferred_column_index(header, ("日产量/22H", "日产量", "产能")),
+                "material": preferred_column_index(header, ("用料", "材料", "材质")),
+                "grade": preferred_column_index(header, ("料型", "牌号", "材料型号")),
+                "weight": preferred_column_index(header, ("预估料重G", "预估料重", "料重G", "料重")),
+                "labor": preferred_column_index(header, ("吹工", "人工HKD", "吹气人工")),
+                "burr": preferred_column_index(header, ("披锋", "披锋HKD")),
+                "profit": preferred_column_index(header, ("利润×", "利润倍率", "利润")),
+                "quantity": preferred_column_index(header, ("成品用量", "数量")),
+                "output_count": preferred_column_index(header, ("出数", "出模数")),
+                "mold_price": preferred_column_index(header, ("模价(¥)", "模价RMB", "模价")),
+                "remark": preferred_column_index(header, ("备注", "说明")),
+            }
+            for source_row, row in enumerate(rows[section_header_index + 1 : end_index], start=section_header_index + 2):
+                item = text(value_at(row, columns["item"]))
+                if not item or re.search(r"合计|汇总|参考表", item):
+                    continue
+                material = text(value_at(row, columns["material"]))
+                grade = text(value_at(row, columns["grade"]))
+                material, grade = _split_material_grade(material, grade)
+                weight = number(value_at(row, columns["weight"]))
+                if not material and weight is None:
+                    continue
+                if not grade:
+                    warnings.append(f"第 {source_row} 行 {item} 未识别料型；保存后需补齐材质 + 料型才能匹配冻结材料价")
+                blow_lines.append({
+                    "item": item,
+                    "daily_capacity": text(value_at(row, columns["daily_capacity"])),
+                    "material": material,
+                    "grade": grade,
+                    "estimated_weight_g": decimal_text(max(weight or Decimal("0"), Decimal("0"))),
+                    "labor_hkd": decimal_text(max(number(value_at(row, columns["labor"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
+                    "burr_hkd": decimal_text(max(number(value_at(row, columns["burr"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
+                    "profit_multiplier": decimal_text(max(number(value_at(row, columns["profit"]), Decimal("1.05")) or Decimal("1.05"), Decimal("0"))),
+                    "quantity": decimal_text(max(number(value_at(row, columns["quantity"]), Decimal("1")) or Decimal("1"), Decimal("0"))),
+                    "output_count": text(value_at(row, columns["output_count"])),
+                    "mold_price_rmb": decimal_text(max(number(value_at(row, columns["mold_price"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
+                    "remark": text(value_at(row, columns["remark"])),
+                    "source_row": source_row,
+                })
+
+    if not injection_lines and not blow_lines:
+        raise ValueError("已识别啤机报价表头，但没有解析到注塑或吹气明细")
+    warnings.append("导入表内料价、原料单价、啤价、产品料价、小计和合计不直接写入；保存后统一按本报价冻结材料价、机型价与 rr2-2026-v1 公式重算")
+    if not injection_lines:
+        warnings.append("本次未识别注塑明细；替换导入会清空现有注塑明细")
+    if not blow_lines:
+        warnings.append("本次未识别吹气明细；替换导入会清空现有吹气明细")
+    fragment = {
+        "injection_loss_rate_percent": decimal_text(section_loss_rate),
+        "injection_lines": injection_lines,
+        "blow_lines": blow_lines,
+    }
+    return fragment, len(injection_lines) + len(blow_lines), warnings
 
 
 def _parse_painting(
@@ -443,8 +634,10 @@ def _parse_painting(
     **_: object,
 ) -> tuple[dict[str, Any], int, list[str]]:
     header = rows[header_index]
-    position_column = column_index(header, ("位置",))
-    note_column = column_index(header, ("备注",))
+    image_column = preferred_column_index(header, ("图片", "图", "图片引用", "附件引用"))
+    name_column = preferred_column_index(header, ("名称", "零件名称", "产品名称"))
+    position_column = preferred_column_index(header, ("位置", "部位"))
+    note_column = preferred_column_index(header, ("备注", "说明"))
     process_columns: list[tuple[str, str, int, int]] = []
     for label, key in PAINTING_PROCESSES:
         qty_column = next(
@@ -456,12 +649,23 @@ def _parse_painting(
             None,
         )
         if qty_column is not None:
-            process_columns.append((label, key, qty_column, qty_column + 1))
+            unit_column = next(
+                (
+                    index
+                    for index, value in enumerate(header)
+                    if normalized(label) in normalized(value)
+                    and any(token in normalized(value) for token in ("单价", "价格"))
+                ),
+                qty_column + 1,
+            )
+            process_columns.append((label, key, qty_column, unit_column))
     output: list[dict[str, Any]] = []
     warnings: list[str] = []
     for source_row, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        name = text(value_at(row, name_column))
         position = text(value_at(row, position_column))
-        if not position or re.search(r"合计|小计|总报价|[:：]$", position):
+        row_label = position or name
+        if not row_label or re.search(r"合计|小计|总报价|[:：]$", row_label):
             continue
         operations = {
             key: {"quantity": "0.0000", "unit_price_hkd": "0.0000"}
@@ -474,7 +678,7 @@ def _parse_painting(
             if qty > 0:
                 has_quantity = True
                 if unit <= 0:
-                    warnings.append(f"第 {source_row} 行 {position}/{label} 未识别单价，已按 0 预览")
+                    warnings.append(f"第 {source_row} 行 {row_label}/{label} 未识别单价，已按 0 预览")
             operations[key] = {
                 "quantity": decimal_text(max(qty, Decimal("0"))),
                 "unit_price_hkd": decimal_text(max(unit, Decimal("0"))),
@@ -482,16 +686,70 @@ def _parse_painting(
         if has_quantity:
             output.append(
                 {
-                    "item": position,
+                    "image_reference": text(value_at(row, image_column)),
+                    "name": name,
+                    "position": position,
                     "operations": operations,
-                    "note": text(value_at(row, note_column)),
+                    "remark": text(value_at(row, note_column)),
                     "source_row": source_row,
                 }
             )
     if not output:
         raise ValueError("已识别喷油表头，但没有解析到喷油工序明细")
-    warnings.append("嵌入喷油图片不自动写入报价，请在对应喷油分段上传图片附件")
+    warnings.append("源表总报价和合计仅用于核对，不直接导入；保存后按八类工序数量 × 单价由服务端重算")
+    warnings.append("嵌入喷油图片不自动写入报价；图片单元格文本会保存为附件引用，原报价单可另存为分段附件")
     return {"rows": output}, len(output), warnings
+
+
+def _parse_slush(
+    rows: list[list[object]],
+    header_index: int,
+    **_: object,
+) -> tuple[dict[str, Any], int, list[str]]:
+    header = rows[header_index]
+    columns = {
+        "product_code": preferred_column_index(header, ("产品编号", "产品编码", "产品号", "货号")),
+        "item": preferred_column_index(header, ("胶件名称", "零件名称", "产品名称", "名称")),
+        "material": preferred_column_index(header, ("材料", "材质")),
+        "weight_g": preferred_column_index(header, ("料重(G)", "料重", "净重(G)", "净重")),
+        "daily_output_24h": preferred_column_index(header, ("日产量24H", "日产量", "24H产量")),
+        "quantity": preferred_column_index(header, ("用量(PC)", "用量", "数量")),
+        "unit_price_hkd": preferred_column_index(header, ("单价HKD", "单价HKS", "单价HK$", "单价")),
+        "remark": preferred_column_index(header, ("备注", "说明")),
+    }
+    output: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for source_row, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        product_code = text(value_at(row, columns["product_code"]))
+        item = text(value_at(row, columns["item"]))
+        label = f"{product_code} {item}".strip()
+        if not label or re.search(r"合计|小计|总价|总计", label):
+            continue
+        quantity = number(value_at(row, columns["quantity"]))
+        unit_price = number(value_at(row, columns["unit_price_hkd"]))
+        if quantity is None:
+            quantity = Decimal("0")
+            warnings.append(f"第 {source_row} 行 {label} 未识别用量，已按 0 预览")
+        if unit_price is None:
+            unit_price = Decimal("0")
+            warnings.append(f"第 {source_row} 行 {label} 未识别单价 HKD，已按 0 预览")
+        output.append(
+            {
+                "product_code": product_code,
+                "item": item,
+                "material": text(value_at(row, columns["material"])),
+                "weight_g": decimal_text(max(number(value_at(row, columns["weight_g"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
+                "daily_output_24h": decimal_text(max(number(value_at(row, columns["daily_output_24h"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
+                "quantity": decimal_text(max(quantity, Decimal("0"))),
+                "unit_price_hkd": decimal_text(max(unit_price, Decimal("0"))),
+                "remark": text(value_at(row, columns["remark"])),
+                "source_row": source_row,
+            }
+        )
+    if not output:
+        raise ValueError("已识别搪胶表头，但没有解析到搪胶产品明细")
+    warnings.append("源表总价和合计仅用于核对，不直接导入；保存后按用量 × 单价 HKD 由服务端重算")
+    return {"lines": output}, len(output), warnings
 
 
 def _parse_sewing(
@@ -508,15 +766,20 @@ def _parse_sewing(
 
     for source_index, row in enumerate(rows, start=1):
         nonempty = [text(value) for value in row if text(value)]
-        if row_has(row, "物料名称", "裁片部位", "用量", "价钱"):
+        if row_has(row, "物料名称|布料名称", "裁片部位|部位", "用量|用量/码", "价钱|总价钱"):
+            total_price_column = preferred_column_index(row, ("总价钱(RMB)", "总价钱"))
+            if total_price_column is None:
+                total_price_column = preferred_column_index(row, ("价钱(RMB)", "价钱", "成本"))
             columns = {
-                "material": column_index(row, ("物料名称",)),
-                "part": column_index(row, ("裁片部位",)),
+                "material": preferred_column_index(row, ("布料名称", "物料名称")),
+                "part": preferred_column_index(row, ("裁片部位", "部位")),
+                "craft": preferred_column_index(row, ("工艺",)),
+                "pieces": preferred_column_index(row, ("裁片数",)),
                 "supplier": column_index(row, ("供应商",)),
                 "usage": column_index(row, ("用量",)),
-                "unit": column_index(row, ("单价", "物料价")),
+                "unit": preferred_column_index(row, ("物料价(RMB)", "物料价", "单价(RMB)", "单价")),
                 "markup": column_index(row, ("码点",)),
-                "price": column_index(row, ("价钱",)),
+                "price": total_price_column,
                 "note": column_index(row, ("备注",)),
             }
             name = pending_title or f"导入产品 {len(groups) + 1}"
@@ -529,10 +792,10 @@ def _parse_sewing(
             groups.append(current)
             pending_title = ""
             continue
-        if source_index <= header_index + 1 and nonempty and len(nonempty) <= 2:
+        if current is None and nonempty and len(nonempty) <= 2:
             candidate = " ".join(nonempty)
             if not re.search(r"^明细表|^DATE|日期|^20\d\d", candidate, re.I):
-                pending_title = candidate
+                pending_title = re.sub(r"^产品\s*[:：]\s*", "", candidate).strip()
             continue
         if current is None or columns is None:
             continue
@@ -560,18 +823,24 @@ def _parse_sewing(
             continue
         if not material:
             continue
+        usage_value = max(usage or Decimal("1"), Decimal("0"))
+        markup_value = max(number(value_at(row, columns["markup"]), Decimal("1")) or Decimal("1"), Decimal("0"))
+        if markup_value <= 0:
+            markup_value = Decimal("1")
         if unit is None:
-            unit = price or Decimal("0")
-            warnings.append(f"第 {source_index} 行 {material} 未识别物料单价，使用价钱列或 0")
+            unit = (price / usage_value / markup_value) if price is not None and usage_value > 0 else Decimal("0")
+            warnings.append(f"第 {source_index} 行 {material} 未识别物料价，已按源表总价反算或按 0 预览")
         current["materials"].append(
             {
                 "item": material,
                 "part": part,
+                "craft": "电绣" if "电绣" in text(value_at(row, columns["craft"])) else "",
+                "pieces": decimal_text(max(number(value_at(row, columns["pieces"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
                 "supplier": text(value_at(row, columns["supplier"])),
-                "usage": decimal_text(max(usage or Decimal("1"), Decimal("0"))),
+                "usage": decimal_text(usage_value),
                 "unit_price_rmb": decimal_text(max(unit, Decimal("0"))),
-                "markup": decimal_text(max(number(value_at(row, columns["markup"]), Decimal("1")) or Decimal("1"), Decimal("0"))),
-                "note": text(value_at(row, columns["note"])),
+                "markup": decimal_text(markup_value),
+                "remark": text(value_at(row, columns["note"])),
                 "source_row": source_index,
             }
         )
@@ -579,6 +848,7 @@ def _parse_sewing(
     groups = [group for group in groups if group["materials"]]
     if not groups:
         raise ValueError("已识别车缝表头，但没有解析到车缝产品分组")
+    warnings.append("源表价钱、总价钱和合计仅用于核对；保存后按用量/码 × 物料价 × 码点由服务端重算，裁片数不参与金额")
     return {"groups": groups}, total_rows, warnings
 
 
@@ -647,7 +917,9 @@ PARSERS: dict[str, Callable[..., tuple[dict[str, Any], int, list[str]]]] = {
     "mold": _parse_mold,
     "hardware": _parse_hardware,
     "electronic": _parse_electronic,
+    "molding": _parse_molding,
     "painting": _parse_painting,
+    "slush": _parse_slush,
     "sewing": _parse_sewing,
     "assembly": _parse_assembly,
 }

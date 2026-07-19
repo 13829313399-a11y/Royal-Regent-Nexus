@@ -145,6 +145,59 @@ def test_engineering_electronic_and_molding_decimal_vectors():
         "blow_hkd": "10.5000",
         "total_hkd": "37.4100",
     }
+    injection_line = molding["line_breakdown"][0]
+    assert injection_line["loss_weight_g"] == "467.6200"
+    assert injection_line["material_price_hkd_g"] == "0.0187"
+    assert injection_line["material_cost_hkd"] == "8.7550"
+    assert injection_line["molding_cost_hkd"] == "4.7000"
+    assert injection_line["unit_amount_hkd"] == "13.4550"
+    assert "台班价 ÷ 套数 ÷ 目标数" in injection_line["formula"]
+    blow_line = molding["line_breakdown"][1]
+    assert blow_line["subtotal_hkd"] == "10.0000"
+    assert blow_line["unit_amount_hkd"] == "10.5000"
+    assert "吹工 + 披锋" in blow_line["formula"]
+
+
+def test_electronic_rmb_contract_recalculates_tax_and_hkd_quote_from_snapshot():
+    electronic = calculate(
+        "electronic",
+        {
+            "pricing_currency": "RMB",
+            "components": [
+                {
+                    "item": "IC",
+                    "specification": "A1",
+                    "quantity": "2",
+                    "unit_price_rmb": "0.45",
+                    "tax_rate_percent": "13",
+                    "children": [
+                        {
+                            "item": "",
+                            "specification": "A2",
+                            "quantity": "18",
+                            "unit_price_rmb": "0.002",
+                            "tax_rate_percent": "13",
+                        }
+                    ],
+                }
+            ],
+            "bonding_rmb": "0",
+            "smt_rmb": "0.496",
+            "labor_rmb": "0.6925",
+            "testing_rmb": "0.14",
+            "packaging_rmb": "0.023",
+            "profit_rate_percent": "10",
+        },
+    )
+
+    assert electronic["status"] == "valid"
+    assert electronic["currency_totals"] == {"HKD": "3.2443", "RMB": "2.7576", "USD": "0.0000"}
+    assert electronic["totals"]["component_rmb"] == "0.9360"
+    assert electronic["totals"]["pre_tax_rmb"] == "2.2875"
+    assert electronic["totals"]["deductible_input_tax_rmb"] == "0.1077"
+    assert electronic["totals"]["tax_credit_difference_rmb"] == "0.2194"
+    assert electronic["totals"]["tax_payable_rmb"] == "0.0219"
+    assert electronic["totals"]["total_hkd"] == "3.2443"
 
 
 def test_painting_slush_sewing_and_assembly_decimal_vectors():
@@ -153,22 +206,34 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
         {
             "rows": [
                 {
-                    "item": "主壳",
+                    "name": "主壳",
+                    "position": "正面",
+                    "image_reference": "主壳.png",
+                    "remark": "对色板",
                     "operations": {
                         "clamp": {"quantity": "2", "unit_price_hkd": "1.5"},
                         "pad_print": {"quantity": "1", "unit_price_hkd": "2"},
+                        "pp_water": {"quantity": "2", "unit_price_hkd": "0.25"},
                     },
                 }
             ]
         },
     )
-    assert painting["totals"]["total_hkd"] == "5.0000"
+    assert painting["totals"]["total_hkd"] == "5.5000"
+    assert painting["line_breakdown"][0]["operations"]["pp_water"] == "0.5000"
+    assert painting["line_breakdown"][0]["name"] == "主壳"
+    assert painting["line_breakdown"][0]["position"] == "正面"
 
     slush = calculate(
         "slush",
-        {"lines": [{"item": "软胶件", "quantity": "2", "unit_price_hkd": "3.6"}]},
+        {"lines": [{"product_code": "RC-01", "item": "软胶件", "material": "PVC", "weight_g": "35", "daily_output_24h": "8000", "quantity": "2", "unit_price_hkd": "3.6", "remark": "透明"}]},
     )
     assert slush["totals"]["total_hkd"] == "7.2000"
+    assert slush["totals"]["total_rmb"] == "6.1200"
+    assert slush["currency_totals"]["RMB"] == "6.1200"
+    assert slush["line_breakdown"][0]["product_code"] == "RC-01"
+    assert slush["line_breakdown"][0]["weight_g"] == "35.0000"
+    assert slush["line_breakdown"][0]["formula"] == "quantity * unit_price_hkd"
 
     sewing = calculate(
         "sewing",
@@ -178,7 +243,7 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
                     "name": "外套",
                     "category": "clothes",
                     "materials": [
-                        {"item": "布料", "usage": "1.2", "unit_price_rmb": "28", "markup": "1.05"}
+                        {"item": "布料", "part": "身体", "craft": "电绣", "pieces": "4", "usage": "1.2", "unit_price_rmb": "28", "markup": "1.05", "remark": "红色"}
                     ],
                     "labor_rmb": "12",
                 },
@@ -195,7 +260,15 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
     )
     assert sewing["totals"]["clothes_rmb"] == "47.2800"
     assert sewing["totals"]["hair_rmb"] == "5.0000"
+    assert sewing["totals"]["total_rmb"] == "52.2800"
     assert sewing["totals"]["total_hkd"] == "61.5059"
+    sewing_line = sewing["line_breakdown"][0]
+    assert sewing_line["part"] == "身体"
+    assert sewing_line["craft"] == "电绣"
+    assert sewing_line["pieces"] == "4.0000"
+    assert sewing_line["price_rmb"] == "33.6000"
+    assert sewing_line["amount_rmb"] == "35.2800"
+    assert sewing_line["formula"] == "usage * unit_price_rmb * markup"
 
     assembly = calculate(
         "assembly",

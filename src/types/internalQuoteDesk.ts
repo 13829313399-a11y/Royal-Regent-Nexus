@@ -60,6 +60,7 @@ export interface InternalQuoteSection {
   lines: InternalQuoteCostLine[]
   attachments: InternalQuoteAttachmentRecord[]
   payload: Record<string, unknown>
+  calculation: Record<string, unknown>
   calculationStatus: string
   dependencyStatus: string
 }
@@ -121,6 +122,61 @@ export interface InternalQuoteShippingScenario {
   totalUsd: number
 }
 
+export interface InternalQuoteRr2SummaryValue {
+  key: string
+  label: string
+  value: number
+  format?: string
+}
+
+export interface InternalQuoteTaxSummaryValue {
+  key: string
+  label: string
+  amountHkd: number
+  ratePercent: number | null
+  deductionHkd: number | null
+}
+
+export interface InternalQuoteShippingPriceRow {
+  name: string
+  totalCartons: number
+  shippingFloorHkd: number
+  freightHkd: number
+  liftHkd: number
+  withFreightHkd: number
+  afterMarkupHkd: number
+  afterSettlementHkd: number
+  totalHkd: number
+  totalUsd: number
+  moldAmortizationUsd: number
+  totalWithMoldUsd: number
+}
+
+export interface InternalQuoteRr2CostSummary {
+  currency: string
+  indonesiaFreightHkd: number
+  t1: InternalQuoteRr2SummaryValue[]
+  t2: InternalQuoteRr2SummaryValue[]
+  t3: InternalQuoteRr2SummaryValue[]
+  t4: InternalQuoteTaxSummaryValue[]
+  rmbPurchaseCostHkd: number
+  totalDeductionHkd: number
+  afterDeductionCostHkd: number
+  shippingPricing: {
+    enabled: boolean
+    freightSharePercent: number
+    liftSharePercent: number
+    markup: number
+    settlement: number
+    factoryPriceHkd: number
+    additionalTaxHkd: number
+    shippingFloorHkd: number
+    hkdUsd: number
+    moldAmortizationUsd: number
+    rows: InternalQuoteShippingPriceRow[]
+  }
+}
+
 export interface InternalQuote {
   id: string
   quoteNo: string
@@ -153,6 +209,7 @@ export interface InternalQuote {
   summaryComponents: Record<string, number>
   summaryWarnings: string[]
   shippingScenarios: InternalQuoteShippingScenario[]
+  rr2CostSummary: InternalQuoteRr2CostSummary
   finalSubmittedBy?: string
   finalApprovedBy?: string
   finalApprovedAt?: string

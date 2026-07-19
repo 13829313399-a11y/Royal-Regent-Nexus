@@ -373,7 +373,10 @@ def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monke
         login(client, "iq_p2_notice_creator", "sales_customer_owner", "sales-business")
         quote = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P2-NOTICE-LIFECYCLE"),
+            json=create_payload(
+                suffix="P2-NOTICE-LIFECYCLE",
+                participating_sections=["sales", "engineering", "molding", "assembly"],
+            ),
         ).json()
         quote_id = quote["id"]
 
