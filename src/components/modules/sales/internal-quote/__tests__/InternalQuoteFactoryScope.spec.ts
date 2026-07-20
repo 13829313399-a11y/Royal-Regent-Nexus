@@ -2,16 +2,23 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthMeResponse } from '@/api/auth'
-import type { ApiInternalQuote } from '@/api/internalQuote'
+import type { ApiInternalQuote, ApiInternalQuotePricingBaseline } from '@/api/internalQuote'
+import InternalQuoteBaselineDialog from '@/components/modules/sales/internal-quote/InternalQuoteBaselineDialog.vue'
+import InternalQuoteCreateDialog from '@/components/modules/sales/internal-quote/InternalQuoteCreateDialog.vue'
 import InternalQuoteHome from '@/components/modules/sales/internal-quote/InternalQuoteHome.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
+import type { InternalQuoteCreatePayload } from '@/types/internalQuoteDesk'
 
 const routerPushMock = vi.hoisted(() => vi.fn())
 const internalQuoteApiMock = vi.hoisted(() => ({
   list: vi.fn(),
   listBusinessOwners: vi.fn(),
+  create: vi.fn(),
+  clone: vi.fn(),
+  getPricingBaseline: vi.fn(),
+  updatePricingBaseline: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -22,11 +29,14 @@ vi.mock('@/api/internalQuote', () => ({
   internalQuoteApi: internalQuoteApiMock,
 }))
 
-function salesSession(): AuthMeResponse {
+function salesSession(factoryId = 'huaxing', includeBaselinePermissions = false): AuthMeResponse {
   const permissions = [
     'internal_quote:read',
     'internal_quote:create',
     'internal_quote:clone',
+    ...(includeBaselinePermissions
+      ? ['internal_quote:baseline_read', 'internal_quote:baseline_manage']
+      : []),
   ]
   return {
     id: 'sales-user',
@@ -38,7 +48,7 @@ function salesSession(): AuthMeResponse {
       role_id: 'position_sales_business',
       role_code: 'position_sales_business',
       role_name: '业务',
-      factory_id: 'huaxing',
+      factory_id: factoryId,
       department: 'sales-business',
       permissions,
       scope_mode: 'cross_factory_read',
@@ -49,7 +59,7 @@ function salesSession(): AuthMeResponse {
     factory_scopes: ['*'],
     department_scopes: ['sales-business'],
     profile: {
-      primary_factory_id: 'huaxing',
+      primary_factory_id: factoryId,
       primary_department: 'sales-business',
       position: '业务',
       confirmation_status: 'confirmed',
@@ -111,12 +121,46 @@ function apiQuote(factoryId: string, id: string): ApiInternalQuote {
   }
 }
 
+function pricingBaseline(factoryId: string, revision = 1): ApiInternalQuotePricingBaseline {
+  return {
+    factory_id: factoryId,
+    workshop_code: `${factoryId}-workshop`,
+    workshop_name: factoryId,
+    revision,
+    source_type: 'custom',
+    updated_by: `${factoryId}-supervisor`,
+    updated_by_name: `${factoryId}主管`,
+    updated_at: '2026-07-20 10:00:00',
+    material_prices: [{ material: `${factoryId}-ABS`, grade: '750SW', price_hkd_lb: '9.25' }],
+    machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '999' }],
+  }
+}
+
+const createPayload: InternalQuoteCreatePayload = {
+  quoteNo: 'IQ-C-RACE',
+  productName: 'C 厂竞态测试产品',
+  customer: 'C 厂客户',
+  versionLabel: 'V1',
+  initiatorDepartment: 'sales-business' as const,
+  businessOwnerId: 'huakang-c-owner',
+  businessOwner: 'C 厂负责人',
+  targetCustomerPrice: 'HKD 10',
+  quantity: 100,
+  targetDate: '2026-08-31',
+  remark: '',
+  participatingSections: ['sales', 'engineering', 'assembly'],
+}
+
 describe('InternalQuoteHome factory permission boundary', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     routerPushMock.mockReset()
     internalQuoteApiMock.list.mockReset().mockResolvedValue([])
     internalQuoteApiMock.listBusinessOwners.mockReset().mockResolvedValue([])
+    internalQuoteApiMock.create.mockReset()
+    internalQuoteApiMock.clone.mockReset()
+    internalQuoteApiMock.getPricingBaseline.mockReset()
+    internalQuoteApiMock.updatePricingBaseline.mockReset()
   })
 
   it('shows foreign factories as read-only and restores operations only in the home factory', async () => {
@@ -227,5 +271,179 @@ describe('InternalQuoteHome factory permission boundary', () => {
     foreignQuotes.resolve([])
     foreignOwners.resolve([])
     await flushPromises()
+  })
+
+  it.each([
+    ['huakang-c', 'C-QUOTE'],
+    ['huakang-d', 'D-QUOTE'],
+  ] as const)('keeps %s in quote detail navigation', async (factoryId, quoteId) => {
+    internalQuoteApiMock.list.mockImplementation((factoryId: string) =>
+      Promise.resolve([apiQuote(factoryId, quoteId)]),
+    )
+    internalQuoteApiMock.listBusinessOwners.mockResolvedValue([])
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().applySession(salesSession())
+    useAppStore().setActiveFactory(factoryId)
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.get('.quote-number').trigger('click')
+
+    expect(routerPushMock).toHaveBeenCalledWith(
+      `/modules/sales-business/internal-quote-desk/${quoteId}/collaboration?factory=${factoryId}`,
+    )
+  })
+
+  it('uses the factory returned by a successful create when opening collaboration', async () => {
+    internalQuoteApiMock.list.mockResolvedValue([])
+    internalQuoteApiMock.listBusinessOwners.mockResolvedValue([
+      { id: 'huakang-c-owner', username: 'c-owner', display_name: 'C 厂负责人' },
+    ])
+    internalQuoteApiMock.create.mockResolvedValue(apiQuote('huakang-c', 'C-CREATED'))
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().applySession(salesSession('huakang-c'))
+    useAppStore().setActiveFactory('huakang-c')
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.get('.quote-new-button').trigger('click')
+    wrapper.findComponent(InternalQuoteCreateDialog).vm.$emit('confirm', createPayload)
+    await flushPromises()
+
+    expect(routerPushMock).toHaveBeenCalledWith(
+      '/modules/sales-business/internal-quote-desk/C-CREATED/collaboration?factory=huakang-c',
+    )
+    expect(useInternalQuoteDeskStore().quotes.map((quote) => quote.id)).toEqual(['C-CREATED'])
+  })
+
+  it.each(['create', 'clone'] as const)(
+    'drops a stale C-factory %s response after a C to D to C switch',
+    async (mode) => {
+      const operation = deferred<ApiInternalQuote>()
+      internalQuoteApiMock.list.mockImplementation((factoryId: string) => Promise.resolve(
+        factoryId === 'huakang-c' ? [apiQuote('huakang-c', 'C-SOURCE')] : [],
+      ))
+      internalQuoteApiMock.listBusinessOwners.mockImplementation((factoryId: string) => Promise.resolve(
+        factoryId === 'huakang-c'
+          ? [{ id: 'huakang-c-owner', username: 'c-owner', display_name: 'C 厂负责人' }]
+          : [],
+      ))
+      internalQuoteApiMock.create.mockReturnValue(operation.promise)
+      internalQuoteApiMock.clone.mockReturnValue(operation.promise)
+
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      useAuthStore().applySession(salesSession('huakang-c'))
+      const appStore = useAppStore()
+      appStore.setActiveFactory('huakang-c')
+      const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+      await flushPromises()
+
+      if (mode === 'create') {
+        await wrapper.get('.quote-new-button').trigger('click')
+      }
+      else {
+        await wrapper.get('button[aria-label="复制报价"]').trigger('click')
+      }
+      wrapper.findComponent(InternalQuoteCreateDialog).vm.$emit('confirm', createPayload)
+      await Promise.resolve()
+      expect(mode === 'create' ? internalQuoteApiMock.create : internalQuoteApiMock.clone).toHaveBeenCalledTimes(1)
+
+      appStore.setActiveFactory('huakang-d')
+      await flushPromises()
+      appStore.setActiveFactory('huakang-c')
+      await flushPromises()
+
+      operation.resolve(apiQuote('huakang-c', mode === 'create' ? 'C-CREATED' : 'C-CLONED'))
+      await flushPromises()
+
+      expect(routerPushMock).not.toHaveBeenCalled()
+      expect(useInternalQuoteDeskStore().quotes.map((quote) => quote.id)).toEqual(['C-SOURCE'])
+      expect(wrapper.findComponent(InternalQuoteCreateDialog).props('open')).toBe(false)
+    },
+  )
+
+  it('closes and clears a baseline dialog and ignores its stale ABA load response', async () => {
+    const staleBaseline = deferred<ApiInternalQuotePricingBaseline>()
+    internalQuoteApiMock.getPricingBaseline.mockReturnValue(staleBaseline.promise)
+    internalQuoteApiMock.listBusinessOwners.mockResolvedValue([
+      { id: 'huakang-c-owner', username: 'c-owner', display_name: 'C 厂负责人' },
+    ])
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().applySession(salesSession('huakang-c', true))
+    const appStore = useAppStore()
+    appStore.setActiveFactory('huakang-c')
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.get('.quote-baseline-button').trigger('click')
+    expect(wrapper.findComponent(InternalQuoteBaselineDialog).props('open')).toBe(true)
+
+    appStore.setActiveFactory('huakang-d')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findComponent(InternalQuoteBaselineDialog).props('open')).toBe(false)
+    wrapper.findComponent(InternalQuoteBaselineDialog).vm.$emit('save', {
+      revision: 1,
+      workshop_name: '华康C',
+      material_prices: [],
+      machine_prices: [],
+    })
+    await flushPromises()
+    expect(internalQuoteApiMock.updatePricingBaseline).not.toHaveBeenCalled()
+
+    appStore.setActiveFactory('huakang-c')
+    await flushPromises()
+    staleBaseline.resolve(pricingBaseline('huakang-c'))
+    await flushPromises()
+
+    const store = useInternalQuoteDeskStore()
+    expect(store.pricingBaseline).toBeNull()
+    expect(store.pricingBaselineFactoryId).toBe('')
+    expect(wrapper.findComponent(InternalQuoteBaselineDialog).props('open')).toBe(false)
+  })
+
+  it('does not apply a stale baseline update after switching C to D to C', async () => {
+    const staleUpdate = deferred<ApiInternalQuotePricingBaseline>()
+    internalQuoteApiMock.getPricingBaseline.mockResolvedValue(pricingBaseline('huakang-c'))
+    internalQuoteApiMock.updatePricingBaseline.mockReturnValue(staleUpdate.promise)
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().applySession(salesSession('huakang-c', true))
+    const appStore = useAppStore()
+    appStore.setActiveFactory('huakang-c')
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.get('.quote-baseline-button').trigger('click')
+    await flushPromises()
+    wrapper.findComponent(InternalQuoteBaselineDialog).vm.$emit('save', {
+      revision: 1,
+      workshop_name: '华康C',
+      material_prices: [{ material: 'C-ABS', grade: '750SW', price_hkd_lb: '10.00' }],
+      machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '1000' }],
+    })
+    await Promise.resolve()
+    expect(internalQuoteApiMock.updatePricingBaseline).toHaveBeenCalledWith(
+      'huakang-c',
+      'huakang-c-workshop',
+      expect.any(Object),
+    )
+
+    appStore.setActiveFactory('huakang-d')
+    await flushPromises()
+    appStore.setActiveFactory('huakang-c')
+    await flushPromises()
+    staleUpdate.resolve(pricingBaseline('huakang-c', 2))
+    await flushPromises()
+
+    expect(useInternalQuoteDeskStore().pricingBaseline).toBeNull()
+    expect(wrapper.findComponent(InternalQuoteBaselineDialog).props('open')).toBe(false)
   })
 })

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { FileSpreadsheet } from '@lucide/vue'
+import { computed } from 'vue'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
 import SalesModuleWorkbench from '@/components/modules/sales/SalesModuleWorkbench.vue'
 import { useAppStore } from '@/stores/app'
@@ -7,11 +8,21 @@ import { useAppStore } from '@/stores/app'
 const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
 
-const metrics = [
-  { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星' },
-  { label: '待复核', value: '1', detail: '主管核对输出版本' },
-  { label: '客户范围', value: '全部', detail: '按账号权限导入和输出' },
-]
+const metrics = computed(() => {
+  if (['huakang-c', 'huakang-d'].includes(appStore.activeProductionFactory.id)) {
+    return [
+      { label: '待转换', value: '0', detail: `${appStore.activeProductionFactory.shortName} 暂无待转换报价` },
+      { label: '待复核', value: '0', detail: `${appStore.activeProductionFactory.shortName} 暂无待复核版本` },
+      { label: '客户范围', value: '待配置', detail: '等待本厂客户与报价资料接入' },
+    ]
+  }
+
+  return [
+    { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星' },
+    { label: '待复核', value: '1', detail: '主管核对输出版本' },
+    { label: '客户范围', value: '全部', detail: '按账号权限导入和输出' },
+  ]
+})
 </script>
 
 <template>

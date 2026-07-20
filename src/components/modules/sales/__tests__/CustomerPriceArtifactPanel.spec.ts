@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CustomerPriceArtifactPanel from '@/components/modules/sales/CustomerPriceArtifactPanel.vue'
+import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
 const artifactApi = vi.hoisted(() => ({
@@ -40,36 +41,44 @@ const availableArtifact = {
   revoke_reason: '',
 }
 
-function applyAuthorizedSession() {
+function applyAuthorizedSession(factoryIds = ['huaxing']) {
   useAuthStore().applySession({
     id: 'sales-1',
     username: 'sales-1',
     display_name: '业务跟客',
     roles: ['车间业务跟客'],
     permissions: ['customer_price:import_internal_quote'],
-    grants: [{
-      role_id: 'sales_customer_owner',
+    grants: factoryIds.map((factoryId) => ({
+      role_id: `sales_customer_owner_${factoryId}`,
       role_code: 'sales_customer_owner',
       role_name: '车间业务跟客',
-      factory_id: 'huaxing',
+      factory_id: factoryId,
       department: 'sales-business',
       permissions: ['customer_price:import_internal_quote'],
       data_scope: 'department',
-    }],
-    factory_scopes: ['huaxing'],
+    })),
+    factory_scopes: factoryIds,
     department_scopes: ['sales-business'],
     authz_mode: 'enforce',
-    effective_access: [{
+    effective_access: factoryIds.map((factoryId) => ({
       permission_code: 'customer_price:import_internal_quote',
-      factory_id: 'huaxing',
+      factory_id: factoryId,
       department: 'sales-business',
       effect: 'allow',
       allowed: true,
       source_type: 'role',
-      source_ids: ['sales_customer_owner'],
-    }],
+      source_ids: [`sales_customer_owner_${factoryId}`],
+    })),
     force_password_change: false,
   })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
 }
 
 describe('CustomerPriceArtifactPanel', () => {
@@ -181,5 +190,49 @@ describe('CustomerPriceArtifactPanel', () => {
     expect(artifactApi.download).toHaveBeenCalledTimes(1)
     expect(artifactApi.consume).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('缺少客户模板必需字段')
+  })
+
+  it('ignores a late C-factory response after switching to D and clears the old list immediately', async () => {
+    applyAuthorizedSession(['huakang-c', 'huakang-d'])
+    const appStore = useAppStore()
+    appStore.setActiveFactory('huakang-c')
+    const cRequest = deferred<typeof availableArtifact[]>()
+    const dRequest = deferred<typeof availableArtifact[]>()
+    const cArtifact = {
+      ...availableArtifact,
+      id: 'IQHAND-C',
+      factory_id: 'huakang-c',
+      quote_no: 'IQ-HKC-001',
+    }
+    const dArtifact = {
+      ...availableArtifact,
+      id: 'IQHAND-D',
+      factory_id: 'huakang-d',
+      quote_no: 'IQ-HKD-001',
+    }
+    artifactApi.list.mockImplementation(({ factoryId }: { factoryId: string }) => (
+      factoryId === 'huakang-c' ? cRequest.promise : dRequest.promise
+    ))
+
+    const wrapper = mount(CustomerPriceArtifactPanel, {
+      props: {
+        customers: [{ id: 'disney', name: '迪士尼' }],
+        selectedCustomerId: 'disney',
+      },
+    })
+    await Promise.resolve()
+
+    appStore.setActiveFactory('huakang-d')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('IQ-HKC-001')
+
+    dRequest.resolve([dArtifact])
+    await flushPromises()
+    expect(wrapper.text()).toContain('IQ-HKD-001')
+
+    cRequest.resolve([cArtifact])
+    await flushPromises()
+    expect(wrapper.text()).toContain('IQ-HKD-001')
+    expect(wrapper.text()).not.toContain('IQ-HKC-001')
   })
 })

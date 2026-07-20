@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { formatNotificationTime, useNotificationCenter } from '@/composables/useNotificationCenter'
+import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import type { MoldingSampleNotificationResponse } from '@/api/moldingSample'
 import type { SystemNotificationResponse } from '@/api/system'
@@ -451,21 +452,24 @@ describe('useNotificationCenter', () => {
   })
 
   it('uses a safe internal-quote route from the backend-filtered system feed', async () => {
+    useAppStore().setActiveFactory('huakang-a')
     systemApiMock.listNotifications.mockResolvedValue([
       createSystemNotification({
         id: 'QUOTE-1',
         title: '内部报价待协作',
         type: 'internal_quote',
+        target_factory_id: 'huakang-c',
         target_permission: 'internal_quote:read',
         payload: {
           quote_no: 'IQ-001',
-          route: '/modules/sales-business/internal-quote-desk/quote-1',
+          route: '/modules/sales-business/internal-quote-desk/quote-1?section=engineering&factory=huaxing',
         },
       }),
       createSystemNotification({
         id: 'QUOTE-2',
         title: '内部报价待汇总',
         type: 'internal_quote',
+        target_factory_id: 'huakang-d',
         target_permission: 'internal_quote:read',
         payload: {
           quote_no: 'IQ-002',
@@ -476,6 +480,7 @@ describe('useNotificationCenter', () => {
         id: 'QUOTE-UNSAFE',
         title: '内部报价异常地址',
         type: 'internal_quote',
+        target_factory_id: 'group',
         target_permission: 'internal_quote:read',
         payload: {
           quote_no: 'IQ-003',
@@ -490,18 +495,20 @@ describe('useNotificationCenter', () => {
     const quoteItem = center().items.value.find((item) => item.id === 'QUOTE-1')
     const summaryItem = center().items.value.find((item) => item.id === 'QUOTE-2')
     const unsafeItem = center().items.value.find((item) => item.id === 'QUOTE-UNSAFE')
-    expect(quoteItem?.route).toBe('/modules/sales-business/internal-quote-desk/quote-1/collaboration')
-    expect(summaryItem?.route).toBe('/modules/sales-business/internal-quote-desk/quote-2/summary')
+    expect(quoteItem?.route).toBe('/modules/sales-business/internal-quote-desk/quote-1/collaboration?section=engineering&factory=huakang-c')
+    expect(summaryItem?.route).toBe('/modules/sales-business/internal-quote-desk/quote-2/summary?factory=huakang-d')
     expect(unsafeItem?.route).toBe('/modules/sales-business/internal-quote-desk')
     expect(quoteItem?.contextLabel).toContain('engineering')
   })
 
   it('forces customer-price artifact notifications onto the conversion workflow route', async () => {
+    useAppStore().setActiveFactory('huakang-a')
     systemApiMock.listNotifications.mockResolvedValue([
       createSystemNotification({
         id: 'QUOTE-ARTIFACT',
         title: '内部报价 artifact 可导入',
         type: 'internal_quote',
+        target_factory_id: 'huakang-d',
         target_permission: 'customer_price:import_internal_quote',
         payload: {
           event: 'customer_price_artifact_available',
@@ -514,7 +521,7 @@ describe('useNotificationCenter', () => {
     const { center } = mountCenter()
     await flushPromises()
 
-    expect(center().items.value[0]?.route).toBe('/modules/sales-business/customer-price-conversion')
+    expect(center().items.value[0]?.route).toBe('/modules/sales-business/customer-price-conversion?factory=huakang-d')
   })
 
   it('counts only actionable internal-quote events as pending work', async () => {

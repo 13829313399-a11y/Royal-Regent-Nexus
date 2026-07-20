@@ -1,12 +1,16 @@
 import importlib
+import sqlite3
 
-from test_molding_sample_api import login_as, make_client
+import pytest
+
+from test_molding_sample_api import login_as, make_client, make_client_with_database
 
 
 def create_fixed_position_user(
     username: str,
     role_id: str,
     department: str,
+    factory_id: str = "huaxing",
 ) -> None:
     db_module = importlib.import_module("app.db")
     auth_models = importlib.import_module("app.models.auth")
@@ -30,17 +34,17 @@ def create_fixed_position_user(
         )
         db.add(
             auth_models.AuthUserRole(
-                id=f"{user_id}:{role_id}:huaxing:{department}",
+                id=f"{user_id}:{role_id}:{factory_id}:{department}",
                 user_id=user_id,
                 role_id=role_id,
-                factory_id="huaxing",
+                factory_id=factory_id,
                 department=department,
             )
         )
         db.add(
             auth_models.EmployeeProfile(
                 user_id=user_id,
-                primary_factory_id="huaxing",
+                primary_factory_id=factory_id,
                 primary_department=department,
                 position=username,
                 phone="",
@@ -82,6 +86,7 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
         assert baseline_response.status_code == 200
         baseline = baseline_response.json()
         assert len(baseline) == 286
+        assert {row["factory_id"] for row in baseline} == {"*"}
         assert baseline[0]["material_code"] == "91000001"
         assert baseline[0]["material_name"] == "ABS 750NSW"
         next_material_code = max(
@@ -115,17 +120,20 @@ def test_engineer_can_create_and_read_persistent_raw_materials(monkeypatch):
         assert created["safety_stock_kg"] == 50
         assert created["unit_price_hkd_per_lb"] is None
 
-        update_response = client.patch(f"/api/raw-materials/{created['id']}", json={
-            "material_name": "工程更新 PP 料",
-            "category": "PP",
-            "spec": "高流动共聚 PP",
-            "unit": "KG",
-            "supplier": "华兴材料供应商",
-            "safety_stock_kg": 60,
-            "unit_price_hkd_per_lb": 6.25,
-            "status": "启用",
-            "notes": "工程部编辑并维护单价",
-        })
+        update_response = client.patch(
+            f"/api/raw-materials/{created['id']}?factory_id=huaxing",
+            json={
+                "material_name": "工程更新 PP 料",
+                "category": "PP",
+                "spec": "高流动共聚 PP",
+                "unit": "KG",
+                "supplier": "华兴材料供应商",
+                "safety_stock_kg": 60,
+                "unit_price_hkd_per_lb": 6.25,
+                "status": "启用",
+                "notes": "工程部编辑并维护单价",
+            },
+        )
         assert update_response.status_code == 200
         updated = update_response.json()
         assert updated["material_code"] == created["material_code"]
@@ -166,17 +174,20 @@ def test_raw_material_creation_is_scoped_to_engineering_and_warehouse(monkeypatc
         baseline = client.get("/api/raw-materials?factory_id=huaxing").json()[0]
         client.post("/api/auth/logout")
         login_as(client, "qa_inspector")
-        blocked_update = client.patch(f"/api/raw-materials/{baseline['id']}", json={
-            "material_name": baseline["material_name"],
-            "category": baseline["category"],
-            "spec": baseline["spec"],
-            "unit": baseline["unit"],
-            "supplier": baseline["supplier"],
-            "safety_stock_kg": baseline["safety_stock_kg"],
-            "unit_price_hkd_per_lb": 9.99,
-            "status": baseline["status"],
-            "notes": baseline["notes"],
-        })
+        blocked_update = client.patch(
+            f"/api/raw-materials/{baseline['id']}?factory_id=huaxing",
+            json={
+                "material_name": baseline["material_name"],
+                "category": baseline["category"],
+                "spec": baseline["spec"],
+                "unit": baseline["unit"],
+                "supplier": baseline["supplier"],
+                "safety_stock_kg": baseline["safety_stock_kg"],
+                "unit_price_hkd_per_lb": 9.99,
+                "status": baseline["status"],
+                "notes": baseline["notes"],
+            },
+        )
         assert blocked_update.status_code == 403
 
         client.post("/api/auth/logout")
@@ -240,3 +251,187 @@ def test_every_engineering_and_warehouse_fixed_position_can_manage_home_raw_mate
             "/api/raw-materials",
             params={"factory_id": "huadeng"},
         ).status_code == 403
+
+
+def test_shared_raw_material_created_in_c_can_be_read_and_updated_in_d(monkeypatch):
+    with make_client(monkeypatch) as client:
+        create_fixed_position_user(
+            "fixed_engineer_c",
+            "position_engineering_engineer",
+            "engineering",
+            factory_id="huakang-c",
+        )
+        create_fixed_position_user(
+            "fixed_engineer_d",
+            "position_engineering_engineer",
+            "engineering",
+            factory_id="huakang-d",
+        )
+
+        login_fixed_position_user(client, "fixed_engineer_c")
+        created_response = client.post(
+            "/api/raw-materials",
+            json={
+                "factory_id": "huakang-c",
+                "material_name": "C 厂新增全厂共享 ABS",
+                "category": "ABS",
+                "spec": "共享规格",
+                "unit": "KG",
+                "supplier": "共享供应商",
+                "safety_stock_kg": 25,
+                "status": "启用",
+                "notes": "由 C 厂创建",
+            },
+        )
+        assert created_response.status_code == 201
+        created = created_response.json()
+        assert created["factory_id"] == "*"
+
+        client.post("/api/auth/logout")
+        login_fixed_position_user(client, "fixed_engineer_d")
+        d_rows_response = client.get(
+            "/api/raw-materials",
+            params={"factory_id": "huakang-d"},
+        )
+        assert d_rows_response.status_code == 200
+        assert any(row["id"] == created["id"] for row in d_rows_response.json())
+
+        updated_response = client.patch(
+            f"/api/raw-materials/{created['id']}",
+            params={"factory_id": "huakang-d"},
+            json={
+                "material_name": "D 厂更新后的全厂共享 ABS",
+                "category": "ABS",
+                "spec": "共享规格 v2",
+                "unit": "KG",
+                "supplier": "共享供应商",
+                "safety_stock_kg": 30,
+                "status": "启用",
+                "notes": "由 D 厂更新",
+            },
+        )
+        assert updated_response.status_code == 200
+        assert updated_response.json()["factory_id"] == "*"
+
+        client.post("/api/auth/logout")
+        login_fixed_position_user(client, "fixed_engineer_c")
+        c_rows_response = client.get(
+            "/api/raw-materials",
+            params={"factory_id": "huakang-c"},
+        )
+        assert c_rows_response.status_code == 200
+        shared_row = next(row for row in c_rows_response.json() if row["id"] == created["id"])
+        assert shared_row["material_name"] == "D 厂更新后的全厂共享 ABS"
+        assert shared_row["safety_stock_kg"] == 30
+
+
+def test_raw_material_factory_context_accepts_only_entity_factories(monkeypatch):
+    valid_factory_ids = (
+        "huakang-a",
+        "huakang-b",
+        "huakang-c",
+        "huakang-d",
+        "huadeng",
+        "huaxing",
+    )
+    invalid_factory_ids = ("group", "*", "fake-factory")
+
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+
+        for factory_id in valid_factory_ids:
+            response = client.get(
+                "/api/raw-materials",
+                params={"factory_id": factory_id},
+            )
+            assert response.status_code == 200
+
+        baseline = client.get(
+            "/api/raw-materials",
+            params={"factory_id": "huaxing"},
+        ).json()[0]
+        update_payload = {
+            "material_name": baseline["material_name"],
+            "category": baseline["category"],
+            "spec": baseline["spec"],
+            "unit": baseline["unit"],
+            "supplier": baseline["supplier"],
+            "safety_stock_kg": baseline["safety_stock_kg"],
+            "status": baseline["status"],
+            "notes": baseline["notes"],
+        }
+
+        for factory_id in invalid_factory_ids:
+            get_response = client.get(
+                "/api/raw-materials",
+                params={"factory_id": factory_id},
+            )
+            assert get_response.status_code == 422
+
+            post_response = client.post(
+                "/api/raw-materials",
+                json={
+                    "factory_id": factory_id,
+                    "material_name": "非法厂区原料",
+                    "category": "ABS",
+                    "unit": "KG",
+                },
+            )
+            assert post_response.status_code == 422
+
+            patch_response = client.patch(
+                f"/api/raw-materials/{baseline['id']}",
+                params={"factory_id": factory_id},
+                json=update_payload,
+            )
+            assert patch_response.status_code == 422
+
+
+def test_startup_refuses_legacy_factory_raw_materials_before_shared_seed(
+    monkeypatch,
+    tmp_path,
+):
+    database_path = tmp_path / "legacy_raw_materials.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE raw_materials (
+                id VARCHAR(64) NOT NULL PRIMARY KEY,
+                factory_id VARCHAR(64) NOT NULL,
+                material_code VARCHAR(128) NOT NULL,
+                material_name VARCHAR(255) NOT NULL,
+                category VARCHAR(128) NOT NULL,
+                spec VARCHAR(255) NOT NULL,
+                unit VARCHAR(64) NOT NULL,
+                supplier VARCHAR(255) NOT NULL,
+                safety_stock_kg FLOAT,
+                status VARCHAR(16) NOT NULL,
+                notes TEXT NOT NULL,
+                created_by VARCHAR(64) NOT NULL,
+                created_at VARCHAR(32) NOT NULL,
+                updated_at VARCHAR(32) NOT NULL,
+                CONSTRAINT uq_raw_materials_factory_code
+                    UNIQUE (factory_id, material_code)
+            );
+            INSERT INTO raw_materials (
+                id, factory_id, material_code, material_name, category, spec,
+                unit, supplier, safety_stock_kg, status, notes,
+                created_by, created_at, updated_at
+            ) VALUES (
+                'RM-LEGACY-HX-001', 'huaxing', '91000001', '旧厂区 ABS',
+                'ABS', '', 'KG', '', NULL, '启用', '', 'legacy',
+                '2026-07-14 08:00:00', '2026-07-14 08:00:00'
+            );
+            """
+        )
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="20260720_0027"):
+        with make_client_with_database(monkeypatch, database_path):
+            pass
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT id, factory_id, material_code FROM raw_materials ORDER BY id"
+        ).fetchall()
+    assert rows == [("RM-LEGACY-HX-001", "huaxing", "91000001")]

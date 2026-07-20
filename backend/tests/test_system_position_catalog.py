@@ -55,6 +55,20 @@ def test_fixed_system_position_definition_contract():
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
         assert set(definition.permission_codes) <= registered_codes
         assert definition.scope_mode in positions.VALID_SCOPE_MODES
+        assert positions.PRODUCTION_TASK_READ_PERMISSION_CODE in definition.permission_codes
+
+    production_task_operating_role_ids = {
+        definition.role_id
+        for definition in definitions
+        if positions.PRODUCTION_TASK_OPERATE_PERMISSION_CODES
+        & set(definition.permission_codes)
+    }
+    assert production_task_operating_role_ids == {
+        "position_general_manager",
+        "position_molding_manager",
+        "position_molding_supervisor",
+        "position_molding_clerk",
+    }
 
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
@@ -125,6 +139,10 @@ def test_fixed_system_position_definition_contract():
     )
     assert "injection_schedule:import" in production_supervisor.permission_codes
     assert "internal_quote:molding_review" in production_supervisor.permission_codes
+    assert not (
+        positions.PRODUCTION_TASK_OPERATE_PERMISSION_CODES
+        & set(production_supervisor.permission_codes)
+    )
 
     assert all(
         "molding_sample:raw_material_write"
@@ -414,6 +432,180 @@ def test_reconcile_restores_drift_preserves_bindings_and_is_idempotent(monkeypat
                     "user-reconcile-position",
                 ).revision
                 == revision_after_hash_change
+            )
+
+
+def test_reconcile_upgrades_legacy_production_task_position_matrix_without_losing_sessions(
+    monkeypatch,
+):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        positions = importlib.import_module("app.services.system_positions")
+        reconcile = importlib.import_module(
+            "app.services.system_position_reconcile"
+        )
+
+        readonly_role_ids = {
+            definition.role_id
+            for definition in positions.SYSTEM_POSITION_DEFINITIONS
+            if definition.role_id
+            not in positions.PRODUCTION_TASK_OPERATING_POSITION_ROLE_IDS
+        }
+        legacy_production_role_ids = {
+            "position_production_manager",
+            "position_production_supervisor",
+            "position_production_clerk",
+        }
+        legacy_without_task_read_role_ids = (
+            readonly_role_ids - legacy_production_role_ids
+        )
+        timestamp = "2030-02-03 04:05:06"
+        user_id = "user-legacy-production-position"
+        binding_id = (
+            f"{user_id}:position_production_clerk:huaxing:production"
+        )
+        session_id = "session-legacy-production-position"
+
+        with db_module.SessionLocal() as db:
+            permissions_by_code = {
+                permission.code: permission
+                for permission in db.scalars(select(models.AuthPermission)).all()
+            }
+            production_read = permissions_by_code[
+                positions.PRODUCTION_TASK_READ_PERMISSION_CODE
+            ]
+
+            for role_id in sorted(legacy_without_task_read_role_ids):
+                link = db.scalar(
+                    select(models.AuthRolePermission).where(
+                        models.AuthRolePermission.role_id == role_id,
+                        models.AuthRolePermission.permission_id
+                        == production_read.id,
+                    )
+                )
+                assert link is not None
+                db.delete(link)
+
+            for role_id in sorted(legacy_production_role_ids):
+                for permission_code in sorted(
+                    positions.PRODUCTION_TASK_OPERATE_PERMISSION_CODES
+                ):
+                    permission = permissions_by_code[permission_code]
+                    db.add(
+                        models.AuthRolePermission(
+                            id=f"legacy:{role_id}:{permission.id}",
+                            role_id=role_id,
+                            permission_id=permission.id,
+                        )
+                    )
+
+            state = db.get(
+                models.AuthIamState,
+                reconcile.SYSTEM_POSITION_CATALOG_STATE_KEY,
+            )
+            state_value = json.loads(state.value_json)
+            for role_id in readonly_role_ids:
+                state_value["role_hashes"][role_id] = (
+                    f"legacy-production-task:{role_id}"
+                )
+            state_value["catalog_hash"] = "legacy-production-task-catalog"
+            state.value_json = json.dumps(state_value, ensure_ascii=False)
+
+            salt, password_hash = auth_service.make_password_hash("123456")
+            db.add(
+                models.AuthUser(
+                    id=user_id,
+                    username="legacy-production-position",
+                    display_name="旧生产文员",
+                    password_salt=salt,
+                    password_hash=password_hash,
+                    status="active",
+                    force_password_change=0,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+            )
+            db.add(
+                models.AuthUserRole(
+                    id=binding_id,
+                    user_id=user_id,
+                    role_id="position_production_clerk",
+                    factory_id="huaxing",
+                    department="production",
+                )
+            )
+            db.add(
+                models.AuthUserAuthorizationRevision(
+                    user_id=user_id,
+                    revision=4,
+                    updated_at=timestamp,
+                )
+            )
+            db.add(
+                models.AuthSession(
+                    id=session_id,
+                    user_id=user_id,
+                    token_hash="legacy-production-position-token",
+                    status="active",
+                    ip_address="127.0.0.1",
+                    user_agent="pytest",
+                    expires_at="2031-02-03 04:05:06",
+                    created_at=timestamp,
+                    revoked_at="",
+                )
+            )
+            db.commit()
+
+            result = reconcile.reconcile_system_position_catalog(
+                db,
+                now=timestamp,
+            )
+            assert set(result.changed_role_ids) == readonly_role_ids
+            assert result.changed_user_ids == (user_id,)
+
+            for definition in positions.SYSTEM_POSITION_DEFINITIONS:
+                permission_codes = {
+                    permission.code
+                    for permission in db.scalars(
+                        select(models.AuthPermission)
+                        .join(
+                            models.AuthRolePermission,
+                            models.AuthRolePermission.permission_id
+                            == models.AuthPermission.id,
+                        )
+                        .where(
+                            models.AuthRolePermission.role_id
+                            == definition.role_id
+                        )
+                    ).all()
+                }
+                assert permission_codes == set(definition.permission_codes)
+
+            assert db.get(models.AuthUserRole, binding_id) is not None
+            assert db.get(models.AuthSession, session_id).status == "active"
+            assert (
+                db.get(models.AuthUserAuthorizationRevision, user_id).revision
+                == 5
+            )
+            assert db.query(models.AuthAuthorizationEvent).filter(
+                models.AuthAuthorizationEvent.event_type
+                == "system_position_reconciled",
+                models.AuthAuthorizationEvent.target_id.in_(readonly_role_ids),
+                models.AuthAuthorizationEvent.created_at == timestamp,
+            ).count() == len(readonly_role_ids)
+
+            second_result = reconcile.reconcile_system_position_catalog(
+                db,
+                now="2030-02-03 04:06:06",
+            )
+            assert second_result.changed_role_ids == ()
+            assert second_result.changed_user_ids == ()
+            assert db.get(models.AuthSession, session_id).status == "active"
+            assert (
+                db.get(models.AuthUserAuthorizationRevision, user_id).revision
+                == 5
             )
 
 

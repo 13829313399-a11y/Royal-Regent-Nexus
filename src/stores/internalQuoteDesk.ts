@@ -430,6 +430,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     conflictMessage: '',
     currentFactoryId: '',
     businessOwnerFactoryId: '',
+    factoryContextFactoryId: '',
+    factoryContextGeneration: 0,
     quoteListRequestSequence: 0,
     dashboardRequestSequence: 0,
     livePreviewRequestSequence: 0,
@@ -438,6 +440,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     dashboardFactoryId: '',
     dashboardPeriod: 'month' as InternalQuoteDashboardPeriod,
     businessOwnerRequestSequence: 0,
+    pricingBaselineFactoryId: '',
+    pricingBaselineWorkshopCode: '',
+    baselineLoadRequestSequence: 0,
+    baselineUpdateRequestSequence: 0,
+    quoteMutationRequestSequence: 0,
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
     versionComparisons: {} as Record<string, ApiInternalQuoteVersionComparison>,
@@ -447,20 +454,66 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     getQuoteById: (state) => (quoteId: string) => state.quotes.find((quote) => quote.id === quoteId),
   },
   actions: {
+    activateFactoryContext(factoryId: string) {
+      if (this.factoryContextFactoryId === factoryId) {
+        return this.factoryContextGeneration
+      }
+
+      this.factoryContextFactoryId = factoryId
+      this.factoryContextGeneration += 1
+      this.currentFactoryId = factoryId
+      this.quotes = []
+      this.quoteListTotal = 0
+      this.quoteListPage = 1
+      this.quoteListPageSize = 10
+      this.quoteListTotalPages = 1
+      this.quoteListCustomers = []
+      this.businessOwners = []
+      this.dashboard = null
+      this.dashboardFactoryId = ''
+      this.pricingBaseline = null
+      this.pricingBaselineFactoryId = ''
+      this.pricingBaselineWorkshopCode = ''
+      this.listLoading = false
+      this.ownerLoading = false
+      this.baselineLoading = false
+      this.baselineSaving = false
+      this.submitting = false
+      this.quoteListRequestSequence += 1
+      this.businessOwnerRequestSequence += 1
+      this.dashboardRequestSequence += 1
+      this.baselineLoadRequestSequence += 1
+      this.baselineUpdateRequestSequence += 1
+      this.quoteMutationRequestSequence += 1
+      return this.factoryContextGeneration
+    },
+    ensureFactoryContext(factoryId: string) {
+      if (!this.factoryContextFactoryId) {
+        return this.activateFactoryContext(factoryId)
+      }
+      return this.factoryContextGeneration
+    },
+    isFactoryContextCurrent(factoryId: string, generation: number) {
+      return this.factoryContextFactoryId === factoryId
+        && this.factoryContextGeneration === generation
+    },
+    clearPricingBaseline() {
+      this.baselineLoadRequestSequence += 1
+      this.baselineUpdateRequestSequence += 1
+      this.pricingBaseline = null
+      this.pricingBaselineFactoryId = ''
+      this.pricingBaselineWorkshopCode = ''
+      this.baselineLoading = false
+      this.baselineSaving = false
+    },
     upsertQuote(quote: InternalQuote) {
       const index = this.quotes.findIndex((item) => item.id === quote.id)
       if (index >= 0) this.quotes.splice(index, 1, quote)
       else this.quotes.unshift(quote)
     },
     async loadQuotes(factoryId: string, options: { status?: string; keyword?: string; customer?: string; page?: number; pageSize?: number } = {}) {
+      const factoryContextGeneration = this.activateFactoryContext(factoryId)
       const requestSequence = ++this.quoteListRequestSequence
-      if (this.currentFactoryId !== factoryId) {
-        this.quotes = []
-        this.quoteListTotal = 0
-        this.quoteListPage = 1
-        this.quoteListTotalPages = 1
-        this.quoteListCustomers = []
-      }
       this.listLoading = true
       this.errorMessage = ''
       this.currentFactoryId = factoryId
@@ -468,7 +521,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         const response = Object.keys(options).length
           ? await internalQuoteApi.list(factoryId, options)
           : await internalQuoteApi.list(factoryId)
-        if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
+        if (
+          requestSequence !== this.quoteListRequestSequence
+          || !this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) return
         if (Array.isArray(response)) {
           // Compatibility with a backend process that still returns the former
           // unpaged array response. Keep the page controls functional instead of
@@ -495,14 +551,20 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           this.quoteListCustomers = response.customers
         }
       } catch (error) {
-        if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
+        if (
+          requestSequence !== this.quoteListRequestSequence
+          || !this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) return
         this.errorMessage = getApiErrorMessage(error)
         this.quotes = []
         this.quoteListTotal = 0
         this.quoteListPage = 1
         this.quoteListTotalPages = 1
       } finally {
-        if (requestSequence === this.quoteListRequestSequence && this.currentFactoryId === factoryId) {
+        if (
+          requestSequence === this.quoteListRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
           this.listLoading = false
         }
       }
@@ -594,17 +656,42 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       }
     },
     async loadPricingBaseline(factoryId: string, workshopCode = 'huaxing-workshop') {
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，请在当前厂区重新读取报价基数。')
+      }
+      const requestSequence = ++this.baselineLoadRequestSequence
       this.baselineLoading = true
       this.errorMessage = ''
       try {
-        this.pricingBaseline = await internalQuoteApi.getPricingBaseline(factoryId, workshopCode)
-        return this.pricingBaseline
+        const pricingBaseline = await internalQuoteApi.getPricingBaseline(factoryId, workshopCode)
+        if (
+          requestSequence === this.baselineLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.pricingBaseline = pricingBaseline
+          this.pricingBaselineFactoryId = factoryId
+          this.pricingBaselineWorkshopCode = workshopCode
+        }
+        return pricingBaseline
       } catch (error) {
-        this.pricingBaseline = null
-        this.errorMessage = getApiErrorMessage(error)
+        if (
+          requestSequence === this.baselineLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.pricingBaseline = null
+          this.pricingBaselineFactoryId = ''
+          this.pricingBaselineWorkshopCode = ''
+          this.errorMessage = getApiErrorMessage(error)
+        }
         throw error
       } finally {
-        this.baselineLoading = false
+        if (
+          requestSequence === this.baselineLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.baselineLoading = false
+        }
       }
     },
     async updatePricingBaseline(
@@ -612,17 +699,40 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       workshopCode: string,
       payload: InternalQuotePricingBaselineUpdateRequest,
     ) {
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，不能提交旧厂区的报价基数。')
+      }
+      const requestSequence = ++this.baselineUpdateRequestSequence
       this.baselineSaving = true
       this.errorMessage = ''
       try {
-        this.pricingBaseline = await internalQuoteApi.updatePricingBaseline(factoryId, workshopCode, payload)
-        return this.pricingBaseline
+        const pricingBaseline = await internalQuoteApi.updatePricingBaseline(factoryId, workshopCode, payload)
+        if (
+          requestSequence === this.baselineUpdateRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.pricingBaseline = pricingBaseline
+          this.pricingBaselineFactoryId = factoryId
+          this.pricingBaselineWorkshopCode = workshopCode
+        }
+        return pricingBaseline
       } catch (error) {
         const message = mutationMessage(error)
-        this.errorMessage = message
+        if (
+          requestSequence === this.baselineUpdateRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.errorMessage = message
+        }
         throw new Error(message)
       } finally {
-        this.baselineSaving = false
+        if (
+          requestSequence === this.baselineUpdateRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.baselineSaving = false
+        }
       }
     },
     async loadQuote(quoteId: string) {
@@ -671,14 +781,19 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         this.submitting = false
       }
     },
-    async createQuote(payload: InternalQuoteCreatePayload) {
+    async createQuote(payload: InternalQuoteCreatePayload, contextFactoryId?: string) {
       if (!payload.businessOwnerId || !payload.businessOwner.trim()) throw new Error('新建内部报价必须指定业务负责人。')
       const appStore = useAppStore()
       const activeFactory = appStore.activeFactory.id === 'group'
         ? appStore.activeProductionFactory
         : appStore.activeFactory
-      const factoryId = activeFactory?.id ?? 'huaxing'
-      const factoryName = activeFactory?.name ?? '华兴'
+      const factoryId = contextFactoryId ?? activeFactory?.id ?? 'huaxing'
+      const factoryName = factoryId === activeFactory?.id ? activeFactory.name : factoryId
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，请在当前厂区重新新建内部报价。')
+      }
+      const requestSequence = ++this.quoteMutationRequestSequence
       this.submitting = true
       try {
         const created = await internalQuoteApi.create({
@@ -690,14 +805,35 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           remark: payload.remark, participating_sections: payload.participatingSections,
         })
         const quote = toQuote(created)
-        this.upsertQuote(quote)
+        if (
+          quote.factoryId === factoryId
+          && requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.upsertQuote(quote)
+        }
         return quote
       } finally {
-        this.submitting = false
+        if (
+          requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.submitting = false
+        }
       }
     },
-    async cloneQuote(sourceQuoteId: string, payload: InternalQuoteCreatePayload) {
+    async cloneQuote(sourceQuoteId: string, payload: InternalQuoteCreatePayload, contextFactoryId?: string) {
       if (!payload.businessOwnerId || !payload.businessOwner.trim()) throw new Error('复制内部报价必须指定业务负责人。')
+      const appStore = useAppStore()
+      const activeFactory = appStore.activeFactory.id === 'group'
+        ? appStore.activeProductionFactory
+        : appStore.activeFactory
+      const factoryId = contextFactoryId ?? activeFactory?.id ?? 'huaxing'
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，请在当前厂区重新复制内部报价。')
+      }
+      const requestSequence = ++this.quoteMutationRequestSequence
       this.submitting = true
       try {
         const cloned = await internalQuoteApi.clone(sourceQuoteId, {
@@ -707,10 +843,21 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           participating_sections: payload.participatingSections,
         })
         const quote = toQuote(cloned)
-        this.upsertQuote(quote)
+        if (
+          quote.factoryId === factoryId
+          && requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.upsertQuote(quote)
+        }
         return quote
       } finally {
-        this.submitting = false
+        if (
+          requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.submitting = false
+        }
       }
     },
     saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {

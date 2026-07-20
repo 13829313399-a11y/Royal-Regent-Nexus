@@ -6,6 +6,7 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -36,6 +37,7 @@ INTERNAL_QUOTE_P4_MIGRATION_REVISION = "20260716_0023"
 IAM_POSITION_SCOPE_MIGRATION_REVISION = "20260717_0024"
 INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION = "20260718_0025"
 INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION = "20260718_0026"
+RAW_MATERIAL_SHARED_MIGRATION_REVISION = "20260720_0027"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -85,7 +87,38 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION]
+    assert script.get_heads() == [RAW_MATERIAL_SHARED_MIGRATION_REVISION]
+
+    raw_material_shared_revision = script.get_revision(
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION
+    )
+    assert (
+        raw_material_shared_revision.down_revision
+        == INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION
+    )
+    raw_material_shared_content = Path(
+        raw_material_shared_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        "RAW_MATERIAL_BUSINESS_FIELDS",
+        "BEGIN IMMEDIATE",
+        "safety_stock_kg",
+        "ORDER BY material_code, factory_id, id",
+        "raw material master data conflict",
+        "LOCK TABLE raw_materials IN ACCESS EXCLUSIVE MODE",
+        "UPDATE raw_materials SET factory_id = '*'",
+        "uq_raw_materials_material_code",
+        "ck_raw_materials_global_factory",
+        "irreversible",
+    ):
+        assert expected in raw_material_shared_content
+    raw_material_upgrade_source = raw_material_shared_content.split(
+        "def upgrade() -> None:",
+        1,
+    )[1].split("def downgrade() -> None:", 1)[0]
+    assert raw_material_upgrade_source.index(
+        "_acquire_sqlite_write_lock(connection)"
+    ) < raw_material_upgrade_source.index("SELECT id, factory_id, material_code")
 
     pricing_baseline_revision = script.get_revision(
         INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION
@@ -363,6 +396,441 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "uq_internal_quote_artifact_handoffs_quote_release" in sql
     assert "target_customer_price" in sql
     assert "create table internal_quote_pricing_baselines" in sql
+    assert "raw material master data conflict" in sql
+    assert "lock table raw_materials in access exclusive mode" in sql
+    assert "update raw_materials set factory_id = '*'" in sql
+    assert "drop constraint uq_raw_materials_factory_code" in sql
+    assert "add constraint uq_raw_materials_material_code unique (material_code)" in sql
+    assert "add constraint ck_raw_materials_global_factory check (factory_id = '*')" in sql
+    assert sql.index("lock table raw_materials in access exclusive mode") < sql.index(
+        "raw material master data conflict"
+    )
+
+
+def test_raw_material_shared_sqlite_write_lock_blocks_competing_writer(tmp_path):
+    database_path = tmp_path / "raw_material_shared_lock.db"
+    with sqlite3.connect(database_path) as seed_connection:
+        seed_connection.execute(
+            "CREATE TABLE raw_materials (id TEXT PRIMARY KEY, factory_id TEXT NOT NULL)"
+        )
+        seed_connection.commit()
+
+    config = Config(str(ALEMBIC_INI))
+    migration_module = ScriptDirectory.from_config(config).get_revision(
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION
+    ).module
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.connect() as migration_connection:
+            with migration_connection.begin():
+                migration_module._acquire_sqlite_write_lock(migration_connection)
+                assert migration_connection.connection.driver_connection.in_transaction
+
+                with sqlite3.connect(database_path, timeout=0) as competing_connection:
+                    try:
+                        competing_connection.execute(
+                            "INSERT INTO raw_materials (id, factory_id) VALUES (?, ?)",
+                            ("RM-COMPETING", "huaxing"),
+                        )
+                        competing_connection.commit()
+                    except sqlite3.OperationalError as error:
+                        assert "locked" in str(error).lower()
+                    else:
+                        raise AssertionError(
+                            "SQLite competing writer was not blocked by the 0027 write lock"
+                        )
+    finally:
+        engine.dispose()
+
+
+def test_raw_material_shared_sqlite_offline_has_controlled_online_only_error(
+    tmp_path,
+):
+    database_path = tmp_path / "raw_material_shared_offline.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            f"{INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION}:head",
+            "--sql",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    assert "cannot run as sqlite offline sql" in output
+    assert "run this revision in sqlite online mode" in output
+    assert "notimplementederror" not in output
+    assert "lock table raw_materials in access exclusive mode" not in output
+
+
+def test_raw_material_shared_upgrade_merges_equivalent_rows_deterministically(
+    tmp_path,
+):
+    database_path = tmp_path / "raw_material_shared_0026.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str, expect_success: bool = True):
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if expect_success:
+            assert result.returncode == 0, result.stderr
+        return result
+
+    run_alembic("upgrade", INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        rows = (
+            (
+                "RM-HX-91000001",
+                "huaxing",
+                "91000001",
+                "ABS 750NSW",
+                "ABS",
+                "通用级",
+                "KG/包",
+                "供应商甲",
+                50.0,
+                "启用",
+                "基准资料",
+                "huaxing-seed",
+                "2026-07-14 09:00:00",
+                "2026-07-14 09:00:00",
+            ),
+            (
+                "RM-HA-91000001",
+                "huakang-a",
+                "91000001",
+                "ABS 750NSW",
+                "ABS",
+                "通用级",
+                "KG/包",
+                "供应商甲",
+                50.0,
+                "启用",
+                "基准资料",
+                "huakang-a-seed",
+                "2026-07-14 10:00:00",
+                "2026-07-14 10:00:00",
+            ),
+            (
+                "RM-HX-92000030",
+                "huaxing",
+                "92000030",
+                "单厂新增 PP",
+                "PP",
+                "共聚",
+                "KG",
+                "供应商乙",
+                None,
+                "启用",
+                "只存在于一个厂区的额外资料",
+                "user-engineer",
+                "2026-07-20 09:00:00",
+                "2026-07-20 09:00:00",
+            ),
+            (
+                "RM-SHARED-93000001",
+                "*",
+                "93000001",
+                "共享 PC",
+                "PC",
+                "透明",
+                "KG",
+                "供应商丙",
+                10.0,
+                "停用",
+                "已归一资料",
+                "shared-owner",
+                "2026-07-20 08:00:00",
+                "2026-07-20 08:00:00",
+            ),
+            (
+                "RM-HD-93000001",
+                "huadeng",
+                "93000001",
+                "共享 PC",
+                "PC",
+                "透明",
+                "KG",
+                "供应商丙",
+                10.0,
+                "停用",
+                "已归一资料",
+                "huadeng-owner",
+                "2026-07-20 11:00:00",
+                "2026-07-20 11:00:00",
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO raw_materials (
+                id, factory_id, material_code, material_name, category, spec,
+                unit, supplier, safety_stock_kg, status, notes,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.commit()
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        migrated = connection.execute(
+            """
+            SELECT id, factory_id, material_code, material_name, safety_stock_kg,
+                   status, notes, created_by, created_at, updated_at
+            FROM raw_materials
+            ORDER BY material_code
+            """
+        ).fetchall()
+        assert migrated == [
+            (
+                "RM-HA-91000001",
+                "*",
+                "91000001",
+                "ABS 750NSW",
+                50.0,
+                "启用",
+                "基准资料",
+                "huakang-a-seed",
+                "2026-07-14 10:00:00",
+                "2026-07-14 10:00:00",
+            ),
+            (
+                "RM-HX-92000030",
+                "*",
+                "92000030",
+                "单厂新增 PP",
+                None,
+                "启用",
+                "只存在于一个厂区的额外资料",
+                "user-engineer",
+                "2026-07-20 09:00:00",
+                "2026-07-20 09:00:00",
+            ),
+            (
+                "RM-SHARED-93000001",
+                "*",
+                "93000001",
+                "共享 PC",
+                10.0,
+                "停用",
+                "已归一资料",
+                "shared-owner",
+                "2026-07-20 08:00:00",
+                "2026-07-20 08:00:00",
+            ),
+        ]
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (RAW_MATERIAL_SHARED_MIGRATION_REVISION,)
+
+        raw_material_table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'raw_materials'"
+        ).fetchone()[0].lower()
+        assert "constraint ck_raw_materials_global_factory check (factory_id = '*')" in (
+            raw_material_table_sql
+        )
+
+        unique_index_columns = []
+        for index_row in connection.execute("PRAGMA index_list('raw_materials')").fetchall():
+            if index_row[2] != 1:
+                continue
+            unique_index_columns.append([
+                column_row[2]
+                for column_row in connection.execute(
+                    f"PRAGMA index_info('{index_row[1]}')"
+                ).fetchall()
+            ])
+        assert ["material_code"] in unique_index_columns
+        assert ["factory_id", "material_code"] not in unique_index_columns
+
+        insert_sql = """
+            INSERT INTO raw_materials (
+                id, factory_id, material_code, material_name, category, spec,
+                unit, supplier, safety_stock_kg, status, notes,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        rejected_rows = (
+            (
+                "RM-INVALID-FACTORY",
+                "huaxing",
+                "94000001",
+                "非法厂区原料",
+            ),
+            (
+                "RM-DUPLICATE-CODE",
+                "*",
+                "91000001",
+                "重复编号原料",
+            ),
+        )
+        for material_id, factory_id, material_code, material_name in rejected_rows:
+            try:
+                connection.execute(
+                    insert_sql,
+                    (
+                        material_id,
+                        factory_id,
+                        material_code,
+                        material_name,
+                        "ABS",
+                        "",
+                        "KG",
+                        "",
+                        None,
+                        "启用",
+                        "",
+                        "test",
+                        "2026-07-20 12:00:00",
+                        "2026-07-20 12:00:00",
+                    ),
+                )
+                connection.commit()
+            except sqlite3.IntegrityError:
+                connection.rollback()
+            else:
+                raise AssertionError(
+                    f"raw_materials constraints accepted invalid row {material_id}"
+                )
+
+    downgrade = run_alembic(
+        "downgrade",
+        INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
+        expect_success=False,
+    )
+    assert downgrade.returncode != 0
+    assert "irreversible" in f"{downgrade.stdout}\n{downgrade.stderr}"
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (RAW_MATERIAL_SHARED_MIGRATION_REVISION,)
+
+
+def test_raw_material_shared_upgrade_rejects_any_business_field_conflict(
+    tmp_path,
+):
+    database_path = tmp_path / "raw_material_shared_conflict_0026.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    initial_upgrade = run_alembic(
+        "upgrade",
+        INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+
+    base_values = {
+        "material_name": "冲突基准原料",
+        "category": "ABS",
+        "spec": "通用级",
+        "unit": "KG",
+        "supplier": "供应商甲",
+        "safety_stock_kg": 50.0,
+        "status": "启用",
+        "notes": "基准备注",
+    }
+    conflicting_values = {
+        "material_name": "冲突后的原料名",
+        "category": "PP",
+        "spec": "高流动",
+        "unit": "磅",
+        "supplier": "供应商乙",
+        "safety_stock_kg": None,
+        "status": "停用",
+        "notes": "不同备注",
+    }
+    conflict_codes: list[str] = []
+    rows: list[tuple] = []
+    for index, (field, conflicting_value) in enumerate(
+        conflicting_values.items(),
+        start=1,
+    ):
+        material_code = f"CONFLICT-{index:02d}"
+        conflict_codes.append(material_code)
+        for factory_id, suffix, overrides in (
+            ("huakang-a", "A", {}),
+            ("huaxing", "HX", {field: conflicting_value}),
+        ):
+            values = {**base_values, **overrides}
+            rows.append(
+                (
+                    f"RM-{suffix}-{index:02d}",
+                    factory_id,
+                    material_code,
+                    values["material_name"],
+                    values["category"],
+                    values["spec"],
+                    values["unit"],
+                    values["supplier"],
+                    values["safety_stock_kg"],
+                    values["status"],
+                    values["notes"],
+                    f"creator-{suffix}",
+                    f"2026-07-20 {index:02d}:00:00",
+                    f"2026-07-20 {index:02d}:30:00",
+                )
+            )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO raw_materials (
+                id, factory_id, material_code, material_name, category, spec,
+                unit, supplier, safety_stock_kg, status, notes,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.commit()
+
+    rejected_upgrade = run_alembic("upgrade", "head")
+    assert rejected_upgrade.returncode != 0
+    migration_output = f"{rejected_upgrade.stdout}\n{rejected_upgrade.stderr}"
+    assert "raw material master data conflict" in migration_output
+    for material_code in conflict_codes:
+        assert material_code in migration_output
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,)
+        assert connection.execute("SELECT COUNT(*) FROM raw_materials").fetchone() == (
+            len(rows),
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM raw_materials WHERE factory_id = '*'"
+        ).fetchone() == (0,)
 
 
 def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
@@ -436,7 +904,7 @@ def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
             "internal_quote:export": "operate",
         }
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
+            RAW_MATERIAL_SHARED_MIGRATION_REVISION,
         )
 
 
@@ -534,7 +1002,7 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
         )
         connection.commit()
 
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         quote = connection.execute(
             """
@@ -562,7 +1030,7 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
             "SELECT quote_no FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'"
         ).fetchone() == ("LEGACY-P1",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
+            RAW_MATERIAL_SHARED_MIGRATION_REVISION,
         )
 
 
@@ -685,7 +1153,7 @@ def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
         )
         connection.commit()
 
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         imported = connection.execute(
             """
@@ -740,5 +1208,5 @@ def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
             "SELECT file_name FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'"
         ).fetchone() == ("历史导出.xlsx",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
+            RAW_MATERIAL_SHARED_MIGRATION_REVISION,
         )

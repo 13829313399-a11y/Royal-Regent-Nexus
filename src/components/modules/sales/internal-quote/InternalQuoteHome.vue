@@ -27,6 +27,7 @@ import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
+import { getFactoryScopedRoute, type FactoryContextId } from '@/data/enterpriseMock'
 import type { InternalQuoteDashboardPeriod, InternalQuotePricingBaselineUpdateRequest } from '@/api/internalQuote'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import type { InternalQuote, InternalQuoteCreatePayload, InternalQuoteStatus } from '@/types/internalQuoteDesk'
@@ -43,8 +44,12 @@ const createDialogOpen = ref(false)
 const dialogMode = ref<'create' | 'clone'>('create')
 const cloneSource = ref<InternalQuote>()
 const dialogError = ref('')
+const createDialogFactoryId = ref('')
+const createDialogFactoryGeneration = ref(0)
 const baselineDialogOpen = ref(false)
 const baselineDialogError = ref('')
+const baselineDialogFactoryId = ref('')
+const baselineDialogFactoryGeneration = ref(0)
 const activeFactory = computed(() => (
   appStore.activeFactory.id === 'group'
     ? appStore.activeProductionFactory
@@ -52,7 +57,10 @@ const activeFactory = computed(() => (
 ))
 const activeFactoryId = computed(() => activeFactory.value?.id ?? 'huaxing')
 const activeFactoryName = computed(() => activeFactory.value?.name ?? '华兴')
-const activeWorkshopCode = computed(() => `${activeFactoryId.value}-workshop`)
+function getQuoteRoute(path: string, factoryId: string = activeFactory.value.id) {
+  return getFactoryScopedRoute(path, factoryId as FactoryContextId)
+}
+quoteStore.activateFactoryContext(activeFactoryId.value)
 const canViewPricingBaseline = computed(() => authStore.can('internal_quote:baseline_read', activeFactoryId.value, 'sales-business'))
 const canManagePricingBaseline = computed(() => authStore.can('internal_quote:baseline_manage', activeFactoryId.value, 'sales-business'))
 const initiatorDepartments = ['sales-business', 'engineering'] as const
@@ -171,6 +179,8 @@ function openCreate() {
   dialogMode.value = 'create'
   cloneSource.value = undefined
   dialogError.value = ''
+  createDialogFactoryId.value = activeFactoryId.value
+  createDialogFactoryGeneration.value = quoteStore.factoryContextGeneration
   createDialogOpen.value = true
 }
 
@@ -179,7 +189,16 @@ function openClone(quote: InternalQuote) {
   dialogMode.value = 'clone'
   cloneSource.value = quote
   dialogError.value = ''
+  createDialogFactoryId.value = activeFactoryId.value
+  createDialogFactoryGeneration.value = quoteStore.factoryContextGeneration
   createDialogOpen.value = true
+}
+
+function closeCreateDialog() {
+  createDialogOpen.value = false
+  cloneSource.value = undefined
+  createDialogFactoryId.value = ''
+  createDialogFactoryGeneration.value = 0
 }
 
 function cloneUnavailableMessage(quote: InternalQuote) {
@@ -197,6 +216,15 @@ function canCloneQuote(quote: InternalQuote) {
 }
 
 async function handleConfirm(payload: InternalQuoteCreatePayload) {
+  const requestedFactoryId = createDialogFactoryId.value
+  const requestedFactoryGeneration = createDialogFactoryGeneration.value
+  if (
+    !createDialogOpen.value
+    || !requestedFactoryId
+    || requestedFactoryId !== activeFactoryId.value
+    || !quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedFactoryGeneration)
+  ) return
+
   dialogError.value = ''
   if (dialogMode.value === 'clone' && cloneSource.value && !canCloneQuote(cloneSource.value)) {
     dialogError.value = `${cloneUnavailableMessage(cloneSource.value)}。`
@@ -206,20 +234,36 @@ async function handleConfirm(payload: InternalQuoteCreatePayload) {
     dialogError.value = `${createUnavailableMessage.value}。`
     return
   }
+  const requestedMode = dialogMode.value
+  const requestedCloneSource = cloneSource.value
   try {
-    const quote = dialogMode.value === 'clone' && cloneSource.value
-      ? await quoteStore.cloneQuote(cloneSource.value.id, payload)
-      : await quoteStore.createQuote(payload)
-    createDialogOpen.value = false
-    void router.push(`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`)
+    const quote = requestedMode === 'clone' && requestedCloneSource
+      ? await quoteStore.cloneQuote(requestedCloneSource.id, payload, requestedFactoryId)
+      : await quoteStore.createQuote(payload, requestedFactoryId)
+    if (
+      quote.factoryId !== requestedFactoryId
+      || !quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedFactoryGeneration)
+    ) return
+
+    closeCreateDialog()
+    void router.push(getQuoteRoute(
+      `/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`,
+      quote.factoryId,
+    ))
   } catch (error) {
-    dialogError.value = getApiErrorMessage(error)
+    if (
+      createDialogOpen.value
+      && createDialogFactoryId.value === requestedFactoryId
+      && quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedFactoryGeneration)
+    ) {
+      dialogError.value = getApiErrorMessage(error)
+    }
   }
 }
 
 function openQuote(quote: InternalQuote) {
   const target = ['fully_approved', 'final_pending', 'released', 'exported'].includes(quote.status) ? 'summary' : 'collaboration'
-  void router.push(`/modules/sales-business/internal-quote-desk/${quote.id}/${target}`)
+  void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/${target}`))
 }
 
 function approvedCount(quote: InternalQuote) {
@@ -227,23 +271,57 @@ function approvedCount(quote: InternalQuote) {
 }
 
 async function openPricingBaseline() {
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = quoteStore.factoryContextGeneration
+  baselineDialogFactoryId.value = requestedFactoryId
+  baselineDialogFactoryGeneration.value = requestedFactoryGeneration
   baselineDialogOpen.value = true
   baselineDialogError.value = ''
   try {
-    await quoteStore.loadPricingBaseline(activeFactoryId.value, activeWorkshopCode.value)
+    await quoteStore.loadPricingBaseline(requestedFactoryId, `${requestedFactoryId}-workshop`)
   } catch (error) {
-    baselineDialogError.value = getApiErrorMessage(error)
+    if (
+      baselineDialogOpen.value
+      && baselineDialogFactoryId.value === requestedFactoryId
+      && quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedFactoryGeneration)
+    ) {
+      baselineDialogError.value = getApiErrorMessage(error)
+    }
   }
 }
 
 async function savePricingBaseline(payload: InternalQuotePricingBaselineUpdateRequest) {
+  const requestedFactoryId = baselineDialogFactoryId.value
+  const requestedFactoryGeneration = baselineDialogFactoryGeneration.value
+  if (
+    !baselineDialogOpen.value
+    || !requestedFactoryId
+    || requestedFactoryId !== activeFactoryId.value
+    || !quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedFactoryGeneration)
+  ) return
+
   baselineDialogError.value = ''
   try {
-    await quoteStore.updatePricingBaseline(activeFactoryId.value, activeWorkshopCode.value, payload)
-    baselineDialogOpen.value = false
+    await quoteStore.updatePricingBaseline(requestedFactoryId, `${requestedFactoryId}-workshop`, payload)
+    if (!quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedFactoryGeneration)) return
+    closePricingBaseline()
   } catch (error) {
-    baselineDialogError.value = getApiErrorMessage(error)
+    if (
+      baselineDialogOpen.value
+      && baselineDialogFactoryId.value === requestedFactoryId
+      && quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedFactoryGeneration)
+    ) {
+      baselineDialogError.value = getApiErrorMessage(error)
+    }
   }
+}
+
+function closePricingBaseline() {
+  baselineDialogOpen.value = false
+  baselineDialogFactoryId.value = ''
+  baselineDialogFactoryGeneration.value = 0
+  baselineDialogError.value = ''
+  quoteStore.clearPricingBaseline()
 }
 
 function requiredCount(quote: InternalQuote) {
@@ -256,7 +334,7 @@ function clearFilters() {
   customerFilter.value = 'all'
 }
 
-async function loadQuotePage(page = 1) {
+async function loadQuotePage(page = 1, factoryId = activeFactoryId.value) {
   const options = {
     page,
     pageSize: 10,
@@ -264,7 +342,7 @@ async function loadQuotePage(page = 1) {
     ...(query.value.trim() ? { keyword: query.value.trim() } : {}),
     ...(customerFilter.value !== 'all' ? { customer: customerFilter.value } : {}),
   }
-  await quoteStore.loadQuotes(activeFactoryId.value, options)
+  await quoteStore.loadQuotes(factoryId, options)
 }
 
 async function changeQuotePage(page: number) {
@@ -272,24 +350,30 @@ async function changeQuotePage(page: number) {
   await loadQuotePage(page)
 }
 
-async function loadPage() {
+async function loadPage(factoryId = activeFactoryId.value) {
+  quoteStore.activateFactoryContext(factoryId)
   await Promise.all([
-    loadQuotePage(1),
-    quoteStore.loadBusinessOwners(activeFactoryId.value),
-    quoteStore.loadDashboard(activeFactoryId.value, statsPeriod.value),
+    loadQuotePage(1, factoryId),
+    quoteStore.loadBusinessOwners(factoryId),
+    quoteStore.loadDashboard(factoryId, statsPeriod.value),
   ])
 }
 
 onMounted(() => { void loadPage() })
 let suppressFilterReload = false
 let listFilterTimer: ReturnType<typeof setTimeout> | undefined
-watch(activeFactoryId, async () => {
-  createDialogOpen.value = false
-  cloneSource.value = undefined
+watch(activeFactoryId, async (factoryId) => {
+  closeCreateDialog()
+  closePricingBaseline()
   dialogError.value = ''
+  if (listFilterTimer) {
+    clearTimeout(listFilterTimer)
+    listFilterTimer = undefined
+  }
+  quoteStore.activateFactoryContext(factoryId)
   suppressFilterReload = true
   clearFilters()
-  void loadPage()
+  void loadPage(factoryId)
   await nextTick()
   suppressFilterReload = false
 })
@@ -489,7 +573,7 @@ onBeforeUnmount(() => {
       :factory-id="activeFactoryId"
       :factory-name="activeFactoryName"
       :allowed-initiator-departments="allowedInitiatorDepartments"
-      @close="createDialogOpen = false"
+      @close="closeCreateDialog"
       @confirm="handleConfirm"
     />
     <InternalQuoteBaselineDialog
@@ -498,7 +582,8 @@ onBeforeUnmount(() => {
       :busy="quoteStore.baselineLoading || quoteStore.baselineSaving"
       :can-edit="canManagePricingBaseline"
       :external-error="baselineDialogError"
-      @close="baselineDialogOpen = false"
+      :factory-name="activeFactoryName"
+      @close="closePricingBaseline"
       @save="savePricingBaseline"
     />
   </div>

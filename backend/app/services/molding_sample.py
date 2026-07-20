@@ -53,10 +53,12 @@ from app.services.business_authz import (
     SHARED_MOLDING_DEPARTMENTS,
     WAREHOUSE_DEPARTMENTS,
     can_view_molding_cost,
+    ensure_general_molding_read,
     ensure_molding_local_write,
     ensure_molding_read,
     ensure_permission_for_departments,
     has_permission_for_departments,
+    has_general_molding_read_access,
     molding_read_access,
 )
 
@@ -111,6 +113,7 @@ BOARD_SOURCE_STATUSES: dict[MoldingSampleBoardStatus, tuple[str, ...]] = {
 
 INITIAL_ORDER_STATUS = "待审核"
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
+PRODUCTION_TASK_STATUSES = frozenset({"待生产", "生产中", "已完成"})
 ALLOWED_ITEM_PATCH_FIELDS = {
     "receipt_no",
     "collected_weight_kg",
@@ -414,6 +417,10 @@ def is_external_order(order: MoldingSampleOrder) -> bool:
     return order.send_to in {"发至湖南", "发至模厂"} or order.workshop == "模厂"
 
 
+def is_production_task_order(order: MoldingSampleOrder) -> bool:
+    return order.status in PRODUCTION_TASK_STATUSES and not is_external_order(order)
+
+
 def ensure_export_permission(db: Session, current_user: AuthContext, factory_id: str) -> None:
     ensure_molding_read(db, current_user, factory_id)
     # Export is an operating permission. A user with cross-factory read scope
@@ -491,7 +498,10 @@ def ensure_permission_in_any_factory(
 def ensure_any_local_molding_read(db: Session, current_user: AuthContext) -> None:
     factory_candidates = user_factory_candidates(current_user)
     for factory_id in factory_candidates:
-        if molding_read_access(current_user, factory_id) == "local":
+        if (
+            molding_read_access(current_user, factory_id) == "local"
+            and has_general_molding_read_access(current_user, factory_id)
+        ):
             return
     ensure_permission_for_departments(
         db,
@@ -591,6 +601,20 @@ def ensure_order_read_allowed(
     order: MoldingSampleOrder,
 ) -> None:
     ensure_molding_read(db, current_user, order.factory_id)
+    if has_general_molding_read_access(current_user, order.factory_id):
+        return
+    if is_production_task_order(order):
+        return
+
+    add_auth_audit(
+        db,
+        "permission_denied",
+        username=current_user.username,
+        user_id=current_user.id,
+        detail=f"仅获生产任务只读权限，禁止读取非生产任务：{order.id}",
+    )
+    db.commit()
+    raise HTTPException(status_code=403, detail="当前账号仅可查看正式生产任务")
 
 
 def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
@@ -635,6 +659,12 @@ def list_orders(
     statement = order_statement()
     if factory_id:
         statement = statement.where(MoldingSampleOrder.factory_id == factory_id)
+        if not has_general_molding_read_access(current_user, factory_id):
+            statement = statement.where(
+                MoldingSampleOrder.status.in_(PRODUCTION_TASK_STATUSES),
+                ~MoldingSampleOrder.send_to.in_(("发至湖南", "发至模厂")),
+                MoldingSampleOrder.workshop != "模厂",
+            )
 
     orders = list(
         db.scalars(
@@ -644,6 +674,10 @@ def list_orders(
     return [
         order for order in orders
         if molding_read_access(current_user, order.factory_id) is not None
+        and (
+            has_general_molding_read_access(current_user, order.factory_id)
+            or is_production_task_order(order)
+        )
     ]
 
 
@@ -831,7 +865,7 @@ def list_board_page(
     page: int,
     page_size: int,
 ) -> tuple[list[MoldingSampleOrder], int, int, int]:
-    ensure_molding_read(db, current_user, factory_id)
+    ensure_general_molding_read(db, current_user, factory_id)
     source_statuses = BOARD_SOURCE_STATUSES[board_status]
     tokens = tokenize_board_search_keyword(keyword)
 
@@ -891,7 +925,7 @@ def get_board_summary(
     factory_id: str,
     keyword: str,
 ) -> dict[str, Any]:
-    ensure_molding_read(db, current_user, factory_id)
+    ensure_general_molding_read(db, current_user, factory_id)
     tokens = tokenize_board_search_keyword(keyword)
     status_counts = _empty_board_status_counts()
 
@@ -1273,6 +1307,14 @@ def update_notification(
         notification_module_permission(notification.target_module),
         notification,
     )
+    if notification.target_module == PRODUCTION_TASK_MODULE:
+        ensure_permission_for_departments(
+            db,
+            current_user,
+            "molding_sample:production_fillback",
+            notification.factory_id,
+            PRODUCTION_DEPARTMENTS,
+        )
     if payload.status not in NOTIFICATION_STATUSES:
         raise HTTPException(status_code=400, detail="通知状态无效")
 
@@ -1312,9 +1354,23 @@ def list_problems(
             statement.order_by(MoldingSampleProblem.created_at.desc(), MoldingSampleProblem.id.desc())
         ).all()
     )
+    problem_order_ids = {problem.order_id for problem in problems}
+    orders_by_id = {
+        order.id: order
+        for order in db.scalars(
+            select(MoldingSampleOrder).where(MoldingSampleOrder.id.in_(problem_order_ids))
+        ).all()
+    }
     return [
         problem for problem in problems
         if molding_read_access(current_user, problem.factory_id) is not None
+        and (
+            has_general_molding_read_access(current_user, problem.factory_id)
+            or (
+                (order := orders_by_id.get(problem.order_id)) is not None
+                and is_production_task_order(order)
+            )
+        )
     ]
 
 

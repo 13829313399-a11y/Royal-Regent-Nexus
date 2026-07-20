@@ -3,6 +3,7 @@ import { ArrowLeft, Building2, Search } from '@lucide/vue'
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import { getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
 interface SalesWorkbenchMetric {
@@ -36,13 +37,20 @@ const activeFactory = computed(() => (
     ? appStore.activeProductionFactory
     : appStore.activeFactory
 ))
+const scopedBackTo = computed(() => props.backTo.startsWith('/')
+  ? getFactoryScopedRoute(props.backTo, activeFactory.value.id)
+  : props.backTo)
+const salesDepartmentRoute = computed(() => getFactoryScopedRoute(
+  '/modules/sales-business',
+  activeFactory.value.id,
+))
 </script>
 
 <template>
   <div class="sales-workbench min-h-screen text-slate-950">
     <header class="sales-topbar">
       <div class="sales-topbar-inner">
-        <RouterLink v-if="backTo" :to="backTo" class="sales-topbar-back">
+        <RouterLink v-if="backTo" :to="scopedBackTo" class="sales-topbar-back">
           <ArrowLeft class="size-4" aria-hidden="true" />
           <span>{{ backLabel }}</span>
         </RouterLink>
@@ -72,7 +80,7 @@ const activeFactory = computed(() => (
     <main class="sales-page">
       <header v-if="showPageHeader" class="sales-page-head">
         <div class="min-w-0">
-          <RouterLink to="/modules/sales-business" class="sales-back-link">
+          <RouterLink :to="salesDepartmentRoute" class="sales-back-link">
             <ArrowLeft class="size-[15px]" aria-hidden="true" />
             业务部模块中心
           </RouterLink>

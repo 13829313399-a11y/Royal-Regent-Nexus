@@ -16,6 +16,7 @@ import {
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ApiInternalQuoteVersionComparison } from '@/api/internalQuote'
+import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
@@ -45,6 +46,10 @@ const canFinalApprove = computed(() => authStore.can('internal_quote:final_appro
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignQuote.value)
+const getQuoteRoute = (path: string) => getFactoryScopedRoute(
+  path,
+  isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
+)
 const versionCandidates = computed(() => quoteStore.versionCandidates[quote.value.id] ?? [])
 const componentLabels: Record<string, string> = {
   molding_hkd: '啤机', painting_hkd: '喷油', electronic_hkd: '电子', hardware_hkd: '五金', auxiliary_hkd: '辅料',
@@ -104,7 +109,7 @@ async function runFinalAction() {
   errorMessage.value = ''
   try {
     if (canOpenExport.value) {
-      void router.push(`/modules/sales-business/internal-quote-desk/${quote.value.id}/export`)
+      void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.value.id}/export`))
       return
     }
     if (isReleased.value && !canExport.value) {
@@ -176,9 +181,9 @@ watch([quoteId, canFinalApprove], () => {
 <template>
   <div class="quote-summary-page">
     <nav class="quote-breadcrumb" aria-label="内部报价导航">
-      <RouterLink to="/modules/sales-business/internal-quote-desk"><ArrowLeft aria-hidden="true" />报价首页</RouterLink>
+      <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft aria-hidden="true" />报价首页</RouterLink>
       <ChevronRight aria-hidden="true" />
-      <RouterLink :to="`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`">{{ quote.quoteNo }} · 协作</RouterLink>
+      <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`)">{{ quote.quoteNo }} · 协作</RouterLink>
       <ChevronRight aria-hidden="true" /><strong>汇总与放行</strong>
     </nav>
 
@@ -243,7 +248,7 @@ watch([quoteId, canFinalApprove], () => {
     <section v-if="versionCandidates.length" class="quote-version-panel"><header><div><FileClock aria-hidden="true" /><span><strong>报价版本对比</strong><small>仅允许同报价或复制版本链，金额差异由服务端计算</small></span></div><div><select v-model="versionBaseId"><option value="">选择基准版本</option><option v-for="candidate in versionCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.quote_no }} · {{ candidate.version_label }} · {{ candidate.updated_at }}</option></select><button type="button" :disabled="!versionBaseId" @click="compareSelectedVersion">开始对比</button></div></header><div v-if="comparison" class="quote-comparison"><article><span>基准成本</span><strong>HKD {{ Number(comparison.total_before_hkd).toFixed(4) }}</strong></article><article><span>当前成本</span><strong>HKD {{ Number(comparison.total_after_hkd).toFixed(4) }}</strong></article><article><span>金额差异</span><strong>HKD {{ Number(comparison.total_delta_hkd).toFixed(4) }}</strong></article><div><p v-for="section in comparison.sections" :key="section.section_code"><span>{{ section.section_name }} · r{{ section.before_revision }} → r{{ section.after_revision }}</span><b>{{ Number(section.delta_hkd).toFixed(4) }}</b></p></div></div></section>
 
     <section class="quote-release-status">
-      <header><div><CheckCircle2 aria-hidden="true" /><span><strong>分段放行状态</strong><small>{{ allSectionsReady ? `${participatingSections.length} 个参与分段已完成` : `还有 ${missingSections.length} 个参与分段未完成` }}</small></span></div><RouterLink :to="`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`">返回协作页</RouterLink></header>
+      <header><div><CheckCircle2 aria-hidden="true" /><span><strong>分段放行状态</strong><small>{{ allSectionsReady ? `${participatingSections.length} 个参与分段已完成` : `还有 ${missingSections.length} 个参与分段未完成` }}</small></span></div><RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`)">返回协作页</RouterLink></header>
       <div class="quote-release-grid"><article v-for="section in participatingSections" :key="section.code" :class="section.status"><span><Check v-if="['approved','not_applicable'].includes(section.status)" aria-hidden="true" /><AlertTriangle v-else aria-hidden="true" /></span><div><strong>{{ section.label }}</strong><small>{{ statusMeta[section.status].label }} · {{ section.reviewer ?? section.submittedBy ?? '尚未提交' }}</small></div><em>r{{ section.revision }}</em></article></div>
       <div v-if="missingSections.length" class="quote-release-warning"><AlertTriangle aria-hidden="true" /><span><strong>暂不可最终放行或导出</strong>{{ missingSections.map((section) => `${section.label}（${statusMeta[section.status].label}）`).join('、') }}</span></div>
     </section>

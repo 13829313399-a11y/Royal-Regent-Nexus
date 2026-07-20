@@ -15,11 +15,18 @@ import {
   type RriInvoiceReconciliationResponse,
 } from '@/api/indonesiaInvoice'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
-import { getDepartmentRoute } from '@/data/enterpriseMock'
+import { getDepartmentRoute, getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
+import { useAppStore } from '@/stores/app'
 
 type InvoiceStatus = '已核对' | '待复核' | '待补资料' | '核对异常'
 type InvoiceFileSide = 'a' | 'b'
+
+const appStore = useAppStore()
+const accountingDepartmentRoute = computed(() => getFactoryScopedRoute(
+  getDepartmentRoute('accounting'),
+  appStore.activeProductionFactory.id,
+))
 
 interface InvoicePair {
   id: string
@@ -281,7 +288,7 @@ function statusClass(status: InvoiceStatus) {
 
     <div class="invoice-page">
       <section id="overview" class="workspace-head">
-        <RouterLink :to="getDepartmentRoute('accounting')" class="back-link">
+        <RouterLink :to="accountingDepartmentRoute" class="back-link">
           <ArrowLeft class="size-4" aria-hidden="true" />
           会计部模块中心
         </RouterLink>

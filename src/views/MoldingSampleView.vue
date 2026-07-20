@@ -42,6 +42,7 @@ import AccountMenu from '@/components/layout/AccountMenu.vue'
 import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
 import {
   factoryContexts,
+  getFactoryScopedRoute,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
@@ -295,6 +296,10 @@ let legacyOrdersLoadPromise: Promise<void> | null = null
 let boardOverviewRequestId = 0
 let legacyOrdersRequestId = 0
 let deepLinkedOrderRequestId = 0
+let protectedMaterialPricesRequestId = 0
+let rawMaterialOptionsRequestId = 0
+let excelImportRequestId = 0
+let manualCreateMutationRequestId = 0
 const boardPageRequestIds: Partial<Record<MoldingSampleStatus, number>> = {}
 
 const materialCompositionPercentageTotal = computed(() => roundMaterialWeight(
@@ -364,6 +369,10 @@ const activeFactory = computed(() =>
     ?? factoryContexts.find((factory) => factory.id === 'huaxing')
     ?? factoryContexts[1],
 )
+const engineeringDepartmentRoute = computed(() => getFactoryScopedRoute(
+  '/modules/engineering',
+  selectedFactoryId.value,
+))
 
 const rawMaterialOptions = computed<RawMaterialSelectOption[]>(() => {
   const seenValues = new Set<string>()
@@ -1416,34 +1425,54 @@ function removeApiRecord(orderId: string) {
 }
 
 async function loadProtectedMaterialPrices(requestedFactoryId: string) {
+  const requestId = ++protectedMaterialPricesRequestId
   rawMaterialPriceList.value = []
 
   try {
     const response = await moldingSampleApi.getMaterialPrices(requestedFactoryId)
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== protectedMaterialPricesRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) {
       return
     }
     rawMaterialPriceList.value = response.prices
   }
   catch {
-    if (requestedFactoryId === selectedFactoryId.value) {
-      rawMaterialPriceList.value = []
+    if (
+      requestId !== protectedMaterialPricesRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) {
+      return
     }
+
+    rawMaterialPriceList.value = []
   }
 }
 
 async function loadRawMaterialOptions(requestedFactoryId: string) {
+  const requestId = ++rawMaterialOptionsRequestId
+  rawMaterialMasterList.value = []
+
   try {
     const rows = await rawMaterialApi.list(requestedFactoryId)
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== rawMaterialOptionsRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) {
       return
     }
     rawMaterialMasterList.value = rows
   }
   catch {
-    if (requestedFactoryId === selectedFactoryId.value) {
-      rawMaterialMasterList.value = []
+    if (
+      requestId !== rawMaterialOptionsRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) {
+      return
     }
+
+    rawMaterialMasterList.value = []
   }
 }
 
@@ -1880,14 +1909,26 @@ async function handleExcelImportFile(event: Event) {
     return
   }
 
+  const requestedFactoryId = selectedFactoryId.value
+  const requestId = ++excelImportRequestId
   excelImporting.value = true
   actionMessage.value = `正在导入Excel文件 ${file.name}...`
 
   try {
     const workbook = await readWorkbookAsArrayBuffer(file)
+    if (
+      requestId !== excelImportRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) return
+
     const preview = await moldingSampleApi.previewOrderExcel(workbook, {
-      factory_id: selectedFactoryId.value,
+      factory_id: requestedFactoryId,
     })
+    if (
+      requestId !== excelImportRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) return
+
     editingRejectedOrderId.value = ''
     createDraft.value = createDraftFromExcelPreview(preview)
     createErrors.value = []
@@ -1896,10 +1937,20 @@ async function handleExcelImportFile(event: Event) {
     actionMessage.value = 'Excel已导入到新建开单草稿，请确认数据无误后提交主管审核。'
   }
   catch (error) {
-    actionMessage.value = `Excel导入失败：${getApiErrorMessage(error)}`
+    if (
+      requestId === excelImportRequestId
+      && requestedFactoryId === selectedFactoryId.value
+    ) {
+      actionMessage.value = `Excel导入失败：${getApiErrorMessage(error)}`
+    }
   }
   finally {
-    excelImporting.value = false
+    if (
+      requestId === excelImportRequestId
+      && requestedFactoryId === selectedFactoryId.value
+    ) {
+      excelImporting.value = false
+    }
     input.value = ''
   }
 }
@@ -2197,6 +2248,16 @@ function showCreateSuccessToast(orderId: string) {
   }, 3200)
 }
 
+function isManualCreateMutationRequestCurrent(requestId: number, factoryId: string) {
+  return requestId === manualCreateMutationRequestId
+    && factoryId === selectedFactoryId.value
+}
+
+function isManualCreateFormContextCurrent(requestId: number, factoryId: string, rejectedOrderId: string) {
+  return isManualCreateMutationRequestCurrent(requestId, factoryId)
+    && editingRejectedOrderId.value === rejectedOrderId
+}
+
 async function submitManualCreate() {
   if (!canSubmitCreateForm.value) {
     actionMessage.value = isSelectedFactoryReadOnly.value
@@ -2207,50 +2268,74 @@ async function submitManualCreate() {
     return
   }
 
-  createDraft.value.factory_id = selectedFactoryId.value
-  createErrors.value = []
-  const result = buildManualMoldingSampleCreateRequest(createDraft.value, selectedFactoryId.value)
+  const requestedFactoryId = selectedFactoryId.value
+  const requestedRejectedOrderId = editingRejectedOrderId.value
+  const isRejectedResubmit = requestedRejectedOrderId !== ''
   const revisionLabel = editingRevisionOrderLabel.value
+  createDraft.value.factory_id = requestedFactoryId
+  createErrors.value = []
+  const result = buildManualMoldingSampleCreateRequest(createDraft.value, requestedFactoryId)
 
   if (!result.payload) {
     createErrors.value = result.errors
-    actionMessage.value = `${isEditingRejectedOrder.value ? `${revisionLabel}重提` : '新建啤办单'}未提交：${result.errors[0] ?? '请检查表单'}`
+    actionMessage.value = `${isRejectedResubmit ? `${revisionLabel}重提` : '新建啤办单'}未提交：${result.errors[0] ?? '请检查表单'}`
     return
   }
 
+  const requestId = ++manualCreateMutationRequestId
   createSubmitting.value = true
-  const isRejectedResubmit = isEditingRejectedOrder.value
   actionMessage.value = isRejectedResubmit ? `正在保存${revisionLabel}修改并重提啤办单...` : '正在提交新建啤办单...'
 
   try {
     const created = isRejectedResubmit
-      ? await resubmitRejectedOrder(result.payload)
+      ? await resubmitRejectedOrder(requestedRejectedOrderId, result.payload)
       : await moldingSampleApi.createOrder(result.payload)
+
+    if (!isManualCreateFormContextCurrent(requestId, requestedFactoryId, requestedRejectedOrderId)) {
+      return
+    }
+    if (
+      created.order.factory_id !== requestedFactoryId
+      || (isRejectedResubmit && created.order.id !== requestedRejectedOrderId)
+    ) {
+      actionMessage.value = '啤办单提交响应与当前厂区或原单不一致，已忽略该响应。'
+      return
+    }
 
     replaceApiRecord(created)
     selectedOrderId.value = created.order.id
     setView('detail')
     await refreshBoardAfterMutation()
+    if (!isManualCreateFormContextCurrent(requestId, requestedFactoryId, requestedRejectedOrderId)) {
+      return
+    }
+
     selectedOrderId.value = created.order.id
     actionMessage.value = isRejectedResubmit
       ? `啤办单 ${created.order.id} 已保存${revisionLabel}修改并重提主管审核。`
       : `啤办单 ${created.order.id} 已提交主管审核，正式列表已刷新。`
     if (!isRejectedResubmit) {
-      clearSavedCreateDraft()
+      clearSavedCreateDraft(requestedFactoryId)
       showCreateSuccessToast(created.order.id)
     }
     resetCreateDraft()
   }
   catch (error) {
-    actionMessage.value = `${isEditingRejectedOrder.value ? `${revisionLabel}重提` : '新建啤办单'}提交失败：${getApiErrorMessage(error)}`
+    if (isManualCreateFormContextCurrent(requestId, requestedFactoryId, requestedRejectedOrderId)) {
+      actionMessage.value = `${isRejectedResubmit ? `${revisionLabel}重提` : '新建啤办单'}提交失败：${getApiErrorMessage(error)}`
+    }
   }
   finally {
-    createSubmitting.value = false
+    if (isManualCreateMutationRequestCurrent(requestId, requestedFactoryId)) {
+      createSubmitting.value = false
+    }
   }
 }
 
-async function resubmitRejectedOrder(payload: NonNullable<ReturnType<typeof buildManualMoldingSampleCreateRequest>['payload']>) {
-  const orderId = editingRejectedOrderId.value
+async function resubmitRejectedOrder(
+  orderId: string,
+  payload: NonNullable<ReturnType<typeof buildManualMoldingSampleCreateRequest>['payload']>,
+) {
   if (!orderId || payload.order.id !== orderId) {
     throw new Error('驳回单编号不能修改，请保持原单号后重提。')
   }
@@ -3191,6 +3276,23 @@ watch(createDraft, () => {
 }, { deep: true })
 
 watch(selectedFactoryId, () => {
+  const shouldRestoreCreateDraft = activeView.value === 'create'
+  excelImportRequestId += 1
+  excelImporting.value = false
+  if (excelFileInput.value) excelFileInput.value.value = ''
+  manualCreateMutationRequestId += 1
+  editingRejectedOrderId.value = ''
+  createErrors.value = []
+  if (shouldRestoreCreateDraft) {
+    restoreSavedCreateDraft()
+  }
+  if (createSubmitting.value) {
+    createSubmitting.value = false
+    actionMessage.value = '厂区已切换，之前的啤办单提交结果不会应用到当前页面。'
+  }
+}, { flush: 'sync' })
+
+watch(selectedFactoryId, () => {
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
@@ -3261,6 +3363,10 @@ onUnmounted(() => {
   invalidateServerBoardRequests()
   invalidateLegacyOrdersRequest()
   deepLinkedOrderRequestId += 1
+  protectedMaterialPricesRequestId += 1
+  rawMaterialOptionsRequestId += 1
+  excelImportRequestId += 1
+  manualCreateMutationRequestId += 1
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
@@ -3278,7 +3384,7 @@ onUnmounted(() => {
     <header class="sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
       <div class="app-page flex items-center gap-4 px-5 py-2.5">
         <RouterLink
-          to="/modules/engineering"
+          :to="engineeringDepartmentRoute"
           class="inline-flex min-h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-white/85 px-3 text-[12px] font-semibold text-slate-600 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
         >
           <ArrowLeft class="size-4" aria-hidden="true" />

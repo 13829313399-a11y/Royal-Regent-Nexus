@@ -183,6 +183,28 @@ describe('internal quote desk frontend layout', () => {
     expect(createDialogSource).toContain('.quote-primary-button:hover,.quote-secondary-button:hover')
   })
 
+  it('keeps the active factory through sales and every internal-quote navigation level', () => {
+    expect(workbenchSource).toMatch(/const scopedBackTo = computed\(\(\) => props\.backTo\.startsWith\('\/'\)[\s\S]{0,100}getFactoryScopedRoute\(props\.backTo, activeFactory\.value\.id\)/)
+    expect(workbenchSource).toMatch(/const salesDepartmentRoute = computed\(\(\) => getFactoryScopedRoute\([\s\S]{0,80}'\/modules\/sales-business',[\s\S]{0,60}activeFactory\.value\.id/)
+    expect(workbenchSource).toContain(':to="scopedBackTo"')
+    expect(workbenchSource).toContain(':to="salesDepartmentRoute"')
+
+    expect(homeSource).toMatch(/function getQuoteRoute\(path: string, factoryId: string = activeFactory\.value\.id\)[\s\S]{0,100}getFactoryScopedRoute\(path, factoryId as FactoryContextId\)/)
+    expect(homeSource).toMatch(/router\.push\(getQuoteRoute\([\s\S]{0,120}`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/collaboration`,[\s\S]{0,80}quote\.factoryId/)
+    expect(homeSource).toMatch(/router\.push\(getQuoteRoute\(`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/\$\{target\}`\)\)/)
+
+    for (const detailSource of [collaborationSource, summarySource, exportSource]) {
+      expect(detailSource).toMatch(/const getQuoteRoute = \(path: string\) => getFactoryScopedRoute\([\s\S]{0,100}isFactoryContextId\(quote\.value\.factoryId\) \? quote\.value\.factoryId : 'huaxing'/)
+      expect(detailSource).not.toMatch(/<RouterLink[^>]+to="\/modules\/sales-business\/internal-quote-desk/)
+    }
+
+    expect(collaborationSource).toContain(':to="getQuoteRoute(\'/modules/sales-business/internal-quote-desk\')"')
+    expect(collaborationSource).toContain(':to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"')
+    expect(summarySource).toContain(':to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`)"')
+    expect(summarySource).toContain('router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.value.id}/export`))')
+    expect(exportSource).toContain(':to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"')
+  })
+
   it('does not import external prototype CDNs and uses the protected internal-quote API adapter', () => {
     const combined = [viewSource, homeSource, collaborationSource, activitySource, sectionEditorSource, summarySource, exportSource].join('\n')
     expect(combined).not.toMatch(/cdn\.tailwindcss|fonts\.googleapis|material-symbols|lh3\.googleusercontent/)

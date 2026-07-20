@@ -17,7 +17,13 @@ const activeDepartmentId = computed<ModuleDepartmentId>(() => {
 
 function selectDepartment(departmentId: ModuleDepartmentId) {
   appStore.setActiveDepartment(departmentId)
-  router.push(getDepartmentRoute(departmentId))
+  router.push({
+    path: getDepartmentRoute(departmentId),
+    query: {
+      ...route.query,
+      factory: appStore.activeFactoryId,
+    },
+  })
 }
 </script>
 

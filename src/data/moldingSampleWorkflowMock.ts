@@ -22,6 +22,8 @@ const fallbackFactoryId: ProductionFactoryContextId = 'huakang-a'
 const moldingSampleFactoryIds: ProductionFactoryContextId[] = [
   'huakang-a',
   'huakang-b',
+  'huakang-c',
+  'huakang-d',
   'huadeng',
   'huaxing',
 ]
@@ -546,6 +548,39 @@ const huaxingItems: MoldingSampleItem[] = [
   }),
 ]
 
+function createPlaceholderFactoryRecord(
+  factoryId: ProductionFactoryContextId,
+  factoryName: string,
+  workshop: MoldingSampleOrder['workshop'],
+) {
+  const order = createOrder({
+    ...huakangAOrder,
+    id: `EMPTY-${factoryId}`,
+    factory_id: factoryId,
+    order_number: '',
+    doc_number: '',
+    product_name: `${factoryName}啤办数据待接入`,
+    client_name: '',
+    date: '2026-07-20',
+    stage: '',
+    workshop,
+    send_to: '',
+    supervisor: '',
+    eng_name: '',
+    reason: `${factoryName}复用公共组件，正式业务数据按厂区独立读取。`,
+    status: '待审核',
+    reject_reason: '',
+    completed_date: '',
+    created_at: '2026-07-20 09:30',
+    updated_at: '2026-07-20 09:30',
+  })
+
+  return createRecord(factoryId, order, [], [])
+}
+
+const huakangCRecord = createPlaceholderFactoryRecord('huakang-c', '华康C', 'A车间')
+const huakangDRecord = createPlaceholderFactoryRecord('huakang-d', '华康D', 'B车间')
+
 export const moldingSampleFactoryRecords: Record<ProductionFactoryContextId, MoldingSampleWorkflowRecord> = {
   'huakang-a': createRecord(
     'huakang-a',
@@ -564,6 +599,8 @@ export const moldingSampleFactoryRecords: Record<ProductionFactoryContextId, Mol
       createAudit(huakangBOrder, 2, '主管通过', huakangBOrder.supervisor, '待审核', '待经理审核', '主管确认用料和交期。'),
     ],
   ),
+  'huakang-c': huakangCRecord,
+  'huakang-d': huakangDRecord,
   huadeng: createRecord(
     'huadeng',
     huadengOrder,
