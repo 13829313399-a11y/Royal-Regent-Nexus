@@ -64,6 +64,8 @@ def test_engineering_electronic_and_molding_decimal_vectors():
     )
     assert engineering["status"] == "valid"
     assert engineering["line_breakdown"][0]["unit_price_hkd"] == "10.0000"
+    assert engineering["line_breakdown"][0]["auxiliary_category"] == "五金"
+    assert engineering["line_breakdown"][0]["tax_rate_percent"] == "13.0000"
     assert engineering["line_breakdown"][0]["formula"].startswith("用量 × 单价 RMB")
     assert engineering["totals"] == {
         "hardware_hkd": "20.0000",
@@ -296,6 +298,90 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
         "packaging_hkd": "1.9500",
         "total_hkd": "4.5500",
     }
+    assert assembly["group_summaries"][0] == {
+        "category": "assembly",
+        "group": "组装",
+        "standard_work_hours": "11.0000",
+        "labor_base_hkd": "260.0000",
+        "production_qty": "800.0000",
+        "teams": "2.0000",
+        "total_persons": "4.0000",
+        "amount_hkd_pcs": "2.6000",
+        "formula": "人工基数 × 总人数 × 小组数 ÷ 生产量",
+    }
+
+
+def test_painting_and_sewing_quick_quotes_are_authoritative_hkd_totals():
+    painting = calculate(
+        "painting",
+        {
+            "quote_mode": "quick",
+            "quick_quote": {"spray_labor_hkd": "2", "paint_hkd": "3"},
+            "rows": [{"name": "历史明细不应重复计价", "operations": {"spray": {"quantity": 99, "unit_price_hkd": 99}}}],
+        },
+    )
+    assert painting["status"] == "valid"
+    assert painting["totals"] == {
+        "quote_mode": "quick",
+        "painting_labor_hkd": "2.0000",
+        "paint_base_hkd": "3.0000",
+        "paint_tax_hkd": "0.3900",
+        "paint_material_hkd": "3.3900",
+        "total_hkd": "5.3900",
+    }
+    assert [row["amount_hkd"] for row in painting["line_breakdown"]] == ["2.0000", "3.0000", "0.3900"]
+
+    sewing = calculate(
+        "sewing",
+        {
+            "quote_mode": "quick",
+            "quick_quotes": [
+                {"doll_name": "公仔 A", "unit_price_hkd": "4.25"},
+                {"doll_name": "公仔 B", "unit_price_hkd": "5.75"},
+            ],
+            "groups": [{"name": "历史明细不应重复计价", "category": "clothes", "materials": [{"item": "布", "usage": 10, "unit_price_rmb": 10}]}],
+        },
+    )
+    assert sewing["status"] == "valid"
+    assert sewing["totals"]["total_hkd"] == "10.0000"
+    assert sewing["totals"]["total_rmb"] == "8.5000"
+    assert sewing["totals"]["clothes_hkd"] == "10.0000"
+    assert [row["item"] for row in sewing["line_breakdown"]] == ["公仔 A", "公仔 B"]
+
+
+def test_incomplete_quick_quotes_can_be_saved_but_block_submission():
+    empty_painting = calculate("painting", {"quote_mode": "quick", "quick_quote": {}})
+    assert empty_painting["status"] == "blocked"
+    assert "painting_quick_quote_empty" in {warning["code"] for warning in empty_painting["warnings"]}
+
+    incomplete_sewing = calculate("sewing", {"quote_mode": "quick", "quick_quotes": [{"doll_name": "", "unit_price_hkd": 2}]})
+    assert incomplete_sewing["status"] == "blocked"
+    assert incomplete_sewing["warnings"][0]["code"] == "sewing_quick_quote_incomplete"
+
+
+def test_assembly_group_inputs_follow_reference_summary_formula():
+    assembly = calculate(
+        "assembly",
+        {
+            "labor_base_hkd": "260",
+            "standard_work_hours": "10.5",
+            "groups": [{
+                "name": "成品组装",
+                "category": "assembly",
+                "production_qty": "100",
+                "teams": "2",
+                "processes": [
+                    {"name": "锁螺丝", "persons": "3", "remark": "电批"},
+                    {"name": "组装", "persons": "2", "remark": ""},
+                ],
+            }],
+        },
+    )
+
+    assert assembly["totals"]["assembly_hkd"] == "26.0000"
+    assert assembly["group_summaries"][0]["standard_work_hours"] == "10.5000"
+    assert assembly["group_summaries"][0]["total_persons"] == "5.0000"
+    assert [row["amount_hkd_pcs"] for row in assembly["line_breakdown"]] == ["15.6000", "10.4000"]
 
 
 def test_engineering_mold_detail_and_production_allocations_follow_rr2_fields_and_formulas():
@@ -345,6 +431,27 @@ def test_engineering_mold_detail_and_production_allocations_follow_rr2_fields_an
         "手板费分摊",
         "测试费分摊",
     ]
+
+    allocation_disabled = calculate(
+        "engineering",
+        {
+            "materials": [],
+            "molds": [{"item": "主体模", "quantity": "1", "cost_rmb": "5000"}],
+            "mold_allocation_enabled": False,
+            "production_mold_costs": [{"item": "模具费用", "cost_rmb": "1000"}],
+            "mold_fx_rmb_usd": "7.75",
+            "amortization_qty": "100",
+            "prototype_total_usd": "500",
+            "prototype_amortization_qty": "50000",
+            "testing_total_usd": "100",
+            "testing_amortization_qty": "2000",
+        },
+    )
+    assert allocation_disabled["totals"]["mold_total_rmb"] == "0.0000"
+    assert allocation_disabled["totals"]["mold_amortization_rmb"] == "0.0000"
+    assert allocation_disabled["totals"]["mold_amortization_usd"] == "0.0000"
+    assert not any(row["kind"] in {"production_mold_cost", "mold_allocation"} for row in allocation_disabled["line_breakdown"])
+    assert any(row["kind"] == "mold_quote" for row in allocation_disabled["line_breakdown"])
 
     with pytest.raises(CalculationInputError, match="客户模费补贴不能大于"):
         calculate(
@@ -620,6 +727,27 @@ def test_real_buzzbee_18a_machine_code_is_present_in_the_authoritative_reference
     )
     assert result["status"] == "valid"
     assert result["line_breakdown"][0]["machine_shift_price_hkd"] == "1890.0000"
+
+    bare_code_result = calculate_section(
+        "molding",
+        {
+            "injection_lines": [{
+                "item": "导入模具行",
+                "material": "ABS",
+                "grade": "750SW",
+                "net_weight_g": "135",
+                "machine_code": "18",
+                "sets": "1",
+                "target_output": "2800",
+                "quantity": "1",
+            }],
+            "blow_lines": [],
+        },
+        snapshot,
+        "IQREF-BARE-A-CODE",
+    )
+    assert bare_code_result["status"] == "valid"
+    assert bare_code_result["line_breakdown"][0]["machine_shift_price_hkd"] == "1890.0000"
 
 
 def test_caixing_tool_plan_is_validated_and_audited_without_changing_internal_cost():

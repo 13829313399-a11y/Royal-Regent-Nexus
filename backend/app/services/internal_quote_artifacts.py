@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 from decimal import Decimal
@@ -232,6 +234,15 @@ def create_import_preview(
             "replace_result_rows": parsed.row_count,
         },
         "warnings": parsed.warnings,
+        "embedded_images": [
+            {
+                "source_row": image.source_row,
+                "file_name": image.file_name,
+                "content_type": image.content_type,
+                "data_base64": base64.b64encode(image.content).decode("ascii"),
+            }
+            for image in parsed.embedded_images
+        ],
     }
     preview["diff_summary"]["append_result_rows"] = (
         int(preview["diff_summary"]["existing_rows"]) + parsed.row_count
@@ -246,7 +257,7 @@ def create_import_preview(
         source_sha256=digest(content),
         source_size_bytes=len(content),
         status="previewed",
-        preview_schema_version="p3-v1",
+        preview_schema_version="p3-v2",
         preview_json=canonical_json(preview),
         target_revision=section.revision,
         confirm_mode="",
@@ -314,6 +325,11 @@ def _merge_import_payload(
     mode: str,
     rmb_hkd_rate: object = "0.85",
 ) -> dict[str, Any]:
+    # An electronic workbook is a complete department quote: its component
+    # list and the five summary costs describe the same whole quotation.
+    # Appending it would duplicate both sets of values on every re-import.
+    if import_type == "electronic":
+        mode = "replace"
     merged = json.loads(json.dumps(current, ensure_ascii=False))
     if import_type == "molding":
         for list_field in ("injection_lines", "blow_lines"):
@@ -421,6 +437,74 @@ def _merge_import_payload(
     return merged
 
 
+def _materialize_imported_mold_images(
+    db: Session,
+    quote: InternalQuote,
+    section: InternalQuoteSection,
+    fragment: dict[str, Any],
+    preview: dict[str, Any],
+    user: AuthContext,
+) -> int:
+    image_records = preview.get("embedded_images", [])
+    mold_rows = fragment.get("molds", [])
+    if not isinstance(image_records, list) or not isinstance(mold_rows, list):
+        return 0
+
+    attachments_by_row: dict[int, list[str]] = {}
+    materialized_count = 0
+    for record in image_records:
+        if not isinstance(record, dict):
+            continue
+        try:
+            source_row = int(record.get("source_row", 0) or 0)
+            content = base64.b64decode(str(record.get("data_base64", "")), validate=True)
+        except (ValueError, TypeError, binascii.Error) as error:
+            raise HTTPException(status_code=400, detail="导入预览中的模具图片数据无效，请重新上传报价单") from error
+        clean_name = safe_file_name(str(record.get("file_name", "")))
+        _extension, content_type = _validate_attachment(clean_name, content)
+        if not content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="导入预览包含非图片模具附件")
+        sha256 = digest(content)
+        attachment = db.scalar(
+            select(InternalQuoteAttachment).where(
+                InternalQuoteAttachment.quote_id == quote.id,
+                InternalQuoteAttachment.department == section.department,
+                InternalQuoteAttachment.sha256 == sha256,
+            )
+        )
+        if attachment is None:
+            attachment = InternalQuoteAttachment(
+                id=f"IQATT-{uuid4().hex}",
+                quote_id=quote.id,
+                factory_id=quote.factory_id,
+                department=section.department,
+                file_name=clean_name,
+                content_type=content_type,
+                size_bytes=len(content),
+                sha256=sha256,
+                content=content,
+                uploaded_by=user.id,
+                uploaded_by_name=user.display_name,
+                uploaded_at=now_text(),
+            )
+            db.add(attachment)
+            db.flush()
+            materialized_count += 1
+        attachments_by_row.setdefault(source_row, []).append(attachment.id)
+
+    for row in mold_rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            source_row = int(row.get("source_row", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        attachment_ids = list(dict.fromkeys(attachments_by_row.get(source_row, [])))
+        if attachment_ids:
+            row["image_attachment_ids"] = attachment_ids
+    return materialized_count
+
+
 def confirm_import_batch(
     db: Session,
     quote_id: str,
@@ -454,6 +538,17 @@ def confirm_import_batch(
     fragment = preview.get("payload_fragment", {})
     if not isinstance(fragment, dict):
         raise HTTPException(status_code=400, detail="导入预览批次结构无效")
+    effective_mode = "replace" if batch.import_type == "electronic" else payload.mode
+    embedded_image_count = 0
+    if batch.import_type == "mold":
+        embedded_image_count = _materialize_imported_mold_images(
+            db,
+            quote,
+            section,
+            fragment,
+            preview,
+            user,
+        )
 
     old_revision = section.revision
     section.payload_json = canonical_json(
@@ -461,7 +556,7 @@ def confirm_import_batch(
             batch.import_type,
             _json_object(section.payload_json),
             fragment,
-            payload.mode,
+            effective_mode,
             preview.get("rmb_hkd_rate", "0.85"),
         )
     )
@@ -475,13 +570,13 @@ def confirm_import_batch(
         _calculate_and_apply(db, quote, section, user)
     except CalculationInputError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    reason = f"import_confirm:{batch.import_type}:{payload.mode}:{batch.id}"
+    reason = f"import_confirm:{batch.import_type}:{effective_mode}:{batch.id}"
     _add_revision(db, quote, section, user, reason=reason)
     _invalidate_downstream_dependencies(db, quote, user, section.department, request)
     _derive_quote_status(db, quote)
 
     batch.status = "confirmed"
-    batch.confirm_mode = payload.mode
+    batch.confirm_mode = effective_mode
     batch.confirmed_revision = section.revision
     batch.confirmed_by = user.id
     batch.confirmed_by_name = user.display_name
@@ -496,8 +591,9 @@ def confirm_import_batch(
             {
                 "batch_id": batch.id,
                 "import_type": batch.import_type,
-                "mode": payload.mode,
+                "mode": effective_mode,
                 "source_sha256": batch.source_sha256,
+                "embedded_image_count": embedded_image_count,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -629,6 +725,27 @@ def get_attachment_download(
         request=request,
     )
     db.commit()
+    return attachment
+
+
+def get_attachment_preview(
+    db: Session,
+    quote_id: str,
+    attachment_id: str,
+    user: AuthContext,
+) -> InternalQuoteAttachment:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_read(db, user, quote.factory_id)
+    attachment = db.scalar(
+        select(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.id == attachment_id,
+            InternalQuoteAttachment.quote_id == quote.id,
+        )
+    )
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    if not attachment.content_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="该附件不是可预览图片")
     return attachment
 
 

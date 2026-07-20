@@ -7,7 +7,7 @@ import InternalQuoteSectionEditor from './InternalQuoteSectionEditor.vue'
 import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
-import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
+import { canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
@@ -40,10 +40,15 @@ const approvedCount = computed(() => participatingSections.value.filter((section
 const progressPercent = computed(() => participatingSections.value.length ? approvedCount.value / participatingSections.value.length * 100 : 0)
 const activeDefinition = computed(() => internalQuoteSectionDefinitions.find((item) => item.code === activeSectionCode.value))
 const canEditActive = computed(() => (activeDefinition.value?.departments ?? []).some((department) => authStore.can(`internal_quote:${activeSectionCode.value}_edit`, quote.value.factoryId, department)))
-const canReviewActive = computed(() => (activeDefinition.value?.departments ?? []).some((department) => authStore.can(`internal_quote:${activeSectionCode.value}_review`, quote.value.factoryId, department)))
+const canReviewActive = computed(() => canReviewInternalQuoteSections(
+  authStore,
+  quote.value.factoryId,
+  quote.value.businessOwnerId,
+))
 const canSyncReference = computed(() => ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const canEditFx = computed(() => quote.value.status !== 'archived' && authStore.can('internal_quote:sales_edit', quote.value.factoryId, 'sales-business'))
 const canManageParticipation = computed(() => quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
+const canRemoveActive = computed(() => canManageParticipation.value && optionalSectionCodes.includes(activeSectionCode.value))
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignFactory(authStore, quote.value.factoryId))
 const getQuoteRoute = (path: string) => getFactoryScopedRoute(
@@ -112,6 +117,21 @@ async function addParticipation() {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '添加参与部门失败。' }
 }
 
+async function removeParticipation(sectionCode: InternalQuoteSectionCode) {
+  if (!canManageParticipation.value || !optionalSectionCodes.includes(sectionCode)) return
+  message.value = ''
+  errorMessage.value = ''
+  const sectionLabel = quote.value.sections.find((section) => section.code === sectionCode)?.label ?? '该部门'
+  try {
+    await quoteStore.removeParticipation(quote.value.id, quote.value.headerRevision, [sectionCode])
+    message.value = `${sectionLabel}已移出当前报价；已不再计入进度、成本汇总和最终放行。`
+    const fallbackSection = participatingSections.value[0]?.code ?? 'sales'
+    await router.replace({ query: { ...route.query, section: fallbackSection } })
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '移除参与部门失败。'
+  }
+}
+
 onMounted(loadQuote)
 watch(quoteId, loadQuote)
 watch([quoteId, canSyncReference], () => {
@@ -125,7 +145,7 @@ watch([quoteId, canSyncReference], () => {
     <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>部门协作</strong></nav>
 
     <header class="quote-collaboration-head">
-      <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ quote.status === 'rejected' ? '存在退回' : '协作进行中' }}</span></div><p>{{ quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
+      <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ quote.status === 'rejected' ? '存在退回' : '协作进行中' }}</span></div><p>{{ quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />全部分段审核 · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
       <div class="quote-head-progress"><div><span>参与分段进度</span><strong>{{ approvedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button type="button" class="focus-entry-toggle" :aria-pressed="focusEntryMode" @click="focusEntryMode = !focusEntryMode"><Maximize2 v-if="focusEntryMode" /><Minimize2 v-else />{{ focusEntryMode ? '显示两侧栏' : '专注填报' }}</button><RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与放行</RouterLink><button v-if="canManageParticipation && availableOptionalSections.length" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
@@ -134,7 +154,7 @@ watch([quoteId, canSyncReference], () => {
     <div class="quote-snapshot-banner"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>同步最新参考表将产生新 revision，并使受影响审批失效</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">同步最新参考表</button></div>
     <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>同步最新参考表</strong><span>将重算已填写分段，并使受影响的审批、最终放行和 artifact 失效。</span></div><textarea v-model="syncReason" rows="2" placeholder="必须填写同步原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">确认同步</button></section>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
-      <div class="quote-participation-copy"><UserPlus /><span><strong>添加参与部门</strong><small>添加后会立即生成填写任务并纳入审批与最终放行；已添加的部门不支持在流程中移除。</small></span></div>
+      <div class="quote-participation-copy"><UserPlus /><span><strong>添加参与部门</strong><small>添加后会立即生成填写任务并纳入审批与最终放行；可选部门也可由业务或工程在其明细底部移除。</small></span></div>
       <div class="quote-participation-options">
         <label v-for="section in availableOptionalSections" :key="section.code" :class="{ active: selectedParticipation.includes(section.code) }">
           <input v-model="selectedParticipation" type="checkbox" :value="section.code">
@@ -150,7 +170,7 @@ watch([quoteId, canSyncReference], () => {
 
     <div class="quote-collaboration-grid" :class="{ 'focus-entry-mode': focusEntryMode }">
       <InternalQuoteSectionRail :sections="participatingSections" :active-code="activeSectionCode" @select="selectSection" />
-      <InternalQuoteSectionEditor :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" />
+      <InternalQuoteSectionEditor :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" @remove="removeParticipation" />
       <InternalQuoteActivityPanel :quote="quote" read-only :can-edit-fx="canEditFx" :busy="quoteStore.submitting" @update-fx="updateReferenceFx" />
     </div>
     <button

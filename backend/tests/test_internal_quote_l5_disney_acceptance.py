@@ -223,8 +223,8 @@ def test_l5_2_real_disney_full_release_preflight_consume_and_output(monkeypatch)
             "qty": 3000,
             "version_label": "V1",
             "initiator_department": "sales-business",
-            "business_owner_id": submitter["id"],
-            "business_owner_name": submitter["display_name"],
+            "business_owner_id": "user-l5_2_disney_reviewer",
+            "business_owner_name": "l5_2_disney_reviewer",
             "target_date": "2026-08-31",
             "remark": "L5.2 真实迪士尼样表验收",
             "participating_sections": [

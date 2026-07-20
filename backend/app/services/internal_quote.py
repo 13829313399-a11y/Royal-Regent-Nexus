@@ -6,7 +6,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,8 @@ from app.schemas.internal_quote import (
     InternalQuoteDashboardOut,
     InternalQuoteHeaderUpdateRequest,
     InternalQuoteOut,
+    InternalQuotePageOut,
+    InternalQuoteParticipationRemoveRequest,
     InternalQuoteParticipationUpdateRequest,
     InternalQuoteReasonRequest,
     InternalQuoteReferenceFxUpdateRequest,
@@ -64,6 +66,7 @@ from app.services.internal_quote_calculator import (
     decimal_value,
     total_from_calculation,
 )
+from app.services.internal_quote_prefill import prefill_molding_from_engineering
 
 
 SECTION_DEFINITIONS = (
@@ -233,13 +236,17 @@ def _check_revision(current: int, supplied: int, resource: str = "分段") -> No
     )
 
 
-def _section_out(section: InternalQuoteSection) -> InternalQuoteSectionOut:
+def _section_out(
+    section: InternalQuoteSection,
+    *,
+    payload_override: dict[str, object] | None = None,
+) -> InternalQuoteSectionOut:
     return InternalQuoteSectionOut(
         id=section.id,
         department=section.department,
         department_name=section.department_name,
         status=section.status,
-        payload=_json_object(section.payload_json),
+        payload=payload_override if payload_override is not None else _json_object(section.payload_json),
         calculation=_json_object(section.calculation_json),
         calculation_status=section.calculation_status,
         calculation_hash=section.calculation_hash,
@@ -276,7 +283,24 @@ def quote_to_out(
             .order_by(InternalQuoteSection.id)
         ).all()
         by_code = {section.department: section for section in rows}
-        sections = [_section_out(by_code[code]) for code in SECTION_NAMES if code in by_code]
+        payload_overrides: dict[str, dict[str, object]] = {}
+        engineering = by_code.get("engineering")
+        molding = by_code.get("molding")
+        if (
+            engineering is not None
+            and molding is not None
+            and engineering.is_required
+            and molding.is_required
+        ):
+            payload_overrides["molding"] = prefill_molding_from_engineering(
+                _json_object(engineering.payload_json),
+                _json_object(molding.payload_json),
+            )
+        sections = [
+            _section_out(by_code[code], payload_override=payload_overrides.get(code))
+            for code in SECTION_NAMES
+            if code in by_code
+        ]
 
     return InternalQuoteOut(
         id=quote.id,
@@ -824,7 +848,13 @@ def _rr2_cost_summary(
 
     factory_price = cost_context.get("factory_price_hkd", Decimal("0"))
     molding_totals = totals("molding")
-    painting_total = _summary_decimal(totals("painting").get("total_hkd"))
+    painting_totals = totals("painting")
+    painting_total = _summary_decimal(painting_totals.get("total_hkd"))
+    painting_labor = _summary_decimal(painting_totals.get("painting_labor_hkd"))
+    paint_material = _summary_decimal(painting_totals.get("paint_material_hkd"))
+    if str(painting_totals.get("quote_mode", "")) != "quick":
+        painting_labor = painting_total * Decimal("0.70")
+        paint_material = painting_total * Decimal("0.30")
     slush_total = _summary_decimal(totals("slush").get("total_hkd"))
     sewing_totals = totals("sewing")
     assembly_totals = totals("assembly")
@@ -901,8 +931,8 @@ def _rr2_cost_summary(
     }
     t3_values = {
         "injection_labor": injection_labor,
-        "painting_labor": painting_total * Decimal("0.70"),
-        "paint_material": painting_total * Decimal("0.30"),
+        "painting_labor": painting_labor,
+        "paint_material": paint_material,
         "assembly_labor": assembly_total,
     }
 
@@ -1402,6 +1432,65 @@ def list_quotes(
     ]
 
 
+def list_quotes_page(
+    db: Session,
+    user: AuthContext,
+    factory_id: str,
+    *,
+    page: int,
+    page_size: int,
+    status: str = "",
+    keyword: str = "",
+    customer: str = "",
+    include_sections: bool = False,
+) -> InternalQuotePageOut:
+    """Return one factory-scoped page without loading the remaining quote rows."""
+
+    ensure_quote_read(db, user, factory_id)
+    statement = select(InternalQuote).where(InternalQuote.factory_id == factory_id)
+    if status:
+        statement = statement.where(InternalQuote.status == status)
+    if customer:
+        statement = statement.where(InternalQuote.customer == customer)
+    if keyword:
+        normalized = f"%{keyword.strip()}%"
+        statement = statement.where(
+            InternalQuote.quote_no.like(normalized)
+            | InternalQuote.product_name.like(normalized)
+            | InternalQuote.customer.like(normalized)
+            | InternalQuote.version_label.like(normalized)
+            | InternalQuote.created_by_name.like(normalized)
+            | InternalQuote.business_owner_name.like(normalized)
+        )
+
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    rows = db.scalars(
+        statement
+        .order_by(InternalQuote.updated_at.desc(), InternalQuote.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    customers = [
+        value
+        for value in db.scalars(
+            select(InternalQuote.customer)
+            .where(InternalQuote.factory_id == factory_id, InternalQuote.customer != "")
+            .distinct()
+            .order_by(InternalQuote.customer)
+        ).all()
+        if value
+    ]
+    return InternalQuotePageOut(
+        items=[quote_to_out(db, quote, include_sections=include_sections) for quote in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        customers=customers,
+    )
+
+
 _DASHBOARD_COMPLETED_STATUSES = {"fully_approved", "exported"}
 _DASHBOARD_CANCELED_STATUSES = {"archived"}
 
@@ -1575,14 +1664,36 @@ def _has_business_owner_binding(
     context = build_auth_context(db, user)
     return can(
         context,
-        "internal_quote:sales_edit",
+        "internal_quote:sales_review",
         factory_id,
         "sales-business",
     ) and any(
         grant.factory_id in {factory_id, "*"}
         and grant.department in {"sales-business", "*"}
-        and "internal_quote:sales_edit" in grant.permissions
+        and "internal_quote:sales_review" in grant.permissions
         for grant in context.grants
+    )
+
+
+def ensure_quote_business_reviewer(
+    db: Session,
+    user: AuthContext,
+    quote: InternalQuote,
+) -> None:
+    """Restrict every section review to the reviewer selected on the quote header."""
+
+    if not quote.business_owner_id or quote.business_owner_id != user.id:
+        reviewer_name = quote.business_owner_name or "建单时指定的业务审核负责人"
+        raise HTTPException(
+            status_code=403,
+            detail=f"仅建单时指定的业务审核负责人（{reviewer_name}）可审核全部部门分段",
+        )
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:sales_review",
+        quote.factory_id,
+        ("sales-business",),
     )
 
 
@@ -1791,6 +1902,123 @@ def add_quote_participation(
             quote,
             title="内部报价最终放行已失效",
             message=f"{quote.quote_no} 因新增{added_names}参与，需重新完成分段审批和最终放行",
+            event="final_release_invalidated",
+            target_user_id=quote.business_owner_id,
+            department="sales",
+        )
+    db.commit()
+    db.refresh(quote)
+    return quote_to_out(db, quote)
+
+
+def remove_quote_participation(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteParticipationRemoveRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:create",
+        quote.factory_id,
+        ("sales-business", "engineering"),
+    )
+    _ensure_active(quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+
+    sections = db.scalars(
+        select(InternalQuoteSection).where(
+            InternalQuoteSection.quote_id == quote.id,
+            InternalQuoteSection.department.in_(payload.remove_sections),
+        )
+    ).all()
+    active_sections = [section for section in sections if section.is_required]
+    if not active_sections:
+        raise HTTPException(status_code=409, detail="所选部门未参与当前内部报价")
+
+    had_final_release = quote.final_release_status in {"pending", "approved"} or quote.status in {
+        "final_reviewing",
+        "fully_approved",
+        "exported",
+    }
+    removed_names = "、".join(section.department_name for section in active_sections)
+    _invalidate_final_release(db, quote, reason=f"移除参与部门：{removed_names}")
+
+    old_header_revision = quote.header_revision
+    timestamp = now_text()
+    for section in active_sections:
+        old_section_revision = section.revision
+        section.is_required = False
+        section.status = "draft"
+        section.payload_json = "{}"
+        section.calculation_json = "{}"
+        section.calculation_status = "pending"
+        section.calculation_hash = ""
+        section.calculation_formula_version = quote.formula_version
+        section.calculation_reference_snapshot_id = quote.reference_snapshot_id
+        section.calculated_at = ""
+        section.dependency_hash = ""
+        section.dependency_status = "current"
+        section.revision += 1
+        section.filled_by = ""
+        section.filled_at = ""
+        section.submitted_by = ""
+        section.submitted_by_id = ""
+        section.submitted_at = ""
+        section.reviewed_by = ""
+        section.reviewed_at = ""
+        section.review_comment = ""
+        section.updated_at = timestamp
+        _add_revision(db, quote, section, user, reason="participation_removed")
+        _add_audit(
+            db,
+            quote,
+            user,
+            "participation_section_removed",
+            department=section.department,
+            old_revision=old_section_revision,
+            new_revision=section.revision,
+            reason=f"不再需要{section.department_name}报价",
+            request=request,
+        )
+        _mark_quote_notifications_handled(
+            db,
+            quote,
+            events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS | {"participation_added"},
+            department=section.department,
+        )
+        _invalidate_downstream_dependencies(db, quote, user, section.department, request)
+
+    quote.header_revision += 1
+    quote.updated_at = timestamp
+    _derive_quote_status(db, quote)
+    _add_audit(
+        db,
+        quote,
+        user,
+        "participation_removed",
+        department=quote.initiator_department,
+        detail=json.dumps(
+            {
+                "removed_sections": [section.department for section in active_sections],
+                "removed_names": [section.department_name for section in active_sections],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        old_revision=old_header_revision,
+        new_revision=quote.header_revision,
+        request=request,
+    )
+    if had_final_release:
+        _add_notification(
+            db,
+            quote,
+            title="内部报价最终放行已失效",
+            message=f"{quote.quote_no} 因移除{removed_names}参与，需重新完成分段审批和最终放行",
             event="final_release_invalidated",
             target_user_id=quote.business_owner_id,
             department="sales",
@@ -2032,8 +2260,12 @@ def save_section(
     _check_revision(section.revision, payload.revision)
     if section.status not in MUTABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="当前状态不可编辑，请先重新打开")
+    next_payload_json = canonical_json(payload.payload)
+    current_payload_json = canonical_json(_json_object(section.payload_json))
+    if next_payload_json == current_payload_json:
+        return _section_out(section)
     old_revision = section.revision
-    section.payload_json = json.dumps(payload.payload, ensure_ascii=False, sort_keys=True)
+    section.payload_json = next_payload_json
     section.status = "draft"
     section.revision += 1
     section.filled_by = user.display_name
@@ -2126,10 +2358,12 @@ def submit_section(
         db,
         quote,
         title=f"{section.department_name}分段待审核",
-        message=f"{quote.quote_no} 的{section.department_name}分段已提交，请主管审核",
+        message=(
+            f"{quote.quote_no} 的{section.department_name}分段已提交，"
+            f"请业务审核负责人 {quote.business_owner_name} 审核"
+        ),
         event="section_submitted",
-        target_permission=f"internal_quote:{section_code}_review",
-        target_department=SECTION_DEPARTMENTS[section_code][0],
+        target_user_id=quote.business_owner_id,
         department=section_code,
         extra={"section_revision": section.revision},
     )
@@ -2188,13 +2422,69 @@ def request_section_na(
         db,
         quote,
         title=f"{section.department_name}不适用申请待审核",
-        message=f"{quote.quote_no} 的{section.department_name}分段申请不适用：{payload.reason}",
+        message=(
+            f"{quote.quote_no} 的{section.department_name}分段申请不适用，"
+            f"请业务审核负责人 {quote.business_owner_name} 审核：{payload.reason}"
+        ),
         event="section_na_requested",
-        target_permission=f"internal_quote:{section_code}_review",
-        target_department=SECTION_DEPARTMENTS[section_code][0],
+        target_user_id=quote.business_owner_id,
         department=section_code,
         reason=payload.reason,
         extra={"section_revision": section.revision},
+    )
+    db.commit()
+    db.refresh(section)
+    return _section_out(section)
+
+
+def withdraw_section_submission(
+    db: Session,
+    quote_id: str,
+    section_code: str,
+    revision: int,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteSectionOut:
+    quote = _get_quote(db, quote_id)
+    ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
+    _ensure_active(quote)
+    section = _get_section(db, quote_id, section_code)
+    _ensure_section_participates(section)
+    _check_revision(section.revision, revision)
+    if section.status not in REVIEWABLE_SECTION_STATUSES:
+        raise HTTPException(status_code=409, detail="仅待审核分段可返回修改")
+    if section.submitted_by_id != user.id:
+        raise HTTPException(status_code=403, detail="仅原提交人可在审核前返回修改")
+
+    old_revision = section.revision
+    section.status = "draft"
+    section.revision += 1
+    section.submitted_by = ""
+    section.submitted_by_id = ""
+    section.submitted_at = ""
+    section.reviewed_by = ""
+    section.reviewed_at = ""
+    section.review_comment = ""
+    section.updated_at = now_text()
+    _add_revision(db, quote, section, user, reason="withdraw")
+    _invalidate_downstream_dependencies(db, quote, user, section_code, request)
+    _derive_quote_status(db, quote)
+    _add_audit(
+        db,
+        quote,
+        user,
+        "withdraw",
+        department=section_code,
+        old_revision=old_revision,
+        new_revision=section.revision,
+        reason="提交人返回修改",
+        request=request,
+    )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=SECTION_REVIEW_NOTIFICATION_EVENTS,
+        department=section_code,
     )
     db.commit()
     db.refresh(section)
@@ -2210,7 +2500,7 @@ def review_section(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
-    ensure_section_permission(db, user, quote.factory_id, section_code, "review")
+    ensure_quote_business_reviewer(db, user, quote)
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
     _ensure_section_participates(section)

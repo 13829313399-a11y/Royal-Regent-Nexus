@@ -2,7 +2,7 @@ import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 export type DisneyPurchasedSection = 'product' | 'package'
 export type EngineeringMaterialCategory = 'hardware' | 'auxiliary' | 'packaging'
-export type EngineeringAuxiliaryCategory = '吸塑' | '胶袋' | '彩盒/内卡' | '电池' | '利宝' | '电镀' | '其他外购'
+export type EngineeringAuxiliaryCategory = '五金' | '吸塑' | '胶袋' | '彩盒/内卡' | '电池' | '利宝' | '电镀' | '其他外购'
 export interface EngineeringMaterialRow {
   item: string
   category: EngineeringMaterialCategory
@@ -26,16 +26,22 @@ export interface EngineeringMaterialRow {
 export interface EngineeringMoldRow {
   item: string
   mold_no: string
+  chinese_name: string
   mold_base_type: string
+  mold_base_material: string
   structure: string
+  process: string
   material: string
+  material_type: string
   color: string
   cavity: string
   quantity: number
   net_weight_g: number
   cycle_time_seconds: number
   mold_size: string
+  mold_specification: string
   image_reference: string
+  image_attachment_ids: string[]
   cost_rmb: number
   remark: string
   machine_code: string
@@ -80,6 +86,7 @@ export type EngineeringCartonRow = SalesCartonRow
 export interface EngineeringPayload {
   materials: EngineeringMaterialRow[]
   molds: EngineeringMoldRow[]
+  mold_allocation_enabled: boolean
   production_mold_costs: EngineeringProductionMoldCostRow[]
   mold_fx_rmb_usd: number
   amortization_qty: number
@@ -132,6 +139,8 @@ export interface ElectronicSummary {
 }
 
 export interface InjectionRow {
+  engineering_source_key?: string
+  engineering_synced_fields?: string[]
   item: string
   mold_no: string
   material: string
@@ -199,7 +208,14 @@ export interface PaintingRow {
   source_row?: number
 }
 export interface DisneyDecorationRow { application_type: string; rate_per_op_usd: number; operations: number }
-export interface PaintingPayload { rows: PaintingRow[]; disney_decorations: DisneyDecorationRow[] }
+export type InternalQuoteEntryMode = 'detail' | 'quick'
+export interface PaintingQuickQuote { spray_labor_hkd: number; paint_hkd: number; paint_tax_rate_percent: 13 }
+export interface PaintingPayload {
+  quote_mode: InternalQuoteEntryMode
+  quick_quote: PaintingQuickQuote
+  rows: PaintingRow[]
+  disney_decorations: DisneyDecorationRow[]
+}
 
 export interface SlushRow {
   product_code: string
@@ -227,11 +243,26 @@ export interface SewingMaterialRow {
   source_row?: number
 }
 export interface SewingGroup { name: string; category: 'clothes' | 'hair'; materials: SewingMaterialRow[]; labor_rmb: number }
-export interface SewingPayload { groups: SewingGroup[] }
+export interface SewingQuickQuoteRow { doll_name: string; unit_price_hkd: number }
+export interface SewingPayload { quote_mode: InternalQuoteEntryMode; quick_quotes: SewingQuickQuoteRow[]; groups: SewingGroup[] }
 
-export interface AssemblyProcessRow { name: string; persons: number; teams: number; production_qty: number }
-export interface AssemblyGroup { name: string; category: 'assembly' | 'packaging'; processes: AssemblyProcessRow[] }
-export interface AssemblyPayload { groups: AssemblyGroup[]; labor_base_hkd: number }
+export interface AssemblyProcessRow {
+  name: string
+  persons: number
+  remark: string
+  /** Compatibility fields for servers that still read capacity from each process row. */
+  production_qty?: number
+  teams?: number
+  source_row?: number
+}
+export interface AssemblyGroup {
+  name: string
+  category: 'assembly' | 'packaging'
+  production_qty: number
+  teams: number
+  processes: AssemblyProcessRow[]
+}
+export interface AssemblyPayload { groups: AssemblyGroup[]; labor_base_hkd: number; standard_work_hours: number }
 
 export interface SalesTaxRow { code: string; amount_hkd: number; rate: number | '' }
 export interface SalesScenario { name: string; capacity_cuft: number; freight_cost_hkd: number; carton_cuft: number; qty_per_carton: number; freight_share: number; lift_share: number; markup: number; settlement: number }
@@ -429,24 +460,25 @@ export function calculateEngineeringMoldPriceHkd(row: Pick<EngineeringMoldRow, '
 }
 
 export function calculateEngineeringMoldAllocation(payload: Pick<EngineeringPayload,
-  'production_mold_costs' | 'mold_fx_rmb_usd' | 'amortization_qty' | 'customer_mold_subsidy_usd'
+  'mold_allocation_enabled' | 'production_mold_costs' | 'mold_fx_rmb_usd' | 'amortization_qty' | 'customer_mold_subsidy_usd'
   | 'prototype_amortization_qty' | 'prototype_total_usd' | 'testing_amortization_qty' | 'testing_total_usd'>) {
   const rate = positivePreviewNumber(payload.mold_fx_rmb_usd) || 7.75
-  const productionTotalRmb = payload.production_mold_costs.reduce(
+  const enabled = payload.mold_allocation_enabled !== false
+  const productionTotalRmb = enabled ? payload.production_mold_costs.reduce(
     (total, row) => total + positivePreviewNumber(row.cost_rmb),
     0,
-  )
+  ) : 0
   const productionTotalUsd = productionTotalRmb / rate
   const moldQty = positivePreviewNumber(payload.amortization_qty)
   const prototypeQty = positivePreviewNumber(payload.prototype_amortization_qty)
   const testingQty = positivePreviewNumber(payload.testing_amortization_qty)
-  const moldShareRmb = moldQty ? productionTotalRmb / moldQty : 0
-  const moldShareUsd = moldQty
+  const moldShareRmb = enabled && moldQty ? productionTotalRmb / moldQty : 0
+  const moldShareUsd = enabled && moldQty
     ? (productionTotalUsd - positivePreviewNumber(payload.customer_mold_subsidy_usd)) / moldQty
     : 0
-  const prototypeShareUsd = prototypeQty ? positivePreviewNumber(payload.prototype_total_usd) / prototypeQty : 0
+  const prototypeShareUsd = enabled && prototypeQty ? positivePreviewNumber(payload.prototype_total_usd) / prototypeQty : 0
   const prototypeShareRmb = prototypeShareUsd * rate
-  const testingShareUsd = testingQty ? positivePreviewNumber(payload.testing_total_usd) / testingQty : 0
+  const testingShareUsd = enabled && testingQty ? positivePreviewNumber(payload.testing_total_usd) / testingQty : 0
   const testingShareRmb = testingShareUsd * rate
   return {
     rate,
@@ -613,6 +645,21 @@ export function calculatePaintingOperationTotals(payload: PaintingPayload) {
   ])) as Record<PaintingOperationCode, number>
 }
 
+export function calculatePaintingQuickPaintTaxHkd(payload: PaintingPayload) {
+  return Math.max(Number(payload.quick_quote?.paint_hkd) || 0, 0) * 0.13
+}
+
+export function calculatePaintingQuickTotalHkd(payload: PaintingPayload) {
+  return Math.max(Number(payload.quick_quote?.spray_labor_hkd) || 0, 0)
+    + Math.max(Number(payload.quick_quote?.paint_hkd) || 0, 0)
+    + calculatePaintingQuickPaintTaxHkd(payload)
+}
+
+export function calculatePaintingTotalHkd(payload: PaintingPayload) {
+  if (payload.quote_mode === 'quick') return calculatePaintingQuickTotalHkd(payload)
+  return payload.rows.reduce((total, row) => total + calculatePaintingRowAmount(row), 0)
+}
+
 export function calculateSlushRowAmount(row: SlushRow) {
   return Math.max(Number(row.quantity) || 0, 0) * Math.max(Number(row.unit_price_hkd) || 0, 0)
 }
@@ -647,9 +694,33 @@ export function calculateSewingTotalRmb(payload: SewingPayload) {
   return payload.groups.reduce((total, group) => total + calculateSewingGroupTotalRmb(group), 0)
 }
 
+export function calculateSewingQuickTotalHkd(payload: SewingPayload) {
+  return payload.quick_quotes.reduce((total, row) => total + Math.max(Number(row.unit_price_hkd) || 0, 0), 0)
+}
+
 export function calculateSewingTotalHkd(payload: SewingPayload, rmbHkdRate: unknown) {
+  if (payload.quote_mode === 'quick') return calculateSewingQuickTotalHkd(payload)
   const rate = positivePreviewNumber(rmbHkdRate)
   return rate ? calculateSewingTotalRmb(payload) / rate : 0
+}
+
+export function calculateAssemblyGroupPeople(group: AssemblyGroup) {
+  return group.processes.reduce((total, row) => total + positivePreviewNumber(row.persons), 0)
+}
+
+export function calculateAssemblyGroupLaborHkd(group: AssemblyGroup, laborBaseHkd: unknown) {
+  const productionQty = positivePreviewNumber(group.production_qty)
+  if (!productionQty) return 0
+  return positivePreviewNumber(laborBaseHkd)
+    * calculateAssemblyGroupPeople(group)
+    * positivePreviewNumber(group.teams)
+    / productionQty
+}
+
+export function calculateAssemblyCategoryLaborHkd(payload: AssemblyPayload, category: AssemblyGroup['category']) {
+  return payload.groups
+    .filter((group) => group.category === category)
+    .reduce((total, group) => total + calculateAssemblyGroupLaborHkd(group, payload.labor_base_hkd), 0)
 }
 
 export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, value: Record<string, unknown>): Record<string, unknown> {
@@ -657,11 +728,11 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'engineering') {
     const hasLegacyCartons = Object.prototype.hasOwnProperty.call(source, 'cartons')
     const normalizedMolds: EngineeringMoldRow[] = rows(source.molds).map((row) => ({
-      item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), mold_base_type: textValue(row.mold_base_type ?? row.mold_type),
-      structure: textValue(row.structure), material: textValue(row.material), color: textValue(row.color), cavity: textValue(row.cavity),
+      item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), chinese_name: textValue(row.chinese_name), mold_base_type: textValue(row.mold_base_type ?? row.mold_type),
+      mold_base_material: textValue(row.mold_base_material), structure: textValue(row.structure), process: textValue(row.process), material: textValue(row.material), material_type: textValue(row.material_type), color: textValue(row.color), cavity: textValue(row.cavity),
       quantity: numberValue(row.quantity ?? row.sets, 1), net_weight_g: numberValue(row.net_weight_g ?? row.weight_g),
-      cycle_time_seconds: numberValue(row.cycle_time_seconds ?? row.cycle_sec), mold_size: textValue(row.mold_size),
-      image_reference: textValue(row.image_reference), cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb), remark: textValue(row.remark ?? row.note),
+      cycle_time_seconds: numberValue(row.cycle_time_seconds ?? row.cycle_sec), mold_size: textValue(row.mold_size), mold_specification: textValue(row.mold_specification),
+      image_reference: textValue(row.image_reference), image_attachment_ids: Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(textValue).filter(Boolean) : [], cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb), remark: textValue(row.remark ?? row.note),
       machine_code: textValue(row.machine_code), target_output: numberValue(row.target_output), source_row: numberValue(row.source_row),
       disney_mold_no: textValue(row.disney_mold_no), disney_parts: textValue(row.disney_parts), disney_material: textValue(row.disney_material), disney_cavities: numberValue(row.disney_cavities), disney_parts_per_shot: numberValue(row.disney_parts_per_shot), disney_tool_cost_usd: numberValue(row.disney_tool_cost_usd),
       dickie_project_name_en: textValue(row.dickie_project_name_en), dickie_mold_no: textValue(row.dickie_mold_no), dickie_parts_en: textValue(row.dickie_parts_en), dickie_resin: textValue(row.dickie_resin), dickie_mold_size: textValue(row.dickie_mold_size), dickie_mold_material: textValue(row.dickie_mold_material), dickie_cavities: numberValue(row.dickie_cavities), dickie_parts_per_shot: numberValue(row.dickie_parts_per_shot), dickie_mold_cost_hkd: numberValue(row.dickie_mold_cost_hkd), dickie_remark_en: textValue(row.dickie_remark_en),
@@ -679,18 +750,21 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       materials: rows(source.materials).map((row) => {
         const category = ['hardware', 'packaging'].includes(textValue(row.category)) ? textValue(row.category) : 'auxiliary'
-        const auxiliaryCategory = ['吸塑', '胶袋', '彩盒/内卡', '电池', '利宝', '电镀'].includes(textValue(row.auxiliary_category))
-          ? textValue(row.auxiliary_category)
-          : '其他外购'
+        const auxiliaryCategory = category === 'hardware'
+          ? '五金'
+          : ['吸塑', '胶袋', '彩盒/内卡', '电池', '利宝', '电镀'].includes(textValue(row.auxiliary_category))
+            ? textValue(row.auxiliary_category)
+            : '其他外购'
         return {
           item: textValue(row.item), category, purpose: textValue(row.purpose), specification: textValue(row.specification ?? row.spec),
           quantity: numberValue(row.quantity ?? row.qty), unit: textValue(row.unit), unit_price_rmb: numberValue(row.unit_price_rmb),
           material: textValue(row.material), surface_treatment: textValue(row.surface_treatment), supplier: textValue(row.supplier), contact: textValue(row.contact),
-          auxiliary_category: auxiliaryCategory, tax_rate_percent: numberValue(row.tax_rate_percent ?? row.tax_pct), remark: textValue(row.remark ?? row.note),
+          auxiliary_category: auxiliaryCategory, tax_rate_percent: category === 'hardware' ? 13 : numberValue(row.tax_rate_percent ?? row.tax_pct), remark: textValue(row.remark ?? row.note),
           disney_description: textValue(row.disney_description), disney_section: textValue(row.disney_section) === 'package' ? 'package' : 'product', disney_unit_price_usd: numberValue(row.disney_unit_price_usd), disney_included: numberValue(row.disney_included, 1),
         }
       }),
       molds: normalizedMolds,
+      mold_allocation_enabled: booleanValue(source.mold_allocation_enabled, true),
       production_mold_costs: productionMoldCosts,
       mold_fx_rmb_usd: numberValue(source.mold_fx_rmb_usd, 7.75),
       amortization_qty: numberValue(source.amortization_qty, 20000),
@@ -728,6 +802,10 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
+        engineering_source_key: textValue(row.engineering_source_key),
+        engineering_synced_fields: Array.isArray(row.engineering_synced_fields)
+          ? row.engineering_synced_fields.filter((field): field is string => typeof field === 'string')
+          : [],
         item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), material: textValue(row.material), grade: textValue(row.grade ?? row.material_grade), color: textValue(row.color),
         net_weight_g: numberValue(row.net_weight_g ?? row.weight_g), loss_rate_percent: numberValue(row.loss_rate_percent, injectionLossRate),
         machine_name: textValue(row.machine_name ?? row.machine), machine_code: textValue(row.machine_code ?? row.machine_model), cavity: textValue(row.cavity),
@@ -747,6 +825,12 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     }
   }
   if (code === 'painting') return {
+    quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
+    quick_quote: {
+      spray_labor_hkd: numberValue(objectValue(source.quick_quote).spray_labor_hkd),
+      paint_hkd: numberValue(objectValue(source.quick_quote).paint_hkd),
+      paint_tax_rate_percent: 13,
+    },
     rows: rows(source.rows).map((row) => ({
       image_reference: textValue(row.image_reference ?? row.image),
       name: textValue(row.name ?? row.item),
@@ -772,6 +856,11 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   }
   if (code === 'sewing') {
     return {
+      quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
+      quick_quotes: rows(source.quick_quotes).map((row) => ({
+        doll_name: textValue(row.doll_name ?? row.name),
+        unit_price_hkd: numberValue(row.unit_price_hkd ?? row.price_hkd),
+      })),
       groups: rows(source.groups).map((group) => ({
         name: textValue(group.name),
         category: ['hair', '车发'].includes(textValue(group.category)) ? 'hair' : 'clothes',
@@ -792,7 +881,33 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     }
   }
   if (code === 'assembly') {
-    return { labor_base_hkd: numberValue(source.labor_base_hkd, 260), groups: rows(source.groups).map((group) => ({ name: textValue(group.name), category: textValue(group.category) === 'packaging' ? 'packaging' : 'assembly', processes: rows(group.processes).map((row) => ({ name: textValue(row.name), persons: numberValue(row.persons), teams: numberValue(row.teams), production_qty: numberValue(row.production_qty) })) })) }
+    return {
+      labor_base_hkd: numberValue(source.labor_base_hkd, 260),
+      standard_work_hours: numberValue(source.standard_work_hours, 11),
+      groups: rows(source.groups).map((group) => {
+        const processes = rows(group.processes)
+        const legacyReference = processes.find((row) => numberValue(row.production_qty) > 0 || numberValue(row.teams) > 0)
+        const productionQty = numberValue(group.production_qty ?? legacyReference?.production_qty)
+        const teams = numberValue(group.teams ?? legacyReference?.teams, 1)
+        return {
+          name: textValue(group.name),
+          category: textValue(group.category) === 'packaging' ? 'packaging' : 'assembly',
+          production_qty: productionQty,
+          teams,
+          processes: processes.map((row) => ({
+            name: textValue(row.name),
+            persons: numberValue(row.persons),
+            remark: textValue(row.remark ?? row.note),
+            // The current form owns these values at product-group level. Keep a
+            // synchronized copy so a backend process that has not yet restarted
+            // after the group-level migration does not incorrectly validate them as 0.
+            production_qty: productionQty,
+            teams,
+            ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
+          })),
+        }
+      }),
+    }
   }
   const hasLegacySalesCostFields = ['additional_tax_hkd', 'indonesia_freight_hkd', 'tax_categories', 'scenarios']
     .some((key) => Object.prototype.hasOwnProperty.call(source, key))

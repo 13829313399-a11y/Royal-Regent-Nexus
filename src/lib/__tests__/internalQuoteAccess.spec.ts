@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canReviewInternalQuoteSections,
   isForeignFactory,
   isInternalQuoteReadOnly,
 } from '@/lib/internalQuoteAccess'
@@ -36,5 +37,41 @@ describe('internal quote read-only presentation boundary', () => {
 
     expect(isInternalQuoteReadOnly(checker, 'huaxing')).toBe(true)
     expect(isForeignFactory(checker, 'huaxing')).toBe(false)
+  })
+})
+
+describe('internal quote selected reviewer boundary', () => {
+  function reviewerChecker(userId: string, allowed: boolean) {
+    return {
+      currentUser: { id: userId, profile: { primary_factory_id: 'huaxing' } },
+      can: (permission: string, factoryId?: string, department?: string) => (
+        allowed
+        && permission === 'internal_quote:sales_review'
+        && factoryId === 'huaxing'
+        && department === 'sales-business'
+      ),
+      canAny: () => false,
+    }
+  }
+
+  it('allows the selected business reviewer to review every department section', () => {
+    expect(canReviewInternalQuoteSections(
+      reviewerChecker('selected-reviewer', true),
+      'huaxing',
+      'selected-reviewer',
+    )).toBe(true)
+  })
+
+  it('rejects other supervisors and selected users without sales review permission', () => {
+    expect(canReviewInternalQuoteSections(
+      reviewerChecker('other-supervisor', true),
+      'huaxing',
+      'selected-reviewer',
+    )).toBe(false)
+    expect(canReviewInternalQuoteSections(
+      reviewerChecker('selected-reviewer', false),
+      'huaxing',
+      'selected-reviewer',
+    )).toBe(false)
   })
 })

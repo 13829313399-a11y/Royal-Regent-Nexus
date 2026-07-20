@@ -15,7 +15,7 @@ describe('internal quote API adapter', () => {
     const http = client()
     const api = createInternalQuoteApi(http)
 
-    await api.list('huaxing', { status: 'drafting', keyword: 'IQ-HX' })
+    await api.list('huaxing', { status: 'drafting', keyword: 'IQ-HX', customer: 'Disney', page: 2, pageSize: 10 })
     await api.getDashboard('huaxing', 'month')
     await api.listBusinessOwners('huaxing')
 
@@ -23,8 +23,11 @@ describe('internal quote API adapter', () => {
       params: {
         factory_id: 'huaxing',
         include_sections: true,
+        page: 2,
+        page_size: 10,
         status: 'drafting',
         keyword: 'IQ-HX',
+        customer: 'Disney',
       },
     })
     expect(http.get).toHaveBeenNthCalledWith(2, '/internal-quotes/dashboard', {
@@ -82,6 +85,7 @@ describe('internal quote API adapter', () => {
     await api.requestSectionNa('quote-1', 'engineering', 7, '无需工程')
     await api.reopenSection('quote-1', 'engineering', 8, '成本变化')
     await api.addParticipation('quote-1', 3, ['painting', 'sewing'])
+    await api.removeParticipation('quote-1', 4, ['painting'])
     await api.updateReferenceFx('quote-1', 3, '0.9', '7.9')
     await api.previewImport('quote-1', 'mold', file)
     await api.confirmImport('quote-1', 'batch-1', 9, 'replace')
@@ -95,6 +99,7 @@ describe('internal quote API adapter', () => {
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/submit', { revision: 5 })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/review', { revision: 6, decision: 'reject', reason: '资料不全' })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation', { revision: 3, add_sections: ['painting', 'sewing'] })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation/remove', { revision: 4, remove_sections: ['painting'] })
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/reference-snapshot/fx', { revision: 3, rmb_hkd: '0.9', hkd_usd: '7.9' })
     const formCalls = http.post.mock.calls.filter(([, data]) => data instanceof FormData)
     expect(formCalls).toHaveLength(2)
