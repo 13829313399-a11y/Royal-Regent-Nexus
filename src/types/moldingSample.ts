@@ -52,6 +52,10 @@ export interface MoldingSampleActualMaterialCostComponent extends MoldingSampleM
 export interface MoldingSampleOrder {
   id: string
   factory_id: string
+  production_factory_id: string | null
+  production_assigned_at: string
+  production_assigned_by: string
+  production_assignment_version: number
   order_number: string
   doc_number: string
   product_name: string
@@ -118,6 +122,19 @@ export interface MoldingSampleAuditLog {
   reason: string
   created_at: string
   tone: MoldingSampleTone
+}
+
+export interface MoldingSampleDispatchLog {
+  id: string
+  order_id: string
+  origin_factory_id: string
+  from_production_factory_id: string | null
+  to_production_factory_id: string
+  action: string
+  reason: string
+  actor_user_id: string
+  actor_name: string
+  created_at: string
 }
 
 export type MoldingSampleRequisitionStatus = '待出库' | '已出库'
@@ -234,6 +251,7 @@ export interface MoldingSampleWorkflowRecord {
   order: MoldingSampleOrder
   items: MoldingSampleItem[]
   audit_logs: MoldingSampleAuditLog[]
+  dispatch_logs: MoldingSampleDispatchLog[]
   requisitions: MoldingSampleRequisition[]
   problems: MoldingSampleProblem[]
   trial_reports: MoldingSampleTrialReport[]

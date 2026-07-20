@@ -166,8 +166,8 @@ INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS = {
 DEFAULT_ROLES = [
     ("group_molding_readonly", "集团啤办只读", "跨厂查看啤办单，默认隐藏成本且不可导出或修改"),
     ("engineer", "工程师", "工程开单、本人草稿维护、导出和通知；不含审核、啤机回填、仓库出库或成本权限"),
-    ("engineering_supervisor", "工程主管", "工程主管审核"),
-    ("manager", "经理", "经理终审、改价和敏感审计"),
+    ("engineering_supervisor", "工程主管", "工程主管审核与啤办生产任务分派"),
+    ("manager", "经理", "经理终审、生产任务分派、改价和敏感审计"),
     ("warehouse_keeper", "PMC / 仓管", "啤办领料、发料与库存管理"),
     ("carton_warehouse_keeper", "纸箱仓管", "纸箱箱唛 PDF 模板维护"),
     ("qa_inspector", "QA 检验员", "QA 箱唛实拍上传与核对"),
@@ -202,6 +202,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:export",
         "molding_sample:raw_material_write",
         "molding_sample:supervisor_review",
+        "molding_sample:dispatch",
         "molding_sample:notification_read",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["engineering_supervisor"],
     },
@@ -211,6 +212,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:edit_draft",
         "molding_sample:delete_draft",
         "molding_sample:manager_review",
+        "molding_sample:dispatch",
         "molding_sample:price_update",
         "molding_sample:audit_read",
         "molding_sample:notification_read",
@@ -538,6 +540,7 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
 )
 POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
+        "molding_sample:dispatch",
         "molding_sample:notification_read",
         "internal_quote:create",
         "internal_quote:clone",

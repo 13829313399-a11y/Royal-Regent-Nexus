@@ -2,7 +2,7 @@ from collections.abc import Generator
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -140,6 +140,21 @@ SQLITE_LEGACY_COLUMNS = {
     ],
 }
 
+MOLDING_SAMPLE_DISPATCH_REVISION = "20260720_0028"
+MOLDING_SAMPLE_DISPATCH_PREVIOUS_REVISION = "20260720_0027"
+MOLDING_SAMPLE_DISPATCH_REQUIRED_COLUMNS = {
+    "molding_sample_orders": {
+        "production_factory_id",
+        "production_assigned_at",
+        "production_assigned_by",
+        "production_assignment_version",
+    },
+    "molding_sample_requisitions": {"factory_id"},
+    "molding_sample_inventory_batches": {"factory_id"},
+    "molding_sample_inventory_movements": {"factory_id"},
+}
+MOLDING_SAMPLE_DISPATCH_REQUIRED_TABLES = {"molding_sample_dispatch_logs"}
+
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
@@ -147,6 +162,49 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def ensure_molding_dispatch_schema_ready() -> None:
+    """Refuse to mutate a pre-0028 database during application startup."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "molding_sample_orders" not in table_names:
+            return
+
+        missing_schema: list[str] = []
+        if "alembic_version" in table_names:
+            current_revision = connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar_one_or_none()
+            if current_revision == MOLDING_SAMPLE_DISPATCH_PREVIOUS_REVISION:
+                missing_schema.append(f"revision:{current_revision}")
+        for table_name, required_columns in MOLDING_SAMPLE_DISPATCH_REQUIRED_COLUMNS.items():
+            if table_name not in table_names:
+                missing_schema.append(f"table:{table_name}")
+                continue
+            existing_columns = {
+                column["name"] for column in inspector.get_columns(table_name)
+            }
+            missing_schema.extend(
+                f"column:{table_name}.{column_name}"
+                for column_name in sorted(required_columns - existing_columns)
+            )
+
+        missing_schema.extend(
+            f"table:{table_name}"
+            for table_name in sorted(MOLDING_SAMPLE_DISPATCH_REQUIRED_TABLES - table_names)
+        )
+        if not missing_schema:
+            return
+
+    raise RuntimeError(
+        "检测到啤办数据库尚未完成 Alembic 迁移 "
+        f"{MOLDING_SAMPLE_DISPATCH_REVISION}；缺少："
+        f"{', '.join(missing_schema)}。请先备份数据库并执行 Alembic 迁移 "
+        f"{MOLDING_SAMPLE_DISPATCH_REVISION}，再启动应用。"
+    )
 
 
 def ensure_sqlite_legacy_columns() -> None:
@@ -209,6 +267,7 @@ def init_db() -> None:
     from app.services.molding_sample import seed_molding_sample_defaults
     from app.services.raw_material import seed_raw_material_defaults
 
+    ensure_molding_dispatch_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

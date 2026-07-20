@@ -11,8 +11,11 @@ from app.core.time import business_now
 from app.models.molding_sample import MoldingSampleMaterialPrice, MoldingSampleOrder
 from app.schemas.molding_sample import MoldingSampleCreateRequest, MoldingSampleItemIn, MoldingSampleOrderIn
 from app.services.molding_sample import (
+    FACTORY_LABELS,
+    MOLDING_FACTORY_CAPABILITIES,
     calculate_material_amount_hkd,
     canonical_material_display,
+    is_external_order,
     parse_legacy_material_components,
 )
 
@@ -23,7 +26,10 @@ NS = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 ORDER_FIELDS = [
     ("单据ID", "id"),
-    ("工厂ID", "factory_id"),
+    ("来源厂区", "factory_id"),
+    ("承接生产厂", "production_factory_id"),
+    ("派厂状态", "production_assignment_status"),
+    ("派厂时间", "production_assigned_at"),
     ("订单号", "order_number"),
     ("文件编号", "doc_number"),
     ("产品名称", "product_name"),
@@ -92,7 +98,10 @@ ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 11, 11, 16, 16, 18, 
 
 BATCH_ORDER_COLUMNS = [
     ("单据ID", "id"),
-    ("工厂ID", "factory_id"),
+    ("来源厂区", "factory_id"),
+    ("承接生产厂", "production_factory_id"),
+    ("派厂状态", "production_assignment_status"),
+    ("派厂时间", "production_assigned_at"),
     ("订单号", "order_number"),
     ("文件编号", "doc_number"),
     ("产品名称", "product_name"),
@@ -118,6 +127,15 @@ ORDER_ALIASES = {
     "单据ID": "id",
     "工厂ID": "factory_id",
     "工厂id": "factory_id",
+    "来源厂区": "factory_id",
+    "来源工厂": "factory_id",
+    "来源厂区ID": "factory_id",
+    "承接生产厂": "production_factory_id",
+    "承接啤办厂区": "production_factory_id",
+    "生产承接厂区": "production_factory_id",
+    "承接厂区": "production_factory_id",
+    "生产厂区": "production_factory_id",
+    "production_factory_id": "production_factory_id",
     "订单号": "order_number",
     "产品编号": "order_number",
     "文件编号": "doc_number",
@@ -217,6 +235,12 @@ MATERIAL_USAGE_TYPE_LABELS = {
     "trial": "试料",
 }
 
+SELF_MOLDING_FACTORY_IDS = {
+    factory_id
+    for factory_id, capability in MOLDING_FACTORY_CAPABILITIES.items()
+    if capability["has_molding_department"]
+}
+
 DETAIL_HEADER_ROW_INDEX = 10
 TITLE_STYLE_ID = 1
 ORDER_LABEL_STYLE_ID = 2
@@ -269,7 +293,10 @@ ITEM_COLUMN_WIDTHS = [
 
 BATCH_COLUMN_WIDTHS = [
     22,
+    22,
+    22,
     14,
+    20,
     16,
     18,
     24,
@@ -343,10 +370,22 @@ def export_order_to_excel(
             "开单事由",
             _safe_text(order.reason),
         ],
-        [],
+        [
+            "来源厂区",
+            _format_factory_value(getattr(order, "factory_id", "")),
+            "承接生产厂",
+            _format_factory_value(getattr(order, "production_factory_id", "")),
+            "派厂状态",
+            _production_assignment_status(order),
+            "派厂时间",
+            _safe_text(getattr(order, "production_assigned_at", "")),
+        ],
         [label for label, _ in ITEM_COLUMNS],
     ]
-    style_matrix: dict[tuple[int, int], int] = {}
+    style_matrix: dict[tuple[int, int], int] = {
+        (4, 7): ORDER_LABEL_STYLE_ID,
+        (4, 8): ORDER_VALUE_STYLE_ID,
+    }
     missing_count = 0
 
     for item in order.items:
@@ -414,7 +453,7 @@ def export_orders_to_excel(
         )
 
     for order_index, order in enumerate(orders):
-        order_values = [getattr(order, field, "") for _, field in BATCH_ORDER_COLUMNS]
+        order_values = [_get_export_order_value(order, field) for _, field in BATCH_ORDER_COLUMNS]
         items = list(order.items)
         group_style = BATCH_ORDER_GROUP_A_STYLE_ID if order_index % 2 == 0 else BATCH_ORDER_GROUP_B_STYLE_ID
         first_row_index = len(rows) + 1
@@ -455,13 +494,15 @@ def export_orders_to_excel(
     )
 
 
-def build_engineering_import_template() -> bytes:
+def build_engineering_import_template(factory_id: str | None = None) -> bytes:
     """Build the engineering-facing import workbook from the current entry fields.
 
     No formula is used for required material: engineers enter ``所需用料(kg)``
     directly, matching the current manual form.
     """
 
+    normalized_factory_id = _normalize_factory_id(factory_id)
+    production_factory_id = normalized_factory_id if normalized_factory_id in SELF_MOLDING_FACTORY_IDS else ""
     last_column = _column_name(len(ENGINEERING_IMPORT_COLUMNS))
     detail_start_row = 9
     detail_end_row = detail_start_row + 30 - 1
@@ -472,7 +513,14 @@ def build_engineering_import_template() -> bytes:
         ["发至", "内部", "审核主管", "", "落单人", ""],
         ["注意事项", ""],
         ["填写说明：基础资料填在上方；每一行代表一项模具明细；多原料请按“比例%原料 + 比例%原料水口料”填写；完整规则和例子请查看“填写说明”工作表。"],
-        [],
+        [
+            "来源厂区",
+            _format_factory_value(normalized_factory_id, fallback=""),
+            "承接生产厂",
+            _format_factory_value(production_factory_id, fallback=""),
+            "派厂状态 / 时间",
+            _template_assignment_status(normalized_factory_id, production_factory_id),
+        ],
         [label for label, _ in ENGINEERING_IMPORT_COLUMNS],
         *[["" for _ in ENGINEERING_IMPORT_COLUMNS] for _ in range(30)],
     ]
@@ -492,6 +540,9 @@ def build_engineering_import_template() -> bytes:
         ["基础资料", "阶段 / 填写部", "填写在 D3 / F3", "默认阶段 T0、填写部 工程部"],
         ["基础资料", "发至 / 审核主管 / 落单人", "填写在 B4 / D4 / F4", "分别映射新建单的发至、审核主管、落单人"],
         ["基础资料", "注意事项", "填写在 B5", "映射新建单的注意事项 / 开单事由"],
+        ["生产归属", "来源厂区", "显示在 B7", "保留为工程单归属 factory_id；正式导入时以当前页面所选厂区为准"],
+        ["生产归属", "承接生产厂", "填写在 D7", "华康 C / D 只能填写华康 A 或华康 B；系统不会随机猜测"],
+        ["生产归属", "派厂状态 / 时间", "显示在 F7", "正式创建后由系统记录状态和派厂时间，模板中的说明不会作为审计时间导入"],
         ["模具明细", "模具编号、模具名称", "每个模具占一行", "第 9 至 38 行可直接填写，共预留 30 行"],
         ["模具明细", "所需用料", "填写单一原料名称，或在同一格填写完整比例组成", "单料例：ABS PA-757"],
         ["多原料", "同一种原料 + 水口料", "例：80%ABS PA-757 + 20%ABS PA-757水口料", "10kg 表示 8kg 原料 + 2kg 同料水口；同一种原料均按 ABS PA-757 价格计算"],
@@ -544,6 +595,66 @@ def build_engineering_import_template() -> bytes:
 def _safe_text(value: object, fallback: str = "—") -> str:
     text = str(value or "").strip()
     return text if text else fallback
+
+
+def _normalize_factory_id(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    normalized_text = text.casefold()
+    compact_text = re.sub(r"\s+", "", text)
+    for factory_id, label in FACTORY_LABELS.items():
+        if normalized_text == factory_id or compact_text == re.sub(r"\s+", "", label):
+            return factory_id
+        if re.search(rf"(?<![a-z0-9-]){re.escape(factory_id)}(?![a-z0-9-])", normalized_text):
+            return factory_id
+    return text
+
+
+def _format_factory_value(value: object, *, fallback: str = "—") -> str:
+    factory_id = _normalize_factory_id(value)
+    if not factory_id:
+        return fallback
+    label = FACTORY_LABELS.get(factory_id)
+    return f"{label}（{factory_id}）" if label else factory_id
+
+
+def _is_external_export_order(order: object) -> bool:
+    return is_external_order(order)  # type: ignore[arg-type]
+
+
+def _production_assignment_status(order: object) -> str:
+    if _is_external_export_order(order):
+        return "外发单（无需派厂）"
+
+    origin_factory_id = _normalize_factory_id(getattr(order, "factory_id", ""))
+    production_factory_id = _normalize_factory_id(getattr(order, "production_factory_id", ""))
+    if not production_factory_id:
+        return "待派厂"
+    if production_factory_id == origin_factory_id:
+        return "本厂承接"
+    return "已派厂"
+
+
+def _template_assignment_status(origin_factory_id: str, production_factory_id: str) -> str:
+    if not origin_factory_id:
+        return "导入后由系统确认并记录时间"
+    if not production_factory_id:
+        return "待派厂；华康 C / D 必须选择 A / B"
+    if production_factory_id == origin_factory_id:
+        return "本厂承接；正式创建后记录时间"
+    return "已选择承接厂；正式创建后记录时间"
+
+
+def _get_export_order_value(order: object, field: str) -> object:
+    if field == "factory_id":
+        return _format_factory_value(getattr(order, field, ""))
+    if field == "production_factory_id":
+        return _format_factory_value(getattr(order, field, ""))
+    if field == "production_assignment_status":
+        return _production_assignment_status(order)
+    return getattr(order, field, "")
 
 
 def _format_decimal(value: float | int | None, digits = 2) -> str:
@@ -1034,6 +1145,8 @@ def _normalize_label(value: str) -> str:
 
 def _normalize_order_value(field: str, value: object) -> str:
     text = str(value or "").strip()
+    if field in {"factory_id", "production_factory_id"}:
+        return _normalize_factory_id(text)
     if field == "date":
         return _normalize_date_text(text)
     if field == "doc_number":

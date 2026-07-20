@@ -911,6 +911,97 @@ def test_system_position_notifications_follow_factory_and_department_contract(
 
 
 @pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
+def test_molding_sample_dispatch_fixed_positions_keep_source_factory_and_department_scope(
+    monkeypatch,
+    authz_mode,
+):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE=authz_mode,
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        positions = importlib.import_module("app.services.system_positions")
+        dispatch_permission = positions.MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE
+
+        def context_for(role_id: str):
+            definition = positions.get_system_position(role_id)
+            assert definition is not None
+            grant = auth_service.AuthGrantContext(
+                role_id=definition.role_id,
+                role_name=definition.name,
+                factory_id="huakang-c",
+                department=definition.department,
+                permissions=frozenset(definition.permission_codes),
+                scope_mode=definition.scope_mode,
+                read_permissions=frozenset(),
+                unrestricted_department=True,
+            )
+            return auth_service.AuthContext(
+                id=f"user-{role_id}",
+                username=role_id,
+                display_name=definition.name,
+                roles=(definition.name,),
+                role_codes=(definition.role_id,),
+                permissions=grant.permissions,
+                factory_scopes=("huakang-c", "*"),
+                department_scopes=(definition.department, "*"),
+                grants=(grant,),
+                active_permission_codes=grant.permissions,
+            )
+
+        for role_id in (
+            "position_engineering_manager",
+            "position_engineering_supervisor",
+        ):
+            engineering_user = context_for(role_id)
+            assert auth_service.has_permission_in_scope(
+                engineering_user,
+                dispatch_permission,
+                "huakang-c",
+                "engineering",
+            )
+            assert not auth_service.has_permission_in_scope(
+                engineering_user,
+                dispatch_permission,
+                "huakang-c",
+                "management",
+            )
+            assert not auth_service.has_permission_in_scope(
+                engineering_user,
+                dispatch_permission,
+                "huakang-d",
+                "engineering",
+            )
+
+        general_manager = context_for("position_general_manager")
+        assert auth_service.has_permission_in_scope(
+            general_manager,
+            dispatch_permission,
+            "huakang-d",
+            "engineering",
+        )
+        assert auth_service.has_permission_in_scope(
+            general_manager,
+            dispatch_permission,
+            "huakang-d",
+            "management",
+        )
+
+        for role_id in (
+            "position_engineering_engineer",
+            "position_molding_manager",
+            "position_production_manager",
+        ):
+            assert not auth_service.has_permission_in_scope(
+                context_for(role_id),
+                dispatch_permission,
+                "huakang-c",
+                "engineering",
+            )
+
+
+@pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
 def test_general_manager_business_matrix_and_system_denials_across_authz_modes(
     monkeypatch,
     authz_mode,

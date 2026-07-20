@@ -1,6 +1,7 @@
 import { http } from '../lib/http.js'
 import type {
   MoldingSampleAuditLog,
+  MoldingSampleDispatchLog,
   MoldingSampleItem,
   MoldingSampleOrder,
   MoldingSampleProblem,
@@ -35,12 +36,14 @@ export interface MoldingSampleEditRequest extends MoldingSampleCreateRequest {}
 export interface MoldingSampleExcelImportOptions {
   order_id?: string
   factory_id?: string
+  production_factory_id?: string
 }
 
 export interface MoldingSampleDetailResponse {
   order: MoldingSampleOrder
   items: MoldingSampleItem[]
   audit_logs: MoldingSampleAuditLog[]
+  dispatch_logs: MoldingSampleDispatchLog[]
   notifications: MoldingSampleNotificationResponse[]
   problems: MoldingSampleProblem[]
   trial_reports: MoldingSampleTrialReport[]
@@ -95,6 +98,19 @@ export interface MoldingSampleStatusRequest {
   reason?: string
 }
 
+export interface MoldingSampleProductionAssignmentRequest {
+  production_factory_id: string
+  reason: string
+  expected_assignment_version: number
+}
+
+export interface MoldingSampleFactoryCapabilityResponse {
+  factory_id: string
+  has_molding_department: boolean
+  allowed_production_factory_ids: string[]
+  suggested_production_factory_id: string
+}
+
 export interface MoldingSampleItemsPatchRequest {
   items: MoldingSampleItemDraft[]
 }
@@ -127,6 +143,7 @@ export interface RequisitionStatusRequest {
 
 export interface RequisitionResponse {
   id: string
+  factory_id: string
   req_number: string
   date: string
   order_id: string
@@ -144,6 +161,7 @@ export interface RequisitionResponse {
 }
 
 export interface InventoryBatchCreateRequest {
+  factory_id?: string
   material: string
   batch_no: string
   location?: string
@@ -152,6 +170,7 @@ export interface InventoryBatchCreateRequest {
 
 export interface InventoryBatchResponse {
   id: string
+  factory_id: string
   material: string
   batch_no: string
   location: string
@@ -162,6 +181,7 @@ export interface InventoryBatchResponse {
 }
 
 export interface InventoryMovementFilters {
+  factory_id?: string
   batch_id?: string
   material?: string
   requisition_id?: string
@@ -169,6 +189,7 @@ export interface InventoryMovementFilters {
 
 export interface InventoryMovementResponse {
   id: number
+  factory_id: string
   batch_id: string
   batch_no: string
   requisition_id: string
@@ -268,6 +289,19 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const response = await client.get<MoldingSampleDetailResponse[]>(`/injection${query}`)
       return response.data
     },
+    async listProductionTasks(executionFactoryId: string) {
+      const params = new URLSearchParams({ production_factory_id: executionFactoryId })
+      const response = await client.get<MoldingSampleDetailResponse[]>(
+        `/injection/production-tasks?${params.toString()}`,
+      )
+      return response.data
+    },
+    async listFactoryCapabilities() {
+      const response = await client.get<MoldingSampleFactoryCapabilityResponse[]>(
+        '/injection/factory-capabilities',
+      )
+      return response.data
+    },
     async getBoardSummary(factoryId: string, query?: string) {
       const params = new URLSearchParams({ factory_id: factoryId })
       const normalizedQuery = query?.trim()
@@ -354,6 +388,9 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       if (options.factory_id) {
         params.set('factory_id', options.factory_id)
       }
+      if (options.production_factory_id) {
+        params.set('production_factory_id', options.production_factory_id)
+      }
       const query = params.toString()
       const response = await client.post<MoldingSampleDetailResponse>(
         query ? `/injection/import-excel?${query}` : '/injection/import-excel',
@@ -374,6 +411,9 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       if (options.factory_id) {
         params.set('factory_id', options.factory_id)
       }
+      if (options.production_factory_id) {
+        params.set('production_factory_id', options.production_factory_id)
+      }
       const query = params.toString()
       const response = await client.post<MoldingSampleCreateRequest>(
         query ? `/injection/import-excel-preview?${query}` : '/injection/import-excel-preview',
@@ -388,6 +428,13 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
     },
     async updateStatus(orderId: string, payload: MoldingSampleStatusRequest) {
       const response = await client.patch<MoldingSampleDetailResponse>(`/injection/${orderId}/status`, payload)
+      return response.data
+    },
+    async updateProductionAssignment(orderId: string, payload: MoldingSampleProductionAssignmentRequest) {
+      const response = await client.patch<MoldingSampleDetailResponse>(
+        `/injection/${orderId}/production-assignment`,
+        payload,
+      )
       return response.data
     },
     async updateItems(orderId: string, payload: MoldingSampleItemsPatchRequest) {
@@ -415,13 +462,24 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       const response = await client.get<RequisitionResponse[]>(url)
       return response.data
     },
-    async listInventoryBatches(material?: string) {
-      const url = material ? `/inventory-batches?${new URLSearchParams({ material }).toString()}` : '/inventory-batches'
+    async listInventoryBatches(material?: string, factoryId?: string) {
+      const params = new URLSearchParams()
+      if (factoryId) {
+        params.set('factory_id', factoryId)
+      }
+      if (material) {
+        params.set('material', material)
+      }
+      const query = params.toString()
+      const url = query ? `/inventory-batches?${query}` : '/inventory-batches'
       const response = await client.get<InventoryBatchResponse[]>(url)
       return response.data
     },
     async listInventoryMovements(filters: InventoryMovementFilters = {}) {
       const params = new URLSearchParams()
+      if (filters.factory_id) {
+        params.set('factory_id', filters.factory_id)
+      }
       if (filters.batch_id) {
         params.set('batch_id', filters.batch_id)
       }

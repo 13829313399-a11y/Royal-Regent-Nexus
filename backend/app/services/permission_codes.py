@@ -14,6 +14,7 @@ MOLDING_SAMPLE_PERMISSION_CODES = (
     "molding_sample:delete_draft",
     "molding_sample:supervisor_review",
     "molding_sample:manager_review",
+    "molding_sample:dispatch",
     "molding_sample:raw_material_write",
     "molding_sample:warehouse_requisition",
     "molding_sample:inventory_issue",

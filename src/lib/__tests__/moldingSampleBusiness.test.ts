@@ -21,6 +21,10 @@ import type { MoldingSampleItem, MoldingSampleOrder } from '../../types/moldingS
 const baseOrder: MoldingSampleOrder = {
   id: 'BP-TEST',
   factory_id: 'huakang-a',
+  production_factory_id: 'huakang-a',
+  production_assigned_at: '2026-04-09 09:30',
+  production_assigned_by: '工程师',
+  production_assignment_version: 1,
   order_number: '62437',
   doc_number: 'W-G026-00',
   product_name: '链条枪',
@@ -86,6 +90,10 @@ const defaultedOrder = createDefaultMoldingSampleOrder({
 
 assert.equal(defaultedOrder.status, '待审核')
 assert.equal(defaultedOrder.order_type, '啤办')
+assert.equal(defaultedOrder.production_factory_id, null)
+assert.equal(defaultedOrder.production_assigned_at, '')
+assert.equal(defaultedOrder.production_assigned_by, '')
+assert.equal(defaultedOrder.production_assignment_version, 0)
 
 assert.equal(isMoldingSampleLocked({ ...baseOrder, status: '待审核' }), false)
 assert.equal(isMoldingSampleLocked({ ...baseOrder, status: '已驳回' }), false)
