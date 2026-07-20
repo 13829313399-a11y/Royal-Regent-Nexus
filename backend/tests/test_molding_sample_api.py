@@ -1780,6 +1780,173 @@ def test_system_position_scope_modes_control_cross_factory_read_and_operate(posi
     ).status_code == 200
 
 
+def test_fixed_non_molding_positions_get_all_factory_task_read_without_task_writes(
+    position_scope_client,
+):
+    client = position_scope_client
+    create_fixed_position_test_user(
+        "fixed_production_clerk_readonly",
+        "position_production_clerk",
+        "production",
+    )
+    create_fixed_position_test_user(
+        "fixed_qa_clerk_task_observer",
+        "position_qa_clerk",
+        "qa",
+    )
+
+    login_as(client, "admin")
+    for order_id, factory_id in (
+        ("BP-FIXED-READONLY-HOME", "huaxing"),
+        ("BP-FIXED-READONLY-FOREIGN", "huadeng"),
+    ):
+        payload = sample_order_payload(order_id)
+        payload["order"]["factory_id"] = factory_id
+        assert client.post("/api/injection", json=payload).status_code == 201
+        approved = client.patch(
+            f"/api/injection/{order_id}/status",
+            json={"action": "主管通过"},
+        )
+        assert approved.status_code == 200
+        assert approved.json()["order"]["status"] == "待生产"
+
+    foreign_review_payload = sample_order_payload("BP-FIXED-READONLY-FOREIGN-REVIEW")
+    foreign_review_payload["order"]["factory_id"] = "huadeng"
+    assert client.post("/api/injection", json=foreign_review_payload).status_code == 201
+    production_problem = client.post(
+        "/api/problems",
+        json={
+            "order_id": "BP-FIXED-READONLY-FOREIGN",
+            "description": "正式生产任务问题可只读查看",
+        },
+    )
+    assert production_problem.status_code == 201
+    add_board_problem(
+        "BP-FIXED-READONLY-FOREIGN-REVIEW",
+        suffix="readonly-hidden",
+        description="非生产阶段问题不得泄露",
+    )
+
+    home_notification = next(
+        notification
+        for notification in client.get(
+            "/api/molding-sample-notifications",
+            params={
+                "target_module": "production_molding_sample_task",
+                "order_id": "BP-FIXED-READONLY-HOME",
+            },
+        ).json()
+        if notification["order_id"] == "BP-FIXED-READONLY-HOME"
+    )
+
+    production_profile = login_fixed_position_test_user(
+        client,
+        "fixed_production_clerk_readonly",
+    )
+    production_grant = next(
+        grant
+        for grant in production_profile["grants"]
+        if grant["role_id"] == "position_production_clerk"
+    )
+    assert "molding_sample:production_read" in production_grant["permissions"]
+    assert {
+        "molding_sample:production_start",
+        "molding_sample:production_fillback",
+        "molding_sample:production_complete",
+    }.isdisjoint(production_grant["permissions"])
+
+    foreign_tasks = client.get(
+        "/api/injection",
+        params={"factory_id": "huadeng"},
+    )
+    assert foreign_tasks.status_code == 200
+    foreign_task = next(
+        row
+        for row in foreign_tasks.json()
+        if row["order"]["id"] == "BP-FIXED-READONLY-FOREIGN"
+    )
+    assert foreign_task["read_source"] == "cross"
+    assert foreign_task["can_view_cost"] is False
+    assert {
+        notification["target_module"]
+        for notification in foreign_task["notifications"]
+    } == {"production_molding_sample_task"}
+    assert "BP-FIXED-READONLY-FOREIGN-REVIEW" not in {
+        row["order"]["id"] for row in foreign_tasks.json()
+    }
+    assert client.get(
+        "/api/injection/BP-FIXED-READONLY-FOREIGN-REVIEW"
+    ).status_code == 403
+
+    assert client.patch(
+        "/api/injection/BP-FIXED-READONLY-HOME/status",
+        json={"action": "开始处理"},
+    ).status_code == 403
+    assert client.patch(
+        "/api/injection/BP-FIXED-READONLY-HOME/items",
+        json={
+            "items": [
+                {
+                    "id": "BP-FIXED-READONLY-HOME-001",
+                    "actual_weight_kg": 2.4,
+                }
+            ]
+        },
+    ).status_code == 403
+    assert client.put(
+        "/api/injection/BP-FIXED-READONLY-HOME/trial-reports/"
+        "BP-FIXED-READONLY-HOME-001",
+        json={"data": {"trial_summary": "只读职位不得保存"}},
+    ).status_code == 403
+    assert client.post(
+        "/api/problems",
+        json={
+            "order_id": "BP-FIXED-READONLY-HOME",
+            "description": "只读职位不得上报",
+        },
+    ).status_code == 403
+    assert client.patch(
+        f"/api/molding-sample-notifications/{home_notification['id']}",
+        json={"status": "已读"},
+    ).status_code == 403
+
+    qa_profile = login_fixed_position_test_user(
+        client,
+        "fixed_qa_clerk_task_observer",
+    )
+    qa_grant = next(
+        grant
+        for grant in qa_profile["grants"]
+        if grant["role_id"] == "position_qa_clerk"
+    )
+    assert qa_grant["scope_mode"] == "own_factory"
+    assert "molding_sample:production_read" in qa_grant["permissions"]
+    qa_foreign_detail = client.get("/api/injection/BP-FIXED-READONLY-FOREIGN")
+    assert qa_foreign_detail.status_code == 200
+    assert qa_foreign_detail.json()["read_source"] == "cross"
+    assert {
+        notification["target_module"]
+        for notification in qa_foreign_detail.json()["notifications"]
+    } == {"production_molding_sample_task"}
+    qa_problems = client.get("/api/problems")
+    assert qa_problems.status_code == 200
+    assert production_problem.json()["id"] in {
+        problem["id"] for problem in qa_problems.json()
+    }
+    assert "BP-FIXED-READONLY-FOREIGN-REVIEW-problem-readonly-hidden" not in {
+        problem["id"] for problem in qa_problems.json()
+    }
+    assert client.get(
+        "/api/raw-materials",
+        params={"factory_id": "huadeng"},
+    ).status_code == 403
+    assert client.get("/api/material-prices").status_code == 403
+    assert client.patch(
+        "/api/injection/BP-FIXED-READONLY-FOREIGN/status",
+        json={"action": "开始处理"},
+    ).status_code == 403
+
+
 def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_boundaries(
     position_scope_client,
 ):

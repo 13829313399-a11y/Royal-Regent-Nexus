@@ -52,6 +52,13 @@ CROSS_FACTORY_READ_LOCAL_ONLY_PERMISSION_CODES = frozenset(
     {"molding_sample:notification_read"}
 )
 
+# Every built-in position may inspect the production-task queue at any factory,
+# while its role-level scope continues to govern every other permission. Keep
+# this allow-list permission-specific so unrelated reads never expand by accident.
+SYSTEM_POSITION_CROSS_FACTORY_READ_PERMISSION_CODES = frozenset(
+    {"molding_sample:production_read"}
+)
+
 
 def default_permission_access_kind(permission_code: str) -> AccessKind:
     return READ_ACCESS_KIND if permission_code in READ_PERMISSION_CODES else OPERATE_ACCESS_KIND
