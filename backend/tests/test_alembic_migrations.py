@@ -38,6 +38,7 @@ IAM_POSITION_SCOPE_MIGRATION_REVISION = "20260717_0024"
 INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION = "20260718_0025"
 INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION = "20260718_0026"
 RAW_MATERIAL_SHARED_MIGRATION_REVISION = "20260720_0027"
+MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION = "20260720_0028"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -50,6 +51,8 @@ MOLDING_SAMPLE_TABLES = [
     "molding_sample_inventory_movements",
     "molding_sample_notifications",
     "molding_sample_problems",
+    "molding_sample_trial_reports",
+    "molding_sample_dispatch_logs",
 ]
 AUTH_TABLES = [
     "auth_users",
@@ -87,7 +90,34 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [RAW_MATERIAL_SHARED_MIGRATION_REVISION]
+    assert script.get_heads() == [MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION]
+
+    dispatch_revision = script.get_revision(
+        MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION
+    )
+    assert dispatch_revision.down_revision == RAW_MATERIAL_SHARED_MIGRATION_REVISION
+    dispatch_content = Path(dispatch_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "production_factory_id",
+        "production_assigned_at",
+        "production_assigned_by",
+        "production_assignment_version",
+        "molding_sample_dispatch_logs",
+        "ix_molding_sample_orders_production_status_created_at",
+        "ck_molding_sample_orders_production_factory",
+        "BEGIN IMMEDIATE",
+        "LOCK TABLE molding_sample_orders",
+        "cannot run as offline SQL",
+        "irreversible",
+    ):
+        assert expected in dispatch_content
+    dispatch_upgrade_source = dispatch_content.split(
+        "def upgrade() -> None:",
+        1,
+    )[1].split("def downgrade() -> None:", 1)[0]
+    assert dispatch_upgrade_source.index("_load_preflight_plan(connection)") < (
+        dispatch_upgrade_source.index("op.add_column")
+    )
 
     raw_material_shared_revision = script.get_revision(
         RAW_MATERIAL_SHARED_MIGRATION_REVISION
@@ -313,7 +343,12 @@ def test_alembic_has_single_molding_sample_head():
     for table_name in [
         name
         for name in MOLDING_SAMPLE_TABLES
-        if name not in {"molding_sample_notifications", "molding_sample_problems"}
+        if name not in {
+            "molding_sample_notifications",
+            "molding_sample_problems",
+            "molding_sample_trial_reports",
+            "molding_sample_dispatch_logs",
+        }
     ]:
         assert table_name in base_migration_content
 
@@ -334,7 +369,7 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
             "-c",
             str(ALEMBIC_INI),
             "upgrade",
-            "head",
+            RAW_MATERIAL_SHARED_MIGRATION_REVISION,
             "--sql",
         ],
         cwd=BACKEND_DIR,
@@ -348,6 +383,8 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     sql = result.stdout.lower()
 
     for table_name in MOLDING_SAMPLE_TABLES:
+        if table_name == "molding_sample_dispatch_logs":
+            continue
         assert f"create table {table_name}" in sql
     for table_name in AUTH_TABLES:
         assert f"create table {table_name}" in sql
@@ -591,7 +628,7 @@ def test_raw_material_shared_upgrade_merges_equivalent_rows_deterministically(
         )
         connection.commit()
 
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", RAW_MATERIAL_SHARED_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         migrated = connection.execute(
             """
@@ -904,7 +941,7 @@ def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
             "internal_quote:export": "operate",
         }
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+            MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,
         )
 
 
@@ -1030,7 +1067,7 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
             "SELECT quote_no FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'"
         ).fetchone() == ("LEGACY-P1",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+            MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,
         )
 
 
@@ -1208,5 +1245,573 @@ def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
             "SELECT file_name FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'"
         ).fetchone() == ("历史导出.xlsx",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+            MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,
         )
+
+
+def _run_dispatch_alembic(database_path: Path, *arguments: str):
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _run_dispatch_init_db(database_path: Path):
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+    env["SEED_ADMIN_PASSWORD"] = "DispatchSchemaGate123!"
+    env.pop("ALEMBIC_OFFLINE_METADATA_ONLY", None)
+    return subprocess.run(
+        [sys.executable, "-c", "from app.db import init_db; init_db()"],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _sqlite_schema_signature(database_path: Path) -> list[tuple[str, str, str]]:
+    with sqlite3.connect(database_path) as connection:
+        return connection.execute(
+            """
+            SELECT type, name, COALESCE(sql, '')
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        ).fetchall()
+
+
+def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(tmp_path):
+    database_path = tmp_path / "molding_sample_dispatch_schema_gate.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+    schema_before_startup = _sqlite_schema_signature(database_path)
+
+    blocked_startup = _run_dispatch_init_db(database_path)
+    assert blocked_startup.returncode != 0
+    startup_output = f"{blocked_startup.stdout}\n{blocked_startup.stderr}"
+    assert MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION in startup_output
+    assert "请先备份数据库并执行 Alembic 迁移" in startup_output
+    assert _sqlite_schema_signature(database_path) == schema_before_startup
+
+    migrated = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert migrated.returncode == 0, migrated.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,)
+        assert {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('molding_sample_orders')"
+            ).fetchall()
+        } >= {
+            "production_factory_id",
+            "production_assigned_at",
+            "production_assigned_by",
+            "production_assignment_version",
+        }
+        assert "molding_sample_dispatch_logs" in {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+
+def _insert_dispatch_test_order(
+    connection: sqlite3.Connection,
+    order_id: str,
+    factory_id: str,
+    status: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO molding_sample_orders (
+            id, factory_id, order_number, doc_number, product_name, client_name,
+            date, stage, order_type, workshop, send_to, supervisor, eng_name,
+            reason, status, reject_reason, completed_date, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            order_id,
+            factory_id,
+            order_id,
+            "",
+            "迁移测试产品",
+            "迁移测试客户",
+            "2026-07-20",
+            "T0",
+            "啤办",
+            "A车间",
+            "",
+            "迁移主管",
+            "迁移工程师",
+            "",
+            status,
+            "",
+            "2026-07-20" if status == "已完成" else "",
+            "2026-07-20 08:00:00",
+            "2026-07-20 08:00:00",
+        ),
+    )
+
+
+def _insert_dispatch_test_requisition(
+    connection: sqlite3.Connection,
+    requisition_id: str,
+    order_id: str,
+    batch_id: str,
+    batch_no: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO molding_sample_requisitions (
+            id, req_number, date, order_id, order_number, material,
+            requested_weight_kg, applicant, notes, inventory_batch_id,
+            inventory_batch_no, status, issued_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            requisition_id,
+            f"REQ-{requisition_id}",
+            "2026-07-20",
+            order_id,
+            order_id,
+            "ABS",
+            5.0,
+            "迁移申请人",
+            "",
+            batch_id,
+            batch_no,
+            "已出库",
+            "2026-07-20 09:00:00",
+            "2026-07-20 08:30:00",
+            "2026-07-20 09:00:00",
+        ),
+    )
+
+
+def _insert_dispatch_test_batch(
+    connection: sqlite3.Connection,
+    batch_id: str,
+    batch_no: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO molding_sample_inventory_batches (
+            id, material, batch_no, location, initial_weight_kg,
+            available_weight_kg, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            batch_id,
+            "ABS",
+            batch_no,
+            "测试仓",
+            100.0,
+            95.0,
+            "2026-07-20 08:00:00",
+            "2026-07-20 09:00:00",
+        ),
+    )
+
+
+def _insert_dispatch_test_movement(
+    connection: sqlite3.Connection,
+    batch_id: str,
+    batch_no: str,
+    requisition_id: str = "",
+    req_number: str = "",
+) -> int:
+    cursor = connection.execute(
+        """
+        INSERT INTO molding_sample_inventory_movements (
+            batch_id, batch_no, requisition_id, req_number, material,
+            movement_type, quantity_kg, before_weight_kg, after_weight_kg,
+            actor_name, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            batch_id,
+            batch_no,
+            requisition_id,
+            req_number,
+            "ABS",
+            "领料出库",
+            5.0,
+            100.0,
+            95.0,
+            "迁移仓管",
+            "",
+            "2026-07-20 09:00:00",
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def test_molding_sample_dispatch_upgrade_backfills_scope_and_preserves_rows(tmp_path):
+    database_path = tmp_path / "molding_sample_dispatch_0027.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+
+    order_rows = (
+        ("ORDER-A", "huakang-a", "已完成"),
+        ("ORDER-B", "huakang-b", "待审核"),
+        ("ORDER-HD", "huadeng", "生产中"),
+        ("ORDER-HX", "huaxing", "待生产"),
+        ("ORDER-C-DRAFT", "huakang-c", "待审核"),
+        ("ORDER-D-REJECTED", "huakang-d", "已驳回"),
+    )
+    with sqlite3.connect(database_path) as connection:
+        for order_id, factory_id, status in order_rows:
+            _insert_dispatch_test_order(connection, order_id, factory_id, status)
+
+        _insert_dispatch_test_batch(connection, "BATCH-A", "LOT-A")
+        _insert_dispatch_test_batch(connection, "BATCH-B", "LOT-B")
+        _insert_dispatch_test_requisition(
+            connection,
+            "REQ-A",
+            "ORDER-A",
+            "BATCH-A",
+            "LOT-A",
+        )
+        _insert_dispatch_test_requisition(
+            connection,
+            "REQ-B",
+            "ORDER-B",
+            "BATCH-B",
+            "LOT-B",
+        )
+        movement_a = _insert_dispatch_test_movement(
+            connection,
+            "BATCH-A",
+            "LOT-A",
+            "REQ-A",
+            "REQ-REQ-A",
+        )
+        movement_b = _insert_dispatch_test_movement(
+            connection,
+            "BATCH-B",
+            "LOT-B",
+            "REQ-B",
+            "REQ-REQ-B",
+        )
+        tracked_tables = (
+            "molding_sample_orders",
+            "molding_sample_requisitions",
+            "molding_sample_inventory_batches",
+            "molding_sample_inventory_movements",
+        )
+        counts_before = {
+            table_name: connection.execute(
+                f"SELECT COUNT(*) FROM {table_name}"
+            ).fetchone()[0]
+            for table_name in tracked_tables
+        }
+        connection.commit()
+
+    migrated = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert migrated.returncode == 0, migrated.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,)
+        assert connection.execute(
+            """
+            SELECT id, factory_id, production_factory_id,
+                   production_assigned_at, production_assigned_by,
+                   production_assignment_version
+            FROM molding_sample_orders ORDER BY id
+            """
+        ).fetchall() == [
+            ("ORDER-A", "huakang-a", "huakang-a", "", "", 0),
+            ("ORDER-B", "huakang-b", "huakang-b", "", "", 0),
+            ("ORDER-C-DRAFT", "huakang-c", None, "", "", 0),
+            ("ORDER-D-REJECTED", "huakang-d", None, "", "", 0),
+            ("ORDER-HD", "huadeng", "huadeng", "", "", 0),
+            ("ORDER-HX", "huaxing", "huaxing", "", "", 0),
+        ]
+        assert connection.execute(
+            "SELECT id, factory_id FROM molding_sample_requisitions ORDER BY id"
+        ).fetchall() == [("REQ-A", "huakang-a"), ("REQ-B", "huakang-b")]
+        assert connection.execute(
+            "SELECT id, factory_id FROM molding_sample_inventory_batches ORDER BY id"
+        ).fetchall() == [("BATCH-A", "huakang-a"), ("BATCH-B", "huakang-b")]
+        assert connection.execute(
+            "SELECT id, factory_id FROM molding_sample_inventory_movements ORDER BY id"
+        ).fetchall() == [
+            (movement_a, "huakang-a"),
+            (movement_b, "huakang-b"),
+        ]
+
+        for table_name, expected_count in counts_before.items():
+            assert connection.execute(
+                f"SELECT COUNT(*) FROM {table_name}"
+            ).fetchone() == (expected_count,)
+
+        for table_name in (
+            "molding_sample_requisitions",
+            "molding_sample_inventory_batches",
+            "molding_sample_inventory_movements",
+        ):
+            factory_column = next(
+                row
+                for row in connection.execute(
+                    f"PRAGMA table_info('{table_name}')"
+                ).fetchall()
+                if row[1] == "factory_id"
+            )
+            assert factory_column[3] == 1
+            assert (
+                f"ix_{table_name}_factory_id"
+                in {
+                    row[1]
+                    for row in connection.execute(
+                        f"PRAGMA index_list('{table_name}')"
+                    ).fetchall()
+                }
+            )
+
+        order_indexes = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list('molding_sample_orders')"
+            ).fetchall()
+        }
+        assert "ix_molding_sample_orders_production_status_created_at" in order_indexes
+        assert [
+            row[2]
+            for row in connection.execute(
+                "PRAGMA index_info('ix_molding_sample_orders_production_status_created_at')"
+            ).fetchall()
+        ] == ["production_factory_id", "status", "created_at"]
+
+        order_table_sql = connection.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = 'molding_sample_orders'
+            """
+        ).fetchone()[0].lower()
+        assert "ck_molding_sample_orders_production_factory" in order_table_sql
+        assert "molding_sample_dispatch_logs" in {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        dispatch_fk = connection.execute(
+            "PRAGMA foreign_key_list('molding_sample_dispatch_logs')"
+        ).fetchone()
+        assert dispatch_fk[2] == "molding_sample_orders"
+        assert dispatch_fk[6].upper() == "CASCADE"
+
+        try:
+            connection.execute(
+                """
+                UPDATE molding_sample_orders
+                SET production_factory_id = 'huakang-c'
+                WHERE id = 'ORDER-C-DRAFT'
+                """
+            )
+            connection.commit()
+        except sqlite3.IntegrityError:
+            connection.rollback()
+        else:
+            raise AssertionError("production factory check accepted huakang-c")
+
+    downgrade = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+    )
+    assert downgrade.returncode != 0
+    assert "irreversible" in f"{downgrade.stdout}\n{downgrade.stderr}".lower()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,)
+
+
+def test_molding_sample_dispatch_preflight_rejects_huakang_cd_production_history(
+    tmp_path,
+):
+    database_path = tmp_path / "molding_sample_dispatch_blocked_orders.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+
+    blocked_orders = (
+        ("ORDER-C-WAITING", "huakang-c", "待生产"),
+        ("ORDER-D-ACTIVE", "huakang-d", "生产中"),
+        ("ORDER-C-DONE", "huakang-c", "已完成"),
+    )
+    with sqlite3.connect(database_path) as connection:
+        for order_id, factory_id, status in blocked_orders:
+            _insert_dispatch_test_order(connection, order_id, factory_id, status)
+        connection.commit()
+
+    rejected = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert rejected.returncode != 0
+    output = f"{rejected.stdout}\n{rejected.stderr}"
+    assert "production destination must be assigned explicitly" in output
+    for order_id, _, _ in blocked_orders:
+        assert order_id in output
+
+    with sqlite3.connect(database_path) as connection:
+        order_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('molding_sample_orders')"
+            ).fetchall()
+        }
+        assert "production_factory_id" not in order_columns
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (RAW_MATERIAL_SHARED_MIGRATION_REVISION,)
+        assert "molding_sample_dispatch_logs" not in {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+
+def test_molding_sample_dispatch_preflight_rejects_unscoped_inventory(tmp_path):
+    database_path = tmp_path / "molding_sample_dispatch_unscoped_inventory.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        _insert_dispatch_test_batch(connection, "BATCH-UNKNOWN", "LOT-UNKNOWN")
+        movement_id = _insert_dispatch_test_movement(
+            connection,
+            "BATCH-MISSING",
+            "LOT-MISSING",
+        )
+        connection.commit()
+
+    rejected = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert rejected.returncode != 0
+    output = f"{rejected.stdout}\n{rejected.stderr}"
+    assert "cannot infer legacy inventory factory scope" in output
+    assert "inventory_batches count=1" in output
+    assert "BATCH-UNKNOWN" in output
+    assert "inventory_movements count=1" in output
+    assert str(movement_id) in output
+
+    with sqlite3.connect(database_path) as connection:
+        for table_name in (
+            "molding_sample_requisitions",
+            "molding_sample_inventory_batches",
+            "molding_sample_inventory_movements",
+        ):
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    f"PRAGMA table_info('{table_name}')"
+                ).fetchall()
+            }
+            assert "factory_id" not in columns
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (RAW_MATERIAL_SHARED_MIGRATION_REVISION,)
+
+
+def test_molding_sample_dispatch_preflight_does_not_treat_cd_origin_as_inventory_owner(
+    tmp_path,
+):
+    database_path = tmp_path / "molding_sample_dispatch_cd_inventory.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        RAW_MATERIAL_SHARED_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        _insert_dispatch_test_order(
+            connection,
+            "ORDER-C-DRAFT-INVENTORY",
+            "huakang-c",
+            "待审核",
+        )
+        _insert_dispatch_test_requisition(
+            connection,
+            "REQ-C-UNMAPPED",
+            "ORDER-C-DRAFT-INVENTORY",
+            "",
+            "",
+        )
+        connection.commit()
+
+    rejected = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert rejected.returncode != 0
+    output = f"{rejected.stdout}\n{rejected.stderr}"
+    assert "cannot infer production factory scope" in output
+    assert "REQ-C-UNMAPPED" in output
+
+    with sqlite3.connect(database_path) as connection:
+        assert "factory_id" not in {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('molding_sample_requisitions')"
+            ).fetchall()
+        }
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (RAW_MATERIAL_SHARED_MIGRATION_REVISION,)
+
+
+def test_molding_sample_dispatch_offline_has_controlled_online_only_error(tmp_path):
+    for database_url in (
+        "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus",
+        f"sqlite:///{(tmp_path / 'dispatch_offline.db').as_posix()}",
+    ):
+        env = os.environ.copy()
+        env["DATABASE_URL"] = database_url
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-c",
+                str(ALEMBIC_INI),
+                "upgrade",
+                f"{RAW_MATERIAL_SHARED_MIGRATION_REVISION}:head",
+                "--sql",
+            ],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        assert "20260720_0028 cannot run as offline sql" in output
+        assert "run this revision in online mode" in output

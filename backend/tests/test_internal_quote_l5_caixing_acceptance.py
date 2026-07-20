@@ -236,8 +236,8 @@ def test_l5_4_real_caixing_plastic_and_plush_release_consume_and_output(monkeypa
                     "qty": 3000,
                     "version_label": "V1",
                     "initiator_department": "sales-business",
-                    "business_owner_id": submitter["id"],
-                    "business_owner_name": submitter["display_name"],
+                    "business_owner_id": f"user-l5_4_{case['product_type']}_reviewer",
+                    "business_owner_name": f"l5_4_{case['product_type']}_reviewer",
                     "target_date": "2026-08-31",
                     "remark": f"L5.4 彩星{case['product_type']}真实样表验收",
                     "participating_sections": [

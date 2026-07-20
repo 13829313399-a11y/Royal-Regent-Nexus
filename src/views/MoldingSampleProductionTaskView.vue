@@ -46,8 +46,14 @@ import {
 } from '@/lib/moldingSampleBusiness'
 import {
   matchesMoldingSampleSearch,
+  normalizeMoldingSampleSearchValue,
   tokenizeMoldingSampleSearchKeyword,
 } from '@/lib/moldingSampleSearch'
+import {
+  getMoldingSampleFactoryCapability,
+  getMoldingSampleFactoryLabel,
+  resolveMoldingSampleProductionFactoryId,
+} from '@/lib/moldingSampleFactoryCapabilities'
 import {
   formatBusinessDate,
   formatBusinessDateTime,
@@ -95,6 +101,15 @@ interface PaginationState<T> {
   hasNext: boolean
 }
 
+interface TaskPrintRouteSnapshot {
+  orderId: string
+  originFactoryId: string
+  productionFactoryId: string
+  productionAssignmentVersion: number
+  productionAssignedAt: string
+  productionAssignedBy: string
+}
+
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
@@ -103,6 +118,7 @@ const authStore = useAuthStore()
 const PRODUCTION_NOTIFICATION_MODULE = 'production_molding_sample_task'
 const PRODUCTION_TASK_PAGE_SIZE = 10
 const PRODUCTION_TASK_STATUSES = new Set<MoldingSampleStatus>(['待生产', '生产中', '已完成'])
+const TASK_PRINT_PREVIEW_STALE_MESSAGE = '任务已删除、改派或派厂路由发生变化，打印预览已失效，请重新选择任务后再打印。'
 const apiRecords = ref<MoldingSampleDetailResponse[]>([])
 const apiNotifications = ref<MoldingSampleNotificationResponse[]>([])
 const apiState = ref<'checking' | 'connected' | 'empty' | 'error'>('checking')
@@ -122,6 +138,7 @@ const selectedFullDataItemId = ref('')
 const fullDataItemPane = ref<HTMLElement | null>(null)
 const selectedTaskPrintOrderIds = ref<string[]>([])
 const printableTaskRecords = ref<MoldingSampleWorkflowRecord[]>([])
+const printableTaskRouteSnapshots = ref<TaskPrintRouteSnapshot[]>([])
 const taskPrintPreviewVisible = ref(false)
 const trialReportDialogVisible = ref(false)
 const trialReportReadOnly = ref(false)
@@ -132,6 +149,9 @@ const protectedRmbToHkdRate = ref<number | null>(null)
 let apiDataRequestId = 0
 let protectedMaterialPricesRequestId = 0
 let trialReportSaveRequestId = 0
+let taskMutationRequestId = 0
+let notificationStatusRequestId = 0
+let problemSubmitRequestId = 0
 
 function handoffWheelAtBoundary(event: WheelEvent) {
   const region = event.currentTarget as HTMLElement | null
@@ -187,6 +207,57 @@ const productionDepartmentRoute = computed(() => getFactoryScopedRoute(
   '/modules/production',
   selectedFactoryId.value,
 ))
+const selectedFactoryCapability = computed(() =>
+  getMoldingSampleFactoryCapability(selectedFactoryId.value),
+)
+const selectedFactoryHasMoldingDepartment = computed(() =>
+  selectedFactoryCapability.value?.hasMoldingDepartment === true,
+)
+
+function getOrderProductionFactoryId(order: MoldingSampleOrder) {
+  return resolveMoldingSampleProductionFactoryId(order)
+}
+
+function getOrderFactoryRouteLabel(order: MoldingSampleOrder) {
+  return `${getMoldingSampleFactoryLabel(order.factory_id)} → ${getMoldingSampleFactoryLabel(getOrderProductionFactoryId(order))}`
+}
+
+function getOrderFactoryOwnershipLabel(order: MoldingSampleOrder) {
+  return `单据归属来源厂（${getMoldingSampleFactoryLabel(order.factory_id)}），生产执行承接厂（${getMoldingSampleFactoryLabel(getOrderProductionFactoryId(order))}）`
+}
+
+function matchesProductionTaskSearch(
+  record: MoldingSampleWorkflowRecord,
+  tokens: string[],
+) {
+  const productionFactoryId = getOrderProductionFactoryId(record.order)
+  const factorySearchValues = [
+    record.order.factory_id,
+    getMoldingSampleFactoryLabel(record.order.factory_id),
+    productionFactoryId,
+    getMoldingSampleFactoryLabel(productionFactoryId),
+    getOrderFactoryRouteLabel(record.order),
+    getOrderFactoryOwnershipLabel(record.order),
+  ]
+    .map((value) => normalizeMoldingSampleSearchValue(value))
+    .filter(Boolean)
+
+  return tokens.every((token) =>
+    matchesMoldingSampleSearch(record, [token])
+    || factorySearchValues.some((value) => value.includes(token)),
+  )
+}
+
+function getWorkflowRecordAccess(
+  record: MoldingSampleDetailResponse,
+): NonNullable<MoldingSampleWorkflowRecord['access']> {
+  const readSource = record.access?.read_source ?? record.read_source ?? 'local'
+  return {
+    read_source: readSource,
+    can_view_cost: record.access?.can_view_cost ?? record.can_view_cost ?? true,
+    read_only: record.access?.read_only ?? record.read_only ?? readSource === 'cross',
+  }
+}
 
 function isWildcardMoldingAdministrator() {
   return authStore.grants.some((grant) =>
@@ -224,13 +295,16 @@ function canProductionPermission(permission: string, factoryId: string) {
 }
 
 const canReadSelectedFactory = computed(() =>
-  canProductionPermission('molding_sample:production_read', selectedFactoryId.value),
+  selectedFactoryHasMoldingDepartment.value
+  && canProductionPermission('molding_sample:production_read', selectedFactoryId.value),
 )
 
 const engineeringOrderRoute = computed(() => {
-  const params = new URLSearchParams({ factory: selectedFactoryId.value })
-  if (selectedTask.value?.order.id) {
-    params.set('order_id', selectedTask.value.order.id)
+  const originFactoryId = selectedTask.value?.order.factory_id || selectedFactoryId.value
+  const params = new URLSearchParams({ factory: originFactoryId })
+  const orderId = selectedTask.value?.order.id || readQueryString(route.query.order_id)
+  if (orderId) {
+    params.set('order_id', orderId)
   }
 
   return `/modules/molding-sample?${params.toString()}`
@@ -247,9 +321,11 @@ const sourceRecords = computed<MoldingSampleWorkflowRecord[]>(() => {
       order: record.order,
       items: record.items,
       audit_logs: record.audit_logs,
+      dispatch_logs: record.dispatch_logs ?? [],
       requisitions: [],
       problems: record.problems ?? [],
       trial_reports: record.trial_reports ?? [],
+      access: getWorkflowRecordAccess(record),
     }))
 })
 
@@ -264,7 +340,7 @@ const taskRecords = computed(() =>
 )
 
 const taskEntries = computed(() => taskRecords.value
-  .filter((record) => record.factory_id === selectedFactoryId.value)
+  .filter((record) => getOrderProductionFactoryId(record.order) === selectedFactoryId.value)
   .filter((record) => !isExternalMoldingSampleOrder(record.order))
   .filter((record) => PRODUCTION_TASK_STATUSES.has(record.order.status))
   .sort((left, right) => getTaskPriority(left.order.status) - getTaskPriority(right.order.status)),
@@ -279,7 +355,7 @@ const searchMatchedTaskEntries = computed(() => {
     return taskEntries.value
   }
 
-  return taskEntries.value.filter((entry) => matchesMoldingSampleSearch(entry, productionSearchTokens.value))
+  return taskEntries.value.filter((entry) => matchesProductionTaskSearch(entry, productionSearchTokens.value))
 })
 
 const selectedTask = computed(() => {
@@ -287,7 +363,6 @@ const selectedTask = computed(() => {
   const targetOrderId = selectedOrderId.value || queryOrderId
 
   return taskEntries.value.find((entry) => entry.order.id === targetOrderId)
-    ?? taskEntries.value.find((entry) => entry.factory_id === selectedFactoryId.value)
     ?? taskEntries.value[0]
     ?? null
 })
@@ -296,7 +371,19 @@ const selectedNotification = computed(() =>
   selectedTask.value ? getLatestNotification(selectedTask.value.order.id) : null,
 )
 
-const selectedTaskFactoryId = computed(() => selectedTask.value?.order.factory_id || selectedFactoryId.value)
+const selectedTaskFactoryId = computed(() =>
+  selectedTask.value
+    ? getOrderProductionFactoryId(selectedTask.value.order) ?? selectedFactoryId.value
+    : selectedFactoryId.value,
+)
+const selectedTaskContextKey = computed(() => selectedTask.value
+  ? [
+      selectedTask.value.order.id,
+      selectedTask.value.order.factory_id,
+      getOrderProductionFactoryId(selectedTask.value.order) ?? '',
+    ].join('|')
+  : '',
+)
 const canStartSelectedTaskFactory = computed(() =>
   canProductionPermission('molding_sample:production_start', selectedTaskFactoryId.value),
 )
@@ -311,11 +398,14 @@ const canUpdateSelectedNotification = computed(() =>
   && canFillbackSelectedTaskFactory.value
   && canProductionPermission('molding_sample:notification_read', selectedTaskFactoryId.value),
 )
-const isSelectedFactoryReadOnly = computed(() => ![
-  'molding_sample:production_start',
-  'molding_sample:production_fillback',
-  'molding_sample:production_complete',
-].some((permission) => canProductionPermission(permission, selectedFactoryId.value)))
+const isSelectedFactoryReadOnly = computed(() =>
+  selectedFactoryHasMoldingDepartment.value
+  && ![
+    'molding_sample:production_start',
+    'molding_sample:production_fillback',
+    'molding_sample:production_complete',
+  ].some((permission) => canProductionPermission(permission, selectedFactoryId.value)),
+)
 
 const activeItems = computed<MoldingSampleItem[]>(() => {
   if (!selectedTask.value) {
@@ -530,6 +620,49 @@ function readQueryString(value: unknown) {
   }
 
   return ''
+}
+
+interface ProductionTaskRequestContext {
+  orderId: string
+  originFactoryId: string
+  productionFactoryId: string
+}
+
+function getProductionTaskRequestContext(
+  task: MoldingSampleWorkflowRecord | null = selectedTask.value,
+): ProductionTaskRequestContext | null {
+  if (!task) {
+    return null
+  }
+
+  const productionFactoryId = getOrderProductionFactoryId(task.order)
+  if (!productionFactoryId) {
+    return null
+  }
+
+  return {
+    orderId: task.order.id,
+    originFactoryId: task.order.factory_id,
+    productionFactoryId,
+  }
+}
+
+function isProductionTaskRequestContextCurrent(context: ProductionTaskRequestContext) {
+  const currentTask = selectedTask.value
+  return selectedFactoryHasMoldingDepartment.value
+    && selectedFactoryId.value === context.productionFactoryId
+    && currentTask?.order.id === context.orderId
+    && currentTask.order.factory_id === context.originFactoryId
+    && getOrderProductionFactoryId(currentTask.order) === context.productionFactoryId
+}
+
+function isProductionTaskResponseForContext(
+  response: MoldingSampleDetailResponse,
+  context: ProductionTaskRequestContext,
+) {
+  return response.order.id === context.orderId
+    && response.order.factory_id === context.originFactoryId
+    && getOrderProductionFactoryId(response.order) === context.productionFactoryId
 }
 
 function getPageCount(total: number) {
@@ -829,13 +962,86 @@ function clearTaskPrintSelection() {
   selectedTaskPrintOrderIds.value = []
 }
 
+function createTaskPrintRouteSnapshot(
+  record: MoldingSampleWorkflowRecord,
+): TaskPrintRouteSnapshot | null {
+  const productionFactoryId = getOrderProductionFactoryId(record.order)
+  if (!productionFactoryId) {
+    return null
+  }
+
+  return {
+    orderId: record.order.id,
+    originFactoryId: record.order.factory_id,
+    productionFactoryId,
+    productionAssignmentVersion: record.order.production_assignment_version,
+    productionAssignedAt: record.order.production_assigned_at,
+    productionAssignedBy: record.order.production_assigned_by,
+  }
+}
+
+function doesTaskMatchPrintRouteSnapshot(
+  record: MoldingSampleWorkflowRecord,
+  snapshot: TaskPrintRouteSnapshot,
+) {
+  return record.order.id === snapshot.orderId
+    && record.order.factory_id === snapshot.originFactoryId
+    && getOrderProductionFactoryId(record.order) === snapshot.productionFactoryId
+    && record.order.production_assignment_version === snapshot.productionAssignmentVersion
+    && record.order.production_assigned_at === snapshot.productionAssignedAt
+    && record.order.production_assigned_by === snapshot.productionAssignedBy
+    && snapshot.productionFactoryId === selectedFactoryId.value
+    && isTaskPrintable(record)
+}
+
+function resolveCurrentTaskPrintRecords() {
+  if (
+    !printableTaskRouteSnapshots.value.length
+    || printableTaskRouteSnapshots.value.length !== printableTaskRecords.value.length
+  ) {
+    return null
+  }
+
+  const currentTaskById = new Map(
+    taskEntries.value.map((record) => [record.order.id, record]),
+  )
+  const currentRecords: MoldingSampleWorkflowRecord[] = []
+
+  for (const snapshot of printableTaskRouteSnapshots.value) {
+    const currentRecord = currentTaskById.get(snapshot.orderId)
+    if (!currentRecord || !doesTaskMatchPrintRouteSnapshot(currentRecord, snapshot)) {
+      return null
+    }
+    currentRecords.push(currentRecord)
+  }
+
+  return currentRecords
+}
+
+function invalidateTaskPrintPreview(message = TASK_PRINT_PREVIEW_STALE_MESSAGE) {
+  taskPrintPreviewVisible.value = false
+  printableTaskRecords.value = []
+  printableTaskRouteSnapshots.value = []
+  actionMessage.value = message
+}
+
 function openTaskPrintPreview() {
   if (!canPrintSelectedTask.value) {
     actionMessage.value = '仅已审核下发至啤机部且包含工程明细的啤办通知单可以打印。'
     return
   }
 
-  printableTaskRecords.value = [...taskPrintActionRecords.value]
+  const records = [...taskPrintActionRecords.value]
+  const routeSnapshots = records
+    .map((record) => createTaskPrintRouteSnapshot(record))
+    .filter((snapshot): snapshot is TaskPrintRouteSnapshot => snapshot !== null)
+  if (routeSnapshots.length !== records.length) {
+    invalidateTaskPrintPreview()
+    return
+  }
+
+  printableTaskRecords.value = records
+  printableTaskRouteSnapshots.value = routeSnapshots
   taskPrintPreviewVisible.value = true
   actionMessage.value = printableTaskRecords.value.length === 1
     ? `已打开啤办通知单 ${printableTaskRecords.value[0].order.id} 的打印预览。`
@@ -844,18 +1050,28 @@ function openTaskPrintPreview() {
 
 function closeTaskPrintPreview() {
   taskPrintPreviewVisible.value = false
+  printableTaskRecords.value = []
+  printableTaskRouteSnapshots.value = []
 }
 
-function confirmTaskPrint() {
-  if (!printableTaskRecords.value.length || !printableTaskRecords.value.every(isTaskPrintable)) {
-    taskPrintPreviewVisible.value = false
-    actionMessage.value = '未找到可打印的啤办生产任务单。'
+async function confirmTaskPrint() {
+  const currentRecords = resolveCurrentTaskPrintRecords()
+  if (!currentRecords) {
+    invalidateTaskPrintPreview()
     return
   }
 
-  actionMessage.value = printableTaskRecords.value.length === 1
-    ? `正在打印工程部下发的啤办通知单 ${printableTaskRecords.value[0].order.id}。`
-    : `正在合并打印 ${printableTaskRecords.value.length} 张工程部下发的啤办通知单。`
+  printableTaskRecords.value = [...currentRecords]
+  await nextTick()
+  const verifiedCurrentRecords = resolveCurrentTaskPrintRecords()
+  if (!verifiedCurrentRecords || !taskPrintPreviewVisible.value) {
+    invalidateTaskPrintPreview()
+    return
+  }
+
+  actionMessage.value = verifiedCurrentRecords.length === 1
+    ? `正在打印工程部下发的啤办通知单 ${verifiedCurrentRecords[0].order.id}。`
+    : `正在合并打印 ${verifiedCurrentRecords.length} 张工程部下发的啤办通知单。`
   document.body.classList.add('molding-sample-task-printing')
   document.getElementById('molding-sample-active-print-page')?.remove()
   const pageStyle = document.createElement('style')
@@ -904,11 +1120,12 @@ function closeTrialReportDialog() {
   trialReportInitialItemId.value = ''
 }
 
-function isTrialReportSaveContextCurrent(requestId: number, factoryId: string, orderId: string) {
+function isTrialReportSaveContextCurrent(
+  requestId: number,
+  context: ProductionTaskRequestContext,
+) {
   return requestId === trialReportSaveRequestId
-    && factoryId === selectedFactoryId.value
-    && selectedTask.value?.order.factory_id === factoryId
-    && selectedTask.value?.order.id === orderId
+    && isProductionTaskRequestContextCurrent(context)
 }
 
 async function saveTrialReport(payload: { itemId: string, data: MoldingSampleTrialReportData }) {
@@ -925,20 +1142,24 @@ async function saveTrialReport(payload: { itemId: string, data: MoldingSampleTri
     actionMessage.value = '真实任务读取失败或暂无正式任务，不能保存试模报告。'
     return
   }
+  const context = getProductionTaskRequestContext(task)
+  if (!context || !selectedFactoryHasMoldingDepartment.value) {
+    actionMessage.value = '当前厂区没有啤机部，不能保存试模报告。'
+    return
+  }
 
-  const requestedFactoryId = selectedFactoryId.value
-  const requestedOrderId = task.order.id
+  const requestedOrderId = context.orderId
   const requestedItemId = payload.itemId
   const requestId = ++trialReportSaveRequestId
   trialReportSaving.value = true
   try {
     const report = await moldingSampleApi.upsertTrialReport(requestedOrderId, requestedItemId, { data: payload.data })
-    if (!isTrialReportSaveContextCurrent(requestId, requestedFactoryId, requestedOrderId)) {
+    if (!isTrialReportSaveContextCurrent(requestId, context)) {
       return
     }
 
     if (
-      report.factory_id !== requestedFactoryId
+      report.factory_id !== context.productionFactoryId
       || report.order_id !== requestedOrderId
       || report.item_id !== requestedItemId
     ) {
@@ -950,14 +1171,14 @@ async function saveTrialReport(payload: { itemId: string, data: MoldingSampleTri
     actionMessage.value = `试模报告已保存并同步至工程部：${requestedOrderId} · ${requestedItemId}。`
   }
   catch (error) {
-    if (!isTrialReportSaveContextCurrent(requestId, requestedFactoryId, requestedOrderId)) {
+    if (!isTrialReportSaveContextCurrent(requestId, context)) {
       return
     }
 
     actionMessage.value = `试模报告保存失败：${getApiErrorMessage(error)}`
   }
   finally {
-    if (isTrialReportSaveContextCurrent(requestId, requestedFactoryId, requestedOrderId)) {
+    if (isTrialReportSaveContextCurrent(requestId, context)) {
       trialReportSaving.value = false
     }
   }
@@ -1013,11 +1234,18 @@ function appendProblemForOrder(orderId: string, problem: MoldingSampleProblem) {
 }
 
 function replaceApiNotificationsForOrder(record: MoldingSampleDetailResponse) {
+  const productionFactoryId = getOrderProductionFactoryId(record.order)
   const productionNotifications = (record.notifications ?? [])
-    .filter((notification) => notification.target_module === PRODUCTION_NOTIFICATION_MODULE)
+    .filter((notification) =>
+      notification.target_module === PRODUCTION_NOTIFICATION_MODULE
+      && notification.factory_id === productionFactoryId,
+    )
   const preservedNotifications = productionNotifications.length
     ? productionNotifications
-    : apiNotifications.value.filter((notification) => notification.order_id === record.order.id)
+    : apiNotifications.value.filter((notification) =>
+        notification.order_id === record.order.id
+        && notification.factory_id === productionFactoryId,
+      )
   const otherNotifications = apiNotifications.value
     .filter((notification) => notification.order_id !== record.order.id)
 
@@ -1061,11 +1289,16 @@ async function loadProtectedMaterialPrices(factoryId: string) {
   protectedMaterialPrices.value = []
   protectedRmbToHkdRate.value = null
 
+  if (getMoldingSampleFactoryCapability(factoryId)?.hasMoldingDepartment !== true) {
+    return
+  }
+
   try {
     const response = await moldingSampleApi.getMaterialPrices(factoryId)
     if (
       requestId !== protectedMaterialPricesRequestId
       || factoryId !== selectedFactoryId.value
+      || getMoldingSampleFactoryCapability(factoryId)?.hasMoldingDepartment !== true
     ) {
       return
     }
@@ -1077,6 +1310,7 @@ async function loadProtectedMaterialPrices(factoryId: string) {
     if (
       requestId !== protectedMaterialPricesRequestId
       || factoryId !== selectedFactoryId.value
+      || getMoldingSampleFactoryCapability(factoryId)?.hasMoldingDepartment !== true
     ) {
       return
     }
@@ -1091,6 +1325,14 @@ async function loadApiData() {
   const requestId = ++apiDataRequestId
   apiState.value = 'checking'
   actionMessage.value = '正在读取啤办生产任务...'
+
+  if (getMoldingSampleFactoryCapability(requestedFactoryId)?.hasMoldingDepartment !== true) {
+    apiRecords.value = []
+    apiNotifications.value = []
+    apiState.value = 'empty'
+    actionMessage.value = `${getMoldingSampleFactoryLabel(requestedFactoryId)}没有啤机部；生产由华康A或华康B承接，请到工程啤办单跟踪派厂和进度。`
+    return
+  }
 
   if (!canProductionPermission('molding_sample:production_read', requestedFactoryId)) {
     apiRecords.value = []
@@ -1108,7 +1350,7 @@ async function loadApiData() {
         })
       : Promise.resolve([])
     const [orders, notifications] = await Promise.all([
-      moldingSampleApi.listOrders(requestedFactoryId),
+      moldingSampleApi.listProductionTasks(requestedFactoryId),
       notificationsRequest,
     ])
     if (
@@ -1118,17 +1360,21 @@ async function loadApiData() {
       return
     }
 
-    apiRecords.value = orders
-    apiNotifications.value = notifications
-    const formalTaskCount = orders.filter((record) =>
-      record.order.factory_id === requestedFactoryId
+    const formalTasks = orders.filter((record) =>
+      getOrderProductionFactoryId(record.order) === requestedFactoryId
       && !isExternalMoldingSampleOrder(record.order)
       && PRODUCTION_TASK_STATUSES.has(record.order.status)
-    ).length
+    )
+    const productionNotifications = notifications.filter((notification) =>
+      notification.factory_id === requestedFactoryId,
+    )
+    apiRecords.value = formalTasks
+    apiNotifications.value = productionNotifications
+    const formalTaskCount = formalTasks.length
     apiState.value = formalTaskCount ? 'connected' : 'empty'
     actionMessage.value = canProductionPermission('molding_sample:notification_read', requestedFactoryId)
       ? formalTaskCount
-        ? `已读取 ${formalTaskCount} 张正式啤办生产任务；同步 ${notifications.length} 条任务通知。`
+        ? `已读取 ${formalTaskCount} 张正式啤办生产任务；同步 ${productionNotifications.length} 条任务通知。`
         : '当前厂区暂无正式啤办生产任务。'
       : formalTaskCount
         ? `已读取 ${formalTaskCount} 张正式啤办生产任务；当前账号没有通知处理权限。`
@@ -1149,13 +1395,13 @@ async function loadApiData() {
   }
 }
 
-async function selectTask(orderId: string, factoryId: string) {
+async function selectTask(orderId: string) {
   selectedOrderId.value = orderId
   await router.replace({
     path: route.path,
     query: {
       ...route.query,
-      factory: factoryId,
+      factory: selectedFactoryId.value,
       order_id: orderId,
     },
   })
@@ -1163,6 +1409,7 @@ async function selectTask(orderId: string, factoryId: string) {
 
 async function updateSelectedNotificationStatus(status: NotificationStatus) {
   const notification = selectedNotification.value
+  const context = getProductionTaskRequestContext()
 
   if (!notification) {
     actionMessage.value = '当前任务没有可更新的正式通知。'
@@ -1180,27 +1427,59 @@ async function updateSelectedNotificationStatus(status: NotificationStatus) {
     actionMessage.value = '当前账号没有处理该厂区生产通知的权限。'
     return
   }
+  if (!context || !selectedFactoryHasMoldingDepartment.value) {
+    actionMessage.value = '当前厂区没有啤机部，不能处理生产通知。'
+    return
+  }
 
+  const requestId = ++notificationStatusRequestId
   notificationUpdating.value = true
 
   try {
     const updated = await moldingSampleApi.updateNotification(notification.id, { status })
+    if (
+      requestId !== notificationStatusRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
+    if (
+      updated.id !== notification.id
+      || updated.order_id !== context.orderId
+      || updated.factory_id !== context.productionFactoryId
+    ) {
+      actionMessage.value = '通知更新响应与当前来源厂、承接生产厂或任务不一致，已忽略该响应。'
+      return
+    }
     replaceApiNotification(updated)
     actionMessage.value = status === '已读'
       ? `通知已读：${updated.order_id}。`
       : `通知已处理：${updated.order_id}。`
   }
   catch (error) {
+    if (
+      requestId !== notificationStatusRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
     actionMessage.value = `通知状态更新失败：${getApiErrorMessage(error)}`
   }
   finally {
-    notificationUpdating.value = false
+    if (requestId === notificationStatusRequestId) {
+      notificationUpdating.value = false
+    }
   }
 }
 
 async function saveProductionFillback() {
-  if (!selectedTask.value) {
+  const context = getProductionTaskRequestContext()
+  if (!selectedTask.value || !context) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
+    return
+  }
+  if (!selectedFactoryHasMoldingDepartment.value) {
+    actionMessage.value = '当前厂区没有啤机部，不能保存生产回填。'
     return
   }
   if (!canFillbackSelectedTaskFactory.value) {
@@ -1208,7 +1487,7 @@ async function saveProductionFillback() {
     return
   }
 
-  const orderId = selectedTask.value.order.id
+  const orderId = context.orderId
   applyLocalItemPatches(orderId)
 
   if (apiState.value !== 'connected') {
@@ -1216,12 +1495,29 @@ async function saveProductionFillback() {
     return
   }
 
+  const requestId = ++taskMutationRequestId
   try {
     const updated = await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
+    if (
+      requestId !== taskMutationRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
+    if (!isProductionTaskResponseForContext(updated, context)) {
+      actionMessage.value = '生产回填响应与当前来源厂、承接生产厂或任务不一致，已忽略该响应。'
+      return
+    }
     replaceApiRecord(updated)
     actionMessage.value = '啤机回填已保存，工程啤办单可以看到最新实际用料。'
   }
   catch (error) {
+    if (
+      requestId !== taskMutationRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
     actionMessage.value = `啤机回填保存失败：${getApiErrorMessage(error)}`
   }
 }
@@ -1241,8 +1537,13 @@ function getProductionTransitionReason(action: ProductionTransitionAction) {
 }
 
 async function runProductionTransition(action: ProductionTransitionAction) {
-  if (!selectedTask.value) {
+  const context = getProductionTaskRequestContext()
+  if (!selectedTask.value || !context) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
+    return
+  }
+  if (!selectedFactoryHasMoldingDepartment.value) {
+    actionMessage.value = '当前厂区没有啤机部，不能操作生产任务。'
     return
   }
   if (['开始处理', '撤回开始生产'].includes(action) && !canStartSelectedTaskFactory.value) {
@@ -1270,7 +1571,7 @@ async function runProductionTransition(action: ProductionTransitionAction) {
     return
   }
 
-  const orderId = selectedTask.value.order.id
+  const orderId = context.orderId
 
   if (action === '标记完成' && canFillbackSelectedTaskFactory.value) {
     applyLocalItemPatches(orderId)
@@ -1281,9 +1582,17 @@ async function runProductionTransition(action: ProductionTransitionAction) {
     return
   }
 
+  const requestId = ++taskMutationRequestId
   try {
     if (action === '标记完成' && canFillbackSelectedTaskFactory.value) {
-      await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
+      const fillbackResponse = await moldingSampleApi.updateItems(orderId, { items: buildItemPatches() })
+      if (
+        requestId !== taskMutationRequestId
+        || !isProductionTaskRequestContextCurrent(context)
+        || !isProductionTaskResponseForContext(fillbackResponse, context)
+      ) {
+        return
+      }
     }
 
     const payload: MoldingSampleStatusRequest = {
@@ -1291,6 +1600,16 @@ async function runProductionTransition(action: ProductionTransitionAction) {
       reason: getProductionTransitionReason(action),
     }
     const updated = await moldingSampleApi.updateStatus(orderId, payload)
+    if (
+      requestId !== taskMutationRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
+    if (!isProductionTaskResponseForContext(updated, context)) {
+      actionMessage.value = '生产状态响应与当前来源厂、承接生产厂或任务不一致，已忽略该响应。'
+      return
+    }
     replaceApiRecord(updated)
     if (action === '开始处理') {
       actionMessage.value = '啤办生产任务已开始执行。'
@@ -1306,13 +1625,24 @@ async function runProductionTransition(action: ProductionTransitionAction) {
     }
   }
   catch (error) {
+    if (
+      requestId !== taskMutationRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
     actionMessage.value = `生产任务状态更新失败：${getApiErrorMessage(error)}`
   }
 }
 
 async function reportProductionProblem() {
   const problem = productionProblem.value.trim()
-  if (!problem || !selectedTask.value) {
+  const context = getProductionTaskRequestContext()
+  if (!problem || !selectedTask.value || !context) {
+    return
+  }
+  if (!selectedFactoryHasMoldingDepartment.value) {
+    actionMessage.value = '当前厂区没有啤机部，不能上报生产问题。'
     return
   }
   if (!canFillbackSelectedTaskFactory.value) {
@@ -1320,13 +1650,14 @@ async function reportProductionProblem() {
     return
   }
 
-  const orderId = selectedTask.value.order.id
+  const orderId = context.orderId
 
   if (apiState.value !== 'connected') {
     actionMessage.value = '真实任务读取失败或暂无正式任务，不能上报问题。'
     return
   }
 
+  const requestId = ++problemSubmitRequestId
   problemSubmitting.value = true
 
   try {
@@ -1334,15 +1665,36 @@ async function reportProductionProblem() {
       order_id: orderId,
       description: problem,
     })
+    if (
+      requestId !== problemSubmitRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
+    if (
+      created.order_id !== context.orderId
+      || created.factory_id !== context.productionFactoryId
+    ) {
+      actionMessage.value = '问题上报响应与当前来源厂、承接生产厂或任务不一致，已忽略该响应。'
+      return
+    }
     appendProblemForOrder(orderId, created)
     actionMessage.value = `问题反馈已保存并同步给工程部：${problem}`
     productionProblem.value = ''
   }
   catch (error) {
+    if (
+      requestId !== problemSubmitRequestId
+      || !isProductionTaskRequestContextCurrent(context)
+    ) {
+      return
+    }
     actionMessage.value = `问题反馈保存失败：${getApiErrorMessage(error)}`
   }
   finally {
-    problemSubmitting.value = false
+    if (requestId === problemSubmitRequestId) {
+      problemSubmitting.value = false
+    }
   }
 }
 
@@ -1366,6 +1718,21 @@ watch(selectedTask, () => {
   selectedFullDataItemId.value = selectedTask.value?.items[0]?.id ?? ''
 }, { immediate: true })
 
+watch(selectedTaskContextKey, (contextKey, previousContextKey) => {
+  if (previousContextKey === undefined || contextKey === previousContextKey) {
+    return
+  }
+
+  trialReportSaveRequestId += 1
+  taskMutationRequestId += 1
+  notificationStatusRequestId += 1
+  problemSubmitRequestId += 1
+  trialReportSaving.value = false
+  notificationUpdating.value = false
+  problemSubmitting.value = false
+  productionProblem.value = ''
+})
+
 watch([queueFilter, productionSearchKeyword, selectedFactoryId], () => {
   queuePage.value = 1
 })
@@ -1377,7 +1744,19 @@ watch(taskEntries, (records) => {
   selectedTaskPrintOrderIds.value = selectedTaskPrintOrderIds.value.filter((orderId) =>
     printableOrderIds.has(orderId),
   )
-})
+
+  if (!taskPrintPreviewVisible.value) {
+    return
+  }
+
+  const currentRecords = resolveCurrentTaskPrintRecords()
+  if (!currentRecords) {
+    invalidateTaskPrintPreview()
+    return
+  }
+
+  printableTaskRecords.value = [...currentRecords]
+}, { deep: true })
 
 watch(selectedFactoryId, (factoryId, previousFactoryId) => {
   if (previousFactoryId === undefined || factoryId === previousFactoryId) {
@@ -1385,7 +1764,12 @@ watch(selectedFactoryId, (factoryId, previousFactoryId) => {
   }
 
   trialReportSaveRequestId += 1
+  taskMutationRequestId += 1
+  notificationStatusRequestId += 1
+  problemSubmitRequestId += 1
   trialReportSaving.value = false
+  notificationUpdating.value = false
+  problemSubmitting.value = false
   closeTrialReportDialog()
   selectedTaskPrintOrderIds.value = []
   printableTaskRecords.value = []
@@ -1405,6 +1789,9 @@ onUnmounted(() => {
   apiDataRequestId += 1
   protectedMaterialPricesRequestId += 1
   trialReportSaveRequestId += 1
+  taskMutationRequestId += 1
+  notificationStatusRequestId += 1
+  problemSubmitRequestId += 1
 })
 
 watchEffect(() => {
@@ -1429,7 +1816,7 @@ watchEffect(() => {
         </RouterLink>
         <ChevronRight class="size-3.5" aria-hidden="true" />
         <span class="font-semibold text-slate-700">
-          生产任务单 · {{ selectedTask?.order.id || '未选择' }}
+          {{ selectedFactoryHasMoldingDepartment ? '生产任务单' : '跨厂生产跟踪' }} · {{ selectedTask?.order.id || activeFactory.shortName }}
         </span>
         <div class="fixed right-4 top-4 z-50 flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-2 py-1 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.45)] backdrop-blur-xl sm:right-6 xl:right-10">
           <span class="sr-only font-medium text-slate-500 lg:not-sr-only lg:inline" role="status" aria-live="polite">
@@ -1453,12 +1840,18 @@ watchEffect(() => {
         <div class="relative flex flex-wrap items-start justify-between gap-4">
           <div class="min-w-0">
             <p class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">MOLDING SAMPLE PRODUCTION TASK</p>
-            <h1 class="mt-1 text-2xl font-bold tracking-tight text-[#17385e]">啤机部生产任务单</h1>
+            <h1 class="mt-1 text-2xl font-bold tracking-tight text-[#17385e]">
+              {{ selectedFactoryHasMoldingDepartment ? '啤机部生产任务单' : '啤办跨厂生产跟踪' }}
+            </h1>
             <p class="mt-1 max-w-4xl text-sm text-slate-600">
-              啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料，完成后把状态回传到同一张工程啤办单。
+              {{ selectedFactoryHasMoldingDepartment
+                ? '啤办生产任务单用于接收工程啤办单通知，啤机部在这里开始执行、回填实际用料，完成后把状态回传到同一张工程啤办单。'
+                : `${activeFactory.shortName}没有啤机部，内部啤办单由华康A或华康B承接生产；这里提供正式说明，派厂和进度统一回到来源厂工程啤办单跟踪。` }}
             </p>
             <p class="mt-1 text-xs text-slate-500">
-              主管审核通过后任务进入生产队列；铃铛通知独立同步，啤机部只处理生产执行字段，工程资料回到工程啤办单维护。
+              {{ selectedFactoryHasMoldingDepartment
+                ? '主管审核通过后任务进入生产队列；铃铛通知独立同步，啤机部只处理生产执行字段，工程资料回到工程啤办单维护。'
+                : '当前厂区不会生成可操作的啤机生产队列，也不能在这里开始、回填、完成、处理通知或上报问题。' }}
             </p>
           </div>
 
@@ -1471,6 +1864,7 @@ watchEffect(() => {
               工程啤办单
             </RouterLink>
             <button
+              v-if="selectedFactoryHasMoldingDepartment"
               type="button"
               :disabled="apiState === 'checking'"
               :aria-busy="apiState === 'checking'"
@@ -1487,13 +1881,40 @@ watchEffect(() => {
         </div>
       </section>
 
-      <div class="grid min-w-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+      <section
+        v-if="!selectedFactoryHasMoldingDepartment"
+        class="enterprise-panel rounded-2xl border border-teal-100 p-6"
+        data-testid="molding-sample-cross-factory-tracking"
+      >
+        <div class="mx-auto max-w-3xl text-center">
+          <div class="mx-auto flex size-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-700">
+            <Send class="size-6" aria-hidden="true" />
+          </div>
+          <h2 class="mt-3 text-lg font-bold text-slate-950">{{ activeFactory.shortName }}啤办单采用跨厂承接</h2>
+          <p class="mt-2 text-sm leading-6 text-slate-600">
+            来源厂仍是{{ activeFactory.shortName }}，承接生产厂必须选择华康A或华康B。生产通知、开始生产、用料回填、试模报告、问题上报和完成回传只在承接生产厂处理。
+          </p>
+          <p class="mt-2 text-xs text-slate-500">
+            本页不会读取或展示可操作生产任务，避免把来源厂误当成执行厂。请在工程啤办单查看“来源厂 → 承接生产厂”、派厂记录及最新进度。
+          </p>
+          <RouterLink
+            :to="engineeringOrderRoute"
+            class="mt-4 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#17385e] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#204b73]"
+            data-testid="molding-sample-cross-factory-tracking-link"
+          >
+            <Package class="size-4" aria-hidden="true" />
+            前往{{ activeFactory.shortName }}工程啤办单跟踪
+          </RouterLink>
+        </div>
+      </section>
+
+      <div v-else class="grid min-w-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <aside class="min-w-0 space-y-3 xl:sticky xl:top-20 xl:self-start" aria-label="啤办生产任务队列">
           <section class="enterprise-panel rounded-2xl p-3.5">
             <div class="flex items-center justify-between gap-3">
               <div>
-                <h2 class="text-[13px] font-bold text-slate-950">当前厂区生产队列</h2>
-                <p class="mt-0.5 text-[11px] text-slate-400">正式生产任务 · {{ activeFactory.shortName }}</p>
+                <h2 class="text-[13px] font-bold text-slate-950">承接生产队列</h2>
+                <p class="mt-0.5 text-[11px] text-slate-400">正式生产任务 · 执行厂 {{ activeFactory.shortName }}</p>
               </div>
               <span class="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-bold text-teal-700">{{ taskEntries.length }}</span>
             </div>
@@ -1606,7 +2027,7 @@ watchEffect(() => {
                     type="button"
                     class="min-w-0 flex-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
                     :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
-                    @click="selectTask(entry.order.id, entry.factory_id)"
+                    @click="selectTask(entry.order.id)"
                   >
                     <div class="flex items-start justify-between gap-2">
                       <span class="font-mono text-[12px] font-bold text-slate-800">{{ entry.order.id }}</span>
@@ -1617,6 +2038,8 @@ watchEffect(() => {
                       {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 业务交期 {{ formatWorkflowDate(entry.items[0]?.completion_time || entry.order.date) }}
                     </p>
                     <p class="mt-0.5 truncate text-[10px] text-slate-400">{{ getTaskWorkflowDateLabel(entry.order) }}</p>
+                    <p class="mt-0.5 truncate text-[10px] font-semibold text-slate-600">来源 → 承接：{{ getOrderFactoryRouteLabel(entry.order) }}</p>
+                    <p class="mt-0.5 truncate text-[10px] text-slate-400">派厂时间：{{ formatWorkflowTime(entry.order.production_assigned_at, '未派厂') }}</p>
                     <p class="mt-1 truncate text-[10px] font-semibold text-teal-700">任务通知 · {{ getNotificationMeta(entry.order.id) }}</p>
                     <p
                       v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
@@ -1663,7 +2086,7 @@ watchEffect(() => {
                   <button
                     type="button"
                     class="w-full truncate rounded-md text-left font-mono font-bold text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
-                    @click="selectTask(entry.order.id, entry.factory_id)"
+                    @click="selectTask(entry.order.id)"
                   >
                     {{ entry.order.id }}
                   </button>
@@ -1672,17 +2095,19 @@ watchEffect(() => {
                   <button
                     type="button"
                     class="w-full min-w-0 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
-                    @click="selectTask(entry.order.id, entry.factory_id)"
+                    @click="selectTask(entry.order.id)"
                   >
                     <span class="block truncate font-semibold text-slate-950">{{ entry.order.product_name }}</span>
                     <span class="block truncate text-[11px] text-slate-400">{{ entry.order.client_name }} · {{ entry.items.length }} 项</span>
+                    <span class="block truncate text-[10px] font-semibold text-slate-500">{{ getOrderFactoryRouteLabel(entry.order) }}</span>
+                    <span class="block truncate text-[10px] text-slate-400">派厂 {{ formatWorkflowTime(entry.order.production_assigned_at, '未派厂') }}</span>
                   </button>
                 </span>
                 <span role="cell">
                   <button
                     type="button"
                     class="w-full rounded-md text-right text-[11px] font-semibold text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
-                    @click="selectTask(entry.order.id, entry.factory_id)"
+                    @click="selectTask(entry.order.id)"
                   >
                     {{ getQueueStatusLabel(entry.order.status) }}
                   </button>
@@ -1726,6 +2151,7 @@ watchEffect(() => {
                   <span class="font-mono text-lg font-bold text-slate-950">{{ selectedTask.order.id }}</span>
                   <StatusPill :label="selectedTask.order.status" :tone="statusTones[selectedTask.order.status]" compact />
                   <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{{ selectedTask.order.stage || '啤办' }}</span>
+                  <span class="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700">来源 → 承接：{{ getOrderFactoryRouteLabel(selectedTask.order) }}</span>
                 </div>
                 <h2 class="mt-0.5 truncate text-[15px] font-bold text-slate-950">
                   {{ selectedTask.order.product_name }} · {{ selectedTask.order.client_name }}
@@ -1734,6 +2160,8 @@ watchEffect(() => {
                   <span>{{ selectedTask.order.workshop }}</span>
                   <span>工程 {{ selectedTask.order.eng_name }}</span>
                   <span>{{ getTaskStageDetail(selectedTask.order) }}</span>
+                  <span>派厂时间 {{ formatWorkflowTime(selectedTask.order.production_assigned_at, '未派厂') }}</span>
+                  <span>{{ getOrderFactoryOwnershipLabel(selectedTask.order) }}</span>
                 </div>
                 <div
                   v-if="selectedNotification"
@@ -2077,6 +2505,18 @@ watchEffect(() => {
                   <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <div class="text-[10px] font-semibold text-slate-400">状态 / 阶段 / 类型</div>
                     <div class="mt-0.5 font-semibold text-slate-900">{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }} · {{ selectedTask.order.order_type }}</div>
+                  </div>
+                  <div class="rounded-lg border border-teal-100 bg-teal-50/50 px-3 py-2">
+                    <div class="text-[10px] font-semibold text-teal-600">来源厂 → 承接生产厂</div>
+                    <div class="mt-0.5 font-semibold text-teal-900">{{ getOrderFactoryRouteLabel(selectedTask.order) }}</div>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div class="text-[10px] font-semibold text-slate-400">派厂时间</div>
+                    <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowTime(selectedTask.order.production_assigned_at, '未派厂') }}</div>
+                  </div>
+                  <div class="rounded-lg border border-teal-100 bg-teal-50/50 px-3 py-2 md:col-span-2">
+                    <div class="text-[10px] font-semibold text-teal-600">单据归属说明</div>
+                    <div class="mt-0.5 font-semibold text-teal-900">{{ getOrderFactoryOwnershipLabel(selectedTask.order) }}</div>
                   </div>
                   <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <div class="text-[10px] font-semibold text-slate-400">填写部 / 发至</div>
@@ -2436,8 +2876,8 @@ watchEffect(() => {
             <div class="mt-3 grid gap-3 md:grid-cols-3">
               <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p class="text-[11px] font-semibold text-slate-500">回传目标</p>
-                <p class="mt-1 text-sm font-semibold text-slate-950">{{ selectedTask.order.id }} 工程啤办单</p>
-                <p class="mt-0.5 text-[11px] text-slate-500">同一张单据，不复制生产数据</p>
+                <p class="mt-1 text-sm font-semibold text-slate-950">{{ selectedTask.order.id }} · {{ getMoldingSampleFactoryLabel(selectedTask.order.factory_id) }}工程啤办单</p>
+                <p class="mt-0.5 text-[11px] text-slate-500">{{ getOrderFactoryRouteLabel(selectedTask.order) }} · 同一张单据，不复制生产数据</p>
               </div>
               <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p class="text-[11px] font-semibold text-slate-500">完成状态</p>
@@ -2525,9 +2965,10 @@ watchEffect(() => {
                 </div>
                 <div class="flex flex-wrap items-start justify-between gap-3 border-b-2 border-slate-900 pb-3">
                   <div>
-                    <div class="text-[13px] font-bold uppercase tracking-[0.12em] text-teal-700">工程部下发 · 啤机部执行</div>
+                    <div class="text-[13px] font-bold uppercase tracking-[0.12em] text-teal-700">来源 → 承接：{{ getOrderFactoryRouteLabel(record.order) }}</div>
                     <div class="mt-1 text-[24px] font-bold text-slate-950">啤办通知单</div>
                     <div class="mt-1 text-[14px] text-slate-500">工程审核通过后下发；以下为工程单据填写详情。</div>
+                    <div class="mt-1 text-[13px] font-semibold text-teal-800">{{ getOrderFactoryOwnershipLabel(record.order) }}</div>
                   </div>
                   <div class="rounded-md bg-slate-900 px-3 py-2 text-right text-[14px] text-white">
                     <div class="font-mono font-bold">{{ record.order.id }}</div>
@@ -2538,6 +2979,8 @@ watchEffect(() => {
                   <div class="bg-white px-3 py-2"><span class="text-slate-400">产品编号</span><div class="font-semibold">{{ formatBlank(record.order.order_number) }}</div></div>
                   <div class="bg-white px-3 py-2"><span class="text-slate-400">产品 / 客户</span><div class="font-semibold">{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</div></div>
                   <div class="bg-white px-3 py-2"><span class="text-slate-400">阶段 / 类型</span><div class="font-semibold">{{ formatBlank(record.order.stage) }} / {{ formatBlank(record.order.order_type) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">来源厂 → 承接生产厂</span><div class="font-semibold text-teal-800">{{ getOrderFactoryRouteLabel(record.order) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">派厂时间</span><div class="font-semibold">{{ formatWorkflowTime(record.order.production_assigned_at, '未派厂') }}</div></div>
                   <div class="bg-white px-3 py-2"><span class="text-slate-400">填写部 / 发至</span><div class="font-semibold">工程部 / {{ formatBlank(record.order.send_to) }}</div></div>
                   <div class="bg-white px-3 py-2"><span class="text-slate-400">工程 / 审核主管</span><div class="font-semibold">{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</div></div>
                   <div class="bg-white px-3 py-2"><span class="text-slate-400">业务开单日期</span><div class="font-semibold">{{ formatWorkflowDate(record.order.date) }}</div></div>
@@ -2571,8 +3014,8 @@ watchEffect(() => {
       :class="getTaskPrintDensityClass(record)"
       data-testid="molding-sample-task-print-notice"
     >
-      <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-label">工程部下发 · 啤机部执行</div><div class="molding-sample-task-print-title">啤办通知单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Work Notice</div></div><div class="molding-sample-task-print-id"><strong>{{ record.order.id }}</strong><span>{{ record.order.status }} · {{ record.order.stage || '待填写' }}<template v-if="printableTaskRecords.length > 1"> · 第 {{ recordIndex + 1 }} / {{ printableTaskRecords.length }} 张</template></span></div></header>
-      <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(record.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(record.order.stage) }} / {{ formatBlank(record.order.order_type) }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(record.order.send_to) }}</strong></div><div><span>工程 / 审核主管</span><strong>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong></div><div><span>业务开单日期</span><strong>{{ formatWorkflowDate(record.order.date) }}</strong></div></section>
+      <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-label">来源 → 承接：{{ getOrderFactoryRouteLabel(record.order) }}</div><div class="molding-sample-task-print-title">啤办通知单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Work Notice</div><div class="molding-sample-task-print-ownership">{{ getOrderFactoryOwnershipLabel(record.order) }}</div></div><div class="molding-sample-task-print-id"><strong>{{ record.order.id }}</strong><span>{{ record.order.status }} · {{ record.order.stage || '待填写' }}<template v-if="printableTaskRecords.length > 1"> · 第 {{ recordIndex + 1 }} / {{ printableTaskRecords.length }} 张</template></span></div></header>
+      <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(record.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(record.order.stage) }} / {{ formatBlank(record.order.order_type) }}</strong></div><div><span>来源厂 → 承接生产厂</span><strong>{{ getOrderFactoryRouteLabel(record.order) }}</strong></div><div><span>派厂时间</span><strong>{{ formatWorkflowTime(record.order.production_assigned_at, '未派厂') }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(record.order.send_to) }}</strong></div><div><span>工程 / 审核主管</span><strong>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong></div><div><span>业务开单日期</span><strong>{{ formatWorkflowDate(record.order.date) }}</strong></div></section>
       <section class="molding-sample-task-print-reason"><span>注意事项 / 开单事由</span><strong>{{ formatBlank(record.order.reason) }}</strong></section>
       <section class="molding-sample-task-print-section-heading"><strong>工程模具明细</strong><span>共 {{ getPrintableEngineeringItems(record).length }} 项 · 不含啤机回填及费用</span></section>
       <table class="molding-sample-task-print-table"><colgroup><col class="molding-sample-task-print-index"><col class="molding-sample-task-print-mold"><col class="molding-sample-task-print-timing"><col class="molding-sample-task-print-material"><col class="molding-sample-task-print-quantity"><col class="molding-sample-task-print-notes"></colgroup><thead><tr><th>#</th><th>模具信息</th><th>工程时点</th><th>用料与颜色</th><th>数量 / 需料</th><th>工程备注</th></tr></thead><tbody><tr v-for="item in getPrintableEngineeringItems(record)" :key="`print-${record.order.id}-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong><span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span></td><td>{{ formatMoldPresenceStatus(item.mold_presence_status) }}<span>回模：{{ formatWorkflowDate(item.mold_return_time) }}</span><span>需办：{{ formatWorkflowDate(item.completion_time) }}</span></td><td><strong>{{ formatBlank(formatMaterialComposition(resolveMaterialComponents(item))) }}</strong><span class="molding-sample-task-print-usage" :class="{ 'is-trial': item.material_usage_type === 'trial' }">{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</span><span>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</span></td><td class="molding-sample-task-print-quantity-value">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤<strong>{{ formatWeight(item.required_material_kg) }}</strong></td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
@@ -2687,6 +3130,7 @@ watchEffect(() => {
   .molding-sample-task-print-label { color: #0f766e; font-size: 10pt; font-weight: 700; letter-spacing: .12em; }
   .molding-sample-task-print-title { margin-top: 2px; font-size: 21pt; font-weight: 700; }
   .molding-sample-task-print-subtitle { margin-top: 2px; color: #64748b; font-size: 9.5pt; letter-spacing: .08em; }
+  .molding-sample-task-print-ownership { margin-top: 3px; color: #0f766e; font-size: 9.5pt; font-weight: 700; }
   .molding-sample-task-print-id { min-width: 190px; padding: 8px 10px; align-self: flex-start; background: #0f172a; color: #fff; text-align: right; font-size: 11pt; }
   .molding-sample-task-print-id strong { display: block; font-size: 12pt; }
   .molding-sample-task-print-id span { display: block; margin-top: 3px; color: #cbd5e1; }

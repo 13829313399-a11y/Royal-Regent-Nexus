@@ -32,9 +32,29 @@ function isMoldingSampleFactoryId(factoryId: string): factoryId is ProductionFac
   return moldingSampleFactoryIds.includes(factoryId as ProductionFactoryContextId)
 }
 
-function createOrder(input: Omit<MoldingSampleOrder, 'order_type' | 'created_at' | 'updated_at'> & Partial<Pick<MoldingSampleOrder, 'order_type' | 'created_at' | 'updated_at'>>): MoldingSampleOrder {
+type DefaultedMoldingSampleOrderField =
+  | 'order_type'
+  | 'production_factory_id'
+  | 'production_assigned_at'
+  | 'production_assigned_by'
+  | 'production_assignment_version'
+  | 'created_at'
+  | 'updated_at'
+
+function createOrder(
+  input: Omit<MoldingSampleOrder, DefaultedMoldingSampleOrderField>
+    & Partial<Pick<MoldingSampleOrder, DefaultedMoldingSampleOrderField>>,
+): MoldingSampleOrder {
+  const isExternalOrder = input.send_to === '发至湖南'
+    || input.send_to === '发至模厂'
+    || input.workshop === '模厂'
+
   return {
     order_type: '啤办',
+    production_factory_id: isExternalOrder ? null : input.factory_id,
+    production_assigned_at: '',
+    production_assigned_by: '',
+    production_assignment_version: 0,
     created_at: `${input.date} 09:30`,
     updated_at: `${input.date} 09:30`,
     ...input,
@@ -131,6 +151,7 @@ function createRecord(
     order,
     items: costedItems,
     audit_logs: auditLogs,
+    dispatch_logs: [],
     requisitions: createRequisitions(order, costedItems),
     problems,
     trial_reports: [],

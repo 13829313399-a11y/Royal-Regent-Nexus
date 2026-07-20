@@ -58,6 +58,10 @@ const result = buildManualMoldingSampleCreateRequest(draft, 'huakang-a')
 assert.deepEqual(result.errors, [])
 assert.equal(result.payload?.order.id, 'BP-62437')
 assert.equal(result.payload?.order.factory_id, 'huakang-a')
+assert.equal(result.payload?.order.production_factory_id, 'huakang-a')
+assert.equal(result.payload?.order.production_assigned_at, '')
+assert.equal(result.payload?.order.production_assigned_by, '')
+assert.equal(result.payload?.order.production_assignment_version, 0)
 assert.equal(result.payload?.order.order_number, '62437')
 assert.equal(result.payload?.order.doc_number, 'W-G026-00')
 assert.equal(result.payload?.order.client_name, 'BuzzBee')
@@ -188,3 +192,60 @@ mixedDraft.items[0]!.material_components[1]!.ratio_percent = '10'
 const invalidRatioResult = buildManualMoldingSampleCreateRequest(mixedDraft)
 assert.equal(invalidRatioResult.payload, null)
 assert.match(invalidRatioResult.errors.join('；'), /原料比例合计必须等于 100%/)
+
+const huakangCDefault = createManualMoldingSampleOrderDraft({ factory_id: 'huakang-c' })
+const huakangDDefault = createManualMoldingSampleOrderDraft({ factory_id: 'huakang-d' })
+assert.equal(huakangCDefault.production_factory_id, 'huakang-a')
+assert.equal(huakangDDefault.production_factory_id, 'huakang-b')
+assert.equal(createManualMoldingSampleOrderDraft({
+  factory_id: 'huakang-c',
+  production_factory_id: 'huakang-b',
+}).production_factory_id, 'huakang-b')
+assert.equal(createManualMoldingSampleOrderDraft({
+  factory_id: 'huaxing',
+  production_factory_id: 'huakang-a',
+}).production_factory_id, 'huaxing')
+assert.equal(createManualMoldingSampleOrderDraft({
+  factory_id: 'huakang-c',
+  production_factory_id: 'huakang-a',
+  send_to: '发至湖南',
+}).production_factory_id, null)
+
+const validHuakangCDraft = {
+  ...draft,
+  factory_id: 'huakang-c',
+  production_factory_id: 'huakang-b',
+}
+const validHuakangCResult = buildManualMoldingSampleCreateRequest(validHuakangCDraft)
+assert.deepEqual(validHuakangCResult.errors, [])
+assert.equal(validHuakangCResult.payload?.order.factory_id, 'huakang-c')
+assert.equal(validHuakangCResult.payload?.order.production_factory_id, 'huakang-b')
+
+const missingHuakangCTargetResult = buildManualMoldingSampleCreateRequest({
+  ...validHuakangCDraft,
+  production_factory_id: null,
+})
+assert.equal(missingHuakangCTargetResult.payload, null)
+assert.match(missingHuakangCTargetResult.errors.join('；'), /必须选择华康A或华康B/)
+
+const invalidHuakangCTargetResult = buildManualMoldingSampleCreateRequest({
+  ...validHuakangCDraft,
+  production_factory_id: 'huaxing',
+})
+assert.equal(invalidHuakangCTargetResult.payload, null)
+assert.match(invalidHuakangCTargetResult.errors.join('；'), /只能由华康A、华康B承接生产/)
+
+const invalidSelfFactoryTargetResult = buildManualMoldingSampleCreateRequest({
+  ...draft,
+  production_factory_id: 'huakang-b',
+})
+assert.equal(invalidSelfFactoryTargetResult.payload, null)
+assert.match(invalidSelfFactoryTargetResult.errors.join('；'), /只能由华康A承接生产/)
+
+const externalHuakangCResult = buildManualMoldingSampleCreateRequest({
+  ...validHuakangCDraft,
+  production_factory_id: null,
+  send_to: '发至湖南',
+})
+assert.deepEqual(externalHuakangCResult.errors, [])
+assert.equal(externalHuakangCResult.payload?.order.production_factory_id, null)

@@ -9,12 +9,13 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.time import business_now, business_today
 from app.models.molding_sample import (
     MoldingSampleAuditLog,
+    MoldingSampleDispatchLog,
     MoldingSampleInventoryBatch,
     MoldingSampleInventoryMovement,
     MoldingSampleItem,
@@ -35,6 +36,7 @@ from app.schemas.molding_sample import (
     MoldingSampleEditRequest,
     MoldingSampleItemIn,
     MoldingSampleNotificationUpdateRequest,
+    MoldingSampleProductionAssignmentRequest,
     MoldingSampleProblemCreateRequest,
     MoldingSampleProblemStatusRequest,
     MoldingSampleStatusRequest,
@@ -114,6 +116,47 @@ BOARD_SOURCE_STATUSES: dict[MoldingSampleBoardStatus, tuple[str, ...]] = {
 INITIAL_ORDER_STATUS = "待审核"
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
 PRODUCTION_TASK_STATUSES = frozenset({"待生产", "生产中", "已完成"})
+DISPATCHABLE_STATUSES = frozenset({"待审核", "待经理审核", "已驳回", "已撤回", "待生产"})
+MOLDING_FACTORY_CAPABILITIES: dict[str, dict[str, object]] = {
+    "huakang-a": {
+        "has_molding_department": True,
+        "allowed_production_factory_ids": ("huakang-a",),
+        "suggested_production_factory_id": "huakang-a",
+    },
+    "huakang-b": {
+        "has_molding_department": True,
+        "allowed_production_factory_ids": ("huakang-b",),
+        "suggested_production_factory_id": "huakang-b",
+    },
+    "huakang-c": {
+        "has_molding_department": False,
+        "allowed_production_factory_ids": ("huakang-a", "huakang-b"),
+        "suggested_production_factory_id": "huakang-a",
+    },
+    "huakang-d": {
+        "has_molding_department": False,
+        "allowed_production_factory_ids": ("huakang-a", "huakang-b"),
+        "suggested_production_factory_id": "huakang-b",
+    },
+    "huadeng": {
+        "has_molding_department": True,
+        "allowed_production_factory_ids": ("huadeng",),
+        "suggested_production_factory_id": "huadeng",
+    },
+    "huaxing": {
+        "has_molding_department": True,
+        "allowed_production_factory_ids": ("huaxing",),
+        "suggested_production_factory_id": "huaxing",
+    },
+}
+FACTORY_LABELS = {
+    "huakang-a": "华康A",
+    "huakang-b": "华康B",
+    "huakang-c": "华康C",
+    "huakang-d": "华康D",
+    "huadeng": "华登",
+    "huaxing": "华兴",
+}
 ALLOWED_ITEM_PATCH_FIELDS = {
     "receipt_no",
     "collected_weight_kg",
@@ -131,6 +174,83 @@ MATERIAL_SETTLEMENT_INPUT_FIELDS = (
     "actual_amount_hkd",
 )
 ENGINEERING_EDIT_DEPARTMENTS = (*ENGINEERING_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS)
+
+
+def factory_label(factory_id: str | None) -> str:
+    if not factory_id:
+        return "待派厂"
+    return FACTORY_LABELS.get(factory_id, factory_id)
+
+
+def molding_factory_capability(factory_id: str) -> dict[str, object]:
+    capability = MOLDING_FACTORY_CAPABILITIES.get(factory_id)
+    if capability is None:
+        raise HTTPException(status_code=400, detail=f"无效厂区：{factory_id}")
+    return capability
+
+
+def list_molding_factory_capabilities() -> list[dict[str, object]]:
+    return [
+        {
+            "factory_id": factory_id,
+            "has_molding_department": bool(capability["has_molding_department"]),
+            "allowed_production_factory_ids": list(
+                capability["allowed_production_factory_ids"]
+            ),
+            "suggested_production_factory_id": str(
+                capability["suggested_production_factory_id"]
+            ),
+        }
+        for factory_id, capability in MOLDING_FACTORY_CAPABILITIES.items()
+    ]
+
+
+def normalize_production_factory_id(
+    origin_factory_id: str,
+    requested_production_factory_id: str | None,
+    *,
+    allow_unassigned: bool,
+) -> str | None:
+    capability = molding_factory_capability(origin_factory_id)
+    allowed = tuple(capability["allowed_production_factory_ids"])
+    requested = (requested_production_factory_id or "").strip() or None
+
+    if requested is None:
+        if bool(capability["has_molding_department"]):
+            return origin_factory_id
+        if allow_unassigned:
+            return None
+        raise HTTPException(status_code=400, detail="华康C/D啤办单必须选择华康A或华康B承接生产")
+
+    if requested not in allowed:
+        allowed_labels = "、".join(factory_label(factory_id) for factory_id in allowed)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{factory_label(origin_factory_id)}啤办单只能由{allowed_labels}承接生产",
+        )
+    return requested
+
+
+def production_factory_id_for_order(
+    order: MoldingSampleOrder,
+    *,
+    require_assigned: bool = True,
+) -> str | None:
+    resolved = normalize_production_factory_id(
+        order.factory_id,
+        order.production_factory_id,
+        allow_unassigned=not require_assigned,
+    )
+    if require_assigned and resolved is None:
+        raise HTTPException(status_code=400, detail="啤办单尚未分配生产承接厂")
+    return resolved
+
+
+def production_route_text(order: MoldingSampleOrder) -> str:
+    return (
+        f"{factory_label(order.factory_id)} → "
+        f"{factory_label(production_factory_id_for_order(order, require_assigned=False))}"
+    )
 
 
 def now_text() -> str:
@@ -595,26 +715,92 @@ def is_fixed_production_notification_only_access(
     return not has_independent_production_read and not has_general_read
 
 
+def has_order_read_access(current_user: AuthContext, order: MoldingSampleOrder) -> bool:
+    origin_read_source = molding_read_access(current_user, order.factory_id)
+    if origin_read_source is not None and has_general_molding_read_access(current_user, order.factory_id):
+        return True
+
+    production_factory_id = production_factory_id_for_order(order, require_assigned=False)
+    if (
+        production_factory_id
+        and is_production_task_order(order)
+        and has_permission_for_departments(
+            current_user,
+            "molding_sample:production_read",
+            production_factory_id,
+            PRODUCTION_DEPARTMENTS,
+        )
+    ):
+        return True
+    return False
+
+
 def ensure_order_read_allowed(
     db: Session,
     current_user: AuthContext,
     order: MoldingSampleOrder,
 ) -> None:
-    ensure_molding_read(db, current_user, order.factory_id)
-    if has_general_molding_read_access(current_user, order.factory_id):
+    if has_order_read_access(current_user, order):
         return
-    if is_production_task_order(order):
-        return
+
+    production_factory_id = production_factory_id_for_order(order, require_assigned=False)
 
     add_auth_audit(
         db,
         "permission_denied",
         username=current_user.username,
         user_id=current_user.id,
-        detail=f"仅获生产任务只读权限，禁止读取非生产任务：{order.id}",
+        detail=(
+            f"禁止读取未授权啤办单：{order.id};"
+            f"来源厂={order.factory_id};承接厂={production_factory_id or '未分配'}"
+        ),
     )
     db.commit()
-    raise HTTPException(status_code=403, detail="当前账号仅可查看正式生产任务")
+    raise HTTPException(status_code=403, detail="无该啤办单查看权限")
+
+
+def order_authorization_factory_id(
+    current_user: AuthContext,
+    order: MoldingSampleOrder,
+) -> str:
+    if (
+        molding_read_access(current_user, order.factory_id) is not None
+        and has_general_molding_read_access(current_user, order.factory_id)
+    ):
+        return order.factory_id
+
+    production_factory_id = production_factory_id_for_order(order, require_assigned=False)
+    if (
+        production_factory_id
+        and is_production_task_order(order)
+        and has_permission_for_departments(
+            current_user,
+            "molding_sample:production_read",
+            production_factory_id,
+            PRODUCTION_DEPARTMENTS,
+        )
+    ):
+        return production_factory_id
+    return order.factory_id
+
+
+def ensure_production_order_permission(
+    db: Session,
+    current_user: AuthContext,
+    order: MoldingSampleOrder,
+    permission: str,
+) -> str:
+    production_factory_id = production_factory_id_for_order(order)
+    assert production_factory_id is not None
+    ensure_molding_local_write(db, current_user, production_factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        permission,
+        production_factory_id,
+        PRODUCTION_DEPARTMENTS,
+    )
+    return production_factory_id
 
 
 def load_order(db: Session, order_id: str, current_user: AuthContext | None = None) -> MoldingSampleOrder:
@@ -624,6 +810,7 @@ def load_order(db: Session, order_id: str, current_user: AuthContext | None = No
         .options(
             selectinload(MoldingSampleOrder.items),
             selectinload(MoldingSampleOrder.audit_logs),
+            selectinload(MoldingSampleOrder.dispatch_logs),
             selectinload(MoldingSampleOrder.notifications),
             selectinload(MoldingSampleOrder.problems),
             selectinload(MoldingSampleOrder.trial_reports),
@@ -642,6 +829,7 @@ def order_statement():
     return select(MoldingSampleOrder).options(
         selectinload(MoldingSampleOrder.items),
         selectinload(MoldingSampleOrder.audit_logs),
+        selectinload(MoldingSampleOrder.dispatch_logs),
         selectinload(MoldingSampleOrder.notifications),
         selectinload(MoldingSampleOrder.problems),
         selectinload(MoldingSampleOrder.trial_reports),
@@ -679,6 +867,41 @@ def list_orders(
             or is_production_task_order(order)
         )
     ]
+
+
+def list_production_tasks(
+    db: Session,
+    current_user: AuthContext,
+    production_factory_id: str,
+) -> list[MoldingSampleOrder]:
+    capability = molding_factory_capability(production_factory_id)
+    if not bool(capability["has_molding_department"]):
+        raise HTTPException(status_code=400, detail="华康C/D没有啤机部，不能作为生产任务队列厂区")
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:production_read",
+        production_factory_id,
+        PRODUCTION_DEPARTMENTS,
+    )
+
+    statement = order_statement().where(
+        MoldingSampleOrder.status.in_(PRODUCTION_TASK_STATUSES),
+        ~MoldingSampleOrder.send_to.in_(("发至湖南", "发至模厂")),
+        MoldingSampleOrder.workshop != "模厂",
+        or_(
+            MoldingSampleOrder.production_factory_id == production_factory_id,
+            (
+                (MoldingSampleOrder.production_factory_id.is_(None))
+                & (MoldingSampleOrder.factory_id == production_factory_id)
+            ),
+        ),
+    )
+    return list(
+        db.scalars(
+            statement.order_by(MoldingSampleOrder.created_at.desc(), MoldingSampleOrder.id.desc())
+        ).all()
+    )
 
 
 def normalize_board_status(status: str) -> MoldingSampleBoardStatus | None:
@@ -1052,11 +1275,12 @@ def append_notification(
     to_status: str = "",
     status: str = "未读",
     actor_name: str = "",
+    target_factory_id: str | None = None,
 ) -> MoldingSampleNotification:
     notification = MoldingSampleNotification(
         id=f"{order.id}-notice-{uuid4().hex[:12]}",
         order_id=order.id,
-        factory_id=order.factory_id,
+        factory_id=target_factory_id or order.factory_id,
         target_module=target_module,
         target_role=target_role,
         event_type=event_type,
@@ -1077,20 +1301,50 @@ def mark_order_notifications_handled(
     order_id: str,
     target_module: str,
     actor_name: str = "",
+    target_factory_id: str | None = None,
 ) -> None:
     handled_at = now_text()
-    notifications = db.scalars(
+    statement = (
         select(MoldingSampleNotification)
         .where(MoldingSampleNotification.order_id == order_id)
         .where(MoldingSampleNotification.target_module == target_module)
         .where(MoldingSampleNotification.status != "已处理")
-    ).all()
+    )
+    if target_factory_id:
+        statement = statement.where(MoldingSampleNotification.factory_id == target_factory_id)
+    notifications = db.scalars(statement).all()
 
     for notification in notifications:
         notification.status = "已处理"
         notification.actor_name = actor_name or notification.actor_name
         notification.read_at = notification.read_at or handled_at
         notification.handled_at = notification.handled_at or handled_at
+
+
+def append_dispatch_log(
+    db: Session,
+    order: MoldingSampleOrder,
+    current_user: AuthContext,
+    *,
+    from_production_factory_id: str | None,
+    to_production_factory_id: str,
+    action: str,
+    reason: str,
+) -> MoldingSampleDispatchLog:
+    log = MoldingSampleDispatchLog(
+        id=f"{order.id}-dispatch-{uuid4().hex[:12]}",
+        order_id=order.id,
+        origin_factory_id=order.factory_id,
+        from_production_factory_id=from_production_factory_id,
+        to_production_factory_id=to_production_factory_id,
+        action=action,
+        reason=reason,
+        actor_user_id=current_user.id,
+        actor_name=current_user.display_name,
+        created_at=now_precise_text(),
+    )
+    db.add(log)
+    return log
 
 
 def append_supervisor_review_notification(
@@ -1363,14 +1617,8 @@ def list_problems(
     }
     return [
         problem for problem in problems
-        if molding_read_access(current_user, problem.factory_id) is not None
-        and (
-            has_general_molding_read_access(current_user, problem.factory_id)
-            or (
-                (order := orders_by_id.get(problem.order_id)) is not None
-                and is_production_task_order(order)
-            )
-        )
+        if (order := orders_by_id.get(problem.order_id)) is not None
+        and has_order_read_access(current_user, order)
     ]
 
 
@@ -1380,16 +1628,20 @@ def create_problem(
     current_user: AuthContext,
 ) -> MoldingSampleProblem:
     order = load_order(db, payload.order_id, current_user)
-    ensure_molding_local_write(db, current_user, order.factory_id)
-    ensure_permission_for_departments(
+    production_factory_id = ensure_production_order_permission(
         db,
         current_user,
+        order,
         "molding_sample:production_fillback",
-        order.factory_id,
-        PRODUCTION_DEPARTMENTS,
     )
     if order.status not in {"待生产", "生产中"}:
         raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以反馈生产问题")
+    acquire_production_transition_guard(
+        db,
+        order,
+        production_factory_id,
+        order.status,
+    )
 
     description = payload.description.strip()
     if not description:
@@ -1398,7 +1650,7 @@ def create_problem(
     reported_by = payload.reported_by.strip() or current_user.display_name
     problem = MoldingSampleProblem(
         id=f"{order.id}-problem-{uuid4().hex[:12]}",
-        factory_id=order.factory_id,
+        factory_id=production_factory_id,
         order_type="injection",
         order_id=order.id,
         order_number=order.order_number,
@@ -1428,6 +1680,7 @@ def create_problem(
         from_status=order.status,
         to_status=order.status,
         actor_name=reported_by,
+        target_factory_id=order.factory_id,
     )
     db.commit()
     db.refresh(problem)
@@ -1447,15 +1700,15 @@ def update_problem_status(
     if problem is None:
         raise HTTPException(status_code=404, detail="问题反馈不存在")
 
-    ensure_molding_local_write(db, current_user, problem.factory_id)
+    order = load_order(db, problem.order_id, current_user)
+    ensure_molding_local_write(db, current_user, order.factory_id)
     ensure_permission_for_departments(
         db,
         current_user,
         "molding_sample:edit_draft",
-        problem.factory_id,
+        order.factory_id,
         ENGINEERING_EDIT_DEPARTMENTS,
     )
-    order = load_order(db, problem.order_id, current_user)
 
     problem.status = payload.status
     problem.resolved_at = now_text() if payload.status == "已解决" else ""
@@ -1476,15 +1729,36 @@ def update_problem_status(
 
 def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user: AuthContext) -> MoldingSampleOrder:
     ensure_molding_create_access(db, current_user, payload.order.factory_id)
+    molding_factory_capability(payload.order.factory_id)
     if db.get(MoldingSampleOrder, payload.order.id):
         raise HTTPException(status_code=409, detail="啤办单编号已存在")
 
     status = INITIAL_ORDER_STATUS
     created_at = now_text()
+    external = payload.order.send_to in {"发至湖南", "发至模厂"} or payload.order.workshop == "模厂"
+    production_factory_id = None if external else normalize_production_factory_id(
+        payload.order.factory_id,
+        payload.order.production_factory_id,
+        allow_unassigned=True,
+    )
+    assignment_version = 1 if production_factory_id else 0
     order = MoldingSampleOrder(
         **payload.order.model_dump(
-            exclude={"status", "completed_date", "created_at", "updated_at"}
+            exclude={
+                "status",
+                "completed_date",
+                "created_at",
+                "updated_at",
+                "production_factory_id",
+                "production_assigned_at",
+                "production_assigned_by",
+                "production_assignment_version",
+            }
         ),
+        production_factory_id=production_factory_id,
+        production_assigned_at=created_at if production_factory_id else "",
+        production_assigned_by=current_user.display_name if production_factory_id else "",
+        production_assignment_version=assignment_version,
         status=status,
         completed_date="",
         created_at=created_at,
@@ -1502,7 +1776,25 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
             )
         )
 
-    append_audit(db, order, "工程提交主管审核", current_user, status, status, "工程开单完成。")
+    if production_factory_id:
+        append_dispatch_log(
+            db,
+            order,
+            current_user,
+            from_production_factory_id=None,
+            to_production_factory_id=production_factory_id,
+            action="本厂承接" if production_factory_id == order.factory_id else "首次派厂",
+            reason="工程开单时确认生产承接厂。",
+        )
+    append_audit(
+        db,
+        order,
+        "工程提交主管审核",
+        current_user,
+        status,
+        status,
+        f"工程开单完成；生产关系：{production_route_text(order)}。" if not external else "工程外发开单完成。",
+    )
     if status == "待审核":
         append_supervisor_review_notification(db, order, from_status=status, actor_name=current_user.display_name)
     db.commit()
@@ -1592,14 +1884,18 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
     current_completed_date = order.completed_date
     current_external = is_external_order(order)
     payload_external = payload.order.send_to in {"发至湖南", "发至模厂"} or payload.order.workshop == "模厂"
+    if current_external != payload_external:
+        raise HTTPException(
+            status_code=400,
+            detail="不可通过全单编辑切换内部生产与外发流程，请按对应流程重新建单",
+        )
     existing_items_by_id = {item.id: item for item in order.items}
     prepared_items: list[tuple[MoldingSampleItemIn, dict[str, Any], int]] = []
 
     if current_status == "已完成" and (
         set(existing_items_by_id) != {item.id for item in payload.items}
-        or current_external != payload_external
     ):
-        raise HTTPException(status_code=400, detail="已完成单不可增删已结算明细或改变内外部结算方式，请先撤回完成")
+        raise HTTPException(status_code=400, detail="已完成单不可增删已结算明细，请先撤回完成")
 
     for index, item_payload in enumerate(payload.items, start=1):
         item_data = normalized_item_data(item_payload, exclude={"order_id", "sort_order"})
@@ -1615,7 +1911,18 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
         prepared_items.append((item_payload, item_data, index))
 
     order_data = payload.order.model_dump(
-        exclude={"id", "factory_id", "status", "completed_date", "created_at", "updated_at"}
+        exclude={
+            "id",
+            "factory_id",
+            "production_factory_id",
+            "production_assigned_at",
+            "production_assigned_by",
+            "production_assignment_version",
+            "status",
+            "completed_date",
+            "created_at",
+            "updated_at",
+        }
     )
     for field, value in order_data.items():
         setattr(order, field, value)
@@ -1652,6 +1959,250 @@ def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, 
     return load_order(db, order_id, current_user)
 
 
+def has_production_assignment_artifacts(db: Session, order: MoldingSampleOrder) -> bool:
+    items = db.scalars(
+        select(MoldingSampleItem)
+        .where(MoldingSampleItem.order_id == order.id)
+        .execution_options(populate_existing=True)
+    ).all()
+    item_has_production_data = any(
+        item.production_machine
+        or item.receipt_no
+        or item.collected_weight_kg is not None
+        or item.actual_weight_kg is not None
+        or item.actual_amount_hkd is not None
+        or item.injection_cost is not None
+        or item.injection_cost_hkd is not None
+        or bool(item.actual_material_cost_components)
+        for item in items
+    )
+    if item_has_production_data:
+        return True
+    return bool(
+        db.scalar(
+            select(
+                or_(
+                    exists().where(MoldingSampleTrialReport.order_id == order.id),
+                    exists().where(MoldingSampleProblem.order_id == order.id),
+                    exists().where(MoldingSampleRequisition.order_id == order.id),
+                )
+            )
+        )
+    )
+
+
+def update_production_assignment(
+    db: Session,
+    order_id: str,
+    payload: MoldingSampleProductionAssignmentRequest,
+    current_user: AuthContext,
+) -> MoldingSampleOrder:
+    order = load_order(db, order_id, current_user)
+    ensure_molding_local_write(db, current_user, order.factory_id)
+    ensure_permission_for_departments(
+        db,
+        current_user,
+        "molding_sample:dispatch",
+        order.factory_id,
+        ENGINEERING_EDIT_DEPARTMENTS,
+    )
+    if is_external_order(order):
+        raise HTTPException(status_code=400, detail="外发湖南或模厂的啤办单不进入内部跨厂派厂流程")
+    capability = molding_factory_capability(order.factory_id)
+    if bool(capability["has_molding_department"]):
+        raise HTTPException(status_code=400, detail="该厂区啤办单固定由本厂承接，无需派厂")
+    if order.status not in DISPATCHABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="生产已经开始或完成，不能改派承接厂")
+    if has_production_assignment_artifacts(db, order):
+        raise HTTPException(status_code=409, detail="单据已有生产、试模、问题或领料数据，不能直接改派")
+
+    new_production_factory_id = normalize_production_factory_id(
+        order.factory_id,
+        payload.production_factory_id,
+        allow_unassigned=False,
+    )
+    assert new_production_factory_id is not None
+    old_production_factory_id = production_factory_id_for_order(order, require_assigned=False)
+    if old_production_factory_id == new_production_factory_id:
+        raise HTTPException(status_code=400, detail="新的生产承接厂与当前承接厂相同")
+    if order.production_assignment_version != payload.expected_assignment_version:
+        raise HTTPException(status_code=409, detail="派厂信息已被其他人更新，请刷新后重试")
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="派厂或改派原因不能为空")
+
+    timestamp = now_text()
+    update_result = db.execute(
+        update(MoldingSampleOrder)
+        .where(
+            MoldingSampleOrder.id == order.id,
+            MoldingSampleOrder.production_assignment_version == payload.expected_assignment_version,
+            MoldingSampleOrder.status.in_(DISPATCHABLE_STATUSES),
+        )
+        .values(
+            production_factory_id=new_production_factory_id,
+            production_assigned_at=timestamp,
+            production_assigned_by=current_user.display_name,
+            production_assignment_version=payload.expected_assignment_version + 1,
+            updated_at=timestamp,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if update_result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="派厂信息或订单状态已变化，请刷新后重试")
+
+    db.flush()
+    db.refresh(order)
+    if has_production_assignment_artifacts(db, order):
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="派厂期间已产生生产、试模、问题或领料数据，不能改派",
+        )
+    action = "首次派厂" if old_production_factory_id is None else "改派生产厂"
+    append_dispatch_log(
+        db,
+        order,
+        current_user,
+        from_production_factory_id=old_production_factory_id,
+        to_production_factory_id=new_production_factory_id,
+        action=action,
+        reason=reason,
+    )
+    append_audit(
+        db,
+        order,
+        action,
+        current_user,
+        order.status,
+        order.status,
+        (
+            f"{factory_label(old_production_factory_id)} → "
+            f"{factory_label(new_production_factory_id)}；原因：{reason}"
+        ),
+    )
+
+    if old_production_factory_id:
+        mark_order_notifications_handled(
+            db,
+            order.id,
+            PRODUCTION_TASK_MODULE,
+            actor_name=current_user.display_name,
+            target_factory_id=old_production_factory_id,
+        )
+    if order.status == "待生产":
+        append_notification(
+            db,
+            order,
+            target_module=PRODUCTION_TASK_MODULE,
+            target_role=PRODUCTION_TARGET_ROLE,
+            event_type="生产改派" if old_production_factory_id else "生产派厂",
+            title="收到跨厂啤办生产任务",
+            message=f"啤办单 {order.id} 已派至本厂生产（{production_route_text(order)}）。",
+            from_status=order.status,
+            to_status=order.status,
+            actor_name=current_user.display_name,
+            target_factory_id=new_production_factory_id,
+        )
+    append_notification(
+        db,
+        order,
+        target_module=ENGINEERING_MOLDING_SAMPLE_MODULE,
+        target_role=ENGINEERING_TARGET_ROLE,
+        event_type="生产派厂变更",
+        title="啤办生产承接厂已更新",
+        message=(
+            f"啤办单 {order.id} 的生产关系已更新为 {production_route_text(order)}。"
+            f"原因：{reason}"
+        ),
+        from_status=order.status,
+        to_status=order.status,
+        actor_name=current_user.display_name,
+        target_factory_id=order.factory_id,
+    )
+    db.commit()
+    db.expire_all()
+    return load_order(db, order.id, current_user)
+
+
+def acquire_production_transition_guard(
+    db: Session,
+    order: MoldingSampleOrder,
+    production_factory_id: str,
+    expected_status: str,
+) -> None:
+    """Serialize production state changes against concurrent reassignment."""
+    assignment_version = order.production_assignment_version
+    assignment_matches = or_(
+        MoldingSampleOrder.production_factory_id == production_factory_id,
+        and_(
+            MoldingSampleOrder.production_factory_id.is_(None),
+            MoldingSampleOrder.factory_id == production_factory_id,
+        ),
+    )
+    guard_result = db.execute(
+        update(MoldingSampleOrder)
+        .where(
+            MoldingSampleOrder.id == order.id,
+            MoldingSampleOrder.status == expected_status,
+            MoldingSampleOrder.production_assignment_version == assignment_version,
+            assignment_matches,
+        )
+        .values(updated_at=MoldingSampleOrder.updated_at)
+        .execution_options(synchronize_session=False)
+    )
+    if guard_result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="生产状态或承接厂已变化，请刷新任务后重试",
+        )
+    db.flush()
+    db.refresh(order)
+
+
+def acquire_approval_transition_guard(
+    db: Session,
+    order_id: str,
+    current_user: AuthContext,
+    *,
+    expected_status: str,
+    idempotent_statuses: frozenset[str],
+    invalid_status_detail: str,
+) -> tuple[MoldingSampleOrder, bool]:
+    """Lock an approval row while accepting a completed retry as idempotent."""
+
+    for _attempt in range(3):
+        order = load_order(db, order_id, current_user)
+        if order.status != expected_status:
+            if order.status in idempotent_statuses:
+                return order, True
+            raise HTTPException(status_code=403, detail=invalid_status_detail)
+
+        guard_result = db.execute(
+            update(MoldingSampleOrder)
+            .where(
+                MoldingSampleOrder.id == order.id,
+                MoldingSampleOrder.status == expected_status,
+                MoldingSampleOrder.production_assignment_version
+                == order.production_assignment_version,
+            )
+            .values(updated_at=MoldingSampleOrder.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        if guard_result.rowcount == 1:
+            db.flush()
+            db.refresh(order)
+            return order, False
+        db.rollback()
+
+    raise HTTPException(
+        status_code=409,
+        detail="审批状态或生产承接厂已变化，请刷新后重试",
+    )
+
+
 def delete_order(
     db: Session,
     order_id: str,
@@ -1663,15 +2214,80 @@ def delete_order(
     db.commit()
 
 
-def list_inventory_batches(db: Session, material: str | None = None) -> list[MoldingSampleInventoryBatch]:
+def resolve_inventory_factory_id(
+    db: Session,
+    current_user: AuthContext,
+    permission: str,
+    requested_factory_id: str | None = None,
+) -> str:
+    requested = (requested_factory_id or "").strip()
+    if requested:
+        molding_factory_capability(requested)
+        ensure_molding_local_write(db, current_user, requested)
+        ensure_permission_for_departments(
+            db,
+            current_user,
+            permission,
+            requested,
+            WAREHOUSE_DEPARTMENTS,
+        )
+        return requested
+
+    primary_factory_id = current_user.profile.primary_factory_id.strip() if current_user.profile else ""
+    candidates = tuple(dict.fromkeys((primary_factory_id, *user_factory_candidates(current_user))))
+    for factory_id in candidates:
+        if not factory_id or factory_id == "*":
+            continue
+        if has_permission_for_departments(
+            current_user,
+            permission,
+            factory_id,
+            WAREHOUSE_DEPARTMENTS,
+        ):
+            return factory_id
+    ensure_permission_in_any_factory(db, current_user, permission, WAREHOUSE_DEPARTMENTS)
+    raise HTTPException(status_code=400, detail="无法确定库存操作厂区，请明确传入 factory_id")
+
+
+def list_inventory_batches(
+    db: Session,
+    current_user: AuthContext,
+    factory_id: str | None = None,
+    material: str | None = None,
+) -> list[MoldingSampleInventoryBatch]:
     statement = select(MoldingSampleInventoryBatch).order_by(
+        MoldingSampleInventoryBatch.factory_id,
         MoldingSampleInventoryBatch.material,
         MoldingSampleInventoryBatch.batch_no,
     )
+    if factory_id:
+        resolve_inventory_factory_id(
+            db,
+            current_user,
+            "molding_sample:inventory_issue",
+            factory_id,
+        )
+        statement = statement.where(MoldingSampleInventoryBatch.factory_id == factory_id)
+    else:
+        ensure_permission_in_any_factory(
+            db,
+            current_user,
+            "molding_sample:inventory_issue",
+            WAREHOUSE_DEPARTMENTS,
+        )
     if material:
         statement = statement.where(MoldingSampleInventoryBatch.material == material.strip())
 
-    return list(db.scalars(statement).all())
+    return [
+        batch
+        for batch in db.scalars(statement).all()
+        if has_permission_for_departments(
+            current_user,
+            "molding_sample:inventory_issue",
+            batch.factory_id,
+            WAREHOUSE_DEPARTMENTS,
+        )
+    ]
 
 
 def create_inventory_batch(
@@ -1679,11 +2295,11 @@ def create_inventory_batch(
     payload: InventoryBatchCreateRequest,
     current_user: AuthContext,
 ) -> MoldingSampleInventoryBatch:
-    ensure_permission_in_any_factory(
+    factory_id = resolve_inventory_factory_id(
         db,
         current_user,
         "molding_sample:inventory_issue",
-        WAREHOUSE_DEPARTMENTS,
+        payload.factory_id,
     )
     if payload.initial_weight_kg <= 0:
         raise HTTPException(status_code=400, detail="批次初始重量必须大于 0")
@@ -1692,6 +2308,7 @@ def create_inventory_batch(
     batch_no = payload.batch_no.strip()
     existing_batch = db.scalar(
         select(MoldingSampleInventoryBatch).where(
+            MoldingSampleInventoryBatch.factory_id == factory_id,
             MoldingSampleInventoryBatch.material == material,
             MoldingSampleInventoryBatch.batch_no == batch_no,
         )
@@ -1702,6 +2319,7 @@ def create_inventory_batch(
     now = now_text()
     batch = MoldingSampleInventoryBatch(
         id=f"batch-{uuid4().hex}",
+        factory_id=factory_id,
         material=material,
         batch_no=batch_no,
         location=payload.location.strip(),
@@ -1739,6 +2357,7 @@ def append_inventory_movement(
 ) -> None:
     db.add(
         MoldingSampleInventoryMovement(
+            factory_id=batch.factory_id,
             batch_id=batch.id,
             batch_no=batch.batch_no,
             requisition_id=requisition.id if requisition else "",
@@ -1757,11 +2376,28 @@ def append_inventory_movement(
 
 def list_inventory_movements(
     db: Session,
+    current_user: AuthContext,
+    factory_id: str | None = None,
     batch_id: str | None = None,
     material: str | None = None,
     requisition_id: str | None = None,
 ) -> list[MoldingSampleInventoryMovement]:
     statement = select(MoldingSampleInventoryMovement).order_by(MoldingSampleInventoryMovement.id.desc())
+    if factory_id:
+        resolve_inventory_factory_id(
+            db,
+            current_user,
+            "molding_sample:inventory_issue",
+            factory_id,
+        )
+        statement = statement.where(MoldingSampleInventoryMovement.factory_id == factory_id)
+    else:
+        ensure_permission_in_any_factory(
+            db,
+            current_user,
+            "molding_sample:inventory_issue",
+            WAREHOUSE_DEPARTMENTS,
+        )
     if batch_id:
         statement = statement.where(MoldingSampleInventoryMovement.batch_id == batch_id)
     if material:
@@ -1769,7 +2405,16 @@ def list_inventory_movements(
     if requisition_id:
         statement = statement.where(MoldingSampleInventoryMovement.requisition_id == requisition_id)
 
-    return list(db.scalars(statement).all())
+    return [
+        movement
+        for movement in db.scalars(statement).all()
+        if has_permission_for_departments(
+            current_user,
+            "molding_sample:inventory_issue",
+            movement.factory_id,
+            WAREHOUSE_DEPARTMENTS,
+        )
+    ]
 
 
 def next_requisition_number(db: Session, date: str) -> str:
@@ -1805,32 +2450,29 @@ def list_requisitions(
         MoldingSampleRequisition.req_number.desc(),
     )
     if order_id:
-        order = load_order(db, order_id, current_user)
+        order = load_order(db, order_id)
+        if not is_production_task_order(order):
+            raise HTTPException(status_code=403, detail="只有正式生产阶段可以查看领料单")
+        production_factory_id = production_factory_id_for_order(order)
+        assert production_factory_id is not None
+        ensure_molding_local_write(db, current_user, production_factory_id)
         ensure_permission_for_departments(
             db,
             current_user,
             "molding_sample:warehouse_requisition",
-            order.factory_id,
+            production_factory_id,
             WAREHOUSE_DEPARTMENTS,
         )
         statement = statement.where(MoldingSampleRequisition.order_id == order_id)
 
     requisitions = list(db.scalars(statement).all())
-    order_factory_ids = {
-        order.id: order.factory_id
-        for order in db.scalars(
-            select(MoldingSampleOrder).where(
-                MoldingSampleOrder.id.in_({item.order_id for item in requisitions})
-            )
-        ).all()
-    }
     return [
         requisition
         for requisition in requisitions
         if has_permission_for_departments(
             current_user,
             "molding_sample:warehouse_requisition",
-            order_factory_ids.get(requisition.order_id, ""),
+            requisition.factory_id,
             WAREHOUSE_DEPARTMENTS,
         )
     ]
@@ -1844,14 +2486,24 @@ def create_requisition(
     if payload.requested_weight_kg <= 0:
         raise HTTPException(status_code=400, detail="申请重量必须大于 0")
 
-    order = load_order(db, payload.order_id, current_user)
-    ensure_molding_local_write(db, current_user, order.factory_id)
+    order = load_order(db, payload.order_id)
+    if order.status not in {"待生产", "生产中"} or is_external_order(order):
+        raise HTTPException(status_code=403, detail="只有待生产或生产中的内部啤办单可以创建领料单")
+    production_factory_id = production_factory_id_for_order(order)
+    assert production_factory_id is not None
+    ensure_molding_local_write(db, current_user, production_factory_id)
     ensure_permission_for_departments(
         db,
         current_user,
         "molding_sample:warehouse_requisition",
-        order.factory_id,
+        production_factory_id,
         WAREHOUSE_DEPARTMENTS,
+    )
+    acquire_production_transition_guard(
+        db,
+        order,
+        production_factory_id,
+        order.status,
     )
     material = payload.material.strip()
     notes = payload.notes.strip()
@@ -1868,6 +2520,7 @@ def create_requisition(
 
     requisition = MoldingSampleRequisition(
         id=f"req-{uuid4().hex}",
+        factory_id=production_factory_id,
         req_number=next_requisition_number(db, payload.date),
         date=payload.date,
         order_id=order.id,
@@ -1900,13 +2553,17 @@ def update_requisition_status(
         raise HTTPException(status_code=404, detail="领料单不存在")
     if payload.status not in {"待出库", "已出库"}:
         raise HTTPException(status_code=400, detail="领料单状态无效")
-    order = load_order(db, requisition.order_id, current_user)
-    ensure_molding_local_write(db, current_user, order.factory_id)
+    order = load_order(db, requisition.order_id)
+    production_factory_id = production_factory_id_for_order(order)
+    assert production_factory_id is not None
+    if requisition.factory_id != production_factory_id:
+        raise HTTPException(status_code=409, detail="领料单厂区与当前生产承接厂不一致")
+    ensure_molding_local_write(db, current_user, production_factory_id)
     ensure_permission_for_departments(
         db,
         current_user,
         "molding_sample:inventory_issue",
-        order.factory_id,
+        production_factory_id,
         WAREHOUSE_DEPARTMENTS,
     )
 
@@ -1918,6 +2575,8 @@ def update_requisition_status(
         batch = db.get(MoldingSampleInventoryBatch, payload.inventory_batch_id)
         if not batch:
             raise HTTPException(status_code=404, detail="库存批次不存在")
+        if batch.factory_id != requisition.factory_id:
+            raise HTTPException(status_code=400, detail="不能跨厂区使用库存批次")
         if batch.material != requisition.material:
             raise HTTPException(status_code=400, detail="批次原料不匹配")
         if batch.available_weight_kg < requisition.requested_weight_kg:
@@ -1976,13 +2635,17 @@ def delete_requisition(db: Session, requisition_id: str, current_user: AuthConte
     requisition = db.get(MoldingSampleRequisition, requisition_id)
     if not requisition:
         raise HTTPException(status_code=404, detail="领料单不存在")
-    order = load_order(db, requisition.order_id, current_user)
-    ensure_molding_local_write(db, current_user, order.factory_id)
+    order = load_order(db, requisition.order_id)
+    production_factory_id = production_factory_id_for_order(order)
+    assert production_factory_id is not None
+    if requisition.factory_id != production_factory_id:
+        raise HTTPException(status_code=409, detail="领料单厂区与当前生产承接厂不一致")
+    ensure_molding_local_write(db, current_user, production_factory_id)
     ensure_permission_for_departments(
         db,
         current_user,
         "molding_sample:warehouse_requisition",
-        order.factory_id,
+        production_factory_id,
         WAREHOUSE_DEPARTMENTS,
     )
 
@@ -2088,16 +2751,20 @@ def update_order_items(
     current_user: AuthContext,
 ) -> MoldingSampleOrder:
     order = load_order(db, order_id, current_user)
-    ensure_molding_local_write(db, current_user, order.factory_id)
-    ensure_permission_for_departments(
+    production_factory_id = ensure_production_order_permission(
         db,
         current_user,
+        order,
         "molding_sample:production_fillback",
-        order.factory_id,
-        PRODUCTION_DEPARTMENTS,
     )
     if order.status not in {"待生产", "生产中"}:
         raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以回填生产数据")
+    acquire_production_transition_guard(
+        db,
+        order,
+        production_factory_id,
+        order.status,
+    )
 
     items_by_id = {item.id: item for item in order.items}
 
@@ -2132,16 +2799,20 @@ def upsert_trial_report(
     """Persist the printable trial report separately from production cost/fillback rows."""
 
     order = load_order(db, order_id, current_user)
-    ensure_molding_local_write(db, current_user, order.factory_id)
-    ensure_permission_for_departments(
+    production_factory_id = ensure_production_order_permission(
         db,
         current_user,
+        order,
         "molding_sample:production_fillback",
-        order.factory_id,
-        PRODUCTION_DEPARTMENTS,
     )
     if order.status not in {"待生产", "生产中"}:
         raise HTTPException(status_code=403, detail="只有待生产或生产中的啤办单可以填写试模报告")
+    acquire_production_transition_guard(
+        db,
+        order,
+        production_factory_id,
+        order.status,
+    )
 
     if item_id not in {item.id for item in order.items}:
         raise HTTPException(status_code=404, detail=f"模具明细不存在：{item_id}")
@@ -2158,7 +2829,7 @@ def upsert_trial_report(
     if report is None:
         report = MoldingSampleTrialReport(
             id=f"{order.id}-trial-{uuid4().hex[:12]}",
-            factory_id=order.factory_id,
+            factory_id=production_factory_id,
             order_id=order.id,
             item_id=item_id,
             data=report_data,
@@ -2197,24 +2868,35 @@ def transition_status(
     current_user: AuthContext,
 ) -> MoldingSampleOrder:
     order = load_order(db, order_id, current_user)
-    ensure_molding_local_write(db, current_user, order.factory_id)
     from_status = order.status
     action = request.action
     next_status: str | None = None
 
     if action == "主管通过":
+        ensure_molding_local_write(db, current_user, order.factory_id)
         ensure_permission_for_departments(
             db, current_user, "molding_sample:supervisor_review", order.factory_id, ENGINEERING_DEPARTMENTS
         )
-        if order.status != "待审核":
-            raise HTTPException(status_code=403, detail="只有指定主管可以审核待审核单")
+        order, approval_already_applied = acquire_approval_transition_guard(
+            db,
+            order.id,
+            current_user,
+            expected_status="待审核",
+            idempotent_statuses=frozenset({"待经理审核", *PRODUCTION_TASK_STATUSES}),
+            invalid_status_detail="只有指定主管可以审核待审核单",
+        )
+        if approval_already_applied:
+            return order
+        from_status = order.status
         if is_external_order(order):
             next_status = "已完成"
             order.completed_date = business_today()
             recalculate_order_costs(db, order, force_material_amount=True)
         else:
+            production_factory_id_for_order(order)
             next_status = "待生产"
     elif action == "主管驳回":
+        ensure_molding_local_write(db, current_user, order.factory_id)
         ensure_permission_for_departments(
             db, current_user, "molding_sample:supervisor_review", order.factory_id, ENGINEERING_DEPARTMENTS
         )
@@ -2223,18 +2905,30 @@ def transition_status(
         next_status = "已驳回"
         order.reject_reason = request.reason
     elif action == "经理通过":
+        ensure_molding_local_write(db, current_user, order.factory_id)
         ensure_permission_for_departments(
             db, current_user, "molding_sample:manager_review", order.factory_id, MANAGEMENT_DEPARTMENTS
         )
-        if order.status != "待经理审核":
-            raise HTTPException(status_code=403, detail="只有经理可以终审待经理审核单")
+        order, approval_already_applied = acquire_approval_transition_guard(
+            db,
+            order.id,
+            current_user,
+            expected_status="待经理审核",
+            idempotent_statuses=PRODUCTION_TASK_STATUSES,
+            invalid_status_detail="只有经理可以终审待经理审核单",
+        )
+        if approval_already_applied:
+            return order
+        from_status = order.status
         if is_external_order(order):
             next_status = "已完成"
             order.completed_date = business_today()
             recalculate_order_costs(db, order, force_material_amount=True)
         else:
+            production_factory_id_for_order(order)
             next_status = "待生产"
     elif action == "经理驳回":
+        ensure_molding_local_write(db, current_user, order.factory_id)
         ensure_permission_for_departments(
             db, current_user, "molding_sample:manager_review", order.factory_id, MANAGEMENT_DEPARTMENTS
         )
@@ -2243,6 +2937,7 @@ def transition_status(
         next_status = "已驳回"
         order.reject_reason = request.reason
     elif action == "工程重提":
+        ensure_molding_local_write(db, current_user, order.factory_id)
         ensure_permission_for_departments(
             db, current_user, "molding_sample:edit_draft", order.factory_id, ENGINEERING_EDIT_DEPARTMENTS
         )
@@ -2251,6 +2946,7 @@ def transition_status(
         next_status = "待审核"
         order.reject_reason = ""
     elif action == "工程撤回":
+        ensure_molding_local_write(db, current_user, order.factory_id)
         ensure_permission_for_departments(
             db, current_user, "molding_sample:edit_draft", order.factory_id, ENGINEERING_EDIT_DEPARTMENTS
         )
@@ -2260,26 +2956,38 @@ def transition_status(
             raise HTTPException(status_code=403, detail="只有开单工程师可以撤回本人提交的待审核单")
         next_status = "已撤回"
     elif action == "开始处理":
-        ensure_permission_for_departments(
-            db, current_user, "molding_sample:production_start", order.factory_id, PRODUCTION_DEPARTMENTS
+        production_factory_id = ensure_production_order_permission(
+            db,
+            current_user,
+            order,
+            "molding_sample:production_start",
         )
         if order.status != "待生产":
             raise HTTPException(status_code=403, detail="只有啤机部可以开始处理待生产单")
+        acquire_production_transition_guard(db, order, production_factory_id, "待生产")
         next_status = "生产中"
     elif action == "撤回开始生产":
-        ensure_permission_for_departments(
-            db, current_user, "molding_sample:production_start", order.factory_id, PRODUCTION_DEPARTMENTS
+        production_factory_id = ensure_production_order_permission(
+            db,
+            current_user,
+            order,
+            "molding_sample:production_start",
         )
         if order.status != "生产中":
             raise HTTPException(status_code=403, detail="只有啤机部可以撤回生产中单")
+        acquire_production_transition_guard(db, order, production_factory_id, "生产中")
         next_status = "待生产"
         order.completed_date = ""
     elif action == "标记完成":
-        ensure_permission_for_departments(
-            db, current_user, "molding_sample:production_complete", order.factory_id, PRODUCTION_DEPARTMENTS
+        production_factory_id = ensure_production_order_permission(
+            db,
+            current_user,
+            order,
+            "molding_sample:production_complete",
         )
         if order.status != "生产中":
             raise HTTPException(status_code=403, detail="只有啤机部可以完成生产中单")
+        acquire_production_transition_guard(db, order, production_factory_id, "生产中")
 
         missing_ids = completion_missing_item_ids(order)
         if missing_ids:
@@ -2289,11 +2997,15 @@ def transition_status(
         order.completed_date = business_today()
         recalculate_order_costs(db, order, force_material_amount=True)
     elif action == "撤回完成":
-        ensure_permission_for_departments(
-            db, current_user, "molding_sample:production_complete", order.factory_id, PRODUCTION_DEPARTMENTS
+        production_factory_id = ensure_production_order_permission(
+            db,
+            current_user,
+            order,
+            "molding_sample:production_complete",
         )
         if order.status != "已完成":
             raise HTTPException(status_code=403, detail="只有啤机部可以撤回已完成单")
+        acquire_production_transition_guard(db, order, production_factory_id, "已完成")
 
         next_status = "生产中"
         order.completed_date = ""
@@ -2335,6 +3047,8 @@ def transition_status(
             actor_name=current_user.display_name,
         )
     elif action in {"主管通过", "经理通过"} and next_status == "待生产":
+        production_factory_id = production_factory_id_for_order(order)
+        assert production_factory_id is not None
         append_notification(
             db,
             order,
@@ -2342,17 +3056,21 @@ def transition_status(
             target_role=PRODUCTION_TARGET_ROLE,
             event_type="待生产",
             title="啤办单已到待生产",
-            message=f"啤办单 {order.id} 已审核通过，啤机部可以开始生产执行。",
+            message=f"啤办单 {order.id} 已审核通过，请按 {production_route_text(order)} 执行生产。",
             from_status=from_status,
             to_status=next_status,
             actor_name=current_user.display_name,
+            target_factory_id=production_factory_id,
         )
     elif action == "开始处理":
+        production_factory_id = production_factory_id_for_order(order)
+        assert production_factory_id is not None
         mark_order_notifications_handled(
             db,
             order_id=order.id,
             target_module=PRODUCTION_TASK_MODULE,
             actor_name=current_user.display_name,
+            target_factory_id=production_factory_id,
         )
         append_notification(
             db,
@@ -2361,13 +3079,16 @@ def transition_status(
             target_role=PRODUCTION_TARGET_ROLE,
             event_type="生产开始",
             title="啤机部已开始生产",
-            message=f"啤办单 {order.id} 已由啤机部开始处理。",
+            message=f"啤办单 {order.id} 已由 {factory_label(production_factory_id)} 啤机部开始处理。",
             from_status=from_status,
             to_status=next_status,
             status="已处理",
             actor_name=current_user.display_name,
+            target_factory_id=production_factory_id,
         )
     elif action == "撤回开始生产":
+        production_factory_id = production_factory_id_for_order(order)
+        assert production_factory_id is not None
         append_notification(
             db,
             order,
@@ -2375,18 +3096,22 @@ def transition_status(
             target_role=PRODUCTION_TARGET_ROLE,
             event_type="生产开始撤回",
             title="啤办开始生产已撤回",
-            message=f"啤机部已撤回啤办单 {order.id} 的开始生产动作，任务回到待生产。",
+            message=f"{factory_label(production_factory_id)}啤机部已撤回啤办单 {order.id} 的开始生产动作，任务回到待生产。",
             from_status=from_status,
             to_status=next_status,
             status="已处理",
             actor_name=current_user.display_name,
+            target_factory_id=production_factory_id,
         )
     elif action == "标记完成":
+        production_factory_id = production_factory_id_for_order(order)
+        assert production_factory_id is not None
         mark_order_notifications_handled(
             db,
             order_id=order.id,
             target_module=PRODUCTION_TASK_MODULE,
             actor_name=current_user.display_name,
+            target_factory_id=production_factory_id,
         )
         append_notification(
             db,
@@ -2395,10 +3120,11 @@ def transition_status(
             target_role=ENGINEERING_TARGET_ROLE,
             event_type="生产完成回传",
             title="啤办生产完成",
-            message=f"啤机部已完成啤办单 {order.id}，实际用料和啤办费已回传。",
+            message=f"{factory_label(production_factory_id)}啤机部已完成啤办单 {order.id}，实际用料和啤办费已回传至{factory_label(order.factory_id)}。",
             from_status=from_status,
             to_status=next_status,
             actor_name=current_user.display_name,
+            target_factory_id=order.factory_id,
         )
     elif action == "撤回完成":
         mark_order_notifications_handled(
@@ -2414,10 +3140,11 @@ def transition_status(
             target_role=ENGINEERING_TARGET_ROLE,
             event_type="生产完成撤回",
             title="啤办完成回传已撤回",
-            message=f"啤机部已撤回啤办单 {order.id} 的完成回传，单据回到生产中等待修正后重新完成。",
+            message=f"{factory_label(production_factory_id_for_order(order))}啤机部已撤回啤办单 {order.id} 的完成回传，单据回到生产中等待修正后重新完成。",
             from_status=from_status,
             to_status=next_status,
             actor_name=current_user.display_name,
+            target_factory_id=order.factory_id,
         )
     db.commit()
     db.expire_all()

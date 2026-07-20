@@ -15,5 +15,5 @@ export const internalQuoteSectionDefinitions: Array<{
   { code: 'painting', label: '喷油部', owner: '喷油核价', formulaHint: '夹模、移印、散枪、边模、油色、浸油、抹油、擦PP水八类工序数量 × 单价。', dependencies: ['工程模具 revision', '喷油报价单'], departments: ['painting'] },
   { code: 'slush', label: '搪胶部', owner: '搪胶核价', formulaHint: '行总价 HKD = 用量 PC × 单价 HKD；合计 RMB 按冻结汇率换算。', dependencies: ['产品编号', '胶件名称', '材料', '料重', '日产量 24H', '用量'], departments: ['slush'] },
   { code: 'sewing', label: '车缝部', owner: '车缝核价', formulaHint: '价钱 RMB = 用量/码 × 物料价；总价钱再乘码点，裁片数只作记录。', dependencies: ['产品组', '类型', '布料名称', '部位', '工艺', '裁片数', '用量/码'], departments: ['sewing'] },
-  { code: 'assembly', label: '装配部', owner: '装配核价', formulaHint: '260 HKD/人 × 人数 × 小组数 ÷ 生产量，组装与包装分别汇总；人工基数可调整。', dependencies: ['工程模具 revision', '生产排拉工序表'], departments: ['assembly'] },
+  { code: 'assembly', label: '装配部', owner: '装配核价', formulaHint: '人工基数 × 总人数 × 小组数 ÷ 生产量；人工基数和标准工时均可调整，组装与包装分别汇总。', dependencies: ['工程模具 revision', '生产排拉工序表'], departments: ['assembly'] },
 ]

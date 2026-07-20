@@ -171,6 +171,10 @@ export function createDefaultMoldingSampleOrder(
   return {
     id: input.id,
     factory_id: input.factory_id ?? 'huakang-a',
+    production_factory_id: input.production_factory_id ?? null,
+    production_assigned_at: input.production_assigned_at ?? '',
+    production_assigned_by: input.production_assigned_by ?? '',
+    production_assignment_version: input.production_assignment_version ?? 0,
     order_number: input.order_number ?? '',
     doc_number: input.doc_number ?? '',
     product_name: input.product_name,

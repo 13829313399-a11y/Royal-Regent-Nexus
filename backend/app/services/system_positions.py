@@ -16,8 +16,16 @@ from app.services.permission_codes import (
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v2"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v3"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
+MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
+MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
+    {
+        "position_general_manager",
+        "position_engineering_manager",
+        "position_engineering_supervisor",
+    }
+)
 PRODUCTION_TASK_OPERATE_PERMISSION_CODES = frozenset(
     {
         "molding_sample:production_start",
@@ -57,6 +65,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "molding_sample:delete_draft",
     "molding_sample:supervisor_review",
     "molding_sample:manager_review",
+    MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE,
     "molding_sample:raw_material_write",
     "molding_sample:warehouse_requisition",
     "molding_sample:inventory_issue",
@@ -130,6 +139,7 @@ ENGINEER_PERMISSION_CODES = (
 ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
     *ENGINEER_PERMISSION_CODES,
     "molding_sample:supervisor_review",
+    MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE,
     "internal_quote:reference_manage",
     "internal_quote:engineering_review",
 )
@@ -266,7 +276,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="engineering",
         department_name="工程部",
         sort_order=200,
-        description="跨厂查看工程数据；本厂开单、维护、原料管理与主管审核",
+        description="跨厂查看工程数据；本厂开单、维护、原料管理、主管审核与生产任务分派",
         scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=ENGINEERING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -276,7 +286,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="engineering",
         department_name="工程部",
         sort_order=210,
-        description="跨厂查看工程数据；本厂开单、维护、原料管理与审核驳回",
+        description="跨厂查看工程数据；本厂开单、维护、原料管理、审核驳回与生产任务分派",
         scope_mode=CROSS_FACTORY_READ_SCOPE,
         permission_codes=ENGINEERING_SUPERVISOR_PERMISSION_CODES,
     ),
@@ -615,6 +625,14 @@ def validate_system_position_definitions() -> None:
     ):
         raise RuntimeError("啤办生产任务操作权限只能授予总经理和啤机职位")
 
+    dispatch_role_ids = {
+        item.role_id
+        for item in SYSTEM_POSITION_DEFINITIONS
+        if MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE in item.permission_codes
+    }
+    if dispatch_role_ids != MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS:
+        raise RuntimeError("啤办生产任务分派权限只能授予总经理、工程经理和工程主管")
+
     all_business_codes = set(BUSINESS_PERMISSION_CODES)
     decided_general_manager_codes = (
         GENERAL_MANAGER_PERMISSION_CODES
@@ -651,8 +669,13 @@ def validate_system_position_definitions() -> None:
         == engineering_supervisor.permission_codes
         and "molding_sample:supervisor_review" not in engineer.permission_codes
         and "molding_sample:manager_review" not in engineer.permission_codes
+        and MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE not in engineer.permission_codes
+        and MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE
+        in engineering_supervisor.permission_codes
+        and MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE
+        in engineering_manager.permission_codes
     ):
-        raise RuntimeError("工程师、主管、经理的审核继承关系无效")
+        raise RuntimeError("工程师、主管、经理的审核与分派继承关系无效")
 
     sales_business = definitions_by_id["position_sales_business"]
     sales_supervisor = definitions_by_id["position_sales_supervisor"]

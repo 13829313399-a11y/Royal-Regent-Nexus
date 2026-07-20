@@ -447,7 +447,7 @@ def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monke
         assert recalculated.status_code == 200, recalculated.text
         resubmitted = client.post(
             f"/api/internal-quotes/{quote_id}/sections/molding/submit",
-            json={"revision": 5},
+            json={"revision": recalculated.json()["revision"]},
         )
         assert resubmitted.status_code == 200, resubmitted.text
 

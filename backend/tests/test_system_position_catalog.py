@@ -42,14 +42,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v3"
     assert len(definitions) == 29
     assert len({item.role_id for item in definitions}) == 29
     assert len({(item.department, item.name) for item in definitions}) == 29
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 65
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 58
+    assert len(registered_codes) == 66
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 59
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -70,10 +71,23 @@ def test_fixed_system_position_definition_contract():
         "position_molding_clerk",
     }
 
+    dispatch_role_ids = {
+        definition.role_id
+        for definition in definitions
+        if positions.MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE
+        in definition.permission_codes
+    }
+    assert dispatch_role_ids == positions.MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS
+    assert dispatch_role_ids == {
+        "position_general_manager",
+        "position_engineering_manager",
+        "position_engineering_supervisor",
+    }
+
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 58
+    assert len(general_manager.permission_codes) == 59
     assert set(general_manager.permission_codes) == set(
         permission_codes.BUSINESS_PERMISSION_CODES
     )
@@ -95,6 +109,9 @@ def test_fixed_system_position_definition_contract():
     assert engineering_manager.permission_codes == engineering_supervisor.permission_codes
     assert "molding_sample:supervisor_review" not in engineer.permission_codes
     assert "molding_sample:manager_review" not in engineer.permission_codes
+    assert "molding_sample:dispatch" not in engineer.permission_codes
+    assert "molding_sample:dispatch" in engineering_supervisor.permission_codes
+    assert "molding_sample:dispatch" in engineering_manager.permission_codes
     assert all(
         "molding_sample:raw_material_write" in definition.permission_codes
         for definition in (engineer, engineering_supervisor, engineering_manager)
@@ -161,6 +178,30 @@ def test_fixed_system_position_definition_contract():
     assert len(set(hashes)) == 29
     assert all(re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes)
     assert re.fullmatch(r"[0-9a-f]{64}", positions.system_position_catalog_hash())
+
+
+def test_molding_sample_dispatch_permission_catalog_and_legacy_role_contract():
+    auth_service = importlib.import_module("app.services.auth")
+    iam_scope = importlib.import_module("app.services.iam_scope")
+    permission_codes = importlib.import_module("app.services.permission_codes")
+    scope_policy = importlib.import_module("app.services.permission_scope_policy")
+
+    dispatch_permission = "molding_sample:dispatch"
+    assert dispatch_permission in permission_codes.MOLDING_SAMPLE_PERMISSION_CODES
+    assert (
+        iam_scope.default_permission_access_kind(dispatch_permission)
+        == iam_scope.OPERATE_ACCESS_KIND
+    )
+
+    policy = scope_policy.permission_scope_policy(dispatch_permission)
+    assert policy.departments == ("engineering", "management")
+    assert policy.requires_global_factory is False
+
+    assert dispatch_permission in auth_service.ROLE_PERMISSIONS["engineering_supervisor"]
+    assert dispatch_permission in auth_service.ROLE_PERMISSIONS["manager"]
+    assert dispatch_permission in auth_service.ROLE_PERMISSIONS["admin"]
+    assert dispatch_permission not in auth_service.ROLE_PERMISSIONS["engineer"]
+    assert dispatch_permission not in auth_service.ROLE_PERMISSIONS["molding_clerk"]
 
 
 def test_reconcile_restores_drift_preserves_bindings_and_is_idempotent(monkeypatch):

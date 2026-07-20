@@ -9,6 +9,14 @@ function statuses(code: Parameters<typeof normalizeInternalQuotePayload>[0], val
 }
 
 describe('internal quote form block progress', () => {
+  it('uses the same 部分 suffix for every department block navigation title', () => {
+    const codes = ['engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'assembly', 'sales'] as const
+    for (const code of codes) {
+      const payload = normalizeInternalQuotePayload(code, {})
+      expect(getInternalQuoteFormBlocks(code, payload).every((item) => item.title.endsWith('部分'))).toBe(true)
+    }
+  })
+
   it('treats blank optional engineering blocks as ready and validates rows once started', () => {
     expect(statuses('engineering', {})).toMatchObject({
       hardware: 'optional',
@@ -24,6 +32,12 @@ describe('internal quote form block progress', () => {
     expect(statuses('engineering', {
       materials: [{ category: 'hardware', item: '螺丝', quantity: 2, unit_price_rmb: 0.35 }],
     }).hardware).toBe('complete')
+
+    expect(statuses('engineering', {
+      mold_allocation_enabled: false,
+      production_mold_costs: [{ item: '', cost_rmb: 1000 }],
+      amortization_qty: 0,
+    })['mold-allocation']).toBe('optional')
   })
 
   it('requires at least one complete molding route', () => {
@@ -39,7 +53,6 @@ describe('internal quote form block progress', () => {
 
   it('marks sales packing and freight complete when carton data is usable', () => {
     const result = statuses('sales', {
-      product_size_cm: { length: 12, width: 8, height: 4 },
       color_box_size_cm: { length: 13, width: 9, height: 5 },
       cartons: [{ item: '主纸箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 }],
     })
@@ -65,5 +78,34 @@ describe('internal quote form block progress', () => {
     expect(statuses('electronic', {
       components: [{ item: '主板', quantity: 1, children: [{ item: 'IC', quantity: 2, unit_price_rmb: 1.25 }] }],
     }).components).toBe('complete')
+  })
+
+  it('tracks painting and sewing quick quotes with their dedicated required fields', () => {
+    expect(statuses('painting', { quote_mode: 'quick', quick_quote: {} }).painting).toBe('missing')
+    expect(statuses('painting', { quote_mode: 'quick', quick_quote: { spray_labor_hkd: 2, paint_hkd: 3 } }).painting).toBe('complete')
+
+    expect(statuses('sewing', { quote_mode: 'quick', quick_quotes: [{ doll_name: '公仔 A', unit_price_hkd: 0 }] }).sewing).toBe('partial')
+    expect(statuses('sewing', { quote_mode: 'quick', quick_quotes: [{ doll_name: '公仔 A', unit_price_hkd: 4.25 }] }).sewing).toBe('complete')
+  })
+
+  it('tracks assembly summary, assembly work and packaging work independently', () => {
+    expect(statuses('assembly', {})).toEqual({
+      'assembly-summary': 'complete',
+      'assembly-work': 'missing',
+      'packaging-work': 'missing',
+    })
+
+    expect(statuses('assembly', {
+      labor_base_hkd: 260,
+      standard_work_hours: 11,
+      groups: [
+        { name: '组装成品', category: 'assembly', production_qty: 100, teams: 1, processes: [{ name: '锁螺丝', persons: 2 }] },
+        { name: '包装成品', category: 'packaging', production_qty: 100, teams: 1, processes: [{ name: '装箱', persons: 2 }] },
+      ],
+    })).toEqual({
+      'assembly-summary': 'complete',
+      'assembly-work': 'complete',
+      'packaging-work': 'complete',
+    })
   })
 })

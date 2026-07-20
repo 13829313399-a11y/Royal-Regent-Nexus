@@ -3,6 +3,8 @@ import importlib
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.drawing.image import Image as WorksheetImage
+from PIL import Image as PillowImage
 
 from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
 
@@ -19,6 +21,24 @@ def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> byt
     return output.getvalue()
 
 
+def workbook_bytes_with_image(rows: list[list[object]], anchor: str, title: str = "报价明细") -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = title
+    for row in rows:
+        sheet.append(row)
+    image_bytes = BytesIO()
+    PillowImage.new("RGB", (4, 4), color=(16, 118, 110)).save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+    image = WorksheetImage(image_bytes)
+    image.anchor = anchor
+    sheet.add_image(image)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
 def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_p3_creator", "sales_customer_owner", "sales-business")
@@ -27,11 +47,12 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
             json=create_payload(suffix="P3-IMPORT", participating_sections=ALL_SECTION_CODES),
         ).json()
         quote_id = created["id"]
-        source = workbook_bytes(
+        source = workbook_bytes_with_image(
             [
                 ["模号", "产品名称", "材质", "克重", "套数", "模价", "机型", "目标数"],
                 ["M-300", "主体模", "ABS", 100, 1, 7750, "4A", 5000],
-            ]
+            ],
+            "U2",
         )
 
         forbidden = client.post(
@@ -60,6 +81,8 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
             "append_result_rows": 1,
         }
         assert preview["source_sha256"] == hashlib.sha256(source).hexdigest()
+        assert preview["payload_fragment"]["molds"][0]["image_reference"] == "模具图片-U2-1.png"
+        assert "embedded_images" not in preview
 
         detail_before = client.get(f"/api/internal-quotes/{quote_id}").json()
         engineering_before = next(
@@ -79,7 +102,21 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
         assert confirmed["section"]["revision"] == 2
         assert confirmed["section"]["calculation_status"] == "valid"
         assert confirmed["section"]["payload"]["molds"][0]["mold_no"] == "M-300"
+        attachment_ids = confirmed["section"]["payload"]["molds"][0]["image_attachment_ids"]
+        assert len(attachment_ids) == 1
         assert confirmed["section"]["calculation"]["totals"]["mold_total_rmb"] == "7750.0000"
+
+        attachments = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments?department=engineering"
+        ).json()
+        assert [item["id"] for item in attachments] == attachment_ids
+        image_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/{attachment_ids[0]}/preview"
+        )
+        assert image_preview.status_code == 200
+        assert image_preview.headers["content-type"] == "image/png"
+        assert image_preview.headers["content-disposition"].startswith("inline;")
+        assert image_preview.content.startswith(b"\x89PNG\r\n\x1a\n")
 
         duplicate = client.post(
             f"/api/internal-quotes/{quote_id}/imports/{preview['batch_id']}/confirm",
@@ -151,8 +188,8 @@ def test_hardware_template_preview_maps_only_shared_material_fields_and_replace_
             "specification": "2.6*8PB",
             "quantity": "3.0000",
             "unit_price_rmb": "0.0044",
-            "auxiliary_category": "其他外购",
-            "tax_rate_percent": "0.0000",
+            "auxiliary_category": "五金",
+            "tax_rate_percent": "13.0000",
             "remark": "样板",
             "source_row": 8,
         }
@@ -170,6 +207,8 @@ def test_hardware_template_preview_maps_only_shared_material_fields_and_replace_
         assert section["calculation"]["totals"]["hardware_hkd"] == "0.0155"
         hardware_line = next(row for row in section["calculation"]["line_breakdown"] if row["category"] == "hardware")
         assert hardware_line["unit_price_hkd"] == "0.0052"
+        assert hardware_line["auxiliary_category"] == "五金"
+        assert hardware_line["tax_rate_percent"] == "13.0000"
         assert "冻结 RMB→HKD 汇率" in hardware_line["formula"]
 
 

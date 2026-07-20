@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
-import { calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePaintingOperationTotals, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, defaultSalesFreightCalculation, normalizeInternalQuotePayload, sewingGroupHasLaborLine, type ElectronicPayload, type EngineeringPayload, type PaintingPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, defaultSalesFreightCalculation, normalizeInternalQuotePayload, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type PaintingPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
@@ -95,10 +95,11 @@ describe('internal quote section payload normalization', () => {
 
   it('normalizes every authoritative section contract without generic cost rows', () => {
     const engineering = normalizeInternalQuotePayload('engineering', { materials: [{ item: '螺丝', category: 'hardware', purpose: '尿兜', spec: '2.6*8PB', qty: '2', unit: 'pcs', unit_price_rmb: '3', material: '铁', surface_treatment: '镀镍', supplier: '港正', contact: '张/电话', tax_pct: '13', note: '样板' }], molds: [] })
-    expect(engineering).toMatchObject({ materials: [{ item: '螺丝', category: 'hardware', purpose: '尿兜', specification: '2.6*8PB', quantity: 2, unit: 'pcs', unit_price_rmb: 3, material: '铁', surface_treatment: '镀镍', supplier: '港正', contact: '张/电话', tax_rate_percent: 13, remark: '样板', auxiliary_category: '其他外购' }] })
+    expect(engineering).toMatchObject({ materials: [{ item: '螺丝', category: 'hardware', purpose: '尿兜', specification: '2.6*8PB', quantity: 2, unit: 'pcs', unit_price_rmb: 3, material: '铁', surface_treatment: '镀镍', supplier: '港正', contact: '张/电话', tax_rate_percent: 13, remark: '样板', auxiliary_category: '五金' }] })
+    expect(normalizeInternalQuotePayload('engineering', { materials: [{ item: '旧五金', category: 'hardware', auxiliary_category: '其他外购', tax_rate_percent: 0 }] })).toMatchObject({ materials: [{ auxiliary_category: '五金', tax_rate_percent: 13 }] })
     expect(engineering).not.toHaveProperty('cartons')
     expect(normalizeInternalQuotePayload('electronic', { components: [{ item: 'IC', quantity: 2, unit_price_hkd: 1.5, children: [{ item: '脚位', quantity: 1, unit_price_hkd: .2 }] }] })).toMatchObject({ components: [{ item: 'IC', children: [{ item: '脚位' }] }], profit_rate_percent: 10 })
-    expect(normalizeInternalQuotePayload('molding', { injection_lines: [{ material: 'ABS', grade: '750SW', machine_code: '20A' }] })).toMatchObject({ injection_lines: [{ material: 'ABS', grade: '750SW', loss_rate_percent: 3, machine_code: '20A' }] })
+    expect(normalizeInternalQuotePayload('molding', { injection_lines: [{ engineering_source_key: 'mold-no:M01#1', engineering_synced_fields: ['mold_no', 'material'], material: 'ABS', grade: '750SW', machine_code: '20A' }] })).toMatchObject({ injection_lines: [{ engineering_source_key: 'mold-no:M01#1', engineering_synced_fields: ['mold_no', 'material'], material: 'ABS', grade: '750SW', loss_rate_percent: 3, machine_code: '20A' }] })
     expect(normalizeInternalQuotePayload('molding', {
       injection_loss_rate_percent: '4',
       injection_lines: [{ name: '主体模', mold_no: 'M-01', material: 'ABS', material_grade: '750SW', color: '黑色', weight_g: '100', machine: '80T', machine_model: '5A', cavity: '2', sets: '1', target: '5000', cycle_sec: '24', note: '客签色' }],
@@ -110,9 +111,9 @@ describe('internal quote section payload normalization', () => {
     })
     expect(normalizeInternalQuotePayload('painting', { rows: [{ item: '头部', position: '正面', image: '头部.png', note: '对色板', operations: { clamp: { quantity: 2, unit_price_hkd: 3 } } }] })).toMatchObject({ rows: [{ name: '头部', position: '正面', image_reference: '头部.png', remark: '对色板', operations: { clamp: { quantity: 2, unit_price_hkd: 3 }, wipe: { quantity: 0, unit_price_hkd: 0 }, pp_water: { quantity: 0, unit_price_hkd: 0 } } }] })
     expect(normalizeInternalQuotePayload('slush', { lines: [{ product_no: 'RC-01', name: '手臂', material: 'PVC', net_weight_g: '35', daily_output: '8000', usage: '2', unit_price_hkd: '4.5', note: '透明', source_row: '8' }] })).toEqual({ lines: [{ product_code: 'RC-01', item: '手臂', material: 'PVC', weight_g: 35, daily_output_24h: 8000, quantity: 2, unit_price_hkd: 4.5, remark: '透明', source_row: 8 }] })
-    expect(normalizeInternalQuotePayload('sewing', { groups: [{ name: '衣服', category: '车衣', items: [{ fabric: '绒布', part: '身体', craft: '电绣', pieces: '4', qty: '0.25', mat_price: '12', markup: '1.1', note: '红色', supplier: 'A', source_row: '8' }] }] })).toEqual({ groups: [{ name: '衣服', category: 'clothes', labor_rmb: 0, materials: [{ item: '绒布', part: '身体', craft: '电绣', pieces: 4, usage: 0.25, unit_price_rmb: 12, markup: 1.1, remark: '红色', supplier: 'A', source_row: 8 }] }] })
-    expect(normalizeInternalQuotePayload('assembly', { groups: [{ name: '包装', category: 'packaging', processes: [{ name: '入袋', persons: 2, teams: 1, production_qty: 100 }] }] })).toMatchObject({ labor_base_hkd: 260, groups: [{ category: 'packaging', processes: [{ production_qty: 100 }] }] })
-    expect(normalizeInternalQuotePayload('assembly', { labor_base_hkd: 285, groups: [] })).toMatchObject({ labor_base_hkd: 285 })
+    expect(normalizeInternalQuotePayload('sewing', { groups: [{ name: '衣服', category: '车衣', items: [{ fabric: '绒布', part: '身体', craft: '电绣', pieces: '4', qty: '0.25', mat_price: '12', markup: '1.1', note: '红色', supplier: 'A', source_row: '8' }] }] })).toEqual({ quote_mode: 'detail', quick_quotes: [], groups: [{ name: '衣服', category: 'clothes', labor_rmb: 0, materials: [{ item: '绒布', part: '身体', craft: '电绣', pieces: 4, usage: 0.25, unit_price_rmb: 12, markup: 1.1, remark: '红色', supplier: 'A', source_row: 8 }] }] })
+    expect(normalizeInternalQuotePayload('assembly', { groups: [{ name: '包装', category: 'packaging', processes: [{ name: '入袋', persons: 2, teams: 1, production_qty: 100, note: '检查封口' }] }] })).toMatchObject({ labor_base_hkd: 260, standard_work_hours: 11, groups: [{ category: 'packaging', production_qty: 100, teams: 1, processes: [{ name: '入袋', persons: 2, remark: '检查封口' }] }] })
+    expect(normalizeInternalQuotePayload('assembly', { labor_base_hkd: 285, standard_work_hours: 10.5, groups: [] })).toMatchObject({ labor_base_hkd: 285, standard_work_hours: 10.5 })
     expect(normalizeInternalQuotePayload('sales', {
       packaging_materials: [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: '2', unit_price_rmb: '3.4', tax_rate_percent: '10', remark: 'FSC' }],
       freight_calc: { cap_40: '2000', hk40: '8200' },
@@ -123,6 +124,42 @@ describe('internal quote section payload normalization', () => {
       freight_calc: { cap_40: 2000, hk40: 8200, cap_10t: 1166, yt5t: 11000 },
       scenarios: [{ name: '盐田', freight_share: .48, lift_share: .52, markup: 1.2, settlement: .98 }],
       customer_quote_fields: { buzzbee: { color_box_tiers: [{ quote_price_hkd: 6.7, fsc_price_hkd: 6.9, moq: 'MOQ3000' }] } },
+    })
+  })
+
+  it('calculates assembly and packaging labor per product group', () => {
+    const payload = normalizeInternalQuotePayload('assembly', {
+      labor_base_hkd: 260,
+      standard_work_hours: 11,
+      groups: [
+        { name: '成品组装', category: 'assembly', production_qty: 100, teams: 2, processes: [{ name: '锁螺丝', persons: 3 }, { name: '装配', persons: 2 }] },
+        { name: '包装', category: 'packaging', production_qty: 200, teams: 1, processes: [{ name: '装箱', persons: 4 }] },
+      ],
+    }) as AssemblyPayload
+
+    expect(calculateAssemblyGroupPeople(payload.groups[0])).toBe(5)
+    expect(calculateAssemblyGroupLaborHkd(payload.groups[0], payload.labor_base_hkd)).toBe(26)
+    expect(calculateAssemblyCategoryLaborHkd(payload, 'assembly')).toBe(26)
+    expect(calculateAssemblyCategoryLaborHkd(payload, 'packaging')).toBe(5.2)
+  })
+
+  it('copies product-group capacity into legacy assembly process fields when saving', () => {
+    const payload = normalizeInternalQuotePayload('assembly', {
+      labor_base_hkd: 260,
+      standard_work_hours: 11,
+      groups: [{
+        name: '火螺装工',
+        category: 'assembly',
+        production_qty: '3000',
+        teams: '1',
+        processes: [{ name: '装配', persons: '42', production_qty: '0', teams: '9' }],
+      }],
+    }) as AssemblyPayload
+
+    expect(payload.groups[0]).toMatchObject({
+      production_qty: 3000,
+      teams: 1,
+      processes: [{ name: '装配', persons: 42, production_qty: 3000, teams: 1 }],
     })
   })
 
@@ -137,6 +174,26 @@ describe('internal quote section payload normalization', () => {
     expect(calculatePaintingRowAmount(payload.rows[0])).toBeCloseTo(.48)
     expect(calculatePaintingOperationTotals(payload)).toMatchObject({ clamp: .24, pp_water: .32 })
     expect(payload.rows.reduce((total, row) => total + calculatePaintingRowAmount(row), 0)).toBeCloseTo(.56)
+  })
+
+  it('normalizes and previews painting and sewing quick quotes without counting preserved details', () => {
+    const painting = normalizeInternalQuotePayload('painting', {
+      quote_mode: 'quick',
+      quick_quote: { spray_labor_hkd: '2', paint_hkd: '3', paint_tax_rate_percent: 99 },
+      rows: [{ name: '保留明细', operations: { spray: { quantity: 10, unit_price_hkd: 10 } } }],
+    }) as unknown as PaintingPayload
+    expect(painting.quick_quote.paint_tax_rate_percent).toBe(13)
+    expect(calculatePaintingQuickPaintTaxHkd(painting)).toBeCloseTo(.39)
+    expect(calculatePaintingTotalHkd(painting)).toBeCloseTo(5.39)
+
+    const sewing = normalizeInternalQuotePayload('sewing', {
+      quote_mode: 'quick',
+      quick_quotes: [{ name: '公仔 A', price_hkd: '4.25' }, { doll_name: '公仔 B', unit_price_hkd: '5.75' }],
+      groups: [{ name: '保留明细', materials: [{ item: '布', usage: 10, unit_price_rmb: 10 }] }],
+    }) as unknown as SewingPayload
+    expect(sewing.quick_quotes).toEqual([{ doll_name: '公仔 A', unit_price_hkd: 4.25 }, { doll_name: '公仔 B', unit_price_hkd: 5.75 }])
+    expect(calculateSewingQuickTotalHkd(sewing)).toBe(10)
+    expect(calculateSewingTotalHkd(sewing, .85)).toBe(10)
   })
 
   it('previews slush line, HKD total and RMB total from the frozen rate', () => {
@@ -203,6 +260,7 @@ describe('internal quote section payload normalization', () => {
   it('normalizes the complete mold sheet and production allocation contract', () => {
     const engineering = normalizeInternalQuotePayload('engineering', {
       materials: [],
+      mold_allocation_enabled: true,
       molds: [{
         name: '主体模', mold_no: 'M-01', mold_type: 'CI 3040', structure: '两板模', material: 'S50C', color: '红', cavity: '2',
         sets: '2', weight_g: '120', cycle_sec: '35', mold_size: '300×400', image_reference: 'M-01.png', price_rmb: '5000', note: '客户确认',
@@ -215,6 +273,7 @@ describe('internal quote section payload normalization', () => {
 
     expect(engineering.molds[0]).toMatchObject({
       item: '主体模', mold_no: 'M-01', mold_base_type: 'CI 3040', structure: '两板模', material: 'S50C', color: '红', cavity: '2',
+      chinese_name: '', mold_base_material: '', process: '', material_type: '', mold_specification: '',
       quantity: 2, net_weight_g: 120, cycle_time_seconds: 35, mold_size: '300×400', image_reference: 'M-01.png', cost_rmb: 5000,
       remark: '客户确认', machine_code: '20A', target_output: 5000, source_row: 8,
     })
@@ -232,6 +291,18 @@ describe('internal quote section payload normalization', () => {
       totalShareRmb: 15.965,
       totalShareUsd: 1.96,
     })
+    const allocationDisabled = normalizeInternalQuotePayload('engineering', {
+      ...engineering,
+      mold_allocation_enabled: false,
+    }) as unknown as EngineeringPayload
+    expect(calculateEngineeringMoldAllocation(allocationDisabled)).toMatchObject({
+      productionTotalRmb: 0,
+      moldShareUsd: 0,
+      prototypeShareUsd: 0,
+      testingShareUsd: 0,
+      totalShareRmb: 0,
+      totalShareUsd: 0,
+    })
 
     const legacy = normalizeInternalQuotePayload('engineering', {
       molds: [{ item: '旧模具', quantity: 2, cost_rmb: 1000 }],
@@ -241,7 +312,7 @@ describe('internal quote section payload normalization', () => {
       { item: '超声模费用', cost_rmb: 0 },
       { item: '喷油模具', cost_rmb: 0 },
     ])
-    expect(legacy).toMatchObject({ mold_fx_rmb_usd: 7.75, amortization_qty: 20000, prototype_amortization_qty: 50000, testing_amortization_qty: 2000 })
+    expect(legacy).toMatchObject({ mold_allocation_enabled: true, mold_fx_rmb_usd: 7.75, amortization_qty: 20000, prototype_amortization_qty: 50000, testing_amortization_qty: 2000 })
   })
 
   it('preserves the Disney P4-only field contract in its owning sections', () => {
@@ -259,7 +330,7 @@ describe('internal quote section payload normalization', () => {
     })).toMatchObject({ injection_lines: [{ disney_mold_no: 'M02', disney_resin_cost_usd_kg: 6.32, disney_cycle_time_seconds: 39, disney_labor_rate_usd_hr: 10.77 }] })
     expect(normalizeInternalQuotePayload('painting', {
       rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: '.0171', operations: '34' }],
-    })).toEqual({ rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: .0171, operations: 34 }] })
+    })).toEqual({ quote_mode: 'detail', quick_quote: { spray_labor_hkd: 0, paint_hkd: 0, paint_tax_rate_percent: 13 }, rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: .0171, operations: 34 }] })
     expect(normalizeInternalQuotePayload('sales', {
       customer_quote_fields: { disney: { item_number: '1000142435', quote_date: '2026-06-03', revision: '0', minimum_order_qty: '3000', moq_prices_usd: { qty_3000: '3.42', qty_5000: '3.17', qty_10000: '2.93' }, transportation_usd: '.027', model_cost_usd: '6200', setup_charge_usd: '1500' } },
     })).toMatchObject({ customer_quote_fields: { disney: { item_number: '1000142435', minimum_order_qty: 3000, moq_prices_usd: { qty_3000: 3.42, qty_5000: 3.17, qty_10000: 2.93 }, model_cost_usd: 6200 } } })

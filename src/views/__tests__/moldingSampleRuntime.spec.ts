@@ -36,6 +36,7 @@ const routeState = vi.hoisted(() => ({
 
 const moldingSampleApiMock = vi.hoisted(() => ({
   listOrders: vi.fn(),
+  listProductionTasks: vi.fn(),
   getOrder: vi.fn(),
   createOrder: vi.fn(),
   editOrder: vi.fn(),
@@ -45,6 +46,7 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   importOrderExcel: vi.fn(),
   previewOrderExcel: vi.fn(),
   updateStatus: vi.fn(),
+  updateProductionAssignment: vi.fn(),
   updateItems: vi.fn(),
   upsertTrialReport: vi.fn(),
   listNotifications: vi.fn(),
@@ -140,6 +142,7 @@ async function mountRuntimeView(
     'molding_sample:delete_draft',
     'molding_sample:supervisor_review',
     'molding_sample:manager_review',
+    'molding_sample:dispatch',
     'molding_sample:production_read',
     'molding_sample:production_start',
     'molding_sample:production_fillback',
@@ -241,6 +244,10 @@ function createMoldingSampleRecord(
     order: {
       id,
       factory_id: 'huaxing',
+      production_factory_id: 'huaxing',
+      production_assigned_at: '2026-07-01 08:00:00',
+      production_assigned_by: '测试账号',
+      production_assignment_version: 1,
       order_number: '62437',
       doc_number: 'W-G026-00',
       product_name: `链条枪${sequence}`,
@@ -261,6 +268,7 @@ function createMoldingSampleRecord(
     },
     items: [],
     audit_logs: [],
+    dispatch_logs: [],
     notifications: [],
     problems: [],
   }
@@ -363,6 +371,7 @@ function createKpiRecord(
 ): MoldingSampleDetailResponse {
   const record = createMoldingSampleRecord(status, id)
   record.order.send_to = sendTo
+  record.order.production_factory_id = sendTo ? null : record.order.production_factory_id
   record.items = [{
     id: `${id}-ITEM-1`,
     order_id: id,
@@ -438,8 +447,13 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huaxing' }
     routerReplace.mockReset()
     vi.clearAllMocks()
+    Object.values(moldingSampleApiMock).forEach((mock) => mock.mockReset())
+    Object.values(rawMaterialApiMock).forEach((mock) => mock.mockReset())
     window.localStorage.clear()
     mockedMoldingSampleApi.listOrders.mockResolvedValue([])
+    mockedMoldingSampleApi.listProductionTasks.mockImplementation((factoryId) =>
+      mockedMoldingSampleApi.listOrders(factoryId),
+    )
     mockedMoldingSampleApi.listNotifications.mockResolvedValue([])
     mockedMoldingSampleApi.getMaterialPrices.mockResolvedValue({
       prices: [{ material: 'ABS 750NSW', unit_price: 4.85 }],
@@ -573,19 +587,342 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('defaults a C internal order to A, keeps the selector editable, and submits both routing factories', async () => {
+    routeState.query = { factory: 'huakang-c' }
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => {
+      const created = createMoldingSampleRecord('待审核', payload.order.id)
+      created.order = {
+        ...created.order,
+        ...payload.order,
+        factory_id: 'huakang-c',
+        production_factory_id: payload.order.production_factory_id ?? null,
+      }
+      return created
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+
+    const selector = wrapper.get('[data-testid="create-production-factory"]')
+    expect((selector.element as HTMLSelectElement).value).toBe('huakang-a')
+    expect(selector.findAll('option').map((option) => option.text())).toEqual([
+      '请选择承接生产厂',
+      '华康A',
+      '华康B',
+    ])
+
+    await fillValidManualCreateForm(wrapper, 'C-TO-A')
+    await getButtonByText(wrapper, '提交主管审核').trigger('click')
+    await flushPromises()
+
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledWith(expect.objectContaining({
+      order: expect.objectContaining({
+        factory_id: 'huakang-c',
+        production_factory_id: 'huakang-a',
+      }),
+    }))
+    wrapper.unmount()
+  })
+
+  it('preserves an explicit B production assignment from a C Excel preview', async () => {
+    routeState.query = { factory: 'huakang-c' }
+    mockedMoldingSampleApi.previewOrderExcel.mockResolvedValueOnce({
+      order: {
+        id: 'BP-C-EXCEL-TO-B',
+        factory_id: 'huakang-c',
+        production_factory_id: 'huakang-b',
+        product_name: 'C厂 Excel 产品',
+        client_name: 'C厂客户',
+        date: '2026-07-20',
+        workshop: '工程部',
+        supervisor: 'C厂工程主管',
+        eng_name: 'C厂工程师',
+      },
+      items: [],
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    const input = wrapper.get('input[type="file"]')
+    const file = new File([new Uint8Array([1, 2, 3])], 'C厂派B.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    Object.defineProperty(input.element, 'files', {
+      value: [file],
+      configurable: true,
+    })
+
+    await input.trigger('change')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.previewOrderExcel).toHaveBeenCalledWith(expect.any(ArrayBuffer), {
+      factory_id: 'huakang-c',
+    })
+    expect((wrapper.get('[data-testid="create-production-factory"]').element as HTMLSelectElement).value).toBe('huakang-b')
+    expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('C厂 Excel 产品')
+    wrapper.unmount()
+  })
+
+  it('clears the production assignment for an external C order and shows self assignment read-only for A', async () => {
+    routeState.query = { factory: 'huakang-c' }
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => {
+      const created = createMoldingSampleRecord('待审核', payload.order.id)
+      created.order = {
+        ...created.order,
+        ...payload.order,
+        factory_id: 'huakang-c',
+        production_factory_id: payload.order.production_factory_id ?? null,
+      }
+      return created
+    })
+
+    const cWrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(cWrapper, '工程部 · 新建开单').trigger('click')
+    await cWrapper.get('[data-testid="create-send-to"]').setValue('发至湖南')
+    await cWrapper.get('[data-testid="create-send-to"]').trigger('change')
+    expect(cWrapper.find('[data-testid="create-production-factory"]').exists()).toBe(false)
+    expect(cWrapper.get('[data-testid="create-production-factory-readonly"]').text()).toContain('外发（不派生产厂）')
+    await fillValidManualCreateForm(cWrapper, 'C-EXTERNAL')
+    await getButtonByText(cWrapper, '提交主管审核').trigger('click')
+    await flushPromises()
+    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].order.production_factory_id).toBeNull()
+    cWrapper.unmount()
+
+    routeState.query = { factory: 'huakang-a' }
+    const aWrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(aWrapper, '工程部 · 新建开单').trigger('click')
+    expect(aWrapper.find('[data-testid="create-production-factory"]').exists()).toBe(false)
+    expect(aWrapper.get('[data-testid="create-production-factory-readonly"]').text()).toBe('华康A')
+    aWrapper.unmount()
+  })
+
+  it('reassigns a dispatchable C order from A to B with a reason and optimistic version', async () => {
+    routeState.query = { factory: 'huakang-c' }
+    const record = createMoldingSampleRecord('待生产', 'BP-C-DISPATCH-001')
+    record.order.factory_id = 'huakang-c'
+    record.order.production_factory_id = 'huakang-a'
+    record.order.production_assignment_version = 2
+    record.dispatch_logs = [{
+      id: 'DISPATCH-1',
+      order_id: record.order.id,
+      origin_factory_id: 'huakang-c',
+      from_production_factory_id: null,
+      to_production_factory_id: 'huakang-a',
+      action: '首次派厂',
+      reason: 'C厂默认建议由A厂承接',
+      actor_user_id: 'tester',
+      actor_name: '测试账号',
+      created_at: '2026-07-20 09:00:00',
+    }]
+    const updated = {
+      ...record,
+      order: {
+        ...record.order,
+        production_factory_id: 'huakang-b',
+        production_assignment_version: 3,
+        production_assigned_at: '2026-07-20 10:00:00',
+      },
+      dispatch_logs: [...record.dispatch_logs, {
+        id: 'DISPATCH-2',
+        order_id: record.order.id,
+        origin_factory_id: 'huakang-c',
+        from_production_factory_id: 'huakang-a',
+        to_production_factory_id: 'huakang-b',
+        action: '改派',
+        reason: 'A厂机台排期冲突',
+        actor_user_id: 'tester',
+        actor_name: '测试账号',
+        created_at: '2026-07-20 10:00:00',
+      }],
+    } satisfies MoldingSampleDetailResponse
+    mockedMoldingSampleApi.listOrders
+      .mockResolvedValueOnce([record])
+      .mockResolvedValueOnce([updated])
+    mockedMoldingSampleApi.updateProductionAssignment.mockResolvedValueOnce(updated)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(wrapper, '单据详情 · 审核').trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="molding-sample-dispatch-panel"]').text()).toContain('华康C → 华康A')
+    const productionLinkTargets = wrapper.findAllComponents({ name: 'RouterLink' }).map((link) => link.props('to'))
+    expect(productionLinkTargets).toContain(`/modules/production/molding-sample-tasks?factory=huakang-a&order_id=${record.order.id}`)
+    await wrapper.get('[data-testid="dispatch-production-factory"]').setValue('huakang-b')
+    await wrapper.get('[data-testid="dispatch-reason"]').setValue('A厂机台排期冲突')
+    await wrapper.get('[data-testid="molding-sample-dispatch-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(mockedMoldingSampleApi.updateProductionAssignment).toHaveBeenCalledWith(record.order.id, {
+      production_factory_id: 'huakang-b',
+      reason: 'A厂机台排期冲突',
+      expected_assignment_version: 2,
+    })
+    expect(wrapper.get('[data-testid="molding-sample-dispatch-panel"]').text()).toContain('华康C → 华康B')
+    expect(wrapper.get('[data-testid="molding-sample-dispatch-panel"]').text()).toContain('A厂机台排期冲突')
+    wrapper.unmount()
+  })
+
+  it('keeps dispatch history read-only when the C engineering account lacks dispatch permission', async () => {
+    routeState.query = { factory: 'huakang-c' }
+    const record = createMoldingSampleRecord('待生产', 'BP-C-DISPATCH-READONLY')
+    record.order.factory_id = 'huakang-c'
+    record.order.production_factory_id = 'huakang-a'
+    record.dispatch_logs = [{
+      id: 'DISPATCH-READONLY-1',
+      order_id: record.order.id,
+      origin_factory_id: 'huakang-c',
+      from_production_factory_id: null,
+      to_production_factory_id: 'huakang-a',
+      action: '首次派厂',
+      reason: '主管安排A厂承接',
+      actor_user_id: 'supervisor',
+      actor_name: '工程主管',
+      created_at: '2026-07-20 09:00:00',
+    }]
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程师'],
+      permissions: ['molding_sample:read', 'molding_sample:production_read'],
+      factoryScopes: ['huakang-c'],
+      department: 'engineering',
+      authzMode: 'enforce',
+      roleId: 'position_engineering_engineer',
+      grantFactoryId: 'huakang-c',
+      primaryFactoryId: 'huakang-c',
+      effectiveAccess: [{
+        permission_code: 'molding_sample:read',
+        factory_id: 'huakang-c',
+        department: 'engineering',
+        effect: 'allow',
+        allowed: true,
+        source_type: 'role_binding',
+        source_ids: ['engineering-read-binding'],
+      }],
+    })
+    expect(wrapper.text()).toContain(record.order.id)
+    await getButtonByText(wrapper, '单据详情 · 审核').trigger('click')
+    await nextTick()
+
+    const panel = wrapper.get('[data-testid="molding-sample-dispatch-panel"]')
+    expect(panel.text()).toContain('主管安排A厂承接')
+    expect(panel.text()).toContain('当前账号仅可查看派厂信息，没有改派权限')
+    const collaborationSummary = wrapper.get('[data-testid="molding-sample-production-collaboration-summary"]')
+    expect(collaborationSummary.text()).toContain('未开始')
+    expect(collaborationSummary.text()).toContain('未完成')
+    expect(collaborationSummary.text()).toContain('暂无通知')
+    expect(wrapper.find('[data-testid="molding-sample-dispatch-form"]').exists()).toBe(false)
+    expect(mockedMoldingSampleApi.updateProductionAssignment).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows recorded cross-factory production actors and the latest notification without inferring missing data', async () => {
+    routeState.query = { factory: 'huakang-c' }
+    const record = createMoldingSampleRecord('已完成', 'BP-C-COLLABORATION-001')
+    record.order.factory_id = 'huakang-c'
+    record.order.production_factory_id = 'huakang-a'
+    record.order.production_assigned_by = 'C厂工程主管'
+    record.order.production_assigned_at = '2026-07-20 08:30:00'
+    record.audit_logs = [
+      {
+        id: 'AUDIT-C-COMPLETE-1',
+        order_id: record.order.id,
+        action: '标记完成',
+        actor_user_id: 'production-finisher',
+        actor_name: 'A厂完成人',
+        actor_role: '啤机部',
+        decision: '完成',
+        from_status: '生产中',
+        to_status: '已完成',
+        reason: '生产及回填已完成',
+        created_at: '2026-07-20 11:00:00',
+        tone: 'green',
+      },
+      {
+        id: 'AUDIT-C-START-1',
+        order_id: record.order.id,
+        action: '开始处理',
+        actor_user_id: 'production-starter',
+        actor_name: 'A厂开始人',
+        actor_role: '啤机部',
+        decision: '开始处理',
+        from_status: '待生产',
+        to_status: '生产中',
+        reason: 'A厂开始承接生产',
+        created_at: '2026-07-20 09:00:00',
+        tone: 'green',
+      },
+    ]
+    record.notifications = [
+      {
+        id: 'NOTIFY-C-OLD-1',
+        order_id: record.order.id,
+        factory_id: 'huakang-c',
+        target_module: 'engineering_molding_sample',
+        target_role: '工程部',
+        event_type: '开始生产',
+        title: 'A厂已开始生产',
+        message: '承接厂开始生产。',
+        from_status: '待生产',
+        to_status: '生产中',
+        status: '已读',
+        actor_name: 'A厂开始人',
+        read_at: '2026-07-20 09:05:00',
+        handled_at: '',
+        created_at: '2026-07-20 09:00:00',
+      },
+      {
+        id: 'NOTIFY-C-LATEST-1',
+        order_id: record.order.id,
+        factory_id: 'huakang-c',
+        target_module: 'engineering_molding_sample',
+        target_role: '工程部',
+        event_type: '生产完成回传',
+        title: 'A厂已完成生产',
+        message: '承接厂完成生产并回传。',
+        from_status: '生产中',
+        to_status: '已完成',
+        status: '未读',
+        actor_name: 'A厂完成人',
+        read_at: '',
+        handled_at: '',
+        created_at: '2026-07-20 11:00:00',
+      },
+    ]
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(wrapper, '单据详情 · 审核').trigger('click')
+    await nextTick()
+
+    const collaborationSummary = wrapper.get('[data-testid="molding-sample-production-collaboration-summary"]')
+    expect(collaborationSummary.text()).toContain('已完成')
+    expect(collaborationSummary.text()).toContain('A厂开始人')
+    expect(collaborationSummary.text()).toContain('A厂完成人')
+    expect(collaborationSummary.text()).toContain('C厂工程主管')
+    expect(collaborationSummary.text()).toContain('生产完成回传 · 未读')
+    expect(collaborationSummary.text()).not.toContain('开始生产 · 已读')
+    wrapper.unmount()
+  })
+
   it.each([
     ['huakang-c', '华康C'],
     ['huakang-d', '华康D'],
-  ] as const)('keeps %s in production-task return and engineering drill-down links', async (factoryId, factoryName) => {
+  ] as const)('shows formal cross-factory tracking for %s without requesting operable production data', async (factoryId, factoryName) => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: factoryId }
-    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
-    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([])
 
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
 
-    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledWith(factoryId)
+    expect(mockedMoldingSampleApi.listProductionTasks).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.listOrders).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.getMaterialPrices).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain(factoryName)
+    expect(wrapper.get('[data-testid="molding-sample-cross-factory-tracking"]').text()).toContain('采用跨厂承接')
+    expect(wrapper.text()).toContain('华康A或华康B承接生产')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('开始生产'))).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text().includes('保存回填'))).toBe(false)
     const linkTargets = wrapper.findAllComponents({ name: 'RouterLink' }).map((link) => link.props('to'))
     expect(linkTargets).toContain(`/modules/production?factory=${factoryId}`)
     expect(linkTargets).toContain(`/modules/molding-sample?factory=${factoryId}`)
@@ -594,121 +931,35 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
-  it('keeps the newest C production tasks, notifications, and prices after a C-D-C ABA switch', async () => {
+  it('shows a C-origin task only in its A execution queue and drills back to the C engineering order', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
-    routeState.query = { factory: '' }
-
-    const materialName = 'ABA 共享 ABS'
-    const staleCOrders = createDeferred<MoldingSampleDetailResponse[]>()
-    const staleCNotifications = createDeferred<MoldingSampleNotificationResponse[]>()
-    const staleCPrices = createDeferred<Awaited<ReturnType<typeof moldingSampleApi.getMaterialPrices>>>()
-    const staleCRecord = createKpiRecord('生产中', 'BP-ABA-C1-STALE', null)
-    const dRecord = createKpiRecord('生产中', 'BP-ABA-D', null)
-    const freshCRecord = createKpiRecord('生产中', 'BP-ABA-C2-FRESH', null)
-
-    for (const [record, factoryId] of [
-      [staleCRecord, 'huakang-c'],
-      [dRecord, 'huakang-d'],
-      [freshCRecord, 'huakang-c'],
-    ] as const) {
-      record.order.factory_id = factoryId
-      record.items[0]!.material = materialName
-      record.items[0]!.required_material_kg = 1
-    }
-
-    const staleCNotification = createProductionTaskNotification(staleCRecord.order.id)
-    staleCNotification.factory_id = 'huakang-c'
-    staleCNotification.event_type = 'C1旧通知'
-    const dNotification = createProductionTaskNotification(dRecord.order.id)
-    dNotification.factory_id = 'huakang-d'
-    dNotification.event_type = 'D厂通知'
-    const freshCNotification = createProductionTaskNotification(freshCRecord.order.id)
-    freshCNotification.factory_id = 'huakang-c'
-    freshCNotification.event_type = 'C2最新通知'
-
-    let cOrderRequestCount = 0
-    let cNotificationRequestCount = 0
-    let cPriceRequestCount = 0
-    mockedMoldingSampleApi.listOrders.mockImplementation((factoryId) => {
-      if (factoryId === 'huakang-c') {
-        cOrderRequestCount += 1
-        return cOrderRequestCount === 1
-          ? staleCOrders.promise
-          : Promise.resolve([freshCRecord])
-      }
-      if (factoryId === 'huakang-d') {
-        return Promise.resolve([dRecord])
-      }
-      return Promise.resolve([])
-    })
-    mockedMoldingSampleApi.listNotifications.mockImplementation(({ factory_id: factoryId }) => {
-      if (factoryId === 'huakang-c') {
-        cNotificationRequestCount += 1
-        return cNotificationRequestCount === 1
-          ? staleCNotifications.promise
-          : Promise.resolve([freshCNotification])
-      }
-      if (factoryId === 'huakang-d') {
-        return Promise.resolve([dNotification])
-      }
-      return Promise.resolve([])
-    })
-    mockedMoldingSampleApi.getMaterialPrices.mockImplementation((factoryId) => {
-      if (factoryId === 'huakang-c') {
-        cPriceRequestCount += 1
-        return cPriceRequestCount === 1
-          ? staleCPrices.promise
-          : Promise.resolve({
-              prices: [{ material: materialName, unit_price: 10 }],
-              rmb_to_hkd_rate: 1.08,
-            })
-      }
-      return Promise.resolve({
-        prices: [{ material: materialName, unit_price: 20 }],
-        rmb_to_hkd_rate: 1.08,
-      })
-    })
+    routeState.query = { factory: 'huakang-a', order_id: 'BP-C-TO-A-001' }
+    const cToARecord = createKpiRecord('待生产', 'BP-C-TO-A-001', null)
+    cToARecord.order.factory_id = 'huakang-c'
+    cToARecord.order.production_factory_id = 'huakang-a'
+    const dToBRecord = createKpiRecord('待生产', 'BP-D-TO-B-001', null)
+    dToBRecord.order.factory_id = 'huakang-d'
+    dToBRecord.order.production_factory_id = 'huakang-b'
+    const notification = createProductionTaskNotification(cToARecord.order.id)
+    notification.factory_id = 'huakang-a'
+    mockedMoldingSampleApi.listProductionTasks.mockResolvedValueOnce([cToARecord, dToBRecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([notification])
 
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
-      activeFactoryId: 'huakang-c',
+      activeFactoryId: 'huakang-a',
     })
-    const appStore = useAppStore()
 
-    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledWith('huakang-c')
-    appStore.setActiveFactory('huakang-d')
-    await nextTick()
-    await flushPromises()
-    expect(wrapper.text()).toContain(dRecord.order.id)
-
-    appStore.setActiveFactory('huakang-c')
-    await nextTick()
-    await flushPromises()
-    await nextTick()
-
-    expect(wrapper.text()).toContain(freshCRecord.order.id)
-    expect(wrapper.text()).toContain('C2最新通知')
-    expect(wrapper.get('[data-testid="production-fillback-expected-cost-panel"]').text()).toContain('$ 22.05')
-
-    staleCOrders.resolve([staleCRecord])
-    staleCNotifications.resolve([staleCNotification])
-    staleCPrices.resolve({
-      prices: [{ material: materialName, unit_price: 99 }],
-      rmb_to_hkd_rate: 1.08,
-    })
-    await flushPromises()
-    await nextTick()
-
-    expect(wrapper.text()).toContain(freshCRecord.order.id)
-    expect(wrapper.text()).not.toContain(staleCRecord.order.id)
-    expect(wrapper.text()).toContain('C2最新通知')
-    expect(wrapper.text()).not.toContain('C1旧通知')
-    expect(wrapper.get('[data-testid="production-fillback-expected-cost-panel"]').text()).toContain('$ 22.05')
-    expect(wrapper.get('[data-testid="production-fillback-expected-cost-panel"]').text()).not.toContain('$ 218.26')
+    expect(mockedMoldingSampleApi.listProductionTasks).toHaveBeenCalledWith('huakang-a')
+    expect(wrapper.text()).toContain(cToARecord.order.id)
+    expect(wrapper.text()).toContain('华康C → 华康A')
+    expect(wrapper.text()).not.toContain(dToBRecord.order.id)
+    const linkTargets = wrapper.findAllComponents({ name: 'RouterLink' }).map((link) => link.props('to'))
+    expect(linkTargets).toContain('/modules/molding-sample?factory=huakang-c&order_id=BP-C-TO-A-001')
 
     wrapper.unmount()
   })
 
-  it('ignores a stale trial-report save after a C-D-C ABA switch', async () => {
+  it('ignores a stale trial-report save after an A-B-A execution-factory switch', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: '' }
 
@@ -717,19 +968,22 @@ describe('molding sample runtime error handling', () => {
     const freshCRecord = createKpiRecord('生产中', orderId, null)
     const dRecord = createKpiRecord('生产中', 'BP-REPORT-ABA-D', null)
     initialCRecord.order.factory_id = 'huakang-c'
+    initialCRecord.order.production_factory_id = 'huakang-a'
     freshCRecord.order.factory_id = 'huakang-c'
+    freshCRecord.order.production_factory_id = 'huakang-a'
     dRecord.order.factory_id = 'huakang-d'
+    dRecord.order.production_factory_id = 'huakang-b'
     initialCRecord.trial_reports = []
     freshCRecord.trial_reports = []
     dRecord.trial_reports = []
 
     let cRequestCount = 0
     mockedMoldingSampleApi.listOrders.mockImplementation((factoryId) => {
-      if (factoryId === 'huakang-c') {
+      if (factoryId === 'huakang-a') {
         cRequestCount += 1
         return Promise.resolve([cRequestCount === 1 ? initialCRecord : freshCRecord])
       }
-      return Promise.resolve(factoryId === 'huakang-d' ? [dRecord] : [])
+      return Promise.resolve(factoryId === 'huakang-b' ? [dRecord] : [])
     })
 
     const reportData = createTrialReportData('C1 旧报告')
@@ -737,7 +991,7 @@ describe('molding sample runtime error handling', () => {
     mockedMoldingSampleApi.upsertTrialReport.mockReturnValueOnce(reportGate.promise)
 
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
-      activeFactoryId: 'huakang-c',
+      activeFactoryId: 'huakang-a',
     })
     const appStore = useAppStore()
     const itemId = initialCRecord.items[0]!.id
@@ -755,14 +1009,14 @@ describe('molding sample runtime error handling', () => {
       { data: reportData },
     )
 
-    appStore.setActiveFactory('huakang-d')
-    appStore.setActiveFactory('huakang-c')
+    appStore.setActiveFactory('huakang-b')
+    appStore.setActiveFactory('huakang-a')
     await nextTick()
     await flushPromises()
 
     reportGate.resolve({
       id: 'REPORT-C1-STALE',
-      factory_id: 'huakang-c',
+      factory_id: 'huakang-a',
       order_id: orderId,
       item_id: itemId,
       data: reportData,
@@ -976,6 +1230,7 @@ describe('molding sample runtime error handling', () => {
 
     const staleCreated = createKpiRecord('待审核', 'BP-C-CREATE-STALE', null)
     staleCreated.order.factory_id = 'huakang-c'
+    staleCreated.order.production_factory_id = 'huakang-a'
     staleCreated.order.product_name = 'C 厂旧响应产品'
     createGate.resolve(staleCreated)
     await flushPromises()
@@ -997,6 +1252,7 @@ describe('molding sample runtime error handling', () => {
     const orderId = 'BP-C-REJECTED-ABA'
     const rejectedRecord = createKpiRecord('已驳回', orderId, null)
     rejectedRecord.order.factory_id = 'huakang-c'
+    rejectedRecord.order.production_factory_id = 'huakang-a'
     rejectedRecord.items[0]!.completion_time = '2026-08-31'
     mockedMoldingSampleApi.listOrders.mockImplementation((factoryId) => Promise.resolve(
       factoryId === 'huakang-c' ? [rejectedRecord] : [],
@@ -1051,6 +1307,7 @@ describe('molding sample runtime error handling', () => {
 
     const staleResubmitted = createKpiRecord('待审核', orderId, null)
     staleResubmitted.order.factory_id = 'huakang-c'
+    staleResubmitted.order.production_factory_id = 'huakang-a'
     staleResubmitted.order.product_name = 'C 厂旧重提响应产品'
     resubmitGate.resolve(staleResubmitted)
     await flushPromises()
@@ -1170,6 +1427,7 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huadeng' }
     const huadengRecord = createMoldingSampleRecord('待审核', 'BP-READONLY-HD-001')
     huadengRecord.order.factory_id = 'huadeng'
+    huadengRecord.order.production_factory_id = 'huadeng'
     mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([huadengRecord])
 
     const wrapper = await mountRuntimeView(MoldingSampleView, {
@@ -1518,7 +1776,11 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).toContain('15.00 kg')
     expect(printArea).toContain('工程首件确认')
     expect(printArea).not.toContain('工程审核通过后下发至啤机部执行；打印内容仅包含工程部填写资料。')
-    expect(printArea).toContain('工程部下发 · 啤机部执行')
+    expect(printArea).toContain('来源 → 承接：华兴 → 华兴')
+    expect(printArea).toContain('来源厂 → 承接生产厂')
+    expect(printArea).toContain('单据归属来源厂（华兴），生产执行承接厂（华兴）')
+    expect(printArea).toContain('派厂时间')
+    expect(printArea).toContain('2026-07-01 08:00:00')
     expect(printArea).not.toContain('14.20 kg')
     expect(printArea).not.toContain('啤机接收')
     expect(preview).not.toContain('文件编号')
@@ -1535,6 +1797,51 @@ describe('molding sample runtime error handling', () => {
     expect(document.body.classList.contains('molding-sample-task-printing')).toBe(false)
     expect(document.getElementById('molding-sample-active-print-page')).toBeNull()
     vi.useRealTimers()
+
+    wrapper.unmount()
+  })
+
+  it('searches the production queue by both source and execution factory identifiers and names', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huakang-a' }
+    const cToARecord = createKpiRecord('待生产', 'BP-PROD-FACTORY-SEARCH-C-A', null)
+    cToARecord.order.factory_id = 'huakang-c'
+    cToARecord.order.production_factory_id = 'huakang-a'
+    const dToARecord = createKpiRecord('生产中', 'BP-PROD-FACTORY-SEARCH-D-A', null)
+    dToARecord.order.factory_id = 'huakang-d'
+    dToARecord.order.production_factory_id = 'huakang-a'
+    dToARecord.order.client_name = 'Another Client'
+
+    mockedMoldingSampleApi.listProductionTasks.mockResolvedValueOnce([cToARecord, dToARecord])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      activeFactoryId: 'huakang-a',
+    })
+    const queue = wrapper.get('[aria-label="啤办生产任务队列"]')
+    const searchInput = wrapper.get('[data-testid="production-task-search-input"]')
+
+    for (const keyword of ['华康C', 'huakang-c']) {
+      await searchInput.setValue(keyword)
+      await nextTick()
+
+      expect(queue.text()).toContain(cToARecord.order.id)
+      expect(queue.text()).not.toContain(dToARecord.order.id)
+    }
+
+    for (const keyword of ['华康A', 'huakang-a']) {
+      await searchInput.setValue(keyword)
+      await nextTick()
+
+      expect(queue.text()).toContain(cToARecord.order.id)
+      expect(queue.text()).toContain(dToARecord.order.id)
+    }
+
+    await searchInput.setValue('buzzbee 华康C 华康A')
+    await nextTick()
+
+    expect(queue.text()).toContain(cToARecord.order.id)
+    expect(queue.text()).not.toContain(dToARecord.order.id)
 
     wrapper.unmount()
   })
@@ -1605,6 +1912,42 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.updateNotification).not.toHaveBeenCalled()
     vi.runAllTimers()
     vi.useRealTimers()
+
+    wrapper.unmount()
+  })
+
+  it('invalidates an open task print preview when the task is reassigned before confirmation', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huakang-a', order_id: 'BP-PROD-PRINT-REASSIGNED' }
+    const record = createKpiRecord('待生产', 'BP-PROD-PRINT-REASSIGNED', null)
+    record.order.factory_id = 'huakang-c'
+    record.order.production_factory_id = 'huakang-a'
+    record.order.production_assignment_version = 1
+    record.order.production_assigned_at = '2026-07-20 08:00:00'
+    record.order.production_assigned_by = 'C厂工程主管'
+    mockedMoldingSampleApi.listProductionTasks.mockResolvedValueOnce([record])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      activeFactoryId: 'huakang-a',
+    })
+
+    await wrapper.get('[data-testid="production-task-print-button"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="molding-sample-task-print-preview"]').exists()).toBe(true)
+
+    record.order.production_factory_id = 'huakang-b'
+    record.order.production_assignment_version = 2
+    record.order.production_assigned_at = '2026-07-20 09:30:00'
+    record.order.production_assigned_by = 'C厂工程经理'
+    await getButtonByExactText(wrapper, '确认打印').trigger('click')
+    await nextTick()
+
+    expect(printSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="molding-sample-task-print-preview"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('打印预览已失效，请重新选择任务后再打印')
 
     wrapper.unmount()
   })
@@ -2401,6 +2744,7 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huadeng', order_id: 'BP-PROD-CLERK-FOREIGN-READONLY' }
     const record = createKpiRecord('待生产', 'BP-PROD-CLERK-FOREIGN-READONLY', null)
     record.order.factory_id = 'huadeng'
+    record.order.production_factory_id = 'huadeng'
     record.items[0]!.order_id = record.order.id
     mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
 
@@ -2455,7 +2799,9 @@ describe('molding sample runtime error handling', () => {
     const readyRecord = createMoldingSampleRecord('待生产', 'BP-CLERK-FOREIGN-READY')
     const reviewRecord = createMoldingSampleRecord('待审核', 'BP-CLERK-FOREIGN-REVIEW')
     readyRecord.order.factory_id = 'huadeng'
+    readyRecord.order.production_factory_id = 'huadeng'
     reviewRecord.order.factory_id = 'huadeng'
+    reviewRecord.order.production_factory_id = 'huadeng'
     mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([readyRecord, reviewRecord])
 
     const taskPermissions = [
@@ -2497,6 +2843,7 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huadeng', order_id: 'BP-SUPERVISOR-FOREIGN-READY' }
     const readyRecord = createMoldingSampleRecord('待生产', 'BP-SUPERVISOR-FOREIGN-READY')
     readyRecord.order.factory_id = 'huadeng'
+    readyRecord.order.production_factory_id = 'huadeng'
     const runningRecord = {
       ...readyRecord,
       order: { ...readyRecord.order, status: '生产中' },
@@ -2627,6 +2974,7 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huadeng' }
     const crossFactoryRecord = createKpiRecord('待审核', 'BP-CROSS-READONLY-HD-001', 1.25)
     crossFactoryRecord.order.factory_id = 'huadeng'
+    crossFactoryRecord.order.production_factory_id = 'huadeng'
     crossFactoryRecord.items[0]!.actual_amount_hkd = 98.76
     crossFactoryRecord.items[0]!.injection_cost = 120
     crossFactoryRecord.items[0]!.injection_cost_hkd = 129.6
@@ -2678,6 +3026,7 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huadeng' }
     const engineeringRecord = createKpiRecord('待审核', 'BP-MOLDING-CLERK-ENGINEERING-READ', 1.25)
     engineeringRecord.order.factory_id = 'huadeng'
+    engineeringRecord.order.production_factory_id = 'huadeng'
     Object.assign(engineeringRecord, {
       read_source: 'cross',
       can_view_cost: false,
@@ -2749,6 +3098,7 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huadeng' }
     const record = createKpiRecord('待审核', 'BP-CROSS-OPERATE-HD-001', 1.25)
     record.order.factory_id = 'huadeng'
+    record.order.production_factory_id = 'huadeng'
     Object.assign(record, {
       read_source: 'cross_operate',
       can_view_cost: false,
@@ -2949,6 +3299,7 @@ describe('molding sample runtime error handling', () => {
     routeState.query = { factory: 'huadeng' }
     const crossFactoryRecord = createKpiRecord('待审核', 'BP-CROSS-COST-HD-001', 1.25)
     crossFactoryRecord.order.factory_id = 'huadeng'
+    crossFactoryRecord.order.production_factory_id = 'huadeng'
     crossFactoryRecord.items[0]!.actual_amount_hkd = 98.76
     Object.assign(crossFactoryRecord, {
       read_source: 'cross',

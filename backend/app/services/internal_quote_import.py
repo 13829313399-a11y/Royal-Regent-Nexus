@@ -39,6 +39,15 @@ PAINTING_PROCESSES = (
 
 
 @dataclass
+class EmbeddedWorkbookImage:
+    source_row: int
+    source_column: int
+    file_name: str
+    content_type: str
+    content: bytes
+
+
+@dataclass
 class ParsedInternalQuoteImport:
     target_department: str
     sheet_name: str
@@ -46,6 +55,7 @@ class ParsedInternalQuoteImport:
     row_count: int
     payload_fragment: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
+    embedded_images: list[EmbeddedWorkbookImage] = field(default_factory=list)
 
 
 def text(value: object) -> str:
@@ -88,6 +98,17 @@ def decimal_text(value: Decimal | int | float | str | None) -> str:
     return format(parsed.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP), "f")
 
 
+def precise_decimal_text(value: Decimal | int | float | str | None) -> str:
+    """Keep source precision while retaining the form's four-decimal minimum."""
+    parsed = number(value, Decimal("0")) or Decimal("0")
+    raw = format(parsed, "f")
+    integer, dot, fraction = raw.partition(".")
+    if not dot:
+        return f"{integer}.0000"
+    fraction = fraction.rstrip("0")
+    return f"{integer}.{fraction.ljust(4, '0')}"
+
+
 def _validate_ooxml(content: bytes) -> None:
     try:
         with zipfile.ZipFile(BytesIO(content)) as archive:
@@ -126,6 +147,64 @@ def workbook_rows(content: bytes) -> list[tuple[str, list[list[object]]]]:
     if not sheets:
         raise ValueError("工作簿为空")
     return sheets
+
+
+def workbook_embedded_images(
+    content: bytes,
+    sheet_name: str,
+    *,
+    source_column: int,
+    min_source_row: int,
+) -> list[EmbeddedWorkbookImage]:
+    """Extract floating Excel images anchored to a specific worksheet column.
+
+    openpyxl exposes worksheet drawing images separately from cell values.  The
+    old importer only saw an empty U cell and wrote a textual cell reference;
+    this function preserves the actual image bytes and their anchor row so the
+    confirmation step can attach them to the corresponding mold record.
+    """
+    try:
+        workbook = load_workbook(BytesIO(content), data_only=True, read_only=False)
+    except Exception as error:
+        raise ValueError("无法读取 Excel 中的嵌入图片") from error
+    extracted: list[EmbeddedWorkbookImage] = []
+    row_counts: dict[int, int] = {}
+    try:
+        if sheet_name not in workbook.sheetnames:
+            return []
+        sheet = workbook[sheet_name]
+        for image in getattr(sheet, "_images", []):
+            marker = getattr(getattr(image, "anchor", None), "_from", None)
+            if marker is None:
+                continue
+            row = int(marker.row) + 1
+            column = int(marker.col) + 1
+            if column != source_column or row < min_source_row:
+                continue
+            try:
+                content_bytes = image._data()
+            except Exception:
+                continue
+            image_format = str(getattr(image, "format", "png") or "png").lower()
+            if image_format in {"jpg", "jpeg"}:
+                extension, content_type = ".jpg", "image/jpeg"
+            elif image_format == "webp":
+                extension, content_type = ".webp", "image/webp"
+            else:
+                extension, content_type = ".png", "image/png"
+            row_counts[row] = row_counts.get(row, 0) + 1
+            extracted.append(
+                EmbeddedWorkbookImage(
+                    source_row=row,
+                    source_column=column,
+                    file_name=f"模具图片-U{row}-{row_counts[row]}{extension}",
+                    content_type=content_type,
+                    content=content_bytes,
+                )
+            )
+    finally:
+        workbook.close()
+    return extracted
 
 
 def row_has(row: list[object], *patterns: str) -> bool:
@@ -200,13 +279,30 @@ def _parse_mold(
     header_index: int,
     *,
     fallback_qty: Decimal,
+    sheet_name: str = "",
+    embedded_images_by_row: dict[int, list[EmbeddedWorkbookImage]] | None = None,
     **_: object,
 ) -> tuple[dict[str, Any], int, list[str]]:
     header = rows[header_index]
+    def layout_token(index: int) -> str:
+        return normalized(value_at(header, index)).replace("'", "").replace("’", "")
+
+    is_water_table_layout = (
+        len(header) >= 21
+        and "MOLDNO" in layout_token(1)
+        and "CHINESENAME" in layout_token(4)
+        and "MATL" in layout_token(7)
+        and "DIM" in layout_token(11)
+        and "TOOLINSERTMATL" in layout_token(13)
+        and "GATE" in layout_token(18)
+        and "PICTURES" in layout_token(20)
+    )
     columns = {
         "mold_no": column_index(header, ("模号", "模具编号", "客人模具编号", "MOLD NO")),
-        "name": column_index(header, ("产品名称", "零件名称", "配件名称", "模具名称", "加工内容", "名称")),
+        "name": column_index(header, ("产品名称", "零件名称", "配件名称", "模具名称", "加工内容", "DESCRIPTION", "名称")),
+        "chinese_name": column_index(header, ("中文名称", "中文名", "CHINESE NAME")),
         "material": column_index(header, ("产品材质", "塑胶原料", "胶料类型", "材质", "材料")),
+        "material_type": column_index(header, ("料型", "材料类型", "MAT'L", "MAT’L")),
         "weight": column_index(header, ("零件重量", "克重", "净重", "PART WEIGHT")),
         "cavity": column_index(header, ("出模数", "型腔", "模数", "CAV")),
         "sets": column_index(header, ("套数", "数量/件", "数量", "UP")),
@@ -214,13 +310,31 @@ def _parse_mold(
         "machine": column_index(header, ("机型(TON)", "INJECTION MACHINE TYPE", "机型")),
         "target": column_index(header, ("模具预计日啤数", "目标数", "CYCLES/DAY")),
         "mold_base_type": column_index(header, ("模胚类型", "模胚型号", "模胚")),
+        "mold_base_material": column_index(header, ("模胚材质", "模仁材质", "TOOL INSERT MAT'L", "TOOL INSERT MAT’L")),
         "structure": column_index(header, ("模具结构", "滑块", "行位", "加工内容")),
+        "process": column_index(header, ("工艺", "入水方式", "水口", "GATE")),
         "cycle": column_index(header, ("周期(秒)", "周期", "啤塑周期", "CYCLE TIME", "CYCLE")),
         "mold_size": column_index(header, ("模具尺寸", "模胚尺寸")),
+        "mold_specification": column_index(header, ("模具规格", "TOOL INFORMATION DIM", "DIM(HXWXD CM)", "DIM")),
         "color": column_index(header, ("颜色", "COLOR")),
         "image": column_index(header, ("图片", "图  片", "IMAGE")),
         "note": column_index(header, ("备注", "说明", "REMARK")),
     }
+    if is_water_table_layout:
+        # Water Table 模价表使用固定双行表头。业务确认的字段位置为：
+        # B 模号、E 模具名称、H 料型、L 模具尺寸、N 模胚材质、S 工艺、U 图片。
+        # 仅覆盖这些明确列，其他字段继续沿用通用表头匹配。
+        columns.update({
+            "mold_no": 1,
+            "name": 4,
+            "chinese_name": None,
+            "material_type": 7,
+            "mold_size": 11,
+            "mold_specification": None,
+            "mold_base_material": 13,
+            "process": 18,
+            "image": 20,
+        })
     warnings: list[str] = []
     molds: list[dict[str, Any]] = []
     last_mold_no = ""
@@ -240,15 +354,40 @@ def _parse_mold(
             break
         if re.search(r"^(合计|小计|总计|说明|备注|客户确认|签名)", joined):
             continue
-        mold_no = text(value_at(row, columns["mold_no"])) or last_mold_no
+        raw_mold_no = text(value_at(row, columns["mold_no"]))
         name = text(value_at(row, columns["name"]))
+        chinese_name = text(value_at(row, columns["chinese_name"]))
         price = number(value_at(row, columns["price"]))
-        if mold_no:
-            last_mold_no = mold_no
-        if not mold_no and not name:
+        continuation_values = (
+            name,
+            chinese_name,
+            text(value_at(row, columns["material"])),
+            text(value_at(row, columns["material_type"])),
+            text(value_at(row, columns["weight"])),
+            text(value_at(row, columns["cavity"])),
+            text(value_at(row, columns["sets"])),
+            text(value_at(row, columns["machine"])),
+            text(value_at(row, columns["target"])),
+            text(value_at(row, columns["mold_base_type"])),
+            text(value_at(row, columns["mold_base_material"])),
+            text(value_at(row, columns["structure"])),
+            text(value_at(row, columns["process"])),
+            text(value_at(row, columns["cycle"])),
+            text(value_at(row, columns["mold_size"])),
+            text(value_at(row, columns["mold_specification"])),
+            text(value_at(row, columns["color"])),
+        )
+        # 空白行不能沿用上一行模号；Water Table 模价表在 M12 后还有
+        # 多个空白/说明行，旧逻辑会把这些行全部错误解析成 M12。
+        if not raw_mold_no and price is None and not any(continuation_values):
+            continue
+        mold_no = raw_mold_no or last_mold_no
+        if raw_mold_no:
+            last_mold_no = raw_mold_no
+        if not mold_no and not name and not chinese_name:
             continue
         if not name:
-            name = mold_no
+            name = chinese_name or mold_no
         if price is None:
             warnings.append(f"第 {source_row} 行 {name} 未识别模具价格，已按 0 预览")
             price = Decimal("0")
@@ -258,23 +397,33 @@ def _parse_mold(
             amortization_candidates.append(sets)
             quantity = Decimal("1")
             warnings.append(f"第 {source_row} 行套数 {decimal_text(sets)} 较大，按分摊数量候选处理，模具数量按 1")
+        row_images = (embedded_images_by_row or {}).get(source_row, [])
+        image_reference = text(value_at(row, columns["image"]))
+        if row_images:
+            image_reference = "；".join(image.file_name for image in row_images)
         molds.append(
             {
                 "item": name,
                 "mold_no": mold_no,
+                "chinese_name": chinese_name,
                 "quantity": decimal_text(max(quantity, Decimal("0"))),
                 "cost_rmb": decimal_text(max(price, Decimal("0"))),
                 "material": text(value_at(row, columns["material"])),
+                "material_type": text(value_at(row, columns["material_type"])),
                 "net_weight_g": decimal_text(number(value_at(row, columns["weight"]), Decimal("0"))),
                 "cavity": text(value_at(row, columns["cavity"])),
                 "machine_code": text(value_at(row, columns["machine"])),
                 "target_output": decimal_text(number(value_at(row, columns["target"]), Decimal("0"))),
                 "mold_base_type": text(value_at(row, columns["mold_base_type"])),
+                "mold_base_material": text(value_at(row, columns["mold_base_material"])),
                 "structure": text(value_at(row, columns["structure"])),
+                "process": text(value_at(row, columns["process"])),
                 "cycle_time_seconds": decimal_text(number(value_at(row, columns["cycle"]), Decimal("0"))),
                 "mold_size": text(value_at(row, columns["mold_size"])),
+                "mold_specification": text(value_at(row, columns["mold_specification"])),
                 "color": text(value_at(row, columns["color"])),
-                "image_reference": text(value_at(row, columns["image"])),
+                "image_reference": image_reference,
+                "image_attachment_ids": [],
                 "remark": text(value_at(row, columns["note"])),
                 "source_row": source_row,
             }
@@ -288,7 +437,13 @@ def _parse_mold(
     if amortization_qty is None:
         amortization_qty = max(fallback_qty, Decimal("1"))
         warnings.append(f"未识别模具分摊数量，预览按报价数量 {decimal_text(amortization_qty)} 填入")
-    warnings.append("嵌入模具图片不自动写入报价，请在对应工程分段上传图片附件")
+    embedded_count = sum(len(items) for items in (embedded_images_by_row or {}).values())
+    if embedded_count:
+        warnings.append(f"已识别并提取 U 列 {embedded_count} 张嵌入图片；确认导入后将自动保存到对应模具行")
+    elif is_water_table_layout:
+        warnings.append("U 列未识别到可提取的嵌入图片；如源表图片为链接，请改为嵌入图片后重试")
+    else:
+        warnings.append("嵌入模具图片不自动写入报价，请在对应工程分段上传图片附件")
     return {"molds": molds, "amortization_qty": decimal_text(amortization_qty)}, len(molds), warnings
 
 
@@ -303,10 +458,8 @@ def _parse_hardware(
     columns = {
         "name": column_index(header, ("零件名称", "配件名称", "名称")),
         "specification": column_index(header, ("规格", "型号")),
-        "material_category": column_index(header, ("类别", "分类")),
         "quantity": column_index(header, ("用量", "数量")),
         "unit_price": column_index(header, ("单价RMB", "单价人民币", "人民币单价", "单价")),
-        "tax_rate": column_index(header, ("税点%", "税点", "税率")),
         "remark": column_index(header, ("备注", "说明")),
     }
     unit_header = normalized(value_at(header, columns["unit_price"]))
@@ -326,20 +479,14 @@ def _parse_hardware(
             continue
         quantity = number(value_at(row, columns["quantity"]))
         unit_price = number(value_at(row, columns["unit_price"]))
-        tax_rate = number(value_at(row, columns["tax_rate"]), Decimal("0")) or Decimal("0")
-        material_category = text(value_at(row, columns["material_category"]))
-        if material_category not in {"吸塑", "胶袋", "彩盒/内卡", "电池", "利宝", "电镀", "其他外购"}:
-            if material_category:
-                warnings.append(f"第 {source_row} 行 {name or specification} 的类别不在允许列表，已按其他外购预览")
-            material_category = "其他外购"
         if quantity is None:
             quantity = Decimal("0")
             warnings.append(f"第 {source_row} 行 {name or specification} 未识别用量，已按 0 预览")
         if unit_price is None:
             unit_price = Decimal("0")
             warnings.append(f"第 {source_row} 行 {name or specification} 未识别人民币单价，已按 0 预览")
-        if quantity < 0 or unit_price < 0 or tax_rate < 0:
-            raise ValueError(f"第 {source_row} 行 {name or specification} 的用量、单价或税点不能小于 0")
+        if quantity < 0 or unit_price < 0:
+            raise ValueError(f"第 {source_row} 行 {name or specification} 的用量或单价不能小于 0")
         unit_price_rmb = unit_price * rmb_hkd if source_is_hkd else unit_price
         output.append(
             {
@@ -348,8 +495,8 @@ def _parse_hardware(
                 "specification": specification,
                 "quantity": decimal_text(quantity),
                 "unit_price_rmb": decimal_text(unit_price_rmb),
-                "auxiliary_category": material_category,
-                "tax_rate_percent": decimal_text(tax_rate),
+                "auxiliary_category": "五金",
+                "tax_rate_percent": "13.0000",
                 "remark": text(value_at(row, columns["remark"])),
                 "source_row": source_row,
             }
@@ -358,7 +505,7 @@ def _parse_hardware(
         raise ValueError("已识别五金表头，但没有解析到五金明细")
     if source_is_hkd:
         warnings.append(f"五金表使用 HKD 单价，已按快照 RMB/HKD={decimal_text(rmb_hkd)} 反算为人民币单价")
-    warnings.append("五金导入仅映射零件名称、规格、类别、用量、单价 RMB、税点和备注；模板其他列不写入报价字段")
+    warnings.append("五金导入仅映射零件名称、规格、用量、单价 RMB 和备注；类别固定为五金、税点固定为 13%，模板其他列不写入报价字段")
     warnings.append("模板内嵌图片不自动写入明细；如需保留，请在工程部分段上传原表或图片附件")
     return {"materials": output}, len(output), warnings
 
@@ -761,6 +908,8 @@ def _parse_sewing(
     current: dict[str, Any] | None = None
     columns: dict[str, int | None] | None = None
     pending_title = ""
+    last_material = ""
+    next_detail_row_is_product_title = False
     warnings: list[str] = []
     total_rows = 0
 
@@ -782,15 +931,18 @@ def _parse_sewing(
                 "price": total_price_column,
                 "note": column_index(row, ("备注",)),
             }
-            name = pending_title or f"导入产品 {len(groups) + 1}"
-            current = {
-                "name": name,
-                "category": "hair" if "发" in name else "clothes",
-                "materials": [],
-                "labor_rmb": "0.0000",
-            }
-            groups.append(current)
+            if current is None or current.get("materials"):
+                name = pending_title or f"导入产品 {len(groups) + 1}"
+                current = {
+                    "name": name,
+                    "category": "hair" if "发" in name else "clothes",
+                    "materials": [],
+                    "labor_rmb": "0.0000",
+                }
+                groups.append(current)
             pending_title = ""
+            last_material = ""
+            next_detail_row_is_product_title = False
             continue
         if current is None and nonempty and len(nonempty) <= 2:
             candidate = " ".join(nonempty)
@@ -799,28 +951,44 @@ def _parse_sewing(
             continue
         if current is None or columns is None:
             continue
-        material = text(value_at(row, columns["material"]))
+        raw_material = text(value_at(row, columns["material"]))
         usage = number(value_at(row, columns["usage"]))
         unit = number(value_at(row, columns["unit"]))
         price = number(value_at(row, columns["price"]))
         part = text(value_at(row, columns["part"]))
-        if "合计" in material:
-            current = None
-            columns = None
+        if any("合计" in value for value in nonempty):
+            next_detail_row_is_product_title = True
+            last_material = ""
             continue
-        if material and usage is None and unit is None and price is None and not part:
-            if current["materials"]:
-                current = {
-                    "name": material,
-                    "category": "hair" if "发" in material else "clothes",
-                    "materials": [],
-                    "labor_rmb": "0.0000",
-                }
-                groups.append(current)
-            else:
-                current["name"] = material
-                current["category"] = "hair" if "发" in material else "clothes"
+        if next_detail_row_is_product_title and raw_material and usage is None and unit is None and price is None and not part:
+            product_name = re.sub(r"^产品\s*[:：]\s*", "", raw_material).strip()
+            current = {
+                "name": product_name,
+                "category": "hair" if "发" in product_name else "clothes",
+                "materials": [],
+                "labor_rmb": "0.0000",
+            }
+            groups.append(current)
+            next_detail_row_is_product_title = False
+            last_material = ""
             continue
+        if raw_material and usage is None and unit is None and price is None and not part:
+            if not current["materials"]:
+                current["name"] = raw_material
+                current["category"] = "hair" if "发" in raw_material else "clothes"
+                last_material = ""
+                continue
+        if not nonempty:
+            last_material = ""
+            continue
+        material = raw_material
+        if material:
+            last_material = material
+        elif part and last_material:
+            # Source sewing quotes commonly write a material only on the first
+            # cutting-part row.  Following rows belong to the same material even
+            # though column A is blank, so forward-fill it within this detail block.
+            material = last_material
         if not material:
             continue
         usage_value = max(usage or Decimal("1"), Decimal("0"))
@@ -837,9 +1005,9 @@ def _parse_sewing(
                 "craft": "电绣" if "电绣" in text(value_at(row, columns["craft"])) else "",
                 "pieces": decimal_text(max(number(value_at(row, columns["pieces"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
                 "supplier": text(value_at(row, columns["supplier"])),
-                "usage": decimal_text(usage_value),
-                "unit_price_rmb": decimal_text(max(unit, Decimal("0"))),
-                "markup": decimal_text(markup_value),
+                "usage": precise_decimal_text(usage_value),
+                "unit_price_rmb": precise_decimal_text(max(unit, Decimal("0"))),
+                "markup": precise_decimal_text(markup_value),
                 "remark": text(value_at(row, columns["note"])),
                 "source_row": source_index,
             }
@@ -898,15 +1066,19 @@ def _parse_assembly(
                 {
                     "name": name,
                     "persons": decimal_text(people),
-                    "teams": "1.0000",
-                    "production_qty": decimal_text(production_qty),
-                    "note": text(value_at(row, people_column + 2)),
+                    "remark": text(value_at(row, people_column + 2)),
                     "source_row": source_row,
                 }
             )
         if processes:
             category = "packaging" if re.search(r"包装|混装|装箱|入箱|彩盒|外箱|吸塑", group_name) else "assembly"
-            groups.append({"name": group_name, "category": category, "processes": processes})
+            groups.append({
+                "name": group_name,
+                "category": category,
+                "production_qty": decimal_text(production_qty),
+                "teams": "1.0000",
+                "processes": processes,
+            })
             total_rows += len(processes)
     if not groups:
         raise ValueError("已识别装配表头，但没有解析到生产排拉工序")
@@ -954,6 +1126,18 @@ def parse_internal_quote_workbook(
             "NAME",
             "MATERIAL",
             "AMOUNT",
+            "CHINESE",
+            "DESCRIPTION",
+            "TYPE",
+            "DIM",
+            "WEIGHT",
+            "INSERT",
+            "SLIDE",
+            "TIME",
+            "RATE",
+            "GATE",
+            "PICTURES",
+            "REMARKS",
         )
         next_text = "|".join(normalized(cell) for cell in next_row)
         hits = sum(1 for word in header_words if normalized(word) in next_text)
@@ -972,12 +1156,33 @@ def parse_internal_quote_workbook(
                 for column in range(width)
             ]
             rows[header_index + 1] = []
+    embedded_images: list[EmbeddedWorkbookImage] = []
+    embedded_images_by_row: dict[int, list[EmbeddedWorkbookImage]] = {}
+    if import_type == "mold":
+        embedded_images = workbook_embedded_images(
+            content,
+            sheet_name,
+            source_column=21,
+            min_source_row=header_index + 2,
+        )
+        for image in embedded_images:
+            embedded_images_by_row.setdefault(image.source_row, []).append(image)
     fragment, row_count, warnings = PARSERS[import_type](
         rows,
         header_index,
         rmb_hkd=rmb_hkd,
         fallback_qty=fallback_qty,
+        sheet_name=sheet_name,
+        embedded_images_by_row=embedded_images_by_row,
     )
+    if import_type == "mold":
+        parsed_rows = fragment.get("molds", [])
+        used_source_rows = {
+            int(row.get("source_row", 0) or 0)
+            for row in parsed_rows
+            if isinstance(row, dict)
+        }
+        embedded_images = [image for image in embedded_images if image.source_row in used_source_rows]
     return ParsedInternalQuoteImport(
         target_department=IMPORT_TYPE_DEPARTMENTS[import_type],
         sheet_name=sheet_name,
@@ -985,4 +1190,5 @@ def parse_internal_quote_workbook(
         row_count=row_count,
         payload_fragment=fragment,
         warnings=warnings,
+        embedded_images=embedded_images,
     )

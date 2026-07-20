@@ -183,20 +183,20 @@ describe('InternalQuoteHome factory permission boundary', () => {
     expect(createButton).toBeTruthy()
     expect(createButton!.attributes('disabled')).toBeDefined()
     expect(wrapper.get('.quote-readonly-notice').text()).toContain('华登 · 跨厂只读')
-    expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huadeng')
+    expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huadeng', { page: 1, pageSize: 10 })
 
     useAppStore().setActiveFactory('huaxing')
     await flushPromises()
 
     expect(wrapper.find('.quote-readonly-notice').exists()).toBe(false)
     expect(createButton!.attributes('disabled')).toBeUndefined()
-    expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huaxing')
+    expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huaxing', { page: 1, pageSize: 10 })
 
     useAppStore().setActiveFactory('huakang-c')
     await flushPromises()
 
     expect(wrapper.get('.quote-readonly-notice').text()).toContain('华康C · 跨厂只读')
-    expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huakang-c')
+    expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huakang-c', { page: 1, pageSize: 10 })
   })
 
   it('ignores slow foreign responses and keeps create locked until home-factory owners are ready', async () => {

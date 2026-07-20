@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -102,7 +103,11 @@ def create_legacy_molding_sample_sqlite_database(database_path: Path):
               reject_reason TEXT,
               completed_date VARCHAR(20),
               created_at VARCHAR(32),
-              updated_at VARCHAR(32)
+              updated_at VARCHAR(32),
+              production_factory_id VARCHAR(64),
+              production_assigned_at VARCHAR(32) NOT NULL DEFAULT '',
+              production_assigned_by VARCHAR(128) NOT NULL DEFAULT '',
+              production_assignment_version INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE molding_sample_items (
               id VARCHAR(64) PRIMARY KEY,
@@ -150,15 +155,39 @@ def create_legacy_molding_sample_sqlite_database(database_path: Path):
               detail TEXT,
               created_at VARCHAR(32)
             );
+            CREATE TABLE molding_sample_requisitions (
+              id VARCHAR(96) PRIMARY KEY,
+              factory_id VARCHAR(64) NOT NULL
+            );
+            CREATE TABLE molding_sample_inventory_batches (
+              id VARCHAR(96) PRIMARY KEY,
+              factory_id VARCHAR(64) NOT NULL
+            );
+            CREATE TABLE molding_sample_inventory_movements (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              factory_id VARCHAR(64) NOT NULL
+            );
+            CREATE TABLE molding_sample_dispatch_logs (
+              id VARCHAR(96) PRIMARY KEY,
+              order_id VARCHAR(64) NOT NULL,
+              origin_factory_id VARCHAR(64) NOT NULL,
+              from_production_factory_id VARCHAR(64),
+              to_production_factory_id VARCHAR(64) NOT NULL,
+              action VARCHAR(64) NOT NULL,
+              reason TEXT NOT NULL DEFAULT '',
+              actor_user_id VARCHAR(64) NOT NULL DEFAULT '',
+              actor_name VARCHAR(128) NOT NULL DEFAULT '',
+              created_at VARCHAR(32) NOT NULL DEFAULT ''
+            );
             INSERT INTO molding_sample_orders (
               id, factory_id, order_number, doc_number, product_name, client_name, date, stage,
               order_type, workshop, send_to, supervisor, eng_name, reason, status,
-              reject_reason, completed_date, created_at, updated_at
+              reject_reason, completed_date, created_at, updated_at, production_factory_id
             ) VALUES (
               'BP-LEGACY-001', 'huaxing', 'LEGACY-001', 'W-G026-00', '旧库啤办单',
               'Legacy Client', '2026-07-01', 'T0', '啤办', 'A车间', '',
               '华兴工程主管', '华兴工程师', '旧库兼容测试', '待审核',
-              '', '', '2026-07-01 08:00', '2026-07-01 08:00'
+              '', '', '2026-07-01 08:00', '2026-07-01 08:00', 'huaxing'
             );
             INSERT INTO molding_sample_audit_logs (
               id, order_id, action, actor_name, actor_role, from_status, to_status, reason, created_at
@@ -196,6 +225,50 @@ TEST_USER_SPECS = {
     "carton_warehouse": ("user-carton-warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
     "qa_inspector": ("user-qa-inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
     "molding_clerk": ("user-molding-clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
+    "c_engineer": ("user-c-engineer", "华康C工程师", "engineer", "huakang-c", "engineering"),
+    "c_supervisor": (
+        "user-c-supervisor",
+        "华康C工程主管",
+        "engineering_supervisor",
+        "huakang-c",
+        "engineering",
+    ),
+    "d_engineer": ("user-d-engineer", "华康D工程师", "engineer", "huakang-d", "engineering"),
+    "d_supervisor": (
+        "user-d-supervisor",
+        "华康D工程主管",
+        "engineering_supervisor",
+        "huakang-d",
+        "engineering",
+    ),
+    "a_molding_clerk": (
+        "user-a-molding-clerk",
+        "华康A啤机部文员",
+        "molding_clerk",
+        "huakang-a",
+        "molding",
+    ),
+    "b_molding_clerk": (
+        "user-b-molding-clerk",
+        "华康B啤机部文员",
+        "molding_clerk",
+        "huakang-b",
+        "molding",
+    ),
+    "a_warehouse_keeper": (
+        "user-a-warehouse-keeper",
+        "华康A仓管",
+        "warehouse_keeper",
+        "huakang-a",
+        "pmc-warehouse",
+    ),
+    "b_warehouse_keeper": (
+        "user-b-warehouse-keeper",
+        "华康B仓管",
+        "warehouse_keeper",
+        "huakang-b",
+        "pmc-warehouse",
+    ),
     "huaxing_molding_a_sales": (
         "user-huaxing-molding-a-sales",
         "华兴啤机车间 A 跟客业务",
@@ -1178,6 +1251,7 @@ def test_engineering_board_page_uses_true_five_row_pages_and_keeps_legacy_list_c
         "order",
         "items",
         "audit_logs",
+        "dispatch_logs",
         "notifications",
         "problems",
         "trial_reports",
@@ -1383,6 +1457,13 @@ def test_production_read_keeps_local_cost_view_while_foreign_factory_is_default_
     huadeng_payload["order"]["factory_id"] = "huadeng"
     assert client.post("/api/injection", json=huaxing_payload).status_code == 201
     assert client.post("/api/injection", json=huadeng_payload).status_code == 201
+    for order_id in ("BP-PRODUCTION-READ-HX-001", "BP-PRODUCTION-READ-HD-001"):
+        approved_response = client.patch(
+            f"/api/injection/{order_id}/status",
+            json={"action": "主管通过"},
+        )
+        assert approved_response.status_code == 200
+        assert approved_response.json()["order"]["status"] == "待生产"
 
     grant_permission_override(
         "qa_inspector",
@@ -3379,6 +3460,11 @@ def test_warehouse_read_endpoints_enforce_permissions_and_factory_scope(enforce_
     assert client.post("/api/injection", json=huadeng_payload).status_code == 201
 
     for order_id in ("BP-WAREHOUSE-READ-HX-001", "BP-WAREHOUSE-READ-HD-001"):
+        approval = client.patch(
+            f"/api/injection/{order_id}/status",
+            json={"action": "主管通过"},
+        )
+        assert approval.status_code == 200
         response = client.post(
             "/api/requisitions",
             json={
@@ -3395,6 +3481,7 @@ def test_warehouse_read_endpoints_enforce_permissions_and_factory_scope(enforce_
     assert client.post(
         "/api/inventory-batches",
         json={
+            "factory_id": "huaxing",
             "material": "HIPS 425",
             "batch_no": "HIPS-20260712-A",
             "location": "A-01",
@@ -3941,3 +4028,661 @@ def test_sensitive_audit_logs_return_latest_200_rows(client):
     assert len(logs) == 200
     assert logs[0]["action"] == "审计204"
     assert logs[-1]["action"] == "审计5"
+
+
+def cross_factory_order_payload(
+    order_id: str,
+    *,
+    origin_factory_id: str,
+    production_factory_id: str | None,
+):
+    payload = sample_order_payload(order_id)
+    payload["order"].update(
+        {
+            "factory_id": origin_factory_id,
+            "production_factory_id": production_factory_id,
+            "supervisor": f"{origin_factory_id}工程主管",
+            "eng_name": f"{origin_factory_id}工程师",
+        }
+    )
+    return payload
+
+
+def test_huakang_c_order_runs_in_huakang_a_without_leaking_engineering_stage(client):
+    order_id = "BP-HKC-TO-HKA-001"
+    login_as(client, "c_engineer")
+    create_response = client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            order_id,
+            origin_factory_id="huakang-c",
+            production_factory_id="huakang-a",
+        ),
+    )
+    assert create_response.status_code == 201
+    created = create_response.json()
+    assert created["order"]["factory_id"] == "huakang-c"
+    assert created["order"]["production_factory_id"] == "huakang-a"
+    assert created["order"]["production_assignment_version"] == 1
+    assert created["dispatch_logs"][0]["origin_factory_id"] == "huakang-c"
+    assert created["dispatch_logs"][0]["to_production_factory_id"] == "huakang-a"
+
+    login_as(client, "a_molding_clerk")
+    assert client.get(f"/api/injection/{order_id}").status_code == 403
+
+    login_as(client, "c_supervisor")
+    approve_response = client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "主管通过"},
+    )
+    assert approve_response.status_code == 200
+    assert approve_response.json()["order"]["status"] == "待生产"
+
+    login_as(client, "a_molding_clerk")
+    a_tasks = client.get(
+        "/api/injection/production-tasks",
+        params={"production_factory_id": "huakang-a"},
+    )
+    assert a_tasks.status_code == 200
+    assert order_id in {row["order"]["id"] for row in a_tasks.json()}
+    a_detail = client.get(f"/api/injection/{order_id}")
+    assert a_detail.status_code == 200
+    assert a_detail.json()["order"]["factory_id"] == "huakang-c"
+    assert a_detail.json()["order"]["production_factory_id"] == "huakang-a"
+
+    login_as(client, "b_molding_clerk")
+    b_tasks = client.get(
+        "/api/injection/production-tasks",
+        params={"production_factory_id": "huakang-b"},
+    )
+    assert b_tasks.status_code == 200
+    assert order_id not in {row["order"]["id"] for row in b_tasks.json()}
+    assert client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "开始处理"},
+    ).status_code == 403
+
+    login_as(client, "c_engineer")
+    assert client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "开始处理"},
+    ).status_code == 403
+
+    login_as(client, "a_molding_clerk")
+    start_response = client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "开始处理"},
+    )
+    assert start_response.status_code == 200
+    item = start_response.json()["items"][0]
+    item_response = client.patch(
+        f"/api/injection/{order_id}/items",
+        json={
+            "items": [
+                {
+                    "id": item["id"],
+                    "actual_weight_kg": 2.4,
+                    "collected_weight_kg": 2.5,
+                }
+            ]
+        },
+    )
+    assert item_response.status_code == 200, item_response.text
+
+    trial_response = client.put(
+        f"/api/injection/{order_id}/trial-reports/{item['id']}",
+        json={"data": {"trial_summary": "华康A试模完成", "tester_name": "A啤机文员"}},
+    )
+    assert trial_response.status_code == 200
+    assert trial_response.json()["factory_id"] == "huakang-a"
+
+    problem_response = client.post(
+        "/api/problems",
+        json={"order_id": order_id, "description": "生产中发现轻微缩水", "reported_by": "A啤机文员"},
+    )
+    assert problem_response.status_code == 201
+    assert problem_response.json()["factory_id"] == "huakang-a"
+
+    complete_response = client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "标记完成"},
+    )
+    assert complete_response.status_code == 200
+    assert complete_response.json()["order"]["status"] == "已完成"
+
+    login_as(client, "c_engineer")
+    origin_detail = client.get(f"/api/injection/{order_id}")
+    assert origin_detail.status_code == 200
+    assert origin_detail.json()["trial_reports"][0]["factory_id"] == "huakang-a"
+    assert origin_detail.json()["problems"][0]["factory_id"] == "huakang-a"
+    engineering_notifications = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "factory_id": "huakang-c",
+            "order_id": order_id,
+            "target_module": "engineering_molding_sample",
+        },
+    )
+    assert engineering_notifications.status_code == 200
+    assert {notification["event_type"] for notification in engineering_notifications.json()} >= {
+        "生产问题反馈",
+        "生产完成回传",
+    }
+
+
+def test_huakang_d_routes_to_b_and_c_d_assignment_validation_is_authoritative(client):
+    login_as(client, "c_engineer")
+    missing_order_id = "BP-HKC-NO-EXECUTOR"
+    missing_response = client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            missing_order_id,
+            origin_factory_id="huakang-c",
+            production_factory_id=None,
+        ),
+    )
+    assert missing_response.status_code == 201
+    login_as(client, "c_supervisor")
+    blocked_approval = client.patch(
+        f"/api/injection/{missing_order_id}/status",
+        json={"action": "主管通过"},
+    )
+    assert blocked_approval.status_code == 400
+    assert "华康A或华康B" in blocked_approval.json()["detail"]
+
+    for index, invalid_factory_id in enumerate(("huakang-c", "group", "*", "unknown"), start=1):
+        login_as(client, "c_engineer")
+        invalid_response = client.post(
+            "/api/injection",
+            json=cross_factory_order_payload(
+                f"BP-HKC-INVALID-{index}",
+                origin_factory_id="huakang-c",
+                production_factory_id=invalid_factory_id,
+            ),
+        )
+        assert invalid_response.status_code == 400
+
+    external_order_id = "BP-HKC-EXTERNAL-NO-DISPATCH"
+    login_as(client, "c_engineer")
+    external_payload = cross_factory_order_payload(
+        external_order_id,
+        origin_factory_id="huakang-c",
+        production_factory_id="huakang-a",
+    )
+    external_payload["order"]["workshop"] = "模厂"
+    external_payload["order"]["send_to"] = "发至模厂"
+    external_create = client.post("/api/injection", json=external_payload)
+    assert external_create.status_code == 201
+    assert external_create.json()["order"]["production_factory_id"] is None
+    login_as(client, "c_supervisor")
+    external_dispatch = client.patch(
+        f"/api/injection/{external_order_id}/production-assignment",
+        json={
+            "production_factory_id": "huakang-b",
+            "reason": "外发单不应进入内部派厂",
+            "expected_assignment_version": 0,
+        },
+    )
+    assert external_dispatch.status_code == 400
+
+    d_order_id = "BP-HKD-TO-HKB-001"
+    login_as(client, "d_engineer")
+    d_create = client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            d_order_id,
+            origin_factory_id="huakang-d",
+            production_factory_id="huakang-b",
+        ),
+    )
+    assert d_create.status_code == 201
+    login_as(client, "d_supervisor")
+    assert client.patch(
+        f"/api/injection/{d_order_id}/status",
+        json={"action": "主管通过"},
+    ).status_code == 200
+    login_as(client, "b_molding_clerk")
+    b_tasks = client.get(
+        "/api/injection/production-tasks",
+        params={"production_factory_id": "huakang-b"},
+    )
+    assert d_order_id in {row["order"]["id"] for row in b_tasks.json()}
+
+    login_as(client, "admin")
+    capability_response = client.get("/api/injection/factory-capabilities")
+    assert capability_response.status_code == 200
+    capabilities = {
+        item["factory_id"]: item for item in capability_response.json()
+    }
+    assert capabilities["huakang-c"] == {
+        "factory_id": "huakang-c",
+        "has_molding_department": False,
+        "allowed_production_factory_ids": ["huakang-a", "huakang-b"],
+        "suggested_production_factory_id": "huakang-a",
+    }
+    assert capabilities["huakang-d"]["allowed_production_factory_ids"] == [
+        "huakang-a",
+        "huakang-b",
+    ]
+    assert capabilities["huakang-d"]["suggested_production_factory_id"] == "huakang-b"
+    c_queue_response = client.get(
+        "/api/injection/production-tasks",
+        params={"production_factory_id": "huakang-c"},
+    )
+    assert c_queue_response.status_code == 400
+
+    own_order_id = "BP-HKA-SELF-001"
+    own_payload = cross_factory_order_payload(
+        own_order_id,
+        origin_factory_id="huakang-a",
+        production_factory_id=None,
+    )
+    own_create = client.post("/api/injection", json=own_payload)
+    assert own_create.status_code == 201
+    assert own_create.json()["order"]["production_factory_id"] == "huakang-a"
+
+
+def test_waiting_cross_factory_order_can_be_reassigned_once_with_queue_and_notification_handoff(client):
+    order_id = "BP-HKC-REASSIGN-001"
+    login_as(client, "c_engineer")
+    assert client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            order_id,
+            origin_factory_id="huakang-c",
+            production_factory_id="huakang-a",
+        ),
+    ).status_code == 201
+    login_as(client, "c_supervisor")
+    assert client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "主管通过"},
+    ).status_code == 200
+
+    reassign_response = client.patch(
+        f"/api/injection/{order_id}/production-assignment",
+        json={
+            "production_factory_id": "huakang-b",
+            "reason": "华康A机台维护，改由华康B承接",
+            "expected_assignment_version": 1,
+        },
+    )
+    assert reassign_response.status_code == 200
+    reassigned = reassign_response.json()
+    assert reassigned["order"]["production_factory_id"] == "huakang-b"
+    assert reassigned["order"]["production_assignment_version"] == 2
+    assert [log["to_production_factory_id"] for log in reassigned["dispatch_logs"]] == [
+        "huakang-a",
+        "huakang-b",
+    ]
+    assert reassigned["dispatch_logs"][-1]["reason"] == "华康A机台维护，改由华康B承接"
+
+    stale_response = client.patch(
+        f"/api/injection/{order_id}/production-assignment",
+        json={
+            "production_factory_id": "huakang-a",
+            "reason": "并发旧页面提交",
+            "expected_assignment_version": 1,
+        },
+    )
+    assert stale_response.status_code == 409
+
+    login_as(client, "a_molding_clerk")
+    a_tasks = client.get(
+        "/api/injection/production-tasks",
+        params={"production_factory_id": "huakang-a"},
+    ).json()
+    assert order_id not in {row["order"]["id"] for row in a_tasks}
+    a_notifications = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "factory_id": "huakang-a",
+            "order_id": order_id,
+            "target_module": "production_molding_sample_task",
+        },
+    )
+    assert a_notifications.status_code == 200
+    assert a_notifications.json()
+    assert all(
+        notification["status"] == "已处理"
+        for notification in a_notifications.json()
+    ), a_notifications.json()
+
+    login_as(client, "b_molding_clerk")
+    b_tasks = client.get(
+        "/api/injection/production-tasks",
+        params={"production_factory_id": "huakang-b"},
+    ).json()
+    assert order_id in {row["order"]["id"] for row in b_tasks}
+    b_notifications = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "factory_id": "huakang-b",
+            "order_id": order_id,
+            "target_module": "production_molding_sample_task",
+        },
+    )
+    assert b_notifications.status_code == 200
+    assert any(notification["status"] == "未读" for notification in b_notifications.json())
+    assert client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "开始处理"},
+    ).status_code == 200
+
+    login_as(client, "c_supervisor")
+    production_stage_reassign = client.patch(
+        f"/api/injection/{order_id}/production-assignment",
+        json={
+            "production_factory_id": "huakang-a",
+            "reason": "生产中直接改派",
+            "expected_assignment_version": 2,
+        },
+    )
+    assert production_stage_reassign.status_code == 409
+
+
+def test_cross_factory_requisition_and_inventory_remain_scoped_to_executor(client):
+    order_id = "BP-HKC-HKA-INVENTORY-001"
+    login_as(client, "c_engineer")
+    assert client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            order_id,
+            origin_factory_id="huakang-c",
+            production_factory_id="huakang-a",
+        ),
+    ).status_code == 201
+    login_as(client, "c_supervisor")
+    assert client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "主管通过"},
+    ).status_code == 200
+
+    login_as(client, "a_warehouse_keeper")
+    batch_response = client.post(
+        "/api/inventory-batches",
+        json={
+            "factory_id": "huakang-a",
+            "material": "HIPS 425",
+            "batch_no": "HKA-HIPS-001",
+            "location": "A-01",
+            "initial_weight_kg": 50,
+        },
+    )
+    assert batch_response.status_code == 201
+    batch = batch_response.json()
+    assert batch["factory_id"] == "huakang-a"
+
+    requisition_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-18",
+            "order_id": order_id,
+            "material": "HIPS 425",
+            "requested_weight_kg": 2.5,
+            "applicant": "华康A啤机部",
+        },
+    )
+    assert requisition_response.status_code == 201
+    requisition = requisition_response.json()
+    assert requisition["factory_id"] == "huakang-a"
+    issue_response = client.patch(
+        f"/api/requisitions/{requisition['id']}/status",
+        json={
+            "status": "已出库",
+            "inventory_batch_id": batch["id"],
+            "issued_at": "2026-07-18 17:00:00",
+        },
+    )
+    assert issue_response.status_code == 200
+
+    movements_response = client.get(
+        "/api/inventory-movements",
+        params={"factory_id": "huakang-a", "requisition_id": requisition["id"]},
+    )
+    assert movements_response.status_code == 200
+    assert movements_response.json()[0]["factory_id"] == "huakang-a"
+
+    login_as(client, "b_warehouse_keeper")
+    assert client.get(
+        "/api/inventory-batches",
+        params={"factory_id": "huakang-a"},
+    ).status_code == 403
+    own_batches = client.get(
+        "/api/inventory-batches",
+        params={"factory_id": "huakang-b"},
+    )
+    assert own_batches.status_code == 200
+    assert own_batches.json() == []
+
+
+def test_cross_factory_approval_retry_is_idempotent_and_does_not_duplicate_notice(client):
+    order_id = "BP-HKC-APPROVAL-IDEMPOTENT-001"
+    login_as(client, "c_engineer")
+    assert client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            order_id,
+            origin_factory_id="huakang-c",
+            production_factory_id="huakang-a",
+        ),
+    ).status_code == 201
+
+    login_as(client, "c_supervisor")
+    first_approval = client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "主管通过"},
+    )
+    repeated_approval = client.patch(
+        f"/api/injection/{order_id}/status",
+        json={"action": "主管通过"},
+    )
+
+    assert first_approval.status_code == 200
+    assert repeated_approval.status_code == 200
+    repeated_detail = repeated_approval.json()
+    assert repeated_detail["order"]["status"] == "待生产"
+    assert len([
+        audit
+        for audit in repeated_detail["audit_logs"]
+        if audit["action"] == "主管通过"
+    ]) == 1
+
+    login_as(client, "a_molding_clerk")
+    notifications = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "factory_id": "huakang-a",
+            "order_id": order_id,
+            "target_module": "production_molding_sample_task",
+        },
+    )
+    assert notifications.status_code == 200
+    effective_waiting_notices = [
+        notification
+        for notification in notifications.json()
+        if notification["event_type"] == "待生产"
+        and notification["status"] != "已处理"
+    ]
+    assert len(effective_waiting_notices) == 1
+
+
+def test_approval_refreshes_assignment_when_reassignment_wins_the_race(client, monkeypatch):
+    order_id = "BP-HKC-APPROVAL-REASSIGN-RACE-001"
+    login_as(client, "c_engineer")
+    assert client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            order_id,
+            origin_factory_id="huakang-c",
+            production_factory_id="huakang-a",
+        ),
+    ).status_code == 201
+
+    service = importlib.import_module("app.services.molding_sample")
+    main_module = importlib.import_module("app.main")
+    original_guard = service.acquire_approval_transition_guard
+    approval_reached_guard = Event()
+    allow_approval_to_continue = Event()
+
+    def delayed_approval_guard(db, *args, **kwargs):
+        # End the initial read transaction so the second session can commit the
+        # reassignment. The approval request still holds its original A snapshot.
+        db.rollback()
+        approval_reached_guard.set()
+        assert allow_approval_to_continue.wait(timeout=10)
+        return original_guard(db, *args, **kwargs)
+
+    monkeypatch.setattr(
+        service,
+        "acquire_approval_transition_guard",
+        delayed_approval_guard,
+    )
+    approval_result: dict[str, object] = {}
+
+    with TestClient(main_module.app) as approval_client:
+        login_as(approval_client, "c_supervisor")
+        login_as(client, "c_supervisor")
+
+        def approve_order() -> None:
+            try:
+                approval_result["response"] = approval_client.patch(
+                    f"/api/injection/{order_id}/status",
+                    json={"action": "主管通过"},
+                )
+            except BaseException as error:  # pragma: no cover - surfaced below
+                approval_result["error"] = error
+
+        approval_thread = Thread(target=approve_order)
+        approval_thread.start()
+        assert approval_reached_guard.wait(timeout=10)
+
+        try:
+            reassignment = client.patch(
+                f"/api/injection/{order_id}/production-assignment",
+                json={
+                    "production_factory_id": "huakang-b",
+                    "reason": "审批并发测试：改由华康B承接",
+                    "expected_assignment_version": 1,
+                },
+            )
+            assert reassignment.status_code == 200, reassignment.text
+        finally:
+            allow_approval_to_continue.set()
+            approval_thread.join(timeout=10)
+        assert not approval_thread.is_alive()
+
+    assert "error" not in approval_result, approval_result.get("error")
+    approval_response = approval_result.get("response")
+    assert approval_response is not None
+    assert hasattr(approval_response, "status_code")
+    assert approval_response.status_code == 200
+    approved = approval_response.json()
+    assert approved["order"]["production_factory_id"] == "huakang-b"
+    assert approved["order"]["status"] == "待生产"
+
+    login_as(client, "a_molding_clerk")
+    old_factory_notices = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "factory_id": "huakang-a",
+            "order_id": order_id,
+            "target_module": "production_molding_sample_task",
+        },
+    )
+    assert old_factory_notices.status_code == 200
+    assert old_factory_notices.json() == []
+
+    login_as(client, "b_molding_clerk")
+    new_factory_notices = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "factory_id": "huakang-b",
+            "order_id": order_id,
+            "target_module": "production_molding_sample_task",
+        },
+    )
+    assert new_factory_notices.status_code == 200
+    assert [
+        notice["event_type"] for notice in new_factory_notices.json()
+    ] == ["待生产"]
+
+
+def test_pending_cross_factory_order_cannot_create_or_list_requisitions(client):
+    order_id = "BP-HKC-PENDING-REQUISITION-BLOCK-001"
+    login_as(client, "c_engineer")
+    assert client.post(
+        "/api/injection",
+        json=cross_factory_order_payload(
+            order_id,
+            origin_factory_id="huakang-c",
+            production_factory_id="huakang-a",
+        ),
+    ).status_code == 201
+
+    login_as(client, "a_warehouse_keeper")
+    create_response = client.post(
+        "/api/requisitions",
+        json={
+            "date": "2026-07-18",
+            "order_id": order_id,
+            "material": "HIPS 425",
+            "requested_weight_kg": 2.5,
+            "applicant": "华康A仓库",
+        },
+    )
+    list_response = client.get(
+        "/api/requisitions",
+        params={"order_id": order_id},
+    )
+
+    assert create_response.status_code == 403
+    assert "待生产或生产中" in create_response.json()["detail"]
+    assert list_response.status_code == 403
+    assert "正式生产阶段" in list_response.json()["detail"]
+
+
+def test_full_order_edit_cannot_switch_between_internal_and_external_flow(client):
+    internal_order_id = "BP-HKC-INTERNAL-TO-EXTERNAL-BLOCK-001"
+    login_as(client, "c_engineer")
+    internal_payload = cross_factory_order_payload(
+        internal_order_id,
+        origin_factory_id="huakang-c",
+        production_factory_id="huakang-a",
+    )
+    assert client.post("/api/injection", json=internal_payload).status_code == 201
+    internal_payload["order"]["workshop"] = "模厂"
+    internal_payload["order"]["send_to"] = "发至模厂"
+    internal_to_external = client.put(
+        f"/api/injection/{internal_order_id}",
+        json=internal_payload,
+    )
+    assert internal_to_external.status_code == 400
+    assert "不可通过全单编辑切换内部生产与外发流程" in internal_to_external.json()["detail"]
+    unchanged_internal = client.get(f"/api/injection/{internal_order_id}").json()
+    assert unchanged_internal["order"]["production_factory_id"] == "huakang-a"
+    assert unchanged_internal["order"]["send_to"] != "发至模厂"
+
+    external_order_id = "BP-HKC-EXTERNAL-TO-INTERNAL-BLOCK-001"
+    external_payload = cross_factory_order_payload(
+        external_order_id,
+        origin_factory_id="huakang-c",
+        production_factory_id="huakang-a",
+    )
+    external_payload["order"]["workshop"] = "模厂"
+    external_payload["order"]["send_to"] = "发至模厂"
+    external_create = client.post("/api/injection", json=external_payload)
+    assert external_create.status_code == 201
+    assert external_create.json()["order"]["production_factory_id"] is None
+
+    external_payload["order"]["workshop"] = "A车间"
+    external_payload["order"]["send_to"] = ""
+    external_to_internal = client.put(
+        f"/api/injection/{external_order_id}",
+        json=external_payload,
+    )
+    assert external_to_internal.status_code == 400
+    assert "不可通过全单编辑切换内部生产与外发流程" in external_to_internal.json()["detail"]
+    unchanged_external = client.get(f"/api/injection/{external_order_id}").json()
+    assert unchanged_external["order"]["production_factory_id"] is None
+    assert unchanged_external["order"]["send_to"] == "发至模厂"

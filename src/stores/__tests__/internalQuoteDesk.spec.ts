@@ -10,6 +10,7 @@ const apiMock = vi.hoisted(() => ({
   create: vi.fn(),
   clone: vi.fn(),
   addParticipation: vi.fn(),
+  removeParticipation: vi.fn(),
   listBusinessOwners: vi.fn(),
   getPricingBaseline: vi.fn(),
   updatePricingBaseline: vi.fn(),
@@ -152,6 +153,7 @@ describe('internal quote desk real API state', () => {
     apiMock.clone.mockResolvedValue(quote({ id: 'clone-1', quote_no: 'IQ-CLONE', status: 'drafting', sections: sectionCodes.map((code, index) => ({ ...section(code, index), status: 'draft', revision: 1 })) }))
     apiMock.saveSection.mockResolvedValue({ ...section('engineering', 1), revision: 2, payload: { molds: [{ item: '模具A' }] } })
     apiMock.addParticipation.mockResolvedValue(quote())
+    apiMock.removeParticipation.mockResolvedValue(quote())
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
   })
 
@@ -163,6 +165,49 @@ describe('internal quote desk real API state', () => {
     expect(store.quotes[0].sections).toHaveLength(8)
     expect(store.quotes[0].sections[0].lines[0]).toMatchObject({ item: '后端行', amountHkd: 12.5 })
     expect(store.businessOwners).toEqual([{ id: 'owner-1', username: 'owner', displayName: '业务负责人' }])
+  })
+
+  it('keeps only the requested quote page and exposes server pagination metadata', async () => {
+    apiMock.list.mockResolvedValue({
+      items: [quote({ id: 'page-2', quote_no: 'IQ-PAGE-2', customer: 'Disney' })],
+      total: 14,
+      page: 2,
+      page_size: 10,
+      total_pages: 2,
+      customers: ['Disney', 'BuzzBee'],
+    })
+    const store = useInternalQuoteDeskStore()
+
+    await store.loadQuotes('huaxing', { page: 2, pageSize: 10, customer: 'Disney' })
+
+    expect(apiMock.list).toHaveBeenCalledWith('huaxing', { page: 2, pageSize: 10, customer: 'Disney' })
+    expect(store.quotes.map((item) => item.id)).toEqual(['page-2'])
+    expect(store.quoteListTotal).toBe(14)
+    expect(store.quoteListPage).toBe(2)
+    expect(store.quoteListPageSize).toBe(10)
+    expect(store.quoteListTotalPages).toBe(2)
+    expect(store.quoteListCustomers).toEqual(['Disney', 'BuzzBee'])
+  })
+
+  it('paginates a legacy unpaged array response instead of locking the list to one page', async () => {
+    const legacyRows = Array.from({ length: 14 }, (_, index) => quote({
+      id: `legacy-${index + 1}`,
+      quote_no: `IQ-LEGACY-${index + 1}`,
+      customer: index % 2 ? 'Disney' : 'BuzzBee',
+    }))
+    apiMock.list.mockResolvedValue(legacyRows)
+    const store = useInternalQuoteDeskStore()
+
+    await store.loadQuotes('huaxing', { page: 1, pageSize: 10 })
+    expect(store.quotes).toHaveLength(10)
+    expect(store.quoteListTotal).toBe(14)
+    expect(store.quoteListPage).toBe(1)
+    expect(store.quoteListTotalPages).toBe(2)
+
+    await store.loadQuotes('huaxing', { page: 2, pageSize: 10 })
+    expect(store.quotes.map((item) => item.id)).toEqual(['legacy-11', 'legacy-12', 'legacy-13', 'legacy-14'])
+    expect(store.quoteListPage).toBe(2)
+    expect(store.quoteListTotalPages).toBe(2)
   })
 
   it('enriches detail with authoritative summary, snapshot, timeline, attachments and exports', async () => {
@@ -219,10 +264,12 @@ describe('internal quote desk real API state', () => {
     const store = useInternalQuoteDeskStore()
     await store.saveSection('quote-1', 'engineering', 1, { molds: [{ item: '模具A' }] }, '修正模具')
     await store.addParticipation('quote-1', 2, ['painting'])
+    await store.removeParticipation('quote-1', 3, ['painting'])
 
     expect(store.sectionEditingEnabled).toBe(true)
     expect(apiMock.saveSection).toHaveBeenCalledWith('quote-1', 'engineering', 1, { molds: [{ item: '模具A' }] }, '修正模具')
     expect(apiMock.addParticipation).toHaveBeenCalledWith('quote-1', 2, ['painting'])
+    expect(apiMock.removeParticipation).toHaveBeenCalledWith('quote-1', 3, ['painting'])
     expect(apiMock.get).toHaveBeenCalledWith('quote-1')
     expect(() => store.addComment('quote-1', '本地评论')).toThrow('尚未提供协作评论接口')
   })

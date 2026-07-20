@@ -20,6 +20,20 @@ for (const requiredCopy of [
   '实际用料',
   '结余金额',
   '啤办生产任务单',
+  '承接生产厂',
+  '来源厂 → 承接生产厂',
+  '生产承接与派厂记录',
+  '改派原因（必填）',
+  '确认改派',
+  '每次派厂都会形成不可变记录',
+  '当前生产状态',
+  '开始人 / 时间',
+  '完成人 / 时间',
+  '派厂人 / 时间',
+  '最近通知状态',
+  '未开始',
+  '未完成',
+  '暂无通知',
   '工程啤办看板只读',
   '可切换查看所有厂区正式单据',
   '新建啤办单',
@@ -111,6 +125,13 @@ for (const requiredImplementation of [
   'tokenizeMoldingSampleSearchKeyword',
   'matchesMoldingSampleSearch',
   'productionTaskRoute',
+  'resolveMoldingSampleProductionFactoryId',
+  'getMoldingSampleFactoryLabel',
+  'validateMoldingSampleProductionAssignment',
+  'selectedApiRecord',
+  'selectedProductionStartAudit',
+  'selectedProductionCompleteAudit',
+  'selectedLatestNotification',
   'apiRecords',
   'apiState',
   'actionToastVisible',
@@ -201,6 +222,8 @@ for (const requiredImplementation of [
   'runApprovalTransition',
   'withdrawSelectedOrder',
   'moldingSampleApi.updateStatus',
+  'moldingSampleApi.updateProductionAssignment',
+  'expected_assignment_version',
   "'工程撤回'",
   "'工程重提'",
   'canEditSelectedRejectedOrder',
@@ -375,7 +398,21 @@ assert.match(source, /填写部/)
 assert.match(source, /<select v-model="createDraft\.workshop"[\s\S]*<option>工程部<\/option>/)
 assert.match(source, /data-testid="create-client-name"[\s\S]*data-testid="create-product-no"/)
 assert.doesNotMatch(source, /<select v-model="createDraft\.send_to"/)
-assert.match(source, /<input v-model="createDraft\.send_to"/)
+assert.match(source, /<input[\s\S]{0,160}v-model="createDraft\.send_to"/)
+assert.match(source, /data-testid="create-production-factory"/)
+assert.match(source, /activeFactoryCapability\?\.dispatchMode === 'cross-factory'/)
+assert.match(source, /v-for="factoryId in allowedCreateProductionFactoryIds"/)
+assert.match(source, /production_factory_id: order\.production_factory_id \?\? null/)
+assert.match(source, /resolveMoldingSampleProductionFactoryId\(selectedRecord\.value\.order\)/)
+assert.match(source, /data-testid="molding-sample-dispatch-panel"/)
+assert.match(source, /data-testid="molding-sample-production-collaboration-summary"/)
+assert.match(source, /getLatestAuditLog\('开始处理'\)/)
+assert.match(source, /getLatestAuditLog\('标记完成'\)/)
+assert.match(source, /authStore\.can\('molding_sample:dispatch', selectedOrder\.value\.factory_id, 'engineering'\)/)
+assert.match(source, /authStore\.can\('molding_sample:dispatch', selectedOrder\.value\.factory_id, 'management'\)/)
+assert.match(source, /expected_assignment_version: expectedAssignmentVersion/)
+assert.match(source, /v-for="log in selectedDispatchLogs"/)
+assert.match(source, /dispatch_logs: record\.dispatch_logs \?\? \[\]/)
 assert.doesNotMatch(source, /<select v-model="createDraft\.supervisor"/)
 assert.match(source, /<input v-model="createDraft\.supervisor"/)
 assert.match(source, /supervisor:\s*''/)
@@ -436,9 +473,10 @@ assert.match(source, /v-model="line\.color"[\s\S]*v-model="line\.pms"/)
 assert.match(source, /v-model="line\.shoot_qty"[\s\S]*v-model="line\.required_material_kg"[\s\S]*v-model="line\.required_date"[\s\S]*v-model="line\.mold_dimensions"[\s\S]*v-model="line\.mold_presence_status"[\s\S]*v-model="line\.notes"/)
 assert.match(source, /v-for="\(line, index\) in createDraft\.items"[\s\S]*role="row"/)
 assert.match(source, /v-model="line\.mold_name"[\s\S]*class="h-9 w-full min-w-0/)
-assert.match(source, /moldingSampleApi\.previewOrderExcel\(workbook,\s*\{\s*factory_id:\s*selectedFactoryId\.value,\s*\}\)/)
+assert.match(source, /moldingSampleApi\.previewOrderExcel\(workbook,\s*\{\s*factory_id:\s*requestedFactoryId,\s*\}\)/)
 assert.match(source, /setView\('create'\)/)
 assert.match(source, /Excel已导入到新建开单草稿/)
+assert.match(source, /审核通过后，任务将进入所选厂区的啤机生产队列/)
 
 for (const removedClearedLayoutCopy of [
   'MOLDING SAMPLE REDESIGN',
