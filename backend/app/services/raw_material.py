@@ -15,7 +15,7 @@ from app.services.auth import AuthContext, add_auth_audit
 
 
 RAW_MATERIAL_BASELINE_PATH = Path(__file__).resolve().parents[1] / "data" / "raw_material_baseline.json"
-RAW_MATERIAL_BASELINE_FACTORY_IDS = ("huakang-a", "huakang-b", "huadeng", "huaxing")
+RAW_MATERIAL_GLOBAL_FACTORY_ID = "*"
 RAW_MATERIAL_CODE_START = 91_000_001
 
 
@@ -51,45 +51,58 @@ def baseline_blend_description(row: dict[str, object]) -> str:
 
 
 def seed_raw_material_defaults(db: Session) -> int:
-    """Seed the prior browser-only baseline into each supported factory idempotently."""
+    """Seed the prior browser-only baseline into the shared material catalog idempotently."""
+    legacy_factory_id = db.scalar(
+        select(RawMaterial.factory_id)
+        .where(RawMaterial.factory_id != RAW_MATERIAL_GLOBAL_FACTORY_ID)
+        .limit(1)
+    )
+    if legacy_factory_id is not None:
+        raise RuntimeError(
+            "检测到尚未迁移的厂区原料资料"
+            f"（factory_id={legacy_factory_id}）；"
+            "请先执行 Alembic 迁移 20260720_0027，再启动应用"
+        )
+
     baseline_rows = load_raw_material_baseline()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     created_count = 0
 
-    for factory_id in RAW_MATERIAL_BASELINE_FACTORY_IDS:
-        existing_codes = set(db.scalars(
-            select(RawMaterial.material_code).where(RawMaterial.factory_id == factory_id)
-        ).all())
-        for row in baseline_rows:
-            material_code = str(row.get("materialCode") or "").strip()
-            if not material_code or material_code in existing_codes:
-                continue
+    existing_codes = set(db.scalars(
+        select(RawMaterial.material_code).where(
+            RawMaterial.factory_id == RAW_MATERIAL_GLOBAL_FACTORY_ID,
+        )
+    ).all())
+    for row in baseline_rows:
+        material_code = str(row.get("materialCode") or "").strip()
+        if not material_code or material_code in existing_codes:
+            continue
 
-            material_name = baseline_material_name(row)
-            blend_description = baseline_blend_description(row)
-            category = str(row.get("plasticCategory") or "").strip()
-            spec = str(row.get("commodityName") or blend_description or row.get("remarks") or "").strip()
-            notes = str(row.get("remarks") or blend_description or "").strip()
-            db.add(
-                RawMaterial(
-                    id=f"RM-BASELINE-{factory_id}-{material_code}",
-                    factory_id=factory_id,
-                    material_code=material_code,
-                    material_name=material_name,
-                    category=category,
-                    spec=spec,
-                    unit=str(row.get("unit") or "KG/包").strip() or "KG/包",
-                    supplier=str(row.get("origin") or "").strip(),
-                    safety_stock_kg=None,
-                    status="启用" if material_name else "停用",
-                    notes=notes,
-                    created_by="system-baseline",
-                    created_at=now,
-                    updated_at=now,
-                )
+        material_name = baseline_material_name(row)
+        blend_description = baseline_blend_description(row)
+        category = str(row.get("plasticCategory") or "").strip()
+        spec = str(row.get("commodityName") or blend_description or row.get("remarks") or "").strip()
+        notes = str(row.get("remarks") or blend_description or "").strip()
+        db.add(
+            RawMaterial(
+                id=f"RM-BASELINE-GLOBAL-{material_code}",
+                factory_id=RAW_MATERIAL_GLOBAL_FACTORY_ID,
+                material_code=material_code,
+                material_name=material_name,
+                category=category,
+                spec=spec,
+                unit=str(row.get("unit") or "KG/包").strip() or "KG/包",
+                supplier=str(row.get("origin") or "").strip(),
+                safety_stock_kg=None,
+                status="启用" if material_name else "停用",
+                notes=notes,
+                created_by="system-baseline",
+                created_at=now,
+                updated_at=now,
             )
-            existing_codes.add(material_code)
-            created_count += 1
+        )
+        existing_codes.add(material_code)
+        created_count += 1
 
     if created_count:
         db.commit()
@@ -102,14 +115,14 @@ def to_raw_material_out(material: RawMaterial, unit_price_hkd_per_lb: float | No
     )
 
 
-def list_raw_materials(db: Session, factory_id: str) -> list[RawMaterialOut]:
+def list_raw_materials(db: Session) -> list[RawMaterialOut]:
     statement = (
         select(RawMaterial, MoldingSampleMaterialPrice.unit_price)
         .outerjoin(
             MoldingSampleMaterialPrice,
             MoldingSampleMaterialPrice.material == RawMaterial.material_name,
         )
-        .where(RawMaterial.factory_id == factory_id)
+        .where(RawMaterial.factory_id == RAW_MATERIAL_GLOBAL_FACTORY_ID)
         .order_by(RawMaterial.material_code, RawMaterial.created_at)
     )
     return [
@@ -148,10 +161,12 @@ def upsert_material_price(
     return unit_price_hkd_per_lb
 
 
-def generate_raw_material_code(db: Session, factory_id: str) -> str:
-    """Return the next eight-digit material code for one factory."""
+def generate_raw_material_code(db: Session) -> str:
+    """Return the next eight-digit material code for the shared catalog."""
     material_codes = db.scalars(
-        select(RawMaterial.material_code).where(RawMaterial.factory_id == factory_id),
+        select(RawMaterial.material_code).where(
+            RawMaterial.factory_id == RAW_MATERIAL_GLOBAL_FACTORY_ID,
+        ),
     ).all()
     numeric_codes = [int(code) for code in material_codes if code.isdecimal()]
     next_code = max([RAW_MATERIAL_CODE_START - 1, *numeric_codes]) + 1
@@ -167,8 +182,8 @@ def create_raw_material(
     for attempt in range(3):
         material = RawMaterial(
             id=f"RM-{uuid4().hex[:12].upper()}",
-            factory_id=payload.factory_id,
-            material_code=generate_raw_material_code(db, payload.factory_id),
+            factory_id=RAW_MATERIAL_GLOBAL_FACTORY_ID,
+            material_code=generate_raw_material_code(db),
             material_name=payload.material_name,
             category=payload.category,
             spec=payload.spec,
@@ -193,7 +208,8 @@ def create_raw_material(
             username=current_user.username,
             user_id=current_user.id,
             detail=(
-                f"厂区={material.factory_id};物料编号={material.material_code};原料={material.material_name};"
+                f"资料范围=全厂共享;操作厂区={payload.factory_id};"
+                f"物料编号={material.material_code};原料={material.material_name};"
                 f"单价(HKD/磅)={unit_price_hkd_per_lb if unit_price_hkd_per_lb is not None else '未维护'}"
             ),
         )
@@ -216,9 +232,10 @@ def update_raw_material(
     material_id: str,
     payload: RawMaterialUpdateRequest,
     current_user: AuthContext,
+    context_factory_id: str,
 ) -> RawMaterialOut:
     material = db.get(RawMaterial, material_id)
-    if material is None:
+    if material is None or material.factory_id != RAW_MATERIAL_GLOBAL_FACTORY_ID:
         raise HTTPException(status_code=404, detail="原料不存在或已被删除")
 
     previous_name = material.material_name
@@ -243,7 +260,7 @@ def update_raw_material(
         username=current_user.username,
         user_id=current_user.id,
         detail=(
-            f"厂区={material.factory_id};物料编号={material.material_code};"
+            f"资料范围=全厂共享;操作厂区={context_factory_id};物料编号={material.material_code};"
             f"原料={previous_name}→{material.material_name};"
             f"单价(HKD/磅)={unit_price_hkd_per_lb if unit_price_hkd_per_lb is not None else '未维护'}"
         ),

@@ -20,10 +20,15 @@ const customerPricePermissions = [
   'customer_price:compare',
 ]
 
-function mountPanel(username: string, deniedPermissions: string[] = []) {
+function mountPanel(
+  username: string,
+  deniedPermissions: string[] = [],
+  factoryId = 'huaxing',
+) {
+  useAppStore().setActiveFactory(factoryId as 'huaxing' | 'huakang-c' | 'huakang-d')
   const effectiveAccess = customerPricePermissions.map((permissionCode) => ({
     permission_code: permissionCode,
-    factory_id: 'huaxing',
+    factory_id: factoryId,
     department: 'sales-business',
     effect: deniedPermissions.includes(permissionCode) ? 'deny' as const : 'allow' as const,
     allowed: !deniedPermissions.includes(permissionCode),
@@ -41,12 +46,12 @@ function mountPanel(username: string, deniedPermissions: string[] = []) {
       role_id: 'sales_customer_owner',
       role_code: 'sales_customer_owner',
       role_name: '车间业务跟客',
-      factory_id: 'huaxing',
+      factory_id: factoryId,
       department: 'sales-business',
       permissions: customerPricePermissions,
       data_scope: 'department',
     }],
-    factory_scopes: ['huaxing'],
+    factory_scopes: [factoryId],
     department_scopes: ['sales-business'],
     authz_mode: 'enforce',
     effective_access: effectiveAccess,
@@ -158,4 +163,24 @@ describe('QuoteCenterPanel customer visibility', () => {
     expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('仅查看')
   })
+
+  it.each(['huakang-c', 'huakang-d'] as const)(
+    'starts %s with an independent empty conversion state and no legacy factory mock',
+    async (factoryId) => {
+      const wrapper = mountPanel(`ordinary-sales-${factoryId}`, [], factoryId)
+      const customerButtons = wrapper.findAll('button[aria-pressed]')
+
+      expect(customerButtons.map((button) => button.text())).toEqual([
+        'BuzzBee 0 单',
+        '迪士尼 0 单',
+        'Dickie 0 单',
+        '彩星 0 单',
+      ])
+
+      for (const customerButton of customerButtons) {
+        await customerButton.trigger('click')
+        expect(wrapper.text()).not.toMatch(/QTC-(?:HKA|HKB|HD)-|CQ-HD-/)
+      }
+    },
+  )
 })

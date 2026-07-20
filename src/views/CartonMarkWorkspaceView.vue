@@ -4,7 +4,7 @@ import { computed, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import CartonMarkCheckPanel from '@/components/modules/qa/CartonMarkCheckPanel.vue'
-import { getDepartmentRoute } from '@/data/enterpriseMock'
+import { getDepartmentRoute, getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -19,8 +19,11 @@ const isWarehouseWorkspace = computed(() => props.workspaceMode === 'warehouse')
 const currentDepartmentId = computed(() => isWarehouseWorkspace.value ? 'pmc-warehouse' : 'qa')
 const workspaceTitle = computed(() => isWarehouseWorkspace.value ? '箱唛资料模板' : '箱唛核验')
 const workspaceSubtitle = computed(() => isWarehouseWorkspace.value ? '客户箱唛 PDF 模板入库' : '实拍箱唛自动核对')
-const departmentRoute = computed(() => getDepartmentRoute(currentDepartmentId.value))
 const activeFactory = computed(() => appStore.activeProductionFactory)
+const departmentRoute = computed(() => getFactoryScopedRoute(
+  getDepartmentRoute(currentDepartmentId.value),
+  activeFactory.value.id,
+))
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)

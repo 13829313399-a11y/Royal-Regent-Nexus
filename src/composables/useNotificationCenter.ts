@@ -3,6 +3,7 @@ import { moldingSampleApi, type MoldingSampleNotificationResponse } from '@/api/
 import { systemApi, type SystemNotificationResponse } from '@/api/system'
 import { formatBusinessDateTime, parseBusinessTimestamp } from '@/lib/dateTime'
 import { getApiErrorMessage } from '@/lib/http'
+import { getFactoryScopedRoute, isProductionFactoryContextId } from '@/data/enterpriseMock'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationSound } from '@/composables/useNotificationSound'
 
@@ -76,6 +77,15 @@ const MAX_SHARED_ANNOUNCEMENTS = 200
 const MAX_WATERMARK_BOUNDARY_KEYS = 500
 const INTERNAL_QUOTE_ROUTE_BASE = '/modules/sales-business/internal-quote-desk'
 const INTERNAL_QUOTE_ROUTE_PATTERN = /^\/modules\/sales-business\/internal-quote-desk\/([A-Za-z0-9][A-Za-z0-9._~-]{0,63})(?:\/(collaboration|summary|export))?$/
+const UNSAFE_INTERNAL_QUOTE_QUERY_KEYS = new Set([
+  'continue',
+  'next',
+  'redirect',
+  'redirect_uri',
+  'return_to',
+  'returnurl',
+  'url',
+])
 const ACTIONABLE_INTERNAL_QUOTE_EVENTS = new Set([
   'quote_created',
   'quote_cloned',
@@ -246,14 +256,27 @@ export function useNotificationCenter() {
 
   function getSystemRoute(notification: SystemNotificationResponse) {
     if (notification.type === 'internal_quote') {
+      let targetRoute = INTERNAL_QUOTE_ROUTE_BASE
       if (notification.payload.event === 'customer_price_artifact_available') {
-        return '/modules/sales-business/customer-price-conversion'
+        targetRoute = '/modules/sales-business/customer-price-conversion'
+      } else {
+        const payloadRoute = typeof notification.payload.route === 'string' ? notification.payload.route.trim() : ''
+        const [payloadPath, rawQuery = ''] = payloadRoute.split('?', 2)
+        const routeMatch = payloadPath?.match(INTERNAL_QUOTE_ROUTE_PATTERN)
+        const query = new URLSearchParams(rawQuery)
+        const hasUnsafeQuery = [...query.keys()].some((key) =>
+          UNSAFE_INTERNAL_QUOTE_QUERY_KEYS.has(key.toLowerCase()),
+        )
+        if (routeMatch && !hasUnsafeQuery) {
+          const [, quoteId, destination = 'collaboration'] = routeMatch
+          const normalizedQuery = query.toString()
+          targetRoute = `${INTERNAL_QUOTE_ROUTE_BASE}/${quoteId}/${destination}${normalizedQuery ? `?${normalizedQuery}` : ''}`
+        }
       }
-      const payloadRoute = typeof notification.payload.route === 'string' ? notification.payload.route.trim() : ''
-      const routeMatch = payloadRoute.match(INTERNAL_QUOTE_ROUTE_PATTERN)
-      if (!routeMatch) return INTERNAL_QUOTE_ROUTE_BASE
-      const [, quoteId, destination = 'collaboration'] = routeMatch
-      return `${INTERNAL_QUOTE_ROUTE_BASE}/${quoteId}/${destination}`
+
+      return isProductionFactoryContextId(notification.target_factory_id)
+        ? getFactoryScopedRoute(targetRoute, notification.target_factory_id)
+        : targetRoute
     }
     if (notification.type === 'password_reset') {
       return `/system/users?tab=password-reset&notification_id=${encodeURIComponent(notification.id)}`

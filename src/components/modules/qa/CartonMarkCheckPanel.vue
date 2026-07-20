@@ -100,6 +100,8 @@ const PHOTO_STORE_NAME = 'cartonMarkPhotos'
 const LOCAL_STORAGE_KEY = 'rr-carton-mark-library-records'
 const PHOTO_LOCAL_STORAGE_KEY = 'rr-carton-mark-photo-records'
 const ALL_CUSTOMERS = '全部'
+const LEGACY_CARTON_MARK_FACTORY_ID: ProductionFactoryContextId = 'huaxing'
+const LEGACY_CARTON_MARK_FACTORY_NAME = '华兴'
 
 const appStore = useAppStore()
 const authStore = useAuthStore()
@@ -159,6 +161,7 @@ const isSavingBatchPhoto = ref(false)
 const deletingRecordId = ref('')
 const deletingPhotoRecordId = ref('')
 const storageMode = ref<'indexedDb' | 'localStorage'>('indexedDb')
+let factoryGeneration = 0
 const pdfUrls = new Set<string>()
 const imageUrls = new Set<string>()
 const photoCropState = reactive<Record<CartonMarkPhotoSide, PhotoCropState>>({
@@ -168,6 +171,9 @@ const photoCropState = reactive<Record<CartonMarkPhotoSide, PhotoCropState>>({
 
 const activeFactory = computed(() => appStore.activeProductionFactory)
 const activeFactoryId = computed(() => activeFactory.value.id as ProductionFactoryContextId)
+const isCurrentFactoryTask = (factoryId: ProductionFactoryContextId, generation: number) => (
+  activeFactoryId.value === factoryId && factoryGeneration === generation
+)
 const isWarehouseWorkspace = computed(() => {
   if (props.workspaceMode) return props.workspaceMode === 'warehouse'
   return String(route.params.department ?? 'qa') === 'pmc-warehouse'
@@ -405,6 +411,7 @@ onMounted(async () => {
 })
 
 watch(activeFactoryId, () => {
+  factoryGeneration += 1
   errorMessage.value = ''
   successMessage.value = ''
   photoErrorMessage.value = ''
@@ -412,6 +419,11 @@ watch(activeFactoryId, () => {
   activeCustomer.value = ALL_CUSTOMERS
   photoForm.customerName = ALL_CUSTOMERS
   photoForm.templateId = ''
+  isSaving.value = false
+  isSavingPhoto.value = false
+  isSavingBatchPhoto.value = false
+  recheckingPhotoId.value = ''
+  resetForm()
   resetPhotoSelection()
   resetBatchPhotoSelection()
 })
@@ -428,6 +440,7 @@ watch(() => photoForm.templateId, () => {
 })
 
 onBeforeUnmount(() => {
+  factoryGeneration += 1
   for (const url of pdfUrls) {
     URL.revokeObjectURL(url)
   }
@@ -742,8 +755,8 @@ function hydrateRecord(record: StoredCartonMarkTemplateRecord): CartonMarkTempla
   return {
     ...record,
     contractNumber: record.contractNumber ?? '',
-    factoryId: record.factoryId ?? activeFactoryId.value,
-    factoryName: record.factoryName ?? activeFactory.value.shortName,
+    factoryId: record.factoryId ?? LEGACY_CARTON_MARK_FACTORY_ID,
+    factoryName: record.factoryName ?? LEGACY_CARTON_MARK_FACTORY_NAME,
     pdfUrl: record.fileBlob ? createPdfUrl(record.fileBlob) : undefined,
   }
 }
@@ -752,8 +765,8 @@ function normalizeStoredRecord(record: StoredCartonMarkTemplateRecord): StoredCa
   return {
     ...record,
     contractNumber: record.contractNumber ?? '',
-    factoryId: record.factoryId ?? activeFactoryId.value,
-    factoryName: record.factoryName ?? activeFactory.value.shortName,
+    factoryId: record.factoryId ?? LEGACY_CARTON_MARK_FACTORY_ID,
+    factoryName: record.factoryName ?? LEGACY_CARTON_MARK_FACTORY_NAME,
   }
 }
 
@@ -765,8 +778,8 @@ function hydratePhotoRecord(record: StoredCartonMarkPhotoRecord): CartonMarkPhot
   return {
     ...record,
     contractNumber: record.contractNumber ?? '',
-    factoryId: record.factoryId ?? activeFactoryId.value,
-    factoryName: record.factoryName ?? activeFactory.value.shortName,
+    factoryId: record.factoryId ?? LEGACY_CARTON_MARK_FACTORY_ID,
+    factoryName: record.factoryName ?? LEGACY_CARTON_MARK_FACTORY_NAME,
     imageUrl: frontImageUrl,
     frontImageUrl,
     sideImageUrl: record.sideImageBlob ? createImageUrl(record.sideImageBlob) : undefined,
@@ -777,8 +790,8 @@ function normalizeStoredPhotoRecord(record: StoredCartonMarkPhotoRecord): Stored
   return {
     ...record,
     contractNumber: record.contractNumber ?? '',
-    factoryId: record.factoryId ?? activeFactoryId.value,
-    factoryName: record.factoryName ?? activeFactory.value.shortName,
+    factoryId: record.factoryId ?? LEGACY_CARTON_MARK_FACTORY_ID,
+    factoryName: record.factoryName ?? LEGACY_CARTON_MARK_FACTORY_NAME,
   }
 }
 
@@ -1121,6 +1134,9 @@ async function submitTemplate() {
 
   isSaving.value = true
 
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryName = activeFactory.value.shortName
+  const requestedFactoryGeneration = factoryGeneration
   const currentFile = selectedFile.value
   const customerName = form.customerName.trim()
   const po = ''
@@ -1133,8 +1149,8 @@ async function submitTemplate() {
   }).length + 1
   const record: CartonMarkTemplateRecord = {
     id: `CM-${Date.now()}`,
-    factoryId: activeFactoryId.value,
-    factoryName: activeFactory.value.shortName,
+    factoryId: requestedFactoryId,
+    factoryName: requestedFactoryName,
     customerName,
     po,
     item,
@@ -1154,18 +1170,24 @@ async function submitTemplate() {
     }
 
     allRecords.value = sortRecords([record, ...allRecords.value])
-    activeCustomer.value = customerName
-    successMessage.value = `${activeFactory.value.shortName} · ${customerName} · ITEM：${item} · 合同：${contractNumber} 已入库。`
-    resetForm()
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      activeCustomer.value = customerName
+      successMessage.value = `${requestedFactoryName} · ${customerName} · ITEM：${item} · 合同：${contractNumber} 已入库。`
+      resetForm()
+    }
   } catch {
     storageMode.value = 'localStorage'
     allRecords.value = sortRecords([record, ...allRecords.value])
     writeRecordsToLocalStorage(allRecords.value)
-    activeCustomer.value = customerName
-    successMessage.value = `${activeFactory.value.shortName} · ${customerName} · ITEM：${item} · 合同：${contractNumber} 已入库。`
-    resetForm()
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      activeCustomer.value = customerName
+      successMessage.value = `${requestedFactoryName} · ${customerName} · ITEM：${item} · 合同：${contractNumber} 已入库。`
+      resetForm()
+    }
   } finally {
-    isSaving.value = false
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      isSaving.value = false
+    }
   }
 }
 
@@ -1250,6 +1272,14 @@ async function submitPhoto() {
     return
   }
 
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryName = activeFactory.value.shortName
+  const requestedFactoryGeneration = factoryGeneration
+  if (template.factoryId !== requestedFactoryId) {
+    photoErrorMessage.value = '模板所属厂区与当前厂区不一致，请重新选择。'
+    return
+  }
+
   if (!template.fileBlob) {
     photoErrorMessage.value = '当前模板只有索引，没有 PDF 原件，无法自动核对。请纸箱仓管重新上传这份 PDF 模板。'
     return
@@ -1270,8 +1300,8 @@ async function submitPhoto() {
   const photoRecord: CartonMarkPhotoRecord = {
     id: `CMP-${Date.now()}`,
     templateId: template.id,
-    factoryId: activeFactoryId.value,
-    factoryName: activeFactory.value.shortName,
+    factoryId: requestedFactoryId,
+    factoryName: requestedFactoryName,
     customerName: template.customerName,
     po: template.po,
     item: template.item,
@@ -1299,12 +1329,16 @@ async function submitPhoto() {
     photoRecord.autoCheckResult = result
     photoRecord.autoCheckErrorMessage = ''
     photoRecord.autoCheckedAt = new Date().toISOString()
-    autoCheckResult.value = result
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      autoCheckResult.value = result
+    }
   } catch (error) {
     const message = `自动核对未完成：${getApiErrorMessage(error)}`
     photoRecord.autoCheckErrorMessage = message
     photoRecord.autoCheckedAt = new Date().toISOString()
-    autoCheckErrorMessage.value = message
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      autoCheckErrorMessage.value = message
+    }
   }
 
   try {
@@ -1315,32 +1349,43 @@ async function submitPhoto() {
     }
 
     allPhotoRecords.value = sortPhotoRecords([photoRecord, ...allPhotoRecords.value])
-    resetPhotoSelection(false)
-    showPhotoAutoCheck(photoRecord)
-    photoSuccessMessage.value = photoRecord.autoCheckResult
-      ? `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
-      : `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      resetPhotoSelection(false)
+      showPhotoAutoCheck(photoRecord)
+      photoSuccessMessage.value = photoRecord.autoCheckResult
+        ? `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
+        : `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
+    }
   } catch {
     storageMode.value = 'localStorage'
     allPhotoRecords.value = sortPhotoRecords([photoRecord, ...allPhotoRecords.value])
     writePhotoRecordsToLocalStorage(allPhotoRecords.value)
-    resetPhotoSelection(false)
-    showPhotoAutoCheck(photoRecord)
-    photoSuccessMessage.value = photoRecord.autoCheckResult
-      ? `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
-      : `${activeFactory.value.shortName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      resetPhotoSelection(false)
+      showPhotoAutoCheck(photoRecord)
+      photoSuccessMessage.value = photoRecord.autoCheckResult
+        ? `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
+        : `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
+    }
   } finally {
-    isSavingPhoto.value = false
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      isSavingPhoto.value = false
+    }
   }
 }
 
 function createBatchPhotoRecords(
   template: CartonMarkTemplateRecord,
   batchResult: CartonMarkBatchCheckResponse,
+  factoryId: ProductionFactoryContextId,
+  factoryName: string,
+  frontFiles: File[],
+  sideFiles: File[],
 ) {
   const uploadedAt = new Date().toISOString()
-  const existingCount = photoRecords.value.filter((record) => {
-    return normalizeKey(record.customerName) === normalizeKey(template.customerName)
+  const existingCount = allPhotoRecords.value.filter((record) => {
+    return record.factoryId === factoryId
+      && normalizeKey(record.customerName) === normalizeKey(template.customerName)
       && normalizeKey(record.po) === normalizeKey(template.po)
       && normalizeKey(record.item) === normalizeKey(template.item)
       && normalizeKey(record.contractNumber) === normalizeKey(template.contractNumber)
@@ -1348,15 +1393,15 @@ function createBatchPhotoRecords(
 
   return batchResult.items.flatMap((batchItem, batchIndex): CartonMarkPhotoRecord[] => {
     const isFront = batchItem.side === 'front'
-    const sourceFile = (isFront ? selectedFrontBatchFiles.value : selectedSideBatchFiles.value)[batchItem.file_index]
+    const sourceFile = (isFront ? frontFiles : sideFiles)[batchItem.file_index]
     if (!sourceFile) return []
 
     const imageUrl = createImageUrl(sourceFile)
     const record: CartonMarkPhotoRecord = {
       id: `CMP-BATCH-${Date.now()}-${batchIndex}`,
       templateId: template.id,
-      factoryId: activeFactoryId.value,
-      factoryName: activeFactory.value.shortName,
+      factoryId,
+      factoryName,
       customerName: template.customerName,
       po: template.po,
       item: template.item,
@@ -1410,41 +1455,69 @@ async function submitBatchPhoto() {
     return
   }
 
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryName = activeFactory.value.shortName
+  const requestedFactoryGeneration = factoryGeneration
+  if (template.factoryId !== requestedFactoryId) {
+    photoErrorMessage.value = '模板所属厂区与当前厂区不一致，请重新选择。'
+    return
+  }
+  const requestedFrontFiles = [...selectedFrontBatchFiles.value]
+  const requestedSideFiles = [...selectedSideBatchFiles.value]
+
   isSavingBatchPhoto.value = true
   try {
     const batchResult = await runCartonMarkBatchAutoCheck(
       template,
-      selectedFrontBatchFiles.value,
-      selectedSideBatchFiles.value,
+      requestedFrontFiles,
+      requestedSideFiles,
     )
-    const batchRecords = createBatchPhotoRecords(template, batchResult)
+    const batchRecords = createBatchPhotoRecords(
+      template,
+      batchResult,
+      requestedFactoryId,
+      requestedFactoryName,
+      requestedFrontFiles,
+      requestedSideFiles,
+    )
     if (!batchRecords.length) {
       throw new Error('批量图片与核对结果不一致，请重新选择图片后再试。')
     }
 
-    const nextPhotoRecords = sortPhotoRecords([...batchRecords, ...allPhotoRecords.value])
+    const batchRecordIds = new Set(batchRecords.map((record) => record.id))
+    const mergeBatchRecords = () => sortPhotoRecords([
+      ...batchRecords,
+      ...allPhotoRecords.value.filter((record) => !batchRecordIds.has(record.id)),
+    ])
     try {
       if (storageMode.value === 'indexedDb') {
         await Promise.all(batchRecords.map((record) => savePhotoRecordToDb(record)))
       } else {
-        writePhotoRecordsToLocalStorage(nextPhotoRecords)
+        writePhotoRecordsToLocalStorage(mergeBatchRecords())
       }
     } catch {
       storageMode.value = 'localStorage'
-      writePhotoRecordsToLocalStorage(nextPhotoRecords)
+      writePhotoRecordsToLocalStorage(mergeBatchRecords())
     }
 
+    const nextPhotoRecords = mergeBatchRecords()
     allPhotoRecords.value = nextPhotoRecords
-    const latestRecord = batchRecords.at(-1) as CartonMarkPhotoRecord
-    showPhotoAutoCheck(latestRecord)
-    resetBatchPhotoSelection()
-    const summary = batchResult.summary
-    const actionName = batchRecords.length === 1 ? '核对' : '批量核对'
-    photoSuccessMessage.value = `${actionName}完成 ${batchRecords.length} 张：通过 ${summary.pass_count} 项，异常 ${summary.mismatch_count} 项，待复核 ${summary.review_count + summary.missing_count} 项。`
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      const latestRecord = batchRecords.at(-1) as CartonMarkPhotoRecord
+      showPhotoAutoCheck(latestRecord)
+      resetBatchPhotoSelection()
+      const summary = batchResult.summary
+      const actionName = batchRecords.length === 1 ? '核对' : '批量核对'
+      photoSuccessMessage.value = `${actionName}完成 ${batchRecords.length} 张：通过 ${summary.pass_count} 项，异常 ${summary.mismatch_count} 项，待复核 ${summary.review_count + summary.missing_count} 项。`
+    }
   } catch (error) {
-    photoErrorMessage.value = `核对未完成：${getApiErrorMessage(error)}`
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      photoErrorMessage.value = `核对未完成：${getApiErrorMessage(error)}`
+    }
   } finally {
-    isSavingBatchPhoto.value = false
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      isSavingBatchPhoto.value = false
+    }
   }
 }
 
@@ -1462,6 +1535,13 @@ async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) {
 
   if (!canReviewPhoto.value) {
     photoErrorMessage.value = '当前账号无权重新自动核对箱唛，请使用 QA 检验员账号操作。'
+    return
+  }
+
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
+  if (photo.factoryId !== requestedFactoryId) {
+    photoErrorMessage.value = '实拍记录所属厂区与当前厂区不一致，请重新选择。'
     return
   }
 
@@ -1502,8 +1582,10 @@ async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) {
     }
 
     await replaceStoredPhotoRecord(checkedPhoto)
-    showPhotoAutoCheck(checkedPhoto)
-    photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 已重新生成自动核对结果。`
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      showPhotoAutoCheck(checkedPhoto)
+      photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 已重新生成自动核对结果。`
+    }
   } catch (error) {
     const message = `自动核对未完成：${getApiErrorMessage(error)}`
     const failedPhoto: CartonMarkPhotoRecord = {
@@ -1513,10 +1595,14 @@ async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) {
     }
 
     await replaceStoredPhotoRecord(failedPhoto)
-    showPhotoAutoCheck(failedPhoto)
-    photoErrorMessage.value = message
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      showPhotoAutoCheck(failedPhoto)
+      photoErrorMessage.value = message
+    }
   } finally {
-    recheckingPhotoId.value = ''
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+      recheckingPhotoId.value = ''
+    }
   }
 }
 

@@ -45,6 +45,19 @@ function isActive(item: NavigationItem) {
   return false
 }
 
+function getNavigationTarget(item: NavigationItem) {
+  if (!item.departmentId) {
+    return item.to
+  }
+
+  return {
+    path: item.to,
+    query: {
+      factory: appStore.activeFactoryId,
+    },
+  }
+}
+
 function handleSelect(item: NavigationItem) {
   if (item.departmentId && isModuleDepartmentId(item.departmentId)) {
     appStore.setActiveDepartment(item.departmentId)
@@ -137,7 +150,7 @@ watch(() => props.mobileOpen, (isOpen) => {
           <RouterLink
             v-for="item in group.items"
             :key="`${group.label}-${item.label}`"
-            :to="item.to"
+            :to="getNavigationTarget(item)"
             class="group relative flex h-10 items-center gap-3 overflow-hidden rounded-lg px-3 text-sm transition-[color,background-color,box-shadow] duration-150"
             :class="isActive(item)
               ? 'bg-gradient-to-r from-teal-50 to-teal-50/45 font-semibold text-teal-800 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.08)]'
