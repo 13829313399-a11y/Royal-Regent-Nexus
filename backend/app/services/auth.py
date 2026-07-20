@@ -40,6 +40,7 @@ from app.services.iam_scope import (
     OPERATE_ACCESS_KIND,
     OWN_FACTORY_SCOPE,
     READ_ACCESS_KIND,
+    SYSTEM_POSITION_CROSS_FACTORY_READ_PERMISSION_CODES,
     VALID_ACCESS_KINDS,
     VALID_SCOPE_MODES,
     default_permission_access_kind,
@@ -517,6 +518,11 @@ def system_position_grant_scope_source(
         return "local"
     if grant.scope_mode == CROSS_FACTORY_OPERATE_SCOPE:
         return "cross_operate"
+    if (
+        permission in SYSTEM_POSITION_CROSS_FACTORY_READ_PERMISSION_CODES
+        and permission in grant.read_permissions
+    ):
+        return "cross_read"
     if (
         grant.scope_mode == CROSS_FACTORY_READ_SCOPE
         and permission in grant.read_permissions
@@ -2196,8 +2202,12 @@ def build_auth_context(db: Session, user: AuthUser) -> AuthContext:
     cross_position_permission_codes = {
         permission_code
         for grant in grants
-        if grant.unrestricted_department and grant.scope_mode != OWN_FACTORY_SCOPE
+        if grant.unrestricted_department
         for permission_code in grant.permissions
+        if (
+            grant.scope_mode != OWN_FACTORY_SCOPE
+            or permission_code in SYSTEM_POSITION_CROSS_FACTORY_READ_PERMISSION_CODES
+        )
     }
     for permission_code in sorted(cross_position_permission_codes - allowed_permission_codes):
         if any(

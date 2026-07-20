@@ -1498,7 +1498,7 @@ describe('molding sample runtime error handling', () => {
 
     const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
 
-    await getButtonByExactText(wrapper, '打印任务单').trigger('click')
+    await wrapper.get('[data-testid="production-task-print-button"]').trigger('click')
     await nextTick()
 
     const preview = wrapper.get('[data-testid="molding-sample-task-print-preview"]').text()
@@ -1534,6 +1534,76 @@ describe('molding sample runtime error handling', () => {
     vi.runAllTimers()
     expect(document.body.classList.contains('molding-sample-task-printing')).toBe(false)
     expect(document.getElementById('molding-sample-active-print-page')).toBeNull()
+    vi.useRealTimers()
+
+    wrapper.unmount()
+  })
+
+  it('combines only the checked production task notices into one print run', async () => {
+    const printSpy = vi.fn()
+    vi.stubGlobal('print', printSpy)
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huaxing', order_id: 'BP-PROD-BATCH-001' }
+    const firstRecord = createKpiRecord('待生产', 'BP-PROD-BATCH-001', null)
+    const secondRecord = createKpiRecord('生产中', 'BP-PROD-BATCH-002', null)
+    const thirdRecord = createKpiRecord('已完成', 'BP-PROD-BATCH-003', 1.25)
+    firstRecord.order.product_name = '批量打印产品一'
+    secondRecord.order.product_name = '批量打印产品二'
+    thirdRecord.order.product_name = '不应打印产品三'
+    firstRecord.items[0].mold_name = '批量模具一'
+    secondRecord.items[0].mold_name = '批量模具二'
+    thirdRecord.items[0].mold_name = '不应打印模具三'
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([
+      firstRecord,
+      secondRecord,
+      thirdRecord,
+    ])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([
+      createProductionTaskNotification(firstRecord.order.id, 1),
+      createProductionTaskNotification(secondRecord.order.id, 2),
+      createProductionTaskNotification(thirdRecord.order.id, 3),
+    ])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    await wrapper.get('[aria-label="选择打印任务 BP-PROD-BATCH-001"]').setValue(true)
+    await getButtonByExactText(wrapper, '生产中 1').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[aria-label="选择打印任务 BP-PROD-BATCH-001"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="production-task-print-selection-toolbar"]').text()).toContain('已选 1 张')
+
+    await wrapper.get('[aria-label="选择打印任务 BP-PROD-BATCH-002"]').setValue(true)
+    await nextTick()
+
+    expect(routerReplace).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="production-task-print-selection-toolbar"]').text()).toContain('已选 2 张')
+    expect(wrapper.get('[data-testid="production-task-print-button"]').attributes('aria-label')).toBe('打印已选 2 张任务单')
+
+    await wrapper.get('[data-testid="production-task-print-button"]').trigger('click')
+    await nextTick()
+
+    const preview = wrapper.get('[data-testid="molding-sample-task-print-preview"]')
+    const printArea = wrapper.get('[data-testid="molding-sample-task-print-area"]')
+    expect(preview.text()).toContain('2 张通知单 · 2 项模具明细')
+    expect(preview.findAll('[data-testid="molding-sample-task-print-preview-notice"]')).toHaveLength(2)
+    expect(printArea.findAll('[data-testid="molding-sample-task-print-notice"]')).toHaveLength(2)
+    for (const expectedCopy of ['BP-PROD-BATCH-001', '批量模具一', 'BP-PROD-BATCH-002', '批量模具二']) {
+      expect(preview.text()).toContain(expectedCopy)
+      expect(printArea.text()).toContain(expectedCopy)
+    }
+    for (const excludedCopy of ['BP-PROD-BATCH-003', '不应打印产品三', '不应打印模具三']) {
+      expect(preview.text()).not.toContain(excludedCopy)
+      expect(printArea.text()).not.toContain(excludedCopy)
+    }
+
+    vi.useFakeTimers()
+    await getButtonByExactText(wrapper, '确认打印').trigger('click')
+    expect(printSpy).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateNotification).not.toHaveBeenCalled()
+    vi.runAllTimers()
     vi.useRealTimers()
 
     wrapper.unmount()
@@ -2322,6 +2392,59 @@ describe('molding sample runtime error handling', () => {
     expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
     expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
     expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('lets a production clerk inspect another factory while every task action stays read-only', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huadeng', order_id: 'BP-PROD-CLERK-FOREIGN-READONLY' }
+    const record = createKpiRecord('待生产', 'BP-PROD-CLERK-FOREIGN-READONLY', null)
+    record.order.factory_id = 'huadeng'
+    record.items[0]!.order_id = record.order.id
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const readPermissions = [
+      'molding_sample:production_read',
+      'molding_sample:notification_read',
+    ]
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['生产文员'],
+      permissions: readPermissions,
+      grantPermissions: readPermissions,
+      factoryScopes: ['huaxing', '*'],
+      department: 'production',
+      primaryFactoryId: 'huaxing',
+      roleId: 'position_production_clerk',
+      grantFactoryId: 'huaxing',
+      scopeMode: 'own_factory',
+      readPermissionCodes: readPermissions,
+      unrestrictedDepartment: true,
+    })
+
+    expect(wrapper.text()).toContain('BP-PROD-CLERK-FOREIGN-READONLY')
+    expect(wrapper.text()).toContain('全厂只读')
+    expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, '标记完成').attributes('disabled')).toBeDefined()
+
+    await getButtonByText(wrapper, '试模报告查看 / 打印').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('试模报告历史 / 打印')
+    expect(wrapper.text()).toContain('当前为只读，尚无已保存报告，可查看或打印空表')
+    expect(wrapper.text()).toContain('仅可查看或打印')
+    expect(wrapper.text()).not.toContain('可直接填写')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('保存试模报告'))).toBe(false)
+    expect(wrapper.find('.molding-sample-trial-report-editor .is-editable').exists()).toBe(false)
+    expect(wrapper.findAll('.molding-sample-trial-report-editor input')).toHaveLength(0)
+    expect(wrapper.findAll('.molding-sample-trial-report-editor textarea')).toHaveLength(0)
+
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateNotification).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.createProblem).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.upsertTrialReport).not.toHaveBeenCalled()
 
     wrapper.unmount()
   })

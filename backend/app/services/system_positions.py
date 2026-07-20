@@ -17,6 +17,22 @@ from app.services.permission_codes import (
 
 
 SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v2"
+PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
+PRODUCTION_TASK_OPERATE_PERMISSION_CODES = frozenset(
+    {
+        "molding_sample:production_start",
+        "molding_sample:production_fillback",
+        "molding_sample:production_complete",
+    }
+)
+PRODUCTION_TASK_OPERATING_POSITION_ROLE_IDS = frozenset(
+    {
+        "position_general_manager",
+        "position_molding_manager",
+        "position_molding_supervisor",
+        "position_molding_clerk",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -44,7 +60,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "molding_sample:raw_material_write",
     "molding_sample:warehouse_requisition",
     "molding_sample:inventory_issue",
-    "molding_sample:production_read",
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:production_start",
     "molding_sample:production_fillback",
     "molding_sample:production_complete",
@@ -96,6 +112,7 @@ GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset()
 
 ENGINEER_PERMISSION_CODES = (
     "molding_sample:read",
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:export",
     "molding_sample:create",
     "molding_sample:raw_material_write",
@@ -118,6 +135,7 @@ ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_SUPERVISOR_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "customer_price:read",
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
@@ -140,6 +158,7 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_BUSINESS_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "customer_price:read",
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
@@ -159,10 +178,7 @@ SALES_BUSINESS_PERMISSION_CODES = (
 PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "molding_sample:read",
     "molding_sample:export",
-    "molding_sample:production_read",
-    "molding_sample:production_start",
-    "molding_sample:production_fillback",
-    "molding_sample:production_complete",
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:audit_read",
     "molding_sample:notification_read",
     "injection_schedule:read",
@@ -177,10 +193,7 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
 PRODUCTION_CLERK_PERMISSION_CODES = (
     "molding_sample:read",
     "molding_sample:export",
-    "molding_sample:production_read",
-    "molding_sample:production_start",
-    "molding_sample:production_fillback",
-    "molding_sample:production_complete",
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:notification_read",
     "injection_schedule:read",
     "injection_schedule:import",
@@ -195,7 +208,7 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
 # 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
 MOLDING_CLERK_PERMISSION_CODES = (
     "molding_sample:read",
-    "molding_sample:production_read",
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:production_start",
     "molding_sample:production_fillback",
     "molding_sample:production_complete",
@@ -206,6 +219,7 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = MOLDING_CLERK_PERMISSION_CODES
 
 WAREHOUSE_PERMISSION_CODES = (
     "molding_sample:read",
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:export",
     "molding_sample:raw_material_write",
     "molding_sample:warehouse_requisition",
@@ -214,19 +228,25 @@ WAREHOUSE_PERMISSION_CODES = (
 )
 
 QA_INSPECTOR_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "carton_mark:read",
     "carton_mark:photo_upload",
     "carton_mark:review",
 )
 QA_CLERK_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "carton_mark:read",
     "carton_mark:photo_upload",
 )
 CARTON_WAREHOUSE_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
     "carton_mark:read",
     "carton_mark:template_upload",
 )
-CARTON_EXTERNAL_PERMISSION_CODES = ("carton_mark:read",)
+CARTON_EXTERNAL_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
+    "carton_mark:read",
+)
 
 
 SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
@@ -306,7 +326,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=400,
-        description="生产任务统筹与啤机排产管理",
+        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
         permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -315,7 +335,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=410,
-        description="生产任务管理与回填协同",
+        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
         permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -324,7 +344,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=420,
-        description="生产任务接收和资料回填",
+        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
         permission_codes=PRODUCTION_CLERK_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -333,7 +353,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=430,
-        description="喷油业务管理；对应模块尚未完善，当前不授予业务权限",
+        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
+        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
     ),
     SystemPositionDefinition(
         role_id="position_painting_supervisor",
@@ -341,7 +362,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=440,
-        description="喷油现场管理；对应模块尚未完善，当前不授予业务权限",
+        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
+        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
     ),
     SystemPositionDefinition(
         role_id="position_painting_clerk",
@@ -349,7 +371,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=450,
-        description="喷油资料协同；对应模块尚未完善，当前不授予业务权限",
+        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
+        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
     ),
     SystemPositionDefinition(
         role_id="position_molding_manager",
@@ -441,7 +464,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="qc",
         department_name="QC部",
         sort_order=700,
-        description="QC 检验管理；对应模块尚未完善，当前不授予业务权限",
+        description="全厂只读查看啤办生产任务；QC 模块尚未完善",
+        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
     ),
     SystemPositionDefinition(
         role_id="position_qc_supervisor",
@@ -449,7 +473,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="qc",
         department_name="QC部",
         sort_order=710,
-        description="QC 检验管理；对应模块尚未完善，当前不授予业务权限",
+        description="全厂只读查看啤办生产任务；QC 模块尚未完善",
+        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
     ),
     SystemPositionDefinition(
         role_id="position_qc_inspector",
@@ -457,7 +482,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="qc",
         department_name="QC部",
         sort_order=720,
-        description="QC 检验执行；对应模块尚未完善，当前不授予业务权限",
+        description="全厂只读查看啤办生产任务；QC 模块尚未完善",
+        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
     ),
     SystemPositionDefinition(
         role_id="position_carton_manager",
@@ -571,6 +597,23 @@ def validate_system_position_definitions() -> None:
             raise RuntimeError(
                 f"系统内置职位 {item.role_id} 引用了未注册权限：{','.join(unknown_codes)}"
             )
+
+    if not all(
+        PRODUCTION_TASK_READ_PERMISSION_CODE in item.permission_codes
+        for item in SYSTEM_POSITION_DEFINITIONS
+    ):
+        raise RuntimeError("全部系统内置职位都必须可全厂只读查看啤办生产任务")
+
+    production_task_operating_role_ids = {
+        item.role_id
+        for item in SYSTEM_POSITION_DEFINITIONS
+        if PRODUCTION_TASK_OPERATE_PERMISSION_CODES & set(item.permission_codes)
+    }
+    if (
+        production_task_operating_role_ids
+        != PRODUCTION_TASK_OPERATING_POSITION_ROLE_IDS
+    ):
+        raise RuntimeError("啤办生产任务操作权限只能授予总经理和啤机职位")
 
     all_business_codes = set(BUSINESS_PERMISSION_CODES)
     decided_general_manager_codes = (

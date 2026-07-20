@@ -1265,7 +1265,10 @@ def test_system_position_can_cross_profile_department_with_position_scope(monkey
         session = login(client, "cross-department-position")
         assert session["profile"]["primary_department"] == "engineering"
         assert session["roles"] == ["生产文员"]
-        assert "molding_sample:production_start" in session["permissions"]
+        assert "molding_sample:production_read" in session["permissions"]
+        assert "molding_sample:production_start" not in session["permissions"]
+        assert "molding_sample:production_fillback" not in session["permissions"]
+        assert "molding_sample:production_complete" not in session["permissions"]
         assert "molding_sample:create" not in session["permissions"]
 
 

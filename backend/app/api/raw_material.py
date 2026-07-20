@@ -10,8 +10,13 @@ from app.schemas.raw_material import (
     RawMaterialUpdateRequest,
 )
 from app.services.auth import AuthContext, get_current_user
-from app.services.business_authz import ENGINEERING_DEPARTMENTS, WAREHOUSE_DEPARTMENTS, ensure_permission_for_departments
-from app.services.molding_sample import ensure_molding_local_write, ensure_molding_read
+from app.services.business_authz import (
+    ENGINEERING_DEPARTMENTS,
+    WAREHOUSE_DEPARTMENTS,
+    ensure_general_molding_read,
+    ensure_molding_local_write,
+    ensure_permission_for_departments,
+)
 from app.services.raw_material import (
     RAW_MATERIAL_GLOBAL_FACTORY_ID,
     create_raw_material,
@@ -35,7 +40,7 @@ def ensure_raw_material_access(db: Session, current_user: AuthContext, factory_i
 
 
 def ensure_raw_material_read_access(db: Session, current_user: AuthContext, factory_id: str) -> None:
-    ensure_molding_read(db, current_user, factory_id)
+    ensure_general_molding_read(db, current_user, factory_id)
 
 
 @router.get("", response_model=list[RawMaterialOut])

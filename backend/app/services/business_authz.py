@@ -282,6 +282,37 @@ def ensure_molding_read(db: Session, user: AuthContext, factory_id: str) -> str:
     raise HTTPException(status_code=403, detail="无该厂区啤办单查看权限")
 
 
+def has_general_molding_read_access(user: AuthContext, factory_id: str) -> bool:
+    """Return whether the user may browse engineering-stage molding records."""
+    return has_permission_for_departments(
+        user,
+        "molding_sample:read",
+        factory_id,
+        SHARED_MOLDING_DEPARTMENTS,
+    ) or has_permission_for_departments(
+        user,
+        MOLDING_CROSS_FACTORY_READ_PERMISSION,
+        factory_id,
+        CROSS_FACTORY_DEPARTMENTS,
+    )
+
+
+def ensure_general_molding_read(db: Session, user: AuthContext, factory_id: str) -> None:
+    ensure_molding_read(db, user, factory_id)
+    if has_general_molding_read_access(user, factory_id):
+        return
+
+    add_auth_audit(
+        db,
+        "permission_denied",
+        username=user.username,
+        user_id=user.id,
+        detail=f"仅获生产任务只读权限，禁止读取工程阶段啤办单：{factory_id}",
+    )
+    db.commit()
+    raise HTTPException(status_code=403, detail="当前账号仅可查看正式生产任务")
+
+
 def can_view_molding_cost(user: AuthContext, factory_id: str, read_source: str | None = None) -> bool:
     source = read_source or molding_read_access(user, factory_id)
     if source == "local":

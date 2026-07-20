@@ -20,6 +20,10 @@ const crossFactoryReadLocalOnlyPermissions = new Set([
   'molding_sample:notification_read',
 ])
 
+const systemPositionCrossFactoryReadPermissions = new Set([
+  'molding_sample:production_read',
+])
+
 const positionDepartmentAliasGroups = [
   new Set(['production', 'molding']),
   new Set(['pmc-warehouse', 'warehouse']),
@@ -53,6 +57,12 @@ function grantFactoryMatches(grant: AuthGrant, permission: string, factoryId?: s
   if (!factoryId) return true
 
   if (grant.scope_mode === 'cross_factory_operate') return true
+  if (
+    systemPositionCrossFactoryReadPermissions.has(permission)
+    && (grant.read_permission_codes ?? []).includes(permission)
+  ) {
+    return true
+  }
   if (
     grant.scope_mode === 'cross_factory_read'
     && (grant.read_permission_codes ?? []).includes(permission)

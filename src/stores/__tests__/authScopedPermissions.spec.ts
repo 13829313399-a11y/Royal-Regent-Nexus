@@ -156,6 +156,59 @@ describe('authStore scoped permission decisions', () => {
   )
 
   it.each(['legacy', 'shadow', 'enforce'] as const)(
+    'expands only production-task read for an own-factory system position in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions: ['molding_sample:production_read', 'carton_mark:read'],
+        factory_scopes: ['huaxing', '*'],
+        grants: [{
+          role_id: 'position_qa_clerk',
+          role_code: 'position_qa_clerk',
+          role_name: 'QA文员',
+          factory_id: 'huaxing',
+          department: 'qa',
+          permissions: ['molding_sample:production_read', 'carton_mark:read'],
+          scope_mode: 'own_factory',
+          read_permission_codes: ['molding_sample:production_read', 'carton_mark:read'],
+          unrestricted_department: true,
+          data_scope: 'department',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? [
+              {
+                permission_code: 'molding_sample:production_read',
+                factory_id: 'huaxing',
+                department: 'qa',
+                effect: 'allow',
+                allowed: true,
+                source_type: 'role_binding',
+                source_ids: ['position-qa-clerk'],
+              },
+              {
+                permission_code: 'carton_mark:read',
+                factory_id: 'huaxing',
+                department: 'qa',
+                effect: 'allow',
+                allowed: true,
+                source_type: 'role_binding',
+                source_ids: ['position-qa-clerk'],
+              },
+            ]
+          : undefined,
+      }))
+
+      expect(store.can('molding_sample:production_read', 'huaxing', 'production')).toBe(true)
+      expect(store.can('molding_sample:production_read', 'huadeng', 'production')).toBe(true)
+      expect(store.can('carton_mark:read', 'huaxing', 'qa')).toBe(true)
+      expect(store.can('carton_mark:read', 'huadeng', 'qa')).toBe(false)
+      expect(store.can('molding_sample:production_fillback', 'huaxing', 'production')).toBe(false)
+      expect(store.can('molding_sample:production_fillback', 'huadeng', 'production')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow', 'enforce'] as const)(
     'lets fixed sales positions read other factories but initiate quotes only for their home factory and department in %s mode',
     (authzMode) => {
       const store = useAuthStore()
