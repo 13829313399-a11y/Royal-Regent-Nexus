@@ -2326,6 +2326,59 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('lets a production clerk inspect another factory while every task action stays read-only', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: 'huadeng', order_id: 'BP-PROD-CLERK-FOREIGN-READONLY' }
+    const record = createKpiRecord('待生产', 'BP-PROD-CLERK-FOREIGN-READONLY', null)
+    record.order.factory_id = 'huadeng'
+    record.items[0]!.order_id = record.order.id
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const readPermissions = [
+      'molding_sample:production_read',
+      'molding_sample:notification_read',
+    ]
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      roles: ['生产文员'],
+      permissions: readPermissions,
+      grantPermissions: readPermissions,
+      factoryScopes: ['huaxing', '*'],
+      department: 'production',
+      primaryFactoryId: 'huaxing',
+      roleId: 'position_production_clerk',
+      grantFactoryId: 'huaxing',
+      scopeMode: 'own_factory',
+      readPermissionCodes: readPermissions,
+      unrestrictedDepartment: true,
+    })
+
+    expect(wrapper.text()).toContain('BP-PROD-CLERK-FOREIGN-READONLY')
+    expect(wrapper.text()).toContain('全厂只读')
+    expect(mockedMoldingSampleApi.listNotifications).not.toHaveBeenCalled()
+    expect(getButtonByText(wrapper, '开始生产').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, '保存回填').attributes('disabled')).toBeDefined()
+    expect(getButtonByText(wrapper, '标记完成').attributes('disabled')).toBeDefined()
+
+    await getButtonByText(wrapper, '试模报告查看 / 打印').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('试模报告历史 / 打印')
+    expect(wrapper.text()).toContain('当前为只读，尚无已保存报告，可查看或打印空表')
+    expect(wrapper.text()).toContain('仅可查看或打印')
+    expect(wrapper.text()).not.toContain('可直接填写')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('保存试模报告'))).toBe(false)
+    expect(wrapper.find('.molding-sample-trial-report-editor .is-editable').exists()).toBe(false)
+    expect(wrapper.findAll('.molding-sample-trial-report-editor input')).toHaveLength(0)
+    expect(wrapper.findAll('.molding-sample-trial-report-editor textarea')).toHaveLength(0)
+
+    expect(mockedMoldingSampleApi.updateStatus).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateItems).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.updateNotification).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.createProblem).not.toHaveBeenCalled()
+    expect(mockedMoldingSampleApi.upsertTrialReport).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
   it('shows only approved external tasks to a molding clerk without foreign notifications or writes', async () => {
     routeState.path = '/modules/production/molding-sample-tasks'
     routeState.query = { factory: 'huadeng', order_id: 'BP-CLERK-FOREIGN-READY' }

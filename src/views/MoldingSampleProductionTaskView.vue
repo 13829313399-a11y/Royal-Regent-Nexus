@@ -306,6 +306,7 @@ const canCompleteSelectedTaskFactory = computed(() =>
 )
 const canUpdateSelectedNotification = computed(() =>
   canOperateProductionFactory(selectedTaskFactoryId.value)
+  && canFillbackSelectedTaskFactory.value
   && canProductionPermission('molding_sample:notification_read', selectedTaskFactoryId.value),
 )
 const isSelectedFactoryReadOnly = computed(() => ![
@@ -832,7 +833,7 @@ function openTrialReportHistory(itemId: string) {
 
 function closeTrialReportDialog() {
   trialReportDialogVisible.value = false
-  trialReportReadOnly.value = false
+  trialReportReadOnly.value = !canSaveSelectedTrialReport.value
   trialReportInitialItemId.value = ''
 }
 
@@ -1364,7 +1365,7 @@ watchEffect(() => {
         class="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] font-semibold text-amber-800"
       >
         <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600" aria-hidden="true" />
-        <span>当前厂区为只读，仅可查看数据</span>
+        <span>全厂只读：可查看当前厂区生产任务，不能开始、回填、完成、处理通知或上报问题</span>
       </section>
 
       <section class="enterprise-panel relative overflow-hidden rounded-2xl p-5">
@@ -1412,7 +1413,7 @@ watchEffect(() => {
           <section class="enterprise-panel rounded-2xl p-3.5">
             <div class="flex items-center justify-between gap-3">
               <div>
-                <h2 class="text-[13px] font-bold text-slate-950">我的生产队列</h2>
+                <h2 class="text-[13px] font-bold text-slate-950">当前厂区生产队列</h2>
                 <p class="mt-0.5 text-[11px] text-slate-400">正式生产任务 · {{ activeFactory.shortName }}</p>
               </div>
               <span class="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-bold text-teal-700">{{ taskEntries.length }}</span>
@@ -1633,7 +1634,7 @@ watchEffect(() => {
                 @click="openTrialReportDialog"
               >
                 <ClipboardPenLine class="size-3.5" aria-hidden="true" />
-                试模报告填写 / 打印
+                {{ canSaveSelectedTrialReport ? '试模报告填写 / 打印' : '试模报告查看 / 打印' }}
               </button>
               <button
                 type="button"
@@ -2314,7 +2315,7 @@ watchEffect(() => {
         :operator-name="currentProductionOperatorName"
         :can-save="canSaveSelectedTrialReport"
         :saving="trialReportSaving"
-        :read-only="trialReportReadOnly"
+        :read-only="trialReportReadOnly || !canSaveSelectedTrialReport"
         :initial-item-id="trialReportInitialItemId"
         @close="closeTrialReportDialog"
         @save="saveTrialReport"

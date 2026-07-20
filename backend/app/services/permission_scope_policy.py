@@ -82,7 +82,7 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
     "molding_sample:production_read": ScopePolicy(
         PRODUCTION_DEPARTMENTS,
-        guidance="仅生产部（啤喷装）范围生效；工程页查看进度使用单据查看权限",
+        guidance="自定义角色仅生产部范围生效；系统内置职位由固定模板获得全厂生产任务只读",
     ),
     "molding_sample:production_start": ScopePolicy(
         PRODUCTION_DEPARTMENTS,

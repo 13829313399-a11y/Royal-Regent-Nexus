@@ -86,6 +86,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_price:compare",
                         "customer_price:read",
                         "injection_schedule:read",
+                        "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",
                         "internal_quote:timeline_read",
@@ -732,6 +733,89 @@ def test_system_position_scope_contract_is_consistent_across_authz_modes(monkeyp
         assert auth_service.has_permission_in_scope(
             wildcard_operate, operate_permission, "huadeng", "engineering"
         )
+
+
+@pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
+def test_system_position_production_task_read_is_the_only_own_factory_permission_expanded(
+    monkeypatch,
+    authz_mode,
+):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE=authz_mode,
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        production_read = "molding_sample:production_read"
+        unrelated_read = "carton_mark:read"
+        production_write = "molding_sample:production_fillback"
+        permissions = frozenset({production_read, unrelated_read, production_write})
+
+        position_grant = auth_service.AuthGrantContext(
+            role_id="position_qa_clerk",
+            role_name="QA文员",
+            factory_id="huaxing",
+            department="qa",
+            permissions=permissions,
+            scope_mode="own_factory",
+            read_permissions=frozenset({production_read, unrelated_read}),
+            unrestricted_department=True,
+        )
+        context = auth_service.AuthContext(
+            id="user-position-production-read",
+            username="position-production-read",
+            display_name="全厂生产任务只读",
+            roles=(position_grant.role_name,),
+            role_codes=(position_grant.role_id,),
+            permissions=permissions,
+            factory_scopes=("huaxing", "*"),
+            department_scopes=("qa", "*"),
+            grants=(position_grant,),
+            active_permission_codes=permissions,
+        )
+
+        allowed, source_type, _, _ = auth_service.authorization_decision(
+            context,
+            production_read,
+            "huadeng",
+            "production",
+        )
+        assert allowed is True
+        assert source_type == "role_binding_cross_read"
+        assert auth_service.has_permission_in_scope(
+            context, production_read, "huadeng", "production"
+        )
+        assert not auth_service.has_permission_in_scope(
+            context, unrelated_read, "huadeng", "qa"
+        )
+        assert not auth_service.has_permission_in_scope(
+            context, production_write, "huadeng", "production"
+        )
+
+        custom_grant = auth_service.replace(
+            position_grant,
+            role_id="custom_production_observer",
+            unrestricted_department=False,
+        )
+        custom_context = auth_service.replace(context, grants=(custom_grant,))
+        assert not auth_service.has_permission_in_scope(
+            custom_context, production_read, "huadeng", "production"
+        )
+
+        deny = auth_service.AuthOverrideContext(
+            id="deny-foreign-production-task-read",
+            permission_code=production_read,
+            effect="deny",
+            factory_id="huadeng",
+            department="*",
+        )
+        denied_context = auth_service.replace(context, overrides=(deny,))
+        assert not auth_service.authorization_decision(
+            denied_context, production_read, "huadeng", "production"
+        )[0]
+        assert auth_service.has_permission_in_scope(
+            denied_context, production_read, "huadeng", "production"
+        ) is (authz_mode != "enforce")
 
 
 @pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
