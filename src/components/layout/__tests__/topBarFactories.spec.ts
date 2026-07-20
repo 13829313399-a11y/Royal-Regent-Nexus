@@ -1,26 +1,75 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { shallowMount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import TopBar from '@/components/layout/TopBar.vue'
+import { factoryContexts, productionFactoryContextIds } from '@/data/enterpriseMock'
+import { useAppStore } from '@/stores/app'
 
-const topBarSource = readFileSync(join(process.cwd(), 'src/components/layout/TopBar.vue'), 'utf8')
-const factorySource = readFileSync(join(process.cwd(), 'src/data/enterpriseMock.ts'), 'utf8')
-const appStoreSource = readFileSync(join(process.cwd(), 'src/stores/app.ts'), 'utf8')
+const routeState = vi.hoisted(() => ({
+  path: '/modules/engineering',
+  name: 'modules-department',
+  params: { department: 'engineering' },
+  query: { layout: 'cards', factory: 'huaxing' } as Record<string, string>,
+}))
+const routerReplaceMock = vi.hoisted(() => vi.fn())
 
-describe('TopBar factory switcher source contract', () => {
-  it('includes Huakang C and D without squeezing the header controls', () => {
-    expect(factorySource).toContain("'huakang-c'")
-    expect(factorySource).toContain("'huakang-d'")
-    expect(factorySource).toContain("name: '华康C'")
-    expect(factorySource).toContain("name: '华康D'")
-    expect(topBarSource).toContain('max-w-[40vw]')
-    expect(topBarSource).toContain('overflow-x-auto')
-    expect(topBarSource).toContain('min-w-max')
-    expect(topBarSource).toContain('shrink-0')
-    expect(topBarSource).toContain(':aria-label="`切换至${getTopBarFactoryLabel(factory)}`"')
+vi.mock('vue-router', () => ({
+  RouterLink: {
+    name: 'RouterLink',
+    props: ['to'],
+    template: '<a><slot /></a>',
+  },
+  useRoute: () => routeState,
+  useRouter: () => ({
+    replace: routerReplaceMock,
+  }),
+}))
+
+describe('TopBar factory switcher', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    routerReplaceMock.mockReset()
+    routeState.query = { layout: 'cards', factory: 'huaxing' }
   })
 
-  it('keeps factory scopes that have no production dataset out of production modules', () => {
-    expect(appStoreSource).toContain('productionFactoryContextIds.includes')
-    expect(factorySource).toContain("Exclude<FactoryContextId, 'group' | 'huakang-c' | 'huakang-d'>")
+  it('includes Huakang C and D in the complete production factory list', () => {
+    const physicalFactoryIds = factoryContexts
+      .filter((factory) => factory.id !== 'group')
+      .map((factory) => factory.id)
+
+    expect(productionFactoryContextIds).toEqual(physicalFactoryIds)
+    expect(productionFactoryContextIds).toContain('huakang-c')
+    expect(productionFactoryContextIds).toContain('huakang-d')
+  })
+
+  it.each([
+    ['huakang-c', '华康C'],
+    ['huakang-d', '华康D'],
+  ] as const)('switches to %s and synchronizes the route factory query', async (factoryId, factoryLabel) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useAppStore()
+    const wrapper = shallowMount(TopBar, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          AccountMenu: true,
+          NotificationCenter: true,
+          RouteLoadingBar: true,
+        },
+      },
+    })
+
+    await wrapper.get(`button[aria-label="切换至${factoryLabel}"]`).trigger('click')
+
+    expect(store.activeFactoryId).toBe(factoryId)
+    expect(store.activeProductionFactory.id).toBe(factoryId)
+    expect(routerReplaceMock).toHaveBeenCalledTimes(1)
+    expect(routerReplaceMock).toHaveBeenCalledWith(expect.objectContaining({
+      query: {
+        layout: 'cards',
+        factory: factoryId,
+      },
+    }))
   })
 })

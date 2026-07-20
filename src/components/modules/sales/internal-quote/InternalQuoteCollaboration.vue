@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import InternalQuoteActivityPanel from './InternalQuoteActivityPanel.vue'
 import InternalQuoteSectionEditor from './InternalQuoteSectionEditor.vue'
 import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
+import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { useAuthStore } from '@/stores/auth'
@@ -45,6 +46,10 @@ const canEditFx = computed(() => quote.value.status !== 'archived' && authStore.
 const canManageParticipation = computed(() => quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignFactory(authStore, quote.value.factoryId))
+const getQuoteRoute = (path: string) => getFactoryScopedRoute(
+  path,
+  isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
+)
 
 function selectSection(code: InternalQuoteSectionCode) { void router.replace({ query: { ...route.query, section: code } }) }
 
@@ -117,11 +122,11 @@ watch([quoteId, canSyncReference], () => {
 
 <template>
   <div class="quote-collaboration-page">
-    <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink to="/modules/sales-business/internal-quote-desk"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>部门协作</strong></nav>
+    <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>部门协作</strong></nav>
 
     <header class="quote-collaboration-head">
       <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ quote.status === 'rejected' ? '存在退回' : '协作进行中' }}</span></div><p>{{ quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
-      <div class="quote-head-progress"><div><span>参与分段进度</span><strong>{{ approvedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button type="button" class="focus-entry-toggle" :aria-pressed="focusEntryMode" @click="focusEntryMode = !focusEntryMode"><Maximize2 v-if="focusEntryMode" /><Minimize2 v-else />{{ focusEntryMode ? '显示两侧栏' : '专注填报' }}</button><RouterLink :to="`/modules/sales-business/internal-quote-desk/${quote.id}/summary`"><BarChart3 />查看汇总与放行</RouterLink><button v-if="canManageParticipation && availableOptionalSections.length" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
+      <div class="quote-head-progress"><div><span>参与分段进度</span><strong>{{ approvedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button type="button" class="focus-entry-toggle" :aria-pressed="focusEntryMode" @click="focusEntryMode = !focusEntryMode"><Maximize2 v-if="focusEntryMode" /><Minimize2 v-else />{{ focusEntryMode ? '显示两侧栏' : '专注填报' }}</button><RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与放行</RouterLink><button v-if="canManageParticipation && availableOptionalSections.length" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
     <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；分段编辑、审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的分段编辑、审核或参考同步权限。' }}</p>

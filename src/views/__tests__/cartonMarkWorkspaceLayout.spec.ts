@@ -44,6 +44,13 @@ describe('carton mark standalone workspaces', () => {
     expect(moduleDetailSource).not.toContain('CartonMarkCheckPanel')
   })
 
+  it('keeps the selected factory in warehouse and QA return links', () => {
+    expect(workspaceSource).toContain('const activeFactory = computed(() => appStore.activeProductionFactory)')
+    expect(workspaceSource).toMatch(/const departmentRoute = computed\(\(\) => getFactoryScopedRoute\([\s\S]{0,120}getDepartmentRoute\(currentDepartmentId\.value\),[\s\S]{0,80}activeFactory\.value\.id/)
+    expect(workspaceSource).toContain(':to="departmentRoute"')
+    expect(workspaceSource).not.toMatch(/<RouterLink[^>]+to="\/modules\/(?:pmc-warehouse|qa)"/)
+  })
+
   it('removes the non-workflow QA summary banner and statistics from the shared panel', () => {
     expect(cartonPanelSource).not.toContain('Carton Mark</p>')
     expect(cartonPanelSource).not.toContain('>Templates</p>')
@@ -90,6 +97,28 @@ describe('carton mark standalone workspaces', () => {
     expect(cartonPanelSource).not.toContain('批量核验同一箱唛')
     expect(cartonPanelSource).not.toContain('批量上传正唛')
     expect(cartonPanelSource).not.toContain('批量上传侧唛')
+  })
+
+  it('binds asynchronous verification results to the factory and files that started the request', () => {
+    for (const requiredContract of [
+      'let factoryGeneration = 0',
+      'isCurrentFactoryTask',
+      'const requestedFactoryId = activeFactoryId.value',
+      'const requestedFactoryGeneration = factoryGeneration',
+      'const requestedFrontFiles = [...selectedFrontBatchFiles.value]',
+      'const requestedSideFiles = [...selectedSideBatchFiles.value]',
+      'template.factoryId !== requestedFactoryId',
+      'photo.factoryId !== requestedFactoryId',
+      'factoryId: requestedFactoryId',
+      'factoryName: requestedFactoryName',
+      "const LEGACY_CARTON_MARK_FACTORY_ID: ProductionFactoryContextId = 'huaxing'",
+      'factoryId: record.factoryId ?? LEGACY_CARTON_MARK_FACTORY_ID',
+    ]) {
+      expect(cartonPanelSource).toContain(requiredContract)
+    }
+
+    expect(cartonPanelSource).toMatch(/watch\(activeFactoryId,[\s\S]{0,120}factoryGeneration \+= 1/)
+    expect(cartonPanelSource).toMatch(/createBatchPhotoRecords\([\s\S]{0,180}requestedFactoryId,[\s\S]{0,100}requestedFrontFiles,[\s\S]{0,100}requestedSideFiles/)
   })
 
   it('keeps the warehouse template route focused on customer, ITEM, and contract imports plus customer collections', () => {

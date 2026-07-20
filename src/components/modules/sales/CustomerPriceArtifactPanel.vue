@@ -9,7 +9,7 @@ import {
   Search,
   ShieldCheck,
 } from '@lucide/vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import {
   customerPriceArtifactApi,
@@ -47,6 +47,8 @@ const loading = ref(false)
 const actingId = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
+let artifactRequestSequence = 0
+let factoryGeneration = 0
 
 const activeFactoryId = computed(() => appStore.activeProductionFactory?.id ?? 'huaxing')
 const canImportArtifact = computed(() => authStore.can(
@@ -54,6 +56,10 @@ const canImportArtifact = computed(() => authStore.can(
   activeFactoryId.value,
   'sales-business',
 ))
+
+function isCurrentFactory(factoryId: string, generation: number) {
+  return factoryId === activeFactoryId.value && generation === factoryGeneration
+}
 
 const statusOptions: Array<{ value: CustomerPriceArtifactStatusFilter; label: string }> = [
   { value: 'available', label: '待接收' },
@@ -102,25 +108,45 @@ function matchConfiguredCustomer(artifact: CustomerPriceInternalQuoteArtifact) {
 }
 
 async function loadArtifacts() {
+  const requestId = ++artifactRequestSequence
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
+
   if (!canImportArtifact.value) {
     artifacts.value = []
+    loading.value = false
     return
   }
 
   loading.value = true
   errorMessage.value = ''
   try {
-    artifacts.value = await customerPriceArtifactApi.list({
-      factoryId: activeFactoryId.value,
+    const nextArtifacts = await customerPriceArtifactApi.list({
+      factoryId: requestedFactoryId,
       status: statusFilter.value,
       customer: customerFilter.value,
       keyword: keyword.value.trim(),
     })
+
+    if (
+      requestId !== artifactRequestSequence
+      || !isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)
+    ) return
+
+    artifacts.value = nextArtifacts.filter((artifact) => artifact.factory_id === requestedFactoryId)
   } catch (error) {
+    if (
+      requestId !== artifactRequestSequence
+      || !isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)
+    ) return
+
     artifacts.value = []
     errorMessage.value = `读取交接文件失败：${getApiErrorMessage(error)}`
   } finally {
-    loading.value = false
+    if (
+      requestId === artifactRequestSequence
+      && isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)
+    ) loading.value = false
   }
 }
 
@@ -164,36 +190,55 @@ async function fetchVerifiedArtifact(artifact: CustomerPriceInternalQuoteArtifac
 }
 
 async function downloadArtifact(artifact: CustomerPriceInternalQuoteArtifact) {
-  if (!canImportArtifact.value || artifact.status === 'revoked' || actingId.value) return
+  if (
+    !canImportArtifact.value
+    || artifact.factory_id !== activeFactoryId.value
+    || artifact.status === 'revoked'
+    || actingId.value
+  ) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
   actingId.value = artifact.id
   errorMessage.value = ''
   successMessage.value = ''
   try {
     const blob = await fetchVerifiedArtifact(artifact)
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
     downloadBlob(blob, artifact.file_name)
     successMessage.value = `${artifact.quote_no} 受控文件已通过 SHA-256 校验并开始下载。`
   } catch (error) {
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
     errorMessage.value = `下载失败：${getApiErrorMessage(error)}`
   } finally {
-    actingId.value = ''
+    if (isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) actingId.value = ''
   }
 }
 
 async function consumeArtifact(artifact: CustomerPriceInternalQuoteArtifact) {
-  if (!canImportArtifact.value || artifact.status !== 'available' || actingId.value) return
+  if (
+    !canImportArtifact.value
+    || artifact.factory_id !== activeFactoryId.value
+    || artifact.status !== 'available'
+    || actingId.value
+  ) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
   actingId.value = artifact.id
   errorMessage.value = ''
   successMessage.value = ''
   try {
     const blob = await fetchVerifiedArtifact(artifact)
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
     const matchedCustomer = matchConfiguredCustomer(artifact)
     if (props.prepareArtifact && !matchedCustomer) {
       throw new Error(`尚未配置“${artifact.customer}”的客户转换模板，文件保持待接收`)
     }
     if (matchedCustomer && props.prepareArtifact) {
       await props.prepareArtifact(artifact, blob)
+      if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
     }
     await customerPriceArtifactApi.consume(artifact.id, `customer-price-ui:${artifact.id}`)
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
     if (matchedCustomer && matchedCustomer.id !== props.selectedCustomerId) {
       emit('selectCustomer', matchedCustomer.id)
     }
@@ -204,16 +249,31 @@ async function consumeArtifact(artifact: CustomerPriceInternalQuoteArtifact) {
       : `${artifact.quote_no} 已一次性接收并下载；当前尚无“${artifact.customer}”客户模板，请保留受控文件等待模板配置。`
     await loadArtifacts()
   } catch (error) {
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
     const message = getApiErrorMessage(error)
     await loadArtifacts()
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
     errorMessage.value = `接收或转换预检失败：${message}`
   } finally {
-    actingId.value = ''
+    if (isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) actingId.value = ''
   }
 }
 
-watch(activeFactoryId, () => { void loadArtifacts() })
+watch(activeFactoryId, () => {
+  factoryGeneration += 1
+  artifactRequestSequence += 1
+  artifacts.value = []
+  loading.value = false
+  actingId.value = ''
+  errorMessage.value = ''
+  successMessage.value = ''
+  void loadArtifacts()
+})
 onMounted(() => { void loadArtifacts() })
+onBeforeUnmount(() => {
+  factoryGeneration += 1
+  artifactRequestSequence += 1
+})
 </script>
 
 <template>

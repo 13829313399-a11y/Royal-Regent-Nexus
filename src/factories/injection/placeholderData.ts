@@ -13,6 +13,8 @@ import {
 const factoryNameMap: Record<ProductionFactoryContextId, string> = {
   'huakang-a': '华康A',
   'huakang-b': '华康B',
+  'huakang-c': '华康C',
+  'huakang-d': '华康D',
   huadeng: '华登',
   huaxing: '华兴',
 }

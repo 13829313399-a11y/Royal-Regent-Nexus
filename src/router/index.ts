@@ -4,7 +4,7 @@ import {
   shouldEnforcePagePermissions,
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
-import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
+import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
@@ -395,7 +395,13 @@ router.beforeEach(async (to) => {
   }
 
   routeLoadingStartedAt = window.performance.now()
-  useAppStore().startRouteLoading()
+  const appStore = useAppStore()
+  appStore.startRouteLoading()
+
+  const requestedFactory = Array.isArray(to.query.factory) ? to.query.factory[0] : to.query.factory
+  if (typeof requestedFactory === 'string' && isFactoryContextId(requestedFactory)) {
+    appStore.setActiveFactory(requestedFactory)
+  }
 
   const authStore = useAuthStore()
   if (to.name === 'login') {

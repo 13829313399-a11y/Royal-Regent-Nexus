@@ -18,6 +18,7 @@ import {
 } from '@lucide/vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
+  getFactoryScopedRoute,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
   type Tone,
@@ -70,6 +71,7 @@ interface MaterialFormState {
 }
 
 interface RequisitionRow {
+  factoryId: ProductionFactoryContextId
   reqNumber: string
   date: string
   orderId: string
@@ -81,6 +83,7 @@ interface RequisitionRow {
 }
 
 interface InventoryBatchRow {
+  factoryId: ProductionFactoryContextId
   batchNo: string
   material: string
   location: string
@@ -90,6 +93,7 @@ interface InventoryBatchRow {
 }
 
 interface InventoryMovementRow {
+  factoryId: ProductionFactoryContextId
   time: string
   type: MovementType
   material: string
@@ -135,6 +139,7 @@ const materialForm = reactive<MaterialFormState>({
 
 const requisitionRows: RequisitionRow[] = [
   {
+    factoryId: 'huaxing',
     reqNumber: 'LL-20260706-003',
     date: '2026-07-06',
     orderId: 'PB-20260705-012',
@@ -145,6 +150,7 @@ const requisitionRows: RequisitionRow[] = [
     issuedAt: '',
   },
   {
+    factoryId: 'huaxing',
     reqNumber: 'LL-20260706-002',
     date: '2026-07-06',
     orderId: 'PB-20260705-009',
@@ -155,6 +161,7 @@ const requisitionRows: RequisitionRow[] = [
     issuedAt: '10:24',
   },
   {
+    factoryId: 'huaxing',
     reqNumber: 'LL-20260706-001',
     date: '2026-07-06',
     orderId: '',
@@ -165,6 +172,7 @@ const requisitionRows: RequisitionRow[] = [
     issuedAt: '09:07',
   },
   {
+    factoryId: 'huaxing',
     reqNumber: 'LL-20260705-008',
     date: '2026-07-05',
     orderId: 'PB-20260704-016',
@@ -178,6 +186,7 @@ const requisitionRows: RequisitionRow[] = [
 
 const inventoryBatchRows: InventoryBatchRow[] = [
   {
+    factoryId: 'huaxing',
     batchNo: 'B-20260701-01',
     material: '透明PVC30度',
     location: 'A-01',
@@ -186,6 +195,7 @@ const inventoryBatchRows: InventoryBatchRow[] = [
     availableWeightKg: 128.5,
   },
   {
+    factoryId: 'huaxing',
     batchNo: 'B-20260628-03',
     material: 'ABS 750W 白',
     location: 'A-02',
@@ -194,6 +204,7 @@ const inventoryBatchRows: InventoryBatchRow[] = [
     availableWeightKg: 42,
   },
   {
+    factoryId: 'huaxing',
     batchNo: 'B-20260620-05',
     material: 'PC 110 透明',
     location: 'B-01',
@@ -202,6 +213,7 @@ const inventoryBatchRows: InventoryBatchRow[] = [
     availableWeightKg: 36.5,
   },
   {
+    factoryId: 'huaxing',
     batchNo: 'B-20260615-02',
     material: 'PP(EP332K)',
     location: 'B-03',
@@ -213,6 +225,7 @@ const inventoryBatchRows: InventoryBatchRow[] = [
 
 const inventoryMovementRows: InventoryMovementRow[] = [
   {
+    factoryId: 'huaxing',
     time: '07-06 10:24',
     type: '出库',
     material: 'ABS 750W 白',
@@ -223,6 +236,7 @@ const inventoryMovementRows: InventoryMovementRow[] = [
     actor: '仓管·陈',
   },
   {
+    factoryId: 'huaxing',
     time: '07-06 09:07',
     type: '出库',
     material: 'PP(EP332K)',
@@ -233,6 +247,7 @@ const inventoryMovementRows: InventoryMovementRow[] = [
     actor: '仓管·陈',
   },
   {
+    factoryId: 'huaxing',
     time: '07-05 16:40',
     type: '撤回',
     material: '透明PVC30度',
@@ -243,6 +258,7 @@ const inventoryMovementRows: InventoryMovementRow[] = [
     actor: '仓管·陈',
   },
   {
+    factoryId: 'huaxing',
     time: '07-01 08:30',
     type: '入库',
     material: '透明PVC30度',
@@ -276,7 +292,8 @@ const movementTypeFilter = ref<'全部' | MovementType>('全部')
 const showMaterialModal = ref(false)
 const showRequisitionModal = ref(false)
 const showBatchModal = ref(false)
-const actionMessage = ref('正在从原料主数据库读取资料...')
+const actionMessage = ref('正在从公共原料资料库读取资料...')
+let rawMaterialRequestSequence = 0
 
 const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
   const routeFactory = route.query.factory
@@ -293,6 +310,19 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
 const activeFactory = computed(() =>
   appStore.activeProductionFactory,
 )
+const scopedRequisitionRows = computed(() =>
+  requisitionRows.filter((row) => row.factoryId === selectedFactoryId.value),
+)
+const scopedInventoryBatchRows = computed(() =>
+  inventoryBatchRows.filter((row) => row.factoryId === selectedFactoryId.value),
+)
+const scopedInventoryMovementRows = computed(() =>
+  inventoryMovementRows.filter((row) => row.factoryId === selectedFactoryId.value),
+)
+const warehouseDepartmentRoute = computed(() => getFactoryScopedRoute(
+  '/modules/pmc-warehouse',
+  selectedFactoryId.value,
+))
 
 const canManageSelectedFactory = computed(() =>
   ['engineering', 'pmc-warehouse', 'warehouse'].some((department) =>
@@ -305,17 +335,25 @@ const canManageSelectedFactory = computed(() =>
 )
 
 async function loadPersistedRawMaterials(factoryId: string) {
+  const requestSequence = ++rawMaterialRequestSequence
   try {
     const persistedRows = await rawMaterialApi.list(factoryId)
-    if (factoryId !== selectedFactoryId.value) {
+    if (
+      requestSequence !== rawMaterialRequestSequence
+      || factoryId !== selectedFactoryId.value
+    ) {
       return
     }
 
     rawMaterialRows.splice(0, rawMaterialRows.length, ...persistedRows.map(mapPersistedRawMaterialRow))
-    actionMessage.value = `已从 ${activeFactory.value.name} 原料主数据库读取 ${persistedRows.length} 条资料。`
+    actionMessage.value = `已从公共原料资料库读取 ${persistedRows.length} 条资料，${activeFactory.value.name} 可直接共用。`
   }
   catch {
-    if (factoryId === selectedFactoryId.value) {
+    if (
+      requestSequence === rawMaterialRequestSequence
+      && factoryId === selectedFactoryId.value
+    ) {
+      rawMaterialRows.splice(0, rawMaterialRows.length)
       notifyAction('无法读取已保存的原料资料，请检查登录状态与后端服务。')
     }
   }
@@ -323,6 +361,9 @@ async function loadPersistedRawMaterials(factoryId: string) {
 
 watch(selectedFactoryId, (factoryId) => {
   closeModals()
+  rawMaterialRows.splice(0, rawMaterialRows.length)
+  materialPage.value = 1
+  actionMessage.value = `正在为 ${activeFactory.value.name} 读取公共原料资料库...`
   void loadPersistedRawMaterials(factoryId)
 }, { immediate: true })
 
@@ -395,7 +436,7 @@ const materialEndIndex = computed(() =>
 const filteredRequisitionRows = computed(() => {
   const keyword = normalizedSearch.value
 
-  return requisitionRows.filter((row) => {
+  return scopedRequisitionRows.value.filter((row) => {
     const matchesStatus = requisitionStatusFilter.value === '全部' || row.status === requisitionStatusFilter.value
     const matchesKeyword = !keyword || [row.reqNumber, row.orderId, row.material, row.applicant]
       .some((value) => value.toLowerCase().includes(keyword))
@@ -404,11 +445,11 @@ const filteredRequisitionRows = computed(() => {
   })
 })
 
-const materialOptions = computed(() => ['全部原料', ...new Set(inventoryBatchRows.map((row) => row.material))])
-const locationOptions = computed(() => ['全部库位', ...new Set(inventoryBatchRows.map((row) => row.location))])
+const materialOptions = computed(() => ['全部原料', ...new Set(scopedInventoryBatchRows.value.map((row) => row.material))])
+const locationOptions = computed(() => ['全部库位', ...new Set(scopedInventoryBatchRows.value.map((row) => row.location))])
 
 const filteredBatchRows = computed(() =>
-  inventoryBatchRows.filter((row) => {
+  scopedInventoryBatchRows.value.filter((row) => {
     const matchesMaterial = selectedMaterialFilter.value === '全部原料' || row.material === selectedMaterialFilter.value
     const matchesLocation = selectedLocationFilter.value === '全部库位' || row.location === selectedLocationFilter.value
 
@@ -417,7 +458,7 @@ const filteredBatchRows = computed(() =>
 )
 
 const filteredMovementRows = computed(() =>
-  inventoryMovementRows.filter((row) =>
+  scopedInventoryMovementRows.value.filter((row) =>
     movementTypeFilter.value === '全部' || row.type === movementTypeFilter.value,
   ),
 )
@@ -439,11 +480,11 @@ const pendingStockProfileCount = computed(() =>
   rawMaterialRows.filter((row) => row.safetyStockKg === null || row.currentStockKg === null).length,
 )
 const materialCategorySummary = computed(() => materialCategoryOptions.value.slice(1, 6).join(' / '))
-const pendingRequisitionCount = computed(() => requisitionRows.filter((row) => row.status === '待出库').length)
-const issuedTodayCount = computed(() => requisitionRows.filter((row) => row.status === '已出库' && row.date === '2026-07-06').length)
-const monthlyRequestedWeight = computed(() => requisitionRows.reduce((total, row) => total + row.requestedWeightKg, 0))
-const availableInventoryWeight = computed(() => inventoryBatchRows.reduce((total, row) => total + row.availableWeightKg, 0))
-const depletedBatchCount = computed(() => inventoryBatchRows.filter((row) => row.availableWeightKg <= 0).length)
+const pendingRequisitionCount = computed(() => scopedRequisitionRows.value.filter((row) => row.status === '待出库').length)
+const issuedTodayCount = computed(() => scopedRequisitionRows.value.filter((row) => row.status === '已出库' && row.date === '2026-07-06').length)
+const monthlyRequestedWeight = computed(() => scopedRequisitionRows.value.reduce((total, row) => total + row.requestedWeightKg, 0))
+const availableInventoryWeight = computed(() => scopedInventoryBatchRows.value.reduce((total, row) => total + row.availableWeightKg, 0))
+const depletedBatchCount = computed(() => scopedInventoryBatchRows.value.filter((row) => row.availableWeightKg <= 0).length)
 
 const tabTitle = computed(() => rawMaterialTabs.find((tab) => tab.id === activeTab.value)?.label ?? '原料资料')
 const isEditingMaterial = computed(() => editingMaterialId.value !== null)
@@ -714,7 +755,7 @@ async function saveMaterial() {
       notes: materialForm.notes,
     }
     if (editingMaterialId.value) {
-      const updated = await rawMaterialApi.update(editingMaterialId.value, payload)
+      const updated = await rawMaterialApi.update(editingMaterialId.value, selectedFactoryId.value, payload)
       const rowIndex = rawMaterialRows.findIndex((row) => row.id === updated.id)
       if (rowIndex >= 0) {
         rawMaterialRows.splice(rowIndex, 1, mapPersistedRawMaterialRow(updated, rowIndex))
@@ -730,7 +771,7 @@ async function saveMaterial() {
       rawMaterialRows.push(mapPersistedRawMaterialRow(created, rawMaterialRows.length))
       materialPage.value = materialPageCount.value
       closeModals()
-      notifyAction(`原料“${created.material_name}”已保存到 ${activeFactory.value.name} 数据库。`)
+      notifyAction(`原料“${created.material_name}”已保存到公共原料资料库，所有厂区可共用。`)
     }
   }
   catch (error) {
@@ -778,7 +819,7 @@ function openBatchModal() {
     <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div class="mx-auto flex max-w-[1720px] items-center gap-3 px-5 py-2.5">
         <RouterLink
-          to="/modules/pmc-warehouse"
+          :to="warehouseDepartmentRoute"
           class="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
         >
           <ArrowLeft class="size-4" aria-hidden="true" />
@@ -902,7 +943,7 @@ function openBatchModal() {
             <div>
               <h2 class="text-[13px] font-bold text-slate-950">原料资料 · 物料主数据</h2>
               <p class="mt-0.5 text-[11px] text-slate-400">
-                当前厂区原料主数据 · 每页 {{ rawMaterialPageSize }} 条
+                公共原料主数据 · 所有厂区共用 · 每页 {{ rawMaterialPageSize }} 条
               </p>
             </div>
             <div class="ml-auto flex flex-wrap items-center gap-2">
@@ -1156,7 +1197,7 @@ function openBatchModal() {
         <div class="grid gap-4 md:grid-cols-4">
           <article class="rounded-lg border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
             <span class="text-[11px] font-medium text-slate-500">批次总数</span>
-            <div class="mt-2 text-3xl font-semibold tracking-tight text-slate-950 tabular-nums">{{ inventoryBatchRows.length }}</div>
+            <div class="mt-2 text-3xl font-semibold tracking-tight text-slate-950 tabular-nums">{{ scopedInventoryBatchRows.length }}</div>
           </article>
           <article class="rounded-lg border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
             <span class="text-[11px] font-medium text-slate-500">可用库存(KG)</span>

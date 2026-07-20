@@ -5,6 +5,9 @@ import { RouterLink, useRoute } from 'vue-router'
 import {
   departmentMap,
   departmentModuleRegistry,
+  getFactoryScopedModule,
+  getFactoryScopedRoute,
+  getFactoryScopedTodoItems,
   isModuleDepartmentId,
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
@@ -30,15 +33,23 @@ const currentDepartmentId = computed<ModuleDepartmentId>(() => {
 const departmentEntry = computed(() => departmentModuleRegistry[currentDepartmentId.value])
 const currentDepartment = computed(() => departmentMap[currentDepartmentId.value])
 const title = computed(() => `${appStore.activeProductionFactory.name} · ${currentDepartment.value.name}模块中心`)
+const visibleDepartmentTodos = computed(() => getFactoryScopedTodoItems(
+  departmentEntry.value.todos,
+  appStore.activeProductionFactory.id,
+))
 
 const visibleModules = computed(() => {
+  const factory = appStore.activeProductionFactory
+
   return departmentEntry.value.modules.map((module) => {
+    const scopedModule = getFactoryScopedModule(module, factory.id)
+
     if (currentDepartmentId.value === 'engineering' && module.id === 'molding-sample') {
       return {
-        ...module,
-        owner: `${appStore.activeProductionFactory.shortName} · 工程部公共模块`,
+        ...scopedModule,
+        owner: `${factory.shortName} · 工程部公共模块`,
         stats: '工程开单后流转到生产任务',
-        route: `/modules/molding-sample?factory=${appStore.activeProductionFactory.id}`,
+        route: getFactoryScopedRoute('/modules/molding-sample', factory.id),
         statusMetrics: [
           { label: '开单', value: '工程登记', tone: 'teal' as const },
           { label: '流转', value: '主管审核', tone: 'blue' as const },
@@ -48,21 +59,21 @@ const visibleModules = computed(() => {
     }
 
     if (currentDepartmentId.value === 'production' && module.id === 'injection-scheduling') {
-      const route = `/modules/production/injection-scheduling?factory=${appStore.activeProductionFactory.id}`
+      const route = getFactoryScopedRoute('/modules/production/injection-scheduling', factory.id)
 
       return {
-        ...module,
+        ...scopedModule,
         href: route,
         route,
       }
     }
 
     if (currentDepartmentId.value === 'production' && module.id === 'molding-sample-production-task') {
-      const route = `/modules/production/molding-sample-tasks?factory=${appStore.activeProductionFactory.id}`
+      const route = getFactoryScopedRoute('/modules/production/molding-sample-tasks', factory.id)
 
       return {
-        ...module,
-        owner: `${appStore.activeProductionFactory.shortName} · 啤机部任务单`,
+        ...scopedModule,
+        owner: `${factory.shortName} · 啤机部任务单`,
         stats: '主管审核后进入任务队列',
         route,
         statusMetrics: [
@@ -73,7 +84,7 @@ const visibleModules = computed(() => {
       }
     }
 
-    return module
+    return scopedModule
   })
 })
 
@@ -200,7 +211,7 @@ watch(currentDepartmentId, (departmentId) => {
         </SectionPanel>
 
         <PermissionMatrix :rows="departmentEntry.permissionRows" />
-        <TodoQueue :items="departmentEntry.todos" />
+        <TodoQueue :items="visibleDepartmentTodos" />
       </aside>
     </div>
   </div>

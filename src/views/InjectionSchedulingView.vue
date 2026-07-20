@@ -17,16 +17,18 @@ import {
   UploadCloud,
   X,
 } from '@lucide/vue'
-import { computed, nextTick, ref, watchEffect } from 'vue'
+import { computed, nextTick, ref, watch, watchEffect } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { injectionScheduleApi } from '@/api/injectionSchedule'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import {
+  factoryContexts,
   getDepartmentRoute,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
   type Tone,
 } from '@/data/enterpriseMock'
+import { getInjectionFactoryConfig } from '@/factories/injection/registry'
 import { useInjectionModuleData } from '@/factories/injection/useInjectionModuleData'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAppStore } from '@/stores/app'
@@ -68,6 +70,7 @@ const router = useRouter()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const {
+  injectionOverviewMetrics,
   injectionDataSourceStatus,
   injectionOrderImportTasks,
   injectionPendingOrderValidationRules,
@@ -160,6 +163,22 @@ const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
     : 'huaxing'
 })
 
+const activeFactory = computed(() =>
+  factoryContexts.find((factory) => factory.id === selectedFactoryId.value)!,
+)
+const activeFactoryConfig = computed(() => getInjectionFactoryConfig(selectedFactoryId.value))
+const hasFormalFactoryData = computed(() =>
+  injectionMachineMasterRows.value.length > 0
+  || injectionPendingOrderDetailRows.value.length > 0
+  || injectionExecutionScheduleRows.value.length > 0,
+)
+const sharedTemplateFactoryNames = computed(() =>
+  factoryContexts
+    .filter((factory) => isProductionFactoryContextId(factory.id))
+    .map((factory) => factory.shortName)
+    .join(' / '),
+)
+
 const canImportDailySchedule = computed(() =>
   authStore.can('injection_schedule:import', selectedFactoryId.value, 'production')
   || authStore.can('injection_schedule:import', selectedFactoryId.value, 'molding'),
@@ -216,12 +235,17 @@ const pageHeadCopy = computed(() => {
     title: '注塑排产中枢',
     pillTone: 'teal' as Tone,
     secondaryPill: '实时看板' as string | null,
-    subtitle: '河源华兴啤机部 · 自有产线 · 已解析 6-30 日排版表（39 台机 · 118 条排期任务）',
+    subtitle: hasFormalFactoryData.value
+      ? '河源华兴啤机部 · 自有产线 · 已解析 6-30 日排版表（39 台机 · 118 条排期任务）'
+      : `${activeFactory.value.shortName}啤机部 · 公共排产组件已启用 · ${activeFactoryConfig.value.dataStatus}`,
   }
 })
 const pageBackTo = computed(() => {
   if (activeStep.value === 'machine-overview') {
-    return getDepartmentRoute('production')
+    return {
+      path: getDepartmentRoute('production'),
+      query: { factory: selectedFactoryId.value },
+    }
   }
 
   const sectionByStep: Record<Exclude<WorkspaceStepId, 'machine-overview'>, WorkspaceStepId> = {
@@ -238,34 +262,36 @@ const pageBackTo = computed(() => {
     },
   }
 })
-const currentDataDate = computed(() => '2026-06-30')
+const currentDataDate = computed(() => hasFormalFactoryData.value ? '2026-06-30' : '待接入')
 
-const overviewCards = computed(() => [
-  {
-    label: '在啤机台',
-    value: '31 / 39',
-    detail: '3 台缺料 · 2 台停机 · 3 台空闲',
-    tone: 'teal' as Tone,
-  },
-  {
-    label: '总欠数',
-    value: '1,860,805',
-    detail: '正欠数 1,863,016 · 负欠 13 行',
-    tone: 'blue' as Tone,
-  },
-  {
-    label: '超期任务',
-    value: '88',
-    detail: '交期差为负 · 需优先跟催',
-    tone: 'red' as Tone,
-  },
-  {
-    label: '特急 / 缺料',
-    value: '15 / 3',
-    detail: '特急▲ 15 条 · 待补料 3 台',
-    tone: 'amber' as Tone,
-  },
-])
+const overviewCards = computed(() => hasFormalFactoryData.value
+  ? [
+      {
+        label: '在啤机台',
+        value: '31 / 39',
+        detail: '3 台缺料 · 2 台停机 · 3 台空闲',
+        tone: 'teal' as Tone,
+      },
+      {
+        label: '总欠数',
+        value: '1,860,805',
+        detail: '正欠数 1,863,016 · 负欠 13 行',
+        tone: 'blue' as Tone,
+      },
+      {
+        label: '超期任务',
+        value: '88',
+        detail: '交期差为负 · 需优先跟催',
+        tone: 'red' as Tone,
+      },
+      {
+        label: '特急 / 缺料',
+        value: '15 / 3',
+        detail: '特急▲ 15 条 · 待补料 3 台',
+        tone: 'amber' as Tone,
+      },
+    ]
+  : injectionOverviewMetrics.value)
 const dataSourceCards = computed(() => injectionDataSourceStatus.value.slice(0, 3))
 const topPendingOrders = computed(() => injectionPendingOrderDetailRows.value.slice(0, 14))
 const topScheduleRows = computed(() => injectionExecutionScheduleRows.value.slice(0, 7))
@@ -491,7 +517,7 @@ const selectedMachineColorRisk = computed(() => {
   return injectionColorTransitionRisks.value.find((risk) => risk.machine === machine.machine) ?? null
 })
 
-const focusCards = computed(() => [
+const focusCards = computed(() => hasFormalFactoryData.value ? [
   {
     label: '超期跟催',
     value: 88,
@@ -547,7 +573,7 @@ const focusCards = computed(() => [
     tone: Tone
     icon: typeof AlertTriangle
     action: FocusAction
-  }[])
+  }[] : [])
 
 const orderPoolRows = computed(() =>
   topPendingOrders.value.map((row, index) => {
@@ -572,7 +598,7 @@ const orderPoolRows = computed(() =>
   }),
 )
 
-const priorityWatchRows = computed(() => [
+const priorityWatchRows = computed(() => hasFormalFactoryData.value ? [
   {
     mold: '20 383 3006-002',
     product: '马桶车圆刷',
@@ -627,7 +653,7 @@ const priorityWatchRows = computed(() => [
     action: '▲特急 在啤旧1，达成中',
     tone: 'amber' as Tone,
   },
-])
+] : [])
 
 const scheduleLaneRows = computed(() =>
   topScheduleRows.value.map((row, index) => ({
@@ -647,6 +673,18 @@ const dailyScheduleFileInput = ref<HTMLInputElement | null>(null)
 const dailyScheduleImportPreview = ref<InjectionScheduleImportPreview | null>(null)
 const dailyScheduleImportError = ref('')
 const isImportingDailySchedule = ref(false)
+let dailyScheduleImportRequestSequence = 0
+
+watch(selectedFactoryId, () => {
+  dailyScheduleImportRequestSequence += 1
+  dailyScheduleImportPreview.value = null
+  dailyScheduleImportError.value = ''
+  isImportingDailySchedule.value = false
+
+  if (dailyScheduleFileInput.value) {
+    dailyScheduleFileInput.value.value = ''
+  }
+})
 
 const formatImportNumber = (value: number | null | undefined) =>
   Math.round(value ?? 0).toLocaleString('zh-CN')
@@ -655,12 +693,19 @@ const importRecognitionStats = computed(() => {
   const summary = dailyScheduleImportPreview.value?.summary
 
   if (!summary) {
-    return [
-      { value: '39', label: '机台主数据行 · 旧机' },
-      { value: '37', label: '机台主数据行 · 新机' },
-      { value: '118', label: '机台排期任务行' },
-      { value: '60', label: '待排 / 异常暂存行' },
-    ]
+    return hasFormalFactoryData.value
+      ? [
+          { value: '39', label: '机台主数据行 · 旧机' },
+          { value: '37', label: '机台主数据行 · 新机' },
+          { value: '118', label: '机台排期任务行' },
+          { value: '60', label: '待排 / 异常暂存行' },
+        ]
+      : [
+          { value: '待接入', label: '机台主数据行 · 旧机' },
+          { value: '待接入', label: '机台主数据行 · 新机' },
+          { value: '待导入', label: '机台排期任务行' },
+          { value: '待导入', label: '待排 / 异常暂存行' },
+        ]
   }
 
   return [
@@ -676,6 +721,31 @@ const importParsingSteps = computed(() => {
   const summary = preview?.summary
 
   if (!summary) {
+    if (!hasFormalFactoryData.value) {
+      return [
+        {
+          title: '等待上传工作簿',
+          detail: `${activeFactory.value.shortName}尚未上传本厂日排版表`,
+        },
+        {
+          title: '识别本厂机台主数据行',
+          detail: '上传后按公共模板识别，结果只写入当前厂区',
+        },
+        {
+          title: '识别任务行并绑定机台',
+          detail: '等待本厂订单与机台数据',
+        },
+        {
+          title: '解析欠数 / 交期 / 颜色 / 用料',
+          detail: '等待本厂日排版表',
+        },
+        {
+          title: '校验数据质量',
+          detail: '导入后显示当前厂区的校验结果',
+        },
+      ]
+    }
+
     return [
       {
         title: '读取工作簿',
@@ -739,28 +809,34 @@ const importQualityIssues = computed(() => {
   const summary = dailyScheduleImportPreview.value?.summary
 
   if (!summary) {
-    return [
-      {
-        tone: 'red' as Tone,
-        count: 13,
-        text: '行负欠数（已啤 > 订单，合计约 -2,211）——需确认冲单 / 补数 / 结案',
-      },
-      {
-        tone: 'amber' as Tone,
-        count: 36,
-        text: '行单价缺失（#N/A）——影响外发金额，需补单价表',
-      },
-      {
-        tone: 'amber' as Tone,
-        count: 7,
-        text: '行计划目标为空 / 为 0（#DIV/0!）——无法换算完成期',
-      },
-      {
-        tone: 'blue' as Tone,
-        count: 60,
-        text: '行待排 / 异常暂存（修模、退回厂家、转水口）——未挂机台，暂不计入正式排期',
-      },
-    ]
+    return hasFormalFactoryData.value
+      ? [
+          {
+            tone: 'red' as Tone,
+            count: 13,
+            text: '行负欠数（已啤 > 订单，合计约 -2,211）——需确认冲单 / 补数 / 结案',
+          },
+          {
+            tone: 'amber' as Tone,
+            count: 36,
+            text: '行单价缺失（#N/A）——影响外发金额，需补单价表',
+          },
+          {
+            tone: 'amber' as Tone,
+            count: 7,
+            text: '行计划目标为空 / 为 0（#DIV/0!）——无法换算完成期',
+          },
+          {
+            tone: 'blue' as Tone,
+            count: 60,
+            text: '行待排 / 异常暂存（修模、退回厂家、转水口）——未挂机台，暂不计入正式排期',
+          },
+        ]
+      : injectionPendingOrderValidationRules.value.map((rule) => ({
+          tone: rule.tone,
+          count: rule.hit,
+          text: rule.detail,
+        }))
   }
 
   return [
@@ -788,28 +864,57 @@ const importQualityIssues = computed(() => {
 })
 
 const importUploadedFileName = computed(() =>
-  dailyScheduleImportPreview.value?.source_file_name ?? '华兴日排版表6-30.xlsx',
+  dailyScheduleImportPreview.value?.source_file_name
+  ?? (hasFormalFactoryData.value ? '华兴日排版表6-30.xlsx' : '尚未选择文件'),
 )
 const importUploadedFileStatus = computed(() =>
-  isImportingDailySchedule.value ? '解析中...' : dailyScheduleImportPreview.value ? '解析完成 100%' : '解析完成 100%',
+  isImportingDailySchedule.value
+    ? '解析中...'
+    : dailyScheduleImportPreview.value || hasFormalFactoryData.value
+      ? '解析完成 100%'
+      : '等待上传',
 )
 const importUploadedFileDetail = computed(() => {
   const summary = dailyScheduleImportPreview.value?.summary
 
   if (!summary) {
-    return 'Sheet1《河源华兴啤机生产日计划表》 · 289 行 · 表内日期 2026-06-30'
+    return hasFormalFactoryData.value
+      ? 'Sheet1《河源华兴啤机生产日计划表》 · 289 行 · 表内日期 2026-06-30'
+      : `${activeFactory.value.shortName}尚未上传本厂日排版表`
   }
 
   return `批次 ${dailyScheduleImportPreview.value?.batch_id} · ${formatImportNumber(summary.machine_count)} 台机 · ${formatImportNumber(summary.task_count)} 条任务 · 表内日期 ${summary.business_date || '待确认'}`
 })
 const importTopIssues = computed(() => dailyScheduleImportPreview.value?.issues.slice(0, 5) ?? [])
 
-const orderHeadMetrics = [
-  { label: '订单池任务', value: '118', detail: '来自 6-30 排版表', tone: 'blue' as Tone },
-  { label: '急单 / 超期', value: '15 / 88', detail: '优先安排', tone: 'red' as Tone },
-  { label: '同模分组', value: '12 组', detail: '可连排省换模', tone: 'teal' as Tone },
-  { label: '待补料', value: '6', detail: '缺料补料优先', tone: 'amber' as Tone },
-]
+const importTotalShortageText = computed(() => {
+  const total = dailyScheduleImportPreview.value?.summary.total_shortage_qty
+
+  if (total !== undefined) {
+    return formatImportNumber(total)
+  }
+
+  return hasFormalFactoryData.value ? formatImportNumber(1860805) : '待导入'
+})
+
+const importOverdueText = computed(() => {
+  const total = dailyScheduleImportPreview.value?.summary.overdue_count
+
+  if (total !== undefined) {
+    return `${formatImportNumber(total)} 条`
+  }
+
+  return hasFormalFactoryData.value ? '88 条' : '待导入'
+})
+
+const orderHeadMetrics = computed(() => hasFormalFactoryData.value
+  ? [
+      { label: '订单池任务', value: '118', detail: '来自 6-30 排版表', tone: 'blue' as Tone },
+      { label: '急单 / 超期', value: '15 / 88', detail: '优先安排', tone: 'red' as Tone },
+      { label: '同模分组', value: '12 组', detail: '可连排省换模', tone: 'teal' as Tone },
+      { label: '待补料', value: '6', detail: '缺料补料优先', tone: 'amber' as Tone },
+    ]
+  : injectionOverviewMetrics.value)
 
 const priorityFactorColors = [
   'var(--red-solid)',
@@ -1349,16 +1454,43 @@ async function handleDailyScheduleFileChange(event: Event) {
     return
   }
 
+  const requestedFactoryId = selectedFactoryId.value
+  const requestSequence = ++dailyScheduleImportRequestSequence
   dailyScheduleImportError.value = ''
+  dailyScheduleImportPreview.value = null
   isImportingDailySchedule.value = true
 
   try {
-    dailyScheduleImportPreview.value = await injectionScheduleApi.importDailySchedule(file, selectedFactoryId.value)
+    const preview = await injectionScheduleApi.importDailySchedule(file, requestedFactoryId)
+
+    if (
+      requestSequence !== dailyScheduleImportRequestSequence
+      || requestedFactoryId !== selectedFactoryId.value
+    ) {
+      return
+    }
+
+    if (preview.factory_id !== requestedFactoryId) {
+      dailyScheduleImportError.value = '导入结果厂区不一致，请重新上传'
+      return
+    }
+
+    dailyScheduleImportPreview.value = preview
   } catch (error) {
-    dailyScheduleImportError.value = getApiErrorMessage(error)
+    if (
+      requestSequence === dailyScheduleImportRequestSequence
+      && requestedFactoryId === selectedFactoryId.value
+    ) {
+      dailyScheduleImportError.value = getApiErrorMessage(error)
+    }
   } finally {
-    isImportingDailySchedule.value = false
-    input.value = ''
+    if (
+      requestSequence === dailyScheduleImportRequestSequence
+      && requestedFactoryId === selectedFactoryId.value
+    ) {
+      isImportingDailySchedule.value = false
+      input.value = ''
+    }
   }
 }
 </script>
@@ -1462,7 +1594,7 @@ async function handleDailyScheduleFileChange(event: Event) {
           </div>
         </div>
 
-        <div v-else-if="activeStep === 'schedule-board'" class="row gap-2 schedule-head-actions">
+        <div v-else-if="activeStep === 'schedule-board' && hasFormalFactoryData" class="row gap-2 schedule-head-actions">
           <button type="button" class="btn">
             <Gauge class="size-[15px]" aria-hidden="true" />
             一键智能排期
@@ -1474,12 +1606,12 @@ async function handleDailyScheduleFileChange(event: Event) {
         </div>
       </header>
 
-      <p v-if="activeStep === 'machine-overview'" class="eyebrow mb-2 flex items-center gap-2">
+      <p v-if="activeStep === 'machine-overview' && hasFormalFactoryData" class="eyebrow mb-2 flex items-center gap-2">
         <Gauge class="size-[15px]" aria-hidden="true" />
         今日运营焦点 · 晨会 08:30 冻结版本（数据 {{ currentDataDate }}）· 点击卡片定位
       </p>
 
-      <section v-if="activeStep === 'machine-overview'" class="focus-band">
+      <section v-if="activeStep === 'machine-overview' && hasFormalFactoryData" class="focus-band">
         <button
           v-for="card in focusCards"
           :key="card.label"
@@ -1503,6 +1635,37 @@ async function handleDailyScheduleFileChange(event: Event) {
       </section>
 
       <template v-if="activeStep === 'machine-overview'">
+        <section v-if="!hasFormalFactoryData" data-testid="factory-empty-state" class="section">
+          <div class="section-title">
+            <span class="ico amber">
+              <Gauge class="size-5" aria-hidden="true" />
+            </span>
+            <div>
+              <h2>{{ activeFactoryConfig.moduleTitle }}</h2>
+              <p class="small muted mt-1">{{ activeFactoryConfig.workspaceSummary }}</p>
+            </div>
+          </div>
+          <div class="metrics mt-4">
+            <article
+              v-for="highlight in activeFactoryConfig.highlights"
+              :key="highlight.label"
+              class="metric"
+              :class="highlight.tone"
+            >
+              <p class="metric-label">{{ highlight.label }}</p>
+              <p class="metric-value">{{ highlight.value }}</p>
+              <p class="metric-detail">{{ activeFactoryConfig.dataStatus }}</p>
+            </article>
+          </div>
+          <div class="hint mt-4">
+            <span class="hint-ico">
+              <ShieldAlert class="size-[15px]" aria-hidden="true" />
+            </span>
+            <span>{{ activeFactoryConfig.processStatus }}；页面不会回退或展示其他厂区的数据。</span>
+          </div>
+        </section>
+
+        <template v-else>
         <section class="section watch-panel">
           <div class="row between wrap gap-3 mb-3">
             <div class="section-title">
@@ -1551,11 +1714,11 @@ async function handleDailyScheduleFileChange(event: Event) {
             <div class="factory-scope">
               <p class="eyebrow mb-2 flex items-center gap-2">
                 <Layers3 class="size-[15px]" aria-hidden="true" />
-                当前厂区 · 河源华兴日排版表
+                当前厂区 · {{ activeFactory.shortName }}日排版表
               </p>
               <div class="current-factory-card">
-                <strong>华兴</strong>
-                <span>河源 · 自有产线 · 已解析 2026-06-30</span>
+                <strong>{{ activeFactory.shortName }}</strong>
+                <span>{{ activeFactory.description }} · 已解析 {{ currentDataDate }}</span>
               </div>
             </div>
             <div class="col gap-2 min-w-[260px]">
@@ -1646,9 +1809,25 @@ async function handleDailyScheduleFileChange(event: Event) {
         >
           无匹配机台 · 试试清空筛选或搜索
         </p>
+        </template>
       </template>
 
       <template v-else-if="activeStep === 'excel-import'">
+        <section v-if="!hasFormalFactoryData" data-testid="factory-empty-state" class="section mb-4">
+          <div class="row between wrap gap-3">
+            <div class="section-title">
+              <span class="ico amber">
+                <FileSpreadsheet class="size-5" aria-hidden="true" />
+              </span>
+              <div>
+                <h2>{{ activeFactoryConfig.moduleTitle }}</h2>
+                <p class="small muted mt-1">{{ activeFactoryConfig.dataStatus }}；可从下方上传 {{ activeFactory.shortName }} 自己的日排版表。</p>
+              </div>
+            </div>
+            <span class="pill amber compact">{{ activeFactoryConfig.processStatus }}</span>
+          </div>
+        </section>
+
         <div class="import-layout">
           <div class="col gap-4 import-main">
             <section class="section">
@@ -1685,7 +1864,7 @@ async function handleDailyScheduleFileChange(event: Event) {
                   <UploadCloud class="size-8" aria-hidden="true" />
                 </div>
                 <h3>{{ isImportingDailySchedule ? '正在解析日排版表...' : '拖拽 Excel 文件到此处，或点击选择' }}</h3>
-                <p>华兴 / 华康A / 华康B / 华登 通用同一模板 · 后端落库生成导入批次</p>
+                <p>{{ sharedTemplateFactoryNames }} 通用同一模板 · 后端按厂区隔离生成导入批次</p>
               </div>
 
               <div class="file-row import-uploaded-file">
@@ -1695,11 +1874,11 @@ async function handleDailyScheduleFileChange(event: Event) {
                     <span class="strong small">{{ importUploadedFileName }}</span>
                     <span class="small muted">{{ importUploadedFileStatus }}</span>
                   </div>
-                  <div class="progress-line"><span :style="{ width: isImportingDailySchedule ? '64%' : '100%' }" /></div>
+                  <div class="progress-line"><span :style="{ width: isImportingDailySchedule ? '64%' : dailyScheduleImportPreview || hasFormalFactoryData ? '100%' : '0%' }" /></div>
                   <div class="xsmall muted mt-2">{{ importUploadedFileDetail }}</div>
                 </div>
-                <span class="pill compact" :class="dailyScheduleImportError ? 'red' : isImportingDailySchedule ? 'amber' : 'green'">
-                  <span class="dot"></span>{{ dailyScheduleImportError ? '解析失败' : isImportingDailySchedule ? '解析中' : '解析完成' }}
+                <span class="pill compact" :class="dailyScheduleImportError ? 'red' : isImportingDailySchedule ? 'amber' : dailyScheduleImportPreview || hasFormalFactoryData ? 'green' : 'slate'">
+                  <span class="dot"></span>{{ dailyScheduleImportError ? '解析失败' : isImportingDailySchedule ? '解析中' : dailyScheduleImportPreview || hasFormalFactoryData ? '解析完成' : '等待上传' }}
                 </span>
               </div>
 
@@ -1749,10 +1928,10 @@ async function handleDailyScheduleFileChange(event: Event) {
 
               <div class="divider"></div>
               <div class="row between small">
-                <span class="muted">总欠数（∑ 欠数列）</span><span class="strong mono">{{ formatImportNumber(dailyScheduleImportPreview?.summary.total_shortage_qty ?? 1860805) }}</span>
+                <span class="muted">总欠数（∑ 欠数列）</span><span class="strong mono">{{ importTotalShortageText }}</span>
               </div>
               <div class="row between small mt-2">
-                <span class="muted">超期任务（交期差 &lt; 0）</span><span class="pill red compact">{{ formatImportNumber(dailyScheduleImportPreview?.summary.overdue_count ?? 88) }} 条</span>
+                <span class="muted">超期任务（交期差 &lt; 0）</span><span class="pill red compact">{{ importOverdueText }}</span>
               </div>
               <div class="row between small mt-2">
                 <span class="muted">外链公式风险</span><span class="pill amber compact">{{ formatImportNumber(dailyScheduleImportPreview?.summary.external_formula_risk_count ?? 0) }} 条</span>
@@ -1857,7 +2036,25 @@ async function handleDailyScheduleFileChange(event: Event) {
       </template>
 
       <template v-else-if="activeStep === 'order-pool'">
-        <div class="pool-layout">
+        <section v-if="!hasFormalFactoryData" data-testid="factory-empty-state" class="section">
+          <div class="section-title">
+            <span class="ico amber">
+              <Boxes class="size-5" aria-hidden="true" />
+            </span>
+            <div>
+              <h2>{{ activeFactory.shortName }}订单池尚未接入</h2>
+              <p class="small muted mt-1">{{ activeFactoryConfig.workspaceSummary }}</p>
+            </div>
+          </div>
+          <div class="hint mt-4">
+            <span class="hint-ico">
+              <ShieldAlert class="size-[15px]" aria-hidden="true" />
+            </span>
+            <span>{{ activeFactoryConfig.dataStatus }}；导入本厂数据后才会生成优先级、同模分组和机台建议。</span>
+          </div>
+        </section>
+
+        <div v-else class="pool-layout">
           <div class="col gap-4">
             <section class="section">
               <div class="section-title" style="margin-bottom:12px">
@@ -2014,7 +2211,25 @@ async function handleDailyScheduleFileChange(event: Event) {
       </template>
 
       <template v-else>
-        <div class="sched-layout">
+        <section v-if="!hasFormalFactoryData" data-testid="factory-empty-state" class="section">
+          <div class="section-title">
+            <span class="ico amber">
+              <CalendarDays class="size-5" aria-hidden="true" />
+            </span>
+            <div>
+              <h2>{{ activeFactory.shortName }}排期数据尚未接入</h2>
+              <p class="small muted mt-1">公共排期组件已启用，等待 {{ activeFactory.shortName }} 的订单池、机台和模具数据。</p>
+            </div>
+          </div>
+          <div class="hint mt-4">
+            <span class="hint-ico">
+              <ShieldAlert class="size-[15px]" aria-hidden="true" />
+            </span>
+            <span>{{ activeFactoryConfig.dataStatus }}；不会使用其他厂区的机台泳道或试算结果。</span>
+          </div>
+        </section>
+
+        <div v-else class="sched-layout">
           <section class="section pending-panel">
             <div class="row between" style="margin-bottom:12px">
               <div class="section-title">

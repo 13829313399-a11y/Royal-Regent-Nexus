@@ -1,4 +1,4 @@
-from sqlalchemy import Float, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Float, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -7,7 +7,8 @@ from app.db import Base
 class RawMaterial(Base):
     __tablename__ = "raw_materials"
     __table_args__ = (
-        UniqueConstraint("factory_id", "material_code", name="uq_raw_materials_factory_code"),
+        CheckConstraint("factory_id = '*'", name="ck_raw_materials_global_factory"),
+        UniqueConstraint("material_code", name="uq_raw_materials_material_code"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
