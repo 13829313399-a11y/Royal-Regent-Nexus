@@ -120,6 +120,8 @@ const localItemOverrides = ref<Record<string, Record<string, Partial<MoldingSamp
 const isSelectedTaskDataExpanded = ref(false)
 const selectedFullDataItemId = ref('')
 const fullDataItemPane = ref<HTMLElement | null>(null)
+const selectedTaskPrintOrderIds = ref<string[]>([])
+const printableTaskRecords = ref<MoldingSampleWorkflowRecord[]>([])
 const taskPrintPreviewVisible = ref(false)
 const trialReportDialogVisible = ref(false)
 const trialReportReadOnly = ref(false)
@@ -342,13 +344,16 @@ const selectedFullDataItem = computed(() =>
 
 // The printed handoff is issued when molding first receives the engineering order.
 // Keep it tied to the original engineering rows instead of unsaved production fillback.
-const printableEngineeringItems = computed<MoldingSampleItem[]>(() => selectedTask.value?.items ?? [])
-const taskPrintDensityClass = computed(() => {
-  const items = printableEngineeringItems.value
+function getPrintableEngineeringItems(record: MoldingSampleWorkflowRecord) {
+  return record.items
+}
+
+function getTaskPrintDensityClass(record: MoldingSampleWorkflowRecord) {
+  const items = getPrintableEngineeringItems(record)
   const textWeight = items.reduce((total, item) => total
     + formatMaterialComposition(resolveMaterialComponents(item)).length
     + String(item.mold_name ?? '').length
-    + String(item.notes ?? '').length, String(selectedTask.value?.order.reason ?? '').length)
+    + String(item.notes ?? '').length, String(record.order.reason ?? '').length)
   const layoutWeight = items.length * 72 + textWeight
 
   if (items.length > 7 || layoutWeight > 1_000) {
@@ -359,14 +364,36 @@ const taskPrintDensityClass = computed(() => {
     return 'is-compact'
   }
 
-  return ''
-})
+  return 'is-short'
+}
+
+function isTaskPrintable(record: MoldingSampleWorkflowRecord) {
+  return Boolean(
+    getPrintableEngineeringItems(record).length
+    && ['待生产', '生产中', '已完成'].includes(record.order.status),
+  )
+}
+
+const selectedTaskPrintOrderIdSet = computed(() => new Set(selectedTaskPrintOrderIds.value))
+const selectedTaskPrintRecords = computed(() => taskEntries.value.filter((record) =>
+  selectedTaskPrintOrderIdSet.value.has(record.order.id)
+  && isTaskPrintable(record),
+))
+const taskPrintActionRecords = computed(() => selectedTaskPrintRecords.value.length
+  ? selectedTaskPrintRecords.value
+  : selectedTask.value && isTaskPrintable(selectedTask.value)
+    ? [selectedTask.value]
+    : [],
+)
+const selectedTaskPrintCount = computed(() => selectedTaskPrintRecords.value.length)
+const taskPrintActionCount = computed(() => taskPrintActionRecords.value.length)
+const printableTaskItemCount = computed(() => printableTaskRecords.value.reduce(
+  (total, record) => total + getPrintableEngineeringItems(record).length,
+  0,
+))
 const canPrintSelectedTask = computed(() =>
-  Boolean(
-    selectedTask.value
-    && printableEngineeringItems.value.length
-    && ['待生产', '生产中', '已完成'].includes(selectedTask.value.order.status),
-  ),
+  taskPrintActionRecords.value.length > 0
+  && taskPrintActionRecords.value.every(isTaskPrintable),
 )
 const canSaveSelectedTrialReport = computed(() =>
   Boolean(
@@ -414,6 +441,15 @@ const filteredTaskPagination = computed(() =>
 )
 
 const paginatedFilteredTaskEntries = computed(() => filteredTaskPagination.value.rows)
+const printableTasksOnCurrentPage = computed(() =>
+  paginatedFilteredTaskEntries.value.filter(isTaskPrintable),
+)
+const isCurrentTaskPageFullySelected = computed(() =>
+  printableTasksOnCurrentPage.value.length > 0
+  && printableTasksOnCurrentPage.value.every((record) =>
+    selectedTaskPrintOrderIdSet.value.has(record.order.id),
+  ),
+)
 
 const waitingTaskCount = computed(() =>
   taskEntries.value.filter((entry) => entry.order.status === '待生产').length,
@@ -768,13 +804,42 @@ function updateItemDraft(itemId: string, field: keyof ItemFillbackDraft, value: 
   }
 }
 
+function isTaskPrintSelected(orderId: string) {
+  return selectedTaskPrintOrderIdSet.value.has(orderId)
+}
+
+function setTaskPrintSelection(orderId: string, checked: boolean) {
+  selectedTaskPrintOrderIds.value = checked
+    ? Array.from(new Set([...selectedTaskPrintOrderIds.value, orderId]))
+    : selectedTaskPrintOrderIds.value.filter((selectedId) => selectedId !== orderId)
+}
+
+function toggleTaskPrintSelection(orderId: string, event: Event) {
+  setTaskPrintSelection(orderId, (event.target as HTMLInputElement).checked)
+}
+
+function selectAllPrintableTasksOnCurrentPage() {
+  selectedTaskPrintOrderIds.value = Array.from(new Set([
+    ...selectedTaskPrintOrderIds.value,
+    ...printableTasksOnCurrentPage.value.map((record) => record.order.id),
+  ]))
+}
+
+function clearTaskPrintSelection() {
+  selectedTaskPrintOrderIds.value = []
+}
+
 function openTaskPrintPreview() {
   if (!canPrintSelectedTask.value) {
     actionMessage.value = '仅已审核下发至啤机部且包含工程明细的啤办通知单可以打印。'
     return
   }
 
+  printableTaskRecords.value = [...taskPrintActionRecords.value]
   taskPrintPreviewVisible.value = true
+  actionMessage.value = printableTaskRecords.value.length === 1
+    ? `已打开啤办通知单 ${printableTaskRecords.value[0].order.id} 的打印预览。`
+    : `已打开 ${printableTaskRecords.value.length} 张啤办通知单的批量打印预览。`
 }
 
 function closeTaskPrintPreview() {
@@ -782,13 +847,15 @@ function closeTaskPrintPreview() {
 }
 
 function confirmTaskPrint() {
-  if (!selectedTask.value) {
+  if (!printableTaskRecords.value.length || !printableTaskRecords.value.every(isTaskPrintable)) {
     taskPrintPreviewVisible.value = false
     actionMessage.value = '未找到可打印的啤办生产任务单。'
     return
   }
 
-  actionMessage.value = `正在打印工程部下发的啤办通知单 ${selectedTask.value.order.id}。`
+  actionMessage.value = printableTaskRecords.value.length === 1
+    ? `正在打印工程部下发的啤办通知单 ${printableTaskRecords.value[0].order.id}。`
+    : `正在合并打印 ${printableTaskRecords.value.length} 张工程部下发的啤办通知单。`
   document.body.classList.add('molding-sample-task-printing')
   document.getElementById('molding-sample-active-print-page')?.remove()
   const pageStyle = document.createElement('style')
@@ -1303,6 +1370,15 @@ watch([queueFilter, productionSearchKeyword, selectedFactoryId], () => {
   queuePage.value = 1
 })
 
+watch(taskEntries, (records) => {
+  const printableOrderIds = new Set(
+    records.filter(isTaskPrintable).map((record) => record.order.id),
+  )
+  selectedTaskPrintOrderIds.value = selectedTaskPrintOrderIds.value.filter((orderId) =>
+    printableOrderIds.has(orderId),
+  )
+})
+
 watch(selectedFactoryId, (factoryId, previousFactoryId) => {
   if (previousFactoryId === undefined || factoryId === previousFactoryId) {
     return
@@ -1311,6 +1387,9 @@ watch(selectedFactoryId, (factoryId, previousFactoryId) => {
   trialReportSaveRequestId += 1
   trialReportSaving.value = false
   closeTrialReportDialog()
+  selectedTaskPrintOrderIds.value = []
+  printableTaskRecords.value = []
+  closeTaskPrintPreview()
 }, { flush: 'sync' })
 
 watch(selectedFactoryId, (factoryId, previousFactoryId) => {
@@ -1478,62 +1557,137 @@ watchEffect(() => {
                 列表
               </button>
             </div>
+            <div
+              class="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-teal-100 bg-teal-50/70 px-2 py-1.5 text-[11px]"
+              data-testid="production-task-print-selection-toolbar"
+            >
+              <span class="mr-auto font-semibold text-teal-800">勾选任务可合并打印</span>
+              <button
+                type="button"
+                :disabled="!printableTasksOnCurrentPage.length || isCurrentTaskPageFullySelected"
+                class="rounded-md bg-white px-2 py-1 font-semibold text-teal-700 shadow-sm ring-1 ring-teal-100 transition hover:bg-teal-100 disabled:cursor-not-allowed disabled:opacity-45"
+                @click="selectAllPrintableTasksOnCurrentPage"
+              >
+                全选本页
+              </button>
+              <button
+                type="button"
+                :disabled="selectedTaskPrintCount === 0"
+                class="rounded-md px-2 py-1 font-semibold text-slate-500 transition hover:bg-white hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
+                @click="clearTaskPrintSelection"
+              >
+                清空
+              </button>
+              <span class="rounded-md bg-teal-700 px-2 py-1 font-bold text-white">已选 {{ selectedTaskPrintCount }} 张</span>
+            </div>
           </section>
 
           <div v-if="filteredTaskEntries.length" class="production-queue-list sidebar-scrollbar space-y-2 pr-0.5" @wheel="handoffWheelAtBoundary">
             <div v-if="queueDisplayMode === 'board'" class="reveal-grid space-y-2">
-              <button
+              <article
                 v-for="entry in paginatedFilteredTaskEntries"
                 :key="entry.order.id"
-                type="button"
-                :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
                 class="interactive-surface w-full rounded-xl border bg-white p-2.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition motion-reduce:transform-none motion-reduce:transition-none hover:border-teal-200 hover:bg-teal-50/40"
-                :class="selectedTask?.order.id === entry.order.id ? 'border-teal-300 bg-gradient-to-r from-teal-50 to-white shadow-[inset_3px_0_0_rgba(13,148,136,0.75),0_8px_20px_-18px_rgba(13,148,136,0.8)] ring-1 ring-teal-100' : 'border-slate-200'"
-                @click="selectTask(entry.order.id, entry.factory_id)"
+                :class="[
+                  selectedTask?.order.id === entry.order.id ? 'border-teal-300 bg-gradient-to-r from-teal-50 to-white shadow-[inset_3px_0_0_rgba(13,148,136,0.75),0_8px_20px_-18px_rgba(13,148,136,0.8)] ring-1 ring-teal-100' : 'border-slate-200',
+                  isTaskPrintSelected(entry.order.id) ? 'ring-2 ring-cyan-200' : '',
+                ]"
               >
-                <div class="flex items-start justify-between gap-2">
-                  <span class="font-mono text-[12px] font-bold text-slate-800">{{ entry.order.id }}</span>
-                  <StatusPill :label="getQueueStatusLabel(entry.order.status)" :tone="statusTones[entry.order.status]" compact />
+                <div class="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    class="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-teal-600"
+                    :checked="isTaskPrintSelected(entry.order.id)"
+                    :disabled="!isTaskPrintable(entry)"
+                    :aria-label="`选择打印任务 ${entry.order.id}`"
+                    @change="toggleTaskPrintSelection(entry.order.id, $event)"
+                  >
+                  <button
+                    type="button"
+                    class="min-w-0 flex-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+                    :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
+                    @click="selectTask(entry.order.id, entry.factory_id)"
+                  >
+                    <div class="flex items-start justify-between gap-2">
+                      <span class="font-mono text-[12px] font-bold text-slate-800">{{ entry.order.id }}</span>
+                      <StatusPill :label="getQueueStatusLabel(entry.order.status)" :tone="statusTones[entry.order.status]" compact />
+                    </div>
+                    <p class="mt-0.5 truncate text-[12px] font-semibold text-slate-950">{{ entry.order.product_name }}</p>
+                    <p class="truncate text-[11px] text-slate-400">
+                      {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 业务交期 {{ formatWorkflowDate(entry.items[0]?.completion_time || entry.order.date) }}
+                    </p>
+                    <p class="mt-0.5 truncate text-[10px] text-slate-400">{{ getTaskWorkflowDateLabel(entry.order) }}</p>
+                    <p class="mt-1 truncate text-[10px] font-semibold text-teal-700">任务通知 · {{ getNotificationMeta(entry.order.id) }}</p>
+                    <p
+                      v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
+                      class="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-500"
+                    >
+                      <AlertTriangle class="size-3" aria-hidden="true" />
+                      {{ entry.items.filter((item) => !(Number(item.actual_weight_kg) > 0)).length }} 项缺实际用料
+                    </p>
+                  </button>
                 </div>
-                <p class="mt-0.5 truncate text-[12px] font-semibold text-slate-950">{{ entry.order.product_name }}</p>
-                <p class="truncate text-[11px] text-slate-400">
-                  {{ entry.order.client_name }} · {{ entry.items.length }} 项 · 业务交期 {{ formatWorkflowDate(entry.items[0]?.completion_time || entry.order.date) }}
-                </p>
-                <p class="mt-0.5 truncate text-[10px] text-slate-400">{{ getTaskWorkflowDateLabel(entry.order) }}</p>
-                <p class="mt-1 truncate text-[10px] font-semibold text-teal-700">任务通知 · {{ getNotificationMeta(entry.order.id) }}</p>
-                <p
-                  v-if="entry.order.status === '生产中' && entry.items.some((item) => !(Number(item.actual_weight_kg) > 0))"
-                  class="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-500"
-                >
-                  <AlertTriangle class="size-3" aria-hidden="true" />
-                  {{ entry.items.filter((item) => !(Number(item.actual_weight_kg) > 0)).length }} 项缺实际用料
-                </p>
-              </button>
+              </article>
             </div>
 
             <div v-else class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" role="table" aria-label="啤办生产任务列表">
-              <div class="grid grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-500" role="row">
+              <div class="grid grid-cols-[28px_112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-500" role="row">
+                <div role="columnheader">选择</div>
                 <div role="columnheader">单号</div>
                 <div role="columnheader">产品 / 客户</div>
                 <div class="text-right" role="columnheader">状态</div>
               </div>
-              <button
+              <div
                 v-for="entry in paginatedFilteredTaskEntries"
                 :key="`list-${entry.order.id}`"
-                type="button"
                 :aria-current="selectedTask?.order.id === entry.order.id ? 'true' : undefined"
-                class="grid w-full grid-cols-[112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 px-3 py-2 text-left text-[12px] transition last:border-b-0 hover:bg-teal-50/50"
-                :class="selectedTask?.order.id === entry.order.id ? 'bg-teal-50/70' : 'bg-white'"
+                class="grid w-full grid-cols-[28px_112px_minmax(0,1fr)_64px] gap-2 border-b border-slate-100 px-3 py-2 text-left text-[12px] transition last:border-b-0 hover:bg-teal-50/50"
+                :class="[
+                  selectedTask?.order.id === entry.order.id ? 'bg-teal-50/70' : 'bg-white',
+                  isTaskPrintSelected(entry.order.id) ? 'ring-1 ring-inset ring-cyan-200' : '',
+                ]"
                 role="row"
-                @click="selectTask(entry.order.id, entry.factory_id)"
               >
-                <span class="min-w-0 truncate font-mono font-bold text-slate-800" role="cell">{{ entry.order.id }}</span>
-                <span class="min-w-0" role="cell">
-                  <span class="block truncate font-semibold text-slate-950">{{ entry.order.product_name }}</span>
-                  <span class="block truncate text-[11px] text-slate-400">{{ entry.order.client_name }} · {{ entry.items.length }} 项</span>
+                <span class="flex items-start pt-0.5" role="cell">
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-slate-300 text-teal-600"
+                    :checked="isTaskPrintSelected(entry.order.id)"
+                    :disabled="!isTaskPrintable(entry)"
+                    :aria-label="`选择打印任务 ${entry.order.id}`"
+                    @click.stop
+                    @change="toggleTaskPrintSelection(entry.order.id, $event)"
+                  >
                 </span>
-                <span class="text-right text-[11px] font-semibold text-slate-500" role="cell">{{ getQueueStatusLabel(entry.order.status) }}</span>
-              </button>
+                <span class="min-w-0" role="cell">
+                  <button
+                    type="button"
+                    class="w-full truncate rounded-md text-left font-mono font-bold text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+                    @click="selectTask(entry.order.id, entry.factory_id)"
+                  >
+                    {{ entry.order.id }}
+                  </button>
+                </span>
+                <span class="min-w-0" role="cell">
+                  <button
+                    type="button"
+                    class="w-full min-w-0 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+                    @click="selectTask(entry.order.id, entry.factory_id)"
+                  >
+                    <span class="block truncate font-semibold text-slate-950">{{ entry.order.product_name }}</span>
+                    <span class="block truncate text-[11px] text-slate-400">{{ entry.order.client_name }} · {{ entry.items.length }} 项</span>
+                  </button>
+                </span>
+                <span role="cell">
+                  <button
+                    type="button"
+                    class="w-full rounded-md text-right text-[11px] font-semibold text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+                    @click="selectTask(entry.order.id, entry.factory_id)"
+                  >
+                    {{ getQueueStatusLabel(entry.order.status) }}
+                  </button>
+                </span>
+              </div>
             </div>
 
             <div class="enterprise-panel flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-[11px] text-slate-500">
@@ -1639,11 +1793,14 @@ watchEffect(() => {
               <button
                 type="button"
                 :disabled="!canPrintSelectedTask"
+                :aria-label="selectedTaskPrintCount ? `打印已选 ${selectedTaskPrintCount} 张任务单` : '打印当前任务单'"
+                data-testid="production-task-print-button"
                 class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                 @click="openTaskPrintPreview"
               >
                 <Printer class="size-3.5" aria-hidden="true" />
                 打印任务单
+                <span class="rounded-full bg-teal-100 px-1.5 py-0.5 text-[10px] font-bold text-teal-700">{{ taskPrintActionCount }}</span>
               </button>
             </div>
           </section>
@@ -2330,7 +2487,7 @@ watchEffect(() => {
         leave-to-class="opacity-0"
       >
         <section
-          v-if="taskPrintPreviewVisible && selectedTask"
+          v-if="taskPrintPreviewVisible && printableTaskRecords.length"
           class="fixed inset-0 z-[60] bg-slate-950/45 px-4 py-5 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
@@ -2344,7 +2501,7 @@ watchEffect(() => {
               </span>
               <div class="min-w-0">
                 <div class="text-[15px] font-bold text-slate-950">啤办通知单 · 打印预览</div>
-                <p class="mt-0.5 text-[12px] text-slate-500">工程审核通过后下发至啤机部 · {{ selectedTask.order.id }}</p>
+                <p class="mt-0.5 text-[12px] text-slate-500">{{ printableTaskRecords.length }} 张通知单 · {{ printableTaskItemCount }} 项模具明细 · 将合并为一次打印</p>
               </div>
               <button
                 type="button"
@@ -2355,8 +2512,17 @@ watchEffect(() => {
                 <X class="size-4" aria-hidden="true" />
               </button>
             </header>
-            <div class="min-h-0 flex-1 overflow-y-auto bg-slate-100 p-4">
-              <article class="mx-auto max-w-6xl rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <div class="min-h-0 flex-1 space-y-4 overflow-y-auto bg-slate-100 p-4">
+              <article
+                v-for="(record, recordIndex) in printableTaskRecords"
+                :key="`preview-${record.order.id}`"
+                class="mx-auto max-w-6xl rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
+                data-testid="molding-sample-task-print-preview-notice"
+              >
+                <div v-if="printableTaskRecords.length > 1" class="mb-3 flex items-center justify-between rounded-md bg-teal-50 px-3 py-2 text-[13px] font-semibold text-teal-800">
+                  <span>批量打印通知单 {{ recordIndex + 1 }} / {{ printableTaskRecords.length }}</span>
+                  <span class="font-mono">{{ record.order.id }}</span>
+                </div>
                 <div class="flex flex-wrap items-start justify-between gap-3 border-b-2 border-slate-900 pb-3">
                   <div>
                     <div class="text-[13px] font-bold uppercase tracking-[0.12em] text-teal-700">工程部下发 · 啤机部执行</div>
@@ -2364,24 +2530,24 @@ watchEffect(() => {
                     <div class="mt-1 text-[14px] text-slate-500">工程审核通过后下发；以下为工程单据填写详情。</div>
                   </div>
                   <div class="rounded-md bg-slate-900 px-3 py-2 text-right text-[14px] text-white">
-                    <div class="font-mono font-bold">{{ selectedTask.order.id }}</div>
-                    <div class="mt-0.5 text-slate-300">{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</div>
+                    <div class="font-mono font-bold">{{ record.order.id }}</div>
+                    <div class="mt-0.5 text-slate-300">{{ record.order.status }} · {{ record.order.stage || '待填写' }}</div>
                   </div>
                 </div>
                 <div class="mt-3 grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 text-[14px] leading-5 sm:grid-cols-3">
-                  <div class="bg-white px-3 py-2"><span class="text-slate-400">产品编号</span><div class="font-semibold">{{ formatBlank(selectedTask.order.order_number) }}</div></div>
-                  <div class="bg-white px-3 py-2"><span class="text-slate-400">产品 / 客户</span><div class="font-semibold">{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</div></div>
-                  <div class="bg-white px-3 py-2"><span class="text-slate-400">阶段 / 类型</span><div class="font-semibold">{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</div></div>
-                  <div class="bg-white px-3 py-2"><span class="text-slate-400">填写部 / 发至</span><div class="font-semibold">工程部 / {{ formatBlank(selectedTask.order.send_to) }}</div></div>
-                  <div class="bg-white px-3 py-2"><span class="text-slate-400">工程 / 审核主管</span><div class="font-semibold">{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</div></div>
-                  <div class="bg-white px-3 py-2"><span class="text-slate-400">业务开单日期</span><div class="font-semibold">{{ formatWorkflowDate(selectedTask.order.date) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">产品编号</span><div class="font-semibold">{{ formatBlank(record.order.order_number) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">产品 / 客户</span><div class="font-semibold">{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">阶段 / 类型</span><div class="font-semibold">{{ formatBlank(record.order.stage) }} / {{ formatBlank(record.order.order_type) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">填写部 / 发至</span><div class="font-semibold">工程部 / {{ formatBlank(record.order.send_to) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">工程 / 审核主管</span><div class="font-semibold">{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</div></div>
+                  <div class="bg-white px-3 py-2"><span class="text-slate-400">业务开单日期</span><div class="font-semibold">{{ formatWorkflowDate(record.order.date) }}</div></div>
                 </div>
-                <div class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[14px] leading-5 text-amber-900"><span class="mr-2 font-semibold text-amber-700">注意事项 / 开单事由</span>{{ formatBlank(selectedTask.order.reason) }}</div>
-                <div class="mt-4 flex items-center justify-between border-b border-slate-200 pb-2"><div class="text-[18px] font-bold text-slate-950">工程模具明细</div><div class="text-[13px] text-slate-400">共 {{ printableEngineeringItems.length }} 项 · 不含啤机回填及费用</div></div>
+                <div class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[14px] leading-5 text-amber-900"><span class="mr-2 font-semibold text-amber-700">注意事项 / 开单事由</span>{{ formatBlank(record.order.reason) }}</div>
+                <div class="mt-4 flex items-center justify-between border-b border-slate-200 pb-2"><div class="text-[18px] font-bold text-slate-950">工程模具明细</div><div class="text-[13px] text-slate-400">共 {{ getPrintableEngineeringItems(record).length }} 项 · 不含啤机回填及费用</div></div>
                 <div class="mt-2 overflow-x-auto">
                   <table class="min-w-[720px] w-full border-collapse text-left text-[14px] leading-5">
                     <thead><tr class="border-y border-slate-200 bg-slate-50 text-[13px] text-slate-500"><th class="w-10 px-2 py-2">#</th><th class="w-[24%] px-2 py-2">模具信息</th><th class="w-[18%] px-2 py-2">工程时点</th><th class="w-[24%] px-2 py-2">用料与颜色</th><th class="w-[14%] px-2 py-2 text-right">数量 / 需料</th><th class="px-2 py-2">工程备注</th></tr></thead>
-                    <tbody class="divide-y divide-slate-100"><tr v-for="item in printableEngineeringItems" :key="`preview-${item.id}`"><td class="px-2 py-2 align-top text-slate-400">{{ item.sort_order }}</td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</div><div class="mt-0.5 text-[13px] text-slate-500">工模尺寸：{{ formatBlank(item.mold_dimensions) }}</div></td><td class="px-2 py-2 align-top text-[13px] text-slate-600"><div>{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div><div class="mt-0.5">回模：{{ formatWorkflowDate(item.mold_return_time) }}</div><div class="mt-0.5">需办：{{ formatWorkflowDate(item.completion_time) }}</div></td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(formatMaterialComposition(resolveMaterialComponents(item))) }}</div><div class="mt-1 text-[12px] font-semibold" :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'">{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</div><div class="mt-0.5 text-[13px] text-slate-600">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></td><td class="px-2 py-2 align-top text-right"><div class="text-[13px] text-slate-600">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤</div><div class="mt-0.5 font-bold tabular-nums text-slate-900">{{ formatWeight(item.required_material_kg) }}</div></td><td class="px-2 py-2 align-top text-slate-600">{{ formatBlank(item.notes) }}</td></tr></tbody>
+                    <tbody class="divide-y divide-slate-100"><tr v-for="item in getPrintableEngineeringItems(record)" :key="`preview-${record.order.id}-${item.id}`"><td class="px-2 py-2 align-top text-slate-400">{{ item.sort_order }}</td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</div><div class="mt-0.5 text-[13px] text-slate-500">工模尺寸：{{ formatBlank(item.mold_dimensions) }}</div></td><td class="px-2 py-2 align-top text-[13px] text-slate-600"><div>{{ formatMoldPresenceStatus(item.mold_presence_status) }}</div><div class="mt-0.5">回模：{{ formatWorkflowDate(item.mold_return_time) }}</div><div class="mt-0.5">需办：{{ formatWorkflowDate(item.completion_time) }}</div></td><td class="px-2 py-2 align-top"><div class="font-semibold text-slate-900">{{ formatBlank(formatMaterialComposition(resolveMaterialComponents(item))) }}</div><div class="mt-1 text-[12px] font-semibold" :class="item.material_usage_type === 'trial' ? 'text-amber-700' : 'text-emerald-700'">{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</div><div class="mt-0.5 text-[13px] text-slate-600">{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</div></td><td class="px-2 py-2 align-top text-right"><div class="text-[13px] text-slate-600">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤</div><div class="mt-0.5 font-bold tabular-nums text-slate-900">{{ formatWeight(item.required_material_kg) }}</div></td><td class="px-2 py-2 align-top text-slate-600">{{ formatBlank(item.notes) }}</td></tr></tbody>
                   </table>
                 </div>
               </article>
@@ -2398,12 +2564,18 @@ watchEffect(() => {
   </main>
 
   <section class="molding-sample-task-print-root hidden" data-testid="molding-sample-task-print-area" aria-label="工程啤办通知单打印内容">
-    <article v-if="selectedTask" class="molding-sample-task-print-page" :class="taskPrintDensityClass">
-      <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-label">工程部下发 · 啤机部执行</div><div class="molding-sample-task-print-title">啤办通知单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Work Notice</div></div><div class="molding-sample-task-print-id"><strong>{{ selectedTask.order.id }}</strong><span>{{ selectedTask.order.status }} · {{ selectedTask.order.stage || '待填写' }}</span></div></header>
-      <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(selectedTask.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(selectedTask.order.product_name) }} / {{ formatBlank(selectedTask.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(selectedTask.order.stage) }} / {{ formatBlank(selectedTask.order.order_type) }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(selectedTask.order.send_to) }}</strong></div><div><span>工程 / 审核主管</span><strong>{{ formatBlank(selectedTask.order.eng_name) }} / {{ formatBlank(selectedTask.order.supervisor) }}</strong></div><div><span>业务开单日期</span><strong>{{ formatWorkflowDate(selectedTask.order.date) }}</strong></div></section>
-      <section class="molding-sample-task-print-reason"><span>注意事项 / 开单事由</span><strong>{{ formatBlank(selectedTask.order.reason) }}</strong></section>
-      <section class="molding-sample-task-print-section-heading"><strong>工程模具明细</strong><span>共 {{ printableEngineeringItems.length }} 项 · 不含啤机回填及费用</span></section>
-      <table class="molding-sample-task-print-table"><colgroup><col class="molding-sample-task-print-index"><col class="molding-sample-task-print-mold"><col class="molding-sample-task-print-timing"><col class="molding-sample-task-print-material"><col class="molding-sample-task-print-quantity"><col class="molding-sample-task-print-notes"></colgroup><thead><tr><th>#</th><th>模具信息</th><th>工程时点</th><th>用料与颜色</th><th>数量 / 需料</th><th>工程备注</th></tr></thead><tbody><tr v-for="item in printableEngineeringItems" :key="`print-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong><span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span></td><td>{{ formatMoldPresenceStatus(item.mold_presence_status) }}<span>回模：{{ formatWorkflowDate(item.mold_return_time) }}</span><span>需办：{{ formatWorkflowDate(item.completion_time) }}</span></td><td><strong>{{ formatBlank(formatMaterialComposition(resolveMaterialComponents(item))) }}</strong><span class="molding-sample-task-print-usage" :class="{ 'is-trial': item.material_usage_type === 'trial' }">{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</span><span>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</span></td><td class="molding-sample-task-print-quantity-value">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤<strong>{{ formatWeight(item.required_material_kg) }}</strong></td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
+    <article
+      v-for="(record, recordIndex) in printableTaskRecords"
+      :key="`print-${record.order.id}`"
+      class="molding-sample-task-print-page"
+      :class="getTaskPrintDensityClass(record)"
+      data-testid="molding-sample-task-print-notice"
+    >
+      <header class="molding-sample-task-print-header"><div><div class="molding-sample-task-print-label">工程部下发 · 啤机部执行</div><div class="molding-sample-task-print-title">啤办通知单</div><div class="molding-sample-task-print-subtitle">Engineering Molding Sample Work Notice</div></div><div class="molding-sample-task-print-id"><strong>{{ record.order.id }}</strong><span>{{ record.order.status }} · {{ record.order.stage || '待填写' }}<template v-if="printableTaskRecords.length > 1"> · 第 {{ recordIndex + 1 }} / {{ printableTaskRecords.length }} 张</template></span></div></header>
+      <section class="molding-sample-task-print-meta"><div><span>产品编号</span><strong>{{ formatBlank(record.order.order_number) }}</strong></div><div><span>产品 / 客户</span><strong>{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</strong></div><div><span>阶段 / 类型</span><strong>{{ formatBlank(record.order.stage) }} / {{ formatBlank(record.order.order_type) }}</strong></div><div><span>填写部 / 发至</span><strong>工程部 / {{ formatBlank(record.order.send_to) }}</strong></div><div><span>工程 / 审核主管</span><strong>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong></div><div><span>业务开单日期</span><strong>{{ formatWorkflowDate(record.order.date) }}</strong></div></section>
+      <section class="molding-sample-task-print-reason"><span>注意事项 / 开单事由</span><strong>{{ formatBlank(record.order.reason) }}</strong></section>
+      <section class="molding-sample-task-print-section-heading"><strong>工程模具明细</strong><span>共 {{ getPrintableEngineeringItems(record).length }} 项 · 不含啤机回填及费用</span></section>
+      <table class="molding-sample-task-print-table"><colgroup><col class="molding-sample-task-print-index"><col class="molding-sample-task-print-mold"><col class="molding-sample-task-print-timing"><col class="molding-sample-task-print-material"><col class="molding-sample-task-print-quantity"><col class="molding-sample-task-print-notes"></colgroup><thead><tr><th>#</th><th>模具信息</th><th>工程时点</th><th>用料与颜色</th><th>数量 / 需料</th><th>工程备注</th></tr></thead><tbody><tr v-for="item in getPrintableEngineeringItems(record)" :key="`print-${record.order.id}-${item.id}`"><td>{{ item.sort_order }}</td><td><strong>{{ formatBlank(item.mold_id) }} · {{ formatBlank(item.mold_name) }}</strong><span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span></td><td>{{ formatMoldPresenceStatus(item.mold_presence_status) }}<span>回模：{{ formatWorkflowDate(item.mold_return_time) }}</span><span>需办：{{ formatWorkflowDate(item.completion_time) }}</span></td><td><strong>{{ formatBlank(formatMaterialComposition(resolveMaterialComponents(item))) }}</strong><span class="molding-sample-task-print-usage" :class="{ 'is-trial': item.material_usage_type === 'trial' }">{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</span><span>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</span></td><td class="molding-sample-task-print-quantity-value">{{ formatBlank(item.quantity) }} · {{ formatBlank(item.shoot_qty) }} 啤<strong>{{ formatWeight(item.required_material_kg) }}</strong></td><td>{{ formatBlank(item.notes) }}</td></tr></tbody></table>
     </article>
   </section>
 </template>
@@ -2507,23 +2679,25 @@ watchEffect(() => {
   body.molding-sample-task-printing * { visibility: hidden; }
   body.molding-sample-task-printing #app > :not(.molding-sample-task-print-root) { display: none !important; }
   body.molding-sample-task-printing .molding-sample-task-print-root, body.molding-sample-task-printing .molding-sample-task-print-root * { visibility: visible; }
-  body.molding-sample-task-printing #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: calc(297mm - 10mm) !important; max-width: none !important; min-height: 0 !important; height: auto !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 10pt; line-height: 1.35; break-after: auto; }
-  .molding-sample-task-print-page { box-sizing: border-box; width: 100%; min-height: 0; height: auto; margin: 0; break-inside: auto; page-break-inside: auto; break-after: auto; }
+  body.molding-sample-task-printing #app > .molding-sample-task-print-root { display: block !important; position: static !important; inset: auto !important; box-sizing: border-box; width: calc(297mm - 10mm) !important; max-width: none !important; min-height: 0 !important; height: auto !important; margin: 0 !important; color: #0f172a; font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 11pt; line-height: 1.38; break-after: auto; }
+  .molding-sample-task-print-page { box-sizing: border-box; width: 100%; min-height: 0; height: auto; margin: 0 0 5mm; padding: 0 0 5mm; border-bottom: 1px dashed #94a3b8; break-inside: auto; page-break-inside: auto; break-after: auto; }
+  .molding-sample-task-print-page:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+  .molding-sample-task-print-page.is-short { break-inside: avoid-page; page-break-inside: avoid; }
   .molding-sample-task-print-header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 8px; }
-  .molding-sample-task-print-label { color: #0f766e; font-size: 9pt; font-weight: 700; letter-spacing: .12em; }
-  .molding-sample-task-print-title { margin-top: 2px; font-size: 20pt; font-weight: 700; }
-  .molding-sample-task-print-subtitle { margin-top: 2px; color: #64748b; font-size: 8.5pt; letter-spacing: .08em; }
-  .molding-sample-task-print-id { min-width: 178px; padding: 8px 10px; align-self: flex-start; background: #0f172a; color: #fff; text-align: right; font-size: 10pt; }
-  .molding-sample-task-print-id strong { display: block; font-size: 11pt; }
+  .molding-sample-task-print-label { color: #0f766e; font-size: 10pt; font-weight: 700; letter-spacing: .12em; }
+  .molding-sample-task-print-title { margin-top: 2px; font-size: 21pt; font-weight: 700; }
+  .molding-sample-task-print-subtitle { margin-top: 2px; color: #64748b; font-size: 9.5pt; letter-spacing: .08em; }
+  .molding-sample-task-print-id { min-width: 190px; padding: 8px 10px; align-self: flex-start; background: #0f172a; color: #fff; text-align: right; font-size: 11pt; }
+  .molding-sample-task-print-id strong { display: block; font-size: 12pt; }
   .molding-sample-task-print-id span { display: block; margin-top: 3px; color: #cbd5e1; }
-  .molding-sample-task-print-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 10px 0; border: 1px solid #cbd5e1; background: #cbd5e1; font-size: 10pt; }
+  .molding-sample-task-print-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 9px 0; border: 1px solid #cbd5e1; background: #cbd5e1; font-size: 11pt; }
   .molding-sample-task-print-meta div { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 6px; min-height: 28px; padding: 6px 7px; background: #fff; }
   .molding-sample-task-print-meta span { color: #64748b; }
-  .molding-sample-task-print-reason { display: grid; grid-template-columns: 138px minmax(0, 1fr); gap: 8px; margin: 0 0 10px; padding: 7px 9px; background: #fffbeb; border: 1px solid #fde68a; font-size: 10pt; }
+  .molding-sample-task-print-reason { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px; margin: 0 0 9px; padding: 7px 9px; background: #fffbeb; border: 1px solid #fde68a; font-size: 11pt; }
   .molding-sample-task-print-reason span { color: #92400e; font-weight: 700; }
-  .molding-sample-task-print-section-heading { display: flex; align-items: center; justify-content: space-between; padding-bottom: 6px; border-bottom: 1px solid #94a3b8; font-size: 11pt; }
-  .molding-sample-task-print-section-heading span { color: #64748b; font-size: 9pt; }
-  .molding-sample-task-print-table { width: 100%; margin-top: 7px; border-collapse: collapse; table-layout: fixed; font-size: 10pt; line-height: 1.35; }
+  .molding-sample-task-print-section-heading { display: flex; align-items: center; justify-content: space-between; padding-bottom: 6px; border-bottom: 1px solid #94a3b8; font-size: 12pt; }
+  .molding-sample-task-print-section-heading span { color: #64748b; font-size: 10pt; }
+  .molding-sample-task-print-table { width: 100%; margin-top: 6px; border-collapse: collapse; table-layout: fixed; font-size: 11pt; line-height: 1.38; }
   .molding-sample-task-print-index { width: 3%; }
   .molding-sample-task-print-mold { width: 25%; }
   .molding-sample-task-print-timing { width: 17%; }
@@ -2531,28 +2705,28 @@ watchEffect(() => {
   .molding-sample-task-print-quantity { width: 12%; }
   .molding-sample-task-print-notes { width: 16%; }
   .molding-sample-task-print-table th, .molding-sample-task-print-table td { border: 1px solid #cbd5e1; padding: 6px 7px; vertical-align: top; overflow-wrap: anywhere; }
-  .molding-sample-task-print-table th { background: #f1f5f9; color: #334155; text-align: left; font-size: 9.5pt; }
-  .molding-sample-task-print-table td > span { display: block; margin-top: 3px; color: #64748b; font-size: 9pt; font-weight: 400; }
+  .molding-sample-task-print-table th { background: #f1f5f9; color: #334155; text-align: left; font-size: 10.5pt; }
+  .molding-sample-task-print-table td > span { display: block; margin-top: 3px; color: #64748b; font-size: 10pt; font-weight: 400; }
   .molding-sample-task-print-table .molding-sample-task-print-usage { color: #047857; font-weight: 700; }
   .molding-sample-task-print-table .molding-sample-task-print-usage.is-trial { color: #b45309; }
   .molding-sample-task-print-quantity-value { text-align: right; }
-  .molding-sample-task-print-quantity-value strong { display: block; margin-top: 3px; font-size: 10pt; }
+  .molding-sample-task-print-quantity-value strong { display: block; margin-top: 3px; font-size: 11pt; }
   .molding-sample-task-print-table thead { display: table-header-group; }
   .molding-sample-task-print-table tr { break-inside: avoid-page; page-break-inside: avoid; }
   .molding-sample-task-print-page.is-compact .molding-sample-task-print-meta { margin: 7px 0; }
   .molding-sample-task-print-page.is-compact .molding-sample-task-print-meta div { min-height: 21px; padding: 4px 5px; }
   .molding-sample-task-print-page.is-compact .molding-sample-task-print-reason { margin-bottom: 7px; padding: 5px 6px; }
-  .molding-sample-task-print-page.is-compact .molding-sample-task-print-table { margin-top: 4px; font-size: 9.25pt; }
+  .molding-sample-task-print-page.is-compact .molding-sample-task-print-table { margin-top: 4px; font-size: 10.5pt; }
   .molding-sample-task-print-page.is-compact .molding-sample-task-print-table th, .molding-sample-task-print-page.is-compact .molding-sample-task-print-table td { padding: 4px 5px; }
-  .molding-sample-task-print-page.is-compact .molding-sample-task-print-table td > span { font-size: 8.5pt; }
+  .molding-sample-task-print-page.is-compact .molding-sample-task-print-table td > span { font-size: 9.75pt; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-header { padding-bottom: 5px; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-title { font-size: 17pt; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-title { font-size: 19pt; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-id { padding: 6px 8px; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta { margin: 5px 0; font-size: 8.5pt; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta { margin: 5px 0; font-size: 10pt; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-meta div { min-height: 19px; padding: 3px 4px; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-reason { margin-bottom: 5px; padding: 4px 5px; font-size: 8.5pt; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table { margin-top: 3px; font-size: 8.5pt; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-reason { margin-bottom: 5px; padding: 4px 5px; font-size: 10pt; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table { margin-top: 3px; font-size: 10pt; }
   .molding-sample-task-print-page.is-dense .molding-sample-task-print-table th, .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td { padding: 3px 4px; }
-  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td > span { font-size: 8pt; }
+  .molding-sample-task-print-page.is-dense .molding-sample-task-print-table td > span { font-size: 9.5pt; }
 }
 </style>

@@ -63,7 +63,17 @@ for (const requiredImplementation of [
   'molding-sample-trial-report-history',
   'data-testid="molding-sample-task-print-preview"',
   'data-testid="molding-sample-task-print-area"',
+  'data-testid="production-task-print-selection-toolbar"',
+  'data-testid="production-task-print-button"',
   'canPrintSelectedTask',
+  'selectedTaskPrintOrderIds',
+  'selectedTaskPrintRecords',
+  'printableTaskRecords',
+  'taskPrintActionRecords',
+  'selectAllPrintableTasksOnCurrentPage',
+  'clearTaskPrintSelection',
+  'toggleTaskPrintSelection',
+  '选择打印任务',
   'openTaskPrintPreview',
   'confirmTaskPrint',
   'window.print()',
@@ -207,22 +217,27 @@ assert.match(source, /molding-sample-task-print-material \{ width: 27%; \}/)
 assert.match(source, /molding-sample-task-print-quantity \{ width: 12%; \}/)
 assert.match(source, /molding-sample-task-print-notes \{ width: 16%; \}/)
 assert.doesNotMatch(source, /min-height: 196mm/)
+assert.match(source, /v-for="\(record, recordIndex\) in printableTaskRecords"/)
+assert.match(source, /data-testid="molding-sample-task-print-notice"/)
 assert.match(source, /molding-sample-task-print-page \{[\s\S]*min-height: 0; height: auto;[\s\S]*break-inside: auto;/)
+assert.match(source, /molding-sample-task-print-page\.is-short \{ break-inside: avoid-page; page-break-inside: avoid; \}/)
+assert.doesNotMatch(source, /molding-sample-task-print-page[^\{]*\{[^}]*break-after:\s*page;/)
 assert.match(source, /molding-sample-task-print-table thead \{ display: table-header-group; \}/)
 assert.match(source, /molding-sample-task-print-table tr \{ break-inside: avoid-page; page-break-inside: avoid; \}/)
-assert.match(source, /taskPrintDensityClass/)
+assert.match(source, /getTaskPrintDensityClass/)
 assert.match(source, /molding-sample-task-print-page\.is-compact/)
 assert.match(source, /molding-sample-task-print-page\.is-dense/)
 assert.match(source, /min-w-\[720px\] w-full border-collapse text-left text-\[14px\] leading-5/)
-assert.match(source, /molding-sample-task-print-root \{[\s\S]*font-size: 10pt; line-height: 1\.35;/)
-assert.match(source, /molding-sample-task-print-meta \{[\s\S]*font-size: 10pt;/)
-assert.match(source, /molding-sample-task-print-reason \{[\s\S]*font-size: 10pt;/)
-assert.match(source, /molding-sample-task-print-table \{[\s\S]*font-size: 10pt; line-height: 1\.35;/)
-assert.match(source, /molding-sample-task-print-table th \{[\s\S]*font-size: 9\.5pt;/)
-assert.match(source, /molding-sample-task-print-table td > span \{[\s\S]*font-size: 9pt;/)
-assert.match(source, /is-compact \.molding-sample-task-print-table \{[\s\S]*font-size: 9\.25pt;/)
-assert.match(source, /is-dense \.molding-sample-task-print-table \{[\s\S]*font-size: 8\.5pt;/)
-assert.match(source, /is-dense \.molding-sample-task-print-table td > span \{ font-size: 8pt; \}/)
+assert.match(source, /molding-sample-task-print-root \{[\s\S]*font-size: 11pt; line-height: 1\.38;/)
+assert.match(source, /molding-sample-task-print-meta \{[\s\S]*font-size: 11pt;/)
+assert.match(source, /molding-sample-task-print-reason \{[\s\S]*font-size: 11pt;/)
+assert.match(source, /molding-sample-task-print-table \{[\s\S]*font-size: 11pt; line-height: 1\.38;/)
+assert.match(source, /molding-sample-task-print-table th \{[\s\S]*font-size: 10\.5pt;/)
+assert.match(source, /molding-sample-task-print-table td > span \{[\s\S]*font-size: 10pt;/)
+assert.match(source, /is-compact \.molding-sample-task-print-table \{[\s\S]*font-size: 10\.5pt;/)
+assert.match(source, /is-dense \.molding-sample-task-print-table \{[\s\S]*font-size: 10pt;/)
+assert.match(source, /is-dense \.molding-sample-task-print-table td > span \{ font-size: 9\.5pt; \}/)
+assert.doesNotMatch(source, /font-size:\s*8(?:\.5)?pt;/)
 assert.doesNotMatch(source, /molding-sample-task-print-footer/)
 assert.match(source, /formatMaterialComposition\(resolveMaterialComponents\(item\)\)/)
 assert.match(source, /试料 · 不计结余/)
