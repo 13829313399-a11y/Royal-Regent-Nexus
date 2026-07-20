@@ -86,6 +86,7 @@ describe('IAM management view semantics and accessibility', () => {
   it('provides complete business labels, status, risk, and fixed-scope presentation', () => {
     expect(permissionActionLabel('read')).toBe('查看')
     expect(permissionActionLabel('raw_material_write')).toBe('维护原料资料')
+    expect(permissionActionLabel('dispatch')).toBe('分派生产任务')
     expect(permissionScopeLabel('factory_department')).toBe('指定厂区与部门')
     expect(permissionAccessKindLabel('read')).toBe('查看')
     expect(permissionAccessKindLabel('operate')).toBe('操作')
@@ -102,6 +103,12 @@ describe('IAM management view semantics and accessibility', () => {
       module_name: '啤办管理',
       action: 'raw_material_write',
     })).toBe('维护啤办原料资料')
+    expect(permissionDisplayLabel({
+      code: 'molding_sample:dispatch',
+      name: 'molding_sample:dispatch',
+      module_name: '啤办管理',
+      action: 'dispatch',
+    })).toBe('分派啤办生产任务')
     expect(permissionDisplayLabel({
       code: 'system:access_approve',
       name: 'system:access_approve',

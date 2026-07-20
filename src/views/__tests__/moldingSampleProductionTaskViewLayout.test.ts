@@ -25,7 +25,13 @@ for (const requiredCopy of [
   '自动同步到工程部单据详情',
   '确认打印',
   '工程啤办明细',
-  '工程部下发 · 啤机部执行',
+  '来源 → 承接',
+  '来源厂 → 承接生产厂',
+  '派厂时间',
+  '单据归属来源厂',
+  '生产执行承接厂',
+  '啤办跨厂生产跟踪',
+  '当前厂区不会生成可操作的啤机生产队列',
   '工程模具明细',
   '模具信息',
   '工程时点',
@@ -51,7 +57,7 @@ for (const requiredCopy of [
 }
 
 for (const requiredImplementation of [
-  'moldingSampleApi.listOrders',
+  'moldingSampleApi.listProductionTasks',
   'moldingSampleApi.listNotifications',
   'moldingSampleApi.updateItems',
   'moldingSampleApi.upsertTrialReport',
@@ -69,6 +75,8 @@ for (const requiredImplementation of [
   'selectedTaskPrintOrderIds',
   'selectedTaskPrintRecords',
   'printableTaskRecords',
+  'TaskPrintRouteSnapshot',
+  'printableTaskRouteSnapshots',
   'taskPrintActionRecords',
   'selectAllPrintableTasksOnCurrentPage',
   'clearTaskPrintSelection',
@@ -76,6 +84,10 @@ for (const requiredImplementation of [
   '选择打印任务',
   'openTaskPrintPreview',
   'confirmTaskPrint',
+  'resolveCurrentTaskPrintRecords',
+  'invalidateTaskPrintPreview',
+  'productionAssignmentVersion',
+  '打印预览已失效，请重新选择任务后再打印',
   'window.print()',
   'moldingSampleApi.updateStatus',
   "'撤回开始生产'",
@@ -121,10 +133,23 @@ for (const requiredImplementation of [
   'searchMatchedTaskEntries',
   'tokenizeMoldingSampleSearchKeyword',
   'matchesMoldingSampleSearch',
+  'normalizeMoldingSampleSearchValue',
+  'matchesProductionTaskSearch',
   'setQueuePage',
   'setQueueDisplayMode',
   'aria-label="啤办生产任务队列"',
   'PRODUCTION_TASK_STATUSES',
+  'resolveMoldingSampleProductionFactoryId',
+  'getOrderProductionFactoryId',
+  'getOrderFactoryRouteLabel',
+  'getOrderFactoryOwnershipLabel',
+  'production_assigned_at',
+  'molding-sample-task-print-ownership',
+  'selectedFactoryHasMoldingDepartment',
+  'data-testid="molding-sample-cross-factory-tracking"',
+  'data-testid="molding-sample-cross-factory-tracking-link"',
+  'isProductionTaskRequestContextCurrent',
+  'isProductionTaskResponseForContext',
   '待生产',
   '生产中',
   '已完成',
@@ -173,6 +198,12 @@ assert.match(source, /data-testid="production-full-item-timing-section"[\s\S]*�
 assert.match(source, /data-testid="production-full-item-usage-section"[\s\S]*实际用量/)
 assert.match(source, /data-testid="production-full-item-cost-grid"/)
 assert.match(source, /data-testid="production-task-search-input"[\s\S]*type="search"[\s\S]*aria-label="模糊搜索生产任务"/)
+assert.match(source, /function matchesProductionTaskSearch\([\s\S]*record\.order\.factory_id[\s\S]*getMoldingSampleFactoryLabel\(record\.order\.factory_id\)[\s\S]*productionFactoryId[\s\S]*getMoldingSampleFactoryLabel\(productionFactoryId\)[\s\S]*tokens\.every/)
+assert.match(source, /data-testid="molding-sample-task-print-preview-notice"[\s\S]*getOrderFactoryOwnershipLabel\(record\.order\)[\s\S]*派厂时间[\s\S]*record\.order\.production_assigned_at/)
+assert.match(source, /class="molding-sample-task-print-root hidden"[\s\S]*molding-sample-task-print-ownership[\s\S]*getOrderFactoryOwnershipLabel\(record\.order\)[\s\S]*派厂时间[\s\S]*record\.order\.production_assigned_at/)
+assert.match(source, /interface TaskPrintRouteSnapshot \{[\s\S]*originFactoryId: string[\s\S]*productionFactoryId: string[\s\S]*productionAssignmentVersion: number[\s\S]*productionAssignedAt: string/)
+assert.match(source, /async function confirmTaskPrint\(\) \{[\s\S]*resolveCurrentTaskPrintRecords\(\)[\s\S]*printableTaskRecords\.value = \[\.\.\.currentRecords\][\s\S]*await nextTick\(\)[\s\S]*resolveCurrentTaskPrintRecords\(\)[\s\S]*window\.print\(\)/)
+assert.match(source, /watch\(taskEntries,[\s\S]*resolveCurrentTaskPrintRecords\(\)[\s\S]*invalidateTaskPrintPreview\(\)[\s\S]*\{ deep: true \}\)/)
 assert.match(source, /placeholder="搜索单号 \/ 产品 \/ 客户 \/ 模具 \/ 原料\.\.\."/)
 assert.match(source, /aria-label="清除生产任务搜索"[\s\S]*productionSearchKeyword = ''/)
 assert.match(source, /:aria-expanded="isSelectedTaskDataExpanded"[\s\S]*aria-controls="production-complete-order-data"/)

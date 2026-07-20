@@ -1,5 +1,10 @@
 import type { MoldingSampleCreateRequest } from '../api/moldingSample.js'
 import { createDefaultMoldingSampleOrder, formatMaterialComposition } from './moldingSampleBusiness.js'
+import {
+  getMoldingSampleFactoryCapability,
+  getSuggestedMoldingSampleProductionFactoryId,
+  validateMoldingSampleProductionAssignment,
+} from './moldingSampleFactoryCapabilities.js'
 import type {
   MoldingSampleMaterialComponent,
   MoldingSampleMaterialSource,
@@ -41,6 +46,7 @@ export interface ManualMoldingSampleLineDraft {
 export interface ManualMoldingSampleOrderDraft {
   id: string
   factory_id: string
+  production_factory_id: string | null
   product_no: string
   doc_number: string
   client_name: string
@@ -64,6 +70,7 @@ export interface ManualMoldingSampleBuildResult {
 export interface ManualMoldingSampleDraftOptions {
   id?: string
   factory_id?: string
+  production_factory_id?: string | null
   product_no?: string
   doc_number?: string
   client_name?: string
@@ -155,9 +162,23 @@ export function createSingleManualMaterialComponentDraft(material: string): Manu
 export function createManualMoldingSampleOrderDraft(
   input: ManualMoldingSampleDraftOptions = {},
 ): ManualMoldingSampleOrderDraft {
+  const factoryId = input.factory_id ?? 'huakang-a'
+  const capability = getMoldingSampleFactoryCapability(factoryId)
+  const isExternalOrder = input.send_to === '发至湖南'
+    || input.send_to === '发至模厂'
+    || input.workshop === '模厂'
+  const productionFactoryId = isExternalOrder
+    ? null
+    : capability?.dispatchMode === 'self-only'
+      ? capability.factoryId
+      : input.production_factory_id === undefined
+        ? getSuggestedMoldingSampleProductionFactoryId(factoryId)
+        : input.production_factory_id
+
   return {
     id: input.id ?? '',
-    factory_id: input.factory_id ?? 'huakang-a',
+    factory_id: factoryId,
+    production_factory_id: productionFactoryId,
     product_no: input.product_no ?? '',
     doc_number: input.doc_number ?? '',
     client_name: input.client_name ?? '',
@@ -259,6 +280,14 @@ export function buildManualMoldingSampleCreateRequest(
   const orderDate = trimText(draft.order_date)
   const supervisor = trimText(draft.supervisor)
   const engineer = trimText(draft.eng_name)
+  const sendTo = draft.send_to === '内部' ? '' : trimText(draft.send_to)
+  const isExternalOrder = sendTo === '发至湖南'
+    || sendTo === '发至模厂'
+    || trimText(draft.workshop) === '模厂'
+
+  const assignmentValidation = isExternalOrder
+    ? null
+    : validateMoldingSampleProductionAssignment(factoryId, draft.production_factory_id)
 
   requireField(productNo, '产品编号', errors)
   requireField(clientName, '客户名称', errors)
@@ -266,6 +295,9 @@ export function buildManualMoldingSampleCreateRequest(
   requireField(orderDate, '落单日期', errors)
   requireField(supervisor, '主管', errors)
   requireField(engineer, '落单人', errors)
+  if (assignmentValidation && !assignmentValidation.valid) {
+    errors.push(assignmentValidation.error)
+  }
 
   const candidateLines = draft.items
     .map((line, index) => ({ line, sourceIndex: index + 1 }))
@@ -300,10 +332,13 @@ export function buildManualMoldingSampleCreateRequest(
     return { payload: null, errors }
   }
 
-  const sendTo = draft.send_to === '内部' ? '' : draft.send_to
   const order = createDefaultMoldingSampleOrder({
     id: orderId,
     factory_id: factoryId,
+    production_factory_id: assignmentValidation?.productionFactoryId ?? null,
+    production_assigned_at: '',
+    production_assigned_by: '',
+    production_assignment_version: 0,
     order_number: productNo,
     doc_number: trimText(draft.doc_number),
     product_name: productName,

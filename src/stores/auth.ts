@@ -30,6 +30,7 @@ const positionDepartmentAliasGroups = [
 ]
 
 const positionDepartmentSensitivePermissions = new Set([
+  'molding_sample:dispatch',
   'molding_sample:notification_read',
   'internal_quote:create',
   'internal_quote:clone',

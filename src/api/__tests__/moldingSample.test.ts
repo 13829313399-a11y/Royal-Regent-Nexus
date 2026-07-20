@@ -48,6 +48,12 @@ const api = createMoldingSampleApi(client as Parameters<typeof createMoldingSamp
 
 assert.deepEqual(await api.listOrders(), { url: '/injection' })
 assert.deepEqual(await api.listOrders('huadeng'), { url: '/injection?factory_id=huadeng' })
+assert.deepEqual(await api.listProductionTasks('huakang-a'), {
+  url: '/injection/production-tasks?production_factory_id=huakang-a',
+})
+assert.deepEqual(await api.listFactoryCapabilities(), {
+  url: '/injection/factory-capabilities',
+})
 assert.deepEqual(await api.getBoardSummary('huaxing', ' 头盔 客户 '), {
   url: '/injection/board/summary?factory_id=huaxing&q=%E5%A4%B4%E7%9B%94+%E5%AE%A2%E6%88%B7',
 })
@@ -110,8 +116,21 @@ const importBuffer = new ArrayBuffer(4)
 await api.exportOrderExcel('BP-1')
 await api.exportOrdersExcel(['BP-1', 'BP-2'])
 await api.downloadEngineeringImportTemplate('huadeng')
-await api.importOrderExcel(importBuffer, { order_id: 'BP-2', factory_id: 'huadeng' })
-await api.previewOrderExcel(importBuffer, { factory_id: 'huadeng' })
+await api.importOrderExcel(importBuffer, {
+  order_id: 'BP-2',
+  factory_id: 'huakang-c',
+  production_factory_id: 'huakang-a',
+})
+await api.previewOrderExcel(importBuffer, {
+  factory_id: 'huakang-d',
+  production_factory_id: 'huakang-b',
+})
+
+await api.updateProductionAssignment('BP-1', {
+  production_factory_id: 'huakang-b',
+  reason: '华康A机台已满，改派华康B。',
+  expected_assignment_version: 2,
+})
 
 await api.listSensitiveAuditLogs()
 
@@ -221,10 +240,11 @@ await api.updateMaterialPrices({
 })
 
 await api.listRequisitions('BP-1')
-await api.listInventoryBatches('HIPS 425')
-await api.listInventoryMovements({ batch_id: 'BATCH-1', material: 'HIPS 425' })
+await api.listInventoryBatches('HIPS 425', 'huakang-a')
+await api.listInventoryMovements({ factory_id: 'huakang-a', batch_id: 'BATCH-1', material: 'HIPS 425' })
 
 await api.createInventoryBatch({
+  factory_id: 'huakang-a',
   material: 'HIPS 425',
   batch_no: 'HIPS-20260701-A',
   location: 'A-01',
@@ -250,6 +270,8 @@ await api.deleteRequisition('REQ-1')
 assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'get /injection',
   'get /injection?factory_id=huadeng',
+  'get /injection/production-tasks?production_factory_id=huakang-a',
+  'get /injection/factory-capabilities',
   'get /injection/board/summary?factory_id=huaxing&q=%E5%A4%B4%E7%9B%94+%E5%AE%A2%E6%88%B7',
   'get /injection/board/summary?factory_id=huadeng',
   'get /injection/board/page?factory_id=huaxing&status=%E5%BE%85%E5%AE%A1%E6%A0%B8&q=%E9%BB%91%E8%89%B2+%E6%A8%A1%E5%85%B7&page=2&page_size=5',
@@ -262,8 +284,9 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'get /injection/BP-1/export-excel',
   'get /injection/export-excel?order_ids=BP-1&order_ids=BP-2',
   'get /injection/import-excel-template?factory_id=huadeng',
-  'post /injection/import-excel?order_id=BP-2&factory_id=huadeng',
-  'post /injection/import-excel-preview?factory_id=huadeng',
+  'post /injection/import-excel?order_id=BP-2&factory_id=huakang-c&production_factory_id=huakang-a',
+  'post /injection/import-excel-preview?factory_id=huakang-d&production_factory_id=huakang-b',
+  'patch /injection/BP-1/production-assignment',
   'get /sensitive-audit-logs',
   'get /molding-sample-notifications?target_module=production_molding_sample_task&factory_id=huakang-a&status=%E6%9C%AA%E8%AF%BB',
   'patch /molding-sample-notifications/N-BP-1',
@@ -275,8 +298,8 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'get /material-prices?factory_id=huadeng',
   'post /manager-update-prices',
   'get /requisitions?order_id=BP-1',
-  'get /inventory-batches?material=HIPS+425',
-  'get /inventory-movements?batch_id=BATCH-1&material=HIPS+425',
+  'get /inventory-batches?factory_id=huakang-a&material=HIPS+425',
+  'get /inventory-movements?factory_id=huakang-a&batch_id=BATCH-1&material=HIPS+425',
   'post /inventory-batches',
   'post /requisitions',
   'patch /requisitions/REQ-1/status',
@@ -303,8 +326,13 @@ assert.deepEqual(calls.find((call) => call.method === 'put' && call.url === '/in
   },
   items: [{ id: 'BP-1-001', mold_name: '左右枪身' }],
 })
-assert.equal(calls.find((call) => call.url === '/injection/import-excel?order_id=BP-2&factory_id=huadeng')?.data, importBuffer)
-assert.equal(calls.find((call) => call.url === '/injection/import-excel-preview?factory_id=huadeng')?.data, importBuffer)
+assert.equal(calls.find((call) => call.url === '/injection/import-excel?order_id=BP-2&factory_id=huakang-c&production_factory_id=huakang-a')?.data, importBuffer)
+assert.equal(calls.find((call) => call.url === '/injection/import-excel-preview?factory_id=huakang-d&production_factory_id=huakang-b')?.data, importBuffer)
+assert.deepEqual(calls.find((call) => call.url === '/injection/BP-1/production-assignment')?.data, {
+  production_factory_id: 'huakang-b',
+  reason: '华康A机台已满，改派华康B。',
+  expected_assignment_version: 2,
+})
 assert.deepEqual(calls.find((call) => call.url === '/manager-update-prices')?.data, {
   prices: [{ material: 'HIPS 425', unit_price: 6, notes: '新经理价' }],
   rmb_to_hkd_rate: 1.1,

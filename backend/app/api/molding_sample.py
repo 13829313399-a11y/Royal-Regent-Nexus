@@ -15,6 +15,7 @@ from app.schemas.molding_sample import (
     MoldingSampleCreateRequest,
     MoldingSampleDetailResponse,
     MoldingSampleEditRequest,
+    MoldingSampleFactoryCapabilityOut,
     MoldingSampleItemOut,
     MoldingSampleItemsPatchRequest,
     MoldingSampleNotificationOut,
@@ -23,6 +24,7 @@ from app.schemas.molding_sample import (
     MoldingSampleProblemCreateRequest,
     MoldingSampleProblemOut,
     MoldingSampleProblemStatusRequest,
+    MoldingSampleProductionAssignmentRequest,
     MoldingSampleStatusRequest,
     MoldingSampleTrialReportOut,
     MoldingSampleTrialReportUpsertRequest,
@@ -35,7 +37,6 @@ from app.schemas.molding_sample import (
 from app.services.auth import AuthContext, get_current_user
 from app.services.business_authz import (
     MANAGEMENT_DEPARTMENTS,
-    WAREHOUSE_DEPARTMENTS,
     can_view_molding_cost,
     molding_read_access,
 )
@@ -57,13 +58,16 @@ from app.services.molding_sample import (
     get_prices,
     list_inventory_batches,
     list_inventory_movements,
+    list_molding_factory_capabilities,
     list_board_page,
     list_notifications,
     list_orders,
+    list_production_tasks,
     list_problems,
     list_requisitions,
     list_sensitive_audit_logs,
     load_order,
+    order_authorization_factory_id,
     has_notification_scope_permission,
     notification_module_permission,
     replace_material_prices,
@@ -71,6 +75,7 @@ from app.services.molding_sample import (
     update_notification,
     update_order,
     update_order_items,
+    update_production_assignment,
     update_problem_status,
     update_requisition_status,
     upsert_trial_report,
@@ -111,8 +116,9 @@ def serialize_order_timing(order) -> MoldingSampleOrderOut:
 
 
 def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResponse:
-    read_source = molding_read_access(current_user, order.factory_id) or "local"
-    can_view_cost = can_view_molding_cost(current_user, order.factory_id, read_source)
+    authorization_factory_id = order_authorization_factory_id(current_user, order)
+    read_source = molding_read_access(current_user, authorization_factory_id) or "local"
+    can_view_cost = can_view_molding_cost(current_user, authorization_factory_id, read_source)
     items = [MoldingSampleItemOut.model_validate(item) for item in order.items]
     if not can_view_cost:
         items = [
@@ -148,6 +154,7 @@ def serialize_order(order, current_user: AuthContext) -> MoldingSampleDetailResp
         order=serialize_order_timing(order),
         items=items,
         audit_logs=list(order.audit_logs),
+        dispatch_logs=list(order.dispatch_logs),
         notifications=notifications,
         problems=list(order.problems),
         trial_reports=list(order.trial_reports),
@@ -208,7 +215,7 @@ def download_engineering_import_template(
     resolved_factory_id = resolve_import_factory_id(current_user, factory_id)
     ensure_molding_create_access(db, current_user, resolved_factory_id)
     return Response(
-        content=build_engineering_import_template(),
+        content=build_engineering_import_template(resolved_factory_id),
         media_type=XLSX_MIME,
         headers={"Content-Disposition": 'attachment; filename="engineering-molding-sample-import-template.xlsx"'},
     )
@@ -259,6 +266,32 @@ def get_injection_board_summary(
     )
 
 
+@router.get(
+    "/api/injection/factory-capabilities",
+    response_model=list[MoldingSampleFactoryCapabilityOut],
+)
+def get_injection_factory_capabilities(
+    _current_user: AuthContext = Depends(get_current_user),
+):
+    return list_molding_factory_capabilities()
+
+
+@router.get("/api/injection/production-tasks", response_model=list[MoldingSampleDetailResponse])
+def get_injection_production_tasks(
+    production_factory_id: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return [
+        serialize_order(order, current_user)
+        for order in list_production_tasks(
+            db,
+            current_user,
+            production_factory_id=production_factory_id,
+        )
+    ]
+
+
 @router.get("/api/injection/{order_id}", response_model=MoldingSampleDetailResponse)
 def get_injection_order(
     order_id: str,
@@ -299,6 +332,7 @@ def import_injection_order_excel(
     body: bytes = Body(..., media_type=XLSX_MIME),
     order_id: str | None = None,
     factory_id: str | None = None,
+    production_factory_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -310,6 +344,8 @@ def import_injection_order_excel(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if production_factory_id is not None:
+        payload.order.production_factory_id = production_factory_id.strip() or None
 
     return serialize_order(create_order(db, payload, current_user), current_user)
 
@@ -319,6 +355,7 @@ def preview_injection_order_excel(
     body: bytes = Body(..., media_type=XLSX_MIME),
     order_id: str | None = None,
     factory_id: str | None = None,
+    production_factory_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -330,6 +367,8 @@ def preview_injection_order_excel(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if production_factory_id is not None:
+        payload.order.production_factory_id = production_factory_id.strip() or None
     ensure_molding_create_access(db, current_user, payload.order.factory_id)
     return payload
 
@@ -362,6 +401,22 @@ def patch_injection_status(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return serialize_order(transition_status(db, order_id, payload, current_user), current_user)
+
+
+@router.patch(
+    "/api/injection/{order_id}/production-assignment",
+    response_model=MoldingSampleDetailResponse,
+)
+def patch_injection_production_assignment(
+    order_id: str,
+    payload: MoldingSampleProductionAssignmentRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return serialize_order(
+        update_production_assignment(db, order_id, payload, current_user),
+        current_user,
+    )
 
 
 @router.patch("/api/injection/{order_id}/items", response_model=MoldingSampleDetailResponse)
@@ -503,35 +558,32 @@ def get_requisitions(
 
 @router.get("/api/inventory-batches", response_model=list[InventoryBatchOut])
 def get_inventory_batches(
+    factory_id: str | None = None,
     material: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission_in_any_factory(
+    return list_inventory_batches(
         db,
         current_user,
-        "molding_sample:inventory_issue",
-        WAREHOUSE_DEPARTMENTS,
+        factory_id=factory_id,
+        material=material,
     )
-    return list_inventory_batches(db, material=material)
 
 
 @router.get("/api/inventory-movements", response_model=list[InventoryMovementOut])
 def get_inventory_movements(
+    factory_id: str | None = None,
     batch_id: str | None = None,
     material: str | None = None,
     requisition_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    ensure_permission_in_any_factory(
-        db,
-        current_user,
-        "molding_sample:inventory_issue",
-        WAREHOUSE_DEPARTMENTS,
-    )
     return list_inventory_movements(
         db,
+        current_user,
+        factory_id=factory_id,
         batch_id=batch_id,
         material=material,
         requisition_id=requisition_id,

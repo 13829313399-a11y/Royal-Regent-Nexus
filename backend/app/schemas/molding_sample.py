@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class MoldingSampleOrderIn(BaseModel):
     id: str
     factory_id: str = "huakang-a"
+    production_factory_id: str | None = None
+    production_assigned_at: str = ""
+    production_assigned_by: str = ""
+    production_assignment_version: int = 0
     order_number: str = ""
     doc_number: str = ""
     product_name: str
@@ -124,6 +128,21 @@ class MoldingSampleAuditLogOut(BaseModel):
     from_status: str
     to_status: str
     reason: str
+    created_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MoldingSampleDispatchLogOut(BaseModel):
+    id: str
+    order_id: str
+    origin_factory_id: str
+    from_production_factory_id: str | None = None
+    to_production_factory_id: str
+    action: str
+    reason: str
+    actor_user_id: str
+    actor_name: str
     created_at: str
 
     model_config = ConfigDict(from_attributes=True)
@@ -273,6 +292,7 @@ class MoldingSampleDetailResponse(BaseModel):
     order: MoldingSampleOrderOut
     items: list[MoldingSampleItemOut]
     audit_logs: list[MoldingSampleAuditLogOut] = Field(default_factory=list)
+    dispatch_logs: list[MoldingSampleDispatchLogOut] = Field(default_factory=list)
     notifications: list[MoldingSampleNotificationOut] = Field(default_factory=list)
     problems: list[MoldingSampleProblemOut] = Field(default_factory=list)
     trial_reports: list[MoldingSampleTrialReportOut] = Field(default_factory=list)
@@ -314,6 +334,19 @@ class MoldingSampleStatusRequest(BaseModel):
     action: str
     reason: str = ""
     today: str | None = None
+
+
+class MoldingSampleProductionAssignmentRequest(BaseModel):
+    production_factory_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=1000)
+    expected_assignment_version: int = Field(ge=0)
+
+
+class MoldingSampleFactoryCapabilityOut(BaseModel):
+    factory_id: str
+    has_molding_department: bool
+    allowed_production_factory_ids: list[str]
+    suggested_production_factory_id: str
 
 
 class MoldingSampleItemsPatchRequest(BaseModel):
@@ -375,6 +408,7 @@ class RequisitionStatusRequest(BaseModel):
 
 class RequisitionOut(BaseModel):
     id: str
+    factory_id: str
     req_number: str
     date: str
     order_id: str
@@ -394,6 +428,7 @@ class RequisitionOut(BaseModel):
 
 
 class InventoryBatchCreateRequest(BaseModel):
+    factory_id: str = ""
     material: str
     batch_no: str
     location: str = ""
@@ -402,6 +437,7 @@ class InventoryBatchCreateRequest(BaseModel):
 
 class InventoryBatchOut(BaseModel):
     id: str
+    factory_id: str
     material: str
     batch_no: str
     location: str
@@ -415,6 +451,7 @@ class InventoryBatchOut(BaseModel):
 
 class InventoryMovementOut(BaseModel):
     id: int
+    factory_id: str
     batch_id: str
     batch_no: str
     requisition_id: str

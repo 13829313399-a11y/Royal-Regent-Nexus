@@ -1,6 +1,16 @@
 from typing import Any
 
-from sqlalchemy import JSON, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -8,9 +18,26 @@ from app.db import Base
 
 class MoldingSampleOrder(Base):
     __tablename__ = "molding_sample_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "production_factory_id IS NULL OR production_factory_id IN "
+            "('huakang-a', 'huakang-b', 'huadeng', 'huaxing')",
+            name="ck_molding_sample_orders_production_factory",
+        ),
+        Index(
+            "ix_molding_sample_orders_production_status_created_at",
+            "production_factory_id",
+            "status",
+            "created_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    production_factory_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    production_assigned_at: Mapped[str] = mapped_column(String(32), default="")
+    production_assigned_by: Mapped[str] = mapped_column(String(128), default="")
+    production_assignment_version: Mapped[int] = mapped_column(Integer, default=0)
     order_number: Mapped[str] = mapped_column(String(128), default="")
     doc_number: Mapped[str] = mapped_column(String(128), default="")
     product_name: Mapped[str] = mapped_column(String(255))
@@ -58,6 +85,11 @@ class MoldingSampleOrder(Base):
         back_populates="order",
         cascade="all, delete-orphan",
         order_by="desc(MoldingSampleTrialReport.updated_at)",
+    )
+    dispatch_logs: Mapped[list["MoldingSampleDispatchLog"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="MoldingSampleDispatchLog.created_at",
     )
 
 
@@ -114,6 +146,28 @@ class MoldingSampleAuditLog(Base):
     created_at: Mapped[str] = mapped_column(String(32), default="")
 
     order: Mapped[MoldingSampleOrder] = relationship(back_populates="audit_logs")
+
+
+class MoldingSampleDispatchLog(Base):
+    """Append-only history for production-factory assignment changes."""
+
+    __tablename__ = "molding_sample_dispatch_logs"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    order_id: Mapped[str] = mapped_column(
+        ForeignKey("molding_sample_orders.id", ondelete="CASCADE"),
+        index=True,
+    )
+    origin_factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    from_production_factory_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_production_factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    actor_user_id: Mapped[str] = mapped_column(String(64), default="")
+    actor_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="", index=True)
+
+    order: Mapped[MoldingSampleOrder] = relationship(back_populates="dispatch_logs")
 
 
 class MoldingSampleNotification(Base):
@@ -212,6 +266,7 @@ class MoldingSampleRequisition(Base):
     __tablename__ = "molding_sample_requisitions"
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
     req_number: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     date: Mapped[str] = mapped_column(String(20), index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_orders.id", ondelete="CASCADE"), index=True)
@@ -234,6 +289,7 @@ class MoldingSampleInventoryBatch(Base):
     __tablename__ = "molding_sample_inventory_batches"
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
     material: Mapped[str] = mapped_column(String(255), index=True)
     batch_no: Mapped[str] = mapped_column(String(128), index=True)
     location: Mapped[str] = mapped_column(String(128), default="")
@@ -247,6 +303,7 @@ class MoldingSampleInventoryMovement(Base):
     __tablename__ = "molding_sample_inventory_movements"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
     batch_id: Mapped[str] = mapped_column(String(96), index=True)
     batch_no: Mapped[str] = mapped_column(String(128), index=True)
     requisition_id: Mapped[str] = mapped_column(String(96), default="", index=True)

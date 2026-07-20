@@ -63,6 +63,14 @@ import {
   matchesMoldingSampleSearch,
   tokenizeMoldingSampleSearchKeyword,
 } from '@/lib/moldingSampleSearch'
+import {
+  getAllowedMoldingSampleProductionFactoryIds,
+  getMoldingSampleFactoryCapability,
+  getMoldingSampleFactoryLabel,
+  getSuggestedMoldingSampleProductionFactoryId,
+  resolveMoldingSampleProductionFactoryId,
+  validateMoldingSampleProductionAssignment,
+} from '@/lib/moldingSampleFactoryCapabilities'
 import { getApiErrorMessage } from '@/lib/http'
 import { formatBusinessDate, formatBusinessDateTime } from '@/lib/dateTime'
 import {
@@ -269,6 +277,9 @@ const approvalSubmitting = ref(false)
 const withdrawSubmitting = ref(false)
 const deleteSubmitting = ref(false)
 const deleteConfirmingOrderId = ref('')
+const dispatchProductionFactoryId = ref('')
+const dispatchReason = ref('')
+const dispatchSubmitting = ref(false)
 const excelFileInput = ref<HTMLInputElement | null>(null)
 const excelImporting = ref(false)
 const excelExporting = ref(false)
@@ -300,6 +311,7 @@ let protectedMaterialPricesRequestId = 0
 let rawMaterialOptionsRequestId = 0
 let excelImportRequestId = 0
 let manualCreateMutationRequestId = 0
+let productionAssignmentRequestId = 0
 const boardPageRequestIds: Partial<Record<MoldingSampleStatus, number>> = {}
 
 const materialCompositionPercentageTotal = computed(() => roundMaterialWeight(
@@ -331,6 +343,13 @@ const materialBalancePeriodOptions: MaterialBalancePeriodOption[] = [
 const MOLDING_SAMPLE_BOARD_PAGE_SIZE = 5
 const MOLDING_SAMPLE_PAGE_SIZE = 10
 const MOLDING_SAMPLE_SEARCH_DEBOUNCE_MS = 275
+const MOLDING_SAMPLE_DISPATCHABLE_STATUSES = new Set<MoldingSampleStatus>([
+  '待审核',
+  '待经理审核',
+  '已驳回',
+  '已撤回',
+  '待生产',
+])
 
 const statusToneClasses: Record<MoldingSampleStatus, string> = {
   待审核: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -368,6 +387,13 @@ const activeFactory = computed(() =>
   factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
     ?? factoryContexts.find((factory) => factory.id === 'huaxing')
     ?? factoryContexts[1],
+)
+const activeFactoryCapability = computed(() =>
+  getMoldingSampleFactoryCapability(selectedFactoryId.value),
+)
+const createDraftIsExternal = computed(() => isExternalCreateDraft(createDraft.value))
+const allowedCreateProductionFactoryIds = computed(() =>
+  getAllowedMoldingSampleProductionFactoryIds(selectedFactoryId.value),
 )
 const engineeringDepartmentRoute = computed(() => getFactoryScopedRoute(
   '/modules/engineering',
@@ -418,7 +444,10 @@ const rawMaterialOptionValueSet = computed(() =>
 )
 
 const productionTaskRoute = computed(() => {
-  const params = new URLSearchParams({ factory: selectedFactoryId.value })
+  const productionFactoryId = selectedRecord.value
+    ? resolveMoldingSampleProductionFactoryId(selectedRecord.value.order)
+    : selectedFactoryId.value
+  const params = new URLSearchParams({ factory: productionFactoryId ?? selectedFactoryId.value })
 
   if (selectedRecord.value?.order.id) {
     params.set('order_id', selectedRecord.value.order.id)
@@ -497,12 +526,41 @@ const selectedOrder = computed<MoldingSampleOrder>(() => selectedRecord.value?.o
 const selectedItems = computed(() => selectedRecord.value?.items ?? [])
 const selectedProblems = computed(() => selectedRecord.value?.problems ?? [])
 const selectedAuditLogs = computed(() => selectedRecord.value?.audit_logs ?? [])
+const selectedDispatchLogs = computed(() => selectedRecord.value?.dispatch_logs ?? [])
+const selectedApiRecord = computed(() =>
+  apiRecords.value.find((record) => record.order.id === selectedOrderId.value) ?? null,
+)
+const selectedProductionStartAudit = computed(() => {
+  if (!['生产中', '已完成'].includes(selectedOrder.value.status)) return null
+  return getLatestAuditLog('开始处理')
+})
+const selectedProductionCompleteAudit = computed(() => {
+  if (selectedOrder.value.status !== '已完成') return null
+  return getLatestAuditLog('标记完成')
+})
+const selectedLatestNotification = computed(() => {
+  const notifications = selectedApiRecord.value?.notifications ?? []
+  return [...notifications].sort((left, right) => right.created_at.localeCompare(left.created_at))[0] ?? null
+})
 const selectedTrialReports = computed(() => selectedRecord.value?.trial_reports ?? [])
 const selectedCompletionGate = computed(() => selectedRecord.value
   ? buildCompletionGate(selectedOrder.value, selectedItems.value)
   : { can_complete: false, missing_item_ids: [], message: '暂无正式单据' },
 )
 const isSelectedExternal = computed(() => selectedRecord.value ? isExternalMoldingSampleOrder(selectedOrder.value) : false)
+const selectedFactoryCapability = computed(() =>
+  getMoldingSampleFactoryCapability(selectedOrder.value.factory_id),
+)
+const selectedProductionFactoryId = computed(() =>
+  resolveMoldingSampleProductionFactoryId(selectedOrder.value),
+)
+const selectedProductionRouteLabel = computed(() => getProductionRouteLabel(selectedOrder.value))
+const isSelectedOrderCrossFactoryDispatch = computed(() =>
+  selectedFactoryCapability.value?.dispatchMode === 'cross-factory' && !isSelectedExternal.value,
+)
+const isSelectedOrderDispatchable = computed(() =>
+  MOLDING_SAMPLE_DISPATCHABLE_STATUSES.has(selectedOrder.value.status),
+)
 
 const kpiCards = computed<KpiCard[]>(() => {
   const records = visibleRecords.value
@@ -845,6 +903,7 @@ const MOLDING_SAMPLE_PERMISSION_DEPARTMENTS: Record<string, readonly string[]> =
   'molding_sample:edit_draft': ['engineering', 'management'],
   'molding_sample:delete_draft': ['engineering', 'management'],
   'molding_sample:manager_review': ['management'],
+  'molding_sample:dispatch': ['engineering', 'management'],
   'molding_sample:price_update': ['management'],
   'molding_sample:export': [
     'engineering',
@@ -862,6 +921,7 @@ const MOLDING_SAMPLE_WRITE_PERMISSIONS = [
   'molding_sample:delete_draft',
   'molding_sample:supervisor_review',
   'molding_sample:manager_review',
+  'molding_sample:dispatch',
   'molding_sample:export',
 ]
 const MOLDING_SAMPLE_OPERATE_PERMISSIONS = new Set([
@@ -1035,6 +1095,23 @@ const canApproveSelectedOrder = computed(() => {
     && canMoldingSamplePermission(actor.permission, selectedOrder.value.factory_id),
   )
 })
+const canDispatchSelectedOrder = computed(() => Boolean(
+  selectedRecord.value
+  && isSelectedOrderCrossFactoryDispatch.value
+  && isSelectedOrderDispatchable.value
+  && !isRecordReadOnly(selectedRecord.value)
+  && (
+    authStore.can('molding_sample:dispatch', selectedOrder.value.factory_id, 'engineering')
+    || authStore.can('molding_sample:dispatch', selectedOrder.value.factory_id, 'management')
+  ),
+))
+const selectedDispatchUnavailableReason = computed(() => {
+  if (isSelectedExternal.value) return '外发湖南或模厂的单据不分配内部承接生产厂。'
+  if (selectedFactoryCapability.value?.dispatchMode !== 'cross-factory') return '该厂设有啤机部，生产任务固定由本厂承接。'
+  if (!isSelectedOrderDispatchable.value) return '生产已经开始或完成，不能再改派承接生产厂。'
+  if (!canDispatchSelectedOrder.value) return '当前账号仅可查看派厂信息，没有改派权限。'
+  return ''
+})
 
 function normalizeBoardStatus(status: MoldingSampleStatus): MoldingSampleStatus {
   return status === '待经理审核' ? '待审核' : status
@@ -1045,15 +1122,23 @@ function toWorkflowRecord(record: MoldingSampleDetailResponse): MoldingSampleWor
     ? record.order.factory_id
     : selectedFactoryId.value
   const readSource = record.access?.read_source ?? record.read_source ?? 'local'
+  const factoryCapability = getMoldingSampleFactoryCapability(factoryId)
+  const productionFactoryId = record.order.production_factory_id
+    ?? (factoryCapability?.hasMoldingDepartment ? factoryId : null)
 
   return {
     factory_id: factoryId,
     order: {
       ...record.order,
       factory_id: factoryId,
+      production_factory_id: productionFactoryId,
+      production_assigned_at: record.order.production_assigned_at ?? '',
+      production_assigned_by: record.order.production_assigned_by ?? '',
+      production_assignment_version: record.order.production_assignment_version ?? 0,
     },
     items: record.items,
     audit_logs: record.audit_logs,
+    dispatch_logs: record.dispatch_logs ?? [],
     requisitions: [],
     problems: record.problems ?? [],
     trial_reports: record.trial_reports ?? [],
@@ -1069,6 +1154,10 @@ function createEmptySelectedOrder(): MoldingSampleOrder {
   return {
     id: '',
     factory_id: selectedFactoryId.value,
+    production_factory_id: getSuggestedMoldingSampleProductionFactoryId(selectedFactoryId.value),
+    production_assigned_at: '',
+    production_assigned_by: '',
+    production_assignment_version: 0,
     order_number: '',
     doc_number: '',
     product_name: '',
@@ -1160,6 +1249,7 @@ function isBlankCreateDraft(draft: ManualMoldingSampleOrderDraft) {
     || draft.order_type !== '啤办'
     || draft.workshop !== '工程部'
     || draft.send_to !== '内部'
+    || draft.production_factory_id !== getSuggestedMoldingSampleProductionFactoryId(draft.factory_id)
   const hasLineValue = draft.items.some((line) => !isBlankCreateLine(line))
 
   return !hasHeaderValue && !hasChangedDefault && !hasLineValue
@@ -1252,6 +1342,7 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
   return createManualMoldingSampleOrderDraft({
     id: record.order.id,
     factory_id: record.factory_id,
+    production_factory_id: record.order.production_factory_id,
     product_no: record.order.order_number,
     doc_number: record.order.doc_number,
     client_name: record.order.client_name,
@@ -1332,6 +1423,7 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
   return createManualMoldingSampleOrderDraft({
     id: order.id,
     factory_id: order.factory_id || selectedFactoryId.value,
+    production_factory_id: order.production_factory_id ?? null,
     product_no: order.order_number || order.id.replace(/^BP-/, ''),
     doc_number: order.doc_number ?? '',
     client_name: order.client_name,
@@ -1545,6 +1637,79 @@ function requestBoardPage(factoryId: string, status: MoldingSampleStatus, query:
   })
 }
 
+function isExternalCreateDraft(draft: Pick<ManualMoldingSampleOrderDraft, 'send_to' | 'workshop'>) {
+  return draft.send_to === '发至湖南'
+    || draft.send_to === '发至模厂'
+    || draft.workshop === '模厂'
+}
+
+function getProductionRouteLabel(order: Pick<MoldingSampleOrder, 'factory_id' | 'production_factory_id' | 'send_to' | 'workshop'>) {
+  const originLabel = getMoldingSampleFactoryLabel(order.factory_id)
+  if (isExternalMoldingSampleOrder(order)) {
+    return `${originLabel} → 外发（不派生产厂）`
+  }
+
+  return `${originLabel} → ${getMoldingSampleFactoryLabel(resolveMoldingSampleProductionFactoryId(order))}`
+}
+
+function getLatestAuditLog(action: string) {
+  return [...selectedAuditLogs.value]
+    .filter((log) => log.action === action)
+    .sort((left, right) => right.created_at.localeCompare(left.created_at))[0] ?? null
+}
+
+function getCreateDraftProductionFactoryLabel() {
+  if (createDraftIsExternal.value) return '外发（不派生产厂）'
+  return getMoldingSampleFactoryLabel(createDraft.value.production_factory_id)
+}
+
+function syncCreateDraftProductionAssignment() {
+  const capability = activeFactoryCapability.value
+  if (!capability) {
+    createDraft.value.production_factory_id = null
+    return
+  }
+  if (createDraftIsExternal.value) {
+    createDraft.value.production_factory_id = null
+    return
+  }
+  if (capability.dispatchMode === 'self-only') {
+    createDraft.value.production_factory_id = capability.factoryId
+    return
+  }
+
+  const validation = validateMoldingSampleProductionAssignment(
+    selectedFactoryId.value,
+    createDraft.value.production_factory_id,
+  )
+  if (!validation.valid) {
+    createDraft.value.production_factory_id = capability.suggestedProductionFactoryId
+  }
+}
+
+function isOrderRoutingResponseExpected(
+  record: MoldingSampleDetailResponse,
+  expectedOriginFactoryId: string,
+  expectedProductionFactoryId: string | null,
+) {
+  return record.order.factory_id === expectedOriginFactoryId
+    && resolveMoldingSampleProductionFactoryId(record.order) === expectedProductionFactoryId
+    && (!isExternalMoldingSampleOrder(record.order) || !record.order.production_factory_id)
+}
+
+function hasAllowedOrderRouting(record: MoldingSampleDetailResponse, expectedOriginFactoryId: string) {
+  if (record.order.factory_id !== expectedOriginFactoryId) return false
+  if (isExternalMoldingSampleOrder(record.order)) return !record.order.production_factory_id
+  if (!record.order.production_factory_id) {
+    return getMoldingSampleFactoryCapability(expectedOriginFactoryId) !== null
+  }
+
+  return validateMoldingSampleProductionAssignment(
+    expectedOriginFactoryId,
+    record.order.production_factory_id,
+  ).valid
+}
+
 async function loadDeepLinkedOrderIfNeeded(requestedFactoryId: string) {
   const deepLinkedOrderId = readQueryString(route.query.order_id)
 
@@ -1571,7 +1736,7 @@ async function loadDeepLinkedOrderIfNeeded(requestedFactoryId: string) {
     ) {
       return
     }
-    if (record.order.factory_id !== requestedFactoryId) {
+    if (!hasAllowedOrderRouting(record, requestedFactoryId)) {
       return
     }
 
@@ -1622,6 +1787,9 @@ async function loadServerBoardOverview(options: { includeSupportingData?: boolea
       || !isServerBoardContextActive()
     ) {
       return
+    }
+    if (pages.some((page) => page.rows.some((record) => !hasAllowedOrderRouting(record, requestedFactoryId)))) {
+      throw new Error('看板响应包含不属于当前来源厂或无效承接生产厂的单据')
     }
 
     boardSummary.value = summary
@@ -1696,6 +1864,9 @@ async function loadServerBoardColumn(status: MoldingSampleStatus, page: number) 
     ) {
       return
     }
+    if (response.rows.some((record) => !hasAllowedOrderRouting(record, requestedFactoryId))) {
+      throw new Error('看板分页响应包含不属于当前来源厂或无效承接生产厂的单据')
+    }
 
     boardPagesByStatus.value = {
       ...boardPagesByStatus.value,
@@ -1757,6 +1928,9 @@ async function loadLegacyApiData(options: { force?: boolean; includeSupportingDa
         || !isLegacyOrdersContextActive()
       ) {
         return
+      }
+      if (records.some((record) => !hasAllowedOrderRouting(record, requestedFactoryId))) {
+        throw new Error('完整列表响应包含不属于当前来源厂或无效承接生产厂的单据')
       }
 
       apiRecords.value = records
@@ -1928,6 +2102,23 @@ async function handleExcelImportFile(event: Event) {
       requestId !== excelImportRequestId
       || requestedFactoryId !== selectedFactoryId.value
     ) return
+    if (preview.order.factory_id !== requestedFactoryId) {
+      actionMessage.value = 'Excel预览响应与当前来源厂不一致，已忽略该响应。'
+      return
+    }
+    if (!isExternalCreateDraft({
+      send_to: preview.order.send_to ?? '',
+      workshop: preview.order.workshop ?? '',
+    }) && preview.order.production_factory_id) {
+      const assignmentValidation = validateMoldingSampleProductionAssignment(
+        requestedFactoryId,
+        preview.order.production_factory_id,
+      )
+      if (!assignmentValidation.valid) {
+        actionMessage.value = `Excel预览中的承接生产厂无效：${assignmentValidation.error}`
+        return
+      }
+    }
 
     editingRejectedOrderId.value = ''
     createDraft.value = createDraftFromExcelPreview(preview)
@@ -2283,6 +2474,12 @@ async function submitManualCreate() {
   }
 
   const requestId = ++manualCreateMutationRequestId
+  const requestedProductionFactoryId = resolveMoldingSampleProductionFactoryId({
+    factory_id: requestedFactoryId,
+    production_factory_id: result.payload.order.production_factory_id ?? null,
+    send_to: result.payload.order.send_to,
+    workshop: result.payload.order.workshop,
+  })
   createSubmitting.value = true
   actionMessage.value = isRejectedResubmit ? `正在保存${revisionLabel}修改并重提啤办单...` : '正在提交新建啤办单...'
 
@@ -2295,10 +2492,10 @@ async function submitManualCreate() {
       return
     }
     if (
-      created.order.factory_id !== requestedFactoryId
+      !isOrderRoutingResponseExpected(created, requestedFactoryId, requestedProductionFactoryId)
       || (isRejectedResubmit && created.order.id !== requestedRejectedOrderId)
     ) {
-      actionMessage.value = '啤办单提交响应与当前厂区或原单不一致，已忽略该响应。'
+      actionMessage.value = '啤办单提交响应与当前来源厂、承接生产厂或原单不一致，已忽略该响应。'
       return
     }
 
@@ -2395,6 +2592,9 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
 
   approvalSubmitting.value = true
   actionMessage.value = `正在提交${decision}结果...`
+  const requestedOrderId = selectedOrder.value.id
+  const requestedOriginFactoryId = selectedOrder.value.factory_id
+  const requestedProductionFactoryId = resolveMoldingSampleProductionFactoryId(selectedOrder.value)
 
   const payload: MoldingSampleStatusRequest = {
     action: decision === '通过' ? actor.passAction : actor.rejectAction,
@@ -2402,7 +2602,14 @@ async function runApprovalTransition(decision: '通过' | '驳回') {
   }
 
   try {
-    const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, payload)
+    const updated = await moldingSampleApi.updateStatus(requestedOrderId, payload)
+    if (
+      selectedOrder.value.id !== requestedOrderId
+      || !isOrderRoutingResponseExpected(updated, requestedOriginFactoryId, requestedProductionFactoryId)
+    ) {
+      actionMessage.value = '审核响应与当前单据的来源厂或承接生产厂不一致，已忽略该响应。'
+      return
+    }
     replaceApiRecord(updated)
     selectedOrderId.value = updated.order.id
     await refreshBoardAfterMutation()
@@ -2432,14 +2639,24 @@ async function withdrawSelectedOrder() {
   }
 
   const actorName = (authStore.currentUser?.display_name ?? selectedOrder.value.eng_name) || '工程部'
+  const requestedOrderId = selectedOrder.value.id
+  const requestedOriginFactoryId = selectedOrder.value.factory_id
+  const requestedProductionFactoryId = resolveMoldingSampleProductionFactoryId(selectedOrder.value)
   withdrawSubmitting.value = true
   actionMessage.value = '正在撤回主管审核...'
 
   try {
-    const updated = await moldingSampleApi.updateStatus(selectedOrder.value.id, {
+    const updated = await moldingSampleApi.updateStatus(requestedOrderId, {
       action: '工程撤回',
       reason: `${actorName}撤回主管审核。`,
     })
+    if (
+      selectedOrder.value.id !== requestedOrderId
+      || !isOrderRoutingResponseExpected(updated, requestedOriginFactoryId, requestedProductionFactoryId)
+    ) {
+      actionMessage.value = '撤回响应与当前单据的来源厂或承接生产厂不一致，已忽略该响应。'
+      return
+    }
     replaceApiRecord(updated)
     selectedOrderId.value = updated.order.id
     await refreshBoardAfterMutation()
@@ -2451,6 +2668,90 @@ async function withdrawSelectedOrder() {
   }
   finally {
     withdrawSubmitting.value = false
+  }
+}
+
+async function updateSelectedProductionAssignment() {
+  if (!selectedRecord.value) {
+    actionMessage.value = '请先选择一张正式啤办单。'
+    return
+  }
+  if (!canDispatchSelectedOrder.value) {
+    actionMessage.value = selectedDispatchUnavailableReason.value || '当前账号没有改派承接生产厂权限。'
+    return
+  }
+
+  const reason = dispatchReason.value.trim()
+  if (!reason) {
+    actionMessage.value = '改派承接生产厂必须填写原因。'
+    return
+  }
+
+  const assignmentValidation = validateMoldingSampleProductionAssignment(
+    selectedOrder.value.factory_id,
+    dispatchProductionFactoryId.value,
+  )
+  if (!assignmentValidation.valid || !assignmentValidation.productionFactoryId) {
+    actionMessage.value = assignmentValidation.error || '请选择有效的承接生产厂。'
+    return
+  }
+  if (assignmentValidation.productionFactoryId === selectedProductionFactoryId.value) {
+    actionMessage.value = '请选择与当前不同的承接生产厂。'
+    return
+  }
+
+  const requestId = ++productionAssignmentRequestId
+  const requestedOrderId = selectedOrder.value.id
+  const requestedOriginFactoryId = selectedOrder.value.factory_id
+  const requestedProductionFactoryId = assignmentValidation.productionFactoryId
+  const expectedAssignmentVersion = selectedOrder.value.production_assignment_version
+  dispatchSubmitting.value = true
+  actionMessage.value = `正在将 ${requestedOrderId} 改派至${getMoldingSampleFactoryLabel(requestedProductionFactoryId)}...`
+
+  try {
+    const updated = await moldingSampleApi.updateProductionAssignment(requestedOrderId, {
+      production_factory_id: requestedProductionFactoryId,
+      reason,
+      expected_assignment_version: expectedAssignmentVersion,
+    })
+    if (
+      requestId !== productionAssignmentRequestId
+      || selectedFactoryId.value !== requestedOriginFactoryId
+      || selectedOrder.value.id !== requestedOrderId
+    ) return
+    if (
+      !isOrderRoutingResponseExpected(updated, requestedOriginFactoryId, requestedProductionFactoryId)
+      || updated.order.production_assignment_version !== expectedAssignmentVersion + 1
+    ) {
+      actionMessage.value = '改派响应与当前来源厂、承接生产厂或版本不一致，已忽略该响应。'
+      return
+    }
+
+    replaceApiRecord(updated)
+    selectedOrderId.value = updated.order.id
+    dispatchReason.value = ''
+    dispatchProductionFactoryId.value = requestedProductionFactoryId
+    await refreshBoardAfterMutation()
+    if (
+      requestId !== productionAssignmentRequestId
+      || selectedFactoryId.value !== requestedOriginFactoryId
+    ) return
+    selectedOrderId.value = updated.order.id
+    actionMessage.value = `啤办单 ${updated.order.id} 已改派至${getMoldingSampleFactoryLabel(requestedProductionFactoryId)}。`
+  }
+  catch (error) {
+    if (
+      requestId === productionAssignmentRequestId
+      && selectedFactoryId.value === requestedOriginFactoryId
+      && selectedOrder.value.id === requestedOrderId
+    ) {
+      actionMessage.value = `改派承接生产厂失败：${getApiErrorMessage(error)}`
+    }
+  }
+  finally {
+    if (requestId === productionAssignmentRequestId) {
+      dispatchSubmitting.value = false
+    }
   }
 }
 
@@ -3281,6 +3582,9 @@ watch(selectedFactoryId, () => {
   excelImporting.value = false
   if (excelFileInput.value) excelFileInput.value.value = ''
   manualCreateMutationRequestId += 1
+  productionAssignmentRequestId += 1
+  dispatchSubmitting.value = false
+  dispatchReason.value = ''
   editingRejectedOrderId.value = ''
   createErrors.value = []
   if (shouldRestoreCreateDraft) {
@@ -3308,8 +3612,21 @@ watch(selectedFactoryId, () => {
 })
 
 watch(selectedOrderId, () => {
+  productionAssignmentRequestId += 1
+  dispatchSubmitting.value = false
+  dispatchReason.value = ''
+  dispatchProductionFactoryId.value = selectedProductionFactoryId.value
+    ?? getSuggestedMoldingSampleProductionFactoryId(selectedOrder.value.factory_id)
+    ?? ''
   isSelectedOrderDataExpanded.value = false
   selectedFullItemId.value = ''
+})
+
+watch(() => selectedOrder.value.production_factory_id, () => {
+  if (dispatchSubmitting.value) return
+  dispatchProductionFactoryId.value = selectedProductionFactoryId.value
+    ?? getSuggestedMoldingSampleProductionFactoryId(selectedOrder.value.factory_id)
+    ?? ''
 })
 
 watch(selectedItems, (items) => {
@@ -3367,6 +3684,7 @@ onUnmounted(() => {
   rawMaterialOptionsRequestId += 1
   excelImportRequestId += 1
   manualCreateMutationRequestId += 1
+  productionAssignmentRequestId += 1
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
@@ -3754,7 +4072,7 @@ onUnmounted(() => {
                   </div>
                 </div>
 
-                <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 xl:grid-cols-4">
+                <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 xl:grid-cols-5">
                   <div class="rounded-md bg-slate-50 px-3 py-2">
                     <span class="block text-[11px] text-slate-400">订单号</span>
                     <strong class="font-mono text-slate-800">{{ formatBlank(record.order.order_number) }}</strong>
@@ -3766,6 +4084,10 @@ onUnmounted(() => {
                   <div class="rounded-md bg-slate-50 px-3 py-2">
                     <span class="block text-[11px] text-slate-400">工程 / 主管</span>
                     <strong class="text-slate-800">{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong>
+                  </div>
+                  <div class="rounded-md bg-teal-50 px-3 py-2">
+                    <span class="block text-[11px] text-teal-600">来源厂 → 承接生产厂</span>
+                    <strong class="text-teal-900">{{ getProductionRouteLabel(record.order) }}</strong>
                   </div>
                   <div class="rounded-md bg-slate-50 px-3 py-2">
                     <span class="block text-[11px] text-slate-400">业务开单 / 系统更新</span>
@@ -4129,6 +4451,9 @@ onUnmounted(() => {
                     </div>
                     <div class="mt-1.5 truncate text-[13px] font-semibold text-slate-950">{{ record.order.product_name }}</div>
                     <div class="mt-0.5 truncate text-[11px] text-slate-500">{{ record.order.client_name }} · {{ record.items.length }} 项明细</div>
+                    <div class="mt-1 truncate text-[10px] font-semibold text-teal-700" :title="getProductionRouteLabel(record.order)">
+                      {{ getProductionRouteLabel(record.order) }}
+                    </div>
                     <div class="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px]">
                       <span class="truncate text-slate-500">{{ getFlowSummary(record) }}</span>
                       <span class="shrink-0 text-slate-400">{{ getWorkflowDateLabel(record) }}</span>
@@ -4219,7 +4544,7 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="overflow-x-auto">
-            <table aria-label="啤办单列表" class="w-full min-w-[1040px] text-[12px]">
+            <table aria-label="啤办单列表" class="w-full min-w-[1160px] text-[12px]">
               <thead>
                 <tr class="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-500">
                   <th class="px-3 py-2 text-left font-medium">选择</th>
@@ -4229,6 +4554,7 @@ onUnmounted(() => {
                   <th class="px-3 py-2 text-left font-medium">阶段</th>
                   <th class="px-3 py-2 text-left font-medium">明细</th>
                   <th class="px-3 py-2 text-left font-medium">工程 / 主管</th>
+                  <th class="px-3 py-2 text-left font-medium">来源 / 承接生产</th>
                   <th class="px-3 py-2 text-left font-medium">进度</th>
                   <th class="px-3 py-2 text-right font-medium">流程日期</th>
                 </tr>
@@ -4281,6 +4607,10 @@ onUnmounted(() => {
                     <div class="mt-0.5 text-[11px] text-slate-400">{{ record.order.supervisor || '未填主管' }}</div>
                   </td>
                   <td class="px-3 py-2.5 align-top">
+                    <div class="whitespace-nowrap font-semibold text-teal-700">{{ getProductionRouteLabel(record.order) }}</div>
+                    <div class="mt-0.5 text-[10px] text-slate-400">整单承接 · 不拆分明细</div>
+                  </td>
+                  <td class="px-3 py-2.5 align-top">
                     <div class="max-w-[220px] truncate text-slate-600">{{ getFlowSummary(record) }}</div>
                     <div v-if="record.problems.length" class="mt-0.5 text-[11px] font-semibold text-red-500">{{ record.problems.length }} 个问题</div>
                   </td>
@@ -4289,7 +4619,7 @@ onUnmounted(() => {
                   </td>
                 </tr>
                 <tr v-if="!visibleRecords.length">
-                  <td colspan="9" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
+                    <td colspan="10" class="px-3 py-10 text-center text-[12px] font-medium text-slate-400">
                     暂无符合条件的啤办单
                   </td>
                 </tr>
@@ -4638,7 +4968,7 @@ onUnmounted(() => {
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">填写部</span>
-                  <select v-model="createDraft.workshop" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <select v-model="createDraft.workshop" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400" @change="syncCreateDraftProductionAssignment">
                     <option>工程部</option>
                     <option>PMC部</option>
                     <option>生产部</option>
@@ -4648,7 +4978,45 @@ onUnmounted(() => {
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">发至</span>
-                  <input v-model="createDraft.send_to" placeholder="填写发至位置" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400">
+                  <input
+                    v-model="createDraft.send_to"
+                    data-testid="create-send-to"
+                    placeholder="填写发至位置"
+                    class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400"
+                    @change="syncCreateDraftProductionAssignment"
+                  >
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-slate-500">承接生产厂</span>
+                  <select
+                    v-if="activeFactoryCapability?.dispatchMode === 'cross-factory' && !createDraftIsExternal"
+                    v-model="createDraft.production_factory_id"
+                    data-testid="create-production-factory"
+                    :disabled="isEditingRejectedOrder"
+                    class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] font-semibold text-slate-700 outline-none focus:border-teal-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  >
+                    <option :value="null" disabled>请选择承接生产厂</option>
+                    <option
+                      v-for="factoryId in allowedCreateProductionFactoryIds"
+                      :key="factoryId"
+                      :value="factoryId"
+                    >
+                      {{ getMoldingSampleFactoryLabel(factoryId) }}
+                    </option>
+                  </select>
+                  <div
+                    v-else
+                    data-testid="create-production-factory-readonly"
+                    class="flex h-8 items-center rounded-md border border-slate-200 bg-slate-50 px-2 text-[12px] font-semibold text-slate-600"
+                  >
+                    {{ getCreateDraftProductionFactoryLabel() }}
+                  </div>
+                  <span
+                    v-if="activeFactoryCapability?.dispatchMode === 'cross-factory' && !createDraftIsExternal"
+                    class="mt-1 block text-[10px] text-slate-400"
+                  >
+                    {{ isEditingRejectedOrder ? '修改承接厂请先返回详情页使用“确认改派”，改派原因会单独留痕。' : `${activeFactory.shortName}没有啤机部，内部单必须由华康A或华康B整单承接；审核通过后，任务将进入所选厂区的啤机生产队列。` }}
+                  </span>
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">审核主管</span>
@@ -4886,6 +5254,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 text-[11px] text-slate-500">
                 <div class="flex justify-between"><span>当前厂区</span><strong class="text-slate-800">{{ activeFactory.shortName }}</strong></div>
+                <div class="flex justify-between gap-3"><span>生产承接</span><strong class="text-right text-slate-800">{{ getMoldingSampleFactoryLabel(selectedFactoryId) }} → {{ getCreateDraftProductionFactoryLabel() }}</strong></div>
                 <div class="flex justify-between"><span>提交人</span><strong class="text-slate-800">{{ authStore.currentUser?.display_name ?? createDraft.eng_name ?? '待填写' }}</strong></div>
                 <div class="flex justify-between"><span>下一节点</span><strong class="text-slate-800">待审核</strong></div>
               </div>
@@ -4964,6 +5333,9 @@ onUnmounted(() => {
                 <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
                   {{ isSelectedExternal ? '外厂 / 模厂路径' : '内部生产' }}
                 </span>
+                <span class="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700">
+                  {{ selectedProductionRouteLabel }}
+                </span>
               </div>
               <div class="mt-1 text-[15px] font-bold">{{ selectedOrder.product_name }} · {{ selectedOrder.client_name }}</div>
               <div class="mt-1 flex flex-wrap gap-x-4 text-[11px] text-slate-400">
@@ -4971,6 +5343,7 @@ onUnmounted(() => {
                 <span>工程 {{ selectedOrder.eng_name }}</span>
                 <span>主管 {{ selectedOrder.supervisor }}</span>
                 <span>业务开单 {{ formatWorkflowDate(selectedOrder.date) }}</span>
+                <span v-if="selectedOrder.production_assigned_at">派厂 {{ formatWorkflowTime(selectedOrder.production_assigned_at) }}</span>
               </div>
             </div>
 
@@ -5023,6 +5396,125 @@ onUnmounted(() => {
               </RouterLink>
             </div>
           </div>
+        </section>
+
+        <section
+          class="rounded-lg border border-teal-200 bg-gradient-to-br from-white to-teal-50/50 p-4"
+          data-testid="molding-sample-dispatch-panel"
+        >
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="flex items-center gap-2">
+                <Factory class="size-4 text-teal-700" aria-hidden="true" />
+                <h2 class="text-[13px] font-bold text-slate-950">生产承接与派厂记录</h2>
+                <span class="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-800">{{ selectedProductionRouteLabel }}</span>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-500">
+                来源厂负责工程审核；承接生产厂负责啤机任务。每次派厂都会形成不可变记录。
+              </p>
+            </div>
+            <div class="text-right text-[10px] text-slate-400">
+              <div>派厂版本 {{ selectedOrder.production_assignment_version }}</div>
+              <div v-if="selectedOrder.production_assigned_by" class="mt-0.5">
+                {{ selectedOrder.production_assigned_by }} · {{ formatWorkflowTime(selectedOrder.production_assigned_at) }}
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5" data-testid="molding-sample-production-collaboration-summary">
+            <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <div class="text-[10px] font-semibold text-slate-400">当前生产状态</div>
+              <div class="mt-0.5 text-[12px] font-bold text-slate-800">{{ selectedOrder.status }}</div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <div class="text-[10px] font-semibold text-slate-400">开始人 / 时间</div>
+              <div class="mt-0.5 text-[12px] font-bold text-slate-800">{{ selectedProductionStartAudit?.actor_name || '未开始' }}</div>
+              <div v-if="selectedProductionStartAudit" class="mt-0.5 text-[10px] text-slate-400">{{ formatWorkflowTime(selectedProductionStartAudit.created_at) }}</div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <div class="text-[10px] font-semibold text-slate-400">完成人 / 时间</div>
+              <div class="mt-0.5 text-[12px] font-bold text-slate-800">{{ selectedProductionCompleteAudit?.actor_name || '未完成' }}</div>
+              <div v-if="selectedProductionCompleteAudit" class="mt-0.5 text-[10px] text-slate-400">{{ formatWorkflowTime(selectedProductionCompleteAudit.created_at) }}</div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <div class="text-[10px] font-semibold text-slate-400">派厂人 / 时间</div>
+              <div class="mt-0.5 text-[12px] font-bold text-slate-800">{{ selectedOrder.production_assigned_by || '未记录' }}</div>
+              <div v-if="selectedOrder.production_assigned_at" class="mt-0.5 text-[10px] text-slate-400">{{ formatWorkflowTime(selectedOrder.production_assigned_at) }}</div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <div class="text-[10px] font-semibold text-slate-400">最近通知状态</div>
+              <div class="mt-0.5 text-[12px] font-bold text-slate-800">
+                {{ selectedLatestNotification ? `${selectedLatestNotification.event_type} · ${selectedLatestNotification.status}` : '暂无通知' }}
+              </div>
+              <div v-if="selectedLatestNotification" class="mt-0.5 text-[10px] text-slate-400">
+                {{ formatWorkflowTime(selectedLatestNotification.created_at) }}
+              </div>
+            </div>
+          </div>
+
+          <form
+            v-if="canDispatchSelectedOrder"
+            data-testid="molding-sample-dispatch-form"
+            class="mt-3 grid gap-2 rounded-lg border border-teal-200 bg-white p-3 md:grid-cols-[180px_minmax(240px,1fr)_auto]"
+            @submit.prevent="updateSelectedProductionAssignment"
+          >
+            <label class="block">
+              <span class="mb-1 block text-[10px] font-semibold text-slate-500">改派至承接生产厂</span>
+              <select
+                v-model="dispatchProductionFactoryId"
+                data-testid="dispatch-production-factory"
+                class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] font-semibold text-slate-700 outline-none focus:border-teal-400"
+              >
+                <option
+                  v-for="factoryId in selectedFactoryCapability?.allowedProductionFactoryIds ?? []"
+                  :key="factoryId"
+                  :value="factoryId"
+                >
+                  {{ getMoldingSampleFactoryLabel(factoryId) }}
+                </option>
+              </select>
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[10px] font-semibold text-slate-500">改派原因（必填）</span>
+              <input
+                v-model="dispatchReason"
+                data-testid="dispatch-reason"
+                maxlength="1000"
+                placeholder="例如：A厂机台排期冲突，改由B厂整单承接"
+                class="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-teal-400"
+              >
+            </label>
+            <button
+              type="submit"
+              :disabled="dispatchSubmitting"
+              class="mt-auto inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-teal-700 px-3 text-[12px] font-semibold text-white transition hover:bg-teal-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <RefreshCw :class="dispatchSubmitting ? 'animate-spin' : ''" class="size-3.5" aria-hidden="true" />
+              {{ dispatchSubmitting ? '改派中...' : '确认改派' }}
+            </button>
+          </form>
+          <p
+            v-else
+            class="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500"
+          >
+            {{ selectedDispatchUnavailableReason }}
+          </p>
+
+          <ol v-if="selectedDispatchLogs.length" class="mt-3 grid gap-2 lg:grid-cols-2">
+            <li
+              v-for="log in selectedDispatchLogs"
+              :key="log.id"
+              class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px]"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <strong class="text-slate-800">{{ log.action }} · {{ getMoldingSampleFactoryLabel(log.from_production_factory_id) }} → {{ getMoldingSampleFactoryLabel(log.to_production_factory_id) }}</strong>
+                <span class="text-slate-400">{{ formatWorkflowTime(log.created_at) }}</span>
+              </div>
+              <p class="mt-1 leading-5 text-slate-600">{{ log.reason }}</p>
+              <p class="mt-1 text-[10px] text-slate-400">{{ log.actor_name }} · 来源 {{ getMoldingSampleFactoryLabel(log.origin_factory_id) }}</p>
+            </li>
+          </ol>
+          <p v-else class="mt-3 text-[11px] text-slate-400">暂无派厂变更记录。</p>
         </section>
 
         <section class="rounded-lg border border-slate-200 bg-white p-4">
@@ -5276,6 +5768,10 @@ onUnmounted(() => {
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                       <div class="text-[10px] font-semibold text-slate-400">填写部 / 发至</div>
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.workshop) }} / {{ formatBlank(selectedOrder.send_to, '内部') }}</div>
+                    </div>
+                    <div class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2">
+                      <div class="text-[10px] font-semibold text-teal-600">来源厂 → 承接生产厂</div>
+                      <div class="mt-0.5 font-semibold text-teal-900">{{ selectedProductionRouteLabel }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                       <div class="text-[10px] font-semibold text-slate-400">工程 / 主管</div>
@@ -5760,6 +6256,10 @@ onUnmounted(() => {
                 <td>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</td>
                 <th>业务开单 / 流程完成</th>
                 <td>{{ formatWorkflowDate(record.order.date) }} / {{ formatWorkflowDate(record.order.completed_date, '未完成') }}</td>
+              </tr>
+              <tr>
+                <th>来源厂 → 承接生产厂</th>
+                <td colspan="3">{{ getProductionRouteLabel(record.order) }}</td>
               </tr>
               <tr>
                 <th>系统更新时间（北京时间）</th>
