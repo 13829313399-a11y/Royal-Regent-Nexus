@@ -23,6 +23,8 @@ from app.schemas.internal_quote import (
     InternalQuoteFinalReviewOut,
     InternalQuoteFinalReviewRequest,
     InternalQuoteOut,
+    InternalQuotePageOut,
+    InternalQuoteParticipationRemoveRequest,
     InternalQuoteParticipationUpdateRequest,
     InternalQuotePricingBaselineOut,
     InternalQuotePricingBaselineUpdateRequest,
@@ -54,9 +56,11 @@ from app.services.internal_quote import (
     get_quote_summary,
     get_quote_timeline,
     list_quotes,
+    list_quotes_page,
     list_business_owners,
     list_section_revisions,
     preview_section_cost,
+    remove_quote_participation,
     reopen_section,
     request_section_na,
     review_section,
@@ -65,6 +69,7 @@ from app.services.internal_quote import (
     sync_quote_reference_set,
     update_quote_reference_fx,
     update_quote_header,
+    withdraw_section_submission,
 )
 from app.services.internal_quote_calculator import FORMULA_VERSION, SECTION_INPUT_CONTRACTS
 from app.services.internal_quote_baseline import get_pricing_baseline, update_pricing_baseline
@@ -73,6 +78,7 @@ from app.services.internal_quote_artifacts import (
     create_controlled_export,
     create_import_preview,
     get_attachment_download,
+    get_attachment_preview,
     get_export_download,
     list_attachments,
     list_export_files,
@@ -98,15 +104,30 @@ customer_price_artifact_router = APIRouter(
 )
 
 
-@router.get("", response_model=list[InternalQuoteOut])
+@router.get("", response_model=list[InternalQuoteOut] | InternalQuotePageOut)
 def get_internal_quotes(
     factory_id: str = Query(min_length=1, max_length=64),
     status_filter: str = Query(default="", alias="status", max_length=32),
     keyword: str = Query(default="", max_length=128),
+    customer: str = Query(default="", max_length=128),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
     include_sections: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    if page is not None:
+        return list_quotes_page(
+            db,
+            current_user,
+            factory_id,
+            page=page,
+            page_size=page_size,
+            status=status_filter,
+            keyword=keyword,
+            customer=customer,
+            include_sections=include_sections,
+        )
     return list_quotes(
         db,
         current_user,
@@ -217,6 +238,17 @@ def post_internal_quote_participation(
     return add_quote_participation(db, quote_id, payload, current_user, request)
 
 
+@router.post("/{quote_id}/participation/remove", response_model=InternalQuoteOut)
+def post_internal_quote_participation_remove(
+    quote_id: str,
+    payload: InternalQuoteParticipationRemoveRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return remove_quote_participation(db, quote_id, payload, current_user, request)
+
+
 @router.get("/{quote_id}/reference-snapshot", response_model=InternalQuoteReferenceSetOut)
 def get_internal_quote_reference_snapshot(
     quote_id: str,
@@ -306,6 +338,25 @@ def post_internal_quote_section_submit(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return submit_section(db, quote_id, section_code, payload.revision, current_user, request)
+
+
+@router.post("/{quote_id}/sections/{section_code}/withdraw", response_model=InternalQuoteSectionOut)
+def post_internal_quote_section_withdraw(
+    quote_id: str,
+    section_code: str,
+    payload: InternalQuoteRevisionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return withdraw_section_submission(
+        db,
+        quote_id,
+        section_code,
+        payload.revision,
+        current_user,
+        request,
+    )
 
 
 @router.post("/{quote_id}/sections/{section_code}/review", response_model=InternalQuoteSectionOut)
@@ -535,6 +586,25 @@ def get_internal_quote_attachment_download(
         media_type=attachment.content_type,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(attachment.file_name)}",
+            "X-Content-SHA256": attachment.sha256,
+        },
+    )
+
+
+@router.get("/{quote_id}/attachments/{attachment_id}/preview")
+def get_internal_quote_attachment_preview(
+    quote_id: str,
+    attachment_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    attachment = get_attachment_preview(db, quote_id, attachment_id, current_user)
+    return Response(
+        content=attachment.content,
+        media_type=attachment.content_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{url_quote(attachment.file_name)}",
+            "Cache-Control": "private, max-age=3600",
             "X-Content-SHA256": attachment.sha256,
         },
     )

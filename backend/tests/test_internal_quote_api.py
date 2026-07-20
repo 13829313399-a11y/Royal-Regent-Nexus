@@ -439,11 +439,110 @@ def test_business_or_engineering_can_add_optional_participation_later(monkeypatc
             for event in timeline.json()["business_events"]
         )
 
+        logout(client)
+        engineering_profile = login(
+            client,
+            "iq_participation_engineering",
+            "engineering_supervisor",
+            "engineering",
+        )
+        assert "internal_quote:create" in engineering_profile["permissions"]
+        removed = client.post(
+            f"/api/internal-quotes/{quote['id']}/participation/remove",
+            json={"revision": 2, "remove_sections": ["electronic"]},
+        )
+        assert removed.status_code == 200, removed.text
+        removed_result = removed.json()
+        assert removed_result["header_revision"] == 3
+        electronic = next(
+            section
+            for section in removed_result["sections"]
+            if section["department"] == "electronic"
+        )
+        assert electronic["is_required"] is False
+        assert electronic["status"] == "draft"
+        assert electronic["payload"] == {}
+        assert electronic["calculation"] == {}
+        assert electronic["revision"] == 3
+
+        mandatory = client.post(
+            f"/api/internal-quotes/{quote['id']}/participation/remove",
+            json={"revision": 3, "remove_sections": ["sales"]},
+        )
+        assert mandatory.status_code == 422
+        assert any(
+            "不能移除" in item["msg"]
+            for item in mandatory.json()["detail"]
+        )
+
+        removed_summary = client.get(f"/api/internal-quotes/{quote['id']}/summary")
+        assert removed_summary.status_code == 200
+        assert removed_summary.json()["required_sections"] == 3
+        assert all(
+            section["section_code"] != "electronic"
+            for section in removed_summary.json()["sections"]
+        )
+
+        removed_timeline = client.get(f"/api/internal-quotes/{quote['id']}/timeline")
+        assert any(
+            event["action"] == "participation_removed"
+            and "electronic" in event["detail"]
+            for event in removed_timeline.json()["business_events"]
+        )
+
+        readded = client.post(
+            f"/api/internal-quotes/{quote['id']}/participation",
+            json={"revision": 3, "add_sections": ["electronic"]},
+        )
+        assert readded.status_code == 200, readded.text
+        readded_electronic = next(
+            section
+            for section in readded.json()["sections"]
+            if section["department"] == "electronic"
+        )
+        assert readded_electronic["is_required"] is True
+        assert readded_electronic["revision"] == 4
+
+        logout(client)
+        login(client, "iq_participation_molding", "molding_clerk", "molding")
+        forbidden = client.post(
+            f"/api/internal-quotes/{quote['id']}/participation/remove",
+            json={"revision": 4, "remove_sections": ["electronic"]},
+        )
+        assert forbidden.status_code == 403
+
+        logout(client)
+        sales_profile = login(
+            client,
+            "iq_participation_sales",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        assert "internal_quote:create" in sales_profile["permissions"]
+        removed_by_sales = client.post(
+            f"/api/internal-quotes/{quote['id']}/participation/remove",
+            json={"revision": 4, "remove_sections": ["electronic"]},
+        )
+        assert removed_by_sales.status_code == 200, removed_by_sales.text
+        assert next(
+            section
+            for section in removed_by_sales.json()["sections"]
+            if section["department"] == "electronic"
+        )["is_required"] is False
+
 
 def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monkeypatch):
     with make_client(monkeypatch) as client:
+        ensure_user("iq_sales_reviewer", "sales_customer_supervisor", "sales-business")
         login(client, "iq_sales_self", "sales_customer_supervisor", "sales-business")
-        created = client.post("/api/internal-quotes", json=create_payload(suffix="FLOW")).json()
+        payload = create_payload(suffix="FLOW")
+        payload.update(
+            {
+                "business_owner_id": "user-iq_sales_reviewer",
+                "business_owner_name": "iq_sales_reviewer",
+            }
+        )
+        created = client.post("/api/internal-quotes", json=payload).json()
         quote_id = created["id"]
         created_notification = next(
             item
@@ -484,14 +583,6 @@ def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monke
         assert next(
             item for item in notifications_after_submit if item["id"] == created_notification["id"]
         )["status"] == "handled"
-        review_notification = next(
-            item
-            for item in notifications_after_submit
-            if item["payload"].get("quote_id") == quote_id
-            and item["payload"].get("event") == "section_submitted"
-            and item["payload"].get("department") == "sales"
-        )
-        assert review_notification["status"] == "unread"
 
         self_review = client.post(
             f"/api/internal-quotes/{quote_id}/sections/sales/review",
@@ -500,7 +591,24 @@ def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monke
         assert self_review.status_code == 403
 
         logout(client)
+        login(client, "iq_sales_other_reviewer", "sales_customer_supervisor", "sales-business")
+        non_selected_review = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/review",
+            json={"revision": 3, "decision": "approve", "reason": "非指定审核人"},
+        )
+        assert non_selected_review.status_code == 403
+        assert "指定的业务审核负责人" in non_selected_review.json()["detail"]
+
+        logout(client)
         login(client, "iq_sales_reviewer", "sales_customer_supervisor", "sales-business")
+        review_notification = next(
+            item
+            for item in client.get("/api/system/notifications").json()
+            if item["payload"].get("quote_id") == quote_id
+            and item["payload"].get("event") == "section_submitted"
+            and item["payload"].get("department") == "sales"
+        )
+        assert review_notification["status"] == "unread"
         approved = client.post(
             f"/api/internal-quotes/{quote_id}/sections/sales/review",
             json={"revision": 3, "decision": "approve", "reason": "复核通过"},
@@ -523,9 +631,86 @@ def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monke
         assert summary.json()["calculation_phase"] == "calculated"
 
 
+def test_submitter_can_withdraw_before_review_and_duplicate_save_keeps_revision(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_sales_withdraw_owner", "sales_customer_supervisor", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="WITHDRAW"),
+        ).json()
+        quote_id = created["id"]
+        initial_payload = {"currency": "HKD", "confirmed": True}
+
+        saved = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 1, "payload": initial_payload},
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["revision"] == 2
+
+        duplicate = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 2, "payload": {"confirmed": True, "currency": "HKD"}},
+        )
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["revision"] == 2
+        revisions_after_duplicate = client.get(
+            f"/api/internal-quotes/{quote_id}/sections/sales/revisions"
+        )
+        assert [item["revision"] for item in revisions_after_duplicate.json()] == [2, 1]
+
+        changed_payload = {**initial_payload, "remark": "修改后的内容"}
+        changed = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 2, "payload": changed_payload},
+        )
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["revision"] == 3
+
+        submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/submit",
+            json={"revision": 3},
+        )
+        assert submitted.status_code == 200, submitted.text
+        assert submitted.json()["status"] == "pending_review"
+        assert submitted.json()["revision"] == 4
+        assert submitted.json()["submitted_by_id"] == "user-iq_sales_withdraw_owner"
+
+        logout(client)
+        login(client, "iq_sales_withdraw_other", "sales_customer_supervisor", "sales-business")
+        forbidden = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/withdraw",
+            json={"revision": 4},
+        )
+        assert forbidden.status_code == 403
+        assert "仅原提交人" in forbidden.json()["detail"]
+
+        logout(client)
+        login(client, "iq_sales_withdraw_owner", "sales_customer_supervisor", "sales-business")
+        withdrawn = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/withdraw",
+            json={"revision": 4},
+        )
+        assert withdrawn.status_code == 200, withdrawn.text
+        assert withdrawn.json()["status"] == "draft"
+        assert withdrawn.json()["revision"] == 5
+        assert withdrawn.json()["submitted_by_id"] == ""
+
+        duplicate_after_withdraw = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 5, "payload": changed_payload},
+        )
+        assert duplicate_after_withdraw.status_code == 200, duplicate_after_withdraw.text
+        assert duplicate_after_withdraw.json()["revision"] == 5
+
+        timeline = client.get(f"/api/internal-quotes/{quote_id}/timeline")
+        assert timeline.status_code == 200
+        assert any(event["action"] == "withdraw" for event in timeline.json()["business_events"])
+
+
 def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
     with make_client(monkeypatch) as client:
-        ensure_user("iq_business_owner_option", "sales_customer_owner", "sales-business")
+        ensure_user("iq_business_owner_option", "sales_customer_supervisor", "sales-business")
         login(client, "iq_engineer_creator", "engineer", "engineering")
         owner_options = client.get(
             "/api/internal-quotes/business-owners?factory_id=huaxing"
@@ -536,9 +721,16 @@ def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
             and item["display_name"] == "iq_business_owner_option"
             for item in owner_options.json()
         )
+        payload = create_payload(initiator_department="engineering", suffix="ENG")
+        payload.update(
+            {
+                "business_owner_id": "user-iq_business_owner_option",
+                "business_owner_name": "iq_business_owner_option",
+            }
+        )
         created_response = client.post(
             "/api/internal-quotes",
-            json=create_payload(initiator_department="engineering", suffix="ENG"),
+            json=payload,
         )
         assert created_response.status_code == 201
         created = created_response.json()
@@ -569,9 +761,19 @@ def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
             f"/api/internal-quotes/{quote_id}/sections/engineering/review",
             json={"revision": 2, "decision": "approve", "reason": "确认不适用"},
         )
+        assert na_approved.status_code == 403
+
+        logout(client)
+        login(client, "iq_business_owner_option", "sales_customer_supervisor", "sales-business")
+        na_approved = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/engineering/review",
+            json={"revision": 2, "decision": "approve", "reason": "确认不适用"},
+        )
         assert na_approved.status_code == 200
         assert na_approved.json()["status"] == "not_applicable"
 
+        logout(client)
+        login(client, "iq_engineer_creator", "engineer", "engineering")
         reopened = client.post(
             f"/api/internal-quotes/{quote_id}/sections/engineering/reopen",
             json={"revision": 3, "reason": "客户范围变化，恢复核价"},
@@ -603,23 +805,28 @@ def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
         assert wrong_factory.status_code == 403
 
 
-def test_business_owner_options_include_fixed_sales_positions_but_not_general_manager(monkeypatch):
+def test_business_owner_options_only_include_users_with_sales_review_permission(monkeypatch):
     monkeypatch.setenv("AUTHZ_MODE", "enforce")
     with make_client(monkeypatch) as client:
         ensure_user(
             "iq_fixed_sales_owner",
-            "position_sales_business",
+            "position_sales_supervisor",
             "sales-business",
         )
         ensure_user(
             "iq_revoked_fixed_sales_owner",
+            "position_sales_supervisor",
+            "sales-business",
+        )
+        ensure_user(
+            "iq_sales_owner_without_review",
             "position_sales_business",
             "sales-business",
         )
         db_module = importlib.import_module("app.db")
         auth_models = importlib.import_module("app.models.auth")
         revoked_binding_id = (
-            "user-iq_revoked_fixed_sales_owner:position_sales_business:"
+            "user-iq_revoked_fixed_sales_owner:position_sales_supervisor:"
             "huaxing:sales-business"
         )
         with db_module.SessionLocal() as db:
@@ -644,6 +851,7 @@ def test_business_owner_options_include_fixed_sales_positions_but_not_general_ma
         owner_ids = {item["id"] for item in owner_options.json()}
         assert "user-iq_fixed_sales_owner" in owner_ids
         assert "user-iq_revoked_fixed_sales_owner" not in owner_ids
+        assert "user-iq_sales_owner_without_review" not in owner_ids
         assert "user-iq_general_manager_owner_check" not in owner_ids
 
 
@@ -916,6 +1124,50 @@ def test_internal_quote_list_can_opt_in_to_section_progress(monkeypatch):
         row = next(item for item in expanded.json() if item["id"] == created["id"])
         assert len(row["sections"]) == 8
         assert all(section["revision"] == 1 for section in row["sections"])
+
+
+def test_internal_quote_list_page_loads_only_ten_rows_and_reports_remaining_pages(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_list_page", "sales_customer_owner", "sales-business")
+        created_ids: list[str] = []
+        for index in range(12):
+            payload = create_payload(suffix=f"PAGE-{index:02d}")
+            payload["customer"] = "分页客户A" if index % 2 == 0 else "分页客户B"
+            created = client.post("/api/internal-quotes", json=payload)
+            assert created.status_code == 201, created.text
+            created_ids.append(created.json()["id"])
+
+        first = client.get(
+            "/api/internal-quotes",
+            params={"factory_id": "huaxing", "page": 1, "page_size": 10, "include_sections": True},
+        )
+        assert first.status_code == 200, first.text
+        first_page = first.json()
+        assert first_page["total"] == 12
+        assert first_page["page"] == 1
+        assert first_page["page_size"] == 10
+        assert first_page["total_pages"] == 2
+        assert len(first_page["items"]) == 10
+        assert all(len(item["sections"]) == 8 for item in first_page["items"])
+        assert first_page["customers"] == ["分页客户A", "分页客户B"]
+
+        second = client.get(
+            "/api/internal-quotes",
+            params={"factory_id": "huaxing", "page": 2, "page_size": 10},
+        )
+        assert second.status_code == 200, second.text
+        second_page = second.json()
+        assert len(second_page["items"]) == 2
+        assert not ({item["id"] for item in first_page["items"]} & {item["id"] for item in second_page["items"]})
+        assert {item["id"] for item in first_page["items"] + second_page["items"]} == set(created_ids)
+
+        filtered = client.get(
+            "/api/internal-quotes",
+            params={"factory_id": "huaxing", "page": 1, "page_size": 10, "customer": "分页客户A"},
+        )
+        assert filtered.status_code == 200, filtered.text
+        assert filtered.json()["total"] == 6
+        assert all(item["customer"] == "分页客户A" for item in filtered.json()["items"])
 
 
 def test_internal_quote_dashboard_reports_period_status_customer_progress_and_speed(monkeypatch):

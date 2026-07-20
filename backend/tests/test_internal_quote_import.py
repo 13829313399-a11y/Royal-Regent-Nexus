@@ -3,6 +3,8 @@ from io import BytesIO
 
 import pytest
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as WorksheetImage
+from PIL import Image as PillowImage
 
 from app.services.internal_quote_artifacts import _merge_import_payload
 from app.services.internal_quote_import import parse_internal_quote_workbook
@@ -14,6 +16,25 @@ def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> byt
     sheet.title = title
     for row in rows:
         sheet.append(row)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def water_table_workbook_with_image() -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "模价表1"
+    sheet.append(["NO.", "MOLD NO.", "Tool", "PART NAME", None, "CAV", "UP", "MAT'L", "COLOR", "CLAMPING FORCE (tonne)", "Part Weight (g)", "TOOL INFORMATION", "Mold Weight (kg)", "Tool Insert Mat'l", "No. of Slide", "CYCLE", "DAILY", "WEEKLY", None, "TOTAL AMOUNT", "PICTURES", "REMARKS"])
+    sheet.append([None, None, "Type", "DESCRIPTION", "CHINESE NAME", None, None, None, None, None, None, "Dim (HxWxD cm)", None, None, None, "TIME (sec)", "RATE", "RATE(K)", "GATE", "(RMB)", None, None])
+    sheet.append([1, "M01", "INJ", None, "水桌主体", 1, 1, "PP", "Blue", "900T", None, "90*90*80", None, "718H", None, 95, None, 4752, "热流道", 237000, None, None])
+    image_bytes = BytesIO()
+    PillowImage.new("RGB", (4, 4), color=(16, 118, 110)).save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+    image = WorksheetImage(image_bytes)
+    image.anchor = "U3"
+    sheet.add_image(image)
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -39,23 +60,73 @@ def test_mold_import_maps_rr2_fields_to_p2_engineering_contract():
     assert parsed.payload_fragment["molds"][0] == {
         "item": "公仔头模",
         "mold_no": "M-100",
+        "chinese_name": "",
         "quantity": "1.0000",
         "cost_rmb": "28000.0000",
         "material": "ABS",
+        "material_type": "",
         "net_weight_g": "85.0000",
         "cavity": "",
         "machine_code": "4A",
         "target_output": "8000.0000",
         "mold_base_type": "",
+        "mold_base_material": "",
         "structure": "",
+        "process": "",
         "cycle_time_seconds": "0.0000",
         "mold_size": "",
+        "mold_specification": "",
         "color": "",
         "image_reference": "",
+        "image_attachment_ids": [],
         "remark": "客户模",
         "source_row": 2,
     }
     assert any("图片附件" in warning for warning in parsed.warnings)
+
+
+def test_mold_import_maps_water_table_two_row_headers_and_skips_blank_rows_after_m12():
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+            [
+                ["NO.", "MOLD NO.", "Tool", "PART NAME", None, "CAV", "UP", "MAT'L", "COLOR", "CLAMPING FORCE (tonne)", "Part Weight (g)", "TOOL INFORMATION", "Mold Weight (kg)", "Tool Insert Mat'l", "No. of Slide", "CYCLE", "DAILY", "WEEKLY", None, "TOTAL AMOUNT", "PICTURES", "REMARKS"],
+                [None, None, "Type", "DESCRIPTION", "CHINESE NAME", None, None, None, None, None, None, "Dim (HxWxD cm)", None, None, None, "TIME (sec)", "RATE", "RATE(K)", "GATE", "(RMB)", None, None],
+                [11, "M11", "INJ", None, "提手", 8, 2.67, "PP", "Blue", "160T", None, "35*55*45", None, "718H", "4个行位", 35, None, 34438, "细水口", 44000, None, None],
+                [12, "M12", "INJ", None, "水桶1/水桶2/滚筒/挂钩/起动臂左/起动臂右", 6, 1, "PP", "021C Orange", "160T", None, "40*55*44", None, "718H", None, 35, None, 12898, "潜水口", 49000, None, None],
+                [],
+                [None] * 22,
+                ["备注：付款方式"],
+                [None] * 18 + ["合计(RMB)", 93000],
+            ]
+        ),
+        "mold",
+    )
+
+    assert parsed.row_count == 2
+    assert [row["mold_no"] for row in parsed.payload_fragment["molds"]] == ["M11", "M12"]
+    m12 = parsed.payload_fragment["molds"][1]
+    assert m12["item"] == "水桶1/水桶2/滚筒/挂钩/起动臂左/起动臂右"
+    assert m12["chinese_name"] == ""
+    assert m12["material_type"] == "PP"
+    assert m12["mold_base_material"] == "718H"
+    assert m12["process"] == "潜水口"
+    assert m12["mold_size"] == "40*55*44"
+    assert m12["mold_specification"] == ""
+    assert m12["image_reference"] == ""
+    assert m12["image_attachment_ids"] == []
+    assert m12["cost_rmb"] == "49000.0000"
+    assert any("U 列未识别" in warning for warning in parsed.warnings)
+
+
+def test_mold_import_extracts_embedded_picture_bytes_and_maps_them_to_source_row():
+    parsed = parse_internal_quote_workbook(water_table_workbook_with_image(), "mold")
+
+    assert len(parsed.embedded_images) == 1
+    assert parsed.embedded_images[0].source_row == 3
+    assert parsed.embedded_images[0].content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert parsed.payload_fragment["molds"][0]["image_reference"] == "模具图片-U3-1.png"
+    assert parsed.payload_fragment["molds"][0]["image_attachment_ids"] == []
+    assert any("已识别并提取 U 列 1 张嵌入图片" in warning for warning in parsed.warnings)
 
 
 def test_electronic_import_converts_rmb_and_maps_extra_parameters():
@@ -114,7 +185,7 @@ def test_electronic_import_keeps_smt_specs_as_components_and_reads_exact_summary
     assert parsed.payload_fragment["profit_rate_percent"] == "10.0000"
 
 
-def test_electronic_append_promotes_legacy_hkd_extras_before_adding_rmb_import():
+def test_electronic_import_replaces_complete_quote_even_when_append_is_requested():
     merged = _merge_import_payload(
         "electronic",
         {
@@ -137,10 +208,11 @@ def test_electronic_append_promotes_legacy_hkd_extras_before_adding_rmb_import()
         ".85",
     )
 
-    assert len(merged["components"]) == 2
+    assert len(merged["components"]) == 1
+    assert merged["components"][0]["item"] == "新件"
     assert merged["pricing_currency"] == "RMB"
-    assert merged["bonding_rmb"] == "1.35"
-    assert merged["smt_rmb"] == "1.90"
+    assert merged["bonding_rmb"] == ".5"
+    assert merged["smt_rmb"] == ".2"
     assert "bonding_hkd" not in merged
     assert "smt_hkd" not in merged
     assert "tax_credit_difference_hkd" not in merged
@@ -334,6 +406,72 @@ def test_sewing_import_keeps_usage_rmb_price_markup_and_labor_line():
     assert group["labor_rmb"] == "0.0000"
 
 
+def test_sewing_import_forward_fills_material_for_following_cutting_parts():
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+            [
+                ["物料名称", "裁片部位", "供应商", "布料MOQ/Y", "低于MOQ/每色产生费用", "用量/码", "单价", "成本", "码点", "价钱", "备注"],
+                ["8寸紫色土豆蝙蝠"],
+                ['58\"270G白色莱卡布，感温变色涂层', "前身", "恒欣", 500, None, 0.084, 93.2, 7.87, 1.1, 8.66, ""],
+                [None, "后身", None, None, None, 0.085, 93.2, 7.97, 1.1, 8.76, ""],
+                [None, "底部", None, None, None, 0.034, 93.2, 3.2, 1.1, 3.52, ""],
+                ['58\"270G紫色莱卡布(无温变)', "前朵", "恒欣", 50, None, 0.008, 20.7, 0.16, 1.1, 0.18, ""],
+                [None, "后耳", None, None, None, 0.008, 20.7, 0.16, 1.1, 0.18, ""],
+            ],
+            title="明细",
+        ),
+        "sewing",
+    )
+
+    materials = parsed.payload_fragment["groups"][0]["materials"]
+    assert parsed.row_count == 5
+    assert parsed.payload_fragment["groups"][0]["name"] == "8寸紫色土豆蝙蝠"
+    assert [row["item"] for row in materials] == [
+        '58\"270G白色莱卡布，感温变色涂层',
+        '58\"270G白色莱卡布，感温变色涂层',
+        '58\"270G白色莱卡布，感温变色涂层',
+        '58\"270G紫色莱卡布(无温变)',
+        '58\"270G紫色莱卡布(无温变)',
+    ]
+    assert [row["part"] for row in materials] == ["前身", "后身", "底部", "前朵", "后耳"]
+    assert materials[1]["usage"] == "0.0850"
+    assert materials[1]["unit_price_rmb"] == "93.2000"
+    assert materials[1]["markup"] == "1.1000"
+
+
+def test_sewing_import_preserves_source_precision_and_uses_total_row_as_product_boundary():
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+            [
+                ["物料名称", "裁片部位", "供应商", "布料MOQ/Y", "低于MOQ/每色产生费用", "用量/码", "单价", "成本", "码点", "价钱", "备注"],
+                ["8寸紫色土豆蝙蝠"],
+                ['58"270G白色莱卡布，感温变色涂层', "前身", "恒欣", 500, None, 0.110590277777778, 93.1, 10.2959548611111, 1.1, 11.3255503472222, ""],
+                [None, "后身", None, None, None, 0.116666666666667, 93.1, 10.8616666666667, 1.1, 11.9478333333333, ""],
+                ["25 mm黄色纽扣（兴信提供）"],
+                [None, None, None, None, None, None, None, None, "合计", 23.2733836805555, None],
+                ["10寸紫色小狗"],
+                ["紫色莱卡布", "前朵", "恒欣", 50, None, 0.01, 20.7, 0.207, 1.1, 0.2277, ""],
+            ],
+            title="明细",
+        ),
+        "sewing",
+    )
+
+    assert parsed.row_count == 4
+    assert [group["name"] for group in parsed.payload_fragment["groups"]] == ["8寸紫色土豆蝙蝠", "10寸紫色小狗"]
+    first_group = parsed.payload_fragment["groups"][0]["materials"]
+    assert [row["item"] for row in first_group] == [
+        '58"270G白色莱卡布，感温变色涂层',
+        '58"270G白色莱卡布，感温变色涂层',
+        "25 mm黄色纽扣（兴信提供）",
+    ]
+    assert [row["part"] for row in first_group[:2]] == ["前身", "后身"]
+    assert first_group[0]["usage"] == "0.110590277777778"
+    assert first_group[1]["usage"] == "0.116666666666667"
+    assert first_group[2]["usage"] == "1.0000"
+    assert first_group[2]["unit_price_rmb"] == "0.0000"
+
+
 def test_sewing_import_maps_screenshot_fields_multiple_groups_and_ignores_derived_totals():
     header = ["布料名称", "部位", "工艺", "裁片数", "用量/码", "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注"]
     parsed = parse_internal_quote_workbook(
@@ -390,9 +528,11 @@ def test_assembly_import_builds_process_groups_and_uses_quote_qty_fallback():
     group = parsed.payload_fragment["groups"][0]
     process = group["processes"][0]
     assert group["category"] == "assembly"
+    assert group["production_qty"] == "1000.0000"
+    assert group["teams"] == "1.0000"
     assert process["name"] == "装电池"
     assert process["persons"] == "4.0000"
-    assert process["production_qty"] == "1000.0000"
+    assert process["remark"] == "检查极性"
     assert any("报价数量" in warning for warning in parsed.warnings)
 
 

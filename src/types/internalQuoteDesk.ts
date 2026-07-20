@@ -51,6 +51,7 @@ export interface InternalQuoteSection {
   totalHkd: number
   updatedAt: string
   submittedBy?: string
+  submittedById?: string
   reviewer?: string
   reviewedAt?: string
   notApplicableReason?: string
@@ -202,6 +203,7 @@ export interface InternalQuote {
   fxHkdUsd: number
   fxRmbUsd: number
   referenceSnapshotId: string
+  referenceSnapshot: Record<string, unknown>
   formulaVersion: string
   headerRevision: number
   finalReleaseStatus: string

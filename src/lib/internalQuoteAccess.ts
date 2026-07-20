@@ -26,9 +26,21 @@ const internalQuoteOperatePermissions = [
 ] as const
 
 interface InternalQuoteAccessChecker {
-  currentUser: { profile?: { primary_factory_id: string } | null } | null
+  currentUser: { id?: string; profile?: { primary_factory_id: string } | null } | null
   can: (permission: string, factoryId?: string, department?: string) => boolean
   canAny: (permissions: string[], factoryId?: string, department?: string) => boolean
+}
+
+export function canReviewInternalQuoteSections(
+  authStore: InternalQuoteAccessChecker,
+  factoryId: string,
+  businessOwnerId: string,
+) {
+  return Boolean(
+    businessOwnerId
+    && authStore.currentUser?.id === businessOwnerId
+    && authStore.can('internal_quote:sales_review', factoryId, 'sales-business'),
+  )
 }
 
 export function canOperateInternalQuote(

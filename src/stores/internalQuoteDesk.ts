@@ -37,7 +37,7 @@ import type {
 
 const actionTitles: Record<string, string> = {
   create: '创建内部报价', clone: '复制内部报价', edit_header: '修改报价单头', save: '保存分段草稿',
-  submit: '提交分段审核', approve: '分段审核通过', reject: '分段审核退回', request_na: '申请分段不适用',
+  submit: '提交分段审核', withdraw: '提交人返回修改', approve: '分段审核通过', reject: '分段审核退回', request_na: '申请分段不适用',
   approve_na: '批准分段不适用', reopen: '合法重开分段', import_preview: '预览导入文件',
   import_confirm: '确认导入文件', upload_attachment: '上传分段附件', download_attachment: '下载分段附件',
   reference_sync: '同步参考快照', reference_fx_update: '调整报价汇率', reference_recalculated: '按新参考重算',
@@ -135,6 +135,7 @@ function toSection(section: ApiInternalQuoteSection, attachments: ApiInternalQuo
     totalHkd: numberValue(totals.total_hkd ?? totals.shipping_floor_hkd),
     updatedAt: section.updated_at,
     submittedBy: section.submitted_by || undefined,
+    submittedById: section.submitted_by_id || undefined,
     reviewer: section.reviewed_by || undefined,
     reviewedAt: section.reviewed_at || undefined,
     notApplicableReason: ['na_pending', 'not_applicable'].includes(section.status) ? section.review_comment || undefined : undefined,
@@ -336,6 +337,7 @@ function toQuote(
     fxHkdUsd: fx.hkdUsd,
     fxRmbUsd: fx.rmbUsd,
     referenceSnapshotId: source.reference_snapshot_id,
+    referenceSnapshot: extras.reference?.snapshot ?? {},
     formulaVersion: source.formula_version,
     headerRevision: source.header_revision,
     finalReleaseStatus: source.final_release_status,
@@ -360,7 +362,7 @@ function emptyQuote(): InternalQuote {
     id: '', quoteNo: '', productName: '正在读取内部报价…', customer: '', versionLabel: '', factoryId: '', factoryName: '',
     workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', initiatorName: '', businessOwnerId: '',
     businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
-    fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', formulaVersion: '', headerRevision: 1,
+    fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', referenceSnapshot: {}, formulaVersion: '', headerRevision: 1,
     finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [], rr2CostSummary: rr2CostSummary(),
     sections: internalQuoteSectionDefinitions.map((definition) => ({
       ...definition, status: 'draft', isRequired: true, revision: 1, totalHkd: 0, updatedAt: '', warnings: [], lines: [],
@@ -403,6 +405,11 @@ function triggerDownload(blob: Blob, fileName: string) {
 export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
   state: () => ({
     quotes: [] as InternalQuote[],
+    quoteListTotal: 0,
+    quoteListPage: 1,
+    quoteListPageSize: 10,
+    quoteListTotalPages: 1,
+    quoteListCustomers: [] as string[],
     businessOwners: [] as InternalQuoteBusinessOwner[],
     pricingBaseline: null as ApiInternalQuotePricingBaseline | null,
     dashboard: null as ApiInternalQuoteDashboard | null,
@@ -445,20 +452,55 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       if (index >= 0) this.quotes.splice(index, 1, quote)
       else this.quotes.unshift(quote)
     },
-    async loadQuotes(factoryId: string) {
+    async loadQuotes(factoryId: string, options: { status?: string; keyword?: string; customer?: string; page?: number; pageSize?: number } = {}) {
       const requestSequence = ++this.quoteListRequestSequence
-      if (this.currentFactoryId !== factoryId) this.quotes = []
+      if (this.currentFactoryId !== factoryId) {
+        this.quotes = []
+        this.quoteListTotal = 0
+        this.quoteListPage = 1
+        this.quoteListTotalPages = 1
+        this.quoteListCustomers = []
+      }
       this.listLoading = true
       this.errorMessage = ''
       this.currentFactoryId = factoryId
       try {
-        const quotes = (await internalQuoteApi.list(factoryId)).map((item) => toQuote(item))
+        const response = Object.keys(options).length
+          ? await internalQuoteApi.list(factoryId, options)
+          : await internalQuoteApi.list(factoryId)
         if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
-        this.quotes = quotes
+        if (Array.isArray(response)) {
+          // Compatibility with a backend process that still returns the former
+          // unpaged array response. Keep the page controls functional instead of
+          // reporting "1 / 1" for a list that contains more than one page.
+          const legacyRows = options.customer
+            ? response.filter((item) => item.customer === options.customer)
+            : response
+          const pageSize = Math.max(1, Math.trunc(options.pageSize ?? 10))
+          const totalPages = Math.max(1, Math.ceil(legacyRows.length / pageSize))
+          const page = Math.min(Math.max(1, Math.trunc(options.page ?? 1)), totalPages)
+          const pageStart = (page - 1) * pageSize
+          this.quotes = legacyRows.slice(pageStart, pageStart + pageSize).map((item) => toQuote(item))
+          this.quoteListTotal = legacyRows.length
+          this.quoteListPage = page
+          this.quoteListPageSize = pageSize
+          this.quoteListTotalPages = totalPages
+          this.quoteListCustomers = [...new Set(response.map((item) => item.customer))].filter(Boolean).sort()
+        } else {
+          this.quotes = response.items.map((item) => toQuote(item))
+          this.quoteListTotal = response.total
+          this.quoteListPage = response.page
+          this.quoteListPageSize = response.page_size
+          this.quoteListTotalPages = response.total_pages
+          this.quoteListCustomers = response.customers
+        }
       } catch (error) {
         if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
         this.errorMessage = getApiErrorMessage(error)
         this.quotes = []
+        this.quoteListTotal = 0
+        this.quoteListPage = 1
+        this.quoteListTotalPages = 1
       } finally {
         if (requestSequence === this.quoteListRequestSequence && this.currentFactoryId === factoryId) {
           this.listLoading = false
@@ -677,6 +719,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     submitSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitSection(quoteId, sectionCode, revision))
     },
+    withdrawSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.withdrawSection(quoteId, sectionCode, revision))
+    },
     reviewSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, decision: 'approve' | 'reject', reason = '') {
       return this.executeMutation(quoteId, () => internalQuoteApi.reviewSection(quoteId, sectionCode, revision, decision, reason))
     },
@@ -688,6 +733,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     addParticipation(quoteId: string, revision: number, sectionCodes: InternalQuoteSectionCode[]) {
       return this.executeMutation(quoteId, () => internalQuoteApi.addParticipation(quoteId, revision, sectionCodes))
+    },
+    removeParticipation(quoteId: string, revision: number, sectionCodes: InternalQuoteSectionCode[]) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.removeParticipation(quoteId, revision, sectionCodes))
     },
     syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.syncReferenceSnapshot(quoteId, revision, reason))

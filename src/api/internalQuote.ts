@@ -79,6 +79,20 @@ export interface ApiInternalQuote {
   sections: ApiInternalQuoteSection[]
 }
 
+export function internalQuoteAttachmentPreviewUrl(quoteId: string, attachmentId: string) {
+  const baseUrl = String(import.meta.env?.VITE_API_BASE_URL ?? '/api').replace(/\/+$/, '')
+  return `${baseUrl}/internal-quotes/${encodeURIComponent(quoteId)}/attachments/${encodeURIComponent(attachmentId)}/preview`
+}
+
+export interface ApiInternalQuotePage {
+  items: ApiInternalQuote[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+  customers: string[]
+}
+
 export interface ApiInternalQuoteAudit {
   id: string
   department: string
@@ -390,13 +404,16 @@ export interface InternalQuoteCloneRequest {
 
 export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
   return {
-    async list(factoryId: string, options: { status?: string; keyword?: string } = {}) {
-      const response = await client.get<ApiInternalQuote[]>('/internal-quotes', {
+    async list(factoryId: string, options: { status?: string; keyword?: string; customer?: string; page?: number; pageSize?: number } = {}) {
+      const response = await client.get<ApiInternalQuotePage>('/internal-quotes', {
         params: {
           factory_id: factoryId,
           include_sections: true,
+          page: options.page ?? 1,
+          page_size: options.pageSize ?? 10,
           ...(options.status ? { status: options.status } : {}),
           ...(options.keyword ? { keyword: options.keyword } : {}),
+          ...(options.customer ? { customer: options.customer } : {}),
         },
       })
       return response.data
@@ -423,6 +440,13 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/participation`, {
         revision,
         add_sections: addSections,
+      })
+      return response.data
+    },
+    async removeParticipation(quoteId: string, revision: number, removeSections: InternalQuoteSectionCode[]) {
+      const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/participation/remove`, {
+        revision,
+        remove_sections: removeSections,
       })
       return response.data
     },
@@ -490,6 +514,10 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     },
     async submitSection(quoteId: string, sectionCode: string, revision: number) {
       const response = await client.post<ApiInternalQuoteSection>(`/internal-quotes/${quoteId}/sections/${sectionCode}/submit`, { revision })
+      return response.data
+    },
+    async withdrawSection(quoteId: string, sectionCode: string, revision: number) {
+      const response = await client.post<ApiInternalQuoteSection>(`/internal-quotes/${quoteId}/sections/${sectionCode}/withdraw`, { revision })
       return response.data
     },
     async reviewSection(quoteId: string, sectionCode: string, revision: number, decision: 'approve' | 'reject', reason = '') {

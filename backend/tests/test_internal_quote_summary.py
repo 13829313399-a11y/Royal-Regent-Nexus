@@ -142,3 +142,32 @@ def test_rr2_shipping_price_uses_48_52_markup_settlement_and_mold_share_when_ena
     assert yt40["after_markup_hkd"] == "72.6000"
     assert yt40["after_settlement_hkd"] == "74.0816"
     assert yt40["total_with_mold_usd"] == "9.7476"
+
+
+def test_rr2_cost_summary_uses_quick_painting_labor_and_tax_inclusive_paint_exactly():
+    sections = summary_sections(freight_enabled=False)
+    painting = next(item for item in sections if item.department == "painting")
+    painting.calculation_json = json.dumps(
+        {
+            "totals": {
+                "quote_mode": "quick",
+                "painting_labor_hkd": "2.0000",
+                "paint_base_hkd": "3.0000",
+                "paint_tax_hkd": "0.3900",
+                "paint_material_hkd": "3.3900",
+                "total_hkd": "5.3900",
+            },
+            "line_breakdown": [],
+        },
+        ensure_ascii=False,
+    )
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1"), "mold_amortization_usd": Decimal("0.25")},
+        SNAPSHOT,
+    )
+
+    labor_rows = rows_by_key(result["t3"])
+    assert labor_rows["painting_labor"]["value"] == "2.0000"
+    assert labor_rows["paint_material"]["value"] == "3.3900"

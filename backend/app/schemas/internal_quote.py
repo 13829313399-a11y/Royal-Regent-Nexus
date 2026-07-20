@@ -326,6 +326,21 @@ class InternalQuoteParticipationUpdateRequest(BaseModel):
         return _normalize_section_codes(values)
 
 
+class InternalQuoteParticipationRemoveRequest(BaseModel):
+    revision: int = Field(ge=1)
+    remove_sections: list[InternalQuoteSectionCode] = Field(min_length=1)
+
+    @field_validator("remove_sections")
+    @classmethod
+    def validate_remove_sections(
+        cls, values: list[InternalQuoteSectionCode]
+    ) -> list[InternalQuoteSectionCode]:
+        invalid = [code for code in values if code not in OPTIONAL_SECTION_CODES]
+        if invalid:
+            raise ValueError("业务部、工程部和装配部为固定参与部门，不能移除")
+        return _normalize_section_codes(values)
+
+
 class InternalQuoteSectionSaveRequest(BaseModel):
     revision: int = Field(ge=1)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -511,6 +526,15 @@ class InternalQuoteOut(BaseModel):
     created_at: str
     updated_at: str
     sections: list[InternalQuoteSectionOut] = Field(default_factory=list)
+
+
+class InternalQuotePageOut(BaseModel):
+    items: list[InternalQuoteOut]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    customers: list[str] = Field(default_factory=list)
 
 
 class InternalQuoteRevisionOut(BaseModel):

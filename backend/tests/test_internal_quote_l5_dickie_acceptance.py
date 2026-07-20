@@ -132,8 +132,8 @@ def test_l5_3_real_dickie_full_release_preflight_consume_and_output(monkeypatch)
                 "qty": 10_000,
                 "version_label": "V1",
                 "initiator_department": "sales-business",
-                "business_owner_id": submitter["id"],
-                "business_owner_name": submitter["display_name"],
+                "business_owner_id": "user-l5_3_dickie_reviewer",
+                "business_owner_name": "l5_3_dickie_reviewer",
                 "target_date": "2026-08-31",
                 "remark": "L5.3 Dickie Disney Cable 真实样表验收",
                 "participating_sections": [
