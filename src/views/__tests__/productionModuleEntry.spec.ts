@@ -23,7 +23,9 @@ describe('production module entry', () => {
     expect(enterpriseSource).not.toMatch(/\/pi-outsource\//)
 
     expect(moduleCenterSource).toMatch(/module\.id === 'molding-sample-production-task'/)
-    expect(moduleCenterSource).toMatch(/\/modules\/production\/molding-sample-tasks\?factory=/)
+    expect(moduleCenterSource).toMatch(
+      /getFactoryScopedRoute\('\/modules\/production\/molding-sample-tasks', factory\.id\)/,
+    )
     expect(moduleCenterSource).not.toMatch(/moldingSampleWorkflowMock/)
     expect(moduleCenterSource).not.toMatch(/getMoldingSampleProductionTaskStats/)
 
@@ -94,14 +96,15 @@ describe('production module entry', () => {
     expect(rawMaterialSource).toMatch(/isSavingMaterial \|\| !canManageSelectedFactory/)
 
     expect(rawMaterialSource).toContain('rawMaterialApi.list(factoryId)')
+    expect(rawMaterialSource).toContain('requestSequence !== rawMaterialRequestSequence')
     expect(rawMaterialSource).toContain('mapPersistedRawMaterialRow')
-    expect(rawMaterialSource).toContain('原料主数据库读取')
+    expect(rawMaterialSource).toContain('公共原料资料库读取')
     expect(rawMaterialSource).toContain('rawMaterialApi.create({')
     expect(rawMaterialSource).toContain('物料编号（系统自动生成）')
     expect(rawMaterialSource).toContain('保存后自动生成')
     expect(rawMaterialSource).not.toContain('material_code: materialCode')
     expect(rawMaterialSource).not.toContain('请填写物料编号和原料名称。')
-    expect(rawMaterialSource).toContain('rawMaterialApi.update(editingMaterialId.value, payload)')
+    expect(rawMaterialSource).toContain('rawMaterialApi.update(editingMaterialId.value, selectedFactoryId.value, payload)')
     expect(rawMaterialSource).toContain('openEditMaterialModal(row)')
     expect(rawMaterialSource).toContain('unitPriceHkdPerLb')
     expect(rawMaterialSource).toContain('工程部维护后会同步用于啤办成本计算。')
@@ -171,6 +174,9 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toMatch(/QuoteCenterPanel/)
     expect(customerPriceConversionViewSource).toMatch(/SalesModuleWorkbench/)
     expect(customerPriceConversionViewSource).toMatch(/title="客价转换台"/)
+    expect(customerPriceConversionViewSource).toMatch(/\['huakang-c', 'huakang-d'\]\.includes\(appStore\.activeProductionFactory\.id\)/)
+    expect(customerPriceConversionViewSource).toContain("{ label: '待转换', value: '0'")
+    expect(customerPriceConversionViewSource).toContain("{ label: '客户范围', value: '待配置'")
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
     expect(customerPriceConversionViewSource).not.toMatch(/quoteDeskTabs/)
 

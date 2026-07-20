@@ -61,8 +61,11 @@ export function createRawMaterialApi(client: RawMaterialHttpClient = http) {
       const response = await client.post<RawMaterialResponse>('/raw-materials', payload)
       return response.data
     },
-    async update(materialId: string, payload: RawMaterialUpdateRequest) {
-      const response = await client.patch<RawMaterialResponse>(`/raw-materials/${encodeURIComponent(materialId)}`, payload)
+    async update(materialId: string, factoryId: string, payload: RawMaterialUpdateRequest) {
+      const response = await client.patch<RawMaterialResponse>(
+        `/raw-materials/${encodeURIComponent(materialId)}?factory_id=${encodeURIComponent(factoryId)}`,
+        payload,
+      )
       return response.data
     },
   }

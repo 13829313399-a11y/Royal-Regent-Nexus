@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
 import { nextTick } from 'vue'
 import { moldingSampleApi } from '@/api/moldingSample'
-import { rawMaterialApi } from '@/api/rawMaterial'
+import { rawMaterialApi, type RawMaterialResponse } from '@/api/rawMaterial'
 import type { AuthEffectiveAccess, AuthGrantScopeMode, AuthzMode } from '@/api/auth'
 import type {
   MoldingSampleBoardPageResponse,
@@ -14,7 +14,14 @@ import type {
   MoldingSampleNotificationResponse,
 } from '@/api/moldingSample'
 import { useAuthStore } from '@/stores/auth'
-import type { MoldingSampleStatus } from '@/types/moldingSample'
+import { useAppStore } from '@/stores/app'
+import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
+import type {
+  MoldingSampleStatus,
+  MoldingSampleTrialReport,
+  MoldingSampleTrialReportData,
+} from '@/types/moldingSample'
+import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
 import MoldingSampleProductionTaskView from '../MoldingSampleProductionTaskView.vue'
 import MoldingSampleView from '../MoldingSampleView.vue'
 
@@ -39,6 +46,7 @@ const moldingSampleApiMock = vi.hoisted(() => ({
   previewOrderExcel: vi.fn(),
   updateStatus: vi.fn(),
   updateItems: vi.fn(),
+  upsertTrialReport: vi.fn(),
   listNotifications: vi.fn(),
   updateNotification: vi.fn(),
   createProblem: vi.fn(),
@@ -114,10 +122,15 @@ async function mountRuntimeView(
     unrestrictedDepartment?: boolean
     roleId?: string
     grantFactoryId?: string
+    activeFactoryId?: ProductionFactoryContextId
   } = {},
 ) {
   const pinia = createPinia()
   setActivePinia(pinia)
+
+  if (options.activeFactoryId) {
+    useAppStore().setActiveFactory(options.activeFactoryId)
+  }
 
   const permissions = options.permissions ?? [
     'molding_sample:read',
@@ -196,6 +209,25 @@ function getButtonByExactText(wrapper: VueWrapper, text: string) {
   expect(button, `button with exact text "${text}"`).toBeTruthy()
 
   return button!
+}
+
+async function fillValidManualCreateForm(wrapper: VueWrapper, label: string) {
+  await wrapper.get('[data-testid="create-product-no"]').setValue(`${label}-PRODUCT-NO`)
+  await wrapper.get('[data-testid="create-client-name"]').setValue(`${label} 客户`)
+  await wrapper.get('[data-testid="create-product-name"]').setValue(`${label} 产品`)
+  await wrapper.get('[data-testid="create-supervisor"]').setValue(`${label} 主管`)
+  await wrapper.get('[data-testid="create-engineer"]').setValue(`${label} 工程师`)
+  await wrapper.get('[data-testid="create-line-mold-id"]').setValue(`${label}-MOLD`)
+  await wrapper.get('[data-testid="create-line-mold-name"]').setValue(`${label} 模具`)
+  const materialInput = wrapper.get('[data-testid="create-line-material"]')
+  await materialInput.trigger('focus')
+  await materialInput.setValue('ABS 750NSW')
+  await materialInput.trigger('keydown.enter')
+  await wrapper.get('[data-testid="create-line-color"]').setValue('本白')
+  await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
+  await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')
+  await wrapper.get('[data-testid="create-line-required-material"]').setValue('2.25')
+  await wrapper.get('[data-testid="create-line-required-date"]').setValue('2026-08-31')
 }
 
 function createMoldingSampleRecord(
@@ -281,6 +313,45 @@ function createDeferred<T>() {
   })
 
   return { promise, resolve, reject }
+}
+
+function createTrialReportData(label: string): MoldingSampleTrialReportData {
+  return {
+    mold_supplier: '', sample_category: '', material_name: '', material_shots: '', material_weight: '',
+    color: '', color_code: '', color_shots: '', color_weight: '', virgin_material_shots: '', virgin_material_weight: '',
+    runner_material_shots: '', runner_material_weight: '', water_ratio: '', water_shots: '', water_material_weight: '',
+    water_weight: '', special_requirements: '', front_mold_water: '', rear_mold_water: '', other_trial_requirement: '',
+    other_trial_requirement_note: '', baking_time_hours: '', mold_condition: '', expected_return_time: '', gross_weight: '',
+    net_weight: '', plastic_model: '', machine_model: '', machine_no: '', cooling_time: '', holding_time: '', cycle_time: '',
+    injection_speed: '', ejector_count: '', cushion_pressure: '', clamping_force: '', high_pressure: '', low_pressure: '',
+    pressure_stage_1: '', pressure_stage_2: '', pressure_stage_3: '', pressure_stage_4: '', barrel_temperature_head: '',
+    barrel_temperature_middle: '', barrel_temperature_end: '', molding_mode: '', mold_issues: [], part_issues: [],
+    issue_notes: '', trial_summary: label, trial_round: 'T1', verdict: '', tester_name: label, tester_date: '',
+    molding_supervisor_name: '', molding_supervisor_date: '', engineer_name: '', engineer_date: '',
+  }
+}
+
+function createSharedRawMaterial(
+  materialCode: string,
+  materialName = 'ABA 共享 ABS',
+): RawMaterialResponse {
+  return {
+    id: `RM-SHARED-${materialCode}`,
+    factory_id: '*',
+    material_code: materialCode,
+    material_name: materialName,
+    category: 'ABS',
+    spec: 'ABA 回归规格',
+    unit: 'KG',
+    supplier: '共享供应商',
+    safety_stock_kg: null,
+    unit_price_hkd_per_lb: null,
+    status: '启用',
+    notes: '',
+    created_by: 'test',
+    created_at: '2026-07-20 08:00:00',
+    updated_at: '2026-07-20 08:00:00',
+  }
 }
 
 function createKpiRecord(
@@ -475,6 +546,520 @@ describe('molding sample runtime error handling', () => {
     expect(wrapper.text()).toContain('华登暂无正式啤办单')
     expect(wrapper.text()).toContain('当前厂区单据')
     expect(wrapper.text()).toContain('华登 · 按状态分列')
+
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['huakang-c', '华康C'],
+    ['huakang-d', '华康D'],
+  ] as const)('keeps %s on the shared engineering page and requests only that factory data', async (factoryId, factoryName) => {
+    routeState.query = { factory: factoryId }
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledWith(factoryId)
+    expect(mockedMoldingSampleApi.getMaterialPrices).toHaveBeenCalledWith(factoryId)
+    expect(mockedRawMaterialApi.list).toHaveBeenCalledWith(factoryId)
+    expect(wrapper.text()).toContain(`${factoryName}暂无正式啤办单`)
+    expect(wrapper.text()).toContain(`${factoryName} · 按状态分列`)
+    expect(wrapper.text()).not.toContain('华兴暂无正式啤办单')
+    const linkTargets = wrapper.findAllComponents({ name: 'RouterLink' }).map((link) => link.props('to'))
+    expect(linkTargets).toContain(`/modules/engineering?factory=${factoryId}`)
+    expect(linkTargets).toContain(`/modules/production/molding-sample-tasks?factory=${factoryId}`)
+    expect(linkTargets.join('\n')).not.toContain('factory=huaxing')
+
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['huakang-c', '华康C'],
+    ['huakang-d', '华康D'],
+  ] as const)('keeps %s in production-task return and engineering drill-down links', async (factoryId, factoryName) => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: factoryId }
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([])
+    mockedMoldingSampleApi.listNotifications.mockResolvedValueOnce([])
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView)
+
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledWith(factoryId)
+    expect(wrapper.text()).toContain(factoryName)
+    const linkTargets = wrapper.findAllComponents({ name: 'RouterLink' }).map((link) => link.props('to'))
+    expect(linkTargets).toContain(`/modules/production?factory=${factoryId}`)
+    expect(linkTargets).toContain(`/modules/molding-sample?factory=${factoryId}`)
+    expect(linkTargets.join('\n')).not.toContain('factory=huaxing')
+
+    wrapper.unmount()
+  })
+
+  it('keeps the newest C production tasks, notifications, and prices after a C-D-C ABA switch', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: '' }
+
+    const materialName = 'ABA 共享 ABS'
+    const staleCOrders = createDeferred<MoldingSampleDetailResponse[]>()
+    const staleCNotifications = createDeferred<MoldingSampleNotificationResponse[]>()
+    const staleCPrices = createDeferred<Awaited<ReturnType<typeof moldingSampleApi.getMaterialPrices>>>()
+    const staleCRecord = createKpiRecord('生产中', 'BP-ABA-C1-STALE', null)
+    const dRecord = createKpiRecord('生产中', 'BP-ABA-D', null)
+    const freshCRecord = createKpiRecord('生产中', 'BP-ABA-C2-FRESH', null)
+
+    for (const [record, factoryId] of [
+      [staleCRecord, 'huakang-c'],
+      [dRecord, 'huakang-d'],
+      [freshCRecord, 'huakang-c'],
+    ] as const) {
+      record.order.factory_id = factoryId
+      record.items[0]!.material = materialName
+      record.items[0]!.required_material_kg = 1
+    }
+
+    const staleCNotification = createProductionTaskNotification(staleCRecord.order.id)
+    staleCNotification.factory_id = 'huakang-c'
+    staleCNotification.event_type = 'C1旧通知'
+    const dNotification = createProductionTaskNotification(dRecord.order.id)
+    dNotification.factory_id = 'huakang-d'
+    dNotification.event_type = 'D厂通知'
+    const freshCNotification = createProductionTaskNotification(freshCRecord.order.id)
+    freshCNotification.factory_id = 'huakang-c'
+    freshCNotification.event_type = 'C2最新通知'
+
+    let cOrderRequestCount = 0
+    let cNotificationRequestCount = 0
+    let cPriceRequestCount = 0
+    mockedMoldingSampleApi.listOrders.mockImplementation((factoryId) => {
+      if (factoryId === 'huakang-c') {
+        cOrderRequestCount += 1
+        return cOrderRequestCount === 1
+          ? staleCOrders.promise
+          : Promise.resolve([freshCRecord])
+      }
+      if (factoryId === 'huakang-d') {
+        return Promise.resolve([dRecord])
+      }
+      return Promise.resolve([])
+    })
+    mockedMoldingSampleApi.listNotifications.mockImplementation(({ factory_id: factoryId }) => {
+      if (factoryId === 'huakang-c') {
+        cNotificationRequestCount += 1
+        return cNotificationRequestCount === 1
+          ? staleCNotifications.promise
+          : Promise.resolve([freshCNotification])
+      }
+      if (factoryId === 'huakang-d') {
+        return Promise.resolve([dNotification])
+      }
+      return Promise.resolve([])
+    })
+    mockedMoldingSampleApi.getMaterialPrices.mockImplementation((factoryId) => {
+      if (factoryId === 'huakang-c') {
+        cPriceRequestCount += 1
+        return cPriceRequestCount === 1
+          ? staleCPrices.promise
+          : Promise.resolve({
+              prices: [{ material: materialName, unit_price: 10 }],
+              rmb_to_hkd_rate: 1.08,
+            })
+      }
+      return Promise.resolve({
+        prices: [{ material: materialName, unit_price: 20 }],
+        rmb_to_hkd_rate: 1.08,
+      })
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      activeFactoryId: 'huakang-c',
+    })
+    const appStore = useAppStore()
+
+    expect(mockedMoldingSampleApi.listOrders).toHaveBeenCalledWith('huakang-c')
+    appStore.setActiveFactory('huakang-d')
+    await nextTick()
+    await flushPromises()
+    expect(wrapper.text()).toContain(dRecord.order.id)
+
+    appStore.setActiveFactory('huakang-c')
+    await nextTick()
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.text()).toContain(freshCRecord.order.id)
+    expect(wrapper.text()).toContain('C2最新通知')
+    expect(wrapper.get('[data-testid="production-fillback-expected-cost-panel"]').text()).toContain('$ 22.05')
+
+    staleCOrders.resolve([staleCRecord])
+    staleCNotifications.resolve([staleCNotification])
+    staleCPrices.resolve({
+      prices: [{ material: materialName, unit_price: 99 }],
+      rmb_to_hkd_rate: 1.08,
+    })
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.text()).toContain(freshCRecord.order.id)
+    expect(wrapper.text()).not.toContain(staleCRecord.order.id)
+    expect(wrapper.text()).toContain('C2最新通知')
+    expect(wrapper.text()).not.toContain('C1旧通知')
+    expect(wrapper.get('[data-testid="production-fillback-expected-cost-panel"]').text()).toContain('$ 22.05')
+    expect(wrapper.get('[data-testid="production-fillback-expected-cost-panel"]').text()).not.toContain('$ 218.26')
+
+    wrapper.unmount()
+  })
+
+  it('ignores a stale trial-report save after a C-D-C ABA switch', async () => {
+    routeState.path = '/modules/production/molding-sample-tasks'
+    routeState.query = { factory: '' }
+
+    const orderId = 'BP-REPORT-ABA-C'
+    const initialCRecord = createKpiRecord('生产中', orderId, null)
+    const freshCRecord = createKpiRecord('生产中', orderId, null)
+    const dRecord = createKpiRecord('生产中', 'BP-REPORT-ABA-D', null)
+    initialCRecord.order.factory_id = 'huakang-c'
+    freshCRecord.order.factory_id = 'huakang-c'
+    dRecord.order.factory_id = 'huakang-d'
+    initialCRecord.trial_reports = []
+    freshCRecord.trial_reports = []
+    dRecord.trial_reports = []
+
+    let cRequestCount = 0
+    mockedMoldingSampleApi.listOrders.mockImplementation((factoryId) => {
+      if (factoryId === 'huakang-c') {
+        cRequestCount += 1
+        return Promise.resolve([cRequestCount === 1 ? initialCRecord : freshCRecord])
+      }
+      return Promise.resolve(factoryId === 'huakang-d' ? [dRecord] : [])
+    })
+
+    const reportData = createTrialReportData('C1 旧报告')
+    const reportGate = createDeferred<MoldingSampleTrialReport>()
+    mockedMoldingSampleApi.upsertTrialReport.mockReturnValueOnce(reportGate.promise)
+
+    const wrapper = await mountRuntimeView(MoldingSampleProductionTaskView, {
+      activeFactoryId: 'huakang-c',
+    })
+    const appStore = useAppStore()
+    const itemId = initialCRecord.items[0]!.id
+
+    await getButtonByText(wrapper, '试模报告填写 / 打印').trigger('click')
+    wrapper.findComponent(MoldingSampleTrialReportDialog).vm.$emit('save', {
+      itemId,
+      data: reportData,
+    })
+    await Promise.resolve()
+
+    expect(mockedMoldingSampleApi.upsertTrialReport).toHaveBeenCalledWith(
+      orderId,
+      itemId,
+      { data: reportData },
+    )
+
+    appStore.setActiveFactory('huakang-d')
+    appStore.setActiveFactory('huakang-c')
+    await nextTick()
+    await flushPromises()
+
+    reportGate.resolve({
+      id: 'REPORT-C1-STALE',
+      factory_id: 'huakang-c',
+      order_id: orderId,
+      item_id: itemId,
+      data: reportData,
+      created_by: 'c1-user',
+      created_at: '2026-07-20 09:00:00',
+      updated_by: 'c1-user',
+      updated_at: '2026-07-20 09:00:00',
+    })
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="molding-sample-trial-report-history"]').text()).toContain('0 份')
+    expect(wrapper.text()).not.toContain('C1 旧报告')
+    expect(wrapper.text()).not.toContain('试模报告已保存并同步至工程部')
+    expect(wrapper.findComponent(MoldingSampleTrialReportDialog).props('saving')).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('keeps the newest C protected prices and raw-material options after a C-D-C ABA switch', async () => {
+    routeState.path = '/modules/molding-sample'
+    routeState.query = { factory: '' }
+
+    const materialName = 'ABA 共享 ABS'
+    const staleCPrices = createDeferred<Awaited<ReturnType<typeof moldingSampleApi.getMaterialPrices>>>()
+    const staleCRawMaterials = createDeferred<RawMaterialResponse[]>()
+    let cPriceRequestCount = 0
+    let cRawMaterialRequestCount = 0
+
+    mockedMoldingSampleApi.listOrders.mockResolvedValue([])
+    mockedMoldingSampleApi.getMaterialPrices.mockImplementation((factoryId) => {
+      if (factoryId === 'huakang-c') {
+        cPriceRequestCount += 1
+        return cPriceRequestCount === 1
+          ? staleCPrices.promise
+          : Promise.resolve({
+              prices: [{ material: materialName, unit_price: 10 }],
+              rmb_to_hkd_rate: 1.08,
+            })
+      }
+      return Promise.resolve({
+        prices: [{ material: materialName, unit_price: 20 }],
+        rmb_to_hkd_rate: 1.08,
+      })
+    })
+    mockedRawMaterialApi.list.mockImplementation((factoryId) => {
+      if (factoryId === 'huakang-c') {
+        cRawMaterialRequestCount += 1
+        return cRawMaterialRequestCount === 1
+          ? staleCRawMaterials.promise
+          : Promise.resolve([createSharedRawMaterial('C2-CODE', materialName)])
+      }
+      return Promise.resolve([createSharedRawMaterial('D-CODE', materialName)])
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      activeFactoryId: 'huakang-c',
+    })
+    const appStore = useAppStore()
+
+    expect(mockedMoldingSampleApi.getMaterialPrices).toHaveBeenCalledWith('huakang-c')
+    expect(mockedRawMaterialApi.list).toHaveBeenCalledWith('huakang-c')
+    appStore.setActiveFactory('huakang-d')
+    await nextTick()
+    await flushPromises()
+    appStore.setActiveFactory('huakang-c')
+    await nextTick()
+    await flushPromises()
+    await nextTick()
+
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    const materialInput = wrapper.get('[data-testid="create-line-material"]')
+    await materialInput.trigger('focus')
+    await materialInput.setValue(materialName)
+    await materialInput.trigger('keydown.enter')
+    await nextTick()
+
+    expect(materialInput.attributes('title')).toContain('C2-CODE')
+    expect(wrapper.get('[data-testid="create-line-material-price"]').text()).toContain('HKD 10.00')
+
+    staleCPrices.resolve({
+      prices: [{ material: materialName, unit_price: 99 }],
+      rmb_to_hkd_rate: 1.08,
+    })
+    staleCRawMaterials.resolve([createSharedRawMaterial('C1-STALE-CODE', materialName)])
+    await flushPromises()
+    await nextTick()
+
+    expect(materialInput.attributes('title')).toContain('C2-CODE')
+    expect(materialInput.attributes('title')).not.toContain('C1-STALE-CODE')
+    expect(wrapper.get('[data-testid="create-line-material-price"]').text()).toContain('HKD 10.00')
+    expect(wrapper.get('[data-testid="create-line-material-price"]').text()).not.toContain('HKD 99.00')
+
+    wrapper.unmount()
+  })
+
+  it.each(['read', 'preview'] as const)(
+    'ignores an Excel import after a C-D-C ABA switch while %s is pending',
+    async (pendingPhase) => {
+      routeState.path = '/modules/molding-sample'
+      routeState.query = { factory: '' }
+
+      const workbookGate = createDeferred<ArrayBuffer>()
+      const previewGate = createDeferred<MoldingSampleCreateRequest>()
+      const stalePreview = {
+        order: {
+          id: 'BP-XLSX-C1-STALE',
+          factory_id: 'huakang-c',
+          product_name: 'C1 旧厂 Excel 产品',
+          client_name: 'C1 客户',
+          date: '2026-07-20',
+          workshop: 'C1 工程部',
+          supervisor: 'C1 主管',
+          eng_name: 'C1 工程师',
+        },
+        items: [],
+      } satisfies MoldingSampleCreateRequest
+      if (pendingPhase === 'preview') {
+        mockedMoldingSampleApi.previewOrderExcel.mockReturnValueOnce(previewGate.promise)
+      }
+
+      const wrapper = await mountRuntimeView(MoldingSampleView, {
+        activeFactoryId: 'huakang-c',
+      })
+      const input = wrapper.get('input[type="file"]')
+      const file = new File([new Uint8Array([1, 2, 3])], 'C厂旧选择.xlsx', {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+      vi.spyOn(file, 'arrayBuffer').mockReturnValue(
+        pendingPhase === 'read'
+          ? workbookGate.promise
+          : Promise.resolve(new Uint8Array([1, 2, 3]).buffer),
+      )
+      Object.defineProperty(input.element, 'files', {
+        value: [file],
+        configurable: true,
+      })
+
+      await input.trigger('change')
+      await Promise.resolve()
+      if (pendingPhase === 'preview') {
+        await flushPromises()
+        expect(mockedMoldingSampleApi.previewOrderExcel).toHaveBeenCalledWith(expect.any(ArrayBuffer), {
+          factory_id: 'huakang-c',
+        })
+      }
+      else {
+        expect(mockedMoldingSampleApi.previewOrderExcel).not.toHaveBeenCalled()
+      }
+
+      const appStore = useAppStore()
+      appStore.setActiveFactory('huakang-d')
+      appStore.setActiveFactory('huakang-c')
+      await nextTick()
+      await flushPromises()
+
+      if (pendingPhase === 'read') {
+        workbookGate.resolve(new Uint8Array([1, 2, 3]).buffer)
+      }
+      else {
+        previewGate.resolve(stalePreview)
+      }
+      await flushPromises()
+      await nextTick()
+
+      expect(mockedMoldingSampleApi.previewOrderExcel).not.toHaveBeenCalledWith(expect.any(ArrayBuffer), {
+        factory_id: 'huakang-d',
+      })
+      expect(mockedMoldingSampleApi.previewOrderExcel).toHaveBeenCalledTimes(pendingPhase === 'read' ? 0 : 1)
+      expect(wrapper.text()).not.toContain('C1 旧厂 Excel 产品')
+      expect(wrapper.text()).not.toContain('Excel已导入到新建开单草稿')
+      expect(wrapper.find('[data-testid="create-product-name"]').exists()).toBe(false)
+      expect(getButtonByText(wrapper, '导入Excel').text()).not.toContain('导入中')
+
+      wrapper.unmount()
+    },
+  )
+
+  it('ignores a stale C create response after switching to D and preserves the D draft key', async () => {
+    routeState.path = '/modules/molding-sample'
+    routeState.query = { factory: '' }
+    const createGate = createDeferred<MoldingSampleDetailResponse>()
+    mockedMoldingSampleApi.createOrder.mockReturnValueOnce(createGate.promise)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      activeFactoryId: 'huakang-c',
+    })
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    await fillValidManualCreateForm(wrapper, 'C-STALE-CREATE')
+    await flushPromises()
+
+    const cDraftKey = 'rr:molding-sample:create-draft:huakang-c'
+    const dDraftKey = 'rr:molding-sample:create-draft:huakang-d'
+    expect(window.localStorage.getItem(cDraftKey)).toContain('C-STALE-CREATE 产品')
+    window.localStorage.setItem(dDraftKey, JSON.stringify({
+      factory_id: 'huakang-d',
+      product_no: 'D-CURRENT-DRAFT',
+      product_name: 'D 厂当前草稿',
+      items: [{}],
+    }))
+
+    await getButtonByText(wrapper, '提交主管审核').trigger('click')
+    await Promise.resolve()
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].order.factory_id).toBe('huakang-c')
+
+    useAppStore().setActiveFactory('huakang-d')
+    await nextTick()
+    await flushPromises()
+    expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('D 厂当前草稿')
+
+    const staleCreated = createKpiRecord('待审核', 'BP-C-CREATE-STALE', null)
+    staleCreated.order.factory_id = 'huakang-c'
+    staleCreated.order.product_name = 'C 厂旧响应产品'
+    createGate.resolve(staleCreated)
+    await flushPromises()
+    await nextTick()
+
+    expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('D 厂当前草稿')
+    expect(window.localStorage.getItem(dDraftKey)).toContain('D 厂当前草稿')
+    expect(window.localStorage.getItem(cDraftKey)).toContain('C-STALE-CREATE 产品')
+    expect(wrapper.text()).not.toContain('BP-C-CREATE-STALE')
+    expect(wrapper.text()).not.toContain('新建成功')
+    expect(getButtonByText(wrapper, '提交主管审核').attributes('disabled')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('drops a stale rejected resubmit after C-D-C and never shows the C rejected form in D', async () => {
+    routeState.path = '/modules/molding-sample'
+    routeState.query = { factory: '' }
+    const orderId = 'BP-C-REJECTED-ABA'
+    const rejectedRecord = createKpiRecord('已驳回', orderId, null)
+    rejectedRecord.order.factory_id = 'huakang-c'
+    rejectedRecord.items[0]!.completion_time = '2026-08-31'
+    mockedMoldingSampleApi.listOrders.mockImplementation((factoryId) => Promise.resolve(
+      factoryId === 'huakang-c' ? [rejectedRecord] : [],
+    ))
+    mockedMoldingSampleApi.editOrder.mockResolvedValueOnce(rejectedRecord)
+    const resubmitGate = createDeferred<MoldingSampleDetailResponse>()
+    mockedMoldingSampleApi.updateStatus.mockReturnValueOnce(resubmitGate.promise)
+    window.localStorage.setItem('rr:molding-sample:create-draft:huakang-c', JSON.stringify({
+      factory_id: 'huakang-c',
+      product_no: 'C-CURRENT-DRAFT',
+      product_name: 'C 厂当前新建草稿',
+      items: [{}],
+    }))
+    window.localStorage.setItem('rr:molding-sample:create-draft:huakang-d', JSON.stringify({
+      factory_id: 'huakang-d',
+      product_no: 'D-CURRENT-DRAFT',
+      product_name: 'D 厂当前新建草稿',
+      items: [{}],
+    }))
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      activeFactoryId: 'huakang-c',
+    })
+    await getButtonByText(wrapper, orderId).trigger('click')
+    await nextTick()
+    await getButtonByText(wrapper, '修改后重提').trigger('click')
+    await wrapper.get('[data-testid="create-product-name"]').setValue('C 厂驳回单编辑内容')
+    await getButtonByText(wrapper, '保存并重提').trigger('click')
+    await flushPromises()
+
+    expect(mockedMoldingSampleApi.editOrder).toHaveBeenCalledWith(
+      orderId,
+      expect.objectContaining({ order: expect.objectContaining({ factory_id: 'huakang-c', id: orderId }) }),
+    )
+    expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith(orderId, expect.objectContaining({
+      action: '工程重提',
+    }))
+
+    const appStore = useAppStore()
+    appStore.setActiveFactory('huakang-d')
+    await nextTick()
+    await flushPromises()
+    expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('D 厂当前新建草稿')
+    expect(wrapper.text()).not.toContain('C 厂驳回单编辑内容')
+    expect(wrapper.text()).not.toContain(orderId)
+    expect(getButtonByText(wrapper, '提交主管审核').exists()).toBe(true)
+
+    appStore.setActiveFactory('huakang-c')
+    await nextTick()
+    await flushPromises()
+    expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('C 厂当前新建草稿')
+
+    const staleResubmitted = createKpiRecord('待审核', orderId, null)
+    staleResubmitted.order.factory_id = 'huakang-c'
+    staleResubmitted.order.product_name = 'C 厂旧重提响应产品'
+    resubmitGate.resolve(staleResubmitted)
+    await flushPromises()
+    await nextTick()
+
+    expect((wrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('C 厂当前新建草稿')
+    expect(wrapper.text()).not.toContain('C 厂旧重提响应产品')
+    expect(wrapper.text()).not.toContain(`啤办单 ${orderId} 已保存驳回单修改并重提主管审核`)
+    expect(getButtonByText(wrapper, '提交主管审核').attributes('disabled')).toBeUndefined()
 
     wrapper.unmount()
   })

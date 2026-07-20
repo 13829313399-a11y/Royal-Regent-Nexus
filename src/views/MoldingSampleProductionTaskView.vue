@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -26,6 +26,7 @@ import {
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   factoryContexts,
+  getFactoryScopedRoute,
   isProductionFactoryContextId,
   type ProductionFactoryContextId,
   type Tone,
@@ -126,6 +127,9 @@ const trialReportInitialItemId = ref('')
 const trialReportSaving = ref(false)
 const protectedMaterialPrices = ref<MoldingSampleMaterialPrice[]>([])
 const protectedRmbToHkdRate = ref<number | null>(null)
+let apiDataRequestId = 0
+let protectedMaterialPricesRequestId = 0
+let trialReportSaveRequestId = 0
 
 function handoffWheelAtBoundary(event: WheelEvent) {
   const region = event.currentTarget as HTMLElement | null
@@ -177,6 +181,10 @@ const activeFactory = computed(() =>
     ?? factoryContexts.find((factory) => factory.id === 'huaxing')
     ?? factoryContexts[1],
 )
+const productionDepartmentRoute = computed(() => getFactoryScopedRoute(
+  '/modules/production',
+  selectedFactoryId.value,
+))
 
 function isWildcardMoldingAdministrator() {
   return authStore.grants.some((grant) =>
@@ -828,8 +836,16 @@ function closeTrialReportDialog() {
   trialReportInitialItemId.value = ''
 }
 
+function isTrialReportSaveContextCurrent(requestId: number, factoryId: string, orderId: string) {
+  return requestId === trialReportSaveRequestId
+    && factoryId === selectedFactoryId.value
+    && selectedTask.value?.order.factory_id === factoryId
+    && selectedTask.value?.order.id === orderId
+}
+
 async function saveTrialReport(payload: { itemId: string, data: MoldingSampleTrialReportData }) {
-  if (!selectedTask.value) {
+  const task = selectedTask.value
+  if (!task) {
     actionMessage.value = '请先选择一张啤办生产任务单。'
     return
   }
@@ -842,17 +858,40 @@ async function saveTrialReport(payload: { itemId: string, data: MoldingSampleTri
     return
   }
 
+  const requestedFactoryId = selectedFactoryId.value
+  const requestedOrderId = task.order.id
+  const requestedItemId = payload.itemId
+  const requestId = ++trialReportSaveRequestId
   trialReportSaving.value = true
   try {
-    const report = await moldingSampleApi.upsertTrialReport(selectedTask.value.order.id, payload.itemId, { data: payload.data })
-    replaceTrialReportForOrder(selectedTask.value.order.id, report)
-    actionMessage.value = `试模报告已保存并同步至工程部：${selectedTask.value.order.id} · ${payload.itemId}。`
+    const report = await moldingSampleApi.upsertTrialReport(requestedOrderId, requestedItemId, { data: payload.data })
+    if (!isTrialReportSaveContextCurrent(requestId, requestedFactoryId, requestedOrderId)) {
+      return
+    }
+
+    if (
+      report.factory_id !== requestedFactoryId
+      || report.order_id !== requestedOrderId
+      || report.item_id !== requestedItemId
+    ) {
+      actionMessage.value = '试模报告保存响应与当前厂区或任务不一致，已忽略该响应。'
+      return
+    }
+
+    replaceTrialReportForOrder(requestedOrderId, report)
+    actionMessage.value = `试模报告已保存并同步至工程部：${requestedOrderId} · ${requestedItemId}。`
   }
   catch (error) {
+    if (!isTrialReportSaveContextCurrent(requestId, requestedFactoryId, requestedOrderId)) {
+      return
+    }
+
     actionMessage.value = `试模报告保存失败：${getApiErrorMessage(error)}`
   }
   finally {
-    trialReportSaving.value = false
+    if (isTrialReportSaveContextCurrent(requestId, requestedFactoryId, requestedOrderId)) {
+      trialReportSaving.value = false
+    }
   }
 }
 
@@ -950,12 +989,16 @@ function getNotificationStatusClass(status: NotificationStatus) {
 }
 
 async function loadProtectedMaterialPrices(factoryId: string) {
+  const requestId = ++protectedMaterialPricesRequestId
   protectedMaterialPrices.value = []
   protectedRmbToHkdRate.value = null
 
   try {
     const response = await moldingSampleApi.getMaterialPrices(factoryId)
-    if (factoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== protectedMaterialPricesRequestId
+      || factoryId !== selectedFactoryId.value
+    ) {
       return
     }
 
@@ -963,7 +1006,10 @@ async function loadProtectedMaterialPrices(factoryId: string) {
     protectedRmbToHkdRate.value = response.rmb_to_hkd_rate
   }
   catch {
-    if (factoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== protectedMaterialPricesRequestId
+      || factoryId !== selectedFactoryId.value
+    ) {
       return
     }
 
@@ -974,6 +1020,7 @@ async function loadProtectedMaterialPrices(factoryId: string) {
 
 async function loadApiData() {
   const requestedFactoryId = selectedFactoryId.value
+  const requestId = ++apiDataRequestId
   apiState.value = 'checking'
   actionMessage.value = '正在读取啤办生产任务...'
 
@@ -996,7 +1043,10 @@ async function loadApiData() {
       moldingSampleApi.listOrders(requestedFactoryId),
       notificationsRequest,
     ])
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== apiDataRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) {
       return
     }
 
@@ -1017,7 +1067,10 @@ async function loadApiData() {
         : '当前厂区暂无正式啤办生产任务。'
   }
   catch (error) {
-    if (requestedFactoryId !== selectedFactoryId.value) {
+    if (
+      requestId !== apiDataRequestId
+      || requestedFactoryId !== selectedFactoryId.value
+    ) {
       return
     }
 
@@ -1254,8 +1307,24 @@ watch(selectedFactoryId, (factoryId, previousFactoryId) => {
     return
   }
 
+  trialReportSaveRequestId += 1
+  trialReportSaving.value = false
+  closeTrialReportDialog()
+}, { flush: 'sync' })
+
+watch(selectedFactoryId, (factoryId, previousFactoryId) => {
+  if (previousFactoryId === undefined || factoryId === previousFactoryId) {
+    return
+  }
+
   void loadApiData()
   void loadProtectedMaterialPrices(factoryId)
+})
+
+onUnmounted(() => {
+  apiDataRequestId += 1
+  protectedMaterialPricesRequestId += 1
+  trialReportSaveRequestId += 1
 })
 
 watchEffect(() => {
@@ -1267,7 +1336,7 @@ watchEffect(() => {
   <main class="production-task-page app-shell min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.09),transparent_32rem),linear-gradient(180deg,#f8fafc_0%,#eef4f8_100%)] px-4 pb-6 pt-16 text-[13px] leading-relaxed text-slate-900 sm:px-6 xl:px-10">
     <div class="app-page mx-auto max-w-[1720px] space-y-4">
       <RouterLink
-        to="/modules/production"
+        :to="productionDepartmentRoute"
         class="interactive-surface fixed left-4 top-4 z-50 inline-flex h-9 items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 px-3 text-sm font-semibold text-slate-600 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.45)] backdrop-blur-xl transition hover:border-teal-200 hover:bg-teal-50/90 hover:text-teal-800 sm:left-6 xl:left-10"
       >
         <ArrowLeft class="size-4" aria-hidden="true" />
@@ -1275,7 +1344,7 @@ watchEffect(() => {
       </RouterLink>
 
       <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-        <RouterLink to="/modules/production" class="font-medium hover:text-slate-900">
+        <RouterLink :to="productionDepartmentRoute" class="font-medium hover:text-slate-900">
           生产部模块
         </RouterLink>
         <ChevronRight class="size-3.5" aria-hidden="true" />

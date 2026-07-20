@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Eye, LockKeyhole, Plus, Save, Settings2, Trash2, X } from '@lucide/vue'
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type {
   ApiInternalQuotePricingBaseline,
   InternalQuotePricingBaselineUpdateRequest,
@@ -12,6 +12,7 @@ const props = defineProps<{
   busy: boolean
   canEdit: boolean
   externalError?: string
+  factoryName?: string
 }>()
 
 const emit = defineEmits<{
@@ -20,9 +21,12 @@ const emit = defineEmits<{
 }>()
 
 const localError = ref('')
+const displayFactoryName = computed(() =>
+  props.factoryName?.trim() || props.baseline?.workshop_name || '当前厂区',
+)
 const form = reactive<InternalQuotePricingBaselineUpdateRequest>({
   revision: 0,
-  workshop_name: '华兴',
+  workshop_name: '当前厂区',
   material_prices: [],
   machine_prices: [],
 })
@@ -30,7 +34,7 @@ const form = reactive<InternalQuotePricingBaselineUpdateRequest>({
 function resetForm() {
   const baseline = props.baseline
   form.revision = baseline?.revision ?? 0
-  form.workshop_name = baseline?.workshop_name ?? '华兴'
+  form.workshop_name = baseline?.workshop_name ?? displayFactoryName.value
   form.material_prices = (baseline?.material_prices ?? []).map((row) => ({ ...row }))
   form.machine_prices = (baseline?.machine_prices ?? []).map((row) => ({ ...row }))
   localError.value = ''
@@ -116,7 +120,7 @@ function save() {
                     {{ canEdit ? '业务主管可修改' : '跟客只读查看' }}
                   </span>
                 </div>
-                <p>维护华兴内部报价的初始材料价与初始机型价。</p>
+                <p>维护{{ displayFactoryName }}内部报价的初始材料价与初始机型价。</p>
               </div>
             </div>
             <button type="button" class="quote-baseline-close" :disabled="busy" aria-label="关闭报价基数" @click="emit('close')"><X aria-hidden="true" /></button>

@@ -1,5 +1,6 @@
 import importlib
 import sys
+from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -166,6 +167,74 @@ def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_p
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()] == [quote_id]
         assert listed.json()[0]["sections"] == []
+
+
+def test_section_live_preview_uses_authoritative_calculator_without_persisting(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_live_preview_engineer", "engineer", "engineering")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(initiator_department="engineering", suffix="LIVE-PREVIEW"),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        saved_payload = {
+            "materials": [
+                {
+                    "item": "五金件",
+                    "category": "hardware",
+                    "quantity": "2",
+                    "unit_price_rmb": "8.5",
+                }
+            ],
+            "molds": [],
+            "production_mold_fees": [],
+        }
+        saved = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/engineering",
+            json={"revision": 1, "payload": saved_payload},
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["revision"] == 2
+        assert saved.json()["calculation"]["totals"]["hardware_hkd"] == "20.0000"
+
+        before_summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
+        assert before_summary.status_code == 200, before_summary.text
+        assert before_summary.json()["factory_price_hkd"] == "20.0000"
+
+        preview_payload = {
+            **saved_payload,
+            "materials": [{**saved_payload["materials"][0], "quantity": "5"}],
+        }
+        preview = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/engineering/preview",
+            json={"revision": 2, "payload": preview_payload},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["calculation_status"] == "valid"
+        assert preview.json()["saved_factory_price_hkd"] == "20.0000"
+        assert preview.json()["preview_factory_price_hkd"] == "50.0000"
+        assert preview.json()["delta_hkd"] == "30.0000"
+        assert preview.json()["components_hkd"]["hardware_hkd"] == "50.0000"
+
+        # A live preview must not create a revision, audit event, or saved amount.
+        section = client.get(f"/api/internal-quotes/{quote_id}").json()["sections"]
+        engineering = next(item for item in section if item["department"] == "engineering")
+        assert engineering["revision"] == 2
+        assert engineering["payload"] == saved_payload
+        revisions = client.get(
+            f"/api/internal-quotes/{quote_id}/sections/engineering/revisions"
+        )
+        assert [item["revision"] for item in revisions.json()] == [2, 1]
+        after_summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
+        assert after_summary.json()["factory_price_hkd"] == "20.0000"
+
+        stale = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/engineering/preview",
+            json={"revision": 1, "payload": preview_payload},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["current_revision"] == 2
 
 
 def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_supervisor(monkeypatch):
@@ -847,6 +916,106 @@ def test_internal_quote_list_can_opt_in_to_section_progress(monkeypatch):
         row = next(item for item in expanded.json() if item["id"] == created["id"])
         assert len(row["sections"]) == 8
         assert all(section["revision"] == 1 for section in row["sections"])
+
+
+def test_internal_quote_dashboard_reports_period_status_customer_progress_and_speed(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_dashboard", "sales_customer_owner", "sales-business")
+        definitions = [
+            ("DASH-A-DONE", "客户A"),
+            ("DASH-A-WIP", "客户A"),
+            ("DASH-B-DONE", "客户B"),
+            ("DASH-C-CANCEL", "客户C"),
+            ("DASH-OLD", "历史客户"),
+        ]
+        quote_ids: dict[str, str] = {}
+        for suffix, customer in definitions:
+            payload = create_payload(suffix=suffix)
+            payload["customer"] = customer
+            created = client.post("/api/internal-quotes", json=payload)
+            assert created.status_code == 201, created.text
+            quote_ids[suffix] = created.json()["id"]
+
+        db_module = importlib.import_module("app.db")
+        quote_models = importlib.import_module("app.models.internal_quote")
+        quote_service = importlib.import_module("app.services.internal_quote")
+        week_start, week_end, _ = quote_service._dashboard_period_bounds("week")
+        year_start, _, _ = quote_service._dashboard_period_bounds("year")
+        available_seconds = max(4.0, (week_end - week_start).total_seconds())
+        speed_unit = min(3600.0, available_seconds / 4)
+
+        with db_module.SessionLocal() as db:
+            done_a = db.get(quote_models.InternalQuote, quote_ids["DASH-A-DONE"])
+            active_a = db.get(quote_models.InternalQuote, quote_ids["DASH-A-WIP"])
+            done_b = db.get(quote_models.InternalQuote, quote_ids["DASH-B-DONE"])
+            canceled_c = db.get(quote_models.InternalQuote, quote_ids["DASH-C-CANCEL"])
+            old_quote = db.get(quote_models.InternalQuote, quote_ids["DASH-OLD"])
+            assert done_a and active_a and done_b and canceled_c and old_quote
+
+            current_stamp = week_start.strftime("%Y-%m-%d %H:%M:%S")
+            for quote in (done_a, active_a, done_b, canceled_c):
+                quote.created_at = current_stamp
+                quote.updated_at = current_stamp
+
+            done_a.status = "fully_approved"
+            done_a.final_release_status = "approved"
+            done_a.final_reviewed_at = (week_start + timedelta(seconds=speed_unit)).strftime("%Y-%m-%d %H:%M:%S")
+            done_a.updated_at = done_a.final_reviewed_at
+            done_b.status = "exported"
+            done_b.final_release_status = "approved"
+            done_b.final_reviewed_at = (week_start + timedelta(seconds=speed_unit * 2)).strftime("%Y-%m-%d %H:%M:%S")
+            done_b.updated_at = done_b.final_reviewed_at
+            canceled_c.status = "archived"
+            canceled_c.archived_at = current_stamp
+            old_quote.status = "fully_approved"
+            old_quote.created_at = (year_start - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            old_quote.updated_at = old_quote.created_at
+            old_quote.final_reviewed_at = old_quote.created_at
+
+            required_sections = (
+                db.query(quote_models.InternalQuoteSection)
+                .filter(
+                    quote_models.InternalQuoteSection.quote_id == active_a.id,
+                    quote_models.InternalQuoteSection.is_required.is_(True),
+                )
+                .order_by(quote_models.InternalQuoteSection.department)
+                .all()
+            )
+            assert len(required_sections) == 3
+            required_sections[0].status = "approved"
+            db.commit()
+
+        for period in ("week", "month", "year"):
+            response = client.get(
+                "/api/internal-quotes/dashboard",
+                params={"factory_id": "huaxing", "period": period},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()
+            assert data["period"] == period
+            assert data["totals"] == {"total": 4, "in_progress": 1, "completed": 2, "canceled": 1}
+            assert {item["key"]: item["count"] for item in data["status_distribution"]} == {
+                "in_progress": 1,
+                "completed": 2,
+                "canceled": 1,
+            }
+            assert data["customer_quote_counts"][0]["customer"] == "客户A"
+            assert data["customer_quote_counts"][0]["count"] == 2
+            assert data["progress_items"] == [
+                {
+                    "quote_id": quote_ids["DASH-A-WIP"],
+                    "quote_no": "IQ-TEST-DASH-A-WIP",
+                    "product_name": "内部报价测试产品",
+                    "customer": "客户A",
+                    "status": "drafting",
+                    "approved_sections": 1,
+                    "required_sections": 3,
+                    "percentage": 33.3,
+                    "updated_at": current_stamp,
+                }
+            ]
+            assert [item["customer"] for item in data["customer_speed"]] == ["客户A", "客户B"]
+            assert data["customer_speed"][0]["average_hours"] < data["customer_speed"][1]["average_hours"]
 
 
 def test_sales_supervisor_can_archive_and_archived_quote_is_locked(monkeypatch):

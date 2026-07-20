@@ -24,7 +24,7 @@ export type Tone = 'teal' | 'blue' | 'amber' | 'red' | 'slate' | 'green'
 
 export type FactoryContextId = 'group' | 'huakang-a' | 'huakang-b' | 'huakang-c' | 'huakang-d' | 'huadeng' | 'huaxing'
 
-export type ProductionFactoryContextId = Exclude<FactoryContextId, 'group' | 'huakang-c' | 'huakang-d'>
+export type ProductionFactoryContextId = Exclude<FactoryContextId, 'group'>
 
 export type DepartmentId =
   | 'overview'
@@ -286,9 +286,15 @@ export const factoryContexts: FactoryContext[] = [
 export const productionFactoryContextIds: ProductionFactoryContextId[] = [
   'huakang-a',
   'huakang-b',
+  'huakang-c',
+  'huakang-d',
   'huadeng',
   'huaxing',
 ]
+
+export function isFactoryContextId(factoryId: string): factoryId is FactoryContextId {
+  return factoryContexts.some((factory) => factory.id === factoryId)
+}
 
 export const departments: Department[] = [
   {
@@ -347,6 +353,93 @@ export function getDepartmentRoute(departmentId: ModuleDepartmentId, moduleId?: 
   return moduleId ? `/modules/${departmentId}/${moduleId}` : `/modules/${departmentId}`
 }
 
+export function getFactoryScopedRoute(route: string, factoryId: FactoryContextId) {
+  const [path, rawQuery = ''] = route.split('?', 2)
+  const query = new URLSearchParams(rawQuery)
+  query.set('factory', factoryId)
+  return `${path}?${query.toString()}`
+}
+
+const factoryTextAliases: Record<ProductionFactoryContextId, string[]> = {
+  'huakang-a': ['华康A', '华康 A', 'A厂', 'A 厂'],
+  'huakang-b': ['华康B', '华康 B', 'B厂', 'B 厂'],
+  'huakang-c': ['华康C', '华康 C', 'C厂', 'C 厂'],
+  'huakang-d': ['华康D', '华康 D', 'D厂', 'D 厂'],
+  huadeng: ['华登'],
+  huaxing: ['华兴'],
+}
+
+function resolveProductionFactoryContextId(factoryId: FactoryContextId): ProductionFactoryContextId {
+  return productionFactoryContextIds.includes(factoryId as ProductionFactoryContextId)
+    ? factoryId as ProductionFactoryContextId
+    : 'huaxing'
+}
+
+export function isFactoryScopedTextVisible(text: string, factoryId: FactoryContextId) {
+  const resolvedFactoryId = resolveProductionFactoryContextId(factoryId)
+  const referencedFactories = productionFactoryContextIds.filter((candidateFactoryId) =>
+    factoryTextAliases[candidateFactoryId].some((alias) => text.includes(alias)),
+  )
+
+  return referencedFactories.length === 0 || referencedFactories.includes(resolvedFactoryId)
+}
+
+export function getFactoryScopedTodoItems(
+  todos: TodoItem[],
+  factoryId: FactoryContextId,
+) {
+  const resolvedFactoryId = resolveProductionFactoryContextId(factoryId)
+  if (resolvedFactoryId === 'huakang-c' || resolvedFactoryId === 'huakang-d') {
+    return []
+  }
+
+  return todos.filter((todo) =>
+    isFactoryScopedTextVisible(`${todo.title} ${todo.meta}`, resolvedFactoryId),
+  )
+}
+
+export function getFactoryScopedModule(
+  module: EnterpriseModule,
+  factoryId: FactoryContextId,
+): EnterpriseModule {
+  const resolvedFactoryId = resolveProductionFactoryContextId(factoryId)
+  const isNewFactoryContext = resolvedFactoryId === 'huakang-c' || resolvedFactoryId === 'huakang-d'
+  const usesSharedRawMaterialCatalog = module.id === 'raw-material-management'
+  const usesIndependentEmptyState = isNewFactoryContext && !usesSharedRawMaterialCatalog
+  const factoryName = factoryContexts.find((factory) => factory.id === resolvedFactoryId)?.shortName ?? resolvedFactoryId
+
+  return {
+    ...module,
+    href: module.href && !/^https?:\/\//i.test(module.href)
+      ? getFactoryScopedRoute(module.href, resolvedFactoryId)
+      : module.href,
+    route: module.route ? getFactoryScopedRoute(module.route, resolvedFactoryId) : undefined,
+    stats: usesSharedRawMaterialCatalog && isNewFactoryContext
+      ? `${factoryName} · 公共原料资料已接入`
+      : usesIndependentEmptyState
+        ? `${factoryName} · 当前暂无本厂数据`
+        : module.stats,
+    statusMetrics: module.statusMetrics.map((metric) => {
+      if (usesSharedRawMaterialCatalog && isNewFactoryContext) {
+        return metric.label === '原料'
+          ? { ...metric, value: '共享', tone: 'teal' }
+          : { ...metric, value: '—', tone: 'slate' }
+      }
+
+      return usesIndependentEmptyState
+        ? { ...metric, value: '—', tone: 'slate' }
+        : { ...metric }
+    }),
+    todos: isNewFactoryContext
+      ? []
+      : module.todos.filter((todo) => isFactoryScopedTextVisible(todo, resolvedFactoryId)),
+    children: module.children.map((child) => ({
+      ...child,
+      route: child.route ? getFactoryScopedRoute(child.route, resolvedFactoryId) : undefined,
+    })),
+  }
+}
+
 export function getDepartmentRegistryEntry(departmentId: ModuleDepartmentId) {
   return departmentModuleRegistry[departmentId]
 }
@@ -379,7 +472,7 @@ export const navigationGroups: NavigationGroup[] = [
   {
     label: 'CONFIG',
     items: [
-      { label: '模块配置', to: getDepartmentRoute('production'), icon: Settings2 },
+      { label: '模块配置', to: getDepartmentRoute('production'), icon: Settings2, departmentId: 'production' },
       { label: '内置职位权限', to: '/system/iam/roles', icon: UserCog, permissions: ['system:permission_catalog_read'] },
       { label: '流程中心', to: '/workbench', icon: Network },
     ],
@@ -467,7 +560,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         statusMetrics: [
           { label: '明细', value: '14', tone: 'blue' },
           { label: '风险', value: '2', tone: 'red' },
-          { label: '厂区', value: '4', tone: 'teal' },
+          { label: '厂区', value: '6', tone: 'teal' },
         ],
         todos: ['按厂区切换啤办单明细', '补 QA 对办与出办留样闭环'],
         children: [
@@ -1536,6 +1629,40 @@ export const moldingSampleFactoryRecords: Record<ProductionFactoryContextId, Mol
     order: huakangBMoldingSampleOrder,
     stages: moldingProgressStages,
     lines: huakangBMoldingSampleLines,
+  },
+  'huakang-c': {
+    factoryId: 'huakang-c',
+    order: {
+      ...huakangBMoldingSampleOrder,
+      customer: '待接入',
+      productNo: 'HKC',
+      productName: '华康C厂区数据待接入',
+      source: '华康C独立数据源',
+      documentNo: '',
+      requester: '',
+      requestDate: '',
+      requiredDate: '',
+      note: '当前厂区暂无示例数据，正式页面只读取华康C自己的后端数据。',
+    },
+    stages: moldingProgressStages.map((stage) => ({ ...stage })),
+    lines: [],
+  },
+  'huakang-d': {
+    factoryId: 'huakang-d',
+    order: {
+      ...huakangBMoldingSampleOrder,
+      customer: '待接入',
+      productNo: 'HKD',
+      productName: '华康D厂区数据待接入',
+      source: '华康D独立数据源',
+      documentNo: '',
+      requester: '',
+      requestDate: '',
+      requiredDate: '',
+      note: '当前厂区暂无示例数据，正式页面只读取华康D自己的后端数据。',
+    },
+    stages: moldingProgressStages.map((stage) => ({ ...stage })),
+    lines: [],
   },
   huadeng: {
     factoryId: 'huadeng',

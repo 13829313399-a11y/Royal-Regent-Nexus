@@ -193,15 +193,24 @@ def create_import_preview(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     existing_payload = _json_object(section.payload_json)
-    list_field = {
-        "mold": "molds",
-        "hardware": "materials",
-        "electronic": "components",
-        "painting": "rows",
-        "sewing": "groups",
-        "assembly": "groups",
-    }[import_type]
-    existing_list = existing_payload.get(list_field, [])
+    if import_type == "molding":
+        injection_rows = existing_payload.get("injection_lines", [])
+        blow_rows = existing_payload.get("blow_lines", [])
+        existing_list = [
+            *(injection_rows if isinstance(injection_rows, list) else []),
+            *(blow_rows if isinstance(blow_rows, list) else []),
+        ]
+    else:
+        list_field = {
+            "mold": "molds",
+            "hardware": "materials",
+            "electronic": "components",
+            "painting": "rows",
+            "slush": "lines",
+            "sewing": "groups",
+            "assembly": "groups",
+        }[import_type]
+        existing_list = existing_payload.get(list_field, [])
     if not isinstance(existing_list, list):
         existing_list = []
     if import_type == "hardware":
@@ -214,6 +223,7 @@ def create_import_preview(
         "sheet_name": parsed.sheet_name,
         "header_row": parsed.header_row,
         "row_count": parsed.row_count,
+        "rmb_hkd_rate": str(fx_value),
         "payload_fragment": parsed.payload_fragment,
         "diff_summary": {
             "target_revision": section.revision,
@@ -302,13 +312,29 @@ def _merge_import_payload(
     current: dict[str, Any],
     fragment: dict[str, Any],
     mode: str,
+    rmb_hkd_rate: object = "0.85",
 ) -> dict[str, Any]:
     merged = json.loads(json.dumps(current, ensure_ascii=False))
+    if import_type == "molding":
+        for list_field in ("injection_lines", "blow_lines"):
+            imported_rows = fragment.get(list_field, [])
+            if not isinstance(imported_rows, list):
+                raise HTTPException(status_code=400, detail="啤机导入预览结构无效")
+            existing_rows = merged.get(list_field, [])
+            if not isinstance(existing_rows, list):
+                existing_rows = []
+            merged[list_field] = imported_rows if mode == "replace" else [*existing_rows, *imported_rows]
+        if fragment.get("injection_loss_rate_percent") is not None:
+            if mode == "replace" or merged.get("injection_loss_rate_percent") is None:
+                merged["injection_loss_rate_percent"] = fragment["injection_loss_rate_percent"]
+        return merged
+
     list_field = {
         "mold": "molds",
         "hardware": "materials",
         "electronic": "components",
         "painting": "rows",
+        "slush": "lines",
         "sewing": "groups",
         "assembly": "groups",
     }[import_type]
@@ -331,7 +357,53 @@ def _merge_import_payload(
         if mode == "replace" or not merged.get("amortization_qty"):
             merged["amortization_qty"] = fragment["amortization_qty"]
     elif import_type == "electronic":
+        rmb_hkd_fields = (
+            ("bonding_rmb", "bonding_hkd"),
+            ("smt_rmb", "smt_hkd"),
+            ("labor_rmb", "labor_hkd"),
+            ("testing_rmb", "testing_hkd"),
+            ("packaging_rmb", "packaging_hkd"),
+        )
+        uses_rmb_contract = fragment.get("pricing_currency") == "RMB" or any(
+            rmb_field in fragment for rmb_field, _ in rmb_hkd_fields
+        )
+        if uses_rmb_contract:
+            try:
+                fx = Decimal(str(rmb_hkd_rate))
+            except ArithmeticError:
+                fx = Decimal("0.85")
+            if fx <= 0:
+                fx = Decimal("0.85")
+            if mode == "append":
+                for rmb_field, hkd_field in rmb_hkd_fields:
+                    if rmb_field not in merged and hkd_field in merged:
+                        merged[rmb_field] = format(Decimal(str(merged.get(hkd_field) or 0)) * fx, "f")
+            for rmb_field, _ in rmb_hkd_fields:
+                if rmb_field not in fragment:
+                    continue
+                merged[rmb_field] = (
+                    _add_decimal_values(merged.get(rmb_field), fragment[rmb_field])
+                    if mode == "append"
+                    else fragment[rmb_field]
+                )
+            for key, value in fragment.items():
+                if key == "components" or key in {item for pair in rmb_hkd_fields for item in pair} or key.startswith("tax_credit_difference_"):
+                    continue
+                if mode == "replace" or key not in merged:
+                    merged[key] = value
+            merged["pricing_currency"] = "RMB"
+            for _, hkd_field in rmb_hkd_fields:
+                merged.pop(hkd_field, None)
+            merged.pop("tax_credit_difference_hkd", None)
+            merged.pop("tax_credit_difference_rmb", None)
+            return merged
+
         additive_fields = {
+            "bonding_rmb",
+            "smt_rmb",
+            "labor_rmb",
+            "testing_rmb",
+            "packaging_rmb",
             "bonding_hkd",
             "smt_hkd",
             "labor_hkd",
@@ -390,6 +462,7 @@ def confirm_import_batch(
             _json_object(section.payload_json),
             fragment,
             payload.mode,
+            preview.get("rmb_hkd_rate", "0.85"),
         )
     )
     section.status = "draft"

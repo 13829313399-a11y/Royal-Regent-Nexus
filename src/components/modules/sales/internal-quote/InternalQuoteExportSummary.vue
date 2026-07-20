@@ -13,6 +13,7 @@ import {
 } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
@@ -33,6 +34,10 @@ const canExport = computed(() => authStore.can('internal_quote:export', quote.va
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignQuote.value)
+const getQuoteRoute = (path: string) => getFactoryScopedRoute(
+  path,
+  isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
+)
 const exportStatusLabel = computed(() => {
   if (!eligible.value) return '尚未最终放行'
   if (canExport.value) return '已最终放行，可导出'
@@ -75,8 +80,8 @@ watch(quoteId, loadQuote)
 <template>
   <div class="quote-export-page">
     <nav class="quote-breadcrumb" aria-label="内部报价导航">
-      <RouterLink to="/modules/sales-business/internal-quote-desk"><ArrowLeft aria-hidden="true" />报价首页</RouterLink><ChevronRight aria-hidden="true" />
-      <RouterLink :to="`/modules/sales-business/internal-quote-desk/${quote.id}/summary`">汇总与放行</RouterLink><ChevronRight aria-hidden="true" /><strong>导出汇总</strong>
+      <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft aria-hidden="true" />报价首页</RouterLink><ChevronRight aria-hidden="true" />
+      <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)">汇总与放行</RouterLink><ChevronRight aria-hidden="true" /><strong>导出汇总</strong>
     </nav>
 
     <header class="quote-export-head">

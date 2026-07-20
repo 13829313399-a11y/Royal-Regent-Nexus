@@ -16,6 +16,7 @@ describe('internal quote API adapter', () => {
     const api = createInternalQuoteApi(http)
 
     await api.list('huaxing', { status: 'drafting', keyword: 'IQ-HX' })
+    await api.getDashboard('huaxing', 'month')
     await api.listBusinessOwners('huaxing')
 
     expect(http.get).toHaveBeenNthCalledWith(1, '/internal-quotes', {
@@ -26,7 +27,10 @@ describe('internal quote API adapter', () => {
         keyword: 'IQ-HX',
       },
     })
-    expect(http.get).toHaveBeenNthCalledWith(2, '/internal-quotes/business-owners', {
+    expect(http.get).toHaveBeenNthCalledWith(2, '/internal-quotes/dashboard', {
+      params: { factory_id: 'huaxing', period: 'month' },
+    })
+    expect(http.get).toHaveBeenNthCalledWith(3, '/internal-quotes/business-owners', {
       params: { factory_id: 'huaxing' },
     })
   })
@@ -72,6 +76,7 @@ describe('internal quote API adapter', () => {
     const file = new File(['xlsx'], '工程.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 
     await api.saveSection('quote-1', 'engineering', 4, { molds: [] }, '修正')
+    await api.previewSection('quote-1', 'engineering', 4, { molds: [{ item: '主模' }] })
     await api.submitSection('quote-1', 'engineering', 5)
     await api.reviewSection('quote-1', 'engineering', 6, 'reject', '资料不全')
     await api.requestSectionNa('quote-1', 'engineering', 7, '无需工程')
@@ -86,6 +91,7 @@ describe('internal quote API adapter', () => {
     await api.createExport('quote-1')
 
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering', { revision: 4, payload: { molds: [] }, reason: '修正' })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/preview', { revision: 4, payload: { molds: [{ item: '主模' }] } })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/submit', { revision: 5 })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/review', { revision: 6, decision: 'reject', reason: '资料不全' })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation', { revision: 3, add_sections: ['painting', 'sewing'] })

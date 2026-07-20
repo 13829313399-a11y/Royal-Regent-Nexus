@@ -4,15 +4,18 @@ import {
   type ApiInternalQuote,
   type ApiInternalQuoteAttachment,
   type ApiInternalQuoteAudit,
+  type ApiInternalQuoteDashboard,
   type ApiInternalQuoteExport,
   type ApiInternalQuoteImportPreview,
   type ApiInternalQuotePricingBaseline,
   type ApiInternalQuoteReferenceSet,
   type ApiInternalQuoteSection,
+  type ApiInternalQuoteSectionPreview,
   type ApiInternalQuoteSummary,
   type ApiInternalQuoteTimeline,
   type ApiInternalQuoteVersionCandidate,
   type ApiInternalQuoteVersionComparison,
+  type InternalQuoteDashboardPeriod,
   type InternalQuotePricingBaselineUpdateRequest,
 } from '@/api/internalQuote'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
@@ -139,6 +142,7 @@ function toSection(section: ApiInternalQuoteSection, attachments: ApiInternalQuo
     lines: calculationLines(section),
     attachments: attachments.filter((item) => item.department === section.department).map(toAttachment),
     payload: section.payload,
+    calculation: section.calculation,
     calculationStatus: section.calculation_status,
     dependencyStatus: section.dependency_status,
   }
@@ -207,6 +211,96 @@ function shippingScenarios(source: ApiInternalQuote) {
   })
 }
 
+const rr2T1Fields = [
+  ['base_price', '货价'], ['imp_mat', '进口料'], ['dom_mat', '国内料'], ['blow', '吹气'],
+  ['slush', '搪胶'], ['sewing_hair', '车发'], ['sewing_cloth', '车衣'], ['hardware', '五金'],
+  ['electronic', '电子'], ['motor', '马达'], ['suction', '吸塑'], ['glue_bag', '胶袋'],
+] as const
+const rr2T2Fields = [
+  ['color_box', '彩盒/内咭'], ['code_before', '未减税前码数'], ['code_after', '减税后码数'],
+  ['battery', '电池'], ['libao', '利宝'], ['plating', '电镀'], ['other_buy', '其他外购'],
+  ['carton', '纸箱'], ['freight', '运费'], ['cabinet', '吊柜费'], ['misc', '杂项'],
+] as const
+const rr2T3Fields = [
+  ['injection_labor', '啤工', undefined], ['painting_labor', '喷油工', undefined],
+  ['paint_material', '油漆', undefined], ['assembly_labor', '装配工', undefined],
+  ['no_labor_cost', '不含人工成本', undefined], ['labor_ratio', '人工比例', 'percent'],
+  ['gross', '毛利', undefined], ['gross_ratio', '毛利率', 'percent'],
+  ['profit', '利润', undefined], ['profit_ratio', '利润率', 'percent'],
+  ['total_cost', '总成本', undefined],
+] as const
+const rr2T4Fields = [
+  ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', 10],
+  ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类13%', 11.5],
+  ['sewcloth13', '车衣类13%', 11.5], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
+  ['tax13b', '含税13%类', 11.5],
+] as const
+
+function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
+  const source = summary?.rr2_cost_summary
+  const shipping = source?.shipping_pricing
+  const fixedValues = (
+    rows: Array<{ key: string; label: string; value: string; format?: string }> | undefined,
+    fields: readonly (readonly [string, string, string?])[],
+  ) => {
+    const rowsByKey = new Map((rows ?? []).map((row) => [row.key, row]))
+    return fields.map(([key, label, format]) => ({
+      key,
+      label,
+      value: numberValue(rowsByKey.get(key)?.value),
+      format,
+    }))
+  }
+  const taxRowsByKey = new Map((source?.t4 ?? []).map((row) => [row.key, row]))
+  return {
+    currency: source?.currency || 'HKD',
+    indonesiaFreightHkd: numberValue(source?.indonesia_freight_hkd),
+    t1: fixedValues(source?.t1, rr2T1Fields),
+    t2: fixedValues(source?.t2, rr2T2Fields),
+    t3: fixedValues(source?.t3, rr2T3Fields),
+    t4: rr2T4Fields.map(([key, label, defaultRate]) => {
+      const row = taxRowsByKey.get(key)
+      const ratePercent = row?.rate_percent == null ? defaultRate : numberValue(row.rate_percent)
+      return {
+        key,
+        label,
+        amountHkd: numberValue(row?.amount_hkd),
+        ratePercent,
+        deductionHkd: row?.deduction_hkd == null ? (ratePercent == null ? null : 0) : numberValue(row.deduction_hkd),
+      }
+    }),
+    rmbPurchaseCostHkd: numberValue(source?.totals.rmb_purchase_cost_hkd),
+    totalDeductionHkd: numberValue(source?.totals.total_deduction_hkd),
+    afterDeductionCostHkd: numberValue(source?.totals.after_deduction_cost_hkd),
+    shippingPricing: {
+      enabled: shipping?.enabled ?? false,
+      freightSharePercent: numberValue(shipping?.freight_share_percent),
+      liftSharePercent: numberValue(shipping?.lift_share_percent),
+      markup: numberValue(shipping?.markup),
+      settlement: numberValue(shipping?.settlement),
+      factoryPriceHkd: numberValue(shipping?.factory_price_hkd),
+      additionalTaxHkd: numberValue(shipping?.additional_tax_hkd),
+      shippingFloorHkd: numberValue(shipping?.shipping_floor_hkd),
+      hkdUsd: numberValue(shipping?.hkd_usd, 7.8),
+      moldAmortizationUsd: numberValue(shipping?.mold_amortization_usd),
+      rows: (shipping?.rows ?? []).map((item) => ({
+        name: String(item.name ?? '出货场景'),
+        totalCartons: numberValue(item.total_cartons),
+        shippingFloorHkd: numberValue(item.shipping_floor_hkd),
+        freightHkd: numberValue(item.freight_hkd),
+        liftHkd: numberValue(item.lift_hkd),
+        withFreightHkd: numberValue(item.with_freight_hkd),
+        afterMarkupHkd: numberValue(item.after_markup_hkd),
+        afterSettlementHkd: numberValue(item.after_settlement_hkd),
+        totalHkd: numberValue(item.total_hkd),
+        totalUsd: numberValue(item.total_usd),
+        moldAmortizationUsd: numberValue(item.mold_amortization_usd),
+        totalWithMoldUsd: numberValue(item.total_with_mold_usd),
+      })),
+    },
+  }
+}
+
 function summaryWarnings(summary?: ApiInternalQuoteSummary) {
   return (summary?.warnings ?? []).map((item) => String(item.message ?? '')).filter(Boolean)
 }
@@ -249,6 +343,7 @@ function toQuote(
     summaryComponents: Object.fromEntries(Object.entries(extras.summary?.components_hkd ?? {}).map(([key, value]) => [key, numberValue(value)])),
     summaryWarnings: summaryWarnings(extras.summary),
     shippingScenarios: shippingScenarios(source),
+    rr2CostSummary: rr2CostSummary(extras.summary),
     finalSubmittedBy: source.final_submitted_by_name || undefined,
     finalApprovedBy: source.final_reviewed_by_name || undefined,
     finalApprovedAt: source.final_reviewed_at || undefined,
@@ -266,10 +361,10 @@ function emptyQuote(): InternalQuote {
     workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', initiatorName: '', businessOwnerId: '',
     businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
     fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', formulaVersion: '', headerRevision: 1,
-    finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [],
+    finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [], rr2CostSummary: rr2CostSummary(),
     sections: internalQuoteSectionDefinitions.map((definition) => ({
       ...definition, status: 'draft', isRequired: true, revision: 1, totalHkd: 0, updatedAt: '', warnings: [], lines: [],
-      attachments: [], payload: {}, calculationStatus: 'pending', dependencyStatus: 'current',
+      attachments: [], payload: {}, calculation: {}, calculationStatus: 'pending', dependencyStatus: 'current',
     })),
     activities: [], comments: [], viewRecords: [], exports: [],
   }
@@ -310,8 +405,12 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     quotes: [] as InternalQuote[],
     businessOwners: [] as InternalQuoteBusinessOwner[],
     pricingBaseline: null as ApiInternalQuotePricingBaseline | null,
+    dashboard: null as ApiInternalQuoteDashboard | null,
+    liveCostPreview: null as ApiInternalQuoteSectionPreview | null,
     placeholderQuote: emptyQuote(),
     listLoading: false,
+    dashboardLoading: false,
+    livePreviewLoading: false,
     detailLoading: false,
     ownerLoading: false,
     baselineLoading: false,
@@ -319,11 +418,26 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     submitting: false,
     fileBusy: false,
     errorMessage: '',
+    dashboardErrorMessage: '',
+    livePreviewErrorMessage: '',
     conflictMessage: '',
     currentFactoryId: '',
     businessOwnerFactoryId: '',
+    factoryContextFactoryId: '',
+    factoryContextGeneration: 0,
     quoteListRequestSequence: 0,
+    dashboardRequestSequence: 0,
+    livePreviewRequestSequence: 0,
+    livePreviewQuoteId: '',
+    livePreviewSectionCode: '' as InternalQuoteSectionCode | '',
+    dashboardFactoryId: '',
+    dashboardPeriod: 'month' as InternalQuoteDashboardPeriod,
     businessOwnerRequestSequence: 0,
+    pricingBaselineFactoryId: '',
+    pricingBaselineWorkshopCode: '',
+    baselineLoadRequestSequence: 0,
+    baselineUpdateRequestSequence: 0,
+    quoteMutationRequestSequence: 0,
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
     versionComparisons: {} as Record<string, ApiInternalQuoteVersionComparison>,
@@ -333,12 +447,58 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     getQuoteById: (state) => (quoteId: string) => state.quotes.find((quote) => quote.id === quoteId),
   },
   actions: {
+    activateFactoryContext(factoryId: string) {
+      if (this.factoryContextFactoryId === factoryId) {
+        return this.factoryContextGeneration
+      }
+
+      this.factoryContextFactoryId = factoryId
+      this.factoryContextGeneration += 1
+      this.currentFactoryId = factoryId
+      this.quotes = []
+      this.businessOwners = []
+      this.pricingBaseline = null
+      this.pricingBaselineFactoryId = ''
+      this.pricingBaselineWorkshopCode = ''
+      this.listLoading = false
+      this.ownerLoading = false
+      this.baselineLoading = false
+      this.baselineSaving = false
+      this.submitting = false
+      this.quoteListRequestSequence += 1
+      this.businessOwnerRequestSequence += 1
+      this.dashboardRequestSequence += 1
+      this.baselineLoadRequestSequence += 1
+      this.baselineUpdateRequestSequence += 1
+      this.quoteMutationRequestSequence += 1
+      return this.factoryContextGeneration
+    },
+    ensureFactoryContext(factoryId: string) {
+      if (!this.factoryContextFactoryId) {
+        return this.activateFactoryContext(factoryId)
+      }
+      return this.factoryContextGeneration
+    },
+    isFactoryContextCurrent(factoryId: string, generation: number) {
+      return this.factoryContextFactoryId === factoryId
+        && this.factoryContextGeneration === generation
+    },
+    clearPricingBaseline() {
+      this.baselineLoadRequestSequence += 1
+      this.baselineUpdateRequestSequence += 1
+      this.pricingBaseline = null
+      this.pricingBaselineFactoryId = ''
+      this.pricingBaselineWorkshopCode = ''
+      this.baselineLoading = false
+      this.baselineSaving = false
+    },
     upsertQuote(quote: InternalQuote) {
       const index = this.quotes.findIndex((item) => item.id === quote.id)
       if (index >= 0) this.quotes.splice(index, 1, quote)
       else this.quotes.unshift(quote)
     },
     async loadQuotes(factoryId: string) {
+      const factoryContextGeneration = this.activateFactoryContext(factoryId)
       const requestSequence = ++this.quoteListRequestSequence
       if (this.currentFactoryId !== factoryId) this.quotes = []
       this.listLoading = true
@@ -346,16 +506,56 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.currentFactoryId = factoryId
       try {
         const quotes = (await internalQuoteApi.list(factoryId)).map((item) => toQuote(item))
-        if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
+        if (
+          requestSequence !== this.quoteListRequestSequence
+          || !this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) return
         this.quotes = quotes
       } catch (error) {
-        if (requestSequence !== this.quoteListRequestSequence || this.currentFactoryId !== factoryId) return
+        if (
+          requestSequence !== this.quoteListRequestSequence
+          || !this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) return
         this.errorMessage = getApiErrorMessage(error)
         this.quotes = []
       } finally {
-        if (requestSequence === this.quoteListRequestSequence && this.currentFactoryId === factoryId) {
+        if (
+          requestSequence === this.quoteListRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
           this.listLoading = false
         }
+      }
+    },
+    async loadDashboard(factoryId: string, period: InternalQuoteDashboardPeriod) {
+      const requestSequence = ++this.dashboardRequestSequence
+      if (this.dashboardFactoryId !== factoryId || this.dashboardPeriod !== period) this.dashboard = null
+      this.dashboardLoading = true
+      this.dashboardErrorMessage = ''
+      this.dashboardFactoryId = factoryId
+      this.dashboardPeriod = period
+      try {
+        const dashboard = await internalQuoteApi.getDashboard(factoryId, period)
+        if (
+          requestSequence !== this.dashboardRequestSequence
+          || this.dashboardFactoryId !== factoryId
+          || this.dashboardPeriod !== period
+        ) return
+        this.dashboard = dashboard
+      } catch (error) {
+        if (
+          requestSequence !== this.dashboardRequestSequence
+          || this.dashboardFactoryId !== factoryId
+          || this.dashboardPeriod !== period
+        ) return
+        this.dashboard = null
+        this.dashboardErrorMessage = getApiErrorMessage(error)
+      } finally {
+        if (
+          requestSequence === this.dashboardRequestSequence
+          && this.dashboardFactoryId === factoryId
+          && this.dashboardPeriod === period
+        ) this.dashboardLoading = false
       }
     },
     async loadBusinessOwners(factoryId: string) {
@@ -377,18 +577,79 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
     },
+    clearLiveCostPreview(quoteId = '', sectionCode: InternalQuoteSectionCode | '' = '') {
+      if (quoteId && this.livePreviewQuoteId && this.livePreviewQuoteId !== quoteId) return
+      if (sectionCode && this.livePreviewSectionCode && this.livePreviewSectionCode !== sectionCode) return
+      this.livePreviewRequestSequence += 1
+      this.liveCostPreview = null
+      this.livePreviewLoading = false
+      this.livePreviewErrorMessage = ''
+      this.livePreviewQuoteId = ''
+      this.livePreviewSectionCode = ''
+    },
+    async previewSectionCost(
+      quoteId: string,
+      sectionCode: InternalQuoteSectionCode,
+      revision: number,
+      payload: Record<string, unknown>,
+    ) {
+      const requestSequence = ++this.livePreviewRequestSequence
+      const contextChanged = this.livePreviewQuoteId !== quoteId || this.livePreviewSectionCode !== sectionCode
+      if (contextChanged) this.liveCostPreview = null
+      this.livePreviewQuoteId = quoteId
+      this.livePreviewSectionCode = sectionCode
+      this.livePreviewLoading = true
+      this.livePreviewErrorMessage = ''
+      try {
+        const preview = await internalQuoteApi.previewSection(quoteId, sectionCode, revision, payload)
+        if (requestSequence !== this.livePreviewRequestSequence) return undefined
+        this.liveCostPreview = preview
+        return preview
+      } catch (error) {
+        if (requestSequence !== this.livePreviewRequestSequence) return undefined
+        this.livePreviewErrorMessage = getApiErrorMessage(error)
+        return undefined
+      } finally {
+        if (requestSequence === this.livePreviewRequestSequence) this.livePreviewLoading = false
+      }
+    },
     async loadPricingBaseline(factoryId: string, workshopCode = 'huaxing-workshop') {
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，请在当前厂区重新读取报价基数。')
+      }
+      const requestSequence = ++this.baselineLoadRequestSequence
       this.baselineLoading = true
       this.errorMessage = ''
       try {
-        this.pricingBaseline = await internalQuoteApi.getPricingBaseline(factoryId, workshopCode)
-        return this.pricingBaseline
+        const pricingBaseline = await internalQuoteApi.getPricingBaseline(factoryId, workshopCode)
+        if (
+          requestSequence === this.baselineLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.pricingBaseline = pricingBaseline
+          this.pricingBaselineFactoryId = factoryId
+          this.pricingBaselineWorkshopCode = workshopCode
+        }
+        return pricingBaseline
       } catch (error) {
-        this.pricingBaseline = null
-        this.errorMessage = getApiErrorMessage(error)
+        if (
+          requestSequence === this.baselineLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.pricingBaseline = null
+          this.pricingBaselineFactoryId = ''
+          this.pricingBaselineWorkshopCode = ''
+          this.errorMessage = getApiErrorMessage(error)
+        }
         throw error
       } finally {
-        this.baselineLoading = false
+        if (
+          requestSequence === this.baselineLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.baselineLoading = false
+        }
       }
     },
     async updatePricingBaseline(
@@ -396,17 +657,40 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       workshopCode: string,
       payload: InternalQuotePricingBaselineUpdateRequest,
     ) {
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，不能提交旧厂区的报价基数。')
+      }
+      const requestSequence = ++this.baselineUpdateRequestSequence
       this.baselineSaving = true
       this.errorMessage = ''
       try {
-        this.pricingBaseline = await internalQuoteApi.updatePricingBaseline(factoryId, workshopCode, payload)
-        return this.pricingBaseline
+        const pricingBaseline = await internalQuoteApi.updatePricingBaseline(factoryId, workshopCode, payload)
+        if (
+          requestSequence === this.baselineUpdateRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.pricingBaseline = pricingBaseline
+          this.pricingBaselineFactoryId = factoryId
+          this.pricingBaselineWorkshopCode = workshopCode
+        }
+        return pricingBaseline
       } catch (error) {
         const message = mutationMessage(error)
-        this.errorMessage = message
+        if (
+          requestSequence === this.baselineUpdateRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.errorMessage = message
+        }
         throw new Error(message)
       } finally {
-        this.baselineSaving = false
+        if (
+          requestSequence === this.baselineUpdateRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.baselineSaving = false
+        }
       }
     },
     async loadQuote(quoteId: string) {
@@ -438,6 +722,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       }
     },
     async executeMutation(quoteId: string, operation: () => Promise<unknown>) {
+      this.clearLiveCostPreview(quoteId)
       this.submitting = true
       this.errorMessage = ''
       this.conflictMessage = ''
@@ -454,14 +739,19 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         this.submitting = false
       }
     },
-    async createQuote(payload: InternalQuoteCreatePayload) {
+    async createQuote(payload: InternalQuoteCreatePayload, contextFactoryId?: string) {
       if (!payload.businessOwnerId || !payload.businessOwner.trim()) throw new Error('新建内部报价必须指定业务负责人。')
       const appStore = useAppStore()
       const activeFactory = appStore.activeFactory.id === 'group'
         ? appStore.activeProductionFactory
         : appStore.activeFactory
-      const factoryId = activeFactory?.id ?? 'huaxing'
-      const factoryName = activeFactory?.name ?? '华兴'
+      const factoryId = contextFactoryId ?? activeFactory?.id ?? 'huaxing'
+      const factoryName = factoryId === activeFactory?.id ? activeFactory.name : factoryId
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，请在当前厂区重新新建内部报价。')
+      }
+      const requestSequence = ++this.quoteMutationRequestSequence
       this.submitting = true
       try {
         const created = await internalQuoteApi.create({
@@ -473,14 +763,35 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           remark: payload.remark, participating_sections: payload.participatingSections,
         })
         const quote = toQuote(created)
-        this.upsertQuote(quote)
+        if (
+          quote.factoryId === factoryId
+          && requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.upsertQuote(quote)
+        }
         return quote
       } finally {
-        this.submitting = false
+        if (
+          requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.submitting = false
+        }
       }
     },
-    async cloneQuote(sourceQuoteId: string, payload: InternalQuoteCreatePayload) {
+    async cloneQuote(sourceQuoteId: string, payload: InternalQuoteCreatePayload, contextFactoryId?: string) {
       if (!payload.businessOwnerId || !payload.businessOwner.trim()) throw new Error('复制内部报价必须指定业务负责人。')
+      const appStore = useAppStore()
+      const activeFactory = appStore.activeFactory.id === 'group'
+        ? appStore.activeProductionFactory
+        : appStore.activeFactory
+      const factoryId = contextFactoryId ?? activeFactory?.id ?? 'huaxing'
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，请在当前厂区重新复制内部报价。')
+      }
+      const requestSequence = ++this.quoteMutationRequestSequence
       this.submitting = true
       try {
         const cloned = await internalQuoteApi.clone(sourceQuoteId, {
@@ -490,10 +801,21 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           participating_sections: payload.participatingSections,
         })
         const quote = toQuote(cloned)
-        this.upsertQuote(quote)
+        if (
+          quote.factoryId === factoryId
+          && requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.upsertQuote(quote)
+        }
         return quote
       } finally {
-        this.submitting = false
+        if (
+          requestSequence === this.quoteMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.submitting = false
+        }
       }
     },
     saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {

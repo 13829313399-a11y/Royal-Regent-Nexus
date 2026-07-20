@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, Download, Eye, Search, UploadCloud, Users } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import CustomerPriceArtifactPanel from '@/components/modules/sales/CustomerPriceArtifactPanel.vue'
 import type { CustomerPriceInternalQuoteArtifact } from '@/api/customerPriceArtifact'
@@ -107,6 +107,9 @@ interface ExportedQuoteVersion {
 
 const authStore = useAuthStore()
 const appStore = useAppStore()
+const activeFactoryId = computed(() => appStore.activeProductionFactory.id)
+const independentEmptyFactoryIds = new Set(['huakang-c', 'huakang-d'])
+const usesIndependentFactoryEmptyState = computed(() => independentEmptyFactoryIds.has(activeFactoryId.value))
 
 const customerOptions: CustomerOption[] = [
   {
@@ -179,7 +182,12 @@ const EXCEL_HTML_MIME_TYPE = 'application/vnd.ms-excel;charset=utf-8'
 const preparedP4Conversions = new Map<string, {
   handoff: CustomerPriceInternalQuoteArtifact
   conversion: P4PreparedCustomerConversion
+  factoryId: string
+  factoryGeneration: number
 }>()
+let factoryGeneration = 0
+let importRequestSequence = 0
+let exportRequestSequence = 0
 
 const conversionRows = ref<CustomerPriceConversionRow[]>([
   {
@@ -262,9 +270,46 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
   },
 ])
 
+function isCurrentFactoryTask(factoryId: string, generation: number) {
+  return factoryId === activeFactoryId.value && generation === factoryGeneration
+}
+
+function resetFactoryTransientState() {
+  selectedCustomerId.value = customerOptions[0]?.id ?? ''
+  selectedCaixingProductType.value = 'plastic'
+  importedCaixingProductType.value = ''
+  detailSearchQuery.value = ''
+  importedCustomerId.value = ''
+  importedFileName.value = ''
+  importedFileSize.value = ''
+  importedAt.value = ''
+  importErrorMessage.value = ''
+  exportErrorMessage.value = ''
+  isExportingCustomerQuote.value = false
+  selectedSheetId.value = 'all'
+  selectedExportVersionId.value = ''
+  importedWorkbookSheets.value = []
+  exportedQuoteVersions.value = []
+  buzzBeeConversionResult.value = null
+  disneyConversionResult.value = null
+  dickyConversionResult.value = null
+  caixingConversionResult.value = null
+  isImportDragActive.value = false
+  importDragDepth = 0
+  preparedP4Conversions.clear()
+}
+
+watch(activeFactoryId, () => {
+  factoryGeneration += 1
+  importRequestSequence += 1
+  exportRequestSequence += 1
+  resetFactoryTransientState()
+})
+
 const visibleCustomers = computed(() => customerOptions.map((customer) => ({
   ...customer,
-  factoryId: appStore.activeProductionFactory.id,
+  factoryId: activeFactoryId.value,
+  activeQuoteCount: usesIndependentFactoryEmptyState.value ? 0 : customer.activeQuoteCount,
 })))
 
 const selectedCustomer = computed<CustomerOption>(() => {
@@ -322,6 +367,10 @@ const selectedImportMatchesCurrentChoice = computed(() => {
 })
 
 const visibleConversionRows = computed(() => {
+  if (usesIndependentFactoryEmptyState.value) {
+    return []
+  }
+
   return conversionRows.value.filter((row) => row.customerId === selectedCustomer.value.id)
 })
 
@@ -595,22 +644,38 @@ function configuredCustomerId(customerName: string): P4ConfiguredCustomerId | nu
 }
 
 async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, blob: Blob) {
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
+  if (handoff.factory_id !== requestedFactoryId) {
+    throw new Error('交接文件所属厂区与当前厂区不一致')
+  }
+
   const customerId = configuredCustomerId(handoff.customer)
   if (!customerId) {
     throw new Error(`尚未配置“${handoff.customer}”的 P4 客户转换规则`)
   }
+  const workbook = await blob.arrayBuffer()
+  if (!isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
+    throw new Error('厂区已切换，请在当前厂区重新接收交接文件')
+  }
   const conversion = prepareP4CustomerConversion(
-    await blob.arrayBuffer(),
+    workbook,
     handoff.file_name,
     customerId,
   )
-  preparedP4Conversions.set(handoff.id, { handoff, conversion })
+  preparedP4Conversions.set(handoff.id, {
+    handoff,
+    conversion,
+    factoryId: requestedFactoryId,
+    factoryGeneration: requestedFactoryGeneration,
+  })
 }
 
 function commitP4Artifact(handoffId: string) {
   const prepared = preparedP4Conversions.get(handoffId)
   if (!prepared) return
   preparedP4Conversions.delete(handoffId)
+  if (!isCurrentFactoryTask(prepared.factoryId, prepared.factoryGeneration)) return
   const { handoff, conversion } = prepared
 
   if (conversion.customerId === 'buzzbee') {
@@ -661,17 +726,19 @@ function commitP4Artifact(handoffId: string) {
   selectedExportVersionId.value = ''
   const totalInternalHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0).toFixed(3))
   const totalCustomerHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0).toFixed(3))
-  conversionRows.value = conversionRows.value.map((row) => row.customerId !== conversion.customerId
-    ? row
-    : {
-        ...row,
-        internalPriceHkd: totalInternalHkd || row.internalPriceHkd,
-        customerPriceHkd: totalCustomerHkd || row.customerPriceHkd,
-        marginBand: totalInternalHkd && totalCustomerHkd ? buildMarginBand(totalInternalHkd, totalCustomerHkd) : row.marginBand,
-        status: row.status === '已生成' ? '待复核' : '待转换',
-        sourceFileName: handoff.file_name,
-        updatedAt: '刚刚',
-      })
+  if (!usesIndependentFactoryEmptyState.value) {
+    conversionRows.value = conversionRows.value.map((row) => row.customerId !== conversion.customerId
+      ? row
+      : {
+          ...row,
+          internalPriceHkd: totalInternalHkd || row.internalPriceHkd,
+          customerPriceHkd: totalCustomerHkd || row.customerPriceHkd,
+          marginBand: totalInternalHkd && totalCustomerHkd ? buildMarginBand(totalInternalHkd, totalCustomerHkd) : row.marginBand,
+          status: row.status === '已生成' ? '待复核' : '待转换',
+          sourceFileName: handoff.file_name,
+          updatedAt: '刚刚',
+        })
+  }
 }
 
 function resolvePublicAssetUrl(url: string) {
@@ -757,6 +824,13 @@ async function importInternalQuoteFile(file: File | undefined) {
   if (!file || !customer || !canImportSelectedCustomer.value) {
     return
   }
+  const requestId = ++importRequestSequence
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
+  const isCurrentImportRequest = () => (
+    requestId === importRequestSequence
+    && isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)
+  )
 
   importErrorMessage.value = ''
 
@@ -767,6 +841,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       }
 
       const buffer = await readFileAsArrayBuffer(file)
+      if (!isCurrentImportRequest()) return
       const conversionResult = convertBuzzBeeInternalQuote(buffer, file.name)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
@@ -782,6 +857,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       }
 
       const buffer = await readFileAsArrayBuffer(file)
+      if (!isCurrentImportRequest()) return
       const conversionResult = convertDisneyInternalQuote(buffer, file.name)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
@@ -797,6 +873,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       }
 
       const buffer = await readFileAsArrayBuffer(file)
+      if (!isCurrentImportRequest()) return
       const conversionResult = convertDickyInternalQuote(buffer, file.name)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
@@ -812,6 +889,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       }
 
       const buffer = await readFileAsArrayBuffer(file)
+      if (!isCurrentImportRequest()) return
       const conversionResult = convertCaixingInternalQuote(buffer, file.name, selectedCaixingProductType.value)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
@@ -830,6 +908,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       importedFileSize.value = formatFileSize(file.size)
     }
 
+    if (!isCurrentImportRequest()) return
+
     importedFileName.value = file.name
     importedCustomerId.value = customer.id
     importedCaixingProductType.value = customer.id === 'caixing' ? selectedCaixingProductType.value : ''
@@ -840,23 +920,26 @@ async function importInternalQuoteFile(file: File | undefined) {
     const totalInternalHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0).toFixed(3))
     const totalCustomerHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0).toFixed(3))
 
-    conversionRows.value = conversionRows.value.map((row) => {
-      if (row.customerId !== customer.id) {
-        return row
-      }
+    if (!usesIndependentFactoryEmptyState.value) {
+      conversionRows.value = conversionRows.value.map((row) => {
+        if (row.customerId !== customer.id) {
+          return row
+        }
 
-      return {
-        ...row,
-        internalPriceHkd: totalInternalHkd || row.internalPriceHkd,
-        customerPriceHkd: totalCustomerHkd || row.customerPriceHkd,
-        marginBand: totalInternalHkd && totalCustomerHkd ? buildMarginBand(totalInternalHkd, totalCustomerHkd) : row.marginBand,
-        status: row.status === '已生成' ? '待复核' : '待转换',
-        quoteNo: row.quoteNo === '待生成' ? '待生成' : row.quoteNo,
-        sourceFileName: file.name,
-        updatedAt: '刚刚',
-      }
-    })
+        return {
+          ...row,
+          internalPriceHkd: totalInternalHkd || row.internalPriceHkd,
+          customerPriceHkd: totalCustomerHkd || row.customerPriceHkd,
+          marginBand: totalInternalHkd && totalCustomerHkd ? buildMarginBand(totalInternalHkd, totalCustomerHkd) : row.marginBand,
+          status: row.status === '已生成' ? '待复核' : '待转换',
+          quoteNo: row.quoteNo === '待生成' ? '待生成' : row.quoteNo,
+          sourceFileName: file.name,
+          updatedAt: '刚刚',
+        }
+      })
+    }
   } catch (error) {
+    if (!isCurrentImportRequest()) return
     importedFileName.value = ''
     importedFileSize.value = ''
     importedCustomerId.value = ''
@@ -930,6 +1013,13 @@ async function exportCustomerQuoteExcel() {
   if (!selectedCustomer.value || !canExportSelectedCustomer.value || !canExportCustomerQuote.value || isExportingCustomerQuote.value) {
     return
   }
+  const requestId = ++exportRequestSequence
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
+  const isCurrentExportRequest = () => (
+    requestId === exportRequestSequence
+    && isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)
+  )
 
   exportErrorMessage.value = ''
   isExportingCustomerQuote.value = true
@@ -946,11 +1036,13 @@ async function exportCustomerQuoteExcel() {
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'disney' && disneyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL, '迪士尼报客')
+      if (!isCurrentExportRequest()) return
       const workbook = createDisneyCustomerQuoteWorkbook(disneyConversionResult.value, templateBuffer)
       fileName = buildDisneyCustomerQuoteFileName(disneyConversionResult.value)
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL, 'Dickie 报客')
+      if (!isCurrentExportRequest()) return
       const workbook = createDickyCustomerQuoteWorkbook(dickyConversionResult.value, templateBuffer)
       fileName = buildDickyCustomerQuoteFileName(dickyConversionResult.value)
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
@@ -961,6 +1053,7 @@ async function exportCustomerQuoteExcel() {
         : CAIXING_PLASTIC_CUSTOMER_QUOTE_TEMPLATE_URL
       const templateLabel = productType === 'plush' ? '彩星毛绒报客' : '彩星塑胶报客'
       const templateBuffer = await fetchTemplateBuffer(templateUrl, templateLabel)
+      if (!isCurrentExportRequest()) return
       const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
       fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
@@ -1024,6 +1117,8 @@ async function exportCustomerQuoteExcel() {
       downloadGeneratedFile(workbookHtml, fileName, EXCEL_HTML_MIME_TYPE)
     }
 
+    if (!isCurrentExportRequest()) return
+
     visibleConversionRows.value.forEach((row) => {
       if (row.status !== '已生成') {
         generateCustomerQuote(row.id)
@@ -1052,9 +1147,10 @@ async function exportCustomerQuoteExcel() {
     exportedQuoteVersions.value = [exportedVersion, ...exportedQuoteVersions.value]
     selectedExportVersionId.value = exportedVersion.id
   } catch (error) {
+    if (!isCurrentExportRequest()) return
     exportErrorMessage.value = error instanceof Error ? `导出失败：${error.message}` : '导出失败：报客价 Excel 生成失败'
   } finally {
-    isExportingCustomerQuote.value = false
+    if (isCurrentExportRequest()) isExportingCustomerQuote.value = false
   }
 }
 </script>

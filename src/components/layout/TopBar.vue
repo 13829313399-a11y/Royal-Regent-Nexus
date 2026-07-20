@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { Menu, Search } from '@lucide/vue'
-import { useRoute } from 'vue-router'
-import { factoryContexts } from '@/data/enterpriseMock'
+import { useRoute, useRouter } from 'vue-router'
+import { factoryContexts, type FactoryContextId } from '@/data/enterpriseMock'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import NotificationCenter from '@/components/notifications/NotificationCenter.vue'
 import RouteLoadingBar from '@/components/layout/RouteLoadingBar.vue'
 import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
 const props = withDefaults(defineProps<{
   navigationOpen?: boolean
@@ -42,6 +43,23 @@ const topBarFactoryContexts = computed(() => {
 const getTopBarFactoryLabel = (factory: (typeof factoryContexts)[number]) => (
   factory.id === 'group' ? '总务' : factory.shortName
 )
+
+function selectFactory(factoryId: FactoryContextId) {
+  appStore.setActiveFactory(factoryId)
+
+  if (!route.path.startsWith('/modules')) {
+    return
+  }
+
+  void router.replace({
+    path: route.path,
+    query: {
+      ...(route.query ?? {}),
+      factory: factoryId,
+    },
+    hash: route.hash,
+  })
+}
 
 watch(() => props.navigationOpen, (isOpen, wasOpen) => {
   if (wasOpen && !isOpen) {
@@ -95,8 +113,9 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
               ? 'border-teal-700 bg-teal-700 text-white shadow-[0_5px_14px_-9px_rgba(13,148,136,0.9)]'
               : 'border-slate-200 bg-white/85 text-slate-600 hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800'"
             :aria-label="`切换至${getTopBarFactoryLabel(factory)}`"
+            :aria-pressed="factory.id === appStore.activeFactoryId"
             :title="factory.name"
-            @click="appStore.setActiveFactory(factory.id)"
+            @click="selectFactory(factory.id)"
           >
             {{ getTopBarFactoryLabel(factory) }}
           </button>

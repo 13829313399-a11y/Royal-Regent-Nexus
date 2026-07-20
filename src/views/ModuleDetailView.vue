@@ -7,6 +7,9 @@ import {
   departmentModuleRegistry,
   getDepartmentModule,
   getDepartmentRoute,
+  getFactoryScopedModule,
+  getFactoryScopedRoute,
+  getFactoryScopedTodoItems,
   isModuleDepartmentId,
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
@@ -27,14 +30,28 @@ const currentDepartmentId = computed<ModuleDepartmentId>(() => {
 
 const currentDepartment = computed(() => departmentMap[currentDepartmentId.value])
 const departmentEntry = computed(() => departmentModuleRegistry[currentDepartmentId.value])
+const activeFactory = computed(() => appStore.activeProductionFactory)
 
 const currentModule = computed(() => {
   const moduleId = String(route.params.module ?? '')
-  return getDepartmentModule(currentDepartmentId.value, moduleId) ?? departmentEntry.value.modules[0]
+  const module = getDepartmentModule(currentDepartmentId.value, moduleId) ?? departmentEntry.value.modules[0]
+  return getFactoryScopedModule(module, activeFactory.value.id)
 })
 
 const isInjectionScheduling = computed(() => currentModule.value.id === 'injection-scheduling')
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
+const departmentCenterRoute = computed(() => getFactoryScopedRoute(
+  getDepartmentRoute(currentDepartmentId.value),
+  activeFactory.value.id,
+))
+const currentModuleRoute = computed(() => currentModule.value.route ?? getFactoryScopedRoute(
+  getDepartmentRoute(currentDepartmentId.value, currentModule.value.id),
+  activeFactory.value.id,
+))
+const visibleDepartmentTodos = computed(() => getFactoryScopedTodoItems(
+  departmentEntry.value.todos,
+  activeFactory.value.id,
+))
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)
@@ -44,7 +61,7 @@ watch(currentDepartmentId, (departmentId) => {
 <template>
   <div class="space-y-6">
     <div class="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-      <RouterLink :to="getDepartmentRoute(currentDepartmentId)" class="inline-flex items-center gap-2 text-slate-600 hover:text-slate-950">
+      <RouterLink :to="departmentCenterRoute" class="inline-flex items-center gap-2 text-slate-600 hover:text-slate-950">
         <ArrowLeft class="size-4" aria-hidden="true" />
         返回{{ currentDepartment.name }}模块中心
       </RouterLink>
@@ -57,7 +74,7 @@ watch(currentDepartmentId, (departmentId) => {
         <div class="max-w-4xl">
           <div class="flex flex-wrap items-center gap-3">
             <StatusPill :label="currentModule.status" :tone="currentModule.statusTone" />
-            <span class="text-sm text-slate-500">{{ currentDepartment.name }} / {{ currentModule.owner }}</span>
+            <span class="text-sm text-slate-500">{{ activeFactory.shortName }} / {{ currentDepartment.name }} / {{ currentModule.owner }}</span>
           </div>
           <h1 class="mt-4 text-4xl font-semibold tracking-tight text-slate-950">{{ currentModule.title }}</h1>
           <p class="mt-4 max-w-3xl text-base leading-8 text-slate-700">
@@ -66,7 +83,7 @@ watch(currentDepartmentId, (departmentId) => {
 
           <div class="mt-6 flex flex-wrap gap-3">
             <RouterLink
-              :to="getDepartmentRoute(currentDepartmentId)"
+              :to="departmentCenterRoute"
               class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700"
             >
               返回模块中心
@@ -192,7 +209,7 @@ watch(currentDepartmentId, (departmentId) => {
                 <Link2 class="size-4" aria-hidden="true" />
                 内部路由
               </div>
-              <p class="mt-3 font-mono text-xs text-slate-800">{{ currentModule.route }}</p>
+              <p class="mt-3 font-mono text-xs text-slate-800">{{ currentModuleRoute }}</p>
             </div>
             <div v-if="currentModule.href" class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
               <p class="text-slate-500">外部系统入口</p>
@@ -202,7 +219,7 @@ watch(currentDepartmentId, (departmentId) => {
         </SectionPanel>
 
         <PermissionMatrix :rows="departmentEntry.permissionRows" />
-        <TodoQueue :items="departmentEntry.todos" title="部门并行待办" subtitle="除了当前模块外，该部门还在推进的事项" />
+        <TodoQueue :items="visibleDepartmentTodos" title="部门并行待办" subtitle="除了当前模块外，该部门还在推进的事项" />
       </aside>
     </div>
   </div>

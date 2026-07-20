@@ -245,17 +245,28 @@ def _walk_components(rows: list[dict[str, Any]], parent: str = ""):
             yield from _walk_components(children, str(row.get("item", "")))
 
 
-def _build_electronic_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
+def _build_electronic_sheet(
+    workbook: Workbook,
+    section: InternalQuoteSection | None,
+    reference_snapshot: dict[str, Any],
+) -> None:
     sheet = workbook.create_sheet("电子明细")
-    _style_title(sheet, "电子报价明细", 8)
-    _header_row(sheet, 3, ("父项", "零件", "规格", "用量", "单价HKD", "金额HKD", "备注", "来源"))
+    _style_title(sheet, "电子报价明细", 10)
+    _header_row(sheet, 3, ("父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源"))
     row_index = 4
     payload = _json_object(section.payload_json) if section else {}
+    fx_value = _number(reference_snapshot.get("fx", {}).get("rmb_hkd"))
+    fx = fx_value if isinstance(fx_value, float) and fx_value > 0 else 0.85
     components = payload.get("components", [])
     for parent, row in _walk_components(components if isinstance(components, list) else []):
         quantity = _number(row.get("quantity"))
-        unit_price = _number(row.get("unit_price_hkd"))
-        amount = quantity * unit_price if isinstance(quantity, float) and isinstance(unit_price, float) else ""
+        unit_price_rmb = _number(row.get("unit_price_rmb"))
+        unit_price_hkd = _number(row.get("unit_price_hkd"))
+        if not isinstance(unit_price_rmb, float) and isinstance(unit_price_hkd, float):
+            unit_price_rmb = unit_price_hkd * fx
+        if not isinstance(unit_price_hkd, float) and isinstance(unit_price_rmb, float):
+            unit_price_hkd = unit_price_rmb / fx
+        amount_hkd = quantity * unit_price_hkd if isinstance(quantity, float) and isinstance(unit_price_hkd, float) else ""
         _body_row(
             sheet,
             row_index,
@@ -264,46 +275,76 @@ def _build_electronic_sheet(workbook: Workbook, section: InternalQuoteSection | 
                 _safe_text(row.get("item", "")),
                 _safe_text(row.get("specification", "")),
                 quantity,
-                unit_price,
-                amount,
-                _safe_text(row.get("note", "")),
+                unit_price_rmb,
+                unit_price_hkd,
+                amount_hkd,
+                _number(row.get("tax_rate_percent")),
+                _safe_text(row.get("remark", row.get("note", ""))),
                 _safe_text(f"{row.get('source_currency', '')} row {row.get('source_row', '')}"),
             ),
-            amount_columns={5, 6},
+            amount_columns={5, 6, 7, 8},
         )
         row_index += 1
-    _finish_sheet(sheet, (20, 28, 28, 12, 15, 15, 28, 20))
+    calculation = _json_object(section.calculation_json) if section else {}
+    totals = calculation.get("totals", {}) if isinstance(calculation.get("totals", {}), dict) else {}
+    row_index += 1
+    _header_row(sheet, row_index, ("电子成本汇总", "RMB", "HKD", "公式口径"))
+    row_index += 1
+    for label, rmb_key, hkd_key, formula in (
+        ("零件成本", "component_rmb", "component_hkd", "用量 × 单价"),
+        ("成本合计（不含税）", "pre_tax_rmb", "pre_tax_hkd", "零件 + 邦定/贴片/人工/测试/包装"),
+        ("含利润价", "with_profit_rmb", "with_profit_hkd", "不含税成本 × (1 + 利润率)"),
+        ("抵税差额", "tax_credit_difference_rmb", "tax_credit_difference_hkd", "含利润价 × 13% - 零件进项抵扣"),
+        ("应交税负", "tax_payable_rmb", "tax_payable_hkd", "抵税差额 × 10%"),
+        ("含税报价", "total_rmb", "total_hkd", "含利润价 + 抵税差额 + 应交税负"),
+    ):
+        _body_row(sheet, row_index, (label, _number(totals.get(rmb_key)), _number(totals.get(hkd_key)), formula), amount_columns={2, 3})
+        row_index += 1
+    _finish_sheet(sheet, (20, 28, 28, 12, 15, 15, 15, 12, 28, 20))
 
 
 def _build_sewing_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
     sheet = workbook.create_sheet("车缝明细")
-    _style_title(sheet, "车缝报价明细", 9)
-    _header_row(sheet, 3, ("产品组", "分类", "物料", "部位", "供应商", "用量", "RMB单价", "码点", "备注"))
+    _style_title(sheet, "车缝报价明细", 14)
+    _header_row(sheet, 3, ("产品组", "类型", "#", "布料名称", "部位", "工艺", "裁片数", "用量/码", "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注", "来源行"))
     row_index = 4
     payload = _json_object(section.payload_json) if section else {}
     for group in payload.get("groups", []) if isinstance(payload.get("groups", []), list) else []:
         if not isinstance(group, dict):
             continue
-        for row in group.get("materials", []) if isinstance(group.get("materials", []), list) else []:
+        for item_index, row in enumerate(group.get("materials", []) if isinstance(group.get("materials", []), list) else [], start=1):
             if not isinstance(row, dict):
                 continue
+            usage = _number(row.get("usage"))
+            unit_price = _number(row.get("unit_price_rmb"))
+            markup = _number(row.get("markup")) or 1
             _body_row(
                 sheet,
                 row_index,
                 (
                     _safe_text(group.get("name", "")),
                     _safe_text(group.get("category", "")),
+                    item_index,
                     _safe_text(row.get("item", "")),
                     _safe_text(row.get("part", "")),
-                    _safe_text(row.get("supplier", "")),
-                    _number(row.get("usage")),
-                    _number(row.get("unit_price_rmb")),
-                    _number(row.get("markup")),
-                    _safe_text(row.get("note", "")),
+                    _safe_text(row.get("craft", "")),
+                    _number(row.get("pieces")),
+                    usage,
+                    unit_price,
+                    usage * unit_price,
+                    markup,
+                    usage * unit_price * markup,
+                    _safe_text(row.get("remark") or row.get("note") or ""),
+                    row.get("source_row", ""),
                 ),
+                amount_columns={8, 9, 10, 11, 12},
             )
+            sheet.cell(row_index, 10).value = f"=H{row_index}*I{row_index}"
+            sheet.cell(row_index, 10).number_format = "#,##0.0000"
+            sheet.cell(row_index, 12).value = f"=J{row_index}*K{row_index}"
+            sheet.cell(row_index, 12).number_format = "#,##0.0000"
             row_index += 1
-    _finish_sheet(sheet, (24, 12, 28, 18, 20, 12, 15, 12, 30))
+    _finish_sheet(sheet, (24, 12, 7, 30, 16, 12, 12, 14, 16, 16, 12, 18, 30, 12))
 
 
 def _build_assembly_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
@@ -502,7 +543,7 @@ def build_internal_quote_workbook(
     workbook.properties.title = f"{quote.quote_no} 内部报价"
     _build_summary_sheet(workbook, quote, sections)
     by_code = {section.department: section for section in sections}
-    _build_electronic_sheet(workbook, by_code.get("electronic"))
+    _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {})
     _build_sewing_sheet(workbook, by_code.get("sewing"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
     if manifest.get("release_stage") == "p4_final_approved":

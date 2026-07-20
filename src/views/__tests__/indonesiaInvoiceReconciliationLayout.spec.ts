@@ -12,6 +12,12 @@ describe('Indonesia invoice reconciliation workspace', () => {
     expect(routerSource).toMatch(/title: '印尼票据核对'[\s\S]{0,100}fullPage: true/)
   })
 
+  it('keeps the active factory in the accounting return link', () => {
+    expect(source).toMatch(/const accountingDepartmentRoute = computed\(\(\) => getFactoryScopedRoute\([\s\S]{0,100}getDepartmentRoute\('accounting'\),[\s\S]{0,80}appStore\.activeProductionFactory\.id/)
+    expect(source).toContain(':to="accountingDepartmentRoute"')
+    expect(source).not.toMatch(/<RouterLink[^>]+to="\/modules\/accounting"/)
+  })
+
   it('accepts two neutral A/B PDF inputs and renders field-level, source-labelled reconciliation results', () => {
     expect(source).toMatch(/印尼票据核对/)
     expect(source).toMatch(/导入两份 PDF/)
