@@ -1246,6 +1246,88 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('clears legacy hidden identifiers from a restored new-order draft and uses the server-generated id', async () => {
+    const generatedOrderId = 'BP-202607210001'
+    window.localStorage.setItem('rr:molding-sample:create-draft:huaxing', JSON.stringify({
+      id: 'BP-LEGACY-HIDDEN-ID',
+      factory_id: 'huaxing',
+      production_factory_id: 'huaxing',
+      product_no: 'LEGACY-PRODUCT-001',
+      client_name: '旧草稿客户',
+      product_name: '旧草稿产品',
+      order_date: '2026-07-21',
+      stage: 'T0',
+      order_type: '啤办',
+      workshop: '工程部',
+      send_to: '内部',
+      supervisor: '华兴主管',
+      eng_name: '华兴工程师',
+      items: [{
+        customer_mold_id: 'LEGACY-MOLD-001',
+        mold_name: '旧草稿模具',
+        material: 'ABS 750NSW',
+        color: '本白',
+        quantity: '1',
+        shoot_qty: '50',
+        required_material_kg: '2.25',
+        required_date: '2026-08-31',
+      }],
+    }))
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => {
+      const created = createMoldingSampleRecord('待审核', generatedOrderId)
+      created.order = { ...created.order, ...payload.order, id: generatedOrderId }
+      return created
+    })
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+
+    expect(wrapper.text()).toContain('提交后生成正式单号')
+    expect((wrapper.get('[data-testid="create-product-no"]').element as HTMLInputElement).value).toBe('LEGACY-PRODUCT-001')
+
+    await getButtonByText(wrapper, '提交主管审核').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    const submitted = mockedMoldingSampleApi.createOrder.mock.calls[0][0]
+    expect(submitted.order).not.toHaveProperty('id')
+    expect(submitted.order.order_number).toBe('LEGACY-PRODUCT-001')
+    expect(submitted.items[0]).not.toHaveProperty('id')
+    expect(submitted.items[0]).not.toHaveProperty('order_id')
+    expect(wrapper.text()).toContain(generatedOrderId)
+    expect(window.localStorage.getItem('rr:molding-sample:create-draft:huaxing')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('sends only one create request for rapid duplicate submit events', async () => {
+    const createGate = createDeferred<MoldingSampleDetailResponse>()
+    const generatedOrderId = 'BP-202607210002'
+    mockedMoldingSampleApi.createOrder.mockReturnValueOnce(createGate.promise)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    await fillValidManualCreateForm(wrapper, 'RAPID-CREATE')
+
+    const submitButton = getButtonByText(wrapper, '提交主管审核')
+    submitButton.element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    submitButton.element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    await nextTick()
+    expect(submitButton.attributes('disabled')).toBeDefined()
+
+    const created = createMoldingSampleRecord('待审核', generatedOrderId)
+    created.order.order_number = 'RAPID-CREATE-PRODUCT-NO'
+    createGate.resolve(created)
+    await flushPromises()
+
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('drops a stale rejected resubmit after C-D-C and never shows the C rejected form in D', async () => {
     routeState.path = '/modules/molding-sample'
     routeState.query = { factory: '' }
@@ -1287,6 +1369,10 @@ describe('molding sample runtime error handling', () => {
       orderId,
       expect.objectContaining({ order: expect.objectContaining({ factory_id: 'huakang-c', id: orderId }) }),
     )
+    expect(mockedMoldingSampleApi.editOrder.mock.calls[0][1].items[0]).toMatchObject({
+      id: `${orderId}-001`,
+      order_id: orderId,
+    })
     expect(mockedMoldingSampleApi.updateStatus).toHaveBeenCalledWith(orderId, expect.objectContaining({
       action: '工程重提',
     }))
@@ -1419,6 +1505,12 @@ describe('molding sample runtime error handling', () => {
 
     await getButtonByExactText(wrapper, '确认打印').trigger('click')
     expect(printSpy).toHaveBeenCalledTimes(1)
+    expect(document.body.classList.contains('molding-sample-overview-printing')).toBe(true)
+    expect(document.getElementById('molding-sample-active-print-page')).not.toBeNull()
+
+    window.dispatchEvent(new Event('afterprint'))
+    expect(document.body.classList.contains('molding-sample-overview-printing')).toBe(false)
+    expect(document.getElementById('molding-sample-active-print-page')).toBeNull()
 
     wrapper.unmount()
   })
@@ -1578,6 +1670,7 @@ describe('molding sample runtime error handling', () => {
 
     await getButtonByExactText(wrapper, '确认打印').trigger('click')
     expect(printSpy).toHaveBeenCalledTimes(1)
+    window.dispatchEvent(new Event('afterprint'))
 
     wrapper.unmount()
   })
@@ -3834,12 +3927,11 @@ describe('molding sample runtime error handling', () => {
     expect((restoredWrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('BK-01')
     expect((restoredWrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('2.25')
 
-    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => ({
-      order: payload.order,
-      items: payload.items,
-      audit_logs: [],
-      problems: [],
-    }))
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => {
+      const created = createMoldingSampleRecord('待审核', 'BP-202607210003')
+      created.order = { ...created.order, ...payload.order, id: 'BP-202607210003' }
+      return created
+    })
 
     await getButtonByText(restoredWrapper, '提交主管审核').trigger('click')
     await flushPromises()
@@ -4017,20 +4109,23 @@ describe('molding sample runtime error handling', () => {
     expect((wrapper.get('[data-testid="material-component-percentage-1"]').element as HTMLInputElement).value).toBe('30')
     await wrapper.get('button[aria-label="关闭原料配比弹窗"]').trigger('click')
 
-    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => ({
-      order: payload.order,
-      items: payload.items,
-      audit_logs: [],
-      problems: [],
-    }))
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => {
+      const created = createMoldingSampleRecord('待审核', 'BP-202607210004')
+      created.order = { ...created.order, ...payload.order, id: 'BP-202607210004' }
+      return created
+    })
 
     await getButtonByText(wrapper, '提交主管审核').trigger('click')
     await flushPromises()
     await nextTick()
 
     expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
-    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].order.doc_number).toBe('W-G026-00')
-    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].items[0]).toMatchObject({
+    const submitted = mockedMoldingSampleApi.createOrder.mock.calls[0][0]
+    expect(submitted.order).not.toHaveProperty('id')
+    expect(submitted.items[0]).not.toHaveProperty('id')
+    expect(submitted.items[0]).not.toHaveProperty('order_id')
+    expect(submitted.order.doc_number).toBe('W-G026-00')
+    expect(submitted.items[0]).toMatchObject({
       mold_id: 'P50002008-01-01',
       mold_name: '30寸黑武士-头盔',
       material: '70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料',
@@ -4048,6 +4143,7 @@ describe('molding sample runtime error handling', () => {
       mold_presence_status: 'in_factory',
       completion_time: '2026-02-10',
     })
+    expect(wrapper.text()).toContain('BP-202607210004')
 
     wrapper.unmount()
   })

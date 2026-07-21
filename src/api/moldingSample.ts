@@ -22,16 +22,23 @@ export interface HttpLikeClient {
 export const MOLDING_SAMPLE_XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 export type MoldingSampleOrderDraft = Partial<MoldingSampleOrder>
-  & Pick<MoldingSampleOrder, 'id' | 'product_name' | 'client_name' | 'date' | 'workshop' | 'supervisor' | 'eng_name'>
+  & Pick<MoldingSampleOrder, 'product_name' | 'client_name' | 'date' | 'workshop' | 'supervisor' | 'eng_name'>
 
-export type MoldingSampleItemDraft = Partial<MoldingSampleItem> & Pick<MoldingSampleItem, 'id'>
+export type MoldingSampleItemDraft = Partial<MoldingSampleItem>
+
+export type MoldingSampleExistingOrderDraft = MoldingSampleOrderDraft & Pick<MoldingSampleOrder, 'id'>
+
+export type MoldingSampleExistingItemDraft = MoldingSampleItemDraft & Pick<MoldingSampleItem, 'id'>
 
 export interface MoldingSampleCreateRequest {
   order: MoldingSampleOrderDraft
   items: MoldingSampleItemDraft[]
 }
 
-export interface MoldingSampleEditRequest extends MoldingSampleCreateRequest {}
+export interface MoldingSampleEditRequest {
+  order: MoldingSampleExistingOrderDraft
+  items: MoldingSampleExistingItemDraft[]
+}
 
 export interface MoldingSampleExcelImportOptions {
   order_id?: string
@@ -112,7 +119,7 @@ export interface MoldingSampleFactoryCapabilityResponse {
 }
 
 export interface MoldingSampleItemsPatchRequest {
-  items: MoldingSampleItemDraft[]
+  items: MoldingSampleExistingItemDraft[]
 }
 
 export interface MoldingSampleTrialReportUpsertRequest {

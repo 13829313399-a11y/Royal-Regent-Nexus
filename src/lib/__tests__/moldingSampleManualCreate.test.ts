@@ -140,6 +140,19 @@ assert.deepEqual(result.payload?.items.map((item) => ({
   },
 ])
 
+const freshDraft = createManualMoldingSampleOrderDraft({
+  ...draft,
+  id: '',
+})
+const freshResult = buildManualMoldingSampleCreateRequest(freshDraft, 'huakang-a')
+
+assert.deepEqual(freshResult.errors, [])
+assert.ok(freshResult.payload)
+assert.equal(Object.hasOwn(freshResult.payload.order, 'id'), false)
+assert.equal(Object.hasOwn(freshResult.payload.items[0] ?? {}, 'id'), false)
+assert.equal(Object.hasOwn(freshResult.payload.items[0] ?? {}, 'order_id'), false)
+assert.equal(freshResult.payload.order.order_number, '62437')
+
 const invalid = createManualMoldingSampleOrderDraft({
   factory_id: 'huakang-a',
   order_date: '2026-04-09',
