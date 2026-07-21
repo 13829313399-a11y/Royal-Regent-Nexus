@@ -39,6 +39,7 @@ INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION = "20260718_0025"
 INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION = "20260718_0026"
 RAW_MATERIAL_SHARED_MIGRATION_REVISION = "20260720_0027"
 MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION = "20260720_0028"
+INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION = "20260721_0029"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -90,7 +91,20 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION]
+    assert script.get_heads() == [INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION]
+
+    customer_revision = script.get_revision(
+        INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
+    )
+    assert customer_revision.down_revision == MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION
+    customer_content = Path(customer_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "internal_quote_customers",
+        "uq_internal_quote_customers_factory_name",
+        "DEFAULT_CUSTOMERS",
+        "historical customers",
+    ):
+        assert expected in customer_content
 
     dispatch_revision = script.get_revision(
         MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION
@@ -355,6 +369,96 @@ def test_alembic_has_single_molding_sample_head():
     notification_revision = script.get_revision(NOTIFICATION_MIGRATION_REVISION)
     notification_migration_content = Path(notification_revision.path).read_text(encoding="utf-8")
     assert "molding_sample_notifications" in notification_migration_content
+
+
+def test_internal_quote_customer_migration_seeds_factories_and_backfills_history(tmp_path):
+    database_path = tmp_path / "internal_quote_customers_0029.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO internal_quotes (
+                id, factory_id, workshop_code, workshop_name, quote_no,
+                product_name, customer, qty, version_label, status,
+                created_by, created_by_name, created_at, updated_at,
+                initiator_department
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "IQ-CUSTOMER-HISTORY",
+                "huaxing",
+                "huaxing-workshop",
+                "华兴",
+                "CUSTOMER-HISTORY",
+                "历史客户产品",
+                "历史客户",
+                1000,
+                "V1",
+                "draft",
+                "legacy-user",
+                "历史用户",
+                "2026-07-21 08:00:00",
+                "2026-07-21 08:00:00",
+                "sales",
+            ),
+        )
+        connection.commit()
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,)
+        counts = dict(connection.execute(
+            """
+            SELECT factory_id, COUNT(*)
+            FROM internal_quote_customers
+            GROUP BY factory_id
+            ORDER BY factory_id
+            """
+        ).fetchall())
+        assert counts == {
+            "huakang-a": 5,
+            "huakang-b": 5,
+            "huakang-c": 5,
+            "huakang-d": 5,
+            "huadeng": 5,
+            "huaxing": 6,
+        }
+        assert connection.execute(
+            """
+            SELECT name, normalized_name, revision
+            FROM internal_quote_customers
+            WHERE factory_id = 'huaxing' AND name = '历史客户'
+            """
+        ).fetchone() == ("历史客户", "历史客户", 1)
+
+    run_alembic("downgrade", MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "internal_quote_customers" not in tables
+        assert connection.execute(
+            "SELECT customer FROM internal_quotes WHERE id = 'IQ-CUSTOMER-HISTORY'"
+        ).fetchone() == ("历史客户",)
 
 
 def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
@@ -941,7 +1045,7 @@ def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
             "internal_quote:export": "operate",
         }
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,
+            INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
         )
 
 
@@ -1067,7 +1171,7 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
             "SELECT quote_no FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'"
         ).fetchone() == ("LEGACY-P1",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,
+            INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
         )
 
 
@@ -1245,7 +1349,7 @@ def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
             "SELECT file_name FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'"
         ).fetchone() == ("历史导出.xlsx",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,
+            INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
         )
 
 
@@ -1311,7 +1415,7 @@ def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,)
+        ).fetchone() == (INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,)
         assert {
             row[1]
             for row in connection.execute(
@@ -1533,7 +1637,7 @@ def test_molding_sample_dispatch_upgrade_backfills_scope_and_preserves_rows(tmp_
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION,)
+        ).fetchone() == (INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,)
         assert connection.execute(
             """
             SELECT id, factory_id, production_factory_id,

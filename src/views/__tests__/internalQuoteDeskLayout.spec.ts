@@ -10,6 +10,7 @@ const workbenchSource = read('src/components/modules/sales/SalesModuleWorkbench.
 const homeSource = read('src/components/modules/sales/internal-quote/InternalQuoteHome.vue')
 const createDialogSource = read('src/components/modules/sales/internal-quote/InternalQuoteCreateDialog.vue')
 const baselineDialogSource = read('src/components/modules/sales/internal-quote/InternalQuoteBaselineDialog.vue')
+const customerDialogSource = read('src/components/modules/sales/internal-quote/InternalQuoteCustomerDialog.vue')
 const collaborationSource = read('src/components/modules/sales/internal-quote/InternalQuoteCollaboration.vue')
 const activitySource = read('src/components/modules/sales/internal-quote/InternalQuoteActivityPanel.vue')
 const sectionEditorSource = read('src/components/modules/sales/internal-quote/InternalQuoteSectionEditor.vue')
@@ -85,6 +86,9 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['啤机报价单', '注塑部分', '模具名称', '模号', '含损耗重量 (g，自动)', '料价 HKD/g（快照）', '原料单价 HKD（自动）', '啤价 HKD/啤（自动）', '出模数', '机型 A码', '目标数', '周期 (秒)', '吹气部分', '日产量 / 22H', '产品料价 HKD（自动）', '吹工 HKD', '披锋 HKD', '利润 ×', '出数', '模价 RMB']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
     expect(sectionEditorSource).toContain('class="primary-upload"')
     expect(sectionEditorSource).toContain('button.primary-upload{border-color:#0f766e;background:#0f766e')
+    expect(sectionEditorSource).toContain('class="template-download"')
+    expect(sectionEditorSource).toContain('下载模板')
+    expect(sectionEditorSource).toContain('downloadImportTemplate(props.quote.id, target.type, target.fileName)')
     expect(sectionEditorSource).toContain('handleUploadFile')
     expect(sectionEditorSource).toContain('detectImportPreview')
     expect(sectionEditorSource).toContain('for (const option of importOptions.value)')
@@ -148,7 +152,7 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['调整汇率', '保存汇率', '保存会生成新 revision', 'updateFx']) expect(activitySource).toContain(text)
     expect(collaborationSource).toContain("internal_quote:sales_edit")
     expect(collaborationSource).toContain('updateReferenceFx')
-    for (const text of ['汇总与最终放行', '权威成本分布', '部门金额分布', '成本项目分布', 'departmentEntries', 'departmentDonutStyle', 'componentDonutStyle', '出货价算价', '客户自提时本板块完全隐藏', '减税明细 / 成本汇总', '一、出厂货价核', '二、包装 / 外购', '三、人工 &amp; 成本汇总', '四、减税明细', '减税后成本', '分段放行状态', '最终提交人与最终放行人不得相同']) expect(summarySource).toContain(text)
+    for (const text of ['汇总与最终放行', '权威成本分布', '部门金额分布', '成本项目分布', 'departmentEntries', 'departmentDonutStyle', 'componentDonutStyle', '出货价算价', '客户自提时本板块完全隐藏', '减税明细 / 成本汇总', '一、出厂货价核', '二、包装 / 外购', '三、人工 &amp; 成本汇总', '四、减税明细', '减税后成本', '分段放行状态', '最终提交人与最终放行人不得相同', '具备最终审核权限的提交人可在批准前主动退回修改', 'finalRejectError', '退回中…']) expect(summarySource).toContain(text)
     for (const text of ['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣类13%', '吸塑类6%', '运费类9%', '含税13%类']) expect(backendSummarySource).toContain(text)
     expect(summarySource).toContain('v-if="shippingPricing.enabled"')
     expect(summarySource).toContain('减税额 = 金额 × 税率')
@@ -162,6 +166,11 @@ describe('internal quote desk frontend layout', () => {
     }
     expect(homeSource).toContain("internal_quote:baseline_read")
     expect(homeSource).toContain("internal_quote:baseline_manage")
+    for (const text of ['客户资料', '仅本厂业务主管可新增、修改和删除', '删除只会从后续建单选项中移除']) {
+      expect(`${homeSource}\n${customerDialogSource}`).toContain(text)
+    }
+    expect(homeSource).toContain("internal_quote:customer_manage")
+    expect(createDialogSource).toContain('v-for="customer in customerOptions"')
   })
 
   it('matches the molding-sample interaction baseline for back navigation, motion and readable type', () => {
@@ -212,6 +221,7 @@ describe('internal quote desk frontend layout', () => {
     expect(apiSource).toContain("'/internal-quotes/business-owners'")
     expect(apiSource).toContain("'/internal-quotes/dashboard'")
     expect(apiSource).toContain("'/internal-quotes/pricing-baseline'")
+    expect(apiSource).toContain("'/internal-quotes/customers'")
     expect(apiSource).toContain('include_sections: true')
     expect(apiSource).toContain('saveSection(quoteId')
     expect(apiSource).toContain('previewImport(quoteId')

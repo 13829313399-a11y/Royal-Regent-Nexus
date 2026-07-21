@@ -12,6 +12,10 @@ const apiMock = vi.hoisted(() => ({
   addParticipation: vi.fn(),
   removeParticipation: vi.fn(),
   listBusinessOwners: vi.fn(),
+  listCustomers: vi.fn(),
+  createCustomer: vi.fn(),
+  updateCustomer: vi.fn(),
+  deleteCustomer: vi.fn(),
   getPricingBaseline: vi.fn(),
   updatePricingBaseline: vi.fn(),
   getTimeline: vi.fn(),
@@ -128,6 +132,22 @@ describe('internal quote desk real API state', () => {
     vi.clearAllMocks()
     apiMock.list.mockResolvedValue([quote()])
     apiMock.listBusinessOwners.mockResolvedValue([{ id: 'owner-1', username: 'owner', display_name: '业务负责人' }])
+    apiMock.listCustomers.mockResolvedValue([{
+      id: 'customer-1', factory_id: 'huaxing', name: 'Disney', revision: 1,
+      created_by: 'system', created_by_name: '系统迁移', created_at: '2026-07-21 10:00:00',
+      updated_by: 'system', updated_by_name: '系统迁移', updated_at: '2026-07-21 10:00:00',
+    }])
+    apiMock.createCustomer.mockResolvedValue({
+      id: 'customer-2', factory_id: 'huaxing', name: 'BuzzBee', revision: 1,
+      created_by: 'supervisor', created_by_name: '业务主管', created_at: '2026-07-21 11:00:00',
+      updated_by: 'supervisor', updated_by_name: '业务主管', updated_at: '2026-07-21 11:00:00',
+    })
+    apiMock.updateCustomer.mockResolvedValue({
+      id: 'customer-2', factory_id: 'huaxing', name: 'BuzzBee Toys', revision: 2,
+      created_by: 'supervisor', created_by_name: '业务主管', created_at: '2026-07-21 11:00:00',
+      updated_by: 'supervisor', updated_by_name: '业务主管', updated_at: '2026-07-21 11:10:00',
+    })
+    apiMock.deleteCustomer.mockResolvedValue(undefined)
     apiMock.getPricingBaseline.mockResolvedValue({
       factory_id: 'huaxing', workshop_code: 'huaxing-workshop', workshop_name: '华兴', revision: 0,
       source_type: 'default', updated_by: '', updated_by_name: '', updated_at: '',
@@ -258,6 +278,20 @@ describe('internal quote desk real API state', () => {
     expect(apiMock.updatePricingBaseline).toHaveBeenCalledWith('huaxing', 'huaxing-workshop', payload)
     expect(saved.revision).toBe(1)
     expect(store.pricingBaseline?.material_prices[0].price_hkd_lb).toBe('9.25')
+  })
+
+  it('keeps factory customers revision-safe across create, rename and delete', async () => {
+    const store = useInternalQuoteDeskStore()
+    await store.loadCustomers('huaxing')
+    const created = await store.createCustomer('huaxing', 'BuzzBee')
+    const updated = await store.updateCustomer('huaxing', created!.id, 'BuzzBee Toys', created!.revision)
+    await store.deleteCustomer('huaxing', updated!.id, updated!.revision)
+
+    expect(apiMock.listCustomers).toHaveBeenCalledWith('huaxing')
+    expect(apiMock.createCustomer).toHaveBeenCalledWith('huaxing', 'BuzzBee')
+    expect(apiMock.updateCustomer).toHaveBeenCalledWith('customer-2', 'BuzzBee Toys', 1)
+    expect(apiMock.deleteCustomer).toHaveBeenCalledWith('customer-2', 2)
+    expect(store.factoryCustomers.map((item) => item.name)).toEqual(['Disney'])
   })
 
   it('writes section payloads through the revision-safe API and keeps comments server-only', async () => {

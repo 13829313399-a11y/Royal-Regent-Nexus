@@ -241,7 +241,9 @@ def review_final_release(
     _check_revision(quote.header_revision, payload.revision, "报价头")
     if quote.status != "final_reviewing" or quote.final_release_status != "pending":
         raise HTTPException(status_code=409, detail="当前报价不在最终放行审核中")
-    if quote.final_submitted_by == user.id:
+    # The two-person lock protects approval. The submitter may still withdraw the
+    # pending release by rejecting it back to the editable workflow.
+    if payload.decision == "approve" and quote.final_submitted_by == user.id:
         raise HTTPException(status_code=403, detail="最终提交人不能审核自己的报价")
 
     sections = _quote_sections(db, quote.id)

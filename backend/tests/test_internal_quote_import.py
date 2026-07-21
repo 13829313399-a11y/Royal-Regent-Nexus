@@ -7,7 +7,8 @@ from openpyxl.drawing.image import Image as WorksheetImage
 from PIL import Image as PillowImage
 
 from app.services.internal_quote_artifacts import _merge_import_payload
-from app.services.internal_quote_import import parse_internal_quote_workbook
+from app.services.internal_quote_import import find_header, parse_internal_quote_workbook, workbook_rows
+from app.services.internal_quote_templates import TEMPLATE_LABELS, build_internal_quote_import_template
 
 
 def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> bytes:
@@ -20,6 +21,17 @@ def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> byt
     workbook.save(output)
     workbook.close()
     return output.getvalue()
+
+
+@pytest.mark.parametrize("import_type", sorted(TEMPLATE_LABELS))
+def test_downloadable_import_template_uses_a_header_recognized_by_its_parser(import_type: str):
+    content, file_name = build_internal_quote_import_template(import_type)
+
+    assert content.startswith(b"PK")
+    assert file_name.endswith(".xlsx")
+    sheet_name, _rows, header_index = find_header(workbook_rows(content), import_type)
+    assert sheet_name == TEMPLATE_LABELS[import_type]
+    assert header_index == 0
 
 
 def water_table_workbook_with_image() -> bytes:
