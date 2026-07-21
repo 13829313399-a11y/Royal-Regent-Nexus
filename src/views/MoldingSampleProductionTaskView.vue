@@ -2535,11 +2535,11 @@ watchEffect(() => {
                     <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowDate(selectedTask.order.completed_date, '未完成') }}</div>
                   </div>
                   <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                    <div class="text-[10px] font-semibold text-slate-400">系统提交时间（北京时间）</div>
+                    <div class="text-[10px] font-semibold text-slate-400">系统提交时间</div>
                     <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowTime(selectedTask.order.created_at) }}</div>
                   </div>
                   <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                    <div class="text-[10px] font-semibold text-slate-400">系统更新时间（北京时间）</div>
+                    <div class="text-[10px] font-semibold text-slate-400">系统更新时间</div>
                     <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowTime(selectedTask.order.updated_at) }}</div>
                   </div>
                 </div>
