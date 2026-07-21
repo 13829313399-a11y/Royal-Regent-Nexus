@@ -189,6 +189,7 @@ export interface InternalQuote {
   workshopCode: string
   workshopName: string
   initiatorDepartment: InternalQuoteInitiatorDepartment
+  createdById: string
   initiatorName: string
   businessOwnerId: string
   businessOwner: string
