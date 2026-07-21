@@ -324,6 +324,7 @@ function toQuote(
     workshopCode: source.workshop_code,
     workshopName: source.workshop_name,
     initiatorDepartment: source.initiator_department === 'engineering' ? 'engineering' : 'sales-business',
+    createdById: source.created_by,
     initiatorName: source.created_by_name || source.created_by,
     businessOwnerId: source.business_owner_id,
     businessOwner: source.business_owner_name,
@@ -361,7 +362,7 @@ function toQuote(
 function emptyQuote(): InternalQuote {
   return {
     id: '', quoteNo: '', productName: '正在读取内部报价…', customer: '', versionLabel: '', factoryId: '', factoryName: '',
-    workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', initiatorName: '', businessOwnerId: '',
+    workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', createdById: '', initiatorName: '', businessOwnerId: '',
     businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
     fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', referenceSnapshot: {}, formulaVersion: '', headerRevision: 1,
     finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [], rr2CostSummary: rr2CostSummary(),

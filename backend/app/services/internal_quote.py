@@ -6,16 +6,19 @@ from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.auth import AuthUser, AuthUserRole, SystemNotification
 from app.models.internal_quote import (
     InternalQuote,
+    InternalQuoteAttachment,
     InternalQuoteArtifactHandoff,
     InternalQuoteAuditLog,
     InternalQuoteExportFile,
+    InternalQuoteFinalReview,
+    InternalQuoteImportBatch,
     InternalQuoteReferenceSet,
     InternalQuoteReview,
     InternalQuoteSection,
@@ -48,6 +51,7 @@ from app.schemas.internal_quote import (
 )
 from app.services.auth import (
     AuthContext,
+    add_auth_audit,
     build_auth_context,
     can,
     ensure_permission_in_scope,
@@ -3247,3 +3251,81 @@ def archive_quote(
     db.commit()
     db.refresh(quote)
     return quote_to_out(db, quote)
+
+
+def delete_quote(
+    db: Session,
+    quote_id: str,
+    revision: int,
+    user: AuthContext,
+    request: Request | None = None,
+) -> None:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_read(db, user, quote.factory_id)
+
+    is_creator = quote.created_by == user.id
+    is_sales_supervisor = has_permission_in_scope(
+        user,
+        "internal_quote:archive",
+        quote.factory_id,
+        "sales-business",
+    )
+    if not is_creator and not is_sales_supervisor:
+        raise HTTPException(status_code=403, detail="仅建单人或本厂区业务主管可删除内部报价")
+
+    _check_revision(quote.header_revision, revision, "报价头")
+    has_export = db.scalar(
+        select(func.count(InternalQuoteExportFile.id)).where(
+            InternalQuoteExportFile.quote_id == quote.id
+        )
+    )
+    has_handoff = db.scalar(
+        select(func.count(InternalQuoteArtifactHandoff.id)).where(
+            InternalQuoteArtifactHandoff.quote_id == quote.id
+        )
+    )
+    if (
+        quote.status in {"released", "exported"}
+        or quote.final_release_status == "approved"
+        or bool(has_export)
+        or bool(has_handoff)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="已放行、已导出或已进入报客价交接的报价不能删除，请使用归档保留审计记录",
+        )
+
+    add_auth_audit(
+        db,
+        "internal_quote_deleted",
+        username=user.username,
+        user_id=user.id,
+        detail=(
+            f"删除内部报价：{quote.factory_id}/{quote.quote_no}/{quote.version_label}，"
+            f"建单人={quote.created_by_name or quote.created_by}，revision={quote.header_revision}"
+        ),
+        request=request,
+    )
+    _mark_quote_notifications_handled(
+        db,
+        quote,
+        events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
+    )
+
+    # Explicitly remove children so SQLite test/local databases remain correct
+    # even when foreign-key cascade enforcement is not enabled on a connection.
+    for model in (
+        InternalQuoteArtifactHandoff,
+        InternalQuoteExportFile,
+        InternalQuoteFinalReview,
+        InternalQuoteAttachment,
+        InternalQuoteImportBatch,
+        InternalQuoteReview,
+        InternalQuoteSectionRevision,
+        InternalQuoteAuditLog,
+        InternalQuoteSection,
+        InternalQuoteReferenceSet,
+    ):
+        db.execute(delete(model).where(model.quote_id == quote.id))
+    db.delete(quote)
+    db.commit()

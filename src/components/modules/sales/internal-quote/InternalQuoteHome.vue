@@ -17,6 +17,7 @@ import {
   Settings2,
   ShieldCheck,
   TimerReset,
+  Trash2,
   Users,
   XCircle,
 } from '@lucide/vue'
@@ -30,7 +31,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import { getFactoryScopedRoute, type FactoryContextId } from '@/data/enterpriseMock'
-import type { ApiInternalQuoteCustomer, InternalQuoteDashboardPeriod, InternalQuotePricingBaselineUpdateRequest } from '@/api/internalQuote'
+import { internalQuoteApi, type ApiInternalQuoteCustomer, type InternalQuoteDashboardPeriod, type InternalQuotePricingBaselineUpdateRequest } from '@/api/internalQuote'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import type { InternalQuote, InternalQuoteCreatePayload, InternalQuoteStatus } from '@/types/internalQuoteDesk'
 
@@ -55,6 +56,9 @@ const baselineDialogFactoryGeneration = ref(0)
 const customerDialogOpen = ref(false)
 const customerDialogFactoryId = ref('')
 const customerDialogFactoryGeneration = ref(0)
+const deleteTarget = ref<InternalQuote>()
+const deleteDialogError = ref('')
+const deletingQuoteId = ref('')
 const activeFactory = computed(() => (
   appStore.activeFactory.id === 'group'
     ? appStore.activeProductionFactory
@@ -342,6 +346,70 @@ function closePricingBaseline() {
   quoteStore.clearPricingBaseline()
 }
 
+function canDeleteQuote(quote: InternalQuote) {
+  if (quote.factoryId !== activeFactoryId.value || isForeignFactory(authStore, quote.factoryId)) return false
+  return quote.createdById === authStore.currentUser?.id
+    || authStore.can('internal_quote:archive', quote.factoryId, 'sales-business')
+}
+
+function deleteIsProtected(quote: InternalQuote) {
+  return ['released', 'exported'].includes(quote.status)
+    || quote.finalReleaseStatus === 'approved'
+}
+
+function deleteButtonTitle(quote: InternalQuote) {
+  return deleteIsProtected(quote)
+    ? '已放行、已导出或已交接的报价不能删除，请使用归档'
+    : '删除内部报价'
+}
+
+function openDeleteDialog(quote: InternalQuote) {
+  if (!canDeleteQuote(quote) || deleteIsProtected(quote)) return
+  deleteTarget.value = quote
+  deleteDialogError.value = ''
+}
+
+function closeDeleteDialog() {
+  if (deletingQuoteId.value) return
+  deleteTarget.value = undefined
+  deleteDialogError.value = ''
+}
+
+function resetDeleteDialog() {
+  deleteTarget.value = undefined
+  deleteDialogError.value = ''
+}
+
+async function confirmDeleteQuote() {
+  const quote = deleteTarget.value
+  if (!quote || !canDeleteQuote(quote) || deleteIsProtected(quote)) return
+  const requestedFactoryId = quote.factoryId
+  const requestedGeneration = quoteStore.factoryContextGeneration
+  deleteDialogError.value = ''
+  deletingQuoteId.value = quote.id
+  try {
+    await internalQuoteApi.deleteQuote(quote.id, quote.headerRevision)
+    if (!quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedGeneration)) return
+    const nextPage = quoteStore.quotes.length > 1 || quoteStore.quoteListPage <= 1
+      ? quoteStore.quoteListPage
+      : quoteStore.quoteListPage - 1
+    resetDeleteDialog()
+    await Promise.all([
+      loadQuotePage(nextPage, requestedFactoryId),
+      quoteStore.loadDashboard(requestedFactoryId, statsPeriod.value),
+    ])
+  } catch (error) {
+    if (
+      deleteTarget.value?.id === quote.id
+      && quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedGeneration)
+    ) {
+      deleteDialogError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (deletingQuoteId.value === quote.id) deletingQuoteId.value = ''
+  }
+}
+
 function openCustomerDialog() {
   if (!canManageCustomers.value) return
   customerDialogFactoryId.value = activeFactoryId.value
@@ -400,7 +468,7 @@ function clearFilters() {
   customerFilter.value = 'all'
 }
 
-async function loadQuotePage(page = 1, factoryId = activeFactoryId.value) {
+async function loadQuotePage(page = 1, factoryId: string = activeFactoryId.value) {
   const options = {
     page,
     pageSize: 10,
@@ -433,6 +501,7 @@ watch(activeFactoryId, async (factoryId) => {
   closeCreateDialog()
   closePricingBaseline()
   closeCustomerDialog()
+  resetDeleteDialog()
   dialogError.value = ''
   if (listFilterTimer) {
     clearTimeout(listFilterTimer)
@@ -618,6 +687,15 @@ onBeforeUnmount(() => {
                     :aria-label="canCloneQuote(quote) ? '复制报价' : cloneUnavailableMessage(quote)"
                     @click="openClone(quote)"
                   ><Copy aria-hidden="true" /></button>
+                  <button
+                    v-if="canDeleteQuote(quote)"
+                    type="button"
+                    class="danger"
+                    :disabled="deleteIsProtected(quote) || deletingQuoteId === quote.id"
+                    :title="deleteButtonTitle(quote)"
+                    :aria-label="deleteButtonTitle(quote)"
+                    @click.stop="openDeleteDialog(quote)"
+                  ><Trash2 aria-hidden="true" /></button>
                   <button type="button" class="primary" title="进入报价" aria-label="进入报价" @click="openQuote(quote)"><ArrowRight aria-hidden="true" /></button>
                 </div>
               </td>
@@ -638,6 +716,24 @@ onBeforeUnmount(() => {
         <span>切换页码时按需加载，未访问页不会预先读取</span>
       </footer>
     </section>
+
+    <div v-if="deleteTarget" class="quote-delete-backdrop" @click.self="closeDeleteDialog">
+      <section class="quote-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="quote-delete-title">
+        <div class="quote-delete-icon"><Trash2 aria-hidden="true" /></div>
+        <div>
+          <h2 id="quote-delete-title">确认删除内部报价？</h2>
+          <p>即将删除 <strong>{{ deleteTarget.quoteNo }}</strong> · {{ deleteTarget.productName }}（{{ deleteTarget.versionLabel }}）。此操作会同时删除尚未放行的分段明细、附件与修订记录，且无法恢复。</p>
+          <p class="quote-delete-rule">仅建单人和本厂区业务主管可执行；已放行、已导出或已交接到报客价的报价只能归档。</p>
+          <p v-if="deleteDialogError" class="quote-delete-error" role="alert">{{ deleteDialogError }}</p>
+          <footer>
+            <button type="button" :disabled="Boolean(deletingQuoteId)" @click="closeDeleteDialog">取消</button>
+            <button type="button" class="danger" :disabled="Boolean(deletingQuoteId)" @click="confirmDeleteQuote">
+              {{ deletingQuoteId ? '正在删除…' : '确认删除' }}
+            </button>
+          </footer>
+        </div>
+      </section>
+    </div>
 
     <InternalQuoteCreateDialog
       :open="createDialogOpen"
@@ -689,7 +785,8 @@ onBeforeUnmount(() => {
 @keyframes quote-chart-grow{from{width:0}}
 .quote-list-panel{overflow:hidden;border:1px solid #dbe5ea;border-radius:14px;background:#fff;box-shadow:0 16px 38px rgb(15 23 42/.05)}.quote-list-toolbar{display:flex;align-items:center;gap:14px;padding:13px;border-bottom:1px solid #e2e8f0}.quote-search-box{display:flex;min-width:280px;flex:1;align-items:center;gap:8px;border:1px solid #dbe5ea;border-radius:9px;background:#f8fafc;padding:0 11px;color:#94a3b8}.quote-search-box:focus-within{border-color:#14b8a6;background:#fff;box-shadow:0 0 0 3px rgb(20 184 166/.08)}.quote-search-box svg{width:16px}.quote-search-box input{min-width:0;flex:1;border:0;background:transparent;padding:9px 0;color:#0f172a;font-size:12px;outline:0}.quote-filters{display:flex;align-items:center;gap:8px;color:#94a3b8}.quote-filters>svg{width:16px}.quote-filters select{height:36px;border:1px solid #dbe5ea;border-radius:9px;background:#fff;padding:0 28px 0 10px;color:#475569;font-size:11px;font-weight:700}.quote-clear-filter{display:grid;width:36px;height:36px;place-items:center;border:1px solid #dbe5ea;border-radius:9px;background:#fff;color:#64748b}.quote-clear-filter:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-clear-filter svg{width:15px}
 .quote-customer-button{display:inline-flex;height:36px;align-items:center;gap:6px;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-size:11px;font-weight:900;white-space:nowrap}.quote-customer-button:hover{border-color:#2dd4bf;background:#ccfbf1}.quote-customer-button:disabled{cursor:wait;opacity:.55}.quote-customer-button svg{width:15px}
-.quote-table-scroll{overflow:auto}.quote-table{width:100%;min-width:1080px;border-collapse:collapse;text-align:left}.quote-table th{background:#f1f5f9;padding:10px 12px;color:#64748b;font-size:9px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.quote-table td{border-top:1px solid #eef2f6;padding:11px 12px;color:#334155;font-size:11px;vertical-align:middle}.quote-table tbody tr{transition:background .15s}.quote-table tbody tr:hover{background:#f8fafc}.quote-table td:nth-child(2) strong{display:block;color:#0f172a;font-size:12px}.quote-table td:nth-child(2) span,.quote-table small{display:block;margin-top:3px;color:#94a3b8;font-size:10px}.quote-number{border:0;background:transparent;padding:0;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;font-weight:900}.quote-number:hover{text-decoration:underline}.quote-initiator,.quote-version{display:inline-flex;border-radius:999px;background:#f1f5f9;padding:4px 7px;color:#475569;font-size:9px;font-weight:900}.quote-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:color-mix(in srgb,var(--tone) 10%,white);padding:5px 8px;color:var(--tone);font-size:9px;font-weight:900;white-space:nowrap}.quote-status i{width:6px;height:6px;border-radius:99px;background:currentColor}.quote-progress-cell{display:flex;min-width:120px;align-items:center;gap:8px}.quote-progress-cell>div{height:6px;flex:1;overflow:hidden;border-radius:99px;background:#e2e8f0}.quote-progress-cell>div span{display:block;height:100%;border-radius:99px;background:#0d9488}.quote-progress-cell strong{color:#475569;font-size:10px}.quote-date{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;white-space:nowrap}.quote-row-actions{display:flex;justify-content:flex-end;gap:5px}.quote-row-actions button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b}.quote-row-actions button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-row-actions button:disabled{cursor:not-allowed;border-color:#e2e8f0;background:#f8fafc;color:#cbd5e1}.quote-row-actions button.primary{border-color:#0f766e;background:#0f766e;color:#fff}.quote-row-actions svg{width:14px}.quote-empty{padding:40px!important;text-align:center;color:#94a3b8!important}.quote-table-footer{display:grid;grid-template-columns:minmax(260px,1fr) auto minmax(240px,1fr);align-items:center;gap:12px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:9px 13px;color:#64748b;font-size:10px}.quote-table-footer>span:last-child{text-align:right}.quote-pagination{display:flex;align-items:center;justify-content:center;gap:8px}.quote-pagination button{display:inline-flex;height:30px;align-items:center;gap:4px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 9px;color:#475569;font-size:10px;font-weight:800}.quote-pagination button:hover:not(:disabled){border-color:#5eead4;background:#f0fdfa;color:#0f766e}.quote-pagination button:disabled{cursor:not-allowed;opacity:.42}.quote-pagination button svg{width:13px}.quote-pagination strong{min-width:72px;color:#334155;text-align:center;font-size:10px}
+.quote-table-scroll{overflow:auto}.quote-table{width:100%;min-width:1120px;border-collapse:collapse;text-align:left}.quote-table th{background:#f1f5f9;padding:10px 12px;color:#64748b;font-size:9px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.quote-table td{border-top:1px solid #eef2f6;padding:11px 12px;color:#334155;font-size:11px;vertical-align:middle}.quote-table tbody tr{transition:background .15s}.quote-table tbody tr:hover{background:#f8fafc}.quote-table td:nth-child(2) strong{display:block;color:#0f172a;font-size:12px}.quote-table td:nth-child(2) span,.quote-table small{display:block;margin-top:3px;color:#94a3b8;font-size:10px}.quote-number{border:0;background:transparent;padding:0;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;font-weight:900}.quote-number:hover{text-decoration:underline}.quote-initiator,.quote-version{display:inline-flex;border-radius:999px;background:#f1f5f9;padding:4px 7px;color:#475569;font-size:9px;font-weight:900}.quote-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:color-mix(in srgb,var(--tone) 10%,white);padding:5px 8px;color:var(--tone);font-size:9px;font-weight:900;white-space:nowrap}.quote-status i{width:6px;height:6px;border-radius:99px;background:currentColor}.quote-progress-cell{display:flex;min-width:120px;align-items:center;gap:8px}.quote-progress-cell>div{height:6px;flex:1;overflow:hidden;border-radius:99px;background:#e2e8f0}.quote-progress-cell>div span{display:block;height:100%;border-radius:99px;background:#0d9488}.quote-progress-cell strong{color:#475569;font-size:10px}.quote-date{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;white-space:nowrap}.quote-row-actions{display:flex;justify-content:flex-end;gap:5px}.quote-row-actions button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b}.quote-row-actions button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-row-actions button:disabled{cursor:not-allowed;border-color:#e2e8f0;background:#f8fafc;color:#cbd5e1}.quote-row-actions button.primary{border-color:#0f766e;background:#0f766e;color:#fff}.quote-row-actions button.danger{border-color:#fecaca;color:#dc2626}.quote-row-actions button.danger:hover:not(:disabled){border-color:#ef4444;background:#fef2f2;color:#b91c1c}.quote-row-actions svg{width:14px}.quote-empty{padding:40px!important;text-align:center;color:#94a3b8!important}.quote-table-footer{display:grid;grid-template-columns:minmax(260px,1fr) auto minmax(240px,1fr);align-items:center;gap:12px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:9px 13px;color:#64748b;font-size:10px}.quote-table-footer>span:last-child{text-align:right}.quote-pagination{display:flex;align-items:center;justify-content:center;gap:8px}.quote-pagination button{display:inline-flex;height:30px;align-items:center;gap:4px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 9px;color:#475569;font-size:10px;font-weight:800}.quote-pagination button:hover:not(:disabled){border-color:#5eead4;background:#f0fdfa;color:#0f766e}.quote-pagination button:disabled{cursor:not-allowed;opacity:.42}.quote-pagination button svg{width:13px}.quote-pagination strong{min-width:72px;color:#334155;text-align:center;font-size:10px}
+.quote-delete-backdrop{position:fixed;z-index:90;display:grid;inset:0;place-items:center;background:rgb(15 23 42/.52);padding:20px;backdrop-filter:blur(2px)}.quote-delete-dialog{display:grid;width:min(520px,100%);grid-template-columns:44px 1fr;gap:14px;border:1px solid #fecaca;border-radius:16px;background:#fff;padding:20px;box-shadow:0 24px 70px rgb(15 23 42/.28)}.quote-delete-icon{display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:#fef2f2;color:#dc2626}.quote-delete-icon svg{width:21px}.quote-delete-dialog h2{margin:1px 0 8px;color:#0f172a;font-size:18px}.quote-delete-dialog p{margin:0;color:#475569;font-size:12px;line-height:1.7}.quote-delete-dialog p strong{color:#0f172a}.quote-delete-dialog .quote-delete-rule{margin-top:10px;border-radius:8px;background:#fff7ed;padding:8px 10px;color:#9a3412;font-size:11px}.quote-delete-dialog .quote-delete-error{margin-top:10px;border:1px solid #fecaca;border-radius:8px;background:#fef2f2;padding:8px 10px;color:#b91c1c;font-size:11px}.quote-delete-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}.quote-delete-dialog footer button{min-width:84px;height:36px;border:1px solid #dbe5ea;border-radius:9px;background:#fff;color:#475569;font-size:11px;font-weight:900}.quote-delete-dialog footer button:hover:not(:disabled){background:#f8fafc}.quote-delete-dialog footer button.danger{border-color:#dc2626;background:#dc2626;color:#fff}.quote-delete-dialog footer button.danger:hover:not(:disabled){background:#b91c1c}.quote-delete-dialog footer button:disabled{cursor:wait;opacity:.55}
 @media(max-width:1300px){.quote-dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-speed-chart{grid-column:1/-1}.quote-speed-plot{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-speed-scale{grid-column:1/-1}}
 @media(max-width:1100px){.quote-kpi-grid{grid-template-columns:repeat(2,1fr)}.quote-list-toolbar{align-items:stretch;flex-direction:column}.quote-filters{flex-wrap:wrap}.quote-filters select{flex:1}.quote-clear-filter{flex:0 0 auto}.quote-progress-bars button{grid-template-columns:minmax(180px,.85fr) minmax(220px,1.3fr) 82px 18px}}
 @media(max-width:820px){.quote-dashboard-grid{grid-template-columns:1fr}.quote-speed-chart,.quote-progress-chart{grid-column:auto}.quote-speed-plot{grid-template-columns:1fr}.quote-dashboard-heading{align-items:stretch;flex-direction:column}.quote-period-switch{align-self:flex-start}.quote-progress-bars button{grid-template-columns:1fr 70px 18px}.quote-progress-title{grid-column:1/-1}.quote-progress-track{grid-column:1}.quote-progress-value{grid-column:2}.quote-progress-bars button>svg{grid-column:3}}
