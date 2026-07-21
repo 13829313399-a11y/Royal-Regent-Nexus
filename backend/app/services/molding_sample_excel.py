@@ -57,6 +57,7 @@ ITEM_COLUMNS = [
     ("适配机型", "machine_type"),
     ("模具是否在厂", "mold_presence_status"),
     ("原料", "material"),
+    ("用料用途", "material_usage_type"),
     ("颜色", "color"),
     ("色粉编号", "pigment_no"),
     ("数量", "quantity"),
@@ -66,7 +67,6 @@ ITEM_COLUMNS = [
     ("预计料费HKD", "expected_amount_hkd"),
     ("模具回厂时间", "mold_return_time"),
     ("完成时间", "completion_time"),
-    ("用料用途", "material_usage_type"),
     ("备注", "notes"),
     ("领料单号", "receipt_no"),
     ("领料kg", "collected_weight_kg"),
@@ -85,6 +85,7 @@ ENGINEERING_IMPORT_COLUMNS = [
     ("模具编号", "mold_id"),
     ("模具名称", "mold_name"),
     ("所需用料", "material"),
+    ("用料用途", "material_usage_type"),
     ("颜色", "color"),
     ("PMS", "pms"),
     ("色粉", "pigment_no"),
@@ -94,11 +95,10 @@ ENGINEERING_IMPORT_COLUMNS = [
     ("需办日期", "required_date"),
     ("工模尺寸", "mold_dimensions"),
     ("模具状态（是否在厂）", "mold_presence_status"),
-    ("用料用途", "material_usage_type"),
     ("备注", "notes"),
 ]
 
-ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 11, 11, 16, 16, 18, 18, 14, 30]
+ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 14, 11, 11, 16, 16, 18, 18, 30]
 
 BATCH_ORDER_COLUMNS = [
     ("单据ID", "id"),
@@ -275,6 +275,7 @@ ITEM_COLUMN_WIDTHS = [
     14,
     14,
     22,
+    14,
     18,
     15,
     11,
@@ -284,7 +285,6 @@ ITEM_COLUMN_WIDTHS = [
     14,
     15,
     15,
-    14,
     30,
     18,
     12,
@@ -325,6 +325,7 @@ BATCH_COLUMN_WIDTHS = [
     14,
     14,
     22,
+    14,
     18,
     15,
     11,
@@ -334,7 +335,6 @@ BATCH_COLUMN_WIDTHS = [
     14,
     15,
     15,
-    14,
     30,
     18,
     12,
@@ -516,7 +516,7 @@ def build_engineering_import_template(factory_id: str | None = None) -> bytes:
         ["开单日期", "", "阶段", "T0", "填写部", "工程部"],
         ["发至", "内部", "审核主管", "", "落单人", ""],
         ["注意事项", ""],
-        ["填写说明：基础资料填在上方；每一行代表一项模具明细；多原料请按“比例%原料 + 比例%原料水口料”填写；完整规则和例子请查看“填写说明”工作表。"],
+        ["填写说明：基础资料填在上方；每一行代表一项模具明细；请先选择用料用途，正式生产填写原料数据库中的启用名称，试料可自定义；完整规则和例子请查看“填写说明”工作表。"],
         [
             "来源厂区",
             _format_factory_value(normalized_factory_id, fallback=""),
@@ -553,13 +553,13 @@ def build_engineering_import_template(factory_id: str | None = None) -> bytes:
         ["多原料", "同料水口简写", "也可写：80%ABS PA-757 + 20%水口料", "水口料未写原料名时，系统自动继承前面的 ABS PA-757"],
         ["多原料", "不同原料 + 水口料", "例：80%ABS PA-757 + 20%PVC 90度（本白,普通）水口料", "10kg 表示 8kg ABS + 2kg PVC 水口；不同原料按各自价格分别计算后合计"],
         ["多原料", "比例规则", "每段必须是“比例%原料”，各段用 + 分隔", "比例合计必须为 100%；水口料段请以“水口”或“水口料”结尾"],
+        ["模具明细", "用料用途", "使用下拉选择：正式生产 / 试料", "正式生产的所需用料须填写原料数据库中的启用名称；试料可自定义输入且不从原料数据库搜索；试料用量保留，金额不计入物料结余；留空按正式生产处理"],
         ["模具明细", "颜色 / PMS / 色粉", "分别填写颜色、PMS 和色粉", "PMS 会与颜色共同显示，色粉单独保存"],
         ["模具明细", "啤/套 / 啤数", "分别填写每套啤数说明和啤数", "啤数请填写数字"],
         ["模具明细", "所需用料(kg)", "直接填写本行模具所需总重量", "多原料时系统按各成分比例拆分重量"],
         ["模具明细", "需办日期", "建议使用 YYYY-MM-DD", "映射明细的需办 / 完成日期"],
         ["模具明细", "工模尺寸", "直接填写尺寸", "例如 207*789 或 650 × 450 × 380 mm"],
         ["模具明细", "模具状态（是否在厂）", "使用下拉选择：在厂 / 不在厂 / 待确认", "留空按待确认处理"],
-        ["模具明细", "用料用途", "使用下拉选择：正式生产 / 试料", "试料不计入物料结余；留空按正式生产处理"],
         ["模具明细", "备注", "填写本行补充信息", "不影响用料比例及费用计算"],
         ["系统维护", "价格、费用与实际回填", "无需在导入模板填写", "原料价格、预计料费、实际用料和实际料费由系统维护"],
     ]
@@ -577,8 +577,8 @@ def build_engineering_import_template(factory_id: str | None = None) -> bytes:
             style_matrix=style_matrix,
             merge_ranges=[f"A1:{last_column}1", "B5:F5", f"A6:{last_column}6"],
             data_validations=[
-                (f"L{detail_start_row}:L{detail_end_row}", ["在厂", "不在厂", "待确认"], "请选择在厂状态"),
-                (f"M{detail_start_row}:M{detail_end_row}", ["正式生产", "试料"], "请选择用料用途"),
+                (f"D{detail_start_row}:D{detail_end_row}", ["正式生产", "试料"], "请选择用料用途"),
+                (f"M{detail_start_row}:M{detail_end_row}", ["在厂", "不在厂", "待确认"], "请选择在厂状态"),
             ],
         ),
         additional_sheets=[
@@ -917,10 +917,12 @@ def parse_order_excel(
             item_data["notes"] = "；".join(note_parts)
 
         material = str(item_data.get("material") or "").strip()
+        material_usage_type = str(item_data.get("material_usage_type") or "production")
         material, material_components = _parse_import_material_components(
             material,
             excel_row_number=excel_row_number,
             strict=uses_current_engineering_detail_contract,
+            allow_arbitrary_text=material_usage_type == "trial",
         )
         item_data["material"] = material
         item_data["material_components"] = material_components
@@ -942,14 +944,17 @@ def _parse_import_material_components(
     *,
     excel_row_number: int,
     strict: bool,
+    allow_arbitrary_text: bool = False,
 ) -> tuple[str, list[dict[str, object]]]:
     """Normalize the one-cell engineering material contract into components.
 
-    Current engineering workbooks fail fast when a value visibly attempts the
-    percentage composition syntax but cannot be parsed.  A plus sign without a
-    percentage can be part of a single material name (for example ``PC+ABS``).
-    Formal legacy exports keep their historical permissive behavior so old
-    round trips are still accepted.
+    Current engineering workbooks fail fast when a production value visibly
+    attempts the percentage composition syntax but cannot be parsed.  Trial
+    rows deliberately accept arbitrary text; a valid composition is still
+    normalized, while composition-looking free text becomes one 100% trial
+    component.  A plus sign without a leading percentage can be part of a
+    single material name (for example ``PC+ABS``).  Formal legacy exports keep
+    their historical permissive behavior so old round trips are still accepted.
     """
 
     normalized_material = material.strip()
@@ -964,6 +969,14 @@ def _parse_import_material_components(
         re.match(r"^\s*\d+(?:\.\d+)?\s*[%％]", normalized_material)
     )
     if has_composition_marker:
+        if allow_arbitrary_text:
+            return normalized_material, [
+                {
+                    "material": normalized_material,
+                    "ratio_percent": 100.0,
+                    "source_type": "virgin",
+                }
+            ]
         if strict:
             raise ValueError(
                 f"Excel 第 {excel_row_number} 行“所需用料”格式错误："
