@@ -1,0 +1,450 @@
+.molding-print-root {
+  color: #0f172a;
+  font-family: "Microsoft YaHei", "Noto Sans CJK SC", "PingFang SC", Arial, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.4;
+}
+
+.molding-print-root.is-preview {
+  width: max-content;
+  min-width: 100%;
+}
+
+.molding-print-page {
+  box-sizing: border-box;
+  margin: 0 auto;
+  background: #fff;
+  color: #0f172a;
+}
+
+.molding-print-root.is-preview .molding-print-page {
+  box-shadow: 0 14px 34px rgb(15 23 42 / 16%);
+}
+
+.molding-print-root.is-preview .molding-print-engineering-page {
+  width: 210mm;
+  min-height: 297mm;
+  padding: 8mm;
+}
+
+.molding-print-root.is-preview .molding-print-production-page {
+  width: 297mm;
+  min-height: 210mm;
+  padding: 6mm;
+}
+
+.molding-print-root.is-preview .molding-print-page + .molding-print-page {
+  margin-top: 8mm;
+}
+
+.molding-print-sheet {
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  padding: 4mm;
+  background: #fff;
+}
+
+.molding-print-root.is-preview .molding-print-sheet {
+  min-height: 100%;
+}
+
+.molding-print-engineering-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 1.35fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 5mm;
+  border-bottom: 2px solid #0f172a;
+  padding-bottom: 3mm;
+}
+
+.molding-print-brand-block,
+.molding-print-title-block,
+.molding-print-production-heading {
+  min-width: 0;
+}
+
+.molding-print-brand-block strong,
+.molding-print-production-heading > strong {
+  display: block;
+  color: #0f766e;
+  font-size: 10.5pt;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+
+.molding-print-brand-block span {
+  display: block;
+  margin-top: 1mm;
+  color: #64748b;
+  font-size: 9.5pt;
+}
+
+.molding-print-title-block {
+  text-align: center;
+}
+
+.molding-print-title-block h1,
+.molding-print-production-heading h1 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 19pt;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.molding-print-title-block p,
+.molding-print-production-heading p {
+  margin: .6mm 0 0;
+  color: #64748b;
+  font-size: 9.5pt;
+  letter-spacing: .05em;
+}
+
+.molding-print-document-number {
+  justify-self: end;
+  min-width: 46mm;
+  box-sizing: border-box;
+  border-radius: 3mm;
+  padding: 3mm 4mm;
+  background: #0f172a;
+  color: #fff;
+  text-align: right;
+}
+
+.molding-print-document-number span {
+  display: block;
+  color: #cbd5e1;
+  font-size: 9.5pt;
+}
+
+.molding-print-document-number strong {
+  display: block;
+  margin-top: 1mm;
+  font-size: 11.5pt;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.molding-print-status-band {
+  display: flex;
+  align-items: center;
+  gap: 3mm;
+  margin-top: 3mm;
+  border-radius: 2mm;
+  padding: 2.2mm 3mm;
+  background: #0f766e;
+  color: #fff;
+}
+
+.molding-print-status-pill {
+  border-radius: 999px;
+  padding: 1mm 3mm;
+  background: #d1fae5;
+  color: #115e59;
+  font-size: 10pt;
+  font-weight: 800;
+}
+
+.molding-print-status-band > strong {
+  font-size: 10.5pt;
+}
+
+.molding-print-batch-index {
+  margin-left: auto;
+  color: #ccfbf1;
+  font-size: 9.5pt;
+}
+
+.molding-print-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2mm;
+  margin-top: 3mm;
+}
+
+.molding-print-meta-grid > div {
+  min-width: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 2mm;
+  padding: 2.2mm 2.6mm;
+}
+
+.molding-print-meta-grid span,
+.molding-print-meta-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.molding-print-meta-grid span {
+  color: #64748b;
+  font-size: 9.5pt;
+}
+
+.molding-print-meta-grid strong {
+  margin-top: .7mm;
+  color: #0f172a;
+  font-size: 10.5pt;
+}
+
+.molding-print-reason-bar,
+.molding-print-reject-bar {
+  display: grid;
+  grid-template-columns: 43mm minmax(0, 1fr);
+  gap: 3mm;
+  margin-top: 3mm;
+  border: 1px solid #fbbf24;
+  border-radius: 2mm;
+  padding: 2.5mm 3mm;
+  background: #fffbeb;
+}
+
+.molding-print-reject-bar {
+  border-color: #fca5a5;
+  background: #fff7f7;
+}
+
+.molding-print-reason-bar span,
+.molding-print-reject-bar span {
+  color: #92400e;
+  font-size: 10pt;
+  font-weight: 800;
+}
+
+.molding-print-reject-bar span {
+  color: #b91c1c;
+}
+
+.molding-print-reason-bar strong,
+.molding-print-reject-bar strong {
+  font-size: 10.5pt;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.molding-print-detail-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 4mm;
+  margin-top: 4mm;
+  border-bottom: 1px solid #94a3b8;
+  padding-bottom: 1.8mm;
+}
+
+.molding-print-detail-heading strong {
+  font-size: 13pt;
+  font-weight: 800;
+}
+
+.molding-print-detail-heading span {
+  color: #64748b;
+  font-size: 9.5pt;
+  text-align: right;
+}
+
+.molding-print-empty {
+  margin-top: 2mm;
+  border: 1px solid #cbd5e1;
+  padding: 8mm;
+  color: #64748b;
+  font-size: 10.5pt;
+  text-align: center;
+}
+
+.molding-print-table {
+  width: 100%;
+  margin-top: 2mm;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 10.5pt;
+  line-height: 1.4;
+}
+
+.molding-print-table thead {
+  display: table-header-group;
+}
+
+.molding-print-table tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.molding-print-table th,
+.molding-print-table td {
+  border: 1px solid #cbd5e1;
+  padding: 2.2mm 2.4mm;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.molding-print-table th {
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 10pt;
+  font-weight: 800;
+  text-align: left;
+}
+
+.molding-print-table td > span,
+.molding-print-table td > strong {
+  display: block;
+}
+
+.molding-print-table td > span {
+  margin-top: 1.2mm;
+  color: #475569;
+  font-size: 9.5pt;
+}
+
+.molding-print-context-row th {
+  padding: 1.5mm 2.4mm;
+  background: #e6fffb;
+  color: #115e59;
+  font-size: 9.5pt;
+}
+
+.molding-print-index-cell {
+  color: #0f766e;
+  font-weight: 800;
+  text-align: center;
+}
+
+.molding-print-cell-primary {
+  color: #0f172a;
+  font-size: 10.5pt;
+  font-weight: 800;
+}
+
+.molding-print-cell-primary + .molding-print-cell-primary {
+  margin-top: 1mm;
+}
+
+.molding-print-usage-type {
+  color: #0f766e !important;
+  font-weight: 800;
+}
+
+.molding-print-usage-type.is-trial {
+  color: #92400e !important;
+}
+
+.molding-print-col-index { width: 4%; }
+.molding-print-col-engineering-mold { width: 23%; }
+.molding-print-col-engineering-material { width: 20%; }
+.molding-print-col-engineering-quantity { width: 14%; }
+.molding-print-col-engineering-usage { width: 15%; }
+.molding-print-col-engineering-cost { width: 24%; }
+
+.molding-print-production-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8mm;
+  border-bottom: 2px solid #0f172a;
+  padding-bottom: 3mm;
+}
+
+.molding-print-production-heading h1 {
+  margin-top: 2mm;
+}
+
+.molding-print-production-page .molding-print-reason-bar {
+  margin-top: 3mm;
+}
+
+.molding-print-production-page .molding-print-detail-heading {
+  margin-top: 4mm;
+}
+
+.molding-print-col-production-mold { width: 24%; }
+.molding-print-col-production-timing { width: 14%; }
+.molding-print-col-production-material { width: 27%; }
+.molding-print-col-production-quantity { width: 14%; }
+.molding-print-col-production-notes { width: 17%; }
+
+.molding-print-production-page.is-compact .molding-print-sheet,
+.molding-print-production-page.is-dense .molding-print-sheet {
+  padding: 3mm;
+}
+
+.molding-print-production-page.is-compact .molding-print-table th,
+.molding-print-production-page.is-compact .molding-print-table td {
+  padding: 1.8mm 2mm;
+}
+
+.molding-print-production-page.is-dense .molding-print-table th,
+.molding-print-production-page.is-dense .molding-print-table td {
+  padding: 1.4mm 1.8mm;
+}
+
+.molding-print-production-page.is-dense .molding-print-reason-bar,
+.molding-print-production-page.is-dense .molding-print-detail-heading {
+  margin-top: 2mm;
+}
+
+@media print {
+  html,
+  body,
+  body.molding-sample-overview-printing #app,
+  body.molding-sample-task-printing #app {
+    min-height: 0 !important;
+    height: auto !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  body.molding-sample-overview-printing *,
+  body.molding-sample-task-printing * {
+    visibility: hidden;
+  }
+
+  body.molding-sample-overview-printing #app > :not(.molding-print-engineering-root),
+  body.molding-sample-task-printing #app > :not(.molding-print-production-root) {
+    display: none !important;
+  }
+
+  body.molding-sample-overview-printing .molding-print-engineering-root,
+  body.molding-sample-overview-printing .molding-print-engineering-root *,
+  body.molding-sample-task-printing .molding-print-production-root,
+  body.molding-sample-task-printing .molding-print-production-root * {
+    visibility: visible;
+  }
+
+  body.molding-sample-overview-printing #app > .molding-print-engineering-root,
+  body.molding-sample-task-printing #app > .molding-print-production-root {
+    display: block !important;
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    min-height: 0 !important;
+    height: auto !important;
+    margin: 0 !important;
+  }
+
+  .molding-print-page {
+    width: 100% !important;
+    min-height: 0 !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .molding-print-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .molding-print-sheet {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+}

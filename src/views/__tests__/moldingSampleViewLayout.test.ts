@@ -4,6 +4,8 @@ import { join } from 'node:path'
 
 const source = readFileSync(join(process.cwd(), 'src/views/MoldingSampleView.vue'), 'utf8')
 const searchSource = readFileSync(join(process.cwd(), 'src/lib/moldingSampleSearch.ts'), 'utf8')
+const engineeringPrintSource = readFileSync(join(process.cwd(), 'src/components/molding/print/MoldingSampleEngineeringPrintDocument.vue'), 'utf8')
+const printCssSource = readFileSync(join(process.cwd(), 'src/components/molding/print/moldingSamplePrint.css'), 'utf8')
 
 for (const requiredCopy of [
   '啤办单管理',
@@ -40,7 +42,7 @@ for (const requiredCopy of [
   '打印',
   '全选当前筛选单据',
   '清空选择',
-  '啤办单打印内容',
+  '工程啤办通知单打印文档',
   '打印预览',
   '确认打印',
   '关闭预览',
@@ -94,7 +96,7 @@ for (const requiredCopy of [
   '不是已启用的原料',
   '原料 \\+ 来源类型',
 ]) {
-  assert.match(source, new RegExp(requiredCopy))
+  assert.match(`${source}\n${engineeringPrintSource}`, new RegExp(requiredCopy))
 }
 
 for (const preservedStatus of [
@@ -344,20 +346,22 @@ assert.match(source, /window\.print\(\)/)
 assert.match(source, /document\.body\.classList\.add\('molding-sample-overview-printing'\)/)
 assert.match(source, /document\.body\.classList\.remove\('molding-sample-overview-printing'\)/)
 assert.match(source, /window\.addEventListener\('afterprint', cleanUp, \{ once: true \}\)/)
-assert.match(source, /<\/main>\s*<section\s+class="molding-sample-print-root hidden"/)
-assert.match(source, /body\.molding-sample-overview-printing #app > :not\(\.molding-sample-print-root\) \{\s*display: none !important;/)
-assert.match(source, /body\.molding-sample-overview-printing #app > \.molding-sample-print-root \{[\s\S]*display: block !important;[\s\S]*position: static !important;/)
-assert.match(source, /\.molding-sample-print-page \{[\s\S]*height: 273mm;[\s\S]*overflow: hidden;/)
-assert.doesNotMatch(source, /\.molding-sample-print-page[^\{]*\{[^}]*min-height:\s*266mm;/)
-assert.match(source, /class="molding-sample-print-meta-grid"/)
-assert.match(source, /class="molding-sample-print-items-grid"/)
-assert.match(source, /v-for="item in record\.items"[\s\S]*class="molding-sample-print-item-card"/)
-assert.match(source, /molding-sample-print-item-metadata[\s\S]*模具资料[\s\S]*原料与颜色[\s\S]*用量概览/)
-assert.match(source, /molding-sample-print-cost-grid[\s\S]*预计料费\(HKD\)[\s\S]*实际料费\(HKD\)/)
-assert.match(source, /\.molding-sample-print-items-grid \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/)
-assert.match(source, /\.molding-sample-print-page\.is-single \.molding-sample-print-items-grid \{[\s\S]*grid-template-columns: minmax\(0, 1fr\);/)
-assert.match(source, /\.molding-sample-print-page\.is-dense \.molding-sample-print-items-grid \{[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/)
-assert.match(source, /:class="\{ 'is-single': record\.items\.length <= 1, 'is-compact': record\.items\.length >= 3, 'is-dense': record\.items\.length >= 6 \}"/)
+assert.match(source, /<\/main>\s*<MoldingSampleEngineeringPrintDocument[\s\S]*class="hidden"/)
+assert.equal((source.match(/<MoldingSampleEngineeringPrintDocument/g) ?? []).length, 2, 'preview and print should use the same engineering document component')
+assert.match(printCssSource, /body\.molding-sample-overview-printing #app > :not\(\.molding-print-engineering-root\)/)
+assert.match(printCssSource, /body\.molding-sample-overview-printing #app > \.molding-print-engineering-root[\s\S]*display: block !important;[\s\S]*position: static !important;/)
+assert.doesNotMatch(printCssSource, /height:\s*273mm|overflow:\s*hidden/)
+assert.match(printCssSource, /\.molding-print-table thead \{\s*display: table-header-group;/)
+assert.match(printCssSource, /\.molding-print-table tr \{\s*break-inside: avoid;\s*page-break-inside: avoid;/)
+assert.match(engineeringPrintSource, /class="molding-print-table molding-print-engineering-table"/)
+assert.match(engineeringPrintSource, /v-for="item in record\.items"[\s\S]*data-testid="molding-sample-engineering-print-row"/)
+assert.match(engineeringPrintSource, /模具信息[\s\S]*原料与颜色[\s\S]*数量 \/ 时点[\s\S]*用量（kg）[\s\S]*料费 \/ 工程备注/)
+assert.match(engineeringPrintSource, /预计料费\(HKD\)[\s\S]*实际料费\(HKD\)/)
+assert.doesNotMatch(engineeringPrintSource, /签核栏|经办确认|主管审核|啤机确认|来源厂 → 承接生产厂/)
+assert.doesNotMatch(engineeringPrintSource, /完整单据打印版|单头资料与所有模具明细字段，供纸面核对/)
+for (const match of printCssSource.matchAll(/font-size:\s*([0-9.]+)pt/g)) {
+  assert.ok(Number(match[1]) >= 9.5, `print font size must stay readable: ${match[0]}`)
+}
 assert.doesNotMatch(source, /业务开单日期|业务开单 \/ 系统更新|业务开单 \/ 流程完成/)
 assert.doesNotMatch(source, /文件编号/)
 assert.doesNotMatch(source, /啤机确认机台/)
@@ -371,14 +375,9 @@ assert.ok(fullDataHeader.indexOf('产品 / 客户') < fullDataHeader.indexOf('�
 assert.match(fullDataHeader, />开单日期</)
 assert.doesNotMatch(fullDataHeader, /北京时间/)
 
-const printBlockStart = source.indexOf('data-testid="molding-sample-print-area"')
-const printBlockEnd = source.indexOf('</template>', printBlockStart)
-const printBlock = source.slice(printBlockStart, printBlockEnd)
-assert.ok(printBlockStart >= 0 && printBlockEnd > printBlockStart)
-assert.ok(printBlock.indexOf('产品 / 客户') < printBlock.indexOf('产品编号'))
-assert.match(printBlock, /完整单据数据/)
-assert.match(printBlock, />开单日期</)
-assert.doesNotMatch(printBlock, /北京时间/)
+assert.ok(engineeringPrintSource.indexOf('产品 / 客户') < engineeringPrintSource.indexOf('产品编号'))
+assert.match(engineeringPrintSource, />开单日期</)
+assert.doesNotMatch(engineeringPrintSource, /北京时间/)
 assert.match(source, /data-testid="molding-sample-detail-table"/)
 assert.match(source, /data-testid="molding-sample-detail-table" class="w-full min-w-\[920px\] table-fixed text-\[12px\]"/)
 assert.doesNotMatch(source, /data-testid="molding-sample-detail-table" class="w-full min-w-\[1300px\]/)
