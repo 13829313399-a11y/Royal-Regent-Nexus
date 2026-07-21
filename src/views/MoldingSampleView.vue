@@ -285,7 +285,7 @@ const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelTemplateDownloading = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_210px_120px_124px_74px_96px_82px_92px_118px_138px_150px_130px_118px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_210px_120px_118px_124px_74px_96px_82px_92px_118px_138px_150px_130px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
@@ -317,6 +317,10 @@ const boardPageRequestIds: Partial<Record<MoldingSampleStatus, number>> = {}
 const materialCompositionPercentageTotal = computed(() => roundMaterialWeight(
   materialCompositionDraftRows.value.reduce((total, row) => total + (Number(row.ratio_percent) || 0), 0),
 ))
+const materialCompositionIsTrial = computed(() => {
+  const lineIndex = materialCompositionLineIndex.value
+  return lineIndex !== null && createDraft.value.items[lineIndex]?.material_usage_type === 'trial'
+})
 
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
@@ -1358,12 +1362,13 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
     reason: record.order.reason,
     items: record.items.map((item) => {
       const colorParts = splitColorPms(item.color)
+      const materialComponents = resolveMaterialComponents(item)
 
       return createManualMoldingSampleLineDraft({
         customer_mold_id: item.mold_id,
         mold_name: item.mold_name,
-        material: item.material,
-        material_components: resolveMaterialComponents(item).map((component) =>
+        material: materialComponents.length ? formatMaterialComposition(materialComponents) : item.material,
+        material_components: materialComponents.map((component) =>
           createManualMoldingSampleMaterialComponentDraft({
             ...component,
             ratio_percent: String(component.ratio_percent),
@@ -1391,15 +1396,16 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
   const items = payload.items.length
     ? payload.items.map((item) => {
         const colorParts = splitColorPms(item.color ?? '')
+        const materialComponents = resolveMaterialComponents({
+          material: item.material ?? '',
+          material_components: item.material_components,
+        })
 
         return createManualMoldingSampleLineDraft({
           customer_mold_id: item.mold_id ?? '',
           mold_name: item.mold_name ?? '',
-          material: item.material ?? '',
-          material_components: resolveMaterialComponents({
-            material: item.material ?? '',
-            material_components: item.material_components,
-          }).map((component) =>
+          material: materialComponents.length ? formatMaterialComposition(materialComponents) : (item.material ?? ''),
+          material_components: materialComponents.map((component) =>
             createManualMoldingSampleMaterialComponentDraft({
               ...component,
               ratio_percent: String(component.ratio_percent),
@@ -3198,7 +3204,14 @@ function clearRawMaterialSelection(line: ManualMoldingSampleLineDraft, index: nu
     ...rawMaterialSearchByLine.value,
     [index]: '',
   }
-  activeRawMaterialPickerLineIndex.value = index
+  activeRawMaterialPickerLineIndex.value = line.material_usage_type === 'production' ? index : null
+}
+
+function updateTrialMaterial(line: ManualMoldingSampleLineDraft, event: Event) {
+  const input = event.target as HTMLInputElement
+  line.material = input.value
+  const material = input.value.trim()
+  line.material_components = material ? [createSingleManualMaterialComponentDraft(material)] : []
 }
 
 function openMaterialCompositionEditor(line: ManualMoldingSampleLineDraft, index: number) {
@@ -3250,8 +3263,9 @@ function saveMaterialComposition() {
     return
   }
 
+  const requiresRawMaterialSelection = line.material_usage_type === 'production'
   const components = materialCompositionDraftRows.value.map((row) => {
-    const enabledOption = findEnabledRawMaterialOption(row.material)
+    const enabledOption = requiresRawMaterialSelection ? findEnabledRawMaterialOption(row.material) : null
     return {
       material: enabledOption?.value ?? row.material.trim(),
       source_type: row.source_type,
@@ -3263,7 +3277,9 @@ function saveMaterialComposition() {
     materialCompositionError.value = '请为每个配比组分选择原料。'
     return
   }
-  const disabledComponentIndex = components.findIndex((component) => !component.enabledOption)
+  const disabledComponentIndex = requiresRawMaterialSelection
+    ? components.findIndex((component) => !component.enabledOption)
+    : -1
   if (disabledComponentIndex >= 0) {
     materialCompositionError.value = `第 ${disabledComponentIndex + 1} 个组分“${components[disabledComponentIndex]?.material}”不是已启用的原料，请从原料列表选择。`
     return
@@ -3299,9 +3315,48 @@ function getMaterialUsageType(line: ManualMoldingSampleLineDraft) {
   return line.material_usage_type
 }
 
-function updateMaterialUsageType(line: ManualMoldingSampleLineDraft, event: Event) {
+function updateMaterialUsageType(line: ManualMoldingSampleLineDraft, index: number, event: Event) {
   const input = event.target as HTMLSelectElement
-  line.material_usage_type = input.value === 'trial' ? 'trial' : 'production'
+  const nextUsageType = input.value === 'trial' ? 'trial' : 'production'
+  if (line.material_usage_type === nextUsageType) {
+    return
+  }
+
+  line.material_usage_type = nextUsageType
+  closeRawMaterialPicker(index)
+
+  if (nextUsageType === 'trial') {
+    return
+  }
+
+  const enabledComponents = line.material_components.map((component) => {
+    const enabledOption = findEnabledRawMaterialOption(component.material)
+    return enabledOption
+      ? createManualMoldingSampleMaterialComponentDraft({
+          ...component,
+          material: enabledOption.value,
+        })
+      : null
+  })
+  if (enabledComponents.length && enabledComponents.every((component) => component !== null)) {
+    line.material_components = enabledComponents as ManualMoldingSampleMaterialComponentDraft[]
+    line.material = formatMaterialComposition(line.material_components.map((component) => ({
+      material: component.material,
+      source_type: component.source_type,
+      ratio_percent: Number(component.ratio_percent),
+    })))
+    return
+  }
+
+  const enabledOption = findEnabledRawMaterialOption(line.material)
+  if (enabledOption) {
+    line.material = enabledOption.value
+    line.material_components = [createSingleManualMaterialComponentDraft(enabledOption.value)]
+    return
+  }
+
+  line.material = ''
+  line.material_components = []
 }
 
 function buildMaterialBalanceItemRow(item: MoldingSampleItem, canViewCost = true): MaterialBalanceItemRow {
@@ -3893,7 +3948,9 @@ onUnmounted(() => {
             </span>
             <div class="min-w-0">
               <h2 class="text-[15px] font-bold text-slate-950">配置原料配比</h2>
-              <p class="mt-0.5 text-[11px] text-slate-500">选择每个原料或水口料组分，配比合计必须为 100%。</p>
+              <p class="mt-0.5 text-[11px] text-slate-500">
+                {{ materialCompositionIsTrial ? '试料组分可自定义输入，不从原料数据库选取；配比合计必须为 100%。' : '选择每个原料或水口料组分，配比合计必须为 100%。' }}
+              </p>
             </div>
             <button
               type="button"
@@ -3906,7 +3963,7 @@ onUnmounted(() => {
           </header>
 
           <div class="min-h-0 flex-1 overflow-y-auto p-5">
-            <datalist id="molding-sample-material-composition-options">
+            <datalist v-if="!materialCompositionIsTrial" id="molding-sample-material-composition-options">
               <option v-for="option in rawMaterialOptions" :key="`composition-${option.value}`" :value="option.value">{{ option.label }}</option>
             </datalist>
 
@@ -3924,10 +3981,11 @@ onUnmounted(() => {
               >
                 <input
                   v-model.trim="component.material"
-                  list="molding-sample-material-composition-options"
+                  :list="materialCompositionIsTrial ? undefined : 'molding-sample-material-composition-options'"
                   :aria-label="`第 ${componentIndex + 1} 个配比原料`"
                   :data-testid="`material-component-name-${componentIndex}`"
-                  placeholder="搜索原料名称或编号"
+                  :placeholder="materialCompositionIsTrial ? '自定义输入试料名称/规格' : '搜索原料名称或编号'"
+                  maxlength="255"
                   class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-3 text-[12px] outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
                 >
                 <select
@@ -5073,6 +5131,7 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">原料价格(HKD/磅)</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">用料用途</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">颜色</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">PMS</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">色粉</div>
@@ -5082,7 +5141,6 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具状态（是否在厂）</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">用料用途</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">备注</div>
                       <div class="min-w-0 truncate text-center" role="columnheader">操作</div>
                     </div>
@@ -5109,8 +5167,21 @@ onUnmounted(() => {
                           @focusout="handleRawMaterialPickerFocusOut(index, $event)"
                         >
                           <div class="relative">
-                            <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                            <Search v-if="line.material_usage_type === 'production'" class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
                             <input
+                              v-if="line.material_usage_type === 'trial'"
+                              :value="line.material"
+                              data-testid="create-line-material"
+                              aria-label="自定义试料用料"
+                              autocomplete="off"
+                              title="试料可自定义输入，不从原料数据库选取"
+                              placeholder="自定义输入试料名称/规格"
+                              maxlength="255"
+                              class="h-9 w-full min-w-0 rounded-md border border-amber-200 bg-amber-50/40 py-0 pl-2.5 pr-7 text-[12px] outline-none transition placeholder:text-slate-400 focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                              @input="updateTrialMaterial(line, $event)"
+                            >
+                            <input
+                              v-else
                               :value="getRawMaterialPickerText(index, line.material)"
                               data-testid="create-line-material"
                               role="combobox"
@@ -5140,7 +5211,7 @@ onUnmounted(() => {
                           </div>
                           <Teleport to="body">
                             <div
-                              v-if="activeRawMaterialPickerLineIndex === index"
+                              v-if="line.material_usage_type === 'production' && activeRawMaterialPickerLineIndex === index"
                               :id="getRawMaterialListboxId(index)"
                               class="fixed z-[80] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-900/10"
                               :style="getRawMaterialPickerStyle(index)"
@@ -5184,6 +5255,9 @@ onUnmounted(() => {
                               </div>
                             </div>
                           </Teleport>
+                          <p v-if="line.material_usage_type === 'trial'" class="mt-1 text-[10px] font-medium text-amber-700">
+                            自定义输入 · 不从原料库选取
+                          </p>
                           <button
                             type="button"
                             class="mt-1 inline-flex h-6 items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-2 text-[10px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-100"
@@ -5204,6 +5278,18 @@ onUnmounted(() => {
                             <span>{{ getDraftWeightedUnitPriceLabel(line) }}</span>
                             <span v-if="getDraftWeightedUnitPrice(line) !== null" class="text-[10px] font-medium text-slate-400">/ 磅</span>
                           </div>
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <select
+                            :value="getMaterialUsageType(line)"
+                            data-testid="create-line-material-usage-type"
+                            aria-label="用料用途"
+                            class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700"
+                            @change="updateMaterialUsageType(line, index, $event)"
+                          >
+                            <option value="production">正式生产</option>
+                            <option value="trial">试料</option>
+                          </select>
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.color" data-testid="create-line-color" placeholder="颜色" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
@@ -5228,18 +5314,6 @@ onUnmounted(() => {
                         </div>
                         <div class="min-w-0" role="cell"><input v-model="line.mold_dimensions" data-testid="create-line-mold-dimensions" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
-                        <div class="min-w-0" role="cell">
-                          <select
-                            :value="getMaterialUsageType(line)"
-                            data-testid="create-line-material-usage-type"
-                            aria-label="用料用途"
-                            class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700"
-                            @change="updateMaterialUsageType(line, $event)"
-                          >
-                            <option value="production">正式生产</option>
-                            <option value="trial">试料</option>
-                          </select>
-                        </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.notes" placeholder="备注提示" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
