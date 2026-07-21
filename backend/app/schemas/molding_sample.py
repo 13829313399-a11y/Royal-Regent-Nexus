@@ -31,6 +31,10 @@ class MoldingSampleOrderIn(BaseModel):
     updated_at: str = ""
 
 
+class MoldingSampleCreateOrderIn(MoldingSampleOrderIn):
+    id: str = ""
+
+
 class MoldingSampleOrderOut(MoldingSampleOrderIn):
     status: str = "待审核"
 
@@ -108,6 +112,10 @@ class MoldingSampleItemIn(BaseModel):
         if abs(total - Decimal("100")) > Decimal("0.01"):
             raise ValueError("原料成分比例合计必须为 100%")
         return self
+
+
+class MoldingSampleCreateItemIn(MoldingSampleItemIn):
+    id: str = ""
 
 
 class MoldingSampleItemOut(MoldingSampleItemIn):
@@ -280,12 +288,13 @@ class MoldingSampleTrialReportOut(BaseModel):
 
 
 class MoldingSampleCreateRequest(BaseModel):
+    order: MoldingSampleCreateOrderIn
+    items: list[MoldingSampleCreateItemIn] = Field(default_factory=list)
+
+
+class MoldingSampleEditRequest(BaseModel):
     order: MoldingSampleOrderIn
     items: list[MoldingSampleItemIn] = Field(default_factory=list)
-
-
-class MoldingSampleEditRequest(MoldingSampleCreateRequest):
-    pass
 
 
 class MoldingSampleDetailResponse(BaseModel):

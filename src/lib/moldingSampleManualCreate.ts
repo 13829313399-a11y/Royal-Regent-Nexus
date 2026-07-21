@@ -1,4 +1,4 @@
-import type { MoldingSampleCreateRequest } from '../api/moldingSample.js'
+import type { MoldingSampleCreateRequest, MoldingSampleOrderDraft } from '../api/moldingSample.js'
 import { createDefaultMoldingSampleOrder, formatMaterialComposition } from './moldingSampleBusiness.js'
 import {
   getMoldingSampleFactoryCapability,
@@ -103,12 +103,6 @@ const manualLineKeys = [
 
 function trimText(value: string | undefined) {
   return (value ?? '').trim()
-}
-
-export function deriveManualMoldingSampleOrderId(productNo: string) {
-  const normalizedProductNo = trimText(productNo)
-
-  return normalizedProductNo ? `BP-${normalizedProductNo}` : ''
 }
 
 export function createManualMoldingSampleLineDraft(
@@ -274,7 +268,7 @@ export function buildManualMoldingSampleCreateRequest(
 ): ManualMoldingSampleBuildResult {
   const errors: string[] = []
   const productNo = trimText(draft.product_no)
-  const orderId = trimText(draft.id) || deriveManualMoldingSampleOrderId(productNo)
+  const orderId = trimText(draft.id)
   const clientName = trimText(draft.client_name)
   const productName = trimText(draft.product_name)
   const orderDate = trimText(draft.order_date)
@@ -355,44 +349,50 @@ export function buildManualMoldingSampleCreateRequest(
     created_at: '',
     updated_at: '',
   })
+  const orderWithoutId: MoldingSampleOrderDraft = { ...order }
+  delete orderWithoutId.id
 
   return {
     payload: {
-      order,
+      order: orderId ? order : orderWithoutId,
       items: candidateLines.map(({ line, sourceIndex }, index) => {
         const materialComponents = materialComponentsBySourceIndex.get(sourceIndex) ?? []
         const material = materialComponents.length
           ? formatMaterialComposition(materialComponents)
           : trimText(line.material)
         return {
-        id: `${orderId}-${String(index + 1).padStart(3, '0')}`,
-        order_id: orderId,
-        sort_order: index + 1,
-        mold_id: trimText(line.customer_mold_id),
-        mold_name: trimText(line.mold_name),
-        machine_type: '',
-        mold_dimensions: trimText(line.mold_dimensions),
-        mold_presence_status: line.mold_presence_status || 'unknown',
-        production_machine: '',
-        material,
-        material_components: materialComponents,
-        material_usage_type: line.material_usage_type,
-        color: formatManualColorPms(line.color, line.pms),
-        pigment_no: trimText(line.pigment_no),
-        quantity: trimText(line.quantity),
-        shoot_qty: parseShootQty(line.shoot_qty),
-        gross_weight_g: null,
-        required_material_kg: parseOptionalNumber(line.required_material_kg),
-        mold_return_time: trimText(line.mold_return_time),
-        completion_time: trimText(line.required_date),
-        notes: trimText(line.notes),
-        receipt_no: '',
-        collected_weight_kg: null,
-        actual_weight_kg: null,
-        actual_amount_hkd: null,
-        injection_cost: null,
-        injection_cost_hkd: null,
-        exchange_rate_at_save: null,
+          ...(orderId
+            ? {
+                id: `${orderId}-${String(index + 1).padStart(3, '0')}`,
+                order_id: orderId,
+              }
+            : {}),
+          sort_order: index + 1,
+          mold_id: trimText(line.customer_mold_id),
+          mold_name: trimText(line.mold_name),
+          machine_type: '',
+          mold_dimensions: trimText(line.mold_dimensions),
+          mold_presence_status: line.mold_presence_status || 'unknown',
+          production_machine: '',
+          material,
+          material_components: materialComponents,
+          material_usage_type: line.material_usage_type,
+          color: formatManualColorPms(line.color, line.pms),
+          pigment_no: trimText(line.pigment_no),
+          quantity: trimText(line.quantity),
+          shoot_qty: parseShootQty(line.shoot_qty),
+          gross_weight_g: null,
+          required_material_kg: parseOptionalNumber(line.required_material_kg),
+          mold_return_time: trimText(line.mold_return_time),
+          completion_time: trimText(line.required_date),
+          notes: trimText(line.notes),
+          receipt_no: '',
+          collected_weight_kg: null,
+          actual_weight_kg: null,
+          actual_amount_hkd: null,
+          injection_cost: null,
+          injection_cost_hkd: null,
+          exchange_rate_at_save: null,
         }
       }),
     },
