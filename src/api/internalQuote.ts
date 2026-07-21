@@ -450,6 +450,11 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/clone`, payload)
       return response.data
     },
+    async deleteQuote(quoteId: string, revision: number) {
+      await client.delete(`/internal-quotes/${quoteId}`, {
+        params: { revision },
+      })
+    },
     async addParticipation(quoteId: string, revision: number, addSections: InternalQuoteSectionCode[]) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/participation`, {
         revision,

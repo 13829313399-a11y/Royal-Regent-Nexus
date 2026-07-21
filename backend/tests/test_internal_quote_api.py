@@ -195,6 +195,89 @@ def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_p
         assert listed.json()[0]["sections"] == []
 
 
+def test_quote_delete_allows_creator_or_local_sales_supervisor_and_protects_released_records(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_delete_creator", "sales_customer_owner", "sales-business")
+        creator_quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="DELETE-CREATOR"),
+        )
+        assert creator_quote.status_code == 201, creator_quote.text
+        creator_quote_id = creator_quote.json()["id"]
+
+        stale = client.delete(
+            f"/api/internal-quotes/{creator_quote_id}",
+            params={"revision": 2},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["current_revision"] == 1
+
+        forbidden_quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="DELETE-SUPERVISOR"),
+        )
+        assert forbidden_quote.status_code == 201, forbidden_quote.text
+        forbidden_quote_id = forbidden_quote.json()["id"]
+
+        logout(client)
+        login(client, "iq_delete_other_owner", "sales_customer_owner", "sales-business")
+        forbidden = client.delete(
+            f"/api/internal-quotes/{forbidden_quote_id}",
+            params={"revision": 1},
+        )
+        assert forbidden.status_code == 403
+        assert forbidden.json()["detail"] == "仅建单人或本厂区业务主管可删除内部报价"
+
+        logout(client)
+        login(client, "iq_delete_supervisor", "sales_customer_supervisor", "sales-business")
+        supervisor_deleted = client.delete(
+            f"/api/internal-quotes/{forbidden_quote_id}",
+            params={"revision": 1},
+        )
+        assert supervisor_deleted.status_code == 204, supervisor_deleted.text
+        assert client.get(f"/api/internal-quotes/{forbidden_quote_id}").status_code == 404
+
+        logout(client)
+        login(client, "iq_delete_creator", "sales_customer_owner", "sales-business")
+        creator_deleted = client.delete(
+            f"/api/internal-quotes/{creator_quote_id}",
+            params={"revision": 1},
+        )
+        assert creator_deleted.status_code == 204, creator_deleted.text
+
+        protected_quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="DELETE-PROTECTED"),
+        )
+        assert protected_quote.status_code == 201, protected_quote.text
+        protected_quote_id = protected_quote.json()["id"]
+        db_module = importlib.import_module("app.db")
+        quote_models = importlib.import_module("app.models.internal_quote")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            record = db.get(quote_models.InternalQuote, protected_quote_id)
+            record.status = "released"
+            record.final_release_status = "approved"
+            db.commit()
+
+        protected = client.delete(
+            f"/api/internal-quotes/{protected_quote_id}",
+            params={"revision": 1},
+        )
+        assert protected.status_code == 409
+        assert "请使用归档保留审计记录" in protected.json()["detail"]
+
+        with db_module.SessionLocal() as db:
+            assert db.get(quote_models.InternalQuote, creator_quote_id) is None
+            assert db.query(quote_models.InternalQuoteSection).filter_by(quote_id=creator_quote_id).count() == 0
+            deletion_audits = db.query(auth_models.AuthAuditLog).filter_by(
+                action="internal_quote_deleted"
+            ).all()
+            assert len(deletion_audits) == 2
+            assert any("DELETE-CREATOR" in item.detail for item in deletion_audits)
+            assert any("DELETE-SUPERVISOR" in item.detail for item in deletion_audits)
+
+
 def test_section_live_preview_uses_authoritative_calculator_without_persisting(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_live_preview_engineer", "engineer", "engineering")

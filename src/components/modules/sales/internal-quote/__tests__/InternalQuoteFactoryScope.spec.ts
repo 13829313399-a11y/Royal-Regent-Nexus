@@ -20,6 +20,7 @@ const internalQuoteApiMock = vi.hoisted(() => ({
   createCustomer: vi.fn(),
   updateCustomer: vi.fn(),
   deleteCustomer: vi.fn(),
+  deleteQuote: vi.fn(),
   create: vi.fn(),
   clone: vi.fn(),
   getPricingBaseline: vi.fn(),
@@ -38,6 +39,7 @@ function salesSession(
   factoryId = 'huaxing',
   includeBaselinePermissions = false,
   includeCustomerPermission = false,
+  includeArchivePermission = false,
 ): AuthMeResponse {
   const permissions = [
     'internal_quote:read',
@@ -47,6 +49,7 @@ function salesSession(
       ? ['internal_quote:baseline_read', 'internal_quote:baseline_manage']
       : []),
     ...(includeCustomerPermission ? ['internal_quote:customer_manage'] : []),
+    ...(includeArchivePermission ? ['internal_quote:archive'] : []),
   ]
   return {
     id: 'sales-user',
@@ -186,6 +189,7 @@ describe('InternalQuoteHome factory permission boundary', () => {
     internalQuoteApiMock.createCustomer.mockReset()
     internalQuoteApiMock.updateCustomer.mockReset()
     internalQuoteApiMock.deleteCustomer.mockReset()
+    internalQuoteApiMock.deleteQuote.mockReset()
     internalQuoteApiMock.create.mockReset()
     internalQuoteApiMock.clone.mockReset()
     internalQuoteApiMock.getPricingBaseline.mockReset()
@@ -265,6 +269,53 @@ describe('InternalQuoteHome factory permission boundary', () => {
     await flushPromises()
     expect(wrapper.findComponent(InternalQuoteCustomerDialog).props('open')).toBe(false)
     expect(wrapper.find('.quote-customer-button').exists()).toBe(false)
+  })
+
+  it('shows quote deletion only to the creator or local sales supervisor and confirms before deleting', async () => {
+    const creatorQuote = apiQuote('huaxing', 'DELETE-ME')
+    creatorQuote.created_by = 'sales-user'
+    internalQuoteApiMock.list
+      .mockResolvedValueOnce([creatorQuote])
+      .mockResolvedValue([])
+    internalQuoteApiMock.deleteQuote.mockResolvedValue(undefined)
+
+    const creatorPinia = createPinia()
+    setActivePinia(creatorPinia)
+    useAuthStore().applySession(salesSession())
+    useAppStore().setActiveFactory('huaxing')
+    const creatorWrapper = mount(InternalQuoteHome, { global: { plugins: [creatorPinia] } })
+    await flushPromises()
+
+    const deleteButton = creatorWrapper.get('button[aria-label="删除内部报价"]')
+    await deleteButton.trigger('click')
+    expect(creatorWrapper.get('.quote-delete-dialog').text()).toContain('IQ-DELETE-ME')
+    expect(internalQuoteApiMock.deleteQuote).not.toHaveBeenCalled()
+
+    await creatorWrapper.get('.quote-delete-dialog button.danger').trigger('click')
+    await flushPromises()
+    expect(internalQuoteApiMock.deleteQuote).toHaveBeenCalledWith('DELETE-ME', 1)
+    expect(creatorWrapper.find('.quote-delete-dialog').exists()).toBe(false)
+    creatorWrapper.unmount()
+
+    const supervisorQuote = apiQuote('huaxing', 'SUPERVISOR-DELETE')
+    supervisorQuote.created_by = 'another-user'
+    internalQuoteApiMock.list.mockResolvedValue([supervisorQuote])
+    const supervisorPinia = createPinia()
+    setActivePinia(supervisorPinia)
+    useAuthStore().applySession(salesSession('huaxing', false, false, true))
+    useAppStore().setActiveFactory('huaxing')
+    const supervisorWrapper = mount(InternalQuoteHome, { global: { plugins: [supervisorPinia] } })
+    await flushPromises()
+    expect(supervisorWrapper.find('button[aria-label="删除内部报价"]').exists()).toBe(true)
+    supervisorWrapper.unmount()
+
+    const ownerPinia = createPinia()
+    setActivePinia(ownerPinia)
+    useAuthStore().applySession(salesSession())
+    useAppStore().setActiveFactory('huaxing')
+    const ownerWrapper = mount(InternalQuoteHome, { global: { plugins: [ownerPinia] } })
+    await flushPromises()
+    expect(ownerWrapper.find('button[aria-label="删除内部报价"]').exists()).toBe(false)
   })
 
   it('ignores slow foreign responses and keeps create locked until home-factory owners are ready', async () => {

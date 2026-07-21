@@ -52,6 +52,7 @@ from app.services.internal_quote import (
     archive_quote,
     clone_quote,
     create_quote,
+    delete_quote,
     ensure_quote_read,
     get_quote_detail,
     get_quote_dashboard,
@@ -271,6 +272,18 @@ def get_internal_quote(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return get_quote_detail(db, quote_id, current_user, request)
+
+
+@router.delete("/{quote_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_internal_quote(
+    quote_id: str,
+    request: Request,
+    revision: int = Query(ge=1),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    delete_quote(db, quote_id, revision, current_user, request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.patch("/{quote_id}", response_model=InternalQuoteOut)
