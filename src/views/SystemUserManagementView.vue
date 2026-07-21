@@ -845,7 +845,7 @@ onMounted(() => {
                     :alt="`${user.display_name || user.username}的头像`"
                     shape="rounded"
                   />
-                  <div>
+                  <div class="user-identity">
                     <strong>{{ user.display_name || user.username }}</strong>
                     <span>{{ user.username }}</span>
                   </div>
@@ -2063,13 +2063,13 @@ onMounted(() => {
   font-size: 12px;
 }
 
-.user-cell strong {
+.user-identity strong {
   display: block;
   color: #020617;
   font-size: 13px;
 }
 
-.user-cell span {
+.user-identity span {
   display: block;
   color: #64748b;
   font-family: "Cascadia Code", Consolas, monospace;

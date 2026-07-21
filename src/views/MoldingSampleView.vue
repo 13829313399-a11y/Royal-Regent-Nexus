@@ -80,6 +80,7 @@ import {
   type MoldingSampleBoardSummaryResponse,
   type MoldingSampleCreateRequest,
   type MoldingSampleDetailResponse,
+  type MoldingSampleEditRequest,
   type MoldingSampleStatusRequest,
 } from '@/api/moldingSample'
 import { rawMaterialApi, type RawMaterialResponse } from '@/api/rawMaterial'
@@ -89,7 +90,6 @@ import {
   createManualMoldingSampleLineDraft,
   createManualMoldingSampleOrderDraft,
   createSingleManualMaterialComponentDraft,
-  deriveManualMoldingSampleOrderId,
   type ManualMoldingSampleMaterialComponentDraft,
   type ManualMoldingSampleLineDraft,
   type ManualMoldingSampleOrderDraft,
@@ -1262,6 +1262,7 @@ function normalizeSavedCreateDraft(saved: Partial<ManualMoldingSampleOrderDraft>
 
   return createManualMoldingSampleOrderDraft({
     ...saved,
+    id: '',
     factory_id: selectedFactoryId.value,
     items: savedItems,
   })
@@ -1421,10 +1422,10 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
     : [createManualMoldingSampleLineDraft()]
 
   return createManualMoldingSampleOrderDraft({
-    id: order.id,
+    id: '',
     factory_id: order.factory_id || selectedFactoryId.value,
     production_factory_id: order.production_factory_id ?? null,
-    product_no: order.order_number || order.id.replace(/^BP-/, ''),
+    product_no: order.order_number || order.id?.replace(/^BP-/, '') || '',
     doc_number: order.doc_number ?? '',
     client_name: order.client_name,
     product_name: order.product_name,
@@ -2230,7 +2231,26 @@ async function confirmPrintOverview() {
     ? `正在打印啤办单 ${printableRecords.value[0].order.id} 的详细内容。`
     : `正在打印 ${printableRecords.value.length} 张啤办单的详细内容。`
   await nextTick()
+  document.body.classList.add('molding-sample-overview-printing')
+  document.getElementById('molding-sample-active-print-page')?.remove()
+  const pageStyle = document.createElement('style')
+  pageStyle.id = 'molding-sample-active-print-page'
+  pageStyle.textContent = '@media print { @page { size: A4 portrait; margin: 12mm 10mm; } }'
+  document.head.append(pageStyle)
+  let cleanedUp = false
+  const cleanUp = () => {
+    if (cleanedUp) {
+      return
+    }
+
+    cleanedUp = true
+    document.body.classList.remove('molding-sample-overview-printing')
+    pageStyle.remove()
+    window.removeEventListener('afterprint', cleanUp)
+  }
+  window.addEventListener('afterprint', cleanUp, { once: true })
   window.print()
+  window.setTimeout(cleanUp, 1000)
 }
 
 function closePrintPreview() {
@@ -2352,20 +2372,6 @@ function openRecord(record: MoldingSampleWorkflowRecord) {
   deleteConfirmingOrderId.value = ''
 }
 
-function readInputValue(event: Event) {
-  return (event.target as HTMLInputElement).value
-}
-
-function updateCreateProductNo(value: string) {
-  const previousDerivedId = deriveManualMoldingSampleOrderId(createDraft.value.product_no)
-
-  createDraft.value.product_no = value
-
-  if (!createDraft.value.id || createDraft.value.id === previousDerivedId) {
-    createDraft.value.id = deriveManualMoldingSampleOrderId(value)
-  }
-}
-
 function addCreateLine() {
   createDraft.value.items.push(createManualMoldingSampleLineDraft())
 }
@@ -2450,6 +2456,10 @@ function isManualCreateFormContextCurrent(requestId: number, factoryId: string, 
 }
 
 async function submitManualCreate() {
+  if (createSubmitting.value) {
+    return
+  }
+
   if (!canSubmitCreateForm.value) {
     actionMessage.value = isSelectedFactoryReadOnly.value
       ? '当前厂区为只读，仅可查看数据。'
@@ -2537,7 +2547,19 @@ async function resubmitRejectedOrder(
     throw new Error('驳回单编号不能修改，请保持原单号后重提。')
   }
 
-  await moldingSampleApi.editOrder(orderId, payload)
+  const editItems = payload.items.map((item) => {
+    if (!item.id) {
+      throw new Error('驳回单明细编号缺失，无法安全重提。')
+    }
+
+    return { ...item, id: item.id }
+  })
+  const editPayload: MoldingSampleEditRequest = {
+    order: { ...payload.order, id: orderId },
+    items: editItems,
+  }
+
+  await moldingSampleApi.editOrder(orderId, editPayload)
 
   return moldingSampleApi.updateStatus(orderId, {
     action: '工程重提',
@@ -4932,7 +4954,7 @@ onUnmounted(() => {
                 <FileText class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold">基础资料</span>
                 <span class="ml-auto text-[11px] text-slate-400">
-                  {{ isEditingRejectedOrder ? `${editingRevisionOrderLabel} ${editingRejectedOrderId}` : '单号自动生成 · BP-新' }}
+                  {{ isEditingRejectedOrder ? `${editingRevisionOrderLabel} ${editingRejectedOrderId}` : '提交后生成正式单号' }}
                 </span>
               </div>
               <div class="grid grid-cols-2 gap-x-4 gap-y-3 p-4 md:grid-cols-3">
@@ -4943,10 +4965,9 @@ onUnmounted(() => {
                 <label class="block">
                   <span class="mb-1 block text-[11px] font-medium text-slate-500">产品编号</span>
                   <input
-                    :value="createDraft.product_no"
+                    v-model="createDraft.product_no"
                     data-testid="create-product-no"
                     class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] outline-none focus:border-slate-400"
-                    @input="updateCreateProductNo(readInputValue($event))"
                   >
                 </label>
                 <label class="block">
@@ -6206,12 +6227,13 @@ onUnmounted(() => {
       :initial-item-id="engineeringTrialReportItemId"
       @close="closeEngineeringTrialReportHistory"
     />
+  </main>
 
-    <section
-      class="molding-sample-print-root hidden"
-      data-testid="molding-sample-print-area"
-      aria-label="啤办单打印内容"
-    >
+  <section
+    class="molding-sample-print-root hidden"
+    data-testid="molding-sample-print-area"
+    aria-label="啤办单打印内容"
+  >
       <article
         v-for="record in printableRecords"
         :key="record.order.id"
@@ -6361,9 +6383,8 @@ onUnmounted(() => {
           <div class="molding-sample-print-qr">扫码<br>查看单据</div>
           <div class="molding-sample-print-pageno">第 1 / 1 页</div>
         </div>
-      </article>
-    </section>
-  </main>
+    </article>
+  </section>
 </template>
 
 <style>
@@ -6374,24 +6395,42 @@ onUnmounted(() => {
   }
 
   html,
-  body {
+  body,
+  body.molding-sample-overview-printing #app {
+    min-height: 0 !important;
+    height: auto !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
     background: #fff !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
 
-  body * {
+  body.molding-sample-overview-printing * {
     visibility: hidden;
   }
 
-  .molding-sample-print-root,
-  .molding-sample-print-root * {
+  body.molding-sample-overview-printing #app > :not(.molding-sample-print-root) {
+    display: none !important;
+  }
+
+  body.molding-sample-overview-printing .molding-sample-print-root,
+  body.molding-sample-overview-printing .molding-sample-print-root * {
     visibility: visible;
   }
 
-  .molding-sample-print-root {
+  body.molding-sample-overview-printing #app > .molding-sample-print-root {
     display: block !important;
-    position: absolute;
-    inset: 0;
-    width: 100%;
+    position: static !important;
+    inset: auto !important;
+    box-sizing: border-box;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    height: auto !important;
+    margin: 0 !important;
     background: white;
     color: #111827;
     padding: 0;
@@ -6401,9 +6440,15 @@ onUnmounted(() => {
   }
 
   .molding-sample-print-page {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 0;
+    height: auto;
+    margin: 0;
     break-after: page;
     page-break-after: always;
-    min-height: 266mm;
+    break-inside: auto;
+    page-break-inside: auto;
   }
 
   .molding-sample-print-page:last-child {

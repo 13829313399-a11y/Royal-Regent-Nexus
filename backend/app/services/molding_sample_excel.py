@@ -9,7 +9,11 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.core.time import business_now
 from app.models.molding_sample import MoldingSampleMaterialPrice, MoldingSampleOrder
-from app.schemas.molding_sample import MoldingSampleCreateRequest, MoldingSampleItemIn, MoldingSampleOrderIn
+from app.schemas.molding_sample import (
+    MoldingSampleCreateItemIn,
+    MoldingSampleCreateOrderIn,
+    MoldingSampleCreateRequest,
+)
 from app.services.molding_sample import (
     FACTORY_LABELS,
     MOLDING_FACTORY_CAPABILITIES,
@@ -840,9 +844,6 @@ def parse_order_excel(
 
     import_time = business_now()
     order_id = str(order_data.get("id") or "").strip()
-    if not order_id:
-        order_id = f"BP-{import_time.strftime('%Y%m%d%H%M%S')}"
-        order_data["id"] = order_id
 
     if not str(order_data.get("product_name") or "").strip():
         raise ValueError("Excel 缺少产品名称")
@@ -859,7 +860,7 @@ def parse_order_excel(
         for index, header in enumerate(headers)
         if (field := _item_field_for_header(header))
     }
-    items: list[MoldingSampleItemIn] = []
+    items: list[MoldingSampleCreateItemIn] = []
     for excel_row_number, row in enumerate(
         rows[detail_header_index + 1 :],
         start=detail_header_index + 2,
@@ -924,16 +925,16 @@ def parse_order_excel(
         item_data["material"] = material
         item_data["material_components"] = material_components
 
-        if order_id_override or not str(item_data.get("id") or "").strip():
+        if order_id_override or (order_id and not str(item_data.get("id") or "").strip()):
             item_data["id"] = f"{order_id}-{item_number:03d}"
         if _parse_int(item_data.get("sort_order", "")) <= 0:
             item_data["sort_order"] = item_number
-        items.append(MoldingSampleItemIn(**item_data))
+        items.append(MoldingSampleCreateItemIn(**item_data))
 
     if not items:
         raise ValueError("Excel 未识别到啤办明细行")
 
-    return MoldingSampleCreateRequest(order=MoldingSampleOrderIn(**order_data), items=items)
+    return MoldingSampleCreateRequest(order=MoldingSampleCreateOrderIn(**order_data), items=items)
 
 
 def _parse_import_material_components(
