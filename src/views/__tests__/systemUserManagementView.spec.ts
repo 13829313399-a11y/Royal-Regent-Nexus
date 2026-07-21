@@ -78,6 +78,12 @@ describe('SystemUserManagementView source contract', () => {
     }
   })
 
+  it('keeps username typography from overriding the shared avatar layout', () => {
+    expect(template).toContain('class="user-identity"')
+    expect(source).toContain('.user-identity span {')
+    expect(source).not.toContain('.user-cell span {')
+  })
+
   it('degrades to a protected read-only page without relying on backend 403 responses', () => {
     expect(source).toContain("const canManageUsers = computed(() => authStore.can('system:user_manage'))")
     expect(source).toContain('data-testid="system-users-protected-notice"')

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.time import business_now, business_today
@@ -69,6 +70,7 @@ DEFAULT_RATE = 1.08
 RATE_KEY = "exchange_rate_rmb_to_hkd"
 RAW_MATERIAL_PRICES_MARKER_KEY = "raw_material_prices_server_v1"
 RAW_MATERIAL_PRICES_PATH = Path(__file__).resolve().parents[1] / "data" / "raw_material_prices.json"
+GENERATED_ORDER_ID_ATTEMPTS = 5
 
 DEFAULT_PRICES = [
     ("HIPS 425", 5.5, "经理默认价"),
@@ -259,6 +261,11 @@ def now_text() -> str:
 
 def now_precise_text() -> str:
     return business_now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def generate_molding_sample_order_id() -> str:
+    timestamp = business_now().strftime("%Y%m%d%H%M%S")
+    return f"BP-{timestamp}-{uuid4().hex[:12].upper()}"
 
 
 def round_money(value: float) -> float:
@@ -1730,8 +1737,6 @@ def update_problem_status(
 def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user: AuthContext) -> MoldingSampleOrder:
     ensure_molding_create_access(db, current_user, payload.order.factory_id)
     molding_factory_capability(payload.order.factory_id)
-    if db.get(MoldingSampleOrder, payload.order.id):
-        raise HTTPException(status_code=409, detail="啤办单编号已存在")
 
     status = INITIAL_ORDER_STATUS
     created_at = now_text()
@@ -1742,32 +1747,75 @@ def create_order(db: Session, payload: MoldingSampleCreateRequest, current_user:
         allow_unassigned=True,
     )
     assignment_version = 1 if production_factory_id else 0
-    order = MoldingSampleOrder(
-        **payload.order.model_dump(
-            exclude={
-                "status",
-                "completed_date",
-                "created_at",
-                "updated_at",
-                "production_factory_id",
-                "production_assigned_at",
-                "production_assigned_by",
-                "production_assignment_version",
-            }
-        ),
-        production_factory_id=production_factory_id,
-        production_assigned_at=created_at if production_factory_id else "",
-        production_assigned_by=current_user.display_name if production_factory_id else "",
-        production_assignment_version=assignment_version,
-        status=status,
-        completed_date="",
-        created_at=created_at,
-        updated_at=created_at,
-    )
-    db.add(order)
+    supplied_order_id = payload.order.id
+    generates_order_id = not supplied_order_id.strip()
+    attempts = GENERATED_ORDER_ID_ATTEMPTS if generates_order_id else 1
 
+    for attempt in range(attempts):
+        order_id = generate_molding_sample_order_id() if generates_order_id else supplied_order_id
+        order = MoldingSampleOrder(
+            **payload.order.model_dump(
+                exclude={
+                    "id",
+                    "status",
+                    "completed_date",
+                    "created_at",
+                    "updated_at",
+                    "production_factory_id",
+                    "production_assigned_at",
+                    "production_assigned_by",
+                    "production_assignment_version",
+                }
+            ),
+            id=order_id,
+            production_factory_id=production_factory_id,
+            production_assigned_at=created_at if production_factory_id else "",
+            production_assigned_by=current_user.display_name if production_factory_id else "",
+            production_assignment_version=assignment_version,
+            status=status,
+            completed_date="",
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        db.add(order)
+        try:
+            # Flush the order header before adding dependent rows. This makes the
+            # database primary key the concurrency authority and keeps a losing
+            # concurrent insert from surfacing as an unhandled 500 response.
+            db.flush()
+        except IntegrityError as exc:
+            db.rollback()
+            if db.get(MoldingSampleOrder, order_id) is None:
+                raise
+            if generates_order_id and attempt + 1 < attempts:
+                continue
+            if generates_order_id:
+                raise HTTPException(status_code=503, detail="暂时无法生成唯一啤办单编号，请重试") from exc
+            raise HTTPException(status_code=409, detail="啤办单编号已存在") from exc
+        break
+
+    explicit_item_ids = {
+        item_payload.id.strip()
+        for item_payload in payload.items
+        if item_payload.id.strip()
+    }
+    generated_item_sequence = 1
     for index, item_payload in enumerate(payload.items, start=1):
-        item_data = normalized_item_data(item_payload, exclude={"order_id", "sort_order"})
+        supplied_item_id = item_payload.id.strip()
+        generates_item_id = generates_order_id or not supplied_item_id
+        excluded_item_fields = {"order_id", "sort_order"}
+        if generates_item_id:
+            excluded_item_fields.add("id")
+        item_data = normalized_item_data(item_payload, exclude=excluded_item_fields)
+        if generates_item_id:
+            while True:
+                generated_item_id = f"{order.id}-{generated_item_sequence:03d}"
+                generated_item_sequence += 1
+                if generated_item_id not in explicit_item_ids:
+                    break
+            item_data["id"] = generated_item_id
+        else:
+            item_data["id"] = supplied_item_id
         db.add(
             MoldingSampleItem(
                 **item_data,

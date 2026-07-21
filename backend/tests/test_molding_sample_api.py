@@ -1,11 +1,12 @@
 import importlib
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 from types import SimpleNamespace
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -701,6 +702,202 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
         "material_usage_type",
         "actual_material_cost_components",
     } <= item_columns
+
+
+def test_create_generates_order_and_item_ids_when_client_omits_them(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("")
+    payload["order"].pop("id")
+    first_item = payload["items"][0]
+    first_item.pop("id")
+    second_item = {
+        **first_item,
+        "id": "stale-client-item-id",
+        "order_id": "stale-client-order-id",
+        "sort_order": 2,
+        "mold_id": "M-002",
+        "mold_name": "弹匣",
+    }
+    payload["items"] = [first_item, second_item]
+
+    response = client.post("/api/injection", json=payload)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    generated_order_id = body["order"]["id"]
+    assert re.fullmatch(r"BP-\d{14}-[0-9A-F]{12}", generated_order_id)
+    assert [item["id"] for item in body["items"]] == [
+        f"{generated_order_id}-001",
+        f"{generated_order_id}-002",
+    ]
+    assert {item["order_id"] for item in body["items"]} == {generated_order_id}
+
+
+@pytest.mark.parametrize("item_count", [1, 2])
+def test_explicit_legacy_order_id_generates_any_missing_item_ids(client, item_count):
+    login_as(client, "engineer")
+    order_id = f"BP-LEGACY-MISSING-ITEM-{item_count}"
+    payload = sample_order_payload(order_id)
+    first_item = payload["items"][0]
+    first_item.pop("id")
+    payload["items"] = [
+        {
+            **first_item,
+            "sort_order": index,
+            "mold_id": f"M-{index:03d}",
+        }
+        for index in range(1, item_count + 1)
+    ]
+
+    response = client.post("/api/injection", json=payload)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert [item["id"] for item in body["items"]] == [
+        f"{order_id}-{index:03d}"
+        for index in range(1, item_count + 1)
+    ]
+    assert {item["order_id"] for item in body["items"]} == {order_id}
+
+
+def test_same_product_number_can_create_two_orders_with_distinct_generated_ids(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("")
+    payload["order"].pop("id")
+    payload["items"][0].pop("id")
+
+    first_response = client.post("/api/injection", json=payload)
+    payload["order"]["stage"] = "EP"
+    second_response = client.post("/api/injection", json=payload)
+
+    assert first_response.status_code == 201, first_response.text
+    assert second_response.status_code == 201, second_response.text
+    first_body = first_response.json()
+    second_body = second_response.json()
+    assert first_body["order"]["order_number"] == "62437"
+    assert second_body["order"]["order_number"] == "62437"
+    assert first_body["order"]["stage"] == "T0"
+    assert second_body["order"]["stage"] == "EP"
+    assert first_body["order"]["id"] != second_body["order"]["id"]
+    assert first_body["items"][0]["id"] == f'{first_body["order"]["id"]}-001'
+    assert second_body["items"][0]["id"] == f'{second_body["order"]["id"]}-001'
+
+
+def test_edit_request_still_requires_the_explicit_order_id(client):
+    login_as(client, "engineer")
+    order_id = "BP-EDIT-ID-REQUIRED-001"
+    assert client.post("/api/injection", json=sample_order_payload(order_id)).status_code == 201
+    edit_payload = sample_order_payload(order_id)
+    edit_payload["order"].pop("id")
+
+    response = client.put(f"/api/injection/{order_id}", json=edit_payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "order", "id"]
+
+
+def test_create_with_an_explicit_duplicate_order_id_returns_stable_conflict(client):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-EXPLICIT-DUPLICATE-001")
+
+    first_response = client.post("/api/injection", json=payload)
+    duplicate_response = client.post("/api/injection", json=payload)
+
+    assert first_response.status_code == 201
+    assert duplicate_response.status_code == 409
+    assert duplicate_response.json() == {"detail": "啤办单编号已存在"}
+
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        orders = list(db.scalars(
+            select(molding_models.MoldingSampleOrder).where(
+                molding_models.MoldingSampleOrder.id == "BP-EXPLICIT-DUPLICATE-001",
+            )
+        ).all())
+        items = list(db.scalars(
+            select(molding_models.MoldingSampleItem).where(
+                molding_models.MoldingSampleItem.order_id == "BP-EXPLICIT-DUPLICATE-001",
+            )
+        ).all())
+    assert len(orders) == 1
+    assert len(items) == 1
+
+
+def test_concurrent_create_with_the_same_explicit_order_id_has_one_winner(client, monkeypatch):
+    login_as(client, "engineer")
+    main_module = importlib.import_module("app.main")
+    db_module = importlib.import_module("app.db")
+    molding_models = importlib.import_module("app.models.molding_sample")
+    order_id = "BP-EXPLICIT-CONCURRENT-001"
+
+    with TestClient(main_module.app) as other_client:
+        login_as(other_client, "engineer")
+        original_flush = db_module.Session.flush
+        order_flush_barrier = Barrier(2)
+
+        def synchronized_order_flush(session, *args, **kwargs):
+            if any(
+                isinstance(record, molding_models.MoldingSampleOrder) and record.id == order_id
+                for record in session.new
+            ):
+                order_flush_barrier.wait(timeout=10)
+            return original_flush(session, *args, **kwargs)
+
+        monkeypatch.setattr(db_module.Session, "flush", synchronized_order_flush)
+        results: list[object] = []
+
+        def create(test_client):
+            try:
+                results.append(test_client.post("/api/injection", json=sample_order_payload(order_id)))
+            except BaseException as error:  # pragma: no cover - surfaced below
+                results.append(error)
+
+        threads = [Thread(target=create, args=(test_client,)) for test_client in (client, other_client)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+        assert all(not thread.is_alive() for thread in threads)
+
+    errors = [result for result in results if isinstance(result, BaseException)]
+    assert errors == []
+    responses = [result for result in results if not isinstance(result, BaseException)]
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    conflict = next(response for response in responses if response.status_code == 409)
+    assert conflict.json() == {"detail": "啤办单编号已存在"}
+
+    with db_module.SessionLocal() as db:
+        orders = list(db.scalars(
+            select(molding_models.MoldingSampleOrder).where(molding_models.MoldingSampleOrder.id == order_id)
+        ).all())
+        items = list(db.scalars(
+            select(molding_models.MoldingSampleItem).where(molding_models.MoldingSampleItem.order_id == order_id)
+        ).all())
+    assert len(orders) == 1
+    assert len(items) == 1
+
+
+def test_generated_order_id_collision_rolls_back_and_retries(client, monkeypatch):
+    login_as(client, "engineer")
+    collision_id = "BP-GENERATED-COLLISION"
+    retry_id = "BP-GENERATED-RETRY"
+    assert client.post("/api/injection", json=sample_order_payload(collision_id)).status_code == 201
+
+    service = importlib.import_module("app.services.molding_sample")
+    generated_ids = iter([collision_id, retry_id])
+    monkeypatch.setattr(service, "generate_molding_sample_order_id", lambda: next(generated_ids))
+    payload = sample_order_payload("")
+    payload["order"].pop("id")
+    payload["items"][0].pop("id")
+
+    response = client.post("/api/injection", json=payload)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["order"]["id"] == retry_id
+    assert body["items"][0]["id"] == f"{retry_id}-001"
+    assert body["items"][0]["order_id"] == retry_id
 
 
 def test_molding_sample_create_and_edit_keep_timing_fields_server_owned(client):
@@ -3659,7 +3856,7 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
     assert parsed.items[0].material_usage_type == "trial"
 
 
-def test_parse_molding_sample_excel_uses_business_time_for_generated_id_and_missing_date(monkeypatch):
+def test_parse_molding_sample_excel_leaves_ids_for_create_service_and_uses_business_date(monkeypatch):
     excel_service = importlib.import_module("app.services.molding_sample_excel")
     import_time = datetime(2026, 7, 19, 0, 1, 2, tzinfo=ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr(excel_service, "business_now", lambda: import_time)
@@ -3685,7 +3882,8 @@ def test_parse_molding_sample_excel_uses_business_time_for_generated_id_and_miss
         excel_service._build_workbook(excel_service._sheet_xml(current_rows, header_row_index=8))
     )
 
-    assert parsed.order.id == "BP-20260719000102"
+    assert parsed.order.id == ""
+    assert parsed.items[0].id == ""
     assert parsed.order.date == "2026-07-19"
 
 
@@ -3930,6 +4128,26 @@ def test_preview_molding_sample_excel_import_does_not_create_order(client):
 
     lookup_response = client.get("/api/injection/BP-XLSX-PREVIEW")
     assert lookup_response.status_code == 404
+
+
+def test_direct_excel_import_without_ids_uses_the_central_order_id_generator(client):
+    login_as(client, "engineer")
+
+    import_response = client.post(
+        "/api/injection/import-excel",
+        content=huaxing_engineering_template_workbook(),
+        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    )
+
+    assert import_response.status_code == 201, import_response.text
+    imported = import_response.json()
+    generated_order_id = imported["order"]["id"]
+    assert re.fullmatch(r"BP-\d{14}-[0-9A-F]{12}", generated_order_id)
+    assert [item["id"] for item in imported["items"]] == [
+        f"{generated_order_id}-001",
+        f"{generated_order_id}-002",
+    ]
+    assert {item["order_id"] for item in imported["items"]} == {generated_order_id}
 
 
 def test_import_huaxing_engineering_molding_sample_template(client):
