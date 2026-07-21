@@ -427,6 +427,7 @@ def test_sales_customer_supervisor_role_is_seeded_with_customer_price_permission
                 "internal_quote:archive",
                 "internal_quote:baseline_read",
                 "internal_quote:baseline_manage",
+                "internal_quote:customer_manage",
                 "internal_quote:export",
                 "internal_quote:final_submit",
                 "internal_quote:final_approve",

@@ -105,6 +105,32 @@ class InternalQuoteBusinessOwnerOut(BaseModel):
     display_name: str
 
 
+class InternalQuoteCustomerCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class InternalQuoteCustomerUpdateRequest(InternalQuoteCustomerCreateRequest):
+    revision: int = Field(ge=1)
+
+
+class InternalQuoteCustomerOut(BaseModel):
+    id: str
+    factory_id: str
+    name: str
+    revision: int
+    created_by: str
+    created_by_name: str
+    created_at: str
+    updated_by: str
+    updated_by_name: str
+    updated_at: str
+
+
 class InternalQuoteDashboardTotalsOut(BaseModel):
     total: int
     in_progress: int

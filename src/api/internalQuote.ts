@@ -5,6 +5,7 @@ export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
   post<T = unknown>(url: string, data?: unknown, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
   put<T = unknown>(url: string, data?: unknown, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
+  delete<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
 }
 
 export interface ApiInternalQuoteSection {
@@ -279,6 +280,19 @@ export interface ApiInternalQuoteBusinessOwner {
   display_name: string
 }
 
+export interface ApiInternalQuoteCustomer {
+  id: string
+  factory_id: string
+  name: string
+  revision: number
+  created_by: string
+  created_by_name: string
+  created_at: string
+  updated_by: string
+  updated_by_name: string
+  updated_at: string
+}
+
 export interface ApiInternalQuoteSectionPreview {
   quote_id: string
   section_code: InternalQuoteSectionCode
@@ -456,6 +470,32 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       })
       return response.data
     },
+    async listCustomers(factoryId: string) {
+      const response = await client.get<ApiInternalQuoteCustomer[]>('/internal-quotes/customers', {
+        params: { factory_id: factoryId },
+      })
+      return response.data
+    },
+    async createCustomer(factoryId: string, name: string) {
+      const response = await client.post<ApiInternalQuoteCustomer>(
+        '/internal-quotes/customers',
+        { name },
+        { params: { factory_id: factoryId } },
+      )
+      return response.data
+    },
+    async updateCustomer(customerId: string, name: string, revision: number) {
+      const response = await client.put<ApiInternalQuoteCustomer>(
+        `/internal-quotes/customers/${customerId}`,
+        { name, revision },
+      )
+      return response.data
+    },
+    async deleteCustomer(customerId: string, revision: number) {
+      await client.delete(`/internal-quotes/customers/${customerId}`, {
+        params: { revision },
+      })
+    },
     async getPricingBaseline(factoryId: string, workshopCode = 'huaxing-workshop') {
       const response = await client.get<ApiInternalQuotePricingBaseline>('/internal-quotes/pricing-baseline', {
         params: { factory_id: factoryId, workshop_code: workshopCode },
@@ -555,6 +595,13 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
         `/internal-quotes/${quoteId}/imports/${importType}/preview`,
         form,
         { headers: { 'Content-Type': 'multipart/form-data' } },
+      )
+      return response.data
+    },
+    async downloadImportTemplate(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type']) {
+      const response = await client.get<Blob>(
+        `/internal-quotes/${quoteId}/imports/${importType}/template`,
+        { responseType: 'blob' },
       )
       return response.data
     },

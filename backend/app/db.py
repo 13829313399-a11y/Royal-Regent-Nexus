@@ -154,6 +154,9 @@ MOLDING_SAMPLE_DISPATCH_REQUIRED_COLUMNS = {
     "molding_sample_inventory_movements": {"factory_id"},
 }
 MOLDING_SAMPLE_DISPATCH_REQUIRED_TABLES = {"molding_sample_dispatch_logs"}
+INTERNAL_QUOTE_CUSTOMER_REVISION = "20260721_0029"
+INTERNAL_QUOTE_CUSTOMER_PREVIOUS_REVISION = "20260720_0028"
+INTERNAL_QUOTE_CUSTOMER_TABLE = "internal_quote_customers"
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -204,6 +207,38 @@ def ensure_molding_dispatch_schema_ready() -> None:
         f"{MOLDING_SAMPLE_DISPATCH_REVISION}；缺少："
         f"{', '.join(missing_schema)}。请先备份数据库并执行 Alembic 迁移 "
         f"{MOLDING_SAMPLE_DISPATCH_REVISION}，再启动应用。"
+    )
+
+
+def ensure_internal_quote_customer_schema_ready() -> None:
+    """Refuse to let create_all bypass the factory-customer data migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "internal_quotes" not in table_names:
+            return
+
+        current_revision = None
+        if "alembic_version" in table_names:
+            current_revision = connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar_one_or_none()
+        if (
+            INTERNAL_QUOTE_CUSTOMER_TABLE in table_names
+            and current_revision != INTERNAL_QUOTE_CUSTOMER_PREVIOUS_REVISION
+        ):
+            return
+
+    missing = (
+        f"revision:{current_revision}"
+        if current_revision == INTERNAL_QUOTE_CUSTOMER_PREVIOUS_REVISION
+        else f"table:{INTERNAL_QUOTE_CUSTOMER_TABLE}"
+    )
+    raise RuntimeError(
+        "检测到内部报价数据库尚未完成厂区客户资料迁移 "
+        f"{INTERNAL_QUOTE_CUSTOMER_REVISION}；缺少：{missing}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
     )
 
 
@@ -268,6 +303,7 @@ def init_db() -> None:
     from app.services.raw_material import seed_raw_material_defaults
 
     ensure_molding_dispatch_schema_ready()
+    ensure_internal_quote_customer_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 
