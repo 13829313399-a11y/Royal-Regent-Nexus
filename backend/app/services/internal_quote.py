@@ -1083,27 +1083,74 @@ def _calculation_dependencies(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
     ).all()
     by_code = {section.department: section for section in sections}
-    if section_code in {"molding", "painting", "assembly"}:
+    if section_code == "molding":
         engineering = by_code.get("engineering")
         if engineering is None:
             return {}
+        engineering_payload = _json_object(engineering.payload_json)
+        source_molds = engineering_payload.get("molds", [])
+        molds = source_molds if isinstance(source_molds, list) else []
+        molding_dependency_fields = (
+            "source_row",
+            "item",
+            "chinese_name",
+            "mold_no",
+            "material",
+            "material_type",
+            "color",
+            "net_weight_g",
+            "cavity",
+            "quantity",
+            "machine_code",
+            "target_output",
+            "cycle_time_seconds",
+        )
+        projected_molds = [
+            {key: row.get(key) for key in molding_dependency_fields}
+            for row in molds
+            if isinstance(row, dict)
+        ]
         return {
-            "engineering_revision": engineering.revision,
-            "engineering_input_hash": str(
-                _json_object(engineering.calculation_json).get("input_hash", "")
-            ),
+            # Only Engineering fields that are actually projected into Molding
+            # participate in this fingerprint.  Workflow revisions and unrelated
+            # Engineering costs must not return an already reviewed section.
+            "engineering_molds_hash": content_hash(projected_molds),
         }
     if section_code == "sales":
         return {
             code: {
-                "revision": section.revision,
-                "calculation_hash": section.calculation_hash,
-                "calculation_status": section.calculation_status,
+                # Sales consumes authoritative section totals, not workflow
+                # revision/status metadata.  Submit/review transitions therefore
+                # keep this dependency stable when the calculated cost is unchanged.
+                "cost_hash": content_hash(
+                    _section_totals(section)
+                    if section.calculation_status == "valid"
+                    else {}
+                ),
             }
             for code, section in by_code.items()
             if code != "sales" and section.is_required
         }
     return {}
+
+
+def _downstream_dependency_hashes(
+    db: Session,
+    quote: InternalQuote,
+    source_section_code: str,
+) -> dict[str, str]:
+    target_codes: list[str] = []
+    if source_section_code == "engineering":
+        # Only Molding is populated from Engineering mold rows.  Painting and
+        # Assembly own their own quotation/routing inputs and are not downstream
+        # calculation consumers of the complete Engineering section.
+        target_codes.append("molding")
+    if source_section_code != "sales":
+        target_codes.append("sales")
+    return {
+        target_code: content_hash(_calculation_dependencies(db, quote, target_code))
+        for target_code in target_codes
+    }
 
 
 def _calculate_and_apply(
@@ -1149,11 +1196,12 @@ def _invalidate_engineering_dependents(
     quote: InternalQuote,
     user: AuthContext,
     request: Request | None,
+    previous_dependency_hashes: dict[str, str] | None = None,
 ) -> None:
     dependents = db.scalars(
         select(InternalQuoteSection).where(
             InternalQuoteSection.quote_id == quote.id,
-            InternalQuoteSection.department.in_(("molding", "painting", "assembly")),
+            InternalQuoteSection.department == "molding",
         )
     ).all()
     for section in dependents:
@@ -1162,6 +1210,14 @@ def _invalidate_engineering_dependents(
         if section.status == "not_applicable":
             continue
         if not _json_object(section.payload_json) and section.status == "draft":
+            continue
+        current_dependency_hash = content_hash(
+            _calculation_dependencies(db, quote, section.department)
+        )
+        if previous_dependency_hashes is not None:
+            if previous_dependency_hashes.get(section.department) == current_dependency_hash:
+                continue
+        elif section.dependency_hash == current_dependency_hash:
             continue
         if section.calculation_status == "stale" and section.dependency_status == "stale":
             continue
@@ -1177,7 +1233,7 @@ def _invalidate_engineering_dependents(
         section.calculation_status = "stale"
         section.dependency_status = "stale"
         section.status = "rejected" if section.status in {"approved", "pending_review"} else "draft"
-        section.review_comment = "工程分段已更新，请同步依赖并重新核价"
+        section.review_comment = "工程模具资料已更新，请同步依赖并重新核价"
         section.updated_at = now_text()
         _add_revision(db, quote, section, user, reason="engineering_dependency_invalidated")
         _add_audit(
@@ -1188,7 +1244,7 @@ def _invalidate_engineering_dependents(
             department=section.department,
             old_revision=old_revision,
             new_revision=section.revision,
-            reason="工程分段 revision/hash 已变化",
+            reason="工程模具计算依赖已变化",
             request=request,
         )
 
@@ -1199,6 +1255,7 @@ def _invalidate_sales_dependency(
     user: AuthContext,
     source_section_code: str,
     request: Request | None,
+    previous_dependency_hashes: dict[str, str] | None = None,
 ) -> None:
     if source_section_code == "sales":
         return
@@ -1213,6 +1270,12 @@ def _invalidate_sales_dependency(
         or sales.status == "not_applicable"
         or not _json_object(sales.payload_json)
     ):
+        return
+    current_dependency_hash = content_hash(_calculation_dependencies(db, quote, "sales"))
+    if previous_dependency_hashes is not None:
+        if previous_dependency_hashes.get("sales") == current_dependency_hash:
+            return
+    elif sales.dependency_hash == current_dependency_hash:
         return
     if sales.calculation_status == "stale" and sales.dependency_status == "stale":
         return
@@ -1250,10 +1313,24 @@ def _invalidate_downstream_dependencies(
     user: AuthContext,
     source_section_code: str,
     request: Request | None,
+    previous_dependency_hashes: dict[str, str] | None = None,
 ) -> None:
     if source_section_code == "engineering":
-        _invalidate_engineering_dependents(db, quote, user, request)
-    _invalidate_sales_dependency(db, quote, user, source_section_code, request)
+        _invalidate_engineering_dependents(
+            db,
+            quote,
+            user,
+            request,
+            previous_dependency_hashes,
+        )
+    _invalidate_sales_dependency(
+        db,
+        quote,
+        user,
+        source_section_code,
+        request,
+        previous_dependency_hashes,
+    )
 
 
 def _derive_quote_status(db: Session, quote: InternalQuote) -> None:
@@ -1950,6 +2027,11 @@ def remove_quote_participation(
     old_header_revision = quote.header_revision
     timestamp = now_text()
     for section in active_sections:
+        previous_dependency_hashes = _downstream_dependency_hashes(
+            db,
+            quote,
+            section.department,
+        )
         old_section_revision = section.revision
         section.is_required = False
         section.status = "draft"
@@ -1990,7 +2072,14 @@ def remove_quote_participation(
             events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS | {"participation_added"},
             department=section.department,
         )
-        _invalidate_downstream_dependencies(db, quote, user, section.department, request)
+        _invalidate_downstream_dependencies(
+            db,
+            quote,
+            user,
+            section.department,
+            request,
+            previous_dependency_hashes,
+        )
 
     quote.header_revision += 1
     quote.updated_at = timestamp
@@ -2264,6 +2353,11 @@ def save_section(
     current_payload_json = canonical_json(_json_object(section.payload_json))
     if next_payload_json == current_payload_json:
         return _section_out(section)
+    previous_dependency_hashes = _downstream_dependency_hashes(
+        db,
+        quote,
+        section_code,
+    )
     old_revision = section.revision
     section.payload_json = next_payload_json
     section.status = "draft"
@@ -2277,7 +2371,14 @@ def save_section(
     except CalculationInputError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     _add_revision(db, quote, section, user, reason=payload.reason)
-    _invalidate_downstream_dependencies(db, quote, user, section_code, request)
+    _invalidate_downstream_dependencies(
+        db,
+        quote,
+        user,
+        section_code,
+        request,
+        previous_dependency_hashes,
+    )
     _derive_quote_status(db, quote)
     _add_audit(
         db,
@@ -2336,7 +2437,6 @@ def submit_section(
     section.review_comment = ""
     section.updated_at = now_text()
     _add_revision(db, quote, section, user, reason="submit")
-    _invalidate_downstream_dependencies(db, quote, user, section_code, request)
     _derive_quote_status(db, quote)
     _add_audit(
         db,
@@ -2399,7 +2499,6 @@ def request_section_na(
     section.review_comment = payload.reason
     section.updated_at = now_text()
     _add_revision(db, quote, section, user, reason=payload.reason)
-    _invalidate_downstream_dependencies(db, quote, user, section_code, request)
     _derive_quote_status(db, quote)
     _add_audit(
         db,
@@ -2467,7 +2566,6 @@ def withdraw_section_submission(
     section.review_comment = ""
     section.updated_at = now_text()
     _add_revision(db, quote, section, user, reason="withdraw")
-    _invalidate_downstream_dependencies(db, quote, user, section_code, request)
     _derive_quote_status(db, quote)
     _add_audit(
         db,
@@ -2524,8 +2622,13 @@ def review_section(
                 },
             )
 
-    old_revision = section.revision
     review_type = "not_applicable" if section.status == "na_pending" else "section"
+    previous_dependency_hashes = (
+        _downstream_dependency_hashes(db, quote, section_code)
+        if review_type == "not_applicable" and payload.decision == "approve"
+        else None
+    )
+    old_revision = section.revision
     if payload.decision == "approve":
         section.status = "not_applicable" if review_type == "not_applicable" else "approved"
         if review_type == "not_applicable":
@@ -2555,7 +2658,15 @@ def review_section(
         )
     )
     _add_revision(db, quote, section, user, reason=payload.reason or payload.decision)
-    _invalidate_downstream_dependencies(db, quote, user, section_code, request)
+    if previous_dependency_hashes is not None:
+        _invalidate_downstream_dependencies(
+            db,
+            quote,
+            user,
+            section_code,
+            request,
+            previous_dependency_hashes,
+        )
     _derive_quote_status(db, quote)
     _add_audit(
         db,
@@ -2643,7 +2754,6 @@ def reopen_section(
         section.calculation_status = "pending"
         section.dependency_status = "current"
     _add_revision(db, quote, section, user, reason=payload.reason)
-    _invalidate_downstream_dependencies(db, quote, user, section_code, request)
     _derive_quote_status(db, quote)
     _add_audit(
         db,

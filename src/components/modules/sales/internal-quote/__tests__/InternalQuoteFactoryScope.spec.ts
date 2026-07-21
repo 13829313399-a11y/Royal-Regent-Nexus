@@ -2,9 +2,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthMeResponse } from '@/api/auth'
-import type { ApiInternalQuote, ApiInternalQuotePricingBaseline } from '@/api/internalQuote'
+import type { ApiInternalQuote, ApiInternalQuoteCustomer, ApiInternalQuotePricingBaseline } from '@/api/internalQuote'
 import InternalQuoteBaselineDialog from '@/components/modules/sales/internal-quote/InternalQuoteBaselineDialog.vue'
 import InternalQuoteCreateDialog from '@/components/modules/sales/internal-quote/InternalQuoteCreateDialog.vue'
+import InternalQuoteCustomerDialog from '@/components/modules/sales/internal-quote/InternalQuoteCustomerDialog.vue'
 import InternalQuoteHome from '@/components/modules/sales/internal-quote/InternalQuoteHome.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -15,6 +16,10 @@ const routerPushMock = vi.hoisted(() => vi.fn())
 const internalQuoteApiMock = vi.hoisted(() => ({
   list: vi.fn(),
   listBusinessOwners: vi.fn(),
+  listCustomers: vi.fn(),
+  createCustomer: vi.fn(),
+  updateCustomer: vi.fn(),
+  deleteCustomer: vi.fn(),
   create: vi.fn(),
   clone: vi.fn(),
   getPricingBaseline: vi.fn(),
@@ -29,7 +34,11 @@ vi.mock('@/api/internalQuote', () => ({
   internalQuoteApi: internalQuoteApiMock,
 }))
 
-function salesSession(factoryId = 'huaxing', includeBaselinePermissions = false): AuthMeResponse {
+function salesSession(
+  factoryId = 'huaxing',
+  includeBaselinePermissions = false,
+  includeCustomerPermission = false,
+): AuthMeResponse {
   const permissions = [
     'internal_quote:read',
     'internal_quote:create',
@@ -37,6 +46,7 @@ function salesSession(factoryId = 'huaxing', includeBaselinePermissions = false)
     ...(includeBaselinePermissions
       ? ['internal_quote:baseline_read', 'internal_quote:baseline_manage']
       : []),
+    ...(includeCustomerPermission ? ['internal_quote:customer_manage'] : []),
   ]
   return {
     id: 'sales-user',
@@ -136,6 +146,21 @@ function pricingBaseline(factoryId: string, revision = 1): ApiInternalQuotePrici
   }
 }
 
+function apiCustomer(factoryId: string, name = `${factoryId}客户`, revision = 1): ApiInternalQuoteCustomer {
+  return {
+    id: `${factoryId}-customer`,
+    factory_id: factoryId,
+    name,
+    revision,
+    created_by: 'system',
+    created_by_name: '系统迁移',
+    created_at: '2026-07-21 10:00:00',
+    updated_by: 'system',
+    updated_by_name: '系统迁移',
+    updated_at: '2026-07-21 10:00:00',
+  }
+}
+
 const createPayload: InternalQuoteCreatePayload = {
   quoteNo: 'IQ-C-RACE',
   productName: 'C 厂竞态测试产品',
@@ -157,6 +182,10 @@ describe('InternalQuoteHome factory permission boundary', () => {
     routerPushMock.mockReset()
     internalQuoteApiMock.list.mockReset().mockResolvedValue([])
     internalQuoteApiMock.listBusinessOwners.mockReset().mockResolvedValue([])
+    internalQuoteApiMock.listCustomers.mockReset().mockImplementation((factoryId: string) => Promise.resolve([apiCustomer(factoryId)]))
+    internalQuoteApiMock.createCustomer.mockReset()
+    internalQuoteApiMock.updateCustomer.mockReset()
+    internalQuoteApiMock.deleteCustomer.mockReset()
     internalQuoteApiMock.create.mockReset()
     internalQuoteApiMock.clone.mockReset()
     internalQuoteApiMock.getPricingBaseline.mockReset()
@@ -197,6 +226,45 @@ describe('InternalQuoteHome factory permission boundary', () => {
 
     expect(wrapper.get('.quote-readonly-notice').text()).toContain('华康C · 跨厂只读')
     expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huakang-c', { page: 1, pageSize: 10 })
+  })
+
+  it('shows customer maintenance only to the local sales supervisor and writes the active factory', async () => {
+    const createdCustomer = apiCustomer('huaxing', '新增客户')
+    internalQuoteApiMock.createCustomer.mockResolvedValue(createdCustomer)
+    internalQuoteApiMock.updateCustomer.mockResolvedValue(apiCustomer('huaxing', '修改客户', 2))
+    internalQuoteApiMock.deleteCustomer.mockResolvedValue(undefined)
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().applySession(salesSession('huaxing', false, true))
+    useAppStore().setActiveFactory('huaxing')
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.get('.quote-customer-button').trigger('click')
+    const dialog = wrapper.findComponent(InternalQuoteCustomerDialog)
+    expect(dialog.props('open')).toBe(true)
+
+    dialog.vm.$emit('create', '新增客户')
+    await flushPromises()
+    expect(internalQuoteApiMock.createCustomer).toHaveBeenCalledWith('huaxing', '新增客户')
+
+    dialog.vm.$emit('update', createdCustomer, '修改客户')
+    await flushPromises()
+    expect(internalQuoteApiMock.updateCustomer).toHaveBeenCalledWith(
+      createdCustomer.id,
+      '修改客户',
+      createdCustomer.revision,
+    )
+
+    dialog.vm.$emit('delete', apiCustomer('huaxing', '修改客户', 2))
+    await flushPromises()
+    expect(internalQuoteApiMock.deleteCustomer).toHaveBeenCalledWith('huaxing-customer', 2)
+
+    useAppStore().setActiveFactory('huadeng')
+    await flushPromises()
+    expect(wrapper.findComponent(InternalQuoteCustomerDialog).props('open')).toBe(false)
+    expect(wrapper.find('.quote-customer-button').exists()).toBe(false)
   })
 
   it('ignores slow foreign responses and keeps create locked until home-factory owners are ready', async () => {

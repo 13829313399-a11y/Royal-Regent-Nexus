@@ -67,6 +67,7 @@ INTERNAL_QUOTE_PERMISSION_CODES = (
     "internal_quote:archive",
     "internal_quote:baseline_read",
     "internal_quote:baseline_manage",
+    "internal_quote:customer_manage",
     "internal_quote:reference_manage",
     "internal_quote:export",
     "internal_quote:final_submit",

@@ -1,6 +1,13 @@
 import importlib
 
-from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
+from test_internal_quote_api import (
+    ALL_SECTION_CODES,
+    create_payload,
+    ensure_user,
+    login,
+    logout,
+    make_client,
+)
 
 
 ENGINEERING_PAYLOAD = {
@@ -31,6 +38,21 @@ MOLDING_PAYLOAD = {
             "quantity": "2",
         }
     ]
+}
+
+
+ASSEMBLY_PAYLOAD = {
+    "labor_base_hkd": "260",
+    "standard_work_hours": "11",
+    "groups": [
+        {
+            "name": "成品组装",
+            "category": "assembly",
+            "production_qty": "100",
+            "teams": "1",
+            "processes": [{"name": "组装", "persons": "2", "remark": ""}],
+        }
+    ],
 }
 
 
@@ -240,7 +262,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         molding_section = molding.json()
         assert molding_section["calculation_status"] == "valid"
         assert molding_section["dependency_status"] == "current"
-        assert molding_section["calculation"]["dependencies"]["engineering_revision"] == 2
+        assert molding_section["calculation"]["dependencies"]["engineering_molds_hash"]
         assert molding_section["calculation"]["totals"]["total_hkd"] == "26.9100"
 
         logout(client)
@@ -251,11 +273,11 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
                 "revision": 2,
                 "payload": {
                     **ENGINEERING_PAYLOAD,
-                    "materials": [
-                        {**ENGINEERING_PAYLOAD["materials"][0], "quantity": "3"}
+                    "molds": [
+                        {**ENGINEERING_PAYLOAD["molds"][0], "item": "主模调整"}
                     ],
                 },
-                "reason": "工程用量调整",
+                "reason": "工程模具资料调整",
             },
         )
         assert engineering_update.status_code == 200
@@ -306,7 +328,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         assert summary.status_code == 200
         body = summary.json()
         assert body["formula_version"] == "rr2-2026-v1"
-        assert body["components_hkd"]["hardware_hkd"] == "30.0000"
+        assert body["components_hkd"]["hardware_hkd"] == "20.0000"
         assert body["calculation_phase"] == "blocked"
         assert any(
             warning["section_code"] == "molding" and warning["severity"] == "blocking"
@@ -314,12 +336,23 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         )
 
 
-def test_p2_workflow_revision_changes_invalidate_calculated_downstream_sections(monkeypatch):
+def test_p2_workflow_revision_changes_do_not_invalidate_calculated_downstream_sections(monkeypatch):
     with make_client(monkeypatch) as client:
+        ensure_user(
+            "iq_p2_lifecycle_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
         login(client, "iq_p2_lifecycle_creator", "sales_customer_owner", "sales-business")
+        payload = create_payload(
+            suffix="P2-LIFECYCLE",
+            participating_sections=ALL_SECTION_CODES,
+        )
+        payload["business_owner_id"] = "user-iq_p2_lifecycle_reviewer"
+        payload["business_owner_name"] = "iq_p2_lifecycle_reviewer"
         created = client.post(
             "/api/internal-quotes",
-            json=create_payload(suffix="P2-LIFECYCLE", participating_sections=ALL_SECTION_CODES),
+            json=payload,
         ).json()
         quote_id = created["id"]
 
@@ -338,6 +371,32 @@ def test_p2_workflow_revision_changes_invalidate_calculated_downstream_sections(
             json={"revision": 1, "payload": MOLDING_PAYLOAD},
         )
         assert molding.status_code == 200, molding.text
+
+        logout(client)
+        login(client, "iq_p2_lifecycle_assembly", "admin", "assembly")
+        assembly = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/assembly",
+            json={"revision": 1, "payload": ASSEMBLY_PAYLOAD},
+        )
+        assert assembly.status_code == 200, assembly.text
+        assembly_submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/assembly/submit",
+            json={"revision": 2},
+        )
+        assert assembly_submitted.status_code == 200, assembly_submitted.text
+
+        logout(client)
+        login(
+            client,
+            "iq_p2_lifecycle_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        assembly_approved = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/assembly/review",
+            json={"revision": 3, "decision": "approve", "reason": "装配核价确认"},
+        )
+        assert assembly_approved.status_code == 200, assembly_approved.text
 
         logout(client)
         login(client, "iq_p2_lifecycle_sales", "sales_customer_owner", "sales-business")
@@ -360,9 +419,110 @@ def test_p2_workflow_revision_changes_invalidate_calculated_downstream_sections(
         detail = client.get(f"/api/internal-quotes/{quote_id}")
         assert detail.status_code == 200
         sections = {item["department"]: item for item in detail.json()["sections"]}
-        assert sections["molding"]["revision"] == 3
-        assert sections["molding"]["calculation_status"] == "stale"
-        assert sections["molding"]["dependency_status"] == "stale"
+        assert sections["molding"]["revision"] == 2
+        assert sections["molding"]["calculation_status"] == "valid"
+        assert sections["molding"]["dependency_status"] == "current"
+        assert sections["assembly"]["revision"] == 4
+        assert sections["assembly"]["status"] == "approved"
+        assert sections["assembly"]["calculation_status"] == "valid"
+        assert sections["assembly"]["dependency_status"] == "current"
+        assert sections["sales"]["revision"] == 2
+        assert sections["sales"]["calculation_status"] == "valid"
+        assert sections["sales"]["dependency_status"] == "current"
+
+        logout(client)
+        login(
+            client,
+            "iq_p2_lifecycle_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        approved = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/engineering/review",
+            json={"revision": 3, "decision": "approve", "reason": "工程核价确认"},
+        )
+        assert approved.status_code == 200, approved.text
+
+        approved_detail = client.get(f"/api/internal-quotes/{quote_id}").json()
+        approved_sections = {
+            item["department"]: item for item in approved_detail["sections"]
+        }
+        assert approved_sections["molding"]["revision"] == 2
+        assert approved_sections["assembly"]["revision"] == 4
+        assert approved_sections["assembly"]["status"] == "approved"
+        assert approved_sections["sales"]["revision"] == 2
+        for section_code in ("molding", "assembly", "sales"):
+            assert approved_sections[section_code]["calculation_status"] == "valid"
+            assert approved_sections[section_code]["dependency_status"] == "current"
+
+
+def test_p2_unrelated_engineering_cost_edit_does_not_return_molding_or_assembly(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p2_scope_creator", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(
+                suffix="P2-DEPENDENCY-SCOPE",
+                participating_sections=ALL_SECTION_CODES,
+            ),
+        ).json()
+        quote_id = created["id"]
+
+        logout(client)
+        login(client, "iq_p2_scope_engineer", "engineer", "engineering")
+        engineering = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/engineering",
+            json={"revision": 1, "payload": ENGINEERING_PAYLOAD},
+        )
+        assert engineering.status_code == 200, engineering.text
+
+        logout(client)
+        login(client, "iq_p2_scope_molding", "molding_clerk", "molding")
+        molding = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/molding",
+            json={"revision": 1, "payload": MOLDING_PAYLOAD},
+        )
+        assert molding.status_code == 200, molding.text
+
+        logout(client)
+        login(client, "iq_p2_scope_assembly", "admin", "assembly")
+        assembly = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/assembly",
+            json={"revision": 1, "payload": ASSEMBLY_PAYLOAD},
+        )
+        assert assembly.status_code == 200, assembly.text
+
+        logout(client)
+        login(client, "iq_p2_scope_sales", "sales_customer_owner", "sales-business")
+        sales = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 1, "payload": {"additional_tax_hkd": "1"}},
+        )
+        assert sales.status_code == 200, sales.text
+
+        logout(client)
+        login(client, "iq_p2_scope_engineer_update", "engineer", "engineering")
+        engineering_update = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/engineering",
+            json={
+                "revision": 2,
+                "payload": {
+                    **ENGINEERING_PAYLOAD,
+                    "materials": [
+                        {**ENGINEERING_PAYLOAD["materials"][0], "quantity": "3"}
+                    ],
+                },
+                "reason": "只调整五金用量",
+            },
+        )
+        assert engineering_update.status_code == 200, engineering_update.text
+
+        detail = client.get(f"/api/internal-quotes/{quote_id}").json()
+        sections = {item["department"]: item for item in detail["sections"]}
+        for section_code in ("molding", "assembly"):
+            assert sections[section_code]["revision"] == 2
+            assert sections[section_code]["calculation_status"] == "valid"
+            assert sections[section_code]["dependency_status"] == "current"
         assert sections["sales"]["revision"] == 3
         assert sections["sales"]["calculation_status"] == "stale"
         assert sections["sales"]["dependency_status"] == "stale"
@@ -370,13 +530,21 @@ def test_p2_workflow_revision_changes_invalidate_calculated_downstream_sections(
 
 def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monkeypatch):
     with make_client(monkeypatch) as client:
+        ensure_user(
+            "iq_p2_notice_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
         login(client, "iq_p2_notice_creator", "sales_customer_owner", "sales-business")
+        payload = create_payload(
+            suffix="P2-NOTICE-LIFECYCLE",
+            participating_sections=["sales", "engineering", "molding", "assembly"],
+        )
+        payload["business_owner_id"] = "user-iq_p2_notice_reviewer"
+        payload["business_owner_name"] = "iq_p2_notice_reviewer"
         quote = client.post(
             "/api/internal-quotes",
-            json=create_payload(
-                suffix="P2-NOTICE-LIFECYCLE",
-                participating_sections=["sales", "engineering", "molding", "assembly"],
-            ),
+            json=payload,
         ).json()
         quote_id = quote["id"]
 
@@ -402,7 +570,7 @@ def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monke
         assert submitted.status_code == 200, submitted.text
 
         logout(client)
-        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        login(client, "iq_p2_notice_reviewer", "sales_customer_supervisor", "sales-business")
         first_review_notification = next(
             item
             for item in client.get("/api/system/notifications").json()
@@ -420,17 +588,17 @@ def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monke
                 "revision": 2,
                 "payload": {
                     **ENGINEERING_PAYLOAD,
-                    "materials": [
-                        {**ENGINEERING_PAYLOAD["materials"][0], "quantity": "3"}
+                    "molds": [
+                        {**ENGINEERING_PAYLOAD["molds"][0], "item": "主模调整"}
                     ],
                 },
-                "reason": "工程用量调整",
+                "reason": "工程模具资料调整",
             },
         )
         assert engineering_update.status_code == 200, engineering_update.text
 
         logout(client)
-        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        login(client, "iq_p2_notice_reviewer", "sales_customer_supervisor", "sales-business")
         notifications_after_dependency_change = client.get("/api/system/notifications").json()
         assert next(
             item
@@ -452,7 +620,7 @@ def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monke
         assert resubmitted.status_code == 200, resubmitted.text
 
         logout(client)
-        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        login(client, "iq_p2_notice_reviewer", "sales_customer_supervisor", "sales-business")
         second_review_notification = next(
             item
             for item in client.get("/api/system/notifications").json()
@@ -471,7 +639,7 @@ def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monke
         assert synced.status_code == 200, synced.text
 
         logout(client)
-        login(client, "iq_p2_notice_reviewer", "position_production_supervisor", "molding")
+        login(client, "iq_p2_notice_reviewer", "sales_customer_supervisor", "sales-business")
         notifications_after_sync = client.get("/api/system/notifications").json()
         assert next(
             item for item in notifications_after_sync if item["id"] == second_review_notification["id"]

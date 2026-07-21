@@ -36,13 +36,16 @@ from app.services.internal_quote import (
     _add_revision,
     _calculate_and_apply,
     _check_revision,
+    _cost_context,
     _derive_quote_status,
+    _downstream_dependency_hashes,
     _ensure_active,
     _ensure_section_participates,
     _get_quote,
     _get_section,
     _invalidate_downstream_dependencies,
     _json_object,
+    _rr2_cost_summary,
     _section_out,
     ensure_quote_permission,
     ensure_quote_read,
@@ -52,6 +55,7 @@ from app.services.internal_quote_calculator import CalculationInputError, canoni
 from app.services.internal_quote_excel import (
     P3_TEMPLATE_VERSION,
     P4_TEMPLATE_VERSION,
+    WORKBOOK_LAYOUT_VERSION,
     build_internal_quote_workbook,
 )
 from app.services.internal_quote_import import IMPORT_TYPE_DEPARTMENTS, parse_internal_quote_workbook
@@ -550,6 +554,11 @@ def confirm_import_batch(
             user,
         )
 
+    previous_dependency_hashes = _downstream_dependency_hashes(
+        db,
+        quote,
+        section.department,
+    )
     old_revision = section.revision
     section.payload_json = canonical_json(
         _merge_import_payload(
@@ -572,7 +581,14 @@ def confirm_import_batch(
         raise HTTPException(status_code=400, detail=str(error)) from error
     reason = f"import_confirm:{batch.import_type}:{effective_mode}:{batch.id}"
     _add_revision(db, quote, section, user, reason=reason)
-    _invalidate_downstream_dependencies(db, quote, user, section.department, request)
+    _invalidate_downstream_dependencies(
+        db,
+        quote,
+        user,
+        section.department,
+        request,
+        previous_dependency_hashes,
+    )
     _derive_quote_status(db, quote)
 
     batch.status = "confirmed"
@@ -834,21 +850,12 @@ def _export_sections(db: Session, quote: InternalQuote) -> list[InternalQuoteSec
     ).all()
 
 
-def _create_artifact_handoff(
-    db: Session,
+def _handoff_manifest(
     quote: InternalQuote,
     record: InternalQuoteExportFile,
-    user: AuthContext,
-) -> InternalQuoteArtifactHandoff:
-    existing = db.scalar(
-        select(InternalQuoteArtifactHandoff).where(
-            InternalQuoteArtifactHandoff.export_id == record.id
-        )
-    )
-    if existing is not None:
-        return existing
+) -> dict[str, object]:
     export_manifest = _json_object(record.export_manifest_json)
-    handoff_manifest = {
+    return {
         "schema_version": "internal-quote-handoff-v1",
         "quote_id": quote.id,
         "quote_no": quote.quote_no,
@@ -863,10 +870,27 @@ def _create_artifact_handoff(
         "file_name": record.file_name,
         "file_sha256": record.sha256,
         "template_version": record.template_version,
+        "workbook_layout_version": export_manifest.get("workbook_layout_version", ""),
         "formula_version": record.formula_version,
         "reference_snapshot_id": record.reference_snapshot_id,
         "section_revisions": _json_object(record.section_revisions_json),
     }
+
+
+def _create_artifact_handoff(
+    db: Session,
+    quote: InternalQuote,
+    record: InternalQuoteExportFile,
+    user: AuthContext,
+) -> InternalQuoteArtifactHandoff:
+    existing = db.scalar(
+        select(InternalQuoteArtifactHandoff).where(
+            InternalQuoteArtifactHandoff.export_id == record.id
+        )
+    )
+    if existing is not None:
+        return existing
+    handoff_manifest = _handoff_manifest(quote, record)
     handoff = InternalQuoteArtifactHandoff(
         id=f"IQHAND-{uuid4().hex}",
         quote_id=quote.id,
@@ -929,7 +953,29 @@ def create_controlled_export(
         and quote.final_release_status == "approved"
         and quote.final_release_revision > 0
     )
+    existing_handoff: InternalQuoteArtifactHandoff | None = None
+    layout_refresh = False
     if is_final_release:
+        current_exports = db.scalars(
+            select(InternalQuoteExportFile)
+            .where(
+                InternalQuoteExportFile.quote_id == quote.id,
+                InternalQuoteExportFile.status == "current",
+                InternalQuoteExportFile.release_stage == "p4_final_approved",
+            )
+            .order_by(
+                InternalQuoteExportFile.exported_at.desc(),
+                InternalQuoteExportFile.id.desc(),
+            )
+        ).all()
+        for current_export in current_exports:
+            current_manifest = _json_object(current_export.export_manifest_json)
+            if (
+                current_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION
+                and str(current_manifest.get("final_release_revision") or "0")
+                == str(quote.final_release_revision)
+            ):
+                return _export_out(current_export)
         existing_handoff = db.scalar(
             select(InternalQuoteArtifactHandoff).where(
                 InternalQuoteArtifactHandoff.quote_id == quote.id,
@@ -939,13 +985,21 @@ def create_controlled_export(
         if existing_handoff is not None:
             existing_export = db.get(InternalQuoteExportFile, existing_handoff.export_id)
             if existing_export is not None and existing_export.release_stage == "p4_final_approved":
-                return _export_out(existing_export)
+                existing_manifest = _json_object(existing_export.export_manifest_json)
+                if existing_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION:
+                    return _export_out(existing_export)
+                # The final-release business payload remains immutable.  A
+                # presentation-only refresh gets a new export record while the
+                # one-per-release customer handoff continues to reference its
+                # original, structurally compatible P4 v2 artifact.
+                layout_refresh = True
     release_stage = "p4_final_approved" if is_final_release else "p3_section_approved"
     template_version = P4_TEMPLATE_VERSION if is_final_release else P3_TEMPLATE_VERSION
     _supersede_outdated_exports(db, quote, sections)
     section_revisions = {section.department: section.revision for section in sections}
     manifest = {
         "template_version": template_version,
+        "workbook_layout_version": WORKBOOK_LAYOUT_VERSION,
         "formula_version": quote.formula_version,
         "reference_snapshot_id": quote.reference_snapshot_id,
         "header_revision": quote.header_revision,
@@ -977,7 +1031,16 @@ def create_controlled_export(
         )
     )
     reference_snapshot = _json_object(reference_set.snapshot_json) if reference_set else {}
-    content = build_internal_quote_workbook(quote, sections, manifest, reference_snapshot)
+    cost_context = _cost_context(db, quote)
+    rr2_cost_summary = _rr2_cost_summary(sections, cost_context, reference_snapshot)
+    content = build_internal_quote_workbook(
+        quote,
+        sections,
+        manifest,
+        reference_snapshot,
+        rr2_cost_summary,
+        cost_context,
+    )
     record = InternalQuoteExportFile(
         id=f"IQEXP-{uuid4().hex}",
         quote_id=quote.id,
@@ -1010,6 +1073,15 @@ def create_controlled_export(
         )
     ).all()
     for item in previous:
+        if (
+            layout_refresh
+            and existing_handoff is not None
+            and existing_handoff.status == "consumed"
+            and item.id == existing_handoff.export_id
+        ):
+            # A consumed customer handoff is immutable.  Keep its exact P4
+            # artifact current alongside the presentation-refreshed workbook.
+            continue
         item.status = "superseded"
         item.superseded_at = now_text()
         handoffs = db.scalars(
@@ -1019,13 +1091,26 @@ def create_controlled_export(
             )
         ).all()
         for handoff in handoffs:
+            if layout_refresh and existing_handoff is not None and handoff.id == existing_handoff.id:
+                continue
             handoff.status = "revoked"
             handoff.revoked_at = now_text()
             handoff.revoke_reason = "已生成后续内部报价导出文件"
     db.add(record)
     db.flush()
-    if is_final_release:
+    if is_final_release and existing_handoff is None:
         _create_artifact_handoff(db, quote, record, user)
+    elif (
+        is_final_release
+        and layout_refresh
+        and existing_handoff is not None
+        and existing_handoff.status == "available"
+    ):
+        existing_handoff.export_id = record.id
+        existing_handoff.artifact_manifest_json = canonical_json(
+            _handoff_manifest(quote, record)
+        )
+    if is_final_release:
         quote.status = "exported"
         quote.updated_at = now_text()
     _add_audit(
@@ -1034,7 +1119,13 @@ def create_controlled_export(
         user,
         "export",
         detail=json.dumps(
-            {"export_id": record.id, "sha256": record.sha256, "release_stage": record.release_stage},
+            {
+                "export_id": record.id,
+                "sha256": record.sha256,
+                "release_stage": record.release_stage,
+                "workbook_layout_version": WORKBOOK_LAYOUT_VERSION,
+                "layout_refresh": layout_refresh,
+            },
             ensure_ascii=False,
             sort_keys=True,
         ),

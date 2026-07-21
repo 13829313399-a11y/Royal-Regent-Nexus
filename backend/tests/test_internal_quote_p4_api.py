@@ -184,6 +184,7 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         final_export = result["export"]
         assert final_export["template_version"] == "internal-quote-p4-v2"
         assert final_export["release_stage"] == "p4_final_approved"
+        assert final_export["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v2"
         assert final_export["export_manifest"]["p4_final_release_required"] is False
         assert final_export["export_manifest"]["final_reviewed_by"] == reviewer["id"]
 
@@ -192,6 +193,21 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         )
         assert export_download.status_code == 200
         workbook = load_workbook(BytesIO(export_download.content), read_only=True, data_only=False)
+        quote_sheet = workbook["报价明细"]
+        assert quote_sheet.sheet_state == "visible"
+        assert quote_sheet["A8"].value == "内部报价测试产品报价"
+        assert quote_sheet["A8"].font.name == "宋体"
+        assert quote_sheet["A8"].font.sz == 14
+        assert quote_sheet["D2"].number_format == "0.0"
+        assert quote_sheet["N2"].number_format == "0.00%"
+        assert quote_sheet["D6"].number_format == "#,##0"
+        assert quote_sheet["N6"].number_format == "0.00"
+        assert quote_sheet["C9"].fill.fill_type is None
+        assert quote_sheet["B10"].value is None
+        assert quote_sheet["C41"].value == "报客价："
+        assert quote_sheet["D42"].value == 3.5
+        assert quote_sheet["C46"].value == "旺季价"
+        assert all(workbook[name].sheet_state == "veryHidden" for name in workbook.sheetnames[1:])
         assert workbook["审批与版本"]["B4"].value == "P4 最终业务放行"
         assert workbook["审批与版本"]["B5"].value == "最终业务放行完成，可交接客价转换台"
         structured = workbook["结构化数据"]
@@ -241,6 +257,7 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         assert handoff["status"] == "available"
         assert handoff["artifact_manifest"]["release_revision"] == 1
         assert handoff["artifact_manifest"]["template_version"] == "internal-quote-p4-v2"
+        assert handoff["artifact_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v2"
         assert handoff["sha256"] == final_export["sha256"]
 
         artifact_download = client.get(
@@ -310,6 +327,105 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         assert revoked.json()[0]["revoke_reason"]
 
 
+def test_p4_legacy_layout_export_is_refreshed_without_replacing_release_handoff(monkeypatch):
+    with make_client(monkeypatch) as client:
+        submitter = login(
+            client,
+            "iq_p4_layout_refresh_submitter",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        payload = create_payload(suffix="P4-LAYOUT-REFRESH", participating_sections=ALL_SECTION_CODES)
+        payload["business_owner_id"] = submitter["id"]
+        payload["business_owner_name"] = submitter["display_name"]
+        quote = client.post("/api/internal-quotes", json=payload).json()
+        quote_id = quote["id"]
+        mark_all_sections_not_applicable(quote_id)
+        submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/final-submit",
+            json={"revision": 1},
+        )
+        assert submitted.status_code == 200, submitted.text
+
+        logout(client)
+        login(
+            client,
+            "iq_p4_layout_refresh_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        approved = client.post(
+            f"/api/internal-quotes/{quote_id}/final-review",
+            json={"revision": 2, "decision": "approve", "reason": "初次最终放行"},
+        )
+        assert approved.status_code == 200, approved.text
+        legacy_export = approved.json()["export"]
+
+        db_module = importlib.import_module("app.db")
+        quote_models = importlib.import_module("app.models.internal_quote")
+        with db_module.SessionLocal() as db:
+            export_record = db.get(quote_models.InternalQuoteExportFile, legacy_export["id"])
+            legacy_manifest = json.loads(export_record.export_manifest_json)
+            legacy_manifest.pop("workbook_layout_version", None)
+            export_record.export_manifest_json = json.dumps(
+                legacy_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            handoff_record = db.query(quote_models.InternalQuoteArtifactHandoff).filter_by(
+                quote_id=quote_id,
+                release_revision=1,
+            ).one()
+            legacy_handoff_id = handoff_record.id
+            legacy_handoff_manifest = json.loads(handoff_record.artifact_manifest_json)
+            legacy_handoff_manifest.pop("workbook_layout_version", None)
+            handoff_record.artifact_manifest_json = json.dumps(
+                legacy_handoff_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            db.commit()
+
+        refreshed_response = client.post(f"/api/internal-quotes/{quote_id}/exports")
+        assert refreshed_response.status_code == 201, refreshed_response.text
+        refreshed = refreshed_response.json()
+        assert refreshed["id"] != legacy_export["id"]
+        assert refreshed["template_version"] == "internal-quote-p4-v2"
+        assert refreshed["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v2"
+
+        downloaded = client.get(
+            f"/api/internal-quotes/{quote_id}/exports/{refreshed['id']}/download"
+        )
+        assert downloaded.status_code == 200
+        workbook = load_workbook(BytesIO(downloaded.content), read_only=True, data_only=False)
+        assert workbook["报价明细"]["A8"].value == "内部报价测试产品报价"
+        assert workbook["报价明细"]["C41"].value == "报客价："
+        assert all(workbook[name].sheet_state == "veryHidden" for name in workbook.sheetnames[1:])
+        workbook.close()
+
+        repeated = client.post(f"/api/internal-quotes/{quote_id}/exports")
+        assert repeated.status_code == 201
+        assert repeated.json()["id"] == refreshed["id"]
+
+        history = client.get(f"/api/internal-quotes/{quote_id}/exports").json()
+        history_by_id = {item["id"]: item for item in history}
+        assert history_by_id[legacy_export["id"]]["status"] == "superseded"
+        assert history_by_id[refreshed["id"]]["status"] == "current"
+
+        artifacts = client.get(
+            "/api/customer-price/internal-quote-artifacts?factory_id=huaxing"
+        )
+        assert artifacts.status_code == 200, artifacts.text
+        assert len(artifacts.json()) == 1
+        preserved_handoff = artifacts.json()[0]
+        assert preserved_handoff["id"] == legacy_handoff_id
+        assert preserved_handoff["export_id"] == refreshed["id"]
+        assert preserved_handoff["status"] == "available"
+        assert preserved_handoff["artifact_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v2"
+
+
 def test_p4_final_rejection_is_immutable_and_can_be_resubmitted(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_p4_reject_submitter", "sales_customer_supervisor", "sales-business")
@@ -355,6 +471,55 @@ def test_p4_final_rejection_is_immutable_and_can_be_resubmitted(monkeypatch):
         assert [(item["submission_revision"], item["decision"]) for item in reviews.json()] == [
             (1, "reject")
         ]
+
+
+def test_p4_final_submitter_can_return_pending_release_but_cannot_self_approve(monkeypatch):
+    with make_client(monkeypatch) as client:
+        submitter = login(
+            client,
+            "iq_p4_self_return_submitter",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="P4-SELF-RETURN", participating_sections=ALL_SECTION_CODES),
+        ).json()
+        quote_id = quote["id"]
+        mark_all_sections_not_applicable(quote_id)
+        submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/final-submit",
+            json={"revision": 1},
+        )
+        assert submitted.status_code == 200, submitted.text
+
+        self_approve = client.post(
+            f"/api/internal-quotes/{quote_id}/final-review",
+            json={"revision": 2, "decision": "approve", "reason": "不应允许自批"},
+        )
+        assert self_approve.status_code == 403
+        assert "不能审核自己的报价" in self_approve.json()["detail"]
+
+        returned = client.post(
+            f"/api/internal-quotes/{quote_id}/final-review",
+            json={"revision": 2, "decision": "reject", "reason": "提交人主动退回补充资料"},
+        )
+        assert returned.status_code == 200, returned.text
+        returned_body = returned.json()
+        assert returned_body["quote"]["status"] == "ready_for_final_review"
+        assert returned_body["quote"]["header_revision"] == 3
+        assert returned_body["quote"]["final_release_status"] == "rejected"
+        assert returned_body["review"]["decision"] == "reject"
+        assert returned_body["review"]["submitted_by"] == submitter["id"]
+        assert returned_body["review"]["actor_id"] == submitter["id"]
+        assert returned_body["review"]["reason"] == "提交人主动退回补充资料"
+
+        resubmitted = client.post(
+            f"/api/internal-quotes/{quote_id}/final-submit",
+            json={"revision": 3},
+        )
+        assert resubmitted.status_code == 200, resubmitted.text
+        assert resubmitted.json()["quote"]["final_submission_revision"] == 2
 
 
 def test_p4_quote_version_comparison_uses_clone_lineage_and_section_snapshots(monkeypatch):

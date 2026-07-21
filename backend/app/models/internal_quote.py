@@ -223,6 +223,29 @@ class InternalQuotePricingBaseline(Base):
     updated_at: Mapped[str] = mapped_column(String(32))
 
 
+class InternalQuoteCustomer(Base):
+    __tablename__ = "internal_quote_customers"
+    __table_args__ = (
+        UniqueConstraint(
+            "factory_id",
+            "normalized_name",
+            name="uq_internal_quote_customers_factory_name",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(128))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64), index=True)
+    created_by_name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[str] = mapped_column(String(32))
+    updated_by: Mapped[str] = mapped_column(String(64), index=True)
+    updated_by_name: Mapped[str] = mapped_column(String(128))
+    updated_at: Mapped[str] = mapped_column(String(32))
+
+
 class InternalQuoteImportBatch(Base):
     __tablename__ = "internal_quote_import_batches"
 

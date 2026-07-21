@@ -364,6 +364,19 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert hashlib.sha256(download.content).hexdigest() == first["sha256"]
         workbook = load_workbook(BytesIO(download.content), data_only=False, read_only=True)
         assert workbook.sheetnames == ["报价明细", "电子明细", "车缝明细", "装配明细", "审批与版本"]
+        quote_sheet = workbook["报价明细"]
+        assert quote_sheet.sheet_state == "visible"
+        assert quote_sheet["A8"].value == "内部报价测试产品报价"
+        assert [quote_sheet.cell(9, column).value for column in range(3, 14)] == [
+            "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", None, "报客价",
+        ]
+        assert quote_sheet["C41"].value == "报客价："
+        assert quote_sheet["D41"].value == "=D38*D39/D40"
+        assert quote_sheet["D42"].value == 3.5
+        assert quote_sheet["D43"].value == '=IF(D42="","",D41-D42)'
+        assert quote_sheet["D44"].value == '=IF(OR(D42="",D42=0),"",D43/D42)'
+        assert quote_sheet["C46"].value == "旺季价"
+        assert all(workbook[name].sheet_state == "veryHidden" for name in workbook.sheetnames[1:])
         electronic_sheet = workbook["电子明细"]
         assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [
             "父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源",
