@@ -7,6 +7,7 @@ function client() {
     get: vi.fn(async () => ({ data: [] })),
     post: vi.fn(async () => ({ data: { id: 'created' } })),
     put: vi.fn(async () => ({ data: { id: 'updated' } })),
+    delete: vi.fn(async () => ({ data: undefined })),
   } satisfies InternalQuoteHttpClient
 }
 
@@ -88,6 +89,7 @@ describe('internal quote API adapter', () => {
     await api.removeParticipation('quote-1', 4, ['painting'])
     await api.updateReferenceFx('quote-1', 3, '0.9', '7.9')
     await api.previewImport('quote-1', 'mold', file)
+    await api.downloadImportTemplate('quote-1', 'mold')
     await api.confirmImport('quote-1', 'batch-1', 9, 'replace')
     await api.uploadAttachment('quote-1', 'engineering', file)
     await api.submitFinal('quote-1', 3)
@@ -101,6 +103,7 @@ describe('internal quote API adapter', () => {
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation', { revision: 3, add_sections: ['painting', 'sewing'] })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation/remove', { revision: 4, remove_sections: ['painting'] })
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/reference-snapshot/fx', { revision: 3, rmb_hkd: '0.9', hkd_usd: '7.9' })
+    expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/mold/template', { responseType: 'blob' })
     const formCalls = http.post.mock.calls.filter(([, data]) => data instanceof FormData)
     expect(formCalls).toHaveLength(2)
     expect((formCalls[0][1] as FormData).get('file')).toBe(file)
@@ -127,6 +130,29 @@ describe('internal quote API adapter', () => {
     })
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/pricing-baseline', payload, {
       params: { factory_id: 'huaxing', workshop_code: 'huaxing-workshop' },
+    })
+  })
+
+  it('uses factory-scoped and revision-safe customer maintenance endpoints', async () => {
+    const http = client()
+    const api = createInternalQuoteApi(http)
+
+    await api.listCustomers('huaxing')
+    await api.createCustomer('huaxing', 'Disney')
+    await api.updateCustomer('customer-1', 'Disney Consumer', 2)
+    await api.deleteCustomer('customer-1', 3)
+
+    expect(http.get).toHaveBeenCalledWith('/internal-quotes/customers', {
+      params: { factory_id: 'huaxing' },
+    })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/customers', { name: 'Disney' }, {
+      params: { factory_id: 'huaxing' },
+    })
+    expect(http.put).toHaveBeenCalledWith('/internal-quotes/customers/customer-1', {
+      name: 'Disney Consumer', revision: 2,
+    })
+    expect(http.delete).toHaveBeenCalledWith('/internal-quotes/customers/customer-1', {
+      params: { revision: 3 },
     })
   })
 })

@@ -71,6 +71,9 @@ INTERNAL_QUOTE_EXPORT_PERMISSION = "internal_quote:export"
 INTERNAL_QUOTE_EXPORT_DEFAULT_ROLE_IDS = ("sales_customer_owner", "sales_customer_supervisor")
 INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER = "internal_quote_p4_release_grant_v1_completed"
 INTERNAL_QUOTE_BASELINE_GRANT_MARKER = "internal_quote_baseline_grant_v1_completed"
+INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER = "internal_quote_customer_grant_v1_completed"
+INTERNAL_QUOTE_CUSTOMER_PERMISSION = "internal_quote:customer_manage"
+INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
 INTERNAL_QUOTE_BASELINE_ROLE_PERMISSIONS = {
     "sales_customer_owner": ("internal_quote:baseline_read",),
     "sales_customer_supervisor": (
@@ -131,6 +134,7 @@ INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS = {
         "internal_quote:archive",
         "internal_quote:baseline_read",
         "internal_quote:baseline_manage",
+        "internal_quote:customer_manage",
         "internal_quote:sales_edit",
         "internal_quote:sales_review",
         "internal_quote:reference_manage",
@@ -1189,6 +1193,75 @@ def seed_internal_quote_baseline_grants_once(db: Session, now: str) -> int:
     return created_count
 
 
+def seed_internal_quote_customer_grants_once(db: Session, now: str) -> int:
+    """Grant factory customer maintenance to existing business supervisors once."""
+    if db.get(AuthIamState, INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER) is not None:
+        return 0
+    permission = db.scalar(
+        select(AuthPermission).where(
+            AuthPermission.code == INTERNAL_QUOTE_CUSTOMER_PERMISSION
+        )
+    )
+    created_count = 0
+    updated_role_ids: set[str] = set()
+    if permission is not None:
+        for role_id in INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS:
+            if db.get(AuthRole, role_id) is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+    if updated_role_ids:
+        for role_id in updated_role_ids:
+            metadata = db.get(AuthRoleMetadata, role_id)
+            if metadata is not None:
+                metadata.version += 1
+                metadata.updated_at = now
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(
+                    AuthUserAuthorizationRevision(
+                        user_id=user_id,
+                        revision=1,
+                        updated_at=now,
+                    )
+                )
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key=INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER,
+            value_json=json.dumps(
+                {"completed_at": now, "created_role_permission_count": created_count},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
 def seed_legacy_read_compat_once(db: Session, now: str) -> int:
     if db.get(AuthIamState, LEGACY_READ_COMPAT_MARKER) is not None:
         return 0
@@ -1511,6 +1584,7 @@ def seed_auth_defaults(db: Session) -> None:
     seed_internal_quote_export_grants_once(db, now)
     seed_internal_quote_release_grants_once(db, now)
     seed_internal_quote_baseline_grants_once(db, now)
+    seed_internal_quote_customer_grants_once(db, now)
     seed_legacy_read_compat_once(db, now)
     seed_legacy_export_compat_once(db, now)
     reconcile_system_position_catalog(db, now=now)

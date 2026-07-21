@@ -285,7 +285,7 @@ const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelTemplateDownloading = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_210px_120px_124px_74px_96px_82px_92px_118px_138px_150px_130px_118px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_210px_120px_118px_124px_74px_96px_82px_92px_118px_138px_150px_130px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
@@ -317,6 +317,10 @@ const boardPageRequestIds: Partial<Record<MoldingSampleStatus, number>> = {}
 const materialCompositionPercentageTotal = computed(() => roundMaterialWeight(
   materialCompositionDraftRows.value.reduce((total, row) => total + (Number(row.ratio_percent) || 0), 0),
 ))
+const materialCompositionIsTrial = computed(() => {
+  const lineIndex = materialCompositionLineIndex.value
+  return lineIndex !== null && createDraft.value.items[lineIndex]?.material_usage_type === 'trial'
+})
 
 const workflowSteps: WorkflowStep[] = [
   { status: '待审核', title: '主管审核', detail: '工程提交后进入主管队列' },
@@ -1358,12 +1362,13 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
     reason: record.order.reason,
     items: record.items.map((item) => {
       const colorParts = splitColorPms(item.color)
+      const materialComponents = resolveMaterialComponents(item)
 
       return createManualMoldingSampleLineDraft({
         customer_mold_id: item.mold_id,
         mold_name: item.mold_name,
-        material: item.material,
-        material_components: resolveMaterialComponents(item).map((component) =>
+        material: materialComponents.length ? formatMaterialComposition(materialComponents) : item.material,
+        material_components: materialComponents.map((component) =>
           createManualMoldingSampleMaterialComponentDraft({
             ...component,
             ratio_percent: String(component.ratio_percent),
@@ -1391,15 +1396,16 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
   const items = payload.items.length
     ? payload.items.map((item) => {
         const colorParts = splitColorPms(item.color ?? '')
+        const materialComponents = resolveMaterialComponents({
+          material: item.material ?? '',
+          material_components: item.material_components,
+        })
 
         return createManualMoldingSampleLineDraft({
           customer_mold_id: item.mold_id ?? '',
           mold_name: item.mold_name ?? '',
-          material: item.material ?? '',
-          material_components: resolveMaterialComponents({
-            material: item.material ?? '',
-            material_components: item.material_components,
-          }).map((component) =>
+          material: materialComponents.length ? formatMaterialComposition(materialComponents) : (item.material ?? ''),
+          material_components: materialComponents.map((component) =>
             createManualMoldingSampleMaterialComponentDraft({
               ...component,
               ratio_percent: String(component.ratio_percent),
@@ -3198,7 +3204,14 @@ function clearRawMaterialSelection(line: ManualMoldingSampleLineDraft, index: nu
     ...rawMaterialSearchByLine.value,
     [index]: '',
   }
-  activeRawMaterialPickerLineIndex.value = index
+  activeRawMaterialPickerLineIndex.value = line.material_usage_type === 'production' ? index : null
+}
+
+function updateTrialMaterial(line: ManualMoldingSampleLineDraft, event: Event) {
+  const input = event.target as HTMLInputElement
+  line.material = input.value
+  const material = input.value.trim()
+  line.material_components = material ? [createSingleManualMaterialComponentDraft(material)] : []
 }
 
 function openMaterialCompositionEditor(line: ManualMoldingSampleLineDraft, index: number) {
@@ -3250,8 +3263,9 @@ function saveMaterialComposition() {
     return
   }
 
+  const requiresRawMaterialSelection = line.material_usage_type === 'production'
   const components = materialCompositionDraftRows.value.map((row) => {
-    const enabledOption = findEnabledRawMaterialOption(row.material)
+    const enabledOption = requiresRawMaterialSelection ? findEnabledRawMaterialOption(row.material) : null
     return {
       material: enabledOption?.value ?? row.material.trim(),
       source_type: row.source_type,
@@ -3263,7 +3277,9 @@ function saveMaterialComposition() {
     materialCompositionError.value = '请为每个配比组分选择原料。'
     return
   }
-  const disabledComponentIndex = components.findIndex((component) => !component.enabledOption)
+  const disabledComponentIndex = requiresRawMaterialSelection
+    ? components.findIndex((component) => !component.enabledOption)
+    : -1
   if (disabledComponentIndex >= 0) {
     materialCompositionError.value = `第 ${disabledComponentIndex + 1} 个组分“${components[disabledComponentIndex]?.material}”不是已启用的原料，请从原料列表选择。`
     return
@@ -3299,9 +3315,48 @@ function getMaterialUsageType(line: ManualMoldingSampleLineDraft) {
   return line.material_usage_type
 }
 
-function updateMaterialUsageType(line: ManualMoldingSampleLineDraft, event: Event) {
+function updateMaterialUsageType(line: ManualMoldingSampleLineDraft, index: number, event: Event) {
   const input = event.target as HTMLSelectElement
-  line.material_usage_type = input.value === 'trial' ? 'trial' : 'production'
+  const nextUsageType = input.value === 'trial' ? 'trial' : 'production'
+  if (line.material_usage_type === nextUsageType) {
+    return
+  }
+
+  line.material_usage_type = nextUsageType
+  closeRawMaterialPicker(index)
+
+  if (nextUsageType === 'trial') {
+    return
+  }
+
+  const enabledComponents = line.material_components.map((component) => {
+    const enabledOption = findEnabledRawMaterialOption(component.material)
+    return enabledOption
+      ? createManualMoldingSampleMaterialComponentDraft({
+          ...component,
+          material: enabledOption.value,
+        })
+      : null
+  })
+  if (enabledComponents.length && enabledComponents.every((component) => component !== null)) {
+    line.material_components = enabledComponents as ManualMoldingSampleMaterialComponentDraft[]
+    line.material = formatMaterialComposition(line.material_components.map((component) => ({
+      material: component.material,
+      source_type: component.source_type,
+      ratio_percent: Number(component.ratio_percent),
+    })))
+    return
+  }
+
+  const enabledOption = findEnabledRawMaterialOption(line.material)
+  if (enabledOption) {
+    line.material = enabledOption.value
+    line.material_components = [createSingleManualMaterialComponentDraft(enabledOption.value)]
+    return
+  }
+
+  line.material = ''
+  line.material_components = []
 }
 
 function buildMaterialBalanceItemRow(item: MoldingSampleItem, canViewCost = true): MaterialBalanceItemRow {
@@ -3893,7 +3948,9 @@ onUnmounted(() => {
             </span>
             <div class="min-w-0">
               <h2 class="text-[15px] font-bold text-slate-950">配置原料配比</h2>
-              <p class="mt-0.5 text-[11px] text-slate-500">选择每个原料或水口料组分，配比合计必须为 100%。</p>
+              <p class="mt-0.5 text-[11px] text-slate-500">
+                {{ materialCompositionIsTrial ? '试料组分可自定义输入，不从原料数据库选取；配比合计必须为 100%。' : '选择每个原料或水口料组分，配比合计必须为 100%。' }}
+              </p>
             </div>
             <button
               type="button"
@@ -3906,7 +3963,7 @@ onUnmounted(() => {
           </header>
 
           <div class="min-h-0 flex-1 overflow-y-auto p-5">
-            <datalist id="molding-sample-material-composition-options">
+            <datalist v-if="!materialCompositionIsTrial" id="molding-sample-material-composition-options">
               <option v-for="option in rawMaterialOptions" :key="`composition-${option.value}`" :value="option.value">{{ option.label }}</option>
             </datalist>
 
@@ -3924,10 +3981,11 @@ onUnmounted(() => {
               >
                 <input
                   v-model.trim="component.material"
-                  list="molding-sample-material-composition-options"
+                  :list="materialCompositionIsTrial ? undefined : 'molding-sample-material-composition-options'"
                   :aria-label="`第 ${componentIndex + 1} 个配比原料`"
                   :data-testid="`material-component-name-${componentIndex}`"
-                  placeholder="搜索原料名称或编号"
+                  :placeholder="materialCompositionIsTrial ? '自定义输入试料名称/规格' : '搜索原料名称或编号'"
+                  maxlength="255"
                   class="h-9 min-w-0 rounded-md border border-slate-200 bg-white px-3 text-[12px] outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
                 >
                 <select
@@ -4096,7 +4154,11 @@ onUnmounted(() => {
 
                 <div class="mt-3 grid gap-2 text-[12px] sm:grid-cols-2 xl:grid-cols-5">
                   <div class="rounded-md bg-slate-50 px-3 py-2">
-                    <span class="block text-[11px] text-slate-400">订单号</span>
+                    <span class="block text-[11px] text-slate-400">产品 / 客户</span>
+                    <strong class="text-slate-800">{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</strong>
+                  </div>
+                  <div class="rounded-md bg-slate-50 px-3 py-2">
+                    <span class="block text-[11px] text-slate-400">产品编号</span>
                     <strong class="font-mono text-slate-800">{{ formatBlank(record.order.order_number) }}</strong>
                   </div>
                   <div class="rounded-md bg-slate-50 px-3 py-2">
@@ -4112,7 +4174,7 @@ onUnmounted(() => {
                     <strong class="text-teal-900">{{ getProductionRouteLabel(record.order) }}</strong>
                   </div>
                   <div class="rounded-md bg-slate-50 px-3 py-2">
-                    <span class="block text-[11px] text-slate-400">业务开单 / 系统更新</span>
+                    <span class="block text-[11px] text-slate-400">开单日期 / 系统更新</span>
                     <strong class="text-slate-800">{{ formatWorkflowDate(record.order.date) }} / {{ formatWorkflowTime(record.order.updated_at) }}</strong>
                   </div>
                 </div>
@@ -5073,6 +5135,7 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">模具名称</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">所需用料</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">原料价格(HKD/磅)</div>
+                      <div class="min-w-0 truncate px-2" role="columnheader">用料用途</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">颜色</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">PMS</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">色粉</div>
@@ -5082,7 +5145,6 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">模具状态（是否在厂）</div>
-                      <div class="min-w-0 truncate px-2" role="columnheader">用料用途</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">备注</div>
                       <div class="min-w-0 truncate text-center" role="columnheader">操作</div>
                     </div>
@@ -5109,8 +5171,21 @@ onUnmounted(() => {
                           @focusout="handleRawMaterialPickerFocusOut(index, $event)"
                         >
                           <div class="relative">
-                            <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                            <Search v-if="line.material_usage_type === 'production'" class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
                             <input
+                              v-if="line.material_usage_type === 'trial'"
+                              :value="line.material"
+                              data-testid="create-line-material"
+                              aria-label="自定义试料用料"
+                              autocomplete="off"
+                              title="试料可自定义输入，不从原料数据库选取"
+                              placeholder="自定义输入试料名称/规格"
+                              maxlength="255"
+                              class="h-9 w-full min-w-0 rounded-md border border-amber-200 bg-amber-50/40 py-0 pl-2.5 pr-7 text-[12px] outline-none transition placeholder:text-slate-400 focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                              @input="updateTrialMaterial(line, $event)"
+                            >
+                            <input
+                              v-else
                               :value="getRawMaterialPickerText(index, line.material)"
                               data-testid="create-line-material"
                               role="combobox"
@@ -5140,7 +5215,7 @@ onUnmounted(() => {
                           </div>
                           <Teleport to="body">
                             <div
-                              v-if="activeRawMaterialPickerLineIndex === index"
+                              v-if="line.material_usage_type === 'production' && activeRawMaterialPickerLineIndex === index"
                               :id="getRawMaterialListboxId(index)"
                               class="fixed z-[80] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-900/10"
                               :style="getRawMaterialPickerStyle(index)"
@@ -5184,6 +5259,9 @@ onUnmounted(() => {
                               </div>
                             </div>
                           </Teleport>
+                          <p v-if="line.material_usage_type === 'trial'" class="mt-1 text-[10px] font-medium text-amber-700">
+                            自定义输入 · 不从原料库选取
+                          </p>
                           <button
                             type="button"
                             class="mt-1 inline-flex h-6 items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-2 text-[10px] font-semibold text-teal-700 transition hover:border-teal-300 hover:bg-teal-100"
@@ -5204,6 +5282,18 @@ onUnmounted(() => {
                             <span>{{ getDraftWeightedUnitPriceLabel(line) }}</span>
                             <span v-if="getDraftWeightedUnitPrice(line) !== null" class="text-[10px] font-medium text-slate-400">/ 磅</span>
                           </div>
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <select
+                            :value="getMaterialUsageType(line)"
+                            data-testid="create-line-material-usage-type"
+                            aria-label="用料用途"
+                            class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700"
+                            @change="updateMaterialUsageType(line, index, $event)"
+                          >
+                            <option value="production">正式生产</option>
+                            <option value="trial">试料</option>
+                          </select>
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.color" data-testid="create-line-color" placeholder="颜色" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
@@ -5228,18 +5318,6 @@ onUnmounted(() => {
                         </div>
                         <div class="min-w-0" role="cell"><input v-model="line.mold_dimensions" data-testid="create-line-mold-dimensions" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"></div>
                         <div class="min-w-0" role="cell"><select v-model="line.mold_presence_status" data-testid="create-line-mold-presence-status" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2"><option value="">待确认</option><option value="in_factory">在厂</option><option value="out_of_factory">不在厂</option></select></div>
-                        <div class="min-w-0" role="cell">
-                          <select
-                            :value="getMaterialUsageType(line)"
-                            data-testid="create-line-material-usage-type"
-                            aria-label="用料用途"
-                            class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700"
-                            @change="updateMaterialUsageType(line, $event)"
-                          >
-                            <option value="production">正式生产</option>
-                            <option value="trial">试料</option>
-                          </select>
-                        </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.notes" placeholder="备注提示" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
@@ -5363,7 +5441,7 @@ onUnmounted(() => {
                 <span>{{ selectedOrder.workshop }}</span>
                 <span>工程 {{ selectedOrder.eng_name }}</span>
                 <span>主管 {{ selectedOrder.supervisor }}</span>
-                <span>业务开单 {{ formatWorkflowDate(selectedOrder.date) }}</span>
+                <span>开单日期 {{ formatWorkflowDate(selectedOrder.date) }}</span>
                 <span v-if="selectedOrder.production_assigned_at">派厂 {{ formatWorkflowTime(selectedOrder.production_assigned_at) }}</span>
               </div>
             </div>
@@ -5775,12 +5853,12 @@ onUnmounted(() => {
 
                   <div class="grid gap-2 text-[12px] md:grid-cols-3 xl:grid-cols-4">
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                      <div class="text-[10px] font-semibold text-slate-400">产品编号</div>
-                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.order_number) }}</div>
-                    </div>
-                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                       <div class="text-[10px] font-semibold text-slate-400">产品 / 客户</div>
                       <div class="mt-0.5 font-semibold text-slate-900">{{ selectedOrder.product_name }} · {{ selectedOrder.client_name }}</div>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div class="text-[10px] font-semibold text-slate-400">产品编号</div>
+                      <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.order_number) }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
                       <div class="text-[10px] font-semibold text-slate-400">状态 / 阶段 / 类型</div>
@@ -5799,7 +5877,7 @@ onUnmounted(() => {
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatBlank(selectedOrder.eng_name) }} / {{ formatBlank(selectedOrder.supervisor) }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                      <div class="text-[10px] font-semibold text-slate-400">业务开单日期</div>
+                      <div class="text-[10px] font-semibold text-slate-400">开单日期</div>
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowDate(selectedOrder.date) }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
@@ -5807,11 +5885,11 @@ onUnmounted(() => {
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowDate(selectedOrder.completed_date, '未完成') }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                      <div class="text-[10px] font-semibold text-slate-400">系统提交时间（北京时间）</div>
+                      <div class="text-[10px] font-semibold text-slate-400">系统提交时间</div>
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowTime(selectedOrder.created_at) }}</div>
                     </div>
                     <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                      <div class="text-[10px] font-semibold text-slate-400">系统更新时间（北京时间）</div>
+                      <div class="text-[10px] font-semibold text-slate-400">系统更新时间</div>
                       <div class="mt-0.5 font-semibold text-slate-900">{{ formatWorkflowTime(selectedOrder.updated_at) }}</div>
                     </div>
                   </div>
@@ -6238,18 +6316,16 @@ onUnmounted(() => {
         v-for="record in printableRecords"
         :key="record.order.id"
         class="molding-sample-print-page"
+        :class="{ 'is-single': record.items.length <= 1, 'is-compact': record.items.length >= 3, 'is-dense': record.items.length >= 6 }"
       >
-        <div class="molding-sample-print-statusband">
-          <span class="molding-sample-print-statuspill">{{ record.order.status }}</span>
-          <span>{{ record.order.stage || '待填写' }} 阶段 · {{ formatBlank(record.order.send_to, '内部') }} · {{ record.order.order_type }}</span>
-          <span class="molding-sample-print-statuscount">共 {{ record.items.length }} 条模具明细</span>
-        </div>
-
         <header class="molding-sample-print-header">
-          <div class="molding-sample-print-brand">Royal Regent Nexus</div>
           <div>
+            <div class="molding-sample-print-brand">Royal Regent Nexus</div>
+            <div class="molding-sample-print-factory">{{ getMoldingSampleFactoryLabel(record.order.factory_id) }} · 工程部</div>
+          </div>
+          <div class="molding-sample-print-heading">
             <div class="molding-sample-print-title">工程啤办通知单</div>
-            <div class="molding-sample-print-subtitle">Molding Sample Order</div>
+            <div class="molding-sample-print-subtitle">完整单据打印版 · Molding Sample Order</div>
           </div>
           <div class="molding-sample-print-docno">
             <span>单据编号</span>
@@ -6257,107 +6333,138 @@ onUnmounted(() => {
           </div>
         </header>
 
-        <section class="molding-sample-print-section">
-          <div class="molding-sample-print-section-title">单据资料</div>
-          <table class="molding-sample-print-meta-table" aria-label="单据资料">
-            <tbody>
-              <tr>
-                <th>订单号</th>
-                <td>{{ formatBlank(record.order.order_number) }}</td>
-                <th>状态</th>
-                <td>{{ record.order.status }} · {{ record.order.stage || '待填写' }} · {{ record.order.order_type }}</td>
-              </tr>
-              <tr>
-                <th>产品 / 客户</th>
-                <td>{{ formatBlank(record.order.product_name) }} / {{ formatBlank(record.order.client_name) }}</td>
-                <th>填写部 / 发至</th>
-                <td>{{ formatBlank(record.order.workshop) }} / {{ formatBlank(record.order.send_to, '内部') }}</td>
-              </tr>
-              <tr>
-                <th>工程 / 主管</th>
-                <td>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</td>
-                <th>业务开单 / 流程完成</th>
-                <td>{{ formatWorkflowDate(record.order.date) }} / {{ formatWorkflowDate(record.order.completed_date, '未完成') }}</td>
-              </tr>
-              <tr>
-                <th>来源厂 → 承接生产厂</th>
-                <td colspan="3">{{ getProductionRouteLabel(record.order) }}</td>
-              </tr>
-              <tr>
-                <th>系统更新时间（北京时间）</th>
-                <td colspan="3">{{ formatWorkflowTime(record.order.updated_at) }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="molding-sample-print-statusband">
+          <span class="molding-sample-print-statuspill">{{ record.order.status }}</span>
+          <span>{{ record.order.stage || '待填写' }} 阶段 · {{ formatBlank(record.order.send_to, '内部') }} · {{ record.order.order_type }}</span>
+          <span class="molding-sample-print-statuscount">共 {{ record.items.length }} 条模具明细</span>
+        </div>
+
+        <section class="molding-sample-print-overview">
+          <div class="molding-sample-print-section-heading">
+            <div>
+              <h3>完整单据数据</h3>
+              <p>单头资料与所有模具明细字段，供纸面核对。</p>
+            </div>
+            <span>{{ record.order.id }}</span>
+          </div>
+          <div class="molding-sample-print-meta-grid">
+            <div class="molding-sample-print-meta-card is-primary">
+              <span>产品 / 客户</span>
+              <strong>{{ formatBlank(record.order.product_name) }} · {{ formatBlank(record.order.client_name) }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>产品编号</span>
+              <strong>{{ formatBlank(record.order.order_number) }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>状态 / 阶段 / 类型</span>
+              <strong>{{ record.order.status }} · {{ record.order.stage || '待填写' }} · {{ record.order.order_type }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>填写部 / 发至</span>
+              <strong>{{ formatBlank(record.order.workshop) }} / {{ formatBlank(record.order.send_to, '内部') }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card is-route">
+              <span>来源厂 → 承接生产厂</span>
+              <strong>{{ getProductionRouteLabel(record.order) }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>工程 / 主管</span>
+              <strong>{{ formatBlank(record.order.eng_name) }} / {{ formatBlank(record.order.supervisor) }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>开单日期</span>
+              <strong>{{ formatWorkflowDate(record.order.date) }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>流程完成日期</span>
+              <strong>{{ formatWorkflowDate(record.order.completed_date, '未完成') }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>系统提交时间</span>
+              <strong>{{ formatWorkflowTime(record.order.created_at) }}</strong>
+            </div>
+            <div class="molding-sample-print-meta-card">
+              <span>系统更新时间</span>
+              <strong>{{ formatWorkflowTime(record.order.updated_at) }}</strong>
+            </div>
+          </div>
+          <div class="molding-sample-print-reason">
+            <span>注意事项 / 开单事由</span>
+            <strong>{{ formatBlank(record.order.reason) }}</strong>
+            <em v-if="record.order.reject_reason">驳回原因：{{ record.order.reject_reason }}</em>
+          </div>
         </section>
 
-        <section class="molding-sample-print-section">
-          <div class="molding-sample-print-section-title">开单事由</div>
-          <div class="molding-sample-print-reason">{{ formatBlank(record.order.reason) }}</div>
-        </section>
-
-        <section class="molding-sample-print-section">
-          <div class="molding-sample-print-section-title">模具明细（一行一模具，节省纸张）</div>
+        <section class="molding-sample-print-details">
+          <div class="molding-sample-print-details-heading">
+            <strong>模具完整明细</strong>
+            <span>共 {{ record.items.length }} 项</span>
+          </div>
           <div v-if="!record.items.length" class="molding-sample-print-empty">暂无明细</div>
-          <table
-            v-else
-            class="molding-sample-print-detail-table"
-            aria-label="模具明细"
-          >
-            <colgroup>
-              <col class="molding-sample-print-col-index">
-              <col class="molding-sample-print-col-mold">
-              <col class="molding-sample-print-col-material">
-              <col class="molding-sample-print-col-color">
-              <col class="molding-sample-print-col-pigment">
-              <col class="molding-sample-print-col-shot">
-              <col class="molding-sample-print-col-date">
-              <col class="molding-sample-print-col-cost">
-              <col class="molding-sample-print-col-notes">
-            </colgroup>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>模号 / 名称</th>
-                <th>原料</th>
-                <th>颜色 / PMS</th>
-                <th>色粉</th>
-                <th>啤数 / 预料</th>
-                <th>需办日期</th>
-                <th>实际回填</th>
-                <th>备注</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="item in record.items" :key="item.id">
-                <td class="molding-sample-print-index">{{ item.sort_order }}</td>
-                <td>
+          <div v-else class="molding-sample-print-items-grid">
+            <article v-for="item in record.items" :key="item.id" class="molding-sample-print-item-card">
+              <header class="molding-sample-print-item-header">
+                <span>{{ item.sort_order }}</span>
+                <div>
                   <strong>{{ formatBlank(item.mold_id) }}</strong>
-                  <span>{{ formatBlank(item.mold_name) }}</span>
-                  <span>工模尺寸：{{ formatBlank(item.mold_dimensions) }}</span>
-                  <span>模具是否在厂：{{ formatMoldPresenceStatus(item.mold_presence_status) }}</span>
-                  <em>{{ formatBlank(item.id) }}</em>
-                </td>
-                <td>{{ formatBlank(item.material) }}</td>
-                <td>
-                  <strong>{{ formatBlank(item.color) }}</strong>
-                  <span>PMS {{ formatBlank(item.pigment_no) }}</span>
-                </td>
-                <td>{{ formatBlank(item.pigment_no) }}</td>
-                <td>
-                  <strong>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</strong>
-                  <span>{{ formatWeight(item.required_material_kg) }}</span>
-                  <span v-if="canViewRecordCost(record)">预计料费 {{ formatMoney(getExpectedMaterialAmountHkd(item)) }}</span>
-                </td>
-                <td>{{ formatWorkflowDate(item.completion_time) }}</td>
-                <td>
-                  <strong>{{ formatWeight(item.actual_weight_kg) }}</strong>
-                  <span v-if="canViewRecordCost(record)">实际料费 {{ formatMoney(item.actual_amount_hkd) }}</span>
-                </td>
-                <td>{{ formatBlank(item.notes) }}</td>
-              </tr>
-            </tbody>
-          </table>
+                  <p>{{ formatBlank(item.mold_name) }}</p>
+                </div>
+                <small>{{ item.material_usage_type === 'trial' ? '试料 · 不计结余' : '正式生产' }}</small>
+              </header>
+              <div class="molding-sample-print-item-body">
+                <section class="molding-sample-print-item-metadata">
+                  <h4>模具资料</h4>
+                  <dl>
+                    <div><dt>工模尺寸</dt><dd>{{ formatBlank(item.mold_dimensions) }}</dd></div>
+                    <div><dt>模具是否在厂</dt><dd>{{ formatMoldPresenceStatus(item.mold_presence_status) }}</dd></div>
+                    <div><dt>需办日期</dt><dd>{{ formatWorkflowDate(item.completion_time) }}</dd></div>
+                    <div><dt>数量 / 啤数</dt><dd>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</dd></div>
+                  </dl>
+                </section>
+                <section class="molding-sample-print-item-material">
+                  <h4>原料与颜色</h4>
+                  <dl>
+                    <div><dt>原料配比</dt><dd>{{ getMaterialCompositionLabel(item) }}</dd></div>
+                    <div><dt>颜色 / PMS</dt><dd>{{ formatBlank(item.color) }} / {{ formatBlank(item.pigment_no) }}</dd></div>
+                  </dl>
+                </section>
+                <section class="molding-sample-print-item-usage">
+                  <h4>用量概览</h4>
+                  <dl>
+                    <div><dt>预计用料</dt><dd>{{ formatWeight(item.required_material_kg) }}</dd></div>
+                    <div><dt>领料重量</dt><dd>{{ formatWeight(item.collected_weight_kg) }}</dd></div>
+                    <div class="is-actual"><dt>实际用料</dt><dd>{{ formatWeight(item.actual_weight_kg) }}</dd></div>
+                  </dl>
+                </section>
+                <section v-if="canViewRecordCost(record)" class="molding-sample-print-cost-grid">
+                  <div>
+                    <h4>预计料费(HKD)</h4>
+                    <p
+                      v-for="(component, componentIndex) in getExpectedMaterialCostBreakdown(item).components"
+                      :key="`print-expected-${item.id}-${componentIndex}`"
+                    >
+                      <span>{{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }}</span>
+                      <strong>{{ formatWeight(component.weight_kg) }} / {{ formatMoney(component.amount_hkd) }}</strong>
+                    </p>
+                    <footer>合计 {{ formatMoney(getExpectedMaterialCostBreakdown(item).total_amount_hkd) }}</footer>
+                  </div>
+                  <div>
+                    <h4>实际料费(HKD)</h4>
+                    <p
+                      v-for="(component, componentIndex) in getActualMaterialCostBreakdown(item).components"
+                      :key="`print-actual-${item.id}-${componentIndex}`"
+                    >
+                      <span>{{ component.material }} · {{ getMaterialSourceLabel(component.source_type) }}</span>
+                      <strong>{{ formatWeight(component.weight_kg) }} / {{ formatMoney(component.amount_hkd) }}</strong>
+                    </p>
+                    <footer>合计 {{ formatMoney(getActualMaterialCostTotal(item)) }}</footer>
+                  </div>
+                </section>
+                <p class="molding-sample-print-item-notes"><span>备注：</span>{{ formatBlank(item.notes) }}</p>
+              </div>
+            </article>
+          </div>
         </section>
 
         <section class="molding-sample-print-signatures" aria-label="签核栏">
@@ -6380,8 +6487,7 @@ onUnmounted(() => {
           <footer class="molding-sample-print-footer">
             本单据由 Royal Regent Nexus 生成。打印前请核对单据资料、模具明细、用料及实际回填。
           </footer>
-          <div class="molding-sample-print-qr">扫码<br>查看单据</div>
-          <div class="molding-sample-print-pageno">第 1 / 1 页</div>
+          <div class="molding-sample-print-pageno">A4 · 一单一页 · 第 1 / 1 页</div>
         </div>
     </article>
   </section>
@@ -6758,6 +6864,502 @@ onUnmounted(() => {
     color: #64748b;
     font-size: 8pt;
     white-space: nowrap;
+  }
+
+  /* The formal overview print follows the on-screen full-data card hierarchy. */
+  .molding-sample-print-page {
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+    gap: 2.2mm;
+    height: 273mm;
+    overflow: hidden;
+    color: #0f172a;
+    font-size: 8pt;
+    line-height: 1.32;
+  }
+
+  .molding-sample-print-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 1.5fr minmax(0, 1fr);
+    align-items: end;
+    gap: 5mm;
+    margin: 0;
+    border-bottom: 0;
+    padding: 0 0 2.2mm;
+  }
+
+  .molding-sample-print-brand {
+    color: #0f766e;
+    font-size: 8.5pt;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+
+  .molding-sample-print-factory {
+    margin-top: 0.7mm;
+    color: #64748b;
+    font-size: 7.2pt;
+    font-weight: 600;
+  }
+
+  .molding-sample-print-heading {
+    text-align: center;
+  }
+
+  .molding-sample-print-title {
+    font-size: 17pt;
+    letter-spacing: 0.08em;
+  }
+
+  .molding-sample-print-subtitle {
+    margin-top: 0.6mm;
+    font-size: 7pt;
+    letter-spacing: 0.04em;
+  }
+
+  .molding-sample-print-docno span {
+    font-size: 7pt;
+  }
+
+  .molding-sample-print-docno strong {
+    margin-top: 0.5mm;
+    overflow-wrap: anywhere;
+    font-size: 9pt;
+  }
+
+  .molding-sample-print-statusband {
+    display: flex;
+    align-items: center;
+    gap: 2mm;
+    margin: 0;
+    border-radius: 2mm;
+    background: #0f766e !important;
+    padding: 1.6mm 2.4mm;
+    color: #fff;
+    font-size: 7.4pt;
+  }
+
+  .molding-sample-print-statuspill {
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    padding: 0.45mm 2mm;
+  }
+
+  .molding-sample-print-overview {
+    min-width: 0;
+  }
+
+  .molding-sample-print-section-heading,
+  .molding-sample-print-details-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 3mm;
+    margin-bottom: 1.5mm;
+  }
+
+  .molding-sample-print-section-heading h3,
+  .molding-sample-print-details-heading strong {
+    margin: 0;
+    color: #0f172a;
+    font-size: 9pt;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-section-heading p {
+    margin: 0.35mm 0 0;
+    color: #64748b;
+    font-size: 6.7pt;
+  }
+
+  .molding-sample-print-section-heading > span,
+  .molding-sample-print-details-heading span {
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    padding: 0.45mm 2mm;
+    color: #64748b;
+    font-size: 6.7pt;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .molding-sample-print-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.2mm;
+  }
+
+  .molding-sample-print-meta-card {
+    min-width: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 1.6mm;
+    background: #fff !important;
+    padding: 1.3mm 1.7mm;
+  }
+
+  .molding-sample-print-meta-card.is-primary {
+    grid-column: span 2;
+  }
+
+  .molding-sample-print-meta-card.is-route {
+    border-color: #99f6e4;
+    background: #f0fdfa !important;
+  }
+
+  .molding-sample-print-meta-card > span,
+  .molding-sample-print-reason > span {
+    display: block;
+    color: #94a3b8;
+    font-size: 6.3pt;
+    font-weight: 700;
+  }
+
+  .molding-sample-print-meta-card.is-route > span {
+    color: #0f766e;
+  }
+
+  .molding-sample-print-meta-card > strong,
+  .molding-sample-print-reason > strong {
+    display: block;
+    margin-top: 0.4mm;
+    overflow-wrap: anywhere;
+    color: #0f172a;
+    font-size: 7.2pt;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-reason {
+    min-height: 0;
+    margin-top: 1.2mm;
+    border: 1px solid #cbd5e1;
+    border-radius: 1.6mm;
+    padding: 1.3mm 1.7mm;
+  }
+
+  .molding-sample-print-reason em {
+    display: block;
+    margin-top: 0.5mm;
+    color: #dc2626;
+    font-size: 6.5pt;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  .molding-sample-print-details {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .molding-sample-print-empty {
+    display: flex;
+    min-height: 24mm;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    border-style: dashed;
+    border-radius: 2mm;
+  }
+
+  .molding-sample-print-items-grid {
+    display: grid;
+    min-height: 0;
+    flex: 1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(0, 1fr);
+    gap: 1.5mm;
+    overflow: hidden;
+  }
+
+  .molding-sample-print-page.is-single .molding-sample-print-items-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-items-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1mm;
+  }
+
+  .molding-sample-print-item-card {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid #cbd5e1;
+    border-radius: 2mm;
+    background: #fff !important;
+  }
+
+  .molding-sample-print-item-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 1.5mm;
+    border-bottom: 1px solid #e2e8f0;
+    background: #f8fafc !important;
+    padding: 1.5mm 1.8mm;
+  }
+
+  .molding-sample-print-item-header > span {
+    display: flex;
+    min-width: 5mm;
+    height: 5mm;
+    align-items: center;
+    justify-content: center;
+    border-radius: 1.3mm;
+    background: #0f172a !important;
+    color: #fff;
+    font-size: 6.5pt;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-item-header strong,
+  .molding-sample-print-item-header p {
+    display: block;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .molding-sample-print-item-header strong {
+    font-size: 7.4pt;
+  }
+
+  .molding-sample-print-item-header p {
+    margin-top: 0.35mm;
+    color: #475569;
+    font-size: 6.8pt;
+    font-weight: 700;
+  }
+
+  .molding-sample-print-item-header small {
+    border-radius: 999px;
+    background: #dcfce7 !important;
+    padding: 0.5mm 1.5mm;
+    color: #166534;
+    font-size: 6pt;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+
+  .molding-sample-print-item-body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.2mm;
+    padding: 1.5mm;
+  }
+
+  .molding-sample-print-item-body > section {
+    min-width: 0;
+    border: 1px solid #e2e8f0;
+    border-radius: 1.5mm;
+    padding: 1.2mm 1.5mm;
+  }
+
+  .molding-sample-print-item-body h4 {
+    margin: 0 0 0.8mm;
+    color: #64748b;
+    font-size: 6.3pt;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  .molding-sample-print-item-body dl,
+  .molding-sample-print-item-body dt,
+  .molding-sample-print-item-body dd {
+    margin: 0;
+  }
+
+  .molding-sample-print-item-metadata dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8mm 1.5mm;
+  }
+
+  .molding-sample-print-item-material dl {
+    display: grid;
+    gap: 0.8mm;
+  }
+
+  .molding-sample-print-item-body dt {
+    color: #94a3b8;
+    font-size: 5.8pt;
+    font-weight: 700;
+  }
+
+  .molding-sample-print-item-body dd {
+    margin-top: 0.25mm;
+    overflow-wrap: anywhere;
+    color: #0f172a;
+    font-size: 6.6pt;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-item-usage,
+  .molding-sample-print-cost-grid,
+  .molding-sample-print-item-notes {
+    grid-column: 1 / -1;
+  }
+
+  .molding-sample-print-item-usage dl {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1mm;
+  }
+
+  .molding-sample-print-item-usage dl > div {
+    border-radius: 1.2mm;
+    background: #f8fafc !important;
+    padding: 1mm 1.4mm;
+  }
+
+  .molding-sample-print-item-usage dl > .is-actual {
+    background: #0f172a !important;
+  }
+
+  .molding-sample-print-item-usage .is-actual dt {
+    color: #cbd5e1;
+  }
+
+  .molding-sample-print-item-usage .is-actual dd {
+    color: #fff;
+  }
+
+  .molding-sample-print-cost-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1mm;
+    padding: 0 !important;
+    border: 0 !important;
+  }
+
+  .molding-sample-print-cost-grid > div {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+    border-radius: 1.5mm;
+  }
+
+  .molding-sample-print-cost-grid h4,
+  .molding-sample-print-cost-grid p,
+  .molding-sample-print-cost-grid footer {
+    margin: 0;
+    padding: 0.7mm 1.3mm;
+  }
+
+  .molding-sample-print-cost-grid h4 {
+    border-bottom: 1px solid #e2e8f0;
+    background: #f8fafc !important;
+  }
+
+  .molding-sample-print-cost-grid p {
+    display: flex;
+    justify-content: space-between;
+    gap: 1mm;
+    border-bottom: 1px solid #f1f5f9;
+    color: #475569;
+    font-size: 5.7pt;
+  }
+
+  .molding-sample-print-cost-grid p span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .molding-sample-print-cost-grid p strong {
+    flex: none;
+    color: #0f172a;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-cost-grid footer {
+    background: #f8fafc !important;
+    text-align: right;
+    font-size: 6.2pt;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-item-notes {
+    margin: 0;
+    border-radius: 1.2mm;
+    background: #f8fafc !important;
+    padding: 1mm 1.4mm;
+    color: #475569;
+    font-size: 6.2pt;
+  }
+
+  .molding-sample-print-item-notes span {
+    color: #64748b;
+    font-weight: 800;
+  }
+
+  .molding-sample-print-page.is-compact .molding-sample-print-item-body {
+    gap: 0.8mm;
+    padding: 1mm;
+  }
+
+  .molding-sample-print-page.is-compact .molding-sample-print-item-body > section {
+    padding: 0.8mm 1mm;
+  }
+
+  .molding-sample-print-page.is-dense {
+    gap: 1.5mm;
+    font-size: 6.6pt;
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-meta-grid {
+    gap: 0.8mm;
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-meta-card {
+    padding: 0.8mm 1mm;
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-item-header {
+    padding: 0.8mm 1mm;
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-item-body {
+    display: block;
+    padding: 0.8mm;
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-item-body > * + * {
+    margin-top: 0.6mm;
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-item-body > section {
+    padding: 0.7mm 0.9mm;
+  }
+
+  .molding-sample-print-page.is-dense .molding-sample-print-cost-grid {
+    display: none;
+  }
+
+  .molding-sample-print-signatures {
+    grid-template-columns: 18mm repeat(3, 1fr);
+    margin: 0;
+  }
+
+  .molding-sample-print-signature-title,
+  .molding-sample-print-signature-cell {
+    min-height: 11mm;
+    padding: 1.2mm 2mm;
+  }
+
+  .molding-sample-print-signature-cell strong {
+    font-size: 7.2pt;
+  }
+
+  .molding-sample-print-signature-cell span {
+    font-size: 6.3pt;
+  }
+
+  .molding-sample-print-footwrap {
+    margin: 0;
+  }
+
+  .molding-sample-print-footer,
+  .molding-sample-print-pageno {
+    font-size: 6.5pt;
   }
 }
 </style>

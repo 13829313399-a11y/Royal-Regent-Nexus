@@ -120,6 +120,32 @@ def create_payload(
     return payload
 
 
+def test_mapped_import_template_download_requires_quote_access_and_returns_xlsx(monkeypatch):
+    with make_client(monkeypatch) as client:
+        anonymous = client.get("/api/internal-quotes/quote-missing/imports/mold/template")
+        assert anonymous.status_code == 401
+
+        login(client, "iq_template_download", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="TEMPLATE", participating_sections=ALL_SECTION_CODES),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+
+        response = client.get(f"/api/internal-quotes/{quote_id}/imports/mold/template")
+        assert response.status_code == 200, response.text
+        assert response.content.startswith(b"PK")
+        assert response.headers["content-type"].startswith(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert response.headers["content-disposition"].startswith("attachment; filename*=UTF-8''")
+        assert response.headers["content-disposition"].endswith("-2026.07.xlsx")
+
+        invalid = client.get(f"/api/internal-quotes/{quote_id}/imports/unknown/template")
+        assert invalid.status_code == 400
+
+
 def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_participate(monkeypatch):
     with make_client(monkeypatch) as client:
         anonymous = client.get("/api/internal-quotes?factory_id=huaxing")
@@ -167,6 +193,89 @@ def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_p
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()] == [quote_id]
         assert listed.json()[0]["sections"] == []
+
+
+def test_quote_delete_allows_creator_or_local_sales_supervisor_and_protects_released_records(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_delete_creator", "sales_customer_owner", "sales-business")
+        creator_quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="DELETE-CREATOR"),
+        )
+        assert creator_quote.status_code == 201, creator_quote.text
+        creator_quote_id = creator_quote.json()["id"]
+
+        stale = client.delete(
+            f"/api/internal-quotes/{creator_quote_id}",
+            params={"revision": 2},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["current_revision"] == 1
+
+        forbidden_quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="DELETE-SUPERVISOR"),
+        )
+        assert forbidden_quote.status_code == 201, forbidden_quote.text
+        forbidden_quote_id = forbidden_quote.json()["id"]
+
+        logout(client)
+        login(client, "iq_delete_other_owner", "sales_customer_owner", "sales-business")
+        forbidden = client.delete(
+            f"/api/internal-quotes/{forbidden_quote_id}",
+            params={"revision": 1},
+        )
+        assert forbidden.status_code == 403
+        assert forbidden.json()["detail"] == "仅建单人或本厂区业务主管可删除内部报价"
+
+        logout(client)
+        login(client, "iq_delete_supervisor", "sales_customer_supervisor", "sales-business")
+        supervisor_deleted = client.delete(
+            f"/api/internal-quotes/{forbidden_quote_id}",
+            params={"revision": 1},
+        )
+        assert supervisor_deleted.status_code == 204, supervisor_deleted.text
+        assert client.get(f"/api/internal-quotes/{forbidden_quote_id}").status_code == 404
+
+        logout(client)
+        login(client, "iq_delete_creator", "sales_customer_owner", "sales-business")
+        creator_deleted = client.delete(
+            f"/api/internal-quotes/{creator_quote_id}",
+            params={"revision": 1},
+        )
+        assert creator_deleted.status_code == 204, creator_deleted.text
+
+        protected_quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="DELETE-PROTECTED"),
+        )
+        assert protected_quote.status_code == 201, protected_quote.text
+        protected_quote_id = protected_quote.json()["id"]
+        db_module = importlib.import_module("app.db")
+        quote_models = importlib.import_module("app.models.internal_quote")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            record = db.get(quote_models.InternalQuote, protected_quote_id)
+            record.status = "released"
+            record.final_release_status = "approved"
+            db.commit()
+
+        protected = client.delete(
+            f"/api/internal-quotes/{protected_quote_id}",
+            params={"revision": 1},
+        )
+        assert protected.status_code == 409
+        assert "请使用归档保留审计记录" in protected.json()["detail"]
+
+        with db_module.SessionLocal() as db:
+            assert db.get(quote_models.InternalQuote, creator_quote_id) is None
+            assert db.query(quote_models.InternalQuoteSection).filter_by(quote_id=creator_quote_id).count() == 0
+            deletion_audits = db.query(auth_models.AuthAuditLog).filter_by(
+                action="internal_quote_deleted"
+            ).all()
+            assert len(deletion_audits) == 2
+            assert any("DELETE-CREATOR" in item.detail for item in deletion_audits)
+            assert any("DELETE-SUPERVISOR" in item.detail for item in deletion_audits)
 
 
 def test_section_live_preview_uses_authoritative_calculator_without_persisting(monkeypatch):
@@ -235,6 +344,96 @@ def test_section_live_preview_uses_authoritative_calculator_without_persisting(m
         )
         assert stale.status_code == 409
         assert stale.json()["detail"]["current_revision"] == 2
+
+
+def test_factory_customers_are_readable_but_only_managed_by_local_sales_supervisor(monkeypatch):
+    with make_client(monkeypatch) as client:
+        owner_profile = login(
+            client,
+            "iq_customer_owner",
+            "sales_customer_owner",
+            "sales-business",
+        )
+        assert "internal_quote:customer_manage" not in owner_profile["permissions"]
+        initial = client.get(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huaxing"},
+        )
+        assert initial.status_code == 200, initial.text
+        assert initial.json() == []
+        forbidden = client.post(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huaxing"},
+            json={"name": "Owner Cannot Add"},
+        )
+        assert forbidden.status_code == 403
+
+        logout(client)
+        supervisor_profile = login(
+            client,
+            "iq_customer_supervisor",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        assert "internal_quote:customer_manage" in supervisor_profile["permissions"]
+        created = client.post(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huaxing"},
+            json={"name": "Alpha Client"},
+        )
+        assert created.status_code == 201, created.text
+        customer = created.json()
+        assert customer["factory_id"] == "huaxing"
+        assert customer["revision"] == 1
+
+        duplicate = client.post(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huaxing"},
+            json={"name": " alpha   client "},
+        )
+        assert duplicate.status_code == 409
+
+        cross_factory = client.post(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huadeng"},
+            json={"name": "Wrong Factory"},
+        )
+        assert cross_factory.status_code == 403
+
+        stale = client.put(
+            f"/api/internal-quotes/customers/{customer['id']}",
+            json={"name": "Alpha Renamed", "revision": 2},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["current_revision"] == 1
+
+        updated = client.put(
+            f"/api/internal-quotes/customers/{customer['id']}",
+            json={"name": "Alpha Renamed", "revision": 1},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["name"] == "Alpha Renamed"
+        assert updated.json()["revision"] == 2
+
+        quote_payload = create_payload(suffix="CUSTOMER-HISTORY")
+        quote_payload["customer"] = "Alpha Renamed"
+        quote = client.post("/api/internal-quotes", json=quote_payload)
+        assert quote.status_code == 201, quote.text
+
+        deleted = client.delete(
+            f"/api/internal-quotes/customers/{customer['id']}",
+            params={"revision": 2},
+        )
+        assert deleted.status_code == 204, deleted.text
+        remaining = client.get(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huaxing"},
+        )
+        assert remaining.status_code == 200
+        assert remaining.json() == []
+        historical_quote = client.get(f"/api/internal-quotes/{quote.json()['id']}")
+        assert historical_quote.status_code == 200
+        assert historical_quote.json()["customer"] == "Alpha Renamed"
 
 
 def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_supervisor(monkeypatch):

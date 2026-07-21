@@ -514,10 +514,12 @@ describe('molding sample runtime error handling', () => {
     expect(engineeringWrapper.text()).toContain('提交 2026-07-18')
     await getButtonByText(engineeringWrapper, record.order.id).trigger('click')
     await flushPromises()
-    expect(engineeringWrapper.text()).toContain('业务开单 2026-02-03')
+    expect(engineeringWrapper.text()).toContain('开单日期 2026-02-03')
     await getButtonByText(engineeringWrapper, '展开完整数据').trigger('click')
     await nextTick()
-    expect(engineeringWrapper.text()).toContain('系统提交时间（北京时间）')
+    expect(engineeringWrapper.text()).toContain('系统提交时间')
+    expect(engineeringWrapper.text()).toContain('系统更新时间')
+    expect(engineeringWrapper.text()).not.toContain('北京时间')
     expect(engineeringWrapper.text()).toContain('2026-07-18 00:30:45')
     expect(engineeringWrapper.text()).toContain('2026-07-18 01:15:09')
     engineeringWrapper.unmount()
@@ -530,6 +532,9 @@ describe('molding sample runtime error handling', () => {
     await getButtonByText(productionWrapper, '展开完整数据').trigger('click')
     await nextTick()
     expect(productionWrapper.text()).toContain('业务开单日期')
+    expect(productionWrapper.text()).toContain('系统提交时间')
+    expect(productionWrapper.text()).toContain('系统更新时间')
+    expect(productionWrapper.text()).not.toContain('北京时间')
     expect(productionWrapper.text()).toContain('2026-02-03')
     expect(productionWrapper.text()).toContain('2026-07-18 00:30:45')
     expect(productionWrapper.text()).toContain('2026-07-18 01:15:09')
@@ -1643,7 +1648,8 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).not.toContain('适配机型')
     expect(printArea).not.toContain('160T')
     expect(printArea).not.toContain('11.00 g')
-    expect(printArea).toContain('模具是否在厂：在厂')
+    expect(printArea).toContain('模具是否在厂')
+    expect(printArea).toContain('在厂')
     expect(printArea).toContain('需办日期')
     expect(printArea).toContain('2026-07-11')
     expect(printArea).not.toContain('模具回厂时间')
@@ -1657,15 +1663,26 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).toContain('BP-PRINT-002')
     expect(printArea).toContain('Royal Regent Nexus')
     expect(printArea).toContain('工程啤办通知单')
-    expect(printArea).toContain('单据资料')
+    expect(printArea).toContain('完整单据数据')
+    expect(printArea).toContain('产品 / 客户')
+    expect(printArea).toContain('产品编号')
+    expect(printArea.indexOf('产品 / 客户')).toBeLessThan(printArea.indexOf('产品编号'))
+    expect(printArea).toContain('开单日期')
+    expect(printArea).not.toContain('业务开单日期')
+    expect(printArea).toContain('模具资料')
+    expect(printArea).toContain('原料与颜色')
+    expect(printArea).toContain('用量概览')
+    expect(printArea).toContain('领料重量')
+    expect(printArea).toContain('预计料费(HKD)')
+    expect(printArea).toContain('实际料费(HKD)')
     expect(printArea).toContain('签核栏')
     expect(printArea).toContain('经办确认')
     expect(printArea).toContain('主管审核')
     expect(printArea).toContain('啤机确认')
     expect(printArea).toContain('T0 阶段')
     expect(printArea).toContain('共 1 条模具明细')
-    expect(printArea).toContain('模具明细（一行一模具，节省纸张）')
-    expect(printArea).toContain('扫码查看单据')
+    expect(printArea).toContain('模具完整明细')
+    expect(printArea).not.toContain('扫码查看单据')
     expect(printArea).toContain('第 1 / 1 页')
 
     await getButtonByExactText(wrapper, '确认打印').trigger('click')
@@ -3892,7 +3909,12 @@ describe('molding sample runtime error handling', () => {
     const lineHeaders = wrapper.findAll('[aria-label="模具明细录入表"] [role="columnheader"]').map((node) => node.text())
     expect(lineHeaders).not.toContain('适配机型')
     expect(lineHeaders).not.toContain('整啤毛重(g)')
-    expect(lineHeaders.slice(-4)).toEqual(['模具状态（是否在厂）', '用料用途', '备注', '操作'])
+    expect(lineHeaders.slice(3, 8)).toEqual(['所需用料', '原料价格(HKD/磅)', '用料用途', '颜色', 'PMS'])
+    expect(lineHeaders.slice(-3)).toEqual(['模具状态（是否在厂）', '备注', '操作'])
+    const firstLineCells = wrapper.findAll('[aria-label="模具明细录入表"] [role="row"]')[1]!.findAll('[role="cell"]')
+    const usageCellIndex = firstLineCells.findIndex((cell) => cell.find('[data-testid="create-line-material-usage-type"]').exists())
+    const colorCellIndex = firstLineCells.findIndex((cell) => cell.find('[data-testid="create-line-color"]').exists())
+    expect(usageCellIndex + 1).toBe(colorCellIndex)
     expect(wrapper.find('[data-testid="create-line-machine-type"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="create-line-gross-weight"]').exists()).toBe(false)
     await wrapper.get('[data-testid="create-product-no"]').setValue('260705-01')
@@ -3907,6 +3929,9 @@ describe('molding sample runtime error handling', () => {
     await materialInput.setValue('ABS 750NSW')
     await materialInput.trigger('keydown.enter')
     expect(wrapper.get('[data-testid="create-line-material-price"]').text()).toContain('HKD 4.85')
+    await wrapper.get('[data-testid="create-line-material-usage-type"]').setValue('trial')
+    await nextTick()
+    await wrapper.get('[data-testid="create-line-material"]').setValue('草稿自定义试料 R-01')
     await wrapper.get('[data-testid="create-line-color"]').setValue('透明蓝')
     await wrapper.get('[data-testid="create-line-quantity"]').setValue('1')
     await wrapper.get('[data-testid="create-line-shoot-qty"]').setValue('50')
@@ -3926,6 +3951,9 @@ describe('molding sample runtime error handling', () => {
     expect((restoredWrapper.get('[data-testid="create-product-name"]').element as HTMLInputElement).value).toBe('透明灯罩')
     expect((restoredWrapper.get('[data-testid="create-line-mold-id"]').element as HTMLInputElement).value).toBe('BK-01')
     expect((restoredWrapper.get('[data-testid="create-line-required-material"]').element as HTMLInputElement).value).toBe('2.25')
+    expect((restoredWrapper.get('[data-testid="create-line-material-usage-type"]').element as HTMLSelectElement).value).toBe('trial')
+    expect(restoredWrapper.get('[data-testid="create-line-material"]').attributes('role')).toBeUndefined()
+    expect((restoredWrapper.get('[data-testid="create-line-material"]').element as HTMLInputElement).value).toBe('草稿自定义试料 R-01')
 
     mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => {
       const created = createMoldingSampleRecord('待审核', 'BP-202607210003')
@@ -3941,12 +3969,87 @@ describe('molding sample runtime error handling', () => {
     expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].items[0]).toMatchObject({
       gross_weight_g: null,
       machine_type: '',
+      material: '草稿自定义试料 R-01',
+      material_components: [
+        { material: '草稿自定义试料 R-01', source_type: 'virgin', ratio_percent: 100 },
+      ],
+      material_usage_type: 'trial',
       required_material_kg: 2.25,
     })
     expect(window.localStorage.getItem('rr:molding-sample:create-draft:huaxing')).toBeNull()
     expect(restoredWrapper.text()).toContain('新建成功')
 
     restoredWrapper.unmount()
+  })
+
+  it('keeps production material database-backed and lets trial material use custom input', async () => {
+    const wrapper = await mountRuntimeView(MoldingSampleView)
+
+    await getButtonByText(wrapper, '工程部 · 新建开单').trigger('click')
+    await fillValidManualCreateForm(wrapper, 'TRIAL-CUSTOM')
+
+    const productionMaterialInput = wrapper.get('[data-testid="create-line-material"]')
+    expect(productionMaterialInput.attributes('role')).toBe('combobox')
+    expect(productionMaterialInput.attributes('placeholder')).toBe('搜索原料名称/编号')
+
+    const usageSelect = wrapper.get('[data-testid="create-line-material-usage-type"]')
+    await usageSelect.setValue('trial')
+    await nextTick()
+
+    const trialMaterialInput = wrapper.get('[data-testid="create-line-material"]')
+    expect(trialMaterialInput.attributes('role')).toBeUndefined()
+    expect(trialMaterialInput.attributes('aria-label')).toBe('自定义试料用料')
+    expect(trialMaterialInput.attributes('placeholder')).toBe('自定义输入试料名称/规格')
+    await trialMaterialInput.setValue('客户自带再生料 X-01')
+    await trialMaterialInput.trigger('focus')
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="create-line-material-price"]').text()).toContain('待维护')
+
+    await wrapper.get('[data-testid="create-line-material-composition-0"]').trigger('click')
+    expect(wrapper.find('#molding-sample-material-composition-options').exists()).toBe(false)
+    await wrapper.get('[data-testid="material-component-percentage-0"]').setValue('70')
+    await getButtonByText(wrapper, '添加组分').trigger('click')
+    await wrapper.get('[data-testid="material-component-name-1"]').setValue('实验辅料 Y-02')
+    await wrapper.get('[data-testid="material-component-percentage-1"]').setValue('20')
+    await wrapper.get('[data-testid="save-material-composition"]').trigger('click')
+    expect(wrapper.get('[data-testid="material-composition-dialog"]').text()).toContain('必须等于 100%')
+    await wrapper.get('[data-testid="material-component-percentage-1"]').setValue('30')
+    await wrapper.get('[data-testid="save-material-composition"]').trigger('click')
+    expect(wrapper.find('[data-testid="material-composition-dialog"]').exists()).toBe(false)
+    expect((wrapper.get('[data-testid="create-line-material"]').element as HTMLInputElement).value).toBe('70%客户自带再生料 X-01 + 30%实验辅料 Y-02')
+
+    await usageSelect.setValue('production')
+    await nextTick()
+    const restoredProductionInput = wrapper.get('[data-testid="create-line-material"]')
+    expect(restoredProductionInput.attributes('role')).toBe('combobox')
+    expect((restoredProductionInput.element as HTMLInputElement).value).toBe('')
+
+    await restoredProductionInput.trigger('focus')
+    await restoredProductionInput.setValue('ABS 750NSW')
+    await restoredProductionInput.trigger('keydown.enter')
+    await usageSelect.setValue('trial')
+    await nextTick()
+    await wrapper.get('[data-testid="create-line-material"]').setValue('客户自带试料 Z9')
+
+    mockedMoldingSampleApi.createOrder.mockImplementationOnce(async (payload) => {
+      const created = createMoldingSampleRecord('待审核', 'BP-TRIAL-CUSTOM-001')
+      created.order = { ...created.order, ...payload.order, id: 'BP-TRIAL-CUSTOM-001' }
+      return created
+    })
+
+    await getButtonByText(wrapper, '提交主管审核').trigger('click')
+    await flushPromises()
+
+    expect(mockedMoldingSampleApi.createOrder).toHaveBeenCalledTimes(1)
+    expect(mockedMoldingSampleApi.createOrder.mock.calls[0][0].items[0]).toMatchObject({
+      material: '客户自带试料 Z9',
+      material_components: [
+        { material: '客户自带试料 Z9', source_type: 'virgin', ratio_percent: 100 },
+      ],
+      material_usage_type: 'trial',
+    })
+
+    wrapper.unmount()
   })
 
   it('rejects disabled and duplicate material components before saving a composition', async () => {

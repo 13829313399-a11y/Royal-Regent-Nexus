@@ -23,6 +23,7 @@ const props = withDefaults(defineProps<{
   mode: 'create' | 'clone'
   sourceQuote?: InternalQuote
   businessOwners: InternalQuoteBusinessOwner[]
+  customers?: string[]
   busy?: boolean
   externalError?: string
   factoryId?: string
@@ -31,6 +32,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   factoryId: 'huaxing',
   factoryName: '华兴',
+  customers: () => [],
   allowedInitiatorDepartments: () => ['sales-business', 'engineering'],
 })
 
@@ -56,8 +58,12 @@ const form = reactive<InternalQuoteCreatePayload>({
 })
 
 const title = computed(() => props.mode === 'clone' ? '复制内部报价' : '新建内部报价')
+const customerOptions = computed(() => Array.from(new Set([
+  ...(props.sourceQuote?.customer ? [props.sourceQuote.customer] : []),
+  ...props.customers,
+])))
 
-watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners[0]?.id] as const, ([open]) => {
+watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners[0]?.id, props.customers[0]] as const, ([open]) => {
   if (!open) return
   errorMessage.value = ''
   if (props.mode === 'clone' && props.sourceQuote) {
@@ -84,7 +90,7 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
   Object.assign(form, {
     quoteNo: '',
     productName: '',
-    customer: '',
+    customer: props.customers[0] ?? '',
     versionLabel: 'V1.0',
     initiatorDepartment: props.allowedInitiatorDepartments[0] ?? 'sales-business',
     businessOwnerId: props.businessOwners[0]?.id ?? '',
@@ -105,6 +111,10 @@ function submit() {
   }
   if (!form.quoteNo.trim() || !form.productName.trim() || !form.customer.trim()) {
     errorMessage.value = '请填写报价号、产品名称和客户。'
+    return
+  }
+  if (props.mode === 'create' && !props.customers.includes(form.customer)) {
+    errorMessage.value = '请选择当前厂区客户资料中的客户。'
     return
   }
   if (!form.businessOwnerId || !form.businessOwner.trim()) {
@@ -195,13 +205,10 @@ function selectBusinessOwner() {
               <label>
                 <span>客户 <b>*</b></span>
                 <select v-model="form.customer">
-                  <option value="" disabled>选择客户</option>
-                  <option>BuzzBee</option>
-                  <option>Disney</option>
-                  <option>Dickie</option>
-                  <option>彩星</option>
-                  <option>Huaxing Demo</option>
+                  <option value="" disabled>{{ customerOptions.length ? '选择客户' : '当前厂区暂无客户' }}</option>
+                  <option v-for="customer in customerOptions" :key="customer" :value="customer">{{ customer }}</option>
                 </select>
+                <small v-if="!customerOptions.length" class="quote-owner-hint">请联系本厂业务主管先维护客户资料。</small>
               </label>
               <label>
                 <span>业务负责人 / 全部分段审核人 <b>*</b></span>
@@ -266,7 +273,7 @@ function selectBusinessOwner() {
 
           <footer class="quote-dialog-actions">
             <button type="button" class="quote-secondary-button" :disabled="busy" @click="emit('close')">取消</button>
-            <button type="button" class="quote-primary-button" :disabled="busy || !businessOwners.length" @click="submit">
+            <button type="button" class="quote-primary-button" :disabled="busy || !businessOwners.length || !customerOptions.length" @click="submit">
               <Copy v-if="mode === 'clone'" aria-hidden="true" />
               <FilePlus2 v-else aria-hidden="true" />
               {{ busy ? '正在提交…' : mode === 'clone' ? '确认复制并进入协作' : '创建并进入协作' }}

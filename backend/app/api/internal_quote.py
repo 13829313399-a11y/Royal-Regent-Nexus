@@ -1,7 +1,7 @@
 from urllib.parse import quote as url_quote
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -13,6 +13,9 @@ from app.schemas.internal_quote import (
     InternalQuoteBusinessOwnerOut,
     InternalQuoteCloneRequest,
     InternalQuoteCreateRequest,
+    InternalQuoteCustomerCreateRequest,
+    InternalQuoteCustomerOut,
+    InternalQuoteCustomerUpdateRequest,
     InternalQuoteDashboardOut,
     InternalQuoteHeaderUpdateRequest,
     InternalQuoteExportFileOut,
@@ -49,6 +52,7 @@ from app.services.internal_quote import (
     archive_quote,
     clone_quote,
     create_quote,
+    delete_quote,
     ensure_quote_read,
     get_quote_detail,
     get_quote_dashboard,
@@ -73,6 +77,13 @@ from app.services.internal_quote import (
 )
 from app.services.internal_quote_calculator import FORMULA_VERSION, SECTION_INPUT_CONTRACTS
 from app.services.internal_quote_baseline import get_pricing_baseline, update_pricing_baseline
+from app.services.internal_quote_customers import (
+    create_customer,
+    delete_customer,
+    list_customers,
+    update_customer,
+)
+from app.services.internal_quote_templates import XLSX_CONTENT_TYPE, build_internal_quote_import_template
 from app.services.internal_quote_artifacts import (
     confirm_import_batch,
     create_controlled_export,
@@ -147,6 +158,53 @@ def get_internal_quote_business_owners(
     return list_business_owners(db, current_user, factory_id)
 
 
+@router.get("/customers", response_model=list[InternalQuoteCustomerOut])
+def get_internal_quote_customers(
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return list_customers(db, factory_id, current_user)
+
+
+@router.post(
+    "/customers",
+    response_model=InternalQuoteCustomerOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_internal_quote_customer(
+    payload: InternalQuoteCustomerCreateRequest,
+    request: Request,
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return create_customer(db, factory_id, payload, current_user, request)
+
+
+@router.put("/customers/{customer_id}", response_model=InternalQuoteCustomerOut)
+def put_internal_quote_customer(
+    customer_id: str,
+    payload: InternalQuoteCustomerUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return update_customer(db, customer_id, payload, current_user, request)
+
+
+@router.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_internal_quote_customer(
+    customer_id: str,
+    request: Request,
+    revision: int = Query(ge=1),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    delete_customer(db, customer_id, revision, current_user, request)
+    return None
+
+
 @router.get("/dashboard", response_model=InternalQuoteDashboardOut)
 def get_internal_quote_dashboard(
     factory_id: str = Query(min_length=1, max_length=64),
@@ -214,6 +272,18 @@ def get_internal_quote(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return get_quote_detail(db, quote_id, current_user, request)
+
+
+@router.delete("/{quote_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_internal_quote(
+    quote_id: str,
+    request: Request,
+    revision: int = Query(ge=1),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    delete_quote(db, quote_id, revision, current_user, request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.patch("/{quote_id}", response_model=InternalQuoteOut)
@@ -504,6 +574,28 @@ async def post_internal_quote_import_preview(
         content,
         current_user,
         request,
+    )
+
+
+@router.get("/{quote_id}/imports/{import_type}/template")
+def get_internal_quote_import_template(
+    quote_id: str,
+    import_type: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    get_quote_detail(db, quote_id, current_user)
+    try:
+        content, file_name = build_internal_quote_import_template(import_type)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return Response(
+        content=content,
+        media_type=XLSX_CONTENT_TYPE,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
+            "Cache-Control": "private, max-age=300",
+        },
     )
 
 

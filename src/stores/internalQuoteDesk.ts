@@ -4,6 +4,7 @@ import {
   type ApiInternalQuote,
   type ApiInternalQuoteAttachment,
   type ApiInternalQuoteAudit,
+  type ApiInternalQuoteCustomer,
   type ApiInternalQuoteDashboard,
   type ApiInternalQuoteExport,
   type ApiInternalQuoteImportPreview,
@@ -323,6 +324,7 @@ function toQuote(
     workshopCode: source.workshop_code,
     workshopName: source.workshop_name,
     initiatorDepartment: source.initiator_department === 'engineering' ? 'engineering' : 'sales-business',
+    createdById: source.created_by,
     initiatorName: source.created_by_name || source.created_by,
     businessOwnerId: source.business_owner_id,
     businessOwner: source.business_owner_name,
@@ -360,7 +362,7 @@ function toQuote(
 function emptyQuote(): InternalQuote {
   return {
     id: '', quoteNo: '', productName: '正在读取内部报价…', customer: '', versionLabel: '', factoryId: '', factoryName: '',
-    workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', initiatorName: '', businessOwnerId: '',
+    workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', createdById: '', initiatorName: '', businessOwnerId: '',
     businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
     fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', referenceSnapshot: {}, formulaVersion: '', headerRevision: 1,
     finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [], rr2CostSummary: rr2CostSummary(),
@@ -410,6 +412,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     quoteListPageSize: 10,
     quoteListTotalPages: 1,
     quoteListCustomers: [] as string[],
+    factoryCustomers: [] as ApiInternalQuoteCustomer[],
     businessOwners: [] as InternalQuoteBusinessOwner[],
     pricingBaseline: null as ApiInternalQuotePricingBaseline | null,
     dashboard: null as ApiInternalQuoteDashboard | null,
@@ -420,16 +423,20 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     livePreviewLoading: false,
     detailLoading: false,
     ownerLoading: false,
+    customerLoading: false,
+    customerSaving: false,
     baselineLoading: false,
     baselineSaving: false,
     submitting: false,
     fileBusy: false,
     errorMessage: '',
+    customerErrorMessage: '',
     dashboardErrorMessage: '',
     livePreviewErrorMessage: '',
     conflictMessage: '',
     currentFactoryId: '',
     businessOwnerFactoryId: '',
+    customerFactoryId: '',
     factoryContextFactoryId: '',
     factoryContextGeneration: 0,
     quoteListRequestSequence: 0,
@@ -440,6 +447,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     dashboardFactoryId: '',
     dashboardPeriod: 'month' as InternalQuoteDashboardPeriod,
     businessOwnerRequestSequence: 0,
+    customerLoadRequestSequence: 0,
+    customerMutationRequestSequence: 0,
     pricingBaselineFactoryId: '',
     pricingBaselineWorkshopCode: '',
     baselineLoadRequestSequence: 0,
@@ -468,6 +477,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.quoteListPageSize = 10
       this.quoteListTotalPages = 1
       this.quoteListCustomers = []
+      this.factoryCustomers = []
       this.businessOwners = []
       this.dashboard = null
       this.dashboardFactoryId = ''
@@ -476,11 +486,17 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.pricingBaselineWorkshopCode = ''
       this.listLoading = false
       this.ownerLoading = false
+      this.customerLoading = false
+      this.customerSaving = false
+      this.customerErrorMessage = ''
+      this.customerFactoryId = ''
       this.baselineLoading = false
       this.baselineSaving = false
       this.submitting = false
       this.quoteListRequestSequence += 1
       this.businessOwnerRequestSequence += 1
+      this.customerLoadRequestSequence += 1
+      this.customerMutationRequestSequence += 1
       this.dashboardRequestSequence += 1
       this.baselineLoadRequestSequence += 1
       this.baselineUpdateRequestSequence += 1
@@ -617,6 +633,95 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         if (requestSequence === this.businessOwnerRequestSequence && this.businessOwnerFactoryId === factoryId) {
           this.ownerLoading = false
         }
+      }
+    },
+    async loadCustomers(factoryId: string) {
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) return []
+      const requestSequence = ++this.customerLoadRequestSequence
+      if (this.customerFactoryId !== factoryId) this.factoryCustomers = []
+      this.customerLoading = true
+      this.customerErrorMessage = ''
+      this.customerFactoryId = factoryId
+      try {
+        const customers = await internalQuoteApi.listCustomers(factoryId)
+        if (
+          requestSequence !== this.customerLoadRequestSequence
+          || !this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) return []
+        this.factoryCustomers = customers
+        return customers
+      } catch (error) {
+        if (
+          requestSequence === this.customerLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) {
+          this.factoryCustomers = []
+          this.customerErrorMessage = getApiErrorMessage(error)
+        }
+        return []
+      } finally {
+        if (
+          requestSequence === this.customerLoadRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) this.customerLoading = false
+      }
+    },
+    async createCustomer(factoryId: string, name: string) {
+      return this.executeCustomerMutation(factoryId, async () => (
+        internalQuoteApi.createCustomer(factoryId, name)
+      ), 'create')
+    },
+    async updateCustomer(factoryId: string, customerId: string, name: string, revision: number) {
+      return this.executeCustomerMutation(factoryId, async () => (
+        internalQuoteApi.updateCustomer(customerId, name, revision)
+      ), 'update')
+    },
+    async deleteCustomer(factoryId: string, customerId: string, revision: number) {
+      return this.executeCustomerMutation(factoryId, async () => {
+        await internalQuoteApi.deleteCustomer(customerId, revision)
+        return { id: customerId } as ApiInternalQuoteCustomer
+      }, 'delete')
+    },
+    async executeCustomerMutation(
+      factoryId: string,
+      operation: () => Promise<ApiInternalQuoteCustomer>,
+      action: 'create' | 'update' | 'delete',
+    ) {
+      const factoryContextGeneration = this.ensureFactoryContext(factoryId)
+      if (!this.isFactoryContextCurrent(factoryId, factoryContextGeneration)) {
+        throw new Error('厂区已切换，请在当前厂区重新维护客户资料。')
+      }
+      const requestSequence = ++this.customerMutationRequestSequence
+      this.customerSaving = true
+      this.customerErrorMessage = ''
+      try {
+        const customer = await operation()
+        if (
+          requestSequence !== this.customerMutationRequestSequence
+          || !this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) return undefined
+        if (action === 'delete') {
+          this.factoryCustomers = this.factoryCustomers.filter((item) => item.id !== customer.id)
+        } else {
+          const index = this.factoryCustomers.findIndex((item) => item.id === customer.id)
+          if (index >= 0) this.factoryCustomers.splice(index, 1, customer)
+          else this.factoryCustomers.push(customer)
+          this.factoryCustomers.sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+        }
+        return customer
+      } catch (error) {
+        const message = mutationMessage(error)
+        if (
+          requestSequence === this.customerMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) this.customerErrorMessage = message
+        throw new Error(message)
+      } finally {
+        if (
+          requestSequence === this.customerMutationRequestSequence
+          && this.isFactoryContextCurrent(factoryId, factoryContextGeneration)
+        ) this.customerSaving = false
       }
     },
     clearLiveCostPreview(quoteId = '', sectionCode: InternalQuoteSectionCode | '' = '') {
@@ -895,6 +1000,23 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.errorMessage = ''
       try {
         return await internalQuoteApi.previewImport(quoteId, importType, file)
+      } catch (error) {
+        const message = mutationMessage(error)
+        this.errorMessage = message
+        throw new Error(message)
+      } finally {
+        this.fileBusy = false
+      }
+    },
+    async downloadImportTemplate(
+      quoteId: string,
+      importType: ApiInternalQuoteImportPreview['import_type'],
+      fileName: string,
+    ) {
+      this.fileBusy = true
+      this.errorMessage = ''
+      try {
+        triggerDownload(await internalQuoteApi.downloadImportTemplate(quoteId, importType), fileName)
       } catch (error) {
         const message = mutationMessage(error)
         this.errorMessage = message
