@@ -3710,6 +3710,24 @@ def test_export_and_import_molding_sample_excel_template(client):
             "mold_presence_status": "out_of_factory",
             "mold_return_time": "2026-07-18",
             "completion_time": "2026-07-22",
+            "material_usage_type": "production",
+        }
+    )
+    source_payload["items"].append(
+        {
+            **source_payload["items"][0],
+            "id": "BP-XLSX-001-002",
+            "sort_order": 2,
+            "mold_id": "M-TRIAL-002",
+            "mold_name": "客户试料模具",
+            "material": "客户自带试料 X-01",
+            "material_components": [
+                {
+                    "material": "客户自带试料 X-01",
+                    "ratio_percent": 100,
+                    "source_type": "virgin",
+                }
+            ],
             "material_usage_type": "trial",
         }
     )
@@ -3728,7 +3746,10 @@ def test_export_and_import_molding_sample_excel_template(client):
     assert "模具是否在厂" in sheet_xml
     assert "模具回厂时间" in sheet_xml
     assert "用料用途" in sheet_xml
+    assert sheet_xml.index("<t>原料</t>") < sheet_xml.index("<t>用料用途</t>") < sheet_xml.index("<t>颜色</t>")
+    assert "正式生产" in sheet_xml
     assert "试料" in sheet_xml
+    assert "客户自带试料 X-01" in sheet_xml
     assert "不在厂" in sheet_xml
 
     import_response = client.post(
@@ -3746,7 +3767,16 @@ def test_export_and_import_molding_sample_excel_template(client):
     assert imported["items"][0]["mold_presence_status"] == "out_of_factory"
     assert imported["items"][0]["mold_return_time"] == "2026-07-18"
     assert imported["items"][0]["completion_time"] == "2026-07-22"
-    assert imported["items"][0]["material_usage_type"] == "trial"
+    assert imported["items"][0]["material_usage_type"] == "production"
+    assert imported["items"][1]["id"] == "BP-XLSX-002-002"
+    assert imported["items"][1]["material_usage_type"] == "trial"
+    assert imported["items"][1]["material_components"] == [
+        {
+            "material": "客户自带试料 X-01",
+            "ratio_percent": 100.0,
+            "source_type": "virgin",
+        }
+    ]
 
 
 def test_download_engineering_import_template_matches_current_manual_fields(client):
@@ -3767,6 +3797,7 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
         "模具编号",
         "模具名称",
         "所需用料",
+        "用料用途",
         "颜色",
         "PMS",
         "色粉",
@@ -3776,11 +3807,11 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
         "需办日期",
         "工模尺寸",
         "模具状态（是否在厂）",
-        "用料用途",
         "备注",
     ]:
         assert current_manual_header in sheet_xml
 
+    assert sheet_xml.index("<t>所需用料</t>") < sheet_xml.index("<t>用料用途</t>") < sheet_xml.index("<t>颜色</t>")
     assert "原料价格(HKD/磅)" not in sheet_xml
     assert "客模具编号" not in sheet_xml
     assert "模具是否在厂" not in sheet_xml
@@ -3792,10 +3823,10 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
     assert '<dimension ref="A1:N38"/>' in sheet_xml
     assert '<row r="38">' in sheet_xml
     assert '<dataValidations count="2">' in sheet_xml
-    assert 'sqref="L9:L38"' in sheet_xml
-    assert '<formula1>"在厂,不在厂,待确认"</formula1>' in sheet_xml
-    assert 'sqref="M9:M38"' in sheet_xml
+    assert 'sqref="D9:D38"' in sheet_xml
     assert '<formula1>"正式生产,试料"</formula1>' in sheet_xml
+    assert 'sqref="M9:M38"' in sheet_xml
+    assert '<formula1>"在厂,不在厂,待确认"</formula1>' in sheet_xml
 
     assert '<sheet name="啤办单" sheetId="1" r:id="rId1"/>' in workbook_xml
     assert '<sheet name="填写说明" sheetId="2" r:id="rId2"/>' in workbook_xml
@@ -3806,7 +3837,9 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
         "80%ABS PA-757 + 20%PVC 90度（本白,普通）水口料",
         "同一种原料",
         "不同原料",
-        "试料不计入物料结余",
+        "正式生产的所需用料须填写原料数据库中的启用名称",
+        "试料可自定义输入且不从原料数据库搜索",
+        "试料用量保留，金额不计入物料结余",
         "原料价格、预计料费、实际用料和实际料费由系统维护",
     ]:
         assert guide_text in guide_xml
@@ -3823,12 +3856,12 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
         [],
         [],
         [
-            "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
-            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "用料用途", "备注",
+            "模具编号", "模具名称", "所需用料", "用料用途", "颜色", "PMS", "色粉", "啤/套",
+            "啤数", "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "备注",
         ],
         [
-            "P50002008-01-01", "30寸黑武士-头盔", "PP（AV161）", "黑色", "Black C", "黑种", "2", 30,
-            15, "2026-07-22", "650 × 450 × 380 mm", "在厂", "试料", "第一次试模",
+            "P50002008-01-01", "30寸黑武士-头盔", "客户自带再生料 X-01", "试料", "黑色", "Black C", "黑种", "2",
+            30, 15, "2026-07-22", "650 × 450 × 380 mm", "在厂", "第一次试模",
         ],
     ]
 
@@ -3843,9 +3876,9 @@ def test_parse_molding_sample_excel_accepts_current_engineering_headers():
     assert parsed.order.reason == "首次打样"
     assert parsed.items[0].mold_id == "P50002008-01-01"
     assert parsed.items[0].mold_presence_status == "in_factory"
-    assert parsed.items[0].material == "PP（AV161）"
+    assert parsed.items[0].material == "客户自带再生料 X-01"
     assert [component.model_dump() for component in parsed.items[0].material_components] == [
-        {"material": "PP（AV161）", "ratio_percent": 100.0, "source_type": "virgin"}
+        {"material": "客户自带再生料 X-01", "ratio_percent": 100.0, "source_type": "virgin"}
     ]
     assert parsed.items[0].color == "黑色 / PMS Black C"
     assert parsed.items[0].required_material_kg == 15
@@ -3885,6 +3918,8 @@ def test_parse_molding_sample_excel_leaves_ids_for_create_service_and_uses_busin
     assert parsed.order.id == ""
     assert parsed.items[0].id == ""
     assert parsed.order.date == "2026-07-19"
+    assert parsed.items[0].material == "PP（AV161）"
+    assert parsed.items[0].material_usage_type == "trial"
 
 
 def test_parse_molding_sample_excel_builds_and_canonicalizes_multi_material_components():
@@ -3898,28 +3933,28 @@ def test_parse_molding_sample_excel_builds_and_canonicalizes_multi_material_comp
         [],
         [],
         [
-            "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
-            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "用料用途", "备注",
+            "模具编号", "模具名称", "所需用料", "用料用途", "颜色", "PMS", "色粉", "啤/套",
+            "啤数", "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "备注",
         ],
         [
             "M-MIX-001", "混料模具", "80%ABS PA-757 + 20%PVC 90度（本白,普通）水口料",
-            "黑色", "Black C", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+            "正式生产", "黑色", "Black C", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "",
         ],
         [
             "M-MIX-002", "同料水口模具", "80%ABS PA-757 + 20%水口料",
-            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+            "正式生产", "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "",
         ],
         [
             "M-SINGLE-003", "加号单料模具", "PC+ABS",
-            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+            "正式生产", "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "",
         ],
         [
             "M-MIX-004", "加号混料模具", "80%PC+ABS + 20%水口料",
-            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+            "正式生产", "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "",
         ],
         [
             "M-SINGLE-005", "含百分号单料模具", "PA66+30%GF",
-            "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "正式生产", "",
+            "正式生产", "本白", "", "", "1", 10, 10, "2026-07-20", "207*789", "在厂", "",
         ],
     ]
 
@@ -3963,16 +3998,51 @@ def test_parse_molding_sample_excel_reports_invalid_engineering_material_row_num
         [],
         [],
         [
-            "模具编号", "模具名称", "所需用料", "颜色", "PMS", "色粉", "啤/套", "啤数",
-            "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "用料用途", "备注",
+            "模具编号", "模具名称", "所需用料", "用料用途", "颜色", "PMS", "色粉", "啤/套",
+            "啤数", "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "备注",
         ],
-        ["M-BAD-001", "错误混料", "80%ABS PA-757 + 错误段", "", "", "", "1", 10, 10, "", "", "在厂", "正式生产", ""],
+        ["M-BAD-001", "错误混料", "80%ABS PA-757 + 错误段", "正式生产", "", "", "", "1", 10, 10, "", "", "在厂", ""],
     ]
 
     with pytest.raises(ValueError, match="Excel 第 9 行.*所需用料.*比例合计必须为 100%"):
         excel_service.parse_order_excel(
             excel_service._build_workbook(excel_service._sheet_xml(current_rows, header_row_index=8))
         )
+
+
+def test_parse_molding_sample_excel_allows_arbitrary_trial_material_text():
+    excel_service = importlib.import_module("app.services.molding_sample_excel")
+    current_rows = [
+        ["工程部啤办通知单 · 基础资料与模具明细导入模板"],
+        ["客户", "Trial Client", "产品编号", "TRIAL-001", "产品名称", "自定义试料映射测试"],
+        ["开单日期", "2026/07/21", "阶段", "T0", "填写部", "工程部"],
+        ["发至", "内部", "审核主管", "杨敬作", "落单人", "工程A"],
+        ["注意事项", ""],
+        [],
+        [],
+        [
+            "模具编号", "模具名称", "所需用料", "用料用途", "颜色", "PMS", "色粉", "啤/套",
+            "啤数", "所需用料(kg)", "需办日期", "工模尺寸", "模具状态（是否在厂）", "备注",
+        ],
+        [
+            "M-TRIAL-001", "试料模具", "80% 客户回收料 + 临时辅料", "试料", "本白", "", "", "1",
+            10, 2.5, "2026-07-25", "207*789", "在厂", "客户提供的自由文本，不作为正式配比解析",
+        ],
+    ]
+
+    parsed = excel_service.parse_order_excel(
+        excel_service._build_workbook(excel_service._sheet_xml(current_rows, header_row_index=8))
+    )
+
+    assert parsed.items[0].material_usage_type == "trial"
+    assert parsed.items[0].material == "80% 客户回收料 + 临时辅料"
+    assert [component.model_dump() for component in parsed.items[0].material_components] == [
+        {
+            "material": "80% 客户回收料 + 临时辅料",
+            "ratio_percent": 100.0,
+            "source_type": "virgin",
+        }
+    ]
 
 
 def test_excel_expected_material_amount_uses_component_prices():
