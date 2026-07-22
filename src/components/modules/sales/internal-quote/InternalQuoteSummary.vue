@@ -19,6 +19,7 @@ import type { ApiInternalQuoteVersionComparison } from '@/api/internalQuote'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { useAuthStore } from '@/stores/auth'
+import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
 
@@ -26,6 +27,7 @@ const route = useRoute()
 const router = useRouter()
 const quoteStore = useInternalQuoteDeskStore()
 const authStore = useAuthStore()
+const appStore = useAppStore()
 const message = ref('')
 const errorMessage = ref('')
 const finalRejectOpen = ref(false)
@@ -34,7 +36,11 @@ const finalRejectError = ref('')
 const versionBaseId = ref('')
 const comparison = ref<ApiInternalQuoteVersionComparison>()
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
-const quote = computed(() => quoteStore.getQuoteById(quoteId.value) ?? quoteStore.placeholderQuote)
+const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
+const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
+const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
+  ? appStore.activeProductionFactory.id
+  : appStore.activeFactory.id)
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const missingSections = computed(() => participatingSections.value.filter((section) => !['approved', 'not_applicable'].includes(section.status)))
@@ -44,6 +50,13 @@ const canExport = computed(() => authStore.can('internal_quote:export', quote.va
 const canOpenExport = computed(() => isReleased.value && canExport.value)
 const canFinalSubmit = computed(() => authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
 const canFinalApprove = computed(() => authStore.can('internal_quote:final_approve', quote.value.factoryId, 'sales-business'))
+const salesSection = computed(() => quote.value.sections.find((section) => section.code === 'sales'))
+const responsibleFollowupId = computed(() => salesSection.value?.submittedById || quote.value.createdById)
+const canResponsibleRelease = computed(() => (
+  canFinalSubmit.value
+  && Boolean(responsibleFollowupId.value)
+  && responsibleFollowupId.value === authStore.currentUser?.id
+))
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignQuote.value)
@@ -117,15 +130,15 @@ async function runFinalAction() {
       throw new Error(isForeignQuote.value ? '跨厂报价仅供查看，不能导出。' : '当前账号没有受控导出权限。')
     }
     if (quote.value.status === 'fully_approved') {
-      if (!canFinalSubmit.value) throw new Error('当前账号没有最终提交权限。')
+      if (!canResponsibleRelease.value) throw new Error('仅负责本单的业务跟客可确认最终放行。')
       await quoteStore.submitFinal(quote.value.id, quote.value.headerRevision)
-      message.value = '已由业务经办提交最终放行，等待另一名业务主管复核。'
+      message.value = '负责跟客已确认最终放行，P4 受控文件和客价交接 artifact 已由服务端生成。'
       return
     }
     if (quote.value.status === 'final_pending') {
-      if (!canFinalApprove.value) throw new Error('当前账号没有最终放行审核权限。')
+      if (!canResponsibleRelease.value) throw new Error('仅负责本单的业务跟客可确认最终放行。')
       await quoteStore.reviewFinal(quote.value.id, quote.value.headerRevision, 'approve')
-      message.value = '最终放行已通过，P4 受控文件和客价交接 artifact 已由服务端生成。'
+      message.value = '负责跟客已确认历史待审单放行，P4 受控文件和客价交接 artifact 已由服务端生成。'
       return
     }
     throw new Error('当前报价尚未满足最终放行条件。')
@@ -172,8 +185,8 @@ async function compareSelectedVersion() {
 }
 
 function finalActionLabel() {
-  if (quote.value.status === 'fully_approved') return canFinalSubmit.value ? '业务提交最终放行' : '无最终提交权限'
-  if (quote.value.status === 'final_pending') return canFinalApprove.value ? '另一名业务主管批准放行' : '无最终审核权限'
+  if (quote.value.status === 'fully_approved') return canResponsibleRelease.value ? '负责跟客确认放行' : '仅负责跟客可放行'
+  if (quote.value.status === 'final_pending') return canResponsibleRelease.value ? '负责跟客确认放行' : '等待负责跟客放行'
   if (canOpenExport.value) return '进入导出汇总'
   if (isReleased.value && !canExport.value) return isForeignQuote.value ? '跨厂只读，不能导出' : '无受控导出权限'
   return '尚未满足放行条件'
@@ -186,6 +199,10 @@ async function loadQuote() {
 
 onMounted(loadQuote)
 watch(quoteId, loadQuote)
+watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quoteFactoryId]) => {
+  if (!quoteFactoryId || quoteFactoryId === factoryId || !isFactoryContextId(factoryId)) return
+  void router.replace(getFactoryScopedRoute('/modules/sales-business/internal-quote-desk', factoryId))
+})
 watch([quoteId, canFinalApprove], () => {
   finalRejectOpen.value = false
   finalReason.value = ''
@@ -270,7 +287,7 @@ watch([quoteId, canFinalApprove], () => {
 
     <section class="quote-final-grid">
       <article class="quote-export-history"><header><FileClock aria-hidden="true" /><span><strong>受控导出记录</strong><small>重开后旧文件保留但标记已取代</small></span></header><div v-if="quote.exports.length"><p v-for="record in quote.exports" :key="record.id"><FileSpreadsheet aria-hidden="true" /><span><strong>{{ record.fileName }}</strong><small>{{ record.exportedBy }} · {{ record.exportedAt }}</small></span><em :class="record.status">{{ record.status === 'current' ? '当前版本' : '已取代' }}</em></p></div><div v-else class="empty">最终放行后才可生成受控 XLSX。</div></article>
-      <article class="quote-final-release" :class="{ ready: allSectionsReady }"><Rocket aria-hidden="true" /><div><span>业务部最终放行</span><h2>{{ allSectionsReady ? (quote.status === 'final_pending' ? '等待第二名业务主管复核' : canOpenExport ? '已放行，可查看受控导出' : isReleased && !canExport ? (isForeignQuote ? '已放行，跨厂仅供查看' : '已放行，当前账号无受控导出权限') : '整单已准备就绪') : '等待全部责任分段完成' }}</h2><p>最终提交人与最终放行人不得相同；提交和审核均携带报价头 revision，服务端冻结完整放行清单。具备最终审核权限的提交人可在批准前主动退回修改。</p><div v-if="quote.finalReleaseStatus === 'rejected'" class="final-rejected">上一轮最终放行已退回，可修正后重新提交。</div></div><div class="final-buttons"><button v-if="quote.status === 'final_pending' && canFinalApprove" type="button" class="reject" @click="toggleFinalReject">退回最终放行</button><button type="button" :disabled="!allSectionsReady || (quote.status === 'fully_approved' && !canFinalSubmit) || (quote.status === 'final_pending' && !canFinalApprove) || (isReleased && !canExport)" @click="runFinalAction"><Download v-if="canOpenExport" aria-hidden="true" /><Rocket v-else aria-hidden="true" />{{ finalActionLabel() }}</button></div></article>
+      <article class="quote-final-release" :class="{ ready: allSectionsReady }"><Rocket aria-hidden="true" /><div><span>业务跟客最终放行</span><h2>{{ allSectionsReady ? (quote.status === 'final_pending' ? '等待负责跟客确认放行' : canOpenExport ? '已放行，可查看受控导出' : isReleased && !canExport ? (isForeignQuote ? '已放行，跨厂仅供查看' : '已放行，当前账号无受控导出权限') : '整单已准备就绪') : '等待全部责任分段完成' }}</h2><p>全部参与分段完成审批后，由业务部分段的提交跟客一人确认放行；请求携带报价头 revision，服务端冻结完整放行清单并生成受控文件。</p><div v-if="quote.finalReleaseStatus === 'rejected'" class="final-rejected">上一轮最终放行已退回，可修正后由负责跟客重新放行。</div></div><div class="final-buttons"><button v-if="quote.status === 'final_pending' && canFinalApprove" type="button" class="reject" @click="toggleFinalReject">退回历史待审放行</button><button type="button" :disabled="!allSectionsReady || (['fully_approved','final_pending'].includes(quote.status) && !canResponsibleRelease) || (isReleased && !canExport)" @click="runFinalAction"><Download v-if="canOpenExport" aria-hidden="true" /><Rocket v-else aria-hidden="true" />{{ finalActionLabel() }}</button></div></article>
     </section>
     <section v-if="finalRejectOpen && canFinalApprove" class="quote-final-reason"><div><strong>退回最终放行</strong><span>原因将写入不可变最终审核记录并通知提交人。</span></div><textarea v-model="finalReason" rows="2" placeholder="必须填写退回原因" /><button type="button" @click="finalRejectOpen = false">取消</button><button type="button" class="primary" :disabled="!finalReason.trim() || quoteStore.submitting || !canFinalApprove" @click="rejectFinal">{{ quoteStore.submitting ? '退回中…' : '确认退回' }}</button><p v-if="finalRejectError" class="quote-final-inline-error" role="alert">{{ finalRejectError }}</p></section>
   </div>

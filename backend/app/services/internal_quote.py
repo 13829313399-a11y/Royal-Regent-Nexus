@@ -3,6 +3,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
@@ -215,6 +216,17 @@ def _get_section(db: Session, quote_id: str, section_code: str) -> InternalQuote
     return section
 
 
+def _final_release_owner(
+    db: Session,
+    quote: InternalQuote,
+) -> tuple[str, str]:
+    sales = _get_section(db, quote.id, "sales")
+    return (
+        sales.submitted_by_id or quote.created_by,
+        sales.submitted_by or quote.created_by_name or "负责跟客",
+    )
+
+
 def _ensure_active(quote: InternalQuote) -> None:
     if quote.status == "archived":
         raise HTTPException(status_code=409, detail="已归档报价不可继续修改")
@@ -278,14 +290,17 @@ def quote_to_out(
     quote: InternalQuote,
     *,
     include_sections: bool = True,
+    section_rows: list[InternalQuoteSection] | None = None,
 ) -> InternalQuoteOut:
     sections: list[InternalQuoteSectionOut] = []
     if include_sections:
-        rows = db.scalars(
-            select(InternalQuoteSection)
-            .where(InternalQuoteSection.quote_id == quote.id)
-            .order_by(InternalQuoteSection.id)
-        ).all()
+        rows = section_rows
+        if rows is None:
+            rows = list(db.scalars(
+                select(InternalQuoteSection)
+                .where(InternalQuoteSection.quote_id == quote.id)
+                .order_by(InternalQuoteSection.id)
+            ).all())
         by_code = {section.department: section for section in rows}
         payload_overrides: dict[str, dict[str, object]] = {}
         engineering = by_code.get("engineering")
@@ -402,6 +417,17 @@ def _add_notification(
 ) -> SystemNotification | None:
     if not target_user_id and not target_permission:
         return None
+    summary_events = {
+        "ready_for_final_review",
+        "final_release_submitted",
+        "final_release_rejected",
+        "final_release_invalidated",
+        "final_release_approved",
+    }
+    destination = "summary" if event in summary_events else "collaboration"
+    route_query = {"factory": quote.factory_id}
+    if destination == "collaboration" and department in SECTION_NAMES:
+        route_query["section"] = department
     payload: dict[str, object] = {
         "module": "internal-quote-desk",
         "event": event,
@@ -411,7 +437,10 @@ def _add_notification(
         "customer": quote.customer,
         "department": department,
         "reason": reason,
-        "route": f"/modules/sales-business/internal-quote-desk/{quote.id}",
+        "route": (
+            f"/modules/sales-business/internal-quote-desk/{quote.id}/{destination}"
+            f"?{urlencode(route_query)}"
+        ),
     }
     if extra:
         payload.update(extra)
@@ -1407,6 +1436,22 @@ def create_quote(
     return quote_to_out(db, quote)
 
 
+def _list_quote_sections(
+    db: Session,
+    quotes: list[InternalQuote],
+) -> dict[str, list[InternalQuoteSection]]:
+    if not quotes:
+        return {}
+    grouped: dict[str, list[InternalQuoteSection]] = defaultdict(list)
+    for section in db.scalars(
+        select(InternalQuoteSection)
+        .where(InternalQuoteSection.quote_id.in_([quote.id for quote in quotes]))
+        .order_by(InternalQuoteSection.quote_id, InternalQuoteSection.id)
+    ).all():
+        grouped[section.quote_id].append(section)
+    return grouped
+
+
 def list_quotes(
     db: Session,
     user: AuthContext,
@@ -1428,9 +1473,16 @@ def list_quotes(
             | InternalQuote.customer.like(normalized)
         )
     statement = statement.order_by(InternalQuote.updated_at.desc(), InternalQuote.id.desc())
+    quotes = list(db.scalars(statement).all())
+    sections_by_quote = _list_quote_sections(db, quotes) if include_sections else {}
     return [
-        quote_to_out(db, quote, include_sections=include_sections)
-        for quote in db.scalars(statement).all()
+        quote_to_out(
+            db,
+            quote,
+            include_sections=include_sections,
+            section_rows=sections_by_quote.get(quote.id, []) if include_sections else None,
+        )
+        for quote in quotes
     ]
 
 
@@ -1467,12 +1519,13 @@ def list_quotes_page(
 
     total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
     total_pages = max(1, (total + page_size - 1) // page_size)
-    rows = db.scalars(
+    rows = list(db.scalars(
         statement
         .order_by(InternalQuote.updated_at.desc(), InternalQuote.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
-    ).all()
+    ).all())
+    sections_by_quote = _list_quote_sections(db, rows) if include_sections else {}
     customers = [
         value
         for value in db.scalars(
@@ -1484,7 +1537,15 @@ def list_quotes_page(
         if value
     ]
     return InternalQuotePageOut(
-        items=[quote_to_out(db, quote, include_sections=include_sections) for quote in rows],
+        items=[
+            quote_to_out(
+                db,
+                quote,
+                include_sections=include_sections,
+                section_rows=sections_by_quote.get(quote.id, []) if include_sections else None,
+            )
+            for quote in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -1783,6 +1844,22 @@ def update_quote_header(
     _ensure_active(quote)
     if quote.status in {"final_reviewing", "fully_approved", "exported"}:
         raise HTTPException(status_code=409, detail="最终审核或放行后的报价头不可直接修改，请先退回或重开分段")
+    started_section = db.scalar(
+        select(InternalQuoteSection.id).where(
+            InternalQuoteSection.quote_id == quote.id,
+            InternalQuoteSection.is_required.is_(True),
+            (
+                (InternalQuoteSection.status != "draft")
+                | (InternalQuoteSection.revision > 1)
+                | (InternalQuoteSection.filled_at != "")
+            ),
+        ).limit(1)
+    )
+    if started_section is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="已有参与分段开始填写；为避免数量或负责人变更与成本 revision 不一致，报价头只能在协作填写前修改",
+        )
     _check_revision(quote.header_revision, payload.revision, "报价头")
     old_revision = quote.header_revision
     for field, value in payload.model_dump(exclude={"revision"}, exclude_none=True).items():
@@ -1905,7 +1982,7 @@ def add_quote_participation(
             title="内部报价最终放行已失效",
             message=f"{quote.quote_no} 因新增{added_names}参与，需重新完成分段审批和最终放行",
             event="final_release_invalidated",
-            target_user_id=quote.business_owner_id,
+            target_user_id=_final_release_owner(db, quote)[0],
             department="sales",
         )
     db.commit()
@@ -2034,7 +2111,7 @@ def remove_quote_participation(
             title="内部报价最终放行已失效",
             message=f"{quote.quote_no} 因移除{removed_names}参与，需重新完成分段审批和最终放行",
             event="final_release_invalidated",
-            target_user_id=quote.business_owner_id,
+            target_user_id=_final_release_owner(db, quote)[0],
             department="sales",
         )
     db.commit()
@@ -2623,13 +2700,17 @@ def review_section(
             extra={"section_revision": section.revision},
         )
     if quote.status == "ready_for_final_review":
+        final_release_owner_id, final_release_owner_name = _final_release_owner(db, quote)
         _add_notification(
             db,
             quote,
-            title="内部报价已具备最终提交条件",
-            message=f"{quote.quote_no} 所有参与分段均已完成，请提交最终业务放行",
+            title="内部报价已具备跟客放行条件",
+            message=(
+                f"{quote.quote_no} 所有参与分段均已完成，"
+                f"请负责跟客 {final_release_owner_name} 确认最终放行"
+            ),
             event="ready_for_final_review",
-            target_user_id=quote.business_owner_id,
+            target_user_id=final_release_owner_id,
             department="sales",
             extra={"header_revision": quote.header_revision},
         )
@@ -2715,7 +2796,7 @@ def reopen_section(
             title="内部报价最终放行已失效",
             message=f"{quote.quote_no} 因{section.department_name}分段重开，需重新完成审批和最终放行",
             event="final_release_invalidated",
-            target_user_id=quote.business_owner_id,
+            target_user_id=_final_release_owner(db, quote)[0],
             department=section_code,
             reason=payload.reason,
         )
@@ -2998,7 +3079,7 @@ def _replace_quote_reference_set(
             title="内部报价最终放行已失效",
             message=f"{quote.quote_no} 因参考快照更新需重新完成分段审批和最终放行",
             event="final_release_invalidated",
-            target_user_id=quote.business_owner_id,
+            target_user_id=_final_release_owner(db, quote)[0],
             department="sales",
             reason=reason,
         )

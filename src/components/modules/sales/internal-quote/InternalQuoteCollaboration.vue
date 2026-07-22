@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleUserRound, Layers3, Maximize2, Minimize2, RefreshCw, UserPlus } from '@lucide/vue'
+import { ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleUserRound, Layers3, Maximize2, Minimize2, Pencil, RefreshCw, UserPlus } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import InternalQuoteActivityPanel from './InternalQuoteActivityPanel.vue'
+import InternalQuoteHeaderDialog from './InternalQuoteHeaderDialog.vue'
 import InternalQuoteSectionEditor from './InternalQuoteSectionEditor.vue'
 import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { cloneInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
+import { internalQuoteApi, type InternalQuoteHeaderUpdateRequest } from '@/api/internalQuote'
 import { useAuthStore } from '@/stores/auth'
+import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
@@ -17,6 +20,7 @@ const route = useRoute()
 const router = useRouter()
 const quoteStore = useInternalQuoteDeskStore()
 const authStore = useAuthStore()
+const appStore = useAppStore()
 const message = ref('')
 const errorMessage = ref('')
 const syncPanelOpen = ref(false)
@@ -27,9 +31,18 @@ const focusEntryMode = ref(true)
 const sectionEditor = ref<InstanceType<typeof InternalQuoteSectionEditor> | null>(null)
 const markupMessage = ref('')
 const markupError = ref('')
+const headerDialogOpen = ref(false)
+const headerDialogBusy = ref(false)
+const headerDialogError = ref('')
+const headerBusinessOwners = ref<Array<{ id: string; username: string; displayName: string }>>([])
+const headerCustomers = ref<string[]>([])
 
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
-const quote = computed(() => quoteStore.getQuoteById(quoteId.value) ?? quoteStore.placeholderQuote)
+const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
+const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
+const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
+  ? appStore.activeProductionFactory.id
+  : appStore.activeFactory.id)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing']
 const availableOptionalSections = computed(() => quote.value.sections.filter((section) => !section.isRequired && optionalSectionCodes.includes(section.code)))
@@ -60,6 +73,11 @@ const markupBlockedReason = computed(() => {
   return '业务部已提交或审核完成；请先重开业务部分段，再保存新的码数。'
 })
 const canManageParticipation = computed(() => quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
+const canEditHeader = computed(() => (
+  !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
+  && participatingSections.value.every((section) => section.status === 'draft' && section.revision === 1)
+  && authStore.can('internal_quote:header_edit', quote.value.factoryId, 'sales-business')
+))
 const canRemoveActive = computed(() => canManageParticipation.value && optionalSectionCodes.includes(activeSectionCode.value))
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignFactory(authStore, quote.value.factoryId))
@@ -181,8 +199,57 @@ async function removeParticipation(sectionCode: InternalQuoteSectionCode) {
   }
 }
 
+async function openHeaderDialog() {
+  if (!canEditHeader.value || !quote.value.id) return
+  const requestedQuoteId = quote.value.id
+  const requestedFactoryId = quote.value.factoryId
+  headerDialogOpen.value = true
+  headerDialogBusy.value = true
+  headerDialogError.value = ''
+  try {
+    const [owners, customers] = await Promise.all([
+      internalQuoteApi.listBusinessOwners(requestedFactoryId),
+      internalQuoteApi.listCustomers(requestedFactoryId),
+    ])
+    if (!headerDialogOpen.value || quote.value.id !== requestedQuoteId) return
+    headerBusinessOwners.value = owners.map((owner) => ({ id: owner.id, username: owner.username, displayName: owner.display_name }))
+    headerCustomers.value = Array.from(new Set([quote.value.customer, ...customers.map((customer) => customer.name)]))
+  } catch (error) {
+    if (headerDialogOpen.value && quote.value.id === requestedQuoteId) {
+      headerDialogError.value = error instanceof Error ? error.message : '读取当前厂区客户和业务负责人失败。'
+    }
+  } finally {
+    if (headerDialogOpen.value && quote.value.id === requestedQuoteId) headerDialogBusy.value = false
+  }
+}
+
+function closeHeaderDialog() {
+  if (headerDialogBusy.value) return
+  headerDialogOpen.value = false
+  headerDialogError.value = ''
+}
+
+async function saveHeader(payload: InternalQuoteHeaderUpdateRequest) {
+  if (!canEditHeader.value) return
+  headerDialogBusy.value = true
+  headerDialogError.value = ''
+  try {
+    await quoteStore.updateHeader(quote.value.id, payload)
+    headerDialogOpen.value = false
+    message.value = '报价资料已保存为新的报价头 revision。'
+  } catch (error) {
+    headerDialogError.value = error instanceof Error ? error.message : '保存报价资料失败。'
+  } finally {
+    headerDialogBusy.value = false
+  }
+}
+
 onMounted(loadQuote)
 watch(quoteId, loadQuote)
+watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quoteFactoryId]) => {
+  if (!quoteFactoryId || quoteFactoryId === factoryId || !isFactoryContextId(factoryId)) return
+  void router.replace(getFactoryScopedRoute('/modules/sales-business/internal-quote-desk', factoryId))
+})
 watch([quoteId, canSyncReference], () => {
   syncPanelOpen.value = false
   syncReason.value = ''
@@ -199,7 +266,7 @@ watch(quoteId, () => {
 
     <header class="quote-collaboration-head">
       <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ quote.status === 'rejected' ? '存在退回' : '协作进行中' }}</span></div><p>{{ quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />全部分段审核 · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
-      <div class="quote-head-progress"><div><span>参与分段进度</span><strong>{{ approvedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button type="button" class="focus-entry-toggle" :aria-pressed="focusEntryMode" @click="focusEntryMode = !focusEntryMode"><Maximize2 v-if="focusEntryMode" /><Minimize2 v-else />{{ focusEntryMode ? '显示两侧栏' : '专注填报' }}</button><RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与放行</RouterLink><button v-if="canManageParticipation && availableOptionalSections.length" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
+      <div class="quote-head-progress"><div><span>参与分段进度</span><strong>{{ approvedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button type="button" class="focus-entry-toggle" :aria-pressed="focusEntryMode" @click="focusEntryMode = !focusEntryMode"><Maximize2 v-if="focusEntryMode" /><Minimize2 v-else />{{ focusEntryMode ? '显示两侧栏' : '专注填报' }}</button><RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与放行</RouterLink><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && availableOptionalSections.length" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
     <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；分段编辑、审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的分段编辑、审核或参考同步权限。' }}</p>
@@ -238,6 +305,16 @@ watch(quoteId, () => {
       <Maximize2 v-if="focusEntryMode" aria-hidden="true" />
       <Minimize2 v-else aria-hidden="true" />
     </button>
+    <InternalQuoteHeaderDialog
+      :open="headerDialogOpen"
+      :quote="quote"
+      :business-owners="headerBusinessOwners"
+      :customers="headerCustomers"
+      :busy="headerDialogBusy"
+      :external-error="headerDialogError"
+      @close="closeHeaderDialog"
+      @confirm="saveHeader"
+    />
   </div>
 </template>
 
