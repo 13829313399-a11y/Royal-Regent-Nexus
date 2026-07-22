@@ -1,5 +1,6 @@
 import hashlib
 import importlib
+import json
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
@@ -55,11 +56,12 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
             "U2",
         )
 
-        forbidden = client.post(
+        sales_preview = client.post(
             f"/api/internal-quotes/{quote_id}/imports/mold/preview",
             files={"file": ("模具报价.xlsx", source, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
-        assert forbidden.status_code == 403
+        assert sales_preview.status_code == 201, sales_preview.text
+        assert sales_preview.json()["target_department"] == "engineering"
 
         logout(client)
         login(client, "iq_p3_engineer", "engineer", "engineering")
@@ -373,6 +375,22 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
                 section.status = "not_applicable"
                 section.calculation_status = "not_applicable"
                 section.dependency_status = "current"
+                if section.department == "sales":
+                    section.payload_json = json.dumps({
+                        "paper_price_factor": 2.75,
+                        "product_size_in": {"length": 12, "width": 8, "height": 4},
+                        "color_box_size_unit": "cm",
+                        "color_box_size_in": {"length": 10, "width": 5, "height": 4},
+                        "cartons": [{
+                            "item": "主纸箱",
+                            "size_unit": "cm",
+                            "length_in": 20,
+                            "width_in": 10,
+                            "height_in": 8,
+                            "qty_per_carton": 2,
+                            "flat_cards": [],
+                        }],
+                    }, ensure_ascii=False)
             db.commit()
 
         first_response = client.post(f"/api/internal-quotes/{quote_id}/exports")
@@ -382,6 +400,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v4"
 
         download = client.get(
             f"/api/internal-quotes/{quote_id}/exports/{first['id']}/download"
@@ -395,17 +414,22 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert quote_sheet.sheet_state == "visible"
         assert quote_sheet["A8"].value == "内部报价测试产品报价"
         packaging_labels = [quote_sheet.cell(row, 10).value for row in range(1, quote_sheet.max_row + 1)]
-        assert "彩盒尺寸 (in)" in packaging_labels
+        assert "彩盒尺寸 (cm)" in packaging_labels
         assert "产品尺寸 (in)" in packaging_labels
+        carton_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 10).value == "外箱 (cm):")
+        assert quote_sheet.cell(carton_row, 11).value == 50.8
+        assert quote_sheet.cell(carton_row + 1, 11).value == 25.4
+        assert quote_sheet.cell(carton_row + 3, 11).value == f"=K{carton_row}/2.54*L{carton_row}/2.54*M{carton_row}/2.54/1728"
         assert [quote_sheet.cell(9, column).value for column in range(3, 14)] == [
             "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", None, "报客价",
         ]
-        assert quote_sheet["C41"].value == "报客价："
-        assert quote_sheet["D41"].value == "=D38*D39/D40"
-        assert quote_sheet["D42"].value == 3.5
-        assert quote_sheet["D43"].value == '=IF(D42="","",D41-D42)'
-        assert quote_sheet["D44"].value == '=IF(OR(D42="",D42=0),"",D43/D42)'
-        assert quote_sheet["C46"].value == "旺季价"
+        assert quote_sheet["D20"].value == "=SUM(D19:D19)"
+        assert quote_sheet["C23"].value == "报客价："
+        assert quote_sheet["D23"].value == "=D20*D21/D22"
+        assert quote_sheet["D24"].value == 3.5
+        assert quote_sheet["D25"].value == '=IF(D24="","",D23-D24)'
+        assert quote_sheet["D26"].value == '=IF(OR(D24="",D24=0),"",D25/D24)'
+        assert quote_sheet["C44"].value == "旺季价"
         assert all(workbook[name].sheet_state == "veryHidden" for name in workbook.sheetnames[1:])
         electronic_sheet = workbook["电子明细"]
         assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [

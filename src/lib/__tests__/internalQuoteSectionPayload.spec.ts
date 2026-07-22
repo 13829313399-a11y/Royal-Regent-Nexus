@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, defaultSalesFreightCalculation, normalizeInternalQuotePayload, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type PaintingPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type PaintingPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
@@ -13,6 +13,7 @@ describe('internal quote section payload normalization', () => {
       paper_price_factor: 2.75,
       packaging_materials: [],
       product_size_in: { length: 0, width: 0, height: 0 },
+      color_box_size_unit: 'inch',
       color_box_size_in: { length: 0, width: 0, height: 0 },
       cartons: [],
       freight_calc: { enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883, hk40: 8000, yt5t: 11000 },
@@ -49,6 +50,23 @@ describe('internal quote section payload normalization', () => {
       tax_categories: [{ code: 'legacy', amount_hkd: 5, rate: .13 }],
       scenarios: [{ name: '旧场景', capacity_cuft: 1980 }],
     })
+  })
+
+  it('preserves cm/inch display units while keeping calculation dimensions in canonical inches', () => {
+    const normalized = normalizeInternalQuotePayload('sales', {
+      color_box_size_unit: 'cm',
+      color_box_size_in: { length: 10, width: 5, height: 4 },
+      cartons: [{ item: '主纸箱', size_unit: 'cm', length_in: 20, width_in: 10, height_in: 8, qty_per_carton: 2, flat_cards: [] }],
+    })
+    expect(normalized).toMatchObject({
+      color_box_size_unit: 'cm',
+      color_box_size_in: { length: 10, width: 5, height: 4 },
+      cartons: [{ size_unit: 'cm', length_in: 20, width_in: 10, height_in: 8 }],
+    })
+    expect(dimensionValueFromInches(10, 'cm')).toBe(25.4)
+    expect(dimensionValueToInches(25.4, 'cm')).toBe(10)
+    expect(dimensionValueFromInches(10, 'inch')).toBe(10)
+    expect(dimensionValueToInches(10, 'inch')).toBe(10)
   })
 
   it('previews the accepted carton, flat-card, CUFT and per-piece formulas', () => {

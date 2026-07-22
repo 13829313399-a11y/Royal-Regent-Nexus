@@ -65,36 +65,57 @@ function positivePrice(value: string | number) {
   return Number.isFinite(parsed) && parsed > 0
 }
 
-function validate() {
-  if (!form.material_prices.length || !form.machine_prices.length) {
+function isBlankMaterialRow(row: InternalQuotePricingBaselineUpdateRequest['material_prices'][number]) {
+  return !row.material.trim() && !row.grade.trim() && !normalizedPrice(row.price_hkd_lb)
+}
+
+function isBlankMachineRow(row: InternalQuotePricingBaselineUpdateRequest['machine_prices'][number]) {
+  return !row.machine_range.trim() && !row.machine.trim() && !normalizedPrice(row.shift_price_hkd)
+}
+
+function validate(
+  materialPrices: InternalQuotePricingBaselineUpdateRequest['material_prices'],
+  machinePrices: InternalQuotePricingBaselineUpdateRequest['machine_prices'],
+) {
+  if (!materialPrices.length || !machinePrices.length) {
     return '初始材料价和初始机型价都至少保留一项'
   }
-  if (form.material_prices.some((row) => !row.material.trim() || !row.grade.trim() || !positivePrice(row.price_hkd_lb))) {
-    return '请完整填写每项材料的材质、料型和大于 0 的 HKD/Lb 单价'
+  const invalidMaterialIndex = materialPrices.findIndex(
+    (row) => !row.material.trim() || !row.grade.trim() || !positivePrice(row.price_hkd_lb),
+  )
+  if (invalidMaterialIndex >= 0) {
+    return `请完整填写第 ${invalidMaterialIndex + 1} 项材料的材质、料型和大于 0 的 HKD/Lb 单价`
   }
-  if (form.machine_prices.some((row) => !row.machine_range.trim() || !row.machine.trim() || !positivePrice(row.shift_price_hkd))) {
-    return '请完整填写每项机型范围、机型和大于 0 的每班价格'
+  const invalidMachineIndex = machinePrices.findIndex(
+    (row) => !row.machine_range.trim() || !row.machine.trim() || !positivePrice(row.shift_price_hkd),
+  )
+  if (invalidMachineIndex >= 0) {
+    return `请完整填写第 ${invalidMachineIndex + 1} 项机型范围、机型和大于 0 的每班价格`
   }
-  const materialKeys = form.material_prices.map((row) => `${row.material.trim().toLocaleLowerCase()}|${row.grade.trim().toLocaleLowerCase()}`)
+  const materialKeys = materialPrices.map((row) => `${row.material.trim().toLocaleLowerCase()}|${row.grade.trim().toLocaleLowerCase()}`)
   if (new Set(materialKeys).size !== materialKeys.length) return '初始材料价存在重复的材质和料型'
-  const machineKeys = form.machine_prices.map((row) => row.machine_range.trim().toLocaleLowerCase())
+  const machineKeys = machinePrices.map((row) => row.machine_range.trim().toLocaleLowerCase())
   if (new Set(machineKeys).size !== machineKeys.length) return '初始机型价存在重复的机型范围'
   return ''
 }
 
 function save() {
   if (!props.canEdit || props.busy) return
-  localError.value = validate()
+  const materialPrices = form.material_prices.filter((row) => !isBlankMaterialRow(row))
+  const machinePrices = form.machine_prices.filter((row) => !isBlankMachineRow(row))
+  form.material_prices = materialPrices
+  form.machine_prices = machinePrices
+  localError.value = validate(materialPrices, machinePrices)
   if (localError.value) return
   emit('save', {
     revision: form.revision,
     workshop_name: form.workshop_name.trim(),
-    material_prices: form.material_prices.map((row) => ({
+    material_prices: materialPrices.map((row) => ({
       material: row.material.trim(),
       grade: row.grade.trim(),
       price_hkd_lb: normalizedPrice(row.price_hkd_lb),
     })),
-    machine_prices: form.machine_prices.map((row) => ({
+    machine_prices: machinePrices.map((row) => ({
       machine_range: row.machine_range.trim(),
       machine: row.machine.trim(),
       shift_price_hkd: normalizedPrice(row.shift_price_hkd),

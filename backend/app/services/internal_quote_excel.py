@@ -14,7 +14,7 @@ from app.models.internal_quote import InternalQuote, InternalQuoteSection
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v3"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v4"
 TEMPLATE_VERSION = P3_TEMPLATE_VERSION
 STRUCTURED_DATA_SCHEMA_VERSION = "internal-quote-structured-data-v1"
 STRUCTURED_DATA_CHUNK_SIZE = 30000
@@ -262,6 +262,39 @@ def _template_style_range(
             )
 
 
+def _replace_border_sides(
+    cell,
+    *,
+    left: Side | None = None,
+    right: Side | None = None,
+    top: Side | None = None,
+    bottom: Side | None = None,
+) -> None:
+    current = cell.border
+    cell.border = Border(
+        left=current.left if left is None else left,
+        right=current.right if right is None else right,
+        top=current.top if top is None else top,
+        bottom=current.bottom if bottom is None else bottom,
+    )
+
+
+def _apply_outline_border(
+    sheet,
+    min_row: int,
+    max_row: int,
+    min_column: int,
+    max_column: int,
+    side: Side,
+) -> None:
+    for column in range(min_column, max_column + 1):
+        _replace_border_sides(sheet.cell(min_row, column), top=side)
+        _replace_border_sides(sheet.cell(max_row, column), bottom=side)
+    for row in range(min_row, max_row + 1):
+        _replace_border_sides(sheet.cell(row, min_column), left=side)
+        _replace_border_sides(sheet.cell(row, max_column), right=side)
+
+
 def _dimensions(value: object) -> tuple[float | str, float | str, float | str]:
     source = _dict_value(value)
     return (
@@ -269,6 +302,21 @@ def _dimensions(value: object) -> tuple[float | str, float | str, float | str]:
         _number(source.get("width", source.get("width_cm", ""))),
         _number(source.get("height", source.get("height_cm", ""))),
     )
+
+
+def _dimension_unit(value: object) -> str:
+    return "cm" if str(value or "").strip().lower() == "cm" else "inch"
+
+
+def _inch_value_for_unit(value: object, unit: str) -> float | str:
+    parsed = _number(value)
+    if not isinstance(parsed, float):
+        return ""
+    return round(parsed * 2.54, 4) if unit == "cm" else parsed
+
+
+def _dimensions_for_unit(value: object, unit: str) -> tuple[float | str, float | str, float | str]:
+    return tuple(_inch_value_for_unit(item, unit) for item in _dimensions(value))
 
 
 def _style_title(sheet, title: str, end_column: int) -> None:
@@ -358,7 +406,6 @@ def _build_summary_sheet(
     t2 = _rr2_values(rr2_cost_summary, "t2")
     t3 = _rr2_values(rr2_cost_summary, "t3")
     t4 = _rr2_tax_rows(rr2_cost_summary)
-    summary_totals = _dict_value(rr2_cost_summary.get("totals", {}))
 
     # A1:R6 — frozen material, machine, tax, carton and exchange references.
     materials = _reference_materials(reference_snapshot)[:20]
@@ -665,7 +712,9 @@ def _build_summary_sheet(
     add_detail("¥9%", "运费", "印尼运费", cost_context.get("indonesia_freight_hkd"))
 
     detail_start_row = mold_total_row + 3
-    detail_slots = max(19, len(detail_rows))
+    # Keep one writable row for an empty quote, but otherwise let the price
+    # calculation block follow the final populated detail immediately.
+    detail_slots = max(1, len(detail_rows))
     detail_end_row = detail_start_row + detail_slots - 1
     for index in range(detail_slots):
         row_index = detail_start_row + index
@@ -690,22 +739,26 @@ def _build_summary_sheet(
     cartons = _list_of_dicts(sales_payload.get("cartons", []))
     carton = cartons[0] if cartons else {}
     carton_line = next((row for row in _calculation_lines(by_code.get("sales"), "carton")), {})
-    carton_dimensions = (
-        _number(carton.get("length_in", "")),
-        _number(carton.get("width_in", "")),
-        _number(carton.get("height_in", "")),
+    carton_unit = _dimension_unit(carton.get("size_unit"))
+    color_box_unit = _dimension_unit(sales_payload.get("color_box_size_unit"))
+    carton_dimensions = tuple(
+        _inch_value_for_unit(carton.get(field, ""), carton_unit)
+        for field in ("length_in", "width_in", "height_in")
     )
     packaging_start_row = detail_start_row
     carton_price_factor = _float_value(reference_snapshot.get("paper_price_factor"), 2.7)
+    carton_length = f"K{packaging_start_row}" + ("/2.54" if carton_unit == "cm" else "")
+    carton_width = f"L{packaging_start_row}" + ("/2.54" if carton_unit == "cm" else "")
+    carton_height = f"M{packaging_start_row}" + ("/2.54" if carton_unit == "cm" else "")
     packaging_rows = (
-        ("外箱:", *carton_dimensions),
-        ("彩盒尺寸 (in)", *_dimensions(sales_payload.get("color_box_size_in") or sales_payload.get("color_box_size_cm"))),
+        (f"外箱 ({carton_unit}):", *carton_dimensions),
+        (f"彩盒尺寸 ({color_box_unit})", *_dimensions_for_unit(sales_payload.get("color_box_size_in") or sales_payload.get("color_box_size_cm"), color_box_unit)),
         ("产品尺寸 (in)", *_dimensions(sales_payload.get("product_size_in") or sales_payload.get("product_size_cm"))),
-        ("CUFT:", f"=K{packaging_start_row}*L{packaging_start_row}*M{packaging_start_row}/1728", "", ""),
-        ("纸板价", f"=K{packaging_start_row}*L{packaging_start_row}*3.5/1000", "", ""),
+        ("CUFT:", f"={carton_length}*{carton_width}*{carton_height}/1728", "", ""),
+        ("纸板价", f"={carton_length}*{carton_width}*3.5/1000", "", ""),
         (
             "箱价：",
-            f"=(K{packaging_start_row}+L{packaging_start_row}+2)*(L{packaging_start_row}+M{packaging_start_row}+1)*{carton_price_factor}*2/1000",
+            f"=({carton_length}+{carton_width}+2)*({carton_width}+{carton_height}+1)*{carton_price_factor}*2/1000",
             "",
             "",
         ),
@@ -737,14 +790,16 @@ def _build_summary_sheet(
     difference_row = subtotal_row + 5
     difference_percent_row = subtotal_row + 6
 
+    # The right-side packaging/function area follows the reference template's
+    # fixed footprint and must not force blank rows into the left cost detail.
     function_start_row = detail_start_row + 10
-    function_end_row = subtotal_row
-    _template_style_range(sheet, function_start_row, function_end_row, 10, 18)
+    function_end_row = function_start_row + 9
+    _template_style_range(sheet, function_start_row, function_end_row, 10, 17)
     sheet.merge_cells(
         start_row=function_start_row,
         start_column=10,
         end_row=function_end_row,
-        end_column=18,
+        end_column=17,
     )
     function_cell = sheet.cell(function_start_row, 10)
     function_cell.value = f"功能介绍：{quote.remark or ''}"
@@ -793,13 +848,15 @@ def _build_summary_sheet(
     for row_index in (target_row, difference_row, difference_percent_row):
         sheet.row_dimensions[row_index].height = 24
 
-    # Color-box tiers sit beside the customer/target price block.
+    # Color-box tiers follow the function box with one blank row, independently
+    # of the now-compact left-side customer/target price block.
     color_box = _dict_value(_dict_value(sales_payload.get("customer_quote_fields", {})).get("buzzbee", {}))
     color_tiers = _list_of_dicts(color_box.get("color_box_tiers", []))[:2]
+    color_tier_header_row = function_end_row + 2
     for column, label in enumerate(("报客彩盒", "报客彩盒FSC", "MOQ数量"), start=10):
         _template_cell(
             sheet,
-            settlement_row,
+            color_tier_header_row,
             column,
             label,
             color=TEMPLATE_BLACK,
@@ -807,7 +864,7 @@ def _build_summary_sheet(
             wrap_text=False,
         )
     for offset in range(2):
-        row_index = quote_row + offset
+        row_index = color_tier_header_row + 1 + offset
         tier = color_tiers[offset] if offset < len(color_tiers) else {}
         values = (
             _number(tier.get("quote_price_hkd", "")),
@@ -828,7 +885,8 @@ def _build_summary_sheet(
 
     # C:P — formula-driven summary bands, retaining the reference workbook's
     # compact yellow headers and thin black grid.
-    summary_start_row = difference_percent_row + 2
+    color_tier_end_row = color_tier_header_row + 2
+    summary_start_row = max(difference_percent_row, color_tier_end_row) + 2
     amount_format = "0.00_);[Red]\\(0.00\\)"
     detail_category_range = f"$B${detail_start_row}:$B${detail_end_row}"
     detail_description_range = f"$C${detail_start_row}:$C${detail_end_row}"
@@ -839,6 +897,13 @@ def _build_summary_sheet(
 
     def sum_description(description: str) -> str:
         return f'=SUMIF({detail_description_range},"{description}",{detail_amount_range})'
+
+    def sum_category_or_authoritative(label_cell: str, fallback: object) -> str:
+        fallback_value = format(_float_value(fallback), ".10g")
+        return (
+            f"=IF(COUNTIF({detail_category_range},{label_cell})>0,"
+            f"SUMIF({detail_category_range},{label_cell},{detail_amount_range}),{fallback_value})"
+        )
 
     def style_summary_pair(
         header_row: int,
@@ -915,8 +980,8 @@ def _build_summary_sheet(
             f'=SUMIF($D${mold_start_row}:$D${mold_end_row},"*ABS*",$K${mold_start_row}:$K${mold_end_row})',
             f"=IFERROR(D{first_value_row}/N{third_value_row},0)",
             f"=IFERROR(D{first_value_row}/P{deduction_row},0)",
-            t2.get("battery", 0.0),
-            t2.get("libao", 0.0),
+            sum_category_or_authoritative(f"F{second_header_row}", t2.get("battery", 0.0)),
+            sum_category_or_authoritative(f"G{second_header_row}", t2.get("libao", 0.0)),
             t2.get("plating", 0.0),
             t2.get("other_buy", 0.0),
             sum_category(f"J{second_header_row}"),
@@ -986,12 +1051,25 @@ def _build_summary_sheet(
         )
 
     tax_amount_row = tax_header_row + 1
+    domestic_material_literal = format(_float_value(t1.get("dom_mat", 0.0)), ".10g")
+    glue_bag_literal = format(_float_value(t1.get("glue_bag", 0.0)), ".10g")
+    rmb_purchase_formula = (
+        f"=SUM({domestic_material_literal},H{first_value_row},I{first_value_row},"
+        f"J{first_value_row},K{first_value_row},L{first_value_row},N{first_value_row},"
+        f"F{second_value_row},G{second_value_row},H{second_value_row},I{second_value_row},"
+        f"J{second_value_row},M{second_value_row},G{third_value_row},{glue_bag_literal})"
+    )
+    tax_13_formula = (
+        f"=SUM({domestic_material_literal},J{first_value_row},L{first_value_row},"
+        f"N{first_value_row},F{second_value_row},G{second_value_row},I{second_value_row},"
+        f"G{third_value_row},{glue_bag_literal})"
+    )
     for column in range(3, 17):
         if column == 3:
-            value: object = _float_value(summary_totals.get("rmb_purchase_cost_hkd"))
+            value: object = rmb_purchase_formula
             number_format = amount_format
         elif column == 4:
-            value = _float_value(t4.get("tax13", {}).get("amount_hkd"))
+            value = tax_13_formula
             number_format = amount_format
         elif column == 5:
             value = ""
@@ -1032,9 +1110,22 @@ def _build_summary_sheet(
             wrap_text=False,
             number_format=amount_format,
         )
+    tax_amount_references = {
+        "tax1": f"H{second_value_row}",
+        "slush3": f"G{first_value_row}",
+        "sewhair13": f"H{first_value_row}",
+        "sewcloth13": f"I{first_value_row}",
+        "suction6": f"M{first_value_row}",
+        "freight9": f"K{second_value_row}",
+        "tax13b": f"D{tax_amount_row}",
+        "carton": f"J{second_value_row}",
+        "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
+    }
     for column, key in enumerate(tax_keys, start=6):
-        amount = _float_value(t4.get(key, {}).get("amount_hkd"))
-        sheet.cell(deduction_row, column).value = f"={amount}*{get_column_letter(column)}{tax_amount_row}"
+        amount_reference = tax_amount_references[key]
+        sheet.cell(deduction_row, column).value = (
+            f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
+        )
     sheet.cell(deduction_row, 15).value = f"=SUM(F{deduction_row}:N{deduction_row})"
     sheet.cell(deduction_row, 16).value = f"=N{third_value_row}-O{deduction_row}"
 
@@ -1079,6 +1170,8 @@ def _build_summary_sheet(
     sheet.page_margins.right = 0.2
     sheet.page_margins.top = 0.35
     sheet.page_margins.bottom = 0.35
+    _apply_outline_border(sheet, 1, deduction_row, 1, 18, TEMPLATE_MEDIUM)
+    _apply_outline_border(sheet, 8, 8, 1, 18, TEMPLATE_MEDIUM)
     sheet.print_area = f"A1:R{deduction_row}"
     sheet.sheet_properties.outlinePr.summaryBelow = True
 

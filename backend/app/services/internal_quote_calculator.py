@@ -100,9 +100,10 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "flat_card_price_factor": "decimal>0; defaults to paper_price_factor",
         "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
         "product_size_in": {"length": "optional decimal>0 inch", "width": "optional decimal>0 inch", "height": "optional decimal>0 inch"},
-        "color_box_size_in": {"length": "decimal>0 inch", "width": "decimal>0 inch", "height": "decimal>0 inch"},
+        "color_box_size_unit": "cm|inch; display/input preference, default inch",
+        "color_box_size_in": {"length": "decimal>0 canonical inch", "width": "decimal>0 canonical inch", "height": "decimal>0 canonical inch"},
         "legacy_dimension_aliases": "product_size_cm/color_box_size_cm remain readable as historical inch-valued keys",
-        "cartons": [{"item": "text", "length_in": "decimal>0", "width_in": "decimal>0", "height_in": "decimal>0", "qty_per_carton": "decimal>0", "flat_cards": "list"}],
+        "cartons": [{"item": "text", "size_unit": "cm|inch display/input preference", "length_in": "decimal>0 canonical inch", "width_in": "decimal>0 canonical inch", "height_in": "decimal>0 canonical inch", "qty_per_carton": "decimal>0", "flat_cards": "list"}],
         "freight_calc": {
             "enabled": "boolean; default true",
             "cap_10t|cap_5t|cap_40|cap_20": "decimal>0 CUFT",

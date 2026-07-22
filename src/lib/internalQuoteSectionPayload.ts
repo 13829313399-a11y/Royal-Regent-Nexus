@@ -82,8 +82,9 @@ export interface SalesPackagingMaterialRow {
   disney_unit_price_usd: number
   disney_included: number
 }
+export type SalesDimensionUnit = 'cm' | 'inch'
 export interface SalesFlatCardRow { name: string; length_in: number; width_in: number; quantity: number }
-export interface SalesCartonRow { item: string; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
+export interface SalesCartonRow { item: string; size_unit?: SalesDimensionUnit; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
 export type EngineeringFlatCardRow = SalesFlatCardRow
 export type EngineeringCartonRow = SalesCartonRow
 export interface EngineeringPayload {
@@ -347,6 +348,7 @@ export interface SalesPayload {
   flat_card_price_factor?: number
   packaging_materials: SalesPackagingMaterialRow[]
   product_size_in: SalesDimensions
+  color_box_size_unit?: SalesDimensionUnit
   color_box_size_in: SalesDimensions
   cartons: SalesCartonRow[]
   freight_calc: SalesFreightCalculation
@@ -396,6 +398,10 @@ function dimensions(value: unknown): SalesDimensions {
   }
 }
 
+export function normalizeSalesDimensionUnit(value: unknown): SalesDimensionUnit {
+  return String(value ?? '').trim().toLowerCase() === 'cm' ? 'cm' : 'inch'
+}
+
 function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
   return rows(value).map((row) => {
     const category = textValue(row.category)
@@ -419,6 +425,7 @@ function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
 function cartonRows(value: unknown): SalesCartonRow[] {
   return rows(value).map((row) => ({
     item: textValue(row.item),
+    size_unit: normalizeSalesDimensionUnit(row.size_unit),
     length_in: numberValue(row.length_in),
     width_in: numberValue(row.width_in),
     height_in: numberValue(row.height_in),
@@ -438,6 +445,16 @@ function cartonRows(value: unknown): SalesCartonRow[] {
 function positivePreviewNumber(value: unknown) {
   const parsed = numberValue(value)
   return parsed > 0 ? parsed : 0
+}
+
+export function dimensionValueFromInches(value: unknown, unit: SalesDimensionUnit) {
+  const inches = numberValue(value)
+  return unit === 'cm' ? Number((inches * 2.54).toFixed(4)) : inches
+}
+
+export function dimensionValueToInches(value: unknown, unit: SalesDimensionUnit) {
+  const displayValue = numberValue(value)
+  return unit === 'cm' ? Number((displayValue / 2.54).toFixed(6)) : displayValue
 }
 
 export function calculateCartonCuft(carton: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'height_in'>) {
@@ -939,6 +956,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     // entered as inches. Migrate them one-for-one; converting by 2.54 here
     // would corrupt existing quotes such as 5.25 × 8.75 × 3.
     product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
+    color_box_size_unit: normalizeSalesDimensionUnit(source.color_box_size_unit),
     color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
     cartons: cartonRows(source.cartons),
     freight_calc: {

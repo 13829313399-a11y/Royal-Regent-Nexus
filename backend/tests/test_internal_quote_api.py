@@ -974,11 +974,12 @@ def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
         created = created_response.json()
         quote_id = created["id"]
 
-        forbidden_sales = client.put(
+        editable_sales = client.put(
             f"/api/internal-quotes/{quote_id}/sections/sales",
             json={"revision": 1, "payload": {"blocked": True}},
         )
-        assert forbidden_sales.status_code == 403
+        assert editable_sales.status_code == 200, editable_sales.text
+        assert editable_sales.json()["revision"] == 2
 
         na_missing_reason = client.post(
             f"/api/internal-quotes/{quote_id}/sections/engineering/request-na",

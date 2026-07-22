@@ -389,7 +389,7 @@ function confirmRemoveParticipation() {
     <header class="quote-editor-head">
       <div><div class="quote-editor-title-row"><h2>{{ section.label }}核价明细</h2><span class="quote-editor-status" :class="`tone-${statusMeta[section.status].tone}`"><i />{{ statusMeta[section.status].label }}</span><span class="quote-revision">revision {{ section.revision }}</span><span v-if="isDirty" class="dirty">有未保存修改</span></div><p>{{ section.formulaHint }}</p></div>
       <div class="quote-editor-tools">
-        <button class="primary-upload" type="button" title="Excel 自动识别导入内容；其他文件按普通附件保存" :disabled="!editable || quoteStore.fileBusy || quoteStore.submitting" @click="uploadInput?.click()"><Paperclip />上传附件</button>
+        <button v-if="section.code !== 'sales'" class="primary-upload" type="button" title="Excel 自动识别导入内容；其他文件按普通附件保存" :disabled="!editable || quoteStore.fileBusy || quoteStore.submitting" @click="uploadInput?.click()"><Paperclip />上传附件</button>
         <div v-if="importOptions.length" class="template-download-control">
           <button
             class="template-download"
@@ -405,7 +405,7 @@ function confirmRemoveParticipation() {
           </div>
         </div>
         <button v-if="supportsQuickQuote" class="quick-entry" :class="{ active: isQuickQuoteMode }" type="button" :title="isQuickQuoteMode ? '切回明细报价，快捷数据保留但不重复计价' : '急单暂缺明细时先填写快捷权威金额'" :disabled="!editable || quoteStore.submitting" @click="toggleQuickQuoteMode"><Zap />{{ quickQuoteButtonLabel }}</button>
-        <input ref="uploadInput" class="sr-only" type="file" accept=".xlsx,.xlsm,.xls,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp" @change="handleUploadFile">
+        <input v-if="section.code !== 'sales'" ref="uploadInput" class="sr-only" type="file" accept=".xlsx,.xlsm,.xls,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp" @change="handleUploadFile">
       </div>
     </header>
 
