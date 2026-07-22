@@ -450,9 +450,17 @@ def get_molding_sample_notifications(
     factory_id: str | None = None,
     order_id: str | None = None,
     status: str | None = None,
+    changed_after: str | None = Query(default=None, max_length=64),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    normalized_changed_after = None
+    if changed_after:
+        parsed_changed_after = parse_business_timestamp(changed_after)
+        if parsed_changed_after is None:
+            raise HTTPException(status_code=422, detail="通知增量游标格式无效")
+        normalized_changed_after = parsed_changed_after.strftime("%Y-%m-%d %H:%M:%S")
+
     return list_notifications(
         db,
         current_user=current_user,
@@ -461,6 +469,7 @@ def get_molding_sample_notifications(
         factory_id=factory_id,
         order_id=order_id,
         status=status,
+        changed_after=normalized_changed_after,
     )
 
 

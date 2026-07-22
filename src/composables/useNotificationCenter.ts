@@ -71,6 +71,7 @@ type SharedObservationWatermarks = Partial<Record<NotificationCenterSource, Shar
 
 const NOTIFICATION_REFRESH_INTERVAL_MS = 25_000
 const MAX_NOTIFICATION_REFRESH_INTERVAL_MS = 120_000
+const NOTIFICATION_CHANGE_LOOKBACK_MS = 5 * 60 * 1_000
 const NOTIFICATION_TOAST_TIMEOUT_MS = 9_000
 const SHARED_ANNOUNCEMENT_TTL_MS = 6 * 60 * 60 * 1_000
 const MAX_SHARED_ANNOUNCEMENTS = 200
@@ -418,6 +419,12 @@ export function useNotificationCenter() {
         ? { ...notification, status: 'read' as const, read_at: notification.read_at || new Date().toISOString() }
         : notification
     ))
+  }
+
+  function mergeNotificationsById<T extends { id: string }>(current: T[], changes: T[]) {
+    const merged = new Map(current.map((notification) => [notification.id, notification]))
+    changes.forEach((notification) => merged.set(notification.id, notification))
+    return [...merged.values()]
   }
 
   function readSharedAnnouncements(storageKey = sharedAnnouncementStorageKey.value) {
@@ -781,16 +788,27 @@ export function useNotificationCenter() {
 
     if (!requestedSources) return true
 
+    const changeFilters = reason === 'background-poll'
+      ? { changed_after: new Date(Date.now() - NOTIFICATION_CHANGE_LOOKBACK_MS).toISOString() }
+      : undefined
+
     const [moldingResult, systemResult] = await Promise.allSettled([
-      shouldLoadMolding ? moldingSampleApi.listNotifications() : Promise.resolve<MoldingSampleNotificationResponse[]>([]),
-      shouldLoadSystem ? systemApi.listNotifications() : Promise.resolve<SystemNotificationResponse[]>([]),
+      shouldLoadMolding
+        ? (changeFilters ? moldingSampleApi.listNotifications(changeFilters) : moldingSampleApi.listNotifications())
+        : Promise.resolve<MoldingSampleNotificationResponse[]>([]),
+      shouldLoadSystem
+        ? (changeFilters ? systemApi.listNotifications(changeFilters) : systemApi.listNotifications())
+        : Promise.resolve<SystemNotificationResponse[]>([]),
     ])
     if (disposed || requestSequence !== loadSequence || requestAccountKey !== accountNotificationKey.value) return false
 
     const successfulSources = new Set<NotificationCenterSource>()
     if (shouldLoadMolding) {
       if (moldingResult.status === 'fulfilled') {
-        moldingNotifications.value = applyReadOverridesToMolding(moldingResult.value)
+        const nextMoldingNotifications = reason === 'background-poll'
+          ? mergeNotificationsById(moldingNotifications.value, moldingResult.value)
+          : moldingResult.value
+        moldingNotifications.value = applyReadOverridesToMolding(nextMoldingNotifications)
         updateSourceStatus('molding', { state: 'ready', error: '' })
         successfulSources.add('molding')
       } else {
@@ -799,7 +817,10 @@ export function useNotificationCenter() {
     }
     if (shouldLoadSystem) {
       if (systemResult.status === 'fulfilled') {
-        systemNotifications.value = applyReadOverridesToSystem(systemResult.value)
+        const nextSystemNotifications = reason === 'background-poll'
+          ? mergeNotificationsById(systemNotifications.value, systemResult.value)
+          : systemResult.value
+        systemNotifications.value = applyReadOverridesToSystem(nextSystemNotifications)
         updateSourceStatus('system', { state: 'ready', error: '' })
         successfulSources.add('system')
       } else {

@@ -172,6 +172,34 @@ describe('useNotificationCenter', () => {
     expect(soundMock.play).not.toHaveBeenCalled()
   })
 
+  it('polls only a recent change window and merges changes into the full baseline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-18T08:30:00Z'))
+    const retained = createBusinessNotification({ id: 'RETAINED', title: '保留的历史消息' })
+    const updated = createBusinessNotification({ id: 'UPDATED', title: '状态将更新' })
+    moldingSampleApiMock.listNotifications.mockResolvedValueOnce([retained, updated])
+
+    const { center } = mountCenter()
+    await flushPromises()
+
+    const arrival = createBusinessNotification({ id: 'ARRIVAL', title: '新增消息' })
+    moldingSampleApiMock.listNotifications.mockResolvedValueOnce([
+      { ...updated, status: '已处理', handled_at: '2026-07-18 16:29:30' },
+      arrival,
+    ])
+    await center().refreshNotifications('background-poll')
+
+    expect(moldingSampleApiMock.listNotifications).toHaveBeenLastCalledWith({
+      changed_after: '2026-07-18T08:25:00.000Z',
+    })
+    expect(center().items.value.map((item) => item.id).sort()).toEqual([
+      'ARRIVAL',
+      'RETAINED',
+      'UPDATED',
+    ])
+    expect(center().items.value.find((item) => item.id === 'UPDATED')?.status).toBe('handled')
+  })
+
   it('interprets legacy and explicit-offset notification times in the business timezone', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-18T08:30:00Z'))

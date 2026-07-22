@@ -250,6 +250,7 @@ export interface MoldingSampleNotificationFilters {
   factory_id?: string
   order_id?: string
   status?: string
+  changed_after?: string
 }
 
 export interface MoldingSampleNotificationUpdateRequest {
@@ -536,6 +537,9 @@ export function createMoldingSampleApi(client: HttpLikeClient = http) {
       }
       if (filters.status) {
         params.set('status', filters.status)
+      }
+      if (filters.changed_after) {
+        params.set('changed_after', filters.changed_after)
       }
       const query = params.toString()
       const response = await client.get<MoldingSampleNotificationResponse[]>(
