@@ -53,7 +53,7 @@ describe('internal quote form block progress', () => {
 
   it('marks sales packing and freight complete when carton data is usable', () => {
     const result = statuses('sales', {
-      color_box_size_cm: { length: 13, width: 9, height: 5 },
+      color_box_size_in: { length: 13, width: 9, height: 5 },
       cartons: [{ item: '主纸箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 }],
     })
 

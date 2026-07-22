@@ -162,11 +162,11 @@ onBeforeUnmount(() => {
 function resetFeedback() { localMessage.value = ''; localError.value = '' }
 function errorText(error: unknown) { return error instanceof Error ? error.message : '操作失败。' }
 
-async function saveDraft(showMessage = true) {
+async function saveDraft(showMessage = true, reason = '') {
   resetFeedback()
   try {
     const requestedRevision = props.section.revision
-    const result = await quoteStore.saveSection(props.quote.id, props.section.code, requestedRevision, cloneInternalQuotePayload(props.section.code, draftPayload.value)) as ApiInternalQuoteSection
+    const result = await quoteStore.saveSection(props.quote.id, props.section.code, requestedRevision, cloneInternalQuotePayload(props.section.code, draftPayload.value), reason) as ApiInternalQuoteSection
     baselinePayload.value = JSON.stringify(draftPayload.value)
     if (showMessage) localMessage.value = result.revision === requestedRevision
       ? `${props.section.label}内容没有变化，沿用 revision ${result.revision}。`
@@ -177,6 +177,24 @@ async function saveDraft(showMessage = true) {
     return undefined
   }
 }
+
+async function saveSalesMarkup(markup: number) {
+  if (props.section.code !== 'sales') throw new Error('当前不是业务部分段，无法合并保存码数。')
+  if (!editable.value) throw new Error('业务部分段当前不可编辑，请先重开后再保存码数。')
+  const shipping = draftPayload.value.shipping && typeof draftPayload.value.shipping === 'object' && !Array.isArray(draftPayload.value.shipping)
+    ? draftPayload.value.shipping as Record<string, unknown>
+    : {}
+  draftPayload.value = normalizeInternalQuotePayload('sales', {
+    ...draftPayload.value,
+    shipping: { ...shipping, markup_x: Number(markup.toFixed(2)) },
+  })
+  const result = await saveDraft(false, '在协作侧栏保存报价码数')
+  if (!result) throw new Error(localError.value || '保存码数失败。')
+  localMessage.value = `业务部当前草稿与码数已保存，服务端已生成 revision ${result.revision} 并重新计算。`
+  return result
+}
+
+defineExpose({ saveSalesMarkup })
 
 function askHowToHandleUnsavedChanges() {
   if (pendingUnsavedPrompt) return pendingUnsavedPrompt

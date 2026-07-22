@@ -1121,20 +1121,11 @@ def _calculation_dependencies(
             "engineering_molds_hash": content_hash(projected_molds),
         }
     if section_code == "sales":
-        return {
-            code: {
-                # Sales consumes authoritative section totals, not workflow
-                # revision/status metadata.  Submit/review transitions therefore
-                # keep this dependency stable when the calculated cost is unchanged.
-                "cost_hash": content_hash(
-                    _section_totals(section)
-                    if section.calculation_status == "valid"
-                    else {}
-                ),
-            }
-            for code, section in by_code.items()
-            if code != "sales" and section.is_required
-        }
+        # Sales approves only the packaging, carton, freight and markup data it
+        # owns. Combined quote totals are rebuilt from every section's latest
+        # authoritative calculation during summary/export/final release, so a
+        # later department save must not force Sales to save and submit again.
+        return {}
     return {}
 
 
@@ -1149,8 +1140,6 @@ def _downstream_dependency_hashes(
         # Assembly own their own quotation/routing inputs and are not downstream
         # calculation consumers of the complete Engineering section.
         target_codes.append("molding")
-    if source_section_code != "sales":
-        target_codes.append("sales")
     return {
         target_code: content_hash(_calculation_dependencies(db, quote, target_code))
         for target_code in target_codes
@@ -1253,64 +1242,6 @@ def _invalidate_engineering_dependents(
         )
 
 
-def _invalidate_sales_dependency(
-    db: Session,
-    quote: InternalQuote,
-    user: AuthContext,
-    source_section_code: str,
-    request: Request | None,
-    previous_dependency_hashes: dict[str, str] | None = None,
-) -> None:
-    if source_section_code == "sales":
-        return
-    sales = db.scalar(
-        select(InternalQuoteSection).where(
-            InternalQuoteSection.quote_id == quote.id,
-            InternalQuoteSection.department == "sales",
-        )
-    )
-    if (
-        sales is None
-        or sales.status == "not_applicable"
-        or not _json_object(sales.payload_json)
-    ):
-        return
-    current_dependency_hash = content_hash(_calculation_dependencies(db, quote, "sales"))
-    if previous_dependency_hashes is not None:
-        if previous_dependency_hashes.get("sales") == current_dependency_hash:
-            return
-    elif sales.dependency_hash == current_dependency_hash:
-        return
-    if sales.calculation_status == "stale" and sales.dependency_status == "stale":
-        return
-    old_revision = sales.revision
-    if sales.status in REVIEWABLE_SECTION_STATUSES:
-        _mark_quote_notifications_handled(
-            db,
-            quote,
-            events=SECTION_REVIEW_NOTIFICATION_EVENTS,
-            department="sales",
-        )
-    sales.revision += 1
-    sales.calculation_status = "stale"
-    sales.dependency_status = "stale"
-    sales.status = "rejected" if sales.status in {"approved", "pending_review"} else "draft"
-    sales.review_comment = f"{SECTION_NAMES[source_section_code]}成本已更新，请重新汇总"
-    sales.updated_at = now_text()
-    _add_revision(db, quote, sales, user, reason=f"{source_section_code}_dependency_invalidated")
-    _add_audit(
-        db,
-        quote,
-        user,
-        "dependency_invalidated",
-        department="sales",
-        old_revision=old_revision,
-        new_revision=sales.revision,
-        reason=f"{SECTION_NAMES[source_section_code]} calculation/revision 已变化",
-        request=request,
-    )
-
-
 def _invalidate_downstream_dependencies(
     db: Session,
     quote: InternalQuote,
@@ -1327,16 +1258,6 @@ def _invalidate_downstream_dependencies(
             request,
             previous_dependency_hashes,
         )
-    _invalidate_sales_dependency(
-        db,
-        quote,
-        user,
-        source_section_code,
-        request,
-        previous_dependency_hashes,
-    )
-
-
 def _derive_quote_status(db: Session, quote: InternalQuote) -> None:
     if quote.status == "archived":
         return

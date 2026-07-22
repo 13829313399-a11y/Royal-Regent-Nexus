@@ -498,8 +498,8 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
                 "tax_rate_percent": "10",
                 "remark": "FSC",
             }],
-            "product_size_cm": {"length": "12", "width": "8", "height": "4"},
-            "color_box_size_cm": {"length": "13", "width": "9", "height": "5"},
+            "product_size_in": {"length": "12", "width": "8", "height": "4"},
+            "color_box_size_in": {"length": "13", "width": "9", "height": "5"},
             "cartons": [
                 {
                     "item": "主纸箱",

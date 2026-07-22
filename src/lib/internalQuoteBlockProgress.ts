@@ -151,9 +151,9 @@ function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
   const packagingComplete = payload.packaging_materials.length > 0 && payload.packaging_materials.every((row) => Boolean(
     text(row.item) && text(row.specification) && positive(row.quantity) && positive(row.unit_price_rmb),
   ))
-  const colorBoxDimensionsComplete = positive(payload.color_box_size_cm.length)
-    && positive(payload.color_box_size_cm.width)
-    && positive(payload.color_box_size_cm.height)
+  const colorBoxDimensionsComplete = positive(payload.color_box_size_in.length)
+    && positive(payload.color_box_size_in.width)
+    && positive(payload.color_box_size_in.height)
   const cartonsComplete = payload.cartons.length > 0 && payload.cartons.every((row) => Boolean(
     text(row.item) && positive(row.length_in) && positive(row.width_in) && positive(row.height_in) && positive(row.qty_per_carton)
     && row.flat_cards.every((card) => text(card.name) && positive(card.length_in) && positive(card.width_in) && positive(card.quantity)),
@@ -167,7 +167,7 @@ function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
   )
   return [
     block('packaging-materials', '包装材料部分', 'optional', payload.packaging_materials.length > 0, packagingComplete, '可选；填写时名称、规格、类别、用量、RMB 单价必填'),
-    block('cartons', '纸箱计算与包装尺寸部分', 'required', payload.cartons.length > 0 || colorBoxDimensionsComplete, colorBoxDimensionsComplete && cartonsComplete, '必须；彩盒三维尺寸、至少一个纸箱尺寸和每箱数量必填；产品尺寸和平卡可选'),
+    block('cartons', '纸箱计算与包装尺寸部分', 'required', payload.cartons.length > 0 || colorBoxDimensionsComplete, colorBoxDimensionsComplete && cartonsComplete, '必须；彩盒三维尺寸（in）、至少一个纸箱尺寸和每箱数量必填；产品尺寸（in）和平卡可选'),
     block('freight', '运费计算部分', 'required', true, freightComplete, '必须二选一：完整填写容量及运费，或明确切换为“客户自提”'),
   ]
 }
