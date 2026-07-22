@@ -78,6 +78,9 @@ export interface SalesPackagingMaterialRow {
   unit_price_rmb: number
   tax_rate_percent: number
   remark: string
+  disney_description: string
+  disney_unit_price_usd: number
+  disney_included: number
 }
 export interface SalesFlatCardRow { name: string; length_in: number; width_in: number; quantity: number }
 export interface SalesCartonRow { item: string; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
@@ -406,6 +409,9 @@ function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
       unit_price_rmb: numberValue(row.unit_price_rmb),
       tax_rate_percent: numberValue(row.tax_rate_percent),
       remark: textValue(row.remark),
+      disney_description: textValue(row.disney_description),
+      disney_unit_price_usd: numberValue(row.disney_unit_price_usd),
+      disney_included: numberValue(row.disney_included, 1),
     }
   })
 }

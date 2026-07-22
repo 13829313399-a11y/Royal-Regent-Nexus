@@ -89,6 +89,17 @@ def test_engineering_refresh_updates_owned_values_without_overwriting_molding_va
     assert len(refreshed["injection_lines"]) == 1
 
 
+def test_disney_mold_no_prefills_matching_molding_row() -> None:
+    result = prefill_molding_from_engineering(
+        {"molds": [{"mold_no": "M01", "chinese_name": "车面", "disney_mold_no": "D-M01"}]},
+        {"injection_lines": []},
+    )
+
+    row = result["injection_lines"][0]
+    assert row["disney_mold_no"] == "D-M01"
+    assert "disney_mold_no" in row["engineering_synced_fields"]
+
+
 def test_removed_engineering_mold_removes_only_projected_row() -> None:
     molding = prefill_molding_from_engineering(
         {"molds": [{"mold_no": "M01", "chinese_name": "工程行"}]},

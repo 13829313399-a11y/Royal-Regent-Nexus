@@ -770,8 +770,11 @@ function p4BuzzBeeColorBox(artifact: P4InternalQuoteArtifact, pcsPerCarton: numb
 }
 
 function p4MachineCodeValue(value: unknown) {
-  const matched = String(value ?? '').trim().match(/^(\d+(?:\.\d+)?)A$/i)
-  return matched ? Number(matched[1]) : 0
+  const matches = Array.from(
+    String(value ?? '').trim().matchAll(/(\d+(?:\.\d+)?)A/gi),
+    (match) => Number(match[1]),
+  ).filter((item) => Number.isFinite(item))
+  return matches.length > 0 ? Math.max(...matches) : 0
 }
 
 function p4Total(artifact: P4InternalQuoteArtifact, sectionCode: keyof P4InternalQuoteArtifact['sections'], key = 'total_hkd') {
