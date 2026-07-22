@@ -17,6 +17,7 @@ import {
   type ApiInternalQuoteVersionCandidate,
   type ApiInternalQuoteVersionComparison,
   type InternalQuoteDashboardPeriod,
+  type InternalQuoteHeaderUpdateRequest,
   type InternalQuotePricingBaselineUpdateRequest,
 } from '@/api/internalQuote'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
@@ -393,6 +394,12 @@ function mutationMessage(error: unknown) {
   return `${message}${current ? `（服务端当前 revision ${current}）` : ''}。当前表单内容未覆盖他人修改，请重新读取后再提交。`
 }
 
+function mutationError(error: unknown) {
+  const wrapped = new Error(mutationMessage(error)) as Error & { status?: number }
+  wrapped.status = responseStatus(error)
+  return wrapped
+}
+
 function triggerDownload(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -454,6 +461,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     baselineLoadRequestSequence: 0,
     baselineUpdateRequestSequence: 0,
     quoteMutationRequestSequence: 0,
+    quoteDetailRequestSequence: 0,
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
     versionComparisons: {} as Record<string, ApiInternalQuoteVersionComparison>,
@@ -501,6 +509,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.baselineLoadRequestSequence += 1
       this.baselineUpdateRequestSequence += 1
       this.quoteMutationRequestSequence += 1
+      this.quoteDetailRequestSequence += 1
       return this.factoryContextGeneration
     },
     ensureFactoryContext(factoryId: string) {
@@ -842,31 +851,68 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     async loadQuote(quoteId: string) {
       if (!quoteId) return undefined
+      const requestSequence = ++this.quoteDetailRequestSequence
       this.detailLoading = true
       this.errorMessage = ''
       try {
         const detail = await internalQuoteApi.get(quoteId)
-        let exportHistoryError = ''
-        const [timeline, reference, summary, attachments, exports] = await Promise.all([
-          internalQuoteApi.getTimeline(quoteId).catch(() => undefined),
-          internalQuoteApi.getReferenceSnapshot(quoteId).catch(() => undefined),
-          internalQuoteApi.getSummary(quoteId).catch(() => undefined),
-          internalQuoteApi.listAttachments(quoteId).catch(() => []),
-          internalQuoteApi.listExports(quoteId).catch((error) => {
-            exportHistoryError = getApiErrorMessage(error)
-            return []
-          }),
+        if (requestSequence !== this.quoteDetailRequestSequence) return undefined
+        const [timelineResult, referenceResult, summaryResult, attachmentsResult, exportsResult] = await Promise.allSettled([
+          internalQuoteApi.getTimeline(quoteId),
+          internalQuoteApi.getReferenceSnapshot(quoteId),
+          internalQuoteApi.getSummary(quoteId),
+          internalQuoteApi.listAttachments(quoteId),
+          internalQuoteApi.listExports(quoteId),
         ])
+        if (requestSequence !== this.quoteDetailRequestSequence) return undefined
+        const criticalErrors = [referenceResult, summaryResult]
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => getApiErrorMessage(result.reason))
+        if (criticalErrors.length) {
+          throw new Error(`报价权威汇总读取不完整：${criticalErrors.join('；')}`)
+        }
+        const existing = this.getQuoteById(quoteId)
+        const timeline = timelineResult.status === 'fulfilled' ? timelineResult.value : undefined
+        const reference = referenceResult.status === 'fulfilled' ? referenceResult.value : undefined
+        const summary = summaryResult.status === 'fulfilled' ? summaryResult.value : undefined
+        const attachments = attachmentsResult.status === 'fulfilled' ? attachmentsResult.value : undefined
+        const exports = exportsResult.status === 'fulfilled' ? exportsResult.value : undefined
         const quote = toQuote(detail, { timeline, reference, summary, attachments, exports })
+        const degradedErrors: string[] = []
+        if (timelineResult.status === 'rejected') {
+          degradedErrors.push(`时间线读取失败：${getApiErrorMessage(timelineResult.reason)}`)
+          if (existing) {
+            quote.activities = existing.activities
+            quote.viewRecords = existing.viewRecords
+          }
+        }
+        if (attachmentsResult.status === 'rejected') {
+          degradedErrors.push(`附件读取失败：${getApiErrorMessage(attachmentsResult.reason)}`)
+          if (existing) {
+            const oldSections = new Map(existing.sections.map((section) => [section.code, section]))
+            quote.sections.forEach((section) => { section.attachments = oldSections.get(section.code)?.attachments ?? [] })
+          }
+        }
+        if (exportsResult.status === 'rejected') {
+          degradedErrors.push(`导出历史读取失败：${getApiErrorMessage(exportsResult.reason)}`)
+          if (existing) quote.exports = existing.exports
+        }
+        if (requestSequence !== this.quoteDetailRequestSequence) return undefined
         this.upsertQuote(quote)
-        if (exportHistoryError) this.errorMessage = `导出历史读取失败：${exportHistoryError}`
+        if (degradedErrors.length) this.errorMessage = degradedErrors.join('；')
         return quote
       } catch (error) {
+        if (requestSequence !== this.quoteDetailRequestSequence) return undefined
         this.errorMessage = getApiErrorMessage(error)
         return undefined
       } finally {
-        this.detailLoading = false
+        if (requestSequence === this.quoteDetailRequestSequence) this.detailLoading = false
       }
+    },
+    async loadQuoteForComparison(quoteId: string) {
+      if (!quoteId) throw new Error('缺少待对比报价编号。')
+      const detail = await internalQuoteApi.get(quoteId)
+      return toQuote(detail)
     },
     async executeMutation(quoteId: string, operation: () => Promise<unknown>) {
       this.clearLiveCostPreview(quoteId)
@@ -875,7 +921,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.conflictMessage = ''
       try {
         const result = await operation()
-        await this.loadQuote(quoteId)
+        const refreshed = await this.loadQuote(quoteId)
+        if (!refreshed) {
+          throw new Error(`操作已在服务端成功，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
+        }
         return result
       } catch (error) {
         const message = mutationMessage(error)
@@ -989,6 +1038,12 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     removeParticipation(quoteId: string, revision: number, sectionCodes: InternalQuoteSectionCode[]) {
       return this.executeMutation(quoteId, () => internalQuoteApi.removeParticipation(quoteId, revision, sectionCodes))
     },
+    updateHeader(quoteId: string, payload: InternalQuoteHeaderUpdateRequest) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.updateHeader(quoteId, payload))
+    },
+    archiveQuote(quoteId: string, revision: number, reason: string) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.archiveQuote(quoteId, revision, reason))
+    },
     syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.syncReferenceSnapshot(quoteId, revision, reason))
     },
@@ -1001,9 +1056,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       try {
         return await internalQuoteApi.previewImport(quoteId, importType, file)
       } catch (error) {
-        const message = mutationMessage(error)
-        this.errorMessage = message
-        throw new Error(message)
+        const wrapped = mutationError(error)
+        this.errorMessage = wrapped.message
+        throw wrapped
       } finally {
         this.fileBusy = false
       }

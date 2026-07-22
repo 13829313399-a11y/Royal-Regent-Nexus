@@ -18,6 +18,9 @@ def mark_all_sections_not_applicable(quote_id: str) -> None:
             section.status = "not_applicable"
             section.calculation_status = "not_applicable"
             section.dependency_status = "current"
+            if section.department == "sales":
+                section.submitted_by_id = quote.created_by
+                section.submitted_by = quote.created_by_name
         quote.status = "ready_for_final_review"
         db.commit()
 
@@ -34,7 +37,30 @@ def mark_required_sections_not_applicable(quote_id: str) -> None:
             section.status = "not_applicable"
             section.calculation_status = "not_applicable"
             section.dependency_status = "current"
+            if section.department == "sales":
+                section.submitted_by_id = quote.created_by
+                section.submitted_by = quote.created_by_name
         quote.status = "ready_for_final_review"
+        db.commit()
+
+
+def mark_legacy_final_pending(quote_id: str) -> None:
+    db_module = importlib.import_module("app.db")
+    quote_models = importlib.import_module("app.models.internal_quote")
+    calculator = importlib.import_module("app.services.internal_quote_calculator")
+    release_service = importlib.import_module("app.services.internal_quote_release")
+    with db_module.SessionLocal() as db:
+        quote = db.get(quote_models.InternalQuote, quote_id)
+        sections = release_service._quote_sections(db, quote_id)
+        quote.header_revision += 1
+        manifest = release_service._release_manifest(quote, sections)
+        quote.status = "final_reviewing"
+        quote.final_release_status = "pending"
+        quote.final_submission_revision += 1
+        quote.final_submission_manifest_json = calculator.canonical_json(manifest)
+        quote.final_submitted_by = quote.created_by
+        quote.final_submitted_by_name = quote.created_by_name
+        quote.final_submitted_at = quote.updated_at
         db.commit()
 
 
@@ -43,7 +69,7 @@ def test_p4_release_ignores_inactive_optional_sections_and_marks_them_in_structu
         submitter = login(
             client,
             "iq_p4_optional_submitter",
-            "sales_customer_supervisor",
+            "sales_customer_owner",
             "sales-business",
         )
         payload = create_payload(suffix="P4-OPTIONAL")
@@ -59,19 +85,7 @@ def test_p4_release_ignores_inactive_optional_sections_and_marks_them_in_structu
             json={"revision": 1},
         )
         assert submitted.status_code == 200, submitted.text
-        logout(client)
-        login(
-            client,
-            "iq_p4_optional_reviewer",
-            "sales_customer_supervisor",
-            "sales-business",
-        )
-        approved = client.post(
-            f"/api/internal-quotes/{quote_id}/final-review",
-            json={"revision": 2, "decision": "approve", "reason": "参与分段均已完成"},
-        )
-        assert approved.status_code == 200, approved.text
-        export = approved.json()["export"]
+        export = submitted.json()["export"]
         downloaded = client.get(
             f"/api/internal-quotes/{quote_id}/exports/{export['id']}/download"
         )
@@ -85,16 +99,16 @@ def test_p4_release_ignores_inactive_optional_sections_and_marks_them_in_structu
         workbook.close()
 
 
-def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact(monkeypatch):
+def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifact(monkeypatch):
     with make_client(monkeypatch) as client:
         submitter = login(
             client,
             "iq_p4_submitter",
-            "sales_customer_supervisor",
+            "sales_customer_owner",
             "sales-business",
         )
         assert "internal_quote:final_submit" in submitter["permissions"]
-        assert "internal_quote:final_approve" in submitter["permissions"]
+        assert "internal_quote:final_approve" not in submitter["permissions"]
         payload = create_payload(suffix="P4-RELEASE", participating_sections=ALL_SECTION_CODES)
         payload["business_owner_id"] = submitter["id"]
         payload["business_owner_name"] = submitter["display_name"]
@@ -115,65 +129,50 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
             "/api/customer-price/internal-quote-artifacts?factory_id=huaxing"
         ).json() == []
 
-        submitted = client.post(
+        logout(client)
+        login(client, "iq_p4_unrelated_owner", "sales_customer_owner", "sales-business")
+        unrelated_release = client.post(
             f"/api/internal-quotes/{quote_id}/final-submit",
             json={"revision": 1},
         )
-        assert submitted.status_code == 200, submitted.text
-        submitted_quote = submitted.json()["quote"]
-        assert submitted_quote["status"] == "final_reviewing"
-        assert submitted_quote["header_revision"] == 2
-        assert submitted_quote["final_release_status"] == "pending"
-        assert submitted_quote["final_submission_revision"] == 1
-        assert submitted_quote["final_submission_manifest"]["manifest_sha256"]
-
-        self_review = client.post(
-            f"/api/internal-quotes/{quote_id}/final-review",
-            json={"revision": 2, "decision": "approve", "reason": ""},
-        )
-        assert self_review.status_code == 403
-        assert "不能审核自己的报价" in self_review.json()["detail"]
+        assert unrelated_release.status_code == 403
+        assert "负责本单的业务跟客" in unrelated_release.json()["detail"]
 
         logout(client)
-        login(client, "iq_p4_owner_no_review", "sales_customer_owner", "sales-business")
-        unauthorized_review = client.post(
-            f"/api/internal-quotes/{quote_id}/final-review",
-            json={"revision": 2, "decision": "approve", "reason": ""},
-        )
-        assert unauthorized_review.status_code == 403
-
-        logout(client)
-        reviewer = login(
+        login(
             client,
-            "iq_p4_reviewer",
-            "sales_customer_supervisor",
+            "iq_p4_submitter",
+            "sales_customer_owner",
             "sales-business",
         )
-        notifications = client.get("/api/system/notifications")
-        assert notifications.status_code == 200
-        final_review_notification = next(
-            item
-            for item in notifications.json()
-            if item["payload"].get("event") == "final_release_submitted"
-            and item["payload"].get("quote_id") == quote_id
+        released = client.post(
+            f"/api/internal-quotes/{quote_id}/final-submit",
+            json={"revision": 1},
         )
-        assert final_review_notification["status"] == "unread"
-
-        approved = client.post(
-            f"/api/internal-quotes/{quote_id}/final-review",
-            json={"revision": 2, "decision": "approve", "reason": "双人复核通过"},
-        )
-        assert approved.status_code == 200, approved.text
-        result = approved.json()
+        assert released.status_code == 200, released.text
+        result = released.json()
         assert result["quote"]["status"] == "exported"
         assert result["quote"]["header_revision"] == 3
         assert result["quote"]["final_release_status"] == "approved"
         assert result["quote"]["final_release_revision"] == 1
         assert result["review"]["decision"] == "approve"
+        assert result["review"]["submitted_by"] == submitter["id"]
+        assert result["review"]["actor_id"] == submitter["id"]
         notifications_after_review = client.get("/api/system/notifications").json()
-        assert next(
-            item for item in notifications_after_review if item["id"] == final_review_notification["id"]
-        )["status"] == "handled"
+        assert not any(
+            item["payload"].get("event") == "final_release_submitted"
+            and item["payload"].get("quote_id") == quote_id
+            for item in notifications_after_review
+        )
+        final_notification = next(
+            item
+            for item in notifications_after_review
+            if item["payload"].get("event") == "final_release_approved"
+            and item["payload"].get("quote_id") == quote_id
+        )
+        assert final_notification["payload"]["route"] == (
+            f"/modules/sales-business/internal-quote-desk/{quote_id}/summary?factory=huaxing"
+        )
         artifact_notification = next(
             item
             for item in notifications_after_review
@@ -186,7 +185,7 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         assert final_export["release_stage"] == "p4_final_approved"
         assert final_export["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v3"
         assert final_export["export_manifest"]["p4_final_release_required"] is False
-        assert final_export["export_manifest"]["final_reviewed_by"] == reviewer["id"]
+        assert final_export["export_manifest"]["final_reviewed_by"] == submitter["id"]
 
         export_download = client.get(
             f"/api/internal-quotes/{quote_id}/exports/{final_export['id']}/download"
@@ -278,6 +277,13 @@ def test_p4_final_release_is_two_person_locked_and_hands_off_only_final_artifact
         assert next(
             item for item in notifications_after_consume if item["id"] == artifact_notification["id"]
         )["status"] == "handled"
+        idempotent = client.post(
+            f"/api/customer-price/internal-quote-artifacts/{handoff['id']}/consume",
+            json={"consumer_reference": "customer-conversion-001"},
+        )
+        assert idempotent.status_code == 200
+        assert idempotent.json()["id"] == handoff["id"]
+        assert idempotent.json()["consumer_reference"] == "customer-conversion-001"
         duplicate = client.post(
             f"/api/customer-price/internal-quote-artifacts/{handoff['id']}/consume",
             json={"consumer_reference": "customer-conversion-002"},
@@ -332,7 +338,7 @@ def test_p4_legacy_layout_export_is_refreshed_without_replacing_release_handoff(
         submitter = login(
             client,
             "iq_p4_layout_refresh_submitter",
-            "sales_customer_supervisor",
+            "sales_customer_owner",
             "sales-business",
         )
         payload = create_payload(suffix="P4-LAYOUT-REFRESH", participating_sections=ALL_SECTION_CODES)
@@ -346,20 +352,7 @@ def test_p4_legacy_layout_export_is_refreshed_without_replacing_release_handoff(
             json={"revision": 1},
         )
         assert submitted.status_code == 200, submitted.text
-
-        logout(client)
-        login(
-            client,
-            "iq_p4_layout_refresh_reviewer",
-            "sales_customer_supervisor",
-            "sales-business",
-        )
-        approved = client.post(
-            f"/api/internal-quotes/{quote_id}/final-review",
-            json={"revision": 2, "decision": "approve", "reason": "初次最终放行"},
-        )
-        assert approved.status_code == 200, approved.text
-        legacy_export = approved.json()["export"]
+        legacy_export = submitted.json()["export"]
 
         db_module = importlib.import_module("app.db")
         quote_models = importlib.import_module("app.models.internal_quote")
@@ -435,10 +428,7 @@ def test_p4_final_rejection_is_immutable_and_can_be_resubmitted(monkeypatch):
         ).json()
         quote_id = quote["id"]
         mark_all_sections_not_applicable(quote_id)
-        assert client.post(
-            f"/api/internal-quotes/{quote_id}/final-submit",
-            json={"revision": 1},
-        ).status_code == 200
+        mark_legacy_final_pending(quote_id)
 
         logout(client)
         login(client, "iq_p4_reject_reviewer", "sales_customer_supervisor", "sales-business")
@@ -465,20 +455,22 @@ def test_p4_final_rejection_is_immutable_and_can_be_resubmitted(monkeypatch):
         )
         assert resubmitted.status_code == 200
         assert resubmitted.json()["quote"]["final_submission_revision"] == 2
+        assert resubmitted.json()["quote"]["final_release_status"] == "approved"
 
         reviews = client.get(f"/api/internal-quotes/{quote_id}/final-reviews")
         assert reviews.status_code == 200
         assert [(item["submission_revision"], item["decision"]) for item in reviews.json()] == [
+            (2, "approve"),
             (1, "reject")
         ]
 
 
-def test_p4_final_submitter_can_return_pending_release_but_cannot_self_approve(monkeypatch):
+def test_p4_existing_pending_release_can_be_completed_by_responsible_followup(monkeypatch):
     with make_client(monkeypatch) as client:
         submitter = login(
             client,
-            "iq_p4_self_return_submitter",
-            "sales_customer_supervisor",
+            "iq_p4_pending_followup",
+            "sales_customer_owner",
             "sales-business",
         )
         quote = client.post(
@@ -487,39 +479,31 @@ def test_p4_final_submitter_can_return_pending_release_but_cannot_self_approve(m
         ).json()
         quote_id = quote["id"]
         mark_all_sections_not_applicable(quote_id)
-        submitted = client.post(
-            f"/api/internal-quotes/{quote_id}/final-submit",
-            json={"revision": 1},
-        )
-        assert submitted.status_code == 200, submitted.text
+        mark_legacy_final_pending(quote_id)
 
-        self_approve = client.post(
+        logout(client)
+        login(client, "iq_p4_pending_other", "sales_customer_owner", "sales-business")
+        unrelated = client.post(
             f"/api/internal-quotes/{quote_id}/final-review",
-            json={"revision": 2, "decision": "approve", "reason": "不应允许自批"},
+            json={"revision": 2, "decision": "approve", "reason": "非负责跟客"},
         )
-        assert self_approve.status_code == 403
-        assert "不能审核自己的报价" in self_approve.json()["detail"]
+        assert unrelated.status_code == 403
+        assert "负责本单的业务跟客" in unrelated.json()["detail"]
 
-        returned = client.post(
+        logout(client)
+        login(client, "iq_p4_pending_followup", "sales_customer_owner", "sales-business")
+        released = client.post(
             f"/api/internal-quotes/{quote_id}/final-review",
-            json={"revision": 2, "decision": "reject", "reason": "提交人主动退回补充资料"},
+            json={"revision": 2, "decision": "approve", "reason": "负责跟客确认放行"},
         )
-        assert returned.status_code == 200, returned.text
-        returned_body = returned.json()
-        assert returned_body["quote"]["status"] == "ready_for_final_review"
-        assert returned_body["quote"]["header_revision"] == 3
-        assert returned_body["quote"]["final_release_status"] == "rejected"
-        assert returned_body["review"]["decision"] == "reject"
-        assert returned_body["review"]["submitted_by"] == submitter["id"]
-        assert returned_body["review"]["actor_id"] == submitter["id"]
-        assert returned_body["review"]["reason"] == "提交人主动退回补充资料"
-
-        resubmitted = client.post(
-            f"/api/internal-quotes/{quote_id}/final-submit",
-            json={"revision": 3},
-        )
-        assert resubmitted.status_code == 200, resubmitted.text
-        assert resubmitted.json()["quote"]["final_submission_revision"] == 2
+        assert released.status_code == 200, released.text
+        released_body = released.json()
+        assert released_body["quote"]["status"] == "exported"
+        assert released_body["quote"]["header_revision"] == 3
+        assert released_body["quote"]["final_release_status"] == "approved"
+        assert released_body["review"]["decision"] == "approve"
+        assert released_body["review"]["submitted_by"] == submitter["id"]
+        assert released_body["review"]["actor_id"] == submitter["id"]
 
 
 def test_p4_quote_version_comparison_uses_clone_lineage_and_section_snapshots(monkeypatch):

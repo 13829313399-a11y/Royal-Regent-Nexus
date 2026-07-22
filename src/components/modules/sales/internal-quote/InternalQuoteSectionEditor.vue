@@ -300,9 +300,14 @@ async function detectImportPreview(file: File) {
   for (const option of importOptions.value) {
     try {
       return await quoteStore.previewImport(props.quote.id, option.type, file)
-    } catch {
+    } catch (error) {
       // Each server parser is authoritative for its own template. A parse miss is
-      // expected while auto-detecting; only a successful parser creates a batch.
+      // expected while auto-detecting. Permission, size, conflict, timeout and
+      // server errors must remain visible instead of silently becoming attachments.
+      const status = error && typeof error === 'object' && 'status' in error
+        ? Number((error as { status?: unknown }).status)
+        : 0
+      if (status !== 400 && status !== 404) throw error
     }
   }
   return undefined
@@ -312,7 +317,7 @@ async function handleUploadFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || !props.canEdit) return
+  if (!file || !editable.value) return
   resetFeedback()
   try {
     const detected = await detectImportPreview(file)
@@ -384,7 +389,7 @@ function confirmRemoveParticipation() {
     <header class="quote-editor-head">
       <div><div class="quote-editor-title-row"><h2>{{ section.label }}核价明细</h2><span class="quote-editor-status" :class="`tone-${statusMeta[section.status].tone}`"><i />{{ statusMeta[section.status].label }}</span><span class="quote-revision">revision {{ section.revision }}</span><span v-if="isDirty" class="dirty">有未保存修改</span></div><p>{{ section.formulaHint }}</p></div>
       <div class="quote-editor-tools">
-        <button class="primary-upload" type="button" title="Excel 自动识别导入内容；其他文件按普通附件保存" :disabled="!props.canEdit || quoteStore.fileBusy || quoteStore.submitting" @click="uploadInput?.click()"><Paperclip />上传附件</button>
+        <button class="primary-upload" type="button" title="Excel 自动识别导入内容；其他文件按普通附件保存" :disabled="!editable || quoteStore.fileBusy || quoteStore.submitting" @click="uploadInput?.click()"><Paperclip />上传附件</button>
         <div v-if="importOptions.length" class="template-download-control">
           <button
             class="template-download"

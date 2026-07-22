@@ -68,6 +68,32 @@ def _quote_sections(db: Session, quote_id: str) -> list[InternalQuoteSection]:
     ).all()
 
 
+def _responsible_followup_id(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+) -> str:
+    sales = next(
+        (section for section in sections if section.department == "sales"),
+        None,
+    )
+    # The Sales section submitter is the person actually following this quote.
+    # Historical fixtures/records may predate submitted_by_id, so fall back to
+    # the quote creator without weakening the final-submit permission check.
+    return (sales.submitted_by_id if sales else "") or quote.created_by
+
+
+def _ensure_responsible_followup(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+    user: AuthContext,
+) -> None:
+    if _responsible_followup_id(quote, sections) != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="仅负责本单的业务跟客（业务部分段提交人）可确认最终放行",
+        )
+
+
 def _release_manifest(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
@@ -162,6 +188,7 @@ def submit_final_release(
         raise HTTPException(status_code=409, detail="当前报价尚未达到最终提交条件")
 
     sections = _quote_sections(db, quote.id)
+    _ensure_responsible_followup(quote, sections, user)
     quote.header_revision += 1
     manifest = _release_manifest(quote, sections)
     timestamp = now_text()
@@ -202,24 +229,21 @@ def submit_final_release(
         quote,
         events=FINAL_SUBMIT_NOTIFICATION_EVENTS,
     )
-    _add_notification(
+    # Final release is a one-person confirmation by the responsible Sales
+    # follow-up. Reuse the immutable review/export path in the same transaction
+    # so manifest verification, audit history and controlled artifacts remain
+    # identical to an approved legacy pending release.
+    return review_final_release(
         db,
-        quote,
-        title="内部报价待最终业务放行",
-        message=f"{quote.quote_no} 已由 {user.display_name} 提交，请另一名业务主管复核",
-        event="final_release_submitted",
-        target_permission="internal_quote:final_approve",
-        target_department="sales-business",
-        department="sales",
-        extra={
-            "submission_revision": quote.final_submission_revision,
-            "header_revision": quote.header_revision,
-            "manifest_sha256": manifest["manifest_sha256"],
-        },
+        quote.id,
+        InternalQuoteFinalReviewRequest(
+            revision=quote.header_revision,
+            decision="approve",
+            reason="负责跟客确认放行",
+        ),
+        user,
+        request,
     )
-    db.commit()
-    db.refresh(quote)
-    return InternalQuoteFinalReleaseOut(quote=quote_to_out(db, quote))
 
 
 def review_final_release(
@@ -230,23 +254,30 @@ def review_final_release(
     request: Request | None = None,
 ) -> InternalQuoteFinalReleaseOut:
     quote = _get_quote(db, quote_id)
-    ensure_quote_permission(
-        db,
-        user,
-        "internal_quote:final_approve",
-        quote.factory_id,
-        ("sales-business",),
-    )
+    sections = _quote_sections(db, quote.id)
+    if payload.decision == "approve":
+        ensure_quote_permission(
+            db,
+            user,
+            "internal_quote:final_submit",
+            quote.factory_id,
+            ("sales-business",),
+        )
+        _ensure_responsible_followup(quote, sections, user)
+    else:
+        # Kept only for returning historical pending releases created before
+        # the one-person workflow. New submissions are approved immediately.
+        ensure_quote_permission(
+            db,
+            user,
+            "internal_quote:final_approve",
+            quote.factory_id,
+            ("sales-business",),
+        )
     _ensure_active(quote)
     _check_revision(quote.header_revision, payload.revision, "报价头")
     if quote.status != "final_reviewing" or quote.final_release_status != "pending":
         raise HTTPException(status_code=409, detail="当前报价不在最终放行审核中")
-    # The two-person lock protects approval. The submitter may still withdraw the
-    # pending release by rejecting it back to the editable workflow.
-    if payload.decision == "approve" and quote.final_submitted_by == user.id:
-        raise HTTPException(status_code=403, detail="最终提交人不能审核自己的报价")
-
-    sections = _quote_sections(db, quote.id)
     live_manifest = _release_manifest(quote, sections)
     submitted_manifest = _json_object(quote.final_submission_manifest_json)
     if live_manifest.get("manifest_sha256") != submitted_manifest.get("manifest_sha256"):
@@ -674,6 +705,11 @@ def consume_customer_price_artifact(
         db.commit()
         raise HTTPException(status_code=409, detail="内部报价 artifact 已失效，不能导入")
     if handoff.status == "consumed":
+        if (
+            handoff.consumed_by == user.id
+            and handoff.consumer_reference == payload.consumer_reference
+        ):
+            return _handoff_out(handoff, export)
         raise HTTPException(status_code=409, detail="内部报价 artifact 已被客价转换台导入")
     handoff.status = "consumed"
     handoff.consumed_by = user.id

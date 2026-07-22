@@ -12,17 +12,24 @@ import {
   ShieldCheck,
 } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { useAuthStore } from '@/stores/auth'
+import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 
 const route = useRoute()
+const router = useRouter()
 const quoteStore = useInternalQuoteDeskStore()
 const authStore = useAuthStore()
+const appStore = useAppStore()
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
-const quote = computed(() => quoteStore.getQuoteById(quoteId.value) ?? quoteStore.placeholderQuote)
+const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
+const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
+const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
+  ? appStore.activeProductionFactory.id
+  : appStore.activeFactory.id)
 const selectedTemplate = ref('internal-quote-p4-v2')
 const confirmChecked = ref(false)
 const message = ref('')
@@ -75,6 +82,10 @@ function loadQuote() {
 
 onMounted(loadQuote)
 watch(quoteId, loadQuote)
+watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quoteFactoryId]) => {
+  if (!quoteFactoryId || quoteFactoryId === factoryId || !isFactoryContextId(factoryId)) return
+  void router.replace(getFactoryScopedRoute('/modules/sales-business/internal-quote-desk', factoryId))
+})
 </script>
 
 <template>

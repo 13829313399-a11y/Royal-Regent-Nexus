@@ -6,6 +6,7 @@ function client() {
   return {
     get: vi.fn(async () => ({ data: [] })),
     post: vi.fn(async () => ({ data: { id: 'created' } })),
+    patch: vi.fn(async () => ({ data: { id: 'patched' } })),
     put: vi.fn(async () => ({ data: { id: 'updated' } })),
     delete: vi.fn(async () => ({ data: undefined })),
   } satisfies InternalQuoteHttpClient
@@ -37,6 +38,23 @@ describe('internal quote API adapter', () => {
     expect(http.get).toHaveBeenNthCalledWith(3, '/internal-quotes/business-owners', {
       params: { factory_id: 'huaxing' },
     })
+  })
+
+  it('maps UI status names to backend workflow statuses', async () => {
+    const http = client()
+    const api = createInternalQuoteApi(http)
+
+    await api.list('huaxing', { status: 'pending_review' })
+    await api.list('huaxing', { status: 'fully_approved' })
+    await api.list('huaxing', { status: 'final_pending' })
+    await api.list('huaxing', { status: 'released' })
+
+    expect(http.get.mock.calls.map(([, config]) => config?.params.status)).toEqual([
+      'section_reviewing',
+      'ready_for_final_review',
+      'final_reviewing',
+      'fully_approved',
+    ])
   })
 
   it('uses the canonical create, clone and detail-enrichment endpoints', async () => {
@@ -130,6 +148,31 @@ describe('internal quote API adapter', () => {
     })
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/pricing-baseline', payload, {
       params: { factory_id: 'huaxing', workshop_code: 'huaxing-workshop' },
+    })
+  })
+
+  it('uses revision-safe header update and archive endpoints', async () => {
+    const http = client()
+    const api = createInternalQuoteApi(http)
+    const payload = {
+      revision: 4,
+      product_name: '新产品名',
+      customer: 'Disney',
+      qty: 1200,
+      business_owner_id: 'owner-1',
+      business_owner_name: '负责人',
+      target_customer_price: 'USD 3.50',
+      target_date: '2026-08-01',
+      remark: '更新资料',
+    }
+
+    await api.updateHeader('quote-1', payload)
+    await api.archiveQuote('quote-1', 5, '项目取消')
+
+    expect(http.patch).toHaveBeenCalledWith('/internal-quotes/quote-1', payload)
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/archive', {
+      revision: 5,
+      reason: '项目取消',
     })
   })
 

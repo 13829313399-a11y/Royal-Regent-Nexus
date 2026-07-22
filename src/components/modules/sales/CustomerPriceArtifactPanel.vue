@@ -259,6 +259,38 @@ async function consumeArtifact(artifact: CustomerPriceInternalQuoteArtifact) {
   }
 }
 
+async function restoreConsumedArtifact(artifact: CustomerPriceInternalQuoteArtifact) {
+  if (
+    !canImportArtifact.value
+    || artifact.factory_id !== activeFactoryId.value
+    || artifact.status !== 'consumed'
+    || actingId.value
+  ) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryGeneration = factoryGeneration
+  actingId.value = artifact.id
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const blob = await fetchVerifiedArtifact(artifact)
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
+    const matchedCustomer = matchConfiguredCustomer(artifact)
+    if (!matchedCustomer || !props.prepareArtifact) {
+      throw new Error(`尚未配置“${artifact.customer}”的客户转换模板，无法恢复转换预览`)
+    }
+    await props.prepareArtifact(artifact, blob)
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
+    if (matchedCustomer.id !== props.selectedCustomerId) emit('selectCustomer', matchedCustomer.id)
+    emit('artifactConsumed', artifact.id)
+    successMessage.value = `${artifact.quote_no} 已从受控源文件恢复 ${matchedCustomer.name} 转换预览；后端接收记录未重复生成。`
+  } catch (error) {
+    if (!isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) return
+    errorMessage.value = `恢复转换预览失败：${getApiErrorMessage(error)}`
+  } finally {
+    if (isCurrentFactory(requestedFactoryId, requestedFactoryGeneration)) actingId.value = ''
+  }
+}
+
 watch(activeFactoryId, () => {
   factoryGeneration += 1
   artifactRequestSequence += 1
@@ -349,7 +381,7 @@ onBeforeUnmount(() => {
       <div v-else-if="artifacts.length === 0" class="mt-4 flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-center">
         <Inbox class="size-7 text-slate-400" aria-hidden="true" />
         <strong class="mt-3 text-sm text-slate-800">当前筛选下没有交接文件</strong>
-        <span class="mt-1 text-xs text-slate-500">只有通过双人最终放行且未被后续 revision 撤销的文件会进入待接收列表。</span>
+        <span class="mt-1 text-xs text-slate-500">只有已由本单负责跟客最终放行且未被后续 revision 撤销的文件会进入待接收列表。</span>
       </div>
 
       <div v-else class="mt-4 grid gap-3 xl:grid-cols-2">
@@ -384,6 +416,11 @@ onBeforeUnmount(() => {
               <LoaderCircle v-if="actingId === artifact.id" class="size-4 animate-spin" aria-hidden="true" />
               <CheckCircle2 v-else class="size-4" aria-hidden="true" />
               {{ actingId === artifact.id ? '正在预检…' : '接收并转换' }}
+            </button>
+            <button v-if="artifact.status === 'consumed'" type="button" :data-testid="`restore-artifact-${artifact.id}`" class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-600 disabled:cursor-wait disabled:bg-slate-400" :disabled="Boolean(actingId)" @click="restoreConsumedArtifact(artifact)">
+              <LoaderCircle v-if="actingId === artifact.id" class="size-4 animate-spin" aria-hidden="true" />
+              <RefreshCw v-else class="size-4" aria-hidden="true" />
+              {{ actingId === artifact.id ? '正在恢复…' : '恢复转换预览' }}
             </button>
           </div>
         </article>

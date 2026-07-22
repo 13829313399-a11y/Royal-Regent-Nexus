@@ -192,6 +192,37 @@ describe('CustomerPriceArtifactPanel', () => {
     expect(wrapper.text()).toContain('缺少客户模板必需字段')
   })
 
+  it('restores a consumed handoff from its controlled source without consuming it again', async () => {
+    applyAuthorizedSession()
+    const consumedArtifact = {
+      ...availableArtifact,
+      status: 'consumed' as const,
+      consumed_by: 'sales-1',
+      consumed_by_name: '业务跟客',
+      consumed_at: '2026-07-17T10:00:00+08:00',
+      consumer_reference: 'customer-price-ui:IQHAND-1',
+    }
+    artifactApi.list.mockResolvedValue([consumedArtifact])
+    const prepareArtifact = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount(CustomerPriceArtifactPanel, {
+      props: {
+        customers: [{ id: 'disney', name: '迪士尼' }],
+        selectedCustomerId: 'buzzbee',
+        prepareArtifact,
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="restore-artifact-IQHAND-1"]').trigger('click')
+    await flushPromises()
+
+    expect(artifactApi.download).toHaveBeenCalledWith('IQHAND-1')
+    expect(prepareArtifact).toHaveBeenCalledWith(consumedArtifact, expect.any(Blob))
+    expect(artifactApi.consume).not.toHaveBeenCalled()
+    expect(wrapper.emitted('selectCustomer')).toEqual([['disney']])
+    expect(wrapper.text()).toContain('后端接收记录未重复生成')
+  })
+
   it('ignores a late C-factory response after switching to D and clears the old list immediately', async () => {
     applyAuthorizedSession(['huakang-c', 'huakang-d'])
     const appStore = useAppStore()
