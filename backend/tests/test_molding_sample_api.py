@@ -1263,6 +1263,8 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     response = client.post("/api/injection", json=sample_order_payload())
 
     assert response.status_code == 201
+    assert response.headers["server-timing"].startswith("app;dur=")
+    assert response.headers["x-request-id"]
     payload = response.json()
     assert payload["order"]["status"] == "待审核"
     assert payload["audit_logs"][0]["actor_name"] == "华兴工程师"
@@ -1295,6 +1297,36 @@ def test_engineer_can_create_order_and_production_user_reads_notification_after_
     assert len(notifications) == 1
     assert notifications[0]["order_id"] == "BP-API-001"
     assert notifications[0]["target_role"] == "啤机部"
+
+    future_changes_response = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "target_module": "production_molding_sample_task",
+            "factory_id": "huaxing",
+            "changed_after": "2099-01-01T00:00:00+08:00",
+        },
+        headers={"x-request-id": "notification-incremental-test"},
+    )
+    assert future_changes_response.status_code == 200
+    assert future_changes_response.headers["x-request-id"] == "notification-incremental-test"
+    assert future_changes_response.json() == []
+
+    historical_changes_response = client.get(
+        "/api/molding-sample-notifications",
+        params={
+            "target_module": "production_molding_sample_task",
+            "factory_id": "huaxing",
+            "changed_after": "2000-01-01T00:00:00+08:00",
+        },
+    )
+    assert historical_changes_response.status_code == 200
+    assert [item["id"] for item in historical_changes_response.json()] == [notifications[0]["id"]]
+
+    invalid_changes_response = client.get(
+        "/api/molding-sample-notifications",
+        params={"changed_after": "not-a-timestamp"},
+    )
+    assert invalid_changes_response.status_code == 422
 
 
 def test_create_order_ignores_client_supplied_status_and_starts_review(client):

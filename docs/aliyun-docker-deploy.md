@@ -181,15 +181,18 @@ sh deploy/update-from-github.sh
 APP_DIR=/你的实际目录 sh deploy/update-from-github.sh
 ```
 
-脚本内部执行的是：
+脚本采用数据保护和健康检查流程：
 
-```bash
-git fetch --prune
-git pull --ff-only
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
-docker compose -f docker-compose.prod.yml ps
-docker image prune -f
-```
+1. 确认生产工作区干净，并检查 DB、API、Web 都处于健康状态。
+2. 仅接受到 `origin/main` 的快进更新；更新前创建 PostgreSQL custom-format 备份、校验和、恢复清单以及容器/配置快照。
+3. 保持旧服务在线完成 API、Web 镜像构建，并保留带时间戳的 API/Web 回滚镜像。
+4. 没有 Alembic 变更时，先启动健康的 API 候选容器，再依次替换 Web 和正式 API；Nginx 会动态解析 API 容器地址。
+5. 检测到 Alembic 变更时自动改用维护窗口路径，避免新旧代码同时访问可能不兼容的数据库结构。
+6. 每个服务替换后都等待健康状态，最后验证 `/health`、首页和备份校验和。数据库容器和数据卷不会被重建。
+
+可通过 `BACKUP_ROOT` 和 `HEALTH_TIMEOUT_SECONDS` 调整备份目录及健康检查等待时间。部署中途失败且 API 候选容器仍能服务时，脚本会保留该候选容器并输出清理命令，避免自动清理导致二次中断。
+
+API 会输出不包含查询字符串的请求耗时记录，Nginx 访问日志包含 `request_time` 与 `upstream_time`。Compose 将单个容器日志限制为 `10 MB × 5`，防止诊断日志持续占用磁盘。
 
 ## 11. 数据备份
 

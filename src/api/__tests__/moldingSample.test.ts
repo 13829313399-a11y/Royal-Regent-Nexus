@@ -138,6 +138,7 @@ await api.listNotifications({
   target_module: 'production_molding_sample_task',
   factory_id: 'huakang-a',
   status: '未读',
+  changed_after: '2026-07-22T08:25:00.000Z',
 })
 
 await api.updateNotification('N-BP-1', {
@@ -288,7 +289,7 @@ assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
   'post /injection/import-excel-preview?factory_id=huakang-d&production_factory_id=huakang-b',
   'patch /injection/BP-1/production-assignment',
   'get /sensitive-audit-logs',
-  'get /molding-sample-notifications?target_module=production_molding_sample_task&factory_id=huakang-a&status=%E6%9C%AA%E8%AF%BB',
+  'get /molding-sample-notifications?target_module=production_molding_sample_task&factory_id=huakang-a&status=%E6%9C%AA%E8%AF%BB&changed_after=2026-07-22T08%3A25%3A00.000Z',
   'patch /molding-sample-notifications/N-BP-1',
   'get /problems?order_id=BP-1&status=%E5%BE%85%E5%A4%84%E7%90%86',
   'post /problems',
