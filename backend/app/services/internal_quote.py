@@ -79,7 +79,7 @@ SECTION_DEFINITIONS = (
     ("engineering", "工程部", ("engineering",)),
     ("electronic", "电子部", ("electronic",)),
     ("molding", "啤机部", ("production", "molding")),
-    ("painting", "喷油部", ("painting",)),
+    ("painting", "喷油部", ("production", "painting")),
     ("slush", "搪胶部", ("slush",)),
     ("sewing", "车缝部", ("sewing",)),
     ("assembly", "装配部", ("assembly",)),
@@ -171,6 +171,14 @@ def ensure_section_permission(
     departments = SECTION_DEPARTMENTS.get(section_code)
     if departments is None:
         raise HTTPException(status_code=404, detail="报价分段不存在")
+    if action == "edit" and any(
+        has_permission_in_scope(user, permission, factory_id, department)
+        for permission, department in (
+            ("internal_quote:sales_edit", "sales-business"),
+            ("internal_quote:engineering_edit", "engineering"),
+        )
+    ):
+        return
     ensure_quote_permission(
         db,
         user,

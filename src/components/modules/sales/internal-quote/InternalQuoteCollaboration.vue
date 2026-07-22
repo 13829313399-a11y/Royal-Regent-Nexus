@@ -8,7 +8,7 @@ import InternalQuoteSectionEditor from './InternalQuoteSectionEditor.vue'
 import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
-import { canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
+import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { cloneInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
 import { internalQuoteApi, type InternalQuoteHeaderUpdateRequest } from '@/api/internalQuote'
 import { useAuthStore } from '@/stores/auth'
@@ -56,7 +56,10 @@ const activeSection = computed(() => participatingSections.value.find((section) 
 const approvedCount = computed(() => participatingSections.value.filter((section) => ['approved', 'not_applicable'].includes(section.status)).length)
 const progressPercent = computed(() => participatingSections.value.length ? approvedCount.value / participatingSections.value.length * 100 : 0)
 const activeDefinition = computed(() => internalQuoteSectionDefinitions.find((item) => item.code === activeSectionCode.value))
-const canEditActive = computed(() => (activeDefinition.value?.departments ?? []).some((department) => authStore.can(`internal_quote:${activeSectionCode.value}_edit`, quote.value.factoryId, department)))
+const canEditActive = computed(() => (
+  canEditAllInternalQuoteSections(authStore, quote.value.factoryId)
+  || (activeDefinition.value?.departments ?? []).some((department) => authStore.can(`internal_quote:${activeSectionCode.value}_edit`, quote.value.factoryId, department))
+))
 const canReviewActive = computed(() => canReviewInternalQuoteSections(
   authStore,
   quote.value.factoryId,

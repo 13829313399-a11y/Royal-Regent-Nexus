@@ -98,7 +98,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     "sales": {
         "paper_price_factor": "decimal>0; default 2.75",
         "flat_card_price_factor": "decimal>0; defaults to paper_price_factor",
-        "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "0..100", "remark": "text"}],
+        "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
         "product_size_in": {"length": "optional decimal>0 inch", "width": "optional decimal>0 inch", "height": "optional decimal>0 inch"},
         "color_box_size_in": {"length": "decimal>0 inch", "width": "decimal>0 inch", "height": "decimal>0 inch"},
         "legacy_dimension_aliases": "product_size_cm/color_box_size_cm remain readable as historical inch-valued keys",

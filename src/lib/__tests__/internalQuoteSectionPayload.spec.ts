@@ -349,8 +349,15 @@ describe('internal quote section payload normalization', () => {
       rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: '.0171', operations: '34' }],
     })).toEqual({ quote_mode: 'detail', quick_quote: { spray_labor_hkd: 0, paint_hkd: 0, paint_tax_rate_percent: 13 }, rows: [], disney_decorations: [{ application_type: 'Whole Item', rate_per_op_usd: .0171, operations: 34 }] })
     expect(normalizeInternalQuotePayload('sales', {
+      packaging_materials: [{
+        item: '彩盒', specification: '四彩', category: 'color_box_inner_card', quantity: '1', unit_price_rmb: '3',
+        disney_description: 'Color Box', disney_unit_price_usd: '.42', disney_included: '1',
+      }],
       customer_quote_fields: { disney: { item_number: '1000142435', quote_date: '2026-06-03', revision: '0', minimum_order_qty: '3000', moq_prices_usd: { qty_3000: '3.42', qty_5000: '3.17', qty_10000: '2.93' }, transportation_usd: '.027', model_cost_usd: '6200', setup_charge_usd: '1500' } },
-    })).toMatchObject({ customer_quote_fields: { disney: { item_number: '1000142435', minimum_order_qty: 3000, moq_prices_usd: { qty_3000: 3.42, qty_5000: 3.17, qty_10000: 2.93 }, model_cost_usd: 6200 } } })
+    })).toMatchObject({
+      packaging_materials: [{ disney_description: 'Color Box', disney_unit_price_usd: .42, disney_included: 1 }],
+      customer_quote_fields: { disney: { item_number: '1000142435', minimum_order_qty: 3000, moq_prices_usd: { qty_3000: 3.42, qty_5000: 3.17, qty_10000: 2.93 }, model_cost_usd: 6200 } },
+    })
   })
 
   it('preserves the Dickie product, English term, material and mold field contract', () => {

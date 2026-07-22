@@ -56,6 +56,44 @@ ASSEMBLY_PAYLOAD = {
 }
 
 
+def test_business_and_engineering_roles_can_edit_all_sections_while_department_roles_stay_scoped(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_cross_sales", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="CROSS-EDIT", participating_sections=ALL_SECTION_CODES),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+
+        sales_edits_molding = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/molding",
+            json={"revision": 1, "payload": MOLDING_PAYLOAD},
+        )
+        assert sales_edits_molding.status_code == 200, sales_edits_molding.text
+
+        logout(client)
+        login(client, "iq_cross_engineer", "engineer", "engineering")
+        engineering_edits_painting = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/painting",
+            json={"revision": 1, "payload": {"rows": []}},
+        )
+        assert engineering_edits_painting.status_code == 200, engineering_edits_painting.text
+
+        logout(client)
+        login(client, "iq_cross_molding", "molding_clerk", "molding")
+        molding_edits_own_section = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/molding",
+            json={"revision": 2, "payload": MOLDING_PAYLOAD},
+        )
+        assert molding_edits_own_section.status_code == 200, molding_edits_own_section.text
+        molding_edits_painting = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/painting",
+            json={"revision": 2, "payload": {"rows": [{"item": "越权"}]}},
+        )
+        assert molding_edits_painting.status_code == 403
+
+
 def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monkeypatch):
     with make_client(monkeypatch) as client:
         profile = login(
