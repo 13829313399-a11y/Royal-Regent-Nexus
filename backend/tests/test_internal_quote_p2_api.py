@@ -456,17 +456,51 @@ def test_p2_workflow_revision_changes_do_not_invalidate_calculated_downstream_se
             assert approved_sections[section_code]["dependency_status"] == "current"
 
 
-def test_p2_unrelated_engineering_cost_edit_does_not_return_molding_or_assembly(monkeypatch):
+def test_p2_sales_can_be_approved_before_other_departments_save_without_resubmitting(monkeypatch):
     with make_client(monkeypatch) as client:
+        ensure_user(
+            "iq_p2_scope_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
         login(client, "iq_p2_scope_creator", "sales_customer_owner", "sales-business")
+        payload = create_payload(
+            suffix="P2-DEPENDENCY-SCOPE",
+            participating_sections=ALL_SECTION_CODES,
+        )
+        payload["business_owner_id"] = "user-iq_p2_scope_reviewer"
+        payload["business_owner_name"] = "iq_p2_scope_reviewer"
         created = client.post(
             "/api/internal-quotes",
-            json=create_payload(
-                suffix="P2-DEPENDENCY-SCOPE",
-                participating_sections=ALL_SECTION_CODES,
-            ),
+            json=payload,
         ).json()
         quote_id = created["id"]
+
+        logout(client)
+        login(client, "iq_p2_scope_sales", "sales_customer_owner", "sales-business")
+        sales = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 1, "payload": {"additional_tax_hkd": "1"}},
+        )
+        assert sales.status_code == 200, sales.text
+        sales_submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/submit",
+            json={"revision": 2},
+        )
+        assert sales_submitted.status_code == 200, sales_submitted.text
+
+        logout(client)
+        login(
+            client,
+            "iq_p2_scope_reviewer",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        sales_approved = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/review",
+            json={"revision": 3, "decision": "approve", "reason": "业务资料确认"},
+        )
+        assert sales_approved.status_code == 200, sales_approved.text
 
         logout(client)
         login(client, "iq_p2_scope_engineer", "engineer", "engineering")
@@ -493,14 +527,6 @@ def test_p2_unrelated_engineering_cost_edit_does_not_return_molding_or_assembly(
         assert assembly.status_code == 200, assembly.text
 
         logout(client)
-        login(client, "iq_p2_scope_sales", "sales_customer_owner", "sales-business")
-        sales = client.put(
-            f"/api/internal-quotes/{quote_id}/sections/sales",
-            json={"revision": 1, "payload": {"additional_tax_hkd": "1"}},
-        )
-        assert sales.status_code == 200, sales.text
-
-        logout(client)
         login(client, "iq_p2_scope_engineer_update", "engineer", "engineering")
         engineering_update = client.put(
             f"/api/internal-quotes/{quote_id}/sections/engineering",
@@ -523,9 +549,10 @@ def test_p2_unrelated_engineering_cost_edit_does_not_return_molding_or_assembly(
             assert sections[section_code]["revision"] == 2
             assert sections[section_code]["calculation_status"] == "valid"
             assert sections[section_code]["dependency_status"] == "current"
-        assert sections["sales"]["revision"] == 3
-        assert sections["sales"]["calculation_status"] == "stale"
-        assert sections["sales"]["dependency_status"] == "stale"
+        assert sections["sales"]["revision"] == 4
+        assert sections["sales"]["status"] == "approved"
+        assert sections["sales"]["calculation_status"] == "valid"
+        assert sections["sales"]["dependency_status"] == "current"
 
 
 def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monkeypatch):

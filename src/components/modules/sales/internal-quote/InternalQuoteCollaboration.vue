@@ -8,6 +8,7 @@ import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
+import { cloneInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
@@ -23,6 +24,9 @@ const syncReason = ref('')
 const participationPanelOpen = ref(false)
 const selectedParticipation = ref<InternalQuoteSectionCode[]>([])
 const focusEntryMode = ref(true)
+const sectionEditor = ref<InstanceType<typeof InternalQuoteSectionEditor> | null>(null)
+const markupMessage = ref('')
+const markupError = ref('')
 
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const quote = computed(() => quoteStore.getQuoteById(quoteId.value) ?? quoteStore.placeholderQuote)
@@ -47,6 +51,14 @@ const canReviewActive = computed(() => canReviewInternalQuoteSections(
 ))
 const canSyncReference = computed(() => ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const canEditFx = computed(() => quote.value.status !== 'archived' && authStore.can('internal_quote:sales_edit', quote.value.factoryId, 'sales-business'))
+const salesSection = computed(() => quote.value.sections.find((section) => section.code === 'sales'))
+const canEditMarkup = computed(() => canEditFx.value)
+const markupBlockedReason = computed(() => {
+  if (!canEditMarkup.value) return ''
+  if (!salesSection.value) return '业务部分段不存在，暂时无法保存码数。'
+  if (['draft', 'rejected'].includes(salesSection.value.status)) return ''
+  return '业务部已提交或审核完成；请先重开业务部分段，再保存新的码数。'
+})
 const canManageParticipation = computed(() => quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
 const canRemoveActive = computed(() => canManageParticipation.value && optionalSectionCodes.includes(activeSectionCode.value))
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
@@ -98,6 +110,43 @@ async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
   }
 }
 
+async function updateQuoteMarkup(payload: { markup: string }) {
+  markupMessage.value = ''
+  markupError.value = ''
+  message.value = ''
+  errorMessage.value = ''
+  if (!canEditMarkup.value || markupBlockedReason.value) {
+    markupError.value = markupBlockedReason.value || '当前账号没有该厂区的业务部编辑权限。'
+    return
+  }
+  const markup = Number(payload.markup)
+  if (!Number.isFinite(markup) || markup < .01 || markup > 9.99) {
+    markupError.value = '码数必须在 0.01 至 9.99 之间。'
+    return
+  }
+  try {
+    if (activeSectionCode.value === 'sales' && sectionEditor.value) {
+      await sectionEditor.value.saveSalesMarkup(markup)
+      markupMessage.value = '码数及当前业务部草稿已保存，并已重新计算报价。'
+    } else {
+      const section = salesSection.value
+      if (!section) throw new Error('业务部分段不存在，暂时无法保存码数。')
+      const sourceShipping = section.payload.shipping && typeof section.payload.shipping === 'object' && !Array.isArray(section.payload.shipping)
+        ? section.payload.shipping as Record<string, unknown>
+        : {}
+      const nextPayload = cloneInternalQuotePayload('sales', {
+        ...section.payload,
+        shipping: { ...sourceShipping, markup_x: Number(markup.toFixed(2)) },
+      })
+      await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, '在协作侧栏保存报价码数')
+      markupMessage.value = '码数已保存为业务部新 revision，并已重新计算报价。'
+    }
+    message.value = markupMessage.value
+  } catch (error) {
+    markupError.value = error instanceof Error ? error.message : '保存码数失败。'
+  }
+}
+
 function toggleParticipationPanel() {
   selectedParticipation.value = []
   participationPanelOpen.value = !participationPanelOpen.value
@@ -138,6 +187,10 @@ watch([quoteId, canSyncReference], () => {
   syncPanelOpen.value = false
   syncReason.value = ''
 })
+watch(quoteId, () => {
+  markupMessage.value = ''
+  markupError.value = ''
+})
 </script>
 
 <template>
@@ -170,8 +223,8 @@ watch([quoteId, canSyncReference], () => {
 
     <div class="quote-collaboration-grid" :class="{ 'focus-entry-mode': focusEntryMode }">
       <InternalQuoteSectionRail :sections="participatingSections" :active-code="activeSectionCode" @select="selectSection" />
-      <InternalQuoteSectionEditor :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" @remove="removeParticipation" />
-      <InternalQuoteActivityPanel :quote="quote" read-only :can-edit-fx="canEditFx" :busy="quoteStore.submitting" @update-fx="updateReferenceFx" />
+      <InternalQuoteSectionEditor ref="sectionEditor" :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" @remove="removeParticipation" />
+      <InternalQuoteActivityPanel :quote="quote" read-only :can-edit-fx="canEditFx" :can-edit-markup="canEditMarkup" :markup-blocked-reason="markupBlockedReason" :markup-message="markupMessage" :markup-error="markupError" :busy="quoteStore.submitting" @update-fx="updateReferenceFx" @update-markup="updateQuoteMarkup" />
     </div>
     <button
       type="button"

@@ -367,6 +367,9 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         quote_sheet = workbook["报价明细"]
         assert quote_sheet.sheet_state == "visible"
         assert quote_sheet["A8"].value == "内部报价测试产品报价"
+        packaging_labels = [quote_sheet.cell(row, 10).value for row in range(1, quote_sheet.max_row + 1)]
+        assert "彩盒尺寸 (in)" in packaging_labels
+        assert "产品尺寸 (in)" in packaging_labels
         assert [quote_sheet.cell(9, column).value for column in range(3, 14)] == [
             "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", None, "报客价",
         ]

@@ -96,4 +96,35 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(wrapper.get('.quote-live-cost').classes()).toContain('over')
     expect(wrapper.text()).toContain('码数与实时试算仅用于调价参考')
   })
+
+  it('shows an explicit save action for authorized users and emits a normalized changed markup', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, {
+      props: { quote: quote(), readOnly: true, canEditMarkup: true },
+    })
+    const saveButton = wrapper.get('[data-testid="save-quote-markup"]')
+    expect(saveButton.attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.15')
+    expect(saveButton.attributes('disabled')).toBeUndefined()
+    await saveButton.trigger('click')
+
+    expect(wrapper.emitted('updateMarkup')).toEqual([[{ markup: '1.15' }]])
+  })
+
+  it('validates markup precision, explains locked sales states, and hides persistence from viewers', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, {
+      props: { quote: quote(), canEditMarkup: true },
+    })
+    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.155')
+    expect(wrapper.text()).toContain('码数最多保留 2 位小数')
+    expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.setProps({ markupBlockedReason: '请先重开业务部分段。' })
+    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.15')
+    expect(wrapper.text()).toContain('请先重开业务部分段')
+    expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
+
+    const viewer = mount(InternalQuoteActivityPanel, { props: { quote: quote() } })
+    expect(viewer.find('[data-testid="save-quote-markup"]').exists()).toBe(false)
+  })
 })

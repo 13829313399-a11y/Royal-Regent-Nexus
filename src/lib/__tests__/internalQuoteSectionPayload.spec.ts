@@ -12,15 +12,30 @@ describe('internal quote section payload normalization', () => {
     expect(fresh).toMatchObject({
       paper_price_factor: 2.75,
       packaging_materials: [],
-      product_size_cm: { length: 0, width: 0, height: 0 },
-      color_box_size_cm: { length: 0, width: 0, height: 0 },
+      product_size_in: { length: 0, width: 0, height: 0 },
+      color_box_size_in: { length: 0, width: 0, height: 0 },
       cartons: [],
       freight_calc: { enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883, hk40: 8000, yt5t: 11000 },
     })
     expect(fresh).not.toHaveProperty('flat_card_price_factor')
+    expect(fresh).not.toHaveProperty('product_size_cm')
+    expect(fresh).not.toHaveProperty('color_box_size_cm')
+    expect(fresh).not.toHaveProperty('shipping')
     expect(normalizeInternalQuotePayload('sales', { paper_price_factor: 2.8, flat_card_price_factor: 2.3 })).toMatchObject({
       paper_price_factor: 2.8,
       flat_card_price_factor: 2.3,
+    })
+    expect(normalizeInternalQuotePayload('sales', {
+      shipping: { markup_x: '1.15', divisor: '.98', freight_pct: '48', lifting_pct: '52' },
+    })).toMatchObject({
+      shipping: { markup_x: 1.15, divisor: .98, freight_pct: 48, lifting_pct: 52 },
+    })
+    expect(normalizeInternalQuotePayload('sales', {
+      product_size_cm: { length: '5.25', width: '8.75', height: '3' },
+      color_box_size_cm: { length: '6', width: '9', height: '3.5' },
+    })).toMatchObject({
+      product_size_in: { length: 5.25, width: 8.75, height: 3 },
+      color_box_size_in: { length: 6, width: 9, height: 3.5 },
     })
 
     expect(normalizeInternalQuotePayload('sales', {
@@ -76,6 +91,7 @@ describe('internal quote section payload normalization', () => {
   it('clones deeply reactive Vue sales forms into plain save payloads', () => {
     const form = reactive({
       scenarios: [{ name: '盐田', capacity_cuft: 1980, carton_cuft: 2, qty_per_carton: 6 }],
+      shipping: { markup_x: 1.15 },
       customer_quote_fields: {
         buzzbee: {
           color_box_tiers: [{ quote_price_hkd: 6.7, fsc_price_hkd: 6.9, moq: 'MOQ3000' }],
@@ -89,6 +105,7 @@ describe('internal quote section payload normalization', () => {
     expect(isReactive((cloned.customer_quote_fields as Record<string, unknown>).buzzbee)).toBe(false)
     expect(cloned).toMatchObject({
       scenarios: [{ name: '盐田', capacity_cuft: 1980 }],
+      shipping: { markup_x: 1.15 },
       customer_quote_fields: { buzzbee: { color_box_tiers: [{ quote_price_hkd: 6.7 }] } },
     })
   })

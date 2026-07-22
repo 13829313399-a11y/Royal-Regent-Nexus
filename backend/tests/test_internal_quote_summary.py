@@ -144,6 +144,24 @@ def test_rr2_shipping_price_uses_48_52_markup_settlement_and_mold_share_when_ena
     assert yt40["total_with_mold_usd"] == "9.7476"
 
 
+def test_rr2_shipping_price_uses_markup_saved_in_the_sales_section():
+    sections = summary_sections(freight_enabled=True)
+    sales = next(item for item in sections if item.department == "sales")
+    sales_payload = json.loads(sales.payload_json)
+    sales_payload["shipping"] = {"markup_x": "1.15"}
+    sales.payload_json = json.dumps(sales_payload, ensure_ascii=False)
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1"), "mold_amortization_usd": Decimal("0.25")},
+        SNAPSHOT,
+    )
+
+    shipping = result["shipping_pricing"]
+    assert shipping["markup"] == "1.1500"
+    assert shipping["rows"][1]["after_markup_hkd"] == "69.5750"
+
+
 def test_rr2_cost_summary_uses_quick_painting_labor_and_tax_inclusive_paint_exactly():
     sections = summary_sections(freight_enabled=False)
     painting = next(item for item in sections if item.department == "painting")

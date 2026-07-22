@@ -99,8 +99,9 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "paper_price_factor": "decimal>0; default 2.75",
         "flat_card_price_factor": "decimal>0; defaults to paper_price_factor",
         "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "0..100", "remark": "text"}],
-        "product_size_cm": {"length": "optional decimal>0", "width": "optional decimal>0", "height": "optional decimal>0"},
-        "color_box_size_cm": {"length": "decimal>0", "width": "decimal>0", "height": "decimal>0"},
+        "product_size_in": {"length": "optional decimal>0 inch", "width": "optional decimal>0 inch", "height": "optional decimal>0 inch"},
+        "color_box_size_in": {"length": "decimal>0 inch", "width": "decimal>0 inch", "height": "decimal>0 inch"},
+        "legacy_dimension_aliases": "product_size_cm/color_box_size_cm remain readable as historical inch-valued keys",
         "cartons": [{"item": "text", "length_in": "decimal>0", "width_in": "decimal>0", "height_in": "decimal>0", "qty_per_carton": "decimal>0", "flat_cards": "list"}],
         "freight_calc": {
             "enabled": "boolean; default true",
@@ -1216,11 +1217,14 @@ def _sales_packaging(
     if not cartons:
         return ZERO, ZERO
 
-    for field, label in (
-        ("product_size_cm", "产品尺寸"),
-        ("color_box_size_cm", "彩盒尺寸"),
+    for field, legacy_field, label in (
+        ("product_size_in", "product_size_cm", "产品尺寸"),
+        ("color_box_size_in", "color_box_size_cm", "彩盒尺寸"),
     ):
-        dimensions = payload.get(field, {}) or {}
+        dimensions = payload.get(field)
+        if dimensions is None:
+            dimensions = payload.get(legacy_field, {})
+        dimensions = dimensions or {}
         if not isinstance(dimensions, dict):
             raise CalculationInputError(f"{label}格式无效")
         dimension_values = {
@@ -1228,7 +1232,8 @@ def _sales_packaging(
             "宽度": decimal_value(dimensions.get("width"), f"{label}宽度"),
             "高度": decimal_value(dimensions.get("height"), f"{label}高度"),
         }
-        # 产品和彩盒尺寸只作为业务资料留存，不参与纸箱成本公式。
+        # 产品和彩盒尺寸按 inch 留存，只作为业务资料，不参与纸箱成本公式。
+        # `_cm` 是历史误命名别名；其既有数值同样按 inch 读取，不做二次换算。
         # 整组未填写（前端序列化为 0）时允许继续计算；一旦开始填写，三项必须完整。
         if any(value > ZERO for value in dimension_values.values()):
             for dimension_label, value in dimension_values.items():
@@ -1540,7 +1545,7 @@ def calculate_section(
         )
     if (
         section_code == "sales"
-        and any(field in payload for field in ("paper_price_factor", "packaging_materials", "product_size_cm", "color_box_size_cm", "cartons"))
+        and any(field in payload for field in ("paper_price_factor", "packaging_materials", "product_size_in", "color_box_size_in", "product_size_cm", "color_box_size_cm", "cartons"))
         and not payload.get("cartons")
     ):
         result["warnings"].append(
