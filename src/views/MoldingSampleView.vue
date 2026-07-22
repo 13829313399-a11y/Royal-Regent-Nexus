@@ -929,6 +929,19 @@ const MOLDING_SAMPLE_WRITE_PERMISSIONS = [
   'molding_sample:dispatch',
   'molding_sample:export',
 ]
+const MOLDING_SAMPLE_OWNER_OR_SUPERVISOR_DELETE_STATUSES = new Set<MoldingSampleStatus>([
+  '待审核',
+  '待生产',
+  '生产中',
+  '已完成',
+  '已驳回',
+  '已撤回',
+])
+const MOLDING_SAMPLE_MANAGER_DELETE_STATUSES = new Set<MoldingSampleStatus>([
+  '待审核',
+  '已驳回',
+  '已撤回',
+])
 const MOLDING_SAMPLE_OPERATE_PERMISSIONS = new Set([
   ...MOLDING_SAMPLE_WRITE_PERMISSIONS,
   'molding_sample:price_update',
@@ -1054,6 +1067,33 @@ const canDeleteDraftOrder = computed(() =>
   canManageSelectedOrderFactory.value
   && canMoldingSamplePermission('molding_sample:delete_draft', selectedOrder.value.factory_id),
 )
+
+function isCurrentUserOpeningEngineer(record: MoldingSampleWorkflowRecord) {
+  const currentUser = authStore.currentUser
+  if (!currentUser) return false
+
+  const submitLogs = record.audit_logs.filter((audit) =>
+    audit.action.startsWith('工程提交') || audit.action.startsWith('工程开单'),
+  )
+  const submitterUserIds = new Set(
+    submitLogs.map((audit) => audit.actor_user_id?.trim()).filter(Boolean),
+  )
+  if (submitterUserIds.size > 0) {
+    return submitterUserIds.has(currentUser.id)
+  }
+
+  const submitterNames = new Set(
+    submitLogs.map((audit) => audit.actor_name?.trim()).filter(Boolean),
+  )
+  if (submitterNames.size > 0) {
+    return submitterNames.has(currentUser.display_name.trim())
+  }
+
+  return Boolean(
+    record.order.eng_name.trim()
+    && record.order.eng_name.trim() === currentUser.display_name.trim(),
+  )
+}
 const isEditingRejectedOrder = computed(() => editingRejectedOrderId.value !== '')
 const editingRevisionOrderLabel = computed(() => selectedOrder.value.status === '已撤回' ? '撤回单' : '驳回单')
 const canSubmitCreateForm = computed(() => isEditingRejectedOrder.value ? canEditDraftOrder.value : canCreateOrder.value)
@@ -1079,17 +1119,26 @@ const canWithdrawSelectedOrder = computed(() =>
   && selectedOrder.value.status === '待审核'
   && canEditDraftOrder.value,
 )
-const canDeleteSelectedWithdrawnOrder = computed(() =>
-  Boolean(selectedRecord.value)
-  && selectedOrder.value.status === '已撤回'
-  && canDeleteDraftOrder.value,
-)
 const canDeleteSelectedOrder = computed(() =>
   Boolean(selectedRecord.value)
   && canManageSelectedOrderFactory.value
   && (
     canMoldingSamplePermission('system:user_manage', selectedOrder.value.factory_id)
-    || canDeleteSelectedWithdrawnOrder.value
+    || (
+      MOLDING_SAMPLE_OWNER_OR_SUPERVISOR_DELETE_STATUSES.has(selectedOrder.value.status)
+      && (
+        canMoldingSamplePermission('molding_sample:supervisor_review', selectedOrder.value.factory_id)
+        || (
+          MOLDING_SAMPLE_MANAGER_DELETE_STATUSES.has(selectedOrder.value.status)
+          && canMoldingSamplePermission('molding_sample:manager_review', selectedOrder.value.factory_id)
+          && canDeleteDraftOrder.value
+        )
+        || (
+          canDeleteDraftOrder.value
+          && isCurrentUserOpeningEngineer(selectedRecord.value!)
+        )
+      )
+    )
   ),
 )
 const canApproveSelectedOrder = computed(() => {
@@ -2793,7 +2842,7 @@ async function deleteSelectedOrder() {
   if (!canDeleteSelectedOrder.value) {
     actionMessage.value = !canManageSelectedOrderFactory.value
       ? '当前厂区为只读，仅可查看数据。'
-      : '只有管理员或可删草稿的工程账号可以删除当前啤办单。'
+      : '只有管理员、具备主管审核权限的账号或建单本人可以删除当前啤办单。'
     return
   }
 
