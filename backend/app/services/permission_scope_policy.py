@@ -19,7 +19,7 @@ INTERNAL_QUOTE_SECTION_DEPARTMENTS = {
     "engineering": ENGINEERING_DEPARTMENTS,
     "electronic": ("electronic",),
     "molding": PRODUCTION_DEPARTMENTS,
-    "painting": ("painting",),
+    "painting": ("production", "painting"),
     "slush": ("slush",),
     "sewing": ("sewing",),
     "assembly": ("assembly",),

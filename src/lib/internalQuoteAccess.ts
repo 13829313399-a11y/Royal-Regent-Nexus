@@ -43,6 +43,16 @@ export function canReviewInternalQuoteSections(
   )
 }
 
+export function canEditAllInternalQuoteSections(
+  authStore: InternalQuoteAccessChecker,
+  factoryId: string,
+) {
+  return Boolean(factoryId) && (
+    authStore.can('internal_quote:sales_edit', factoryId, 'sales-business')
+    || authStore.can('internal_quote:engineering_edit', factoryId, 'engineering')
+  )
+}
+
 export function canOperateInternalQuote(
   authStore: InternalQuoteAccessChecker,
   factoryId: string,
