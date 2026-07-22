@@ -3538,6 +3538,94 @@ describe('molding sample runtime error handling', () => {
     wrapper.unmount()
   })
 
+  it('shows delete for an engineering supervisor across every business-allowed order status', async () => {
+    const allowedStatuses: MoldingSampleStatus[] = [
+      '待审核',
+      '待生产',
+      '生产中',
+      '已完成',
+      '已驳回',
+      '已撤回',
+    ]
+    const records = allowedStatuses.map((status, index) => {
+      const record = createMoldingSampleRecord(status, `BP-SUPERVISOR-DELETE-${index + 1}`, index + 1)
+      record.order.eng_name = '其他工程师'
+      return record
+    })
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程主管'],
+      permissions: ['molding_sample:read', 'molding_sample:supervisor_review'],
+      factoryScopes: ['huaxing'],
+      displayName: '华兴工程主管',
+      department: 'engineering',
+    })
+
+    for (const record of records) {
+      await getButtonByText(wrapper, record.order.id).trigger('click')
+      await nextTick()
+      expect(getButtonByText(wrapper, '删除啤办单').exists()).toBe(true)
+      await getButtonByExactText(wrapper, '返回看板').trigger('click')
+      await nextTick()
+    }
+
+    wrapper.unmount()
+  })
+
+  it('shows delete for the opening engineer across every business-allowed order status', async () => {
+    const allowedStatuses: MoldingSampleStatus[] = [
+      '待审核',
+      '待生产',
+      '生产中',
+      '已完成',
+      '已驳回',
+      '已撤回',
+    ]
+    const records = allowedStatuses.map((status, index) =>
+      createMoldingSampleRecord(status, `BP-OWNER-DELETE-${index + 1}`, index + 1),
+    )
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程部'],
+      permissions: ['molding_sample:read', 'molding_sample:delete_draft'],
+      factoryScopes: ['huaxing'],
+      displayName: '测试账号',
+      department: 'engineering',
+    })
+
+    for (const record of records) {
+      await getButtonByText(wrapper, record.order.id).trigger('click')
+      await nextTick()
+      expect(getButtonByText(wrapper, '删除啤办单').exists()).toBe(true)
+      await getButtonByExactText(wrapper, '返回看板').trigger('click')
+      await nextTick()
+    }
+
+    wrapper.unmount()
+  })
+
+  it('keeps a waiting-manager-review order admin-only for deletion', async () => {
+    const record = createMoldingSampleRecord('待经理审核', 'BP-WAITING-MANAGER-DELETE-UI')
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程主管'],
+      permissions: ['molding_sample:read', 'molding_sample:supervisor_review'],
+      factoryScopes: ['huaxing'],
+      displayName: '华兴工程主管',
+      department: 'engineering',
+    })
+
+    await getButtonByText(wrapper, record.order.id).trigger('click')
+    await nextTick()
+
+    expect(wrapper.findAll('button').some((button) => button.text().includes('删除啤办单'))).toBe(false)
+
+    wrapper.unmount()
+  })
+
   it('keeps a completed legacy list load when the initial server board response arrives late', async () => {
     const lateBoardRecord = createMoldingSampleRecord('待审核', 'BP-LATE-BOARD-001', 1)
     const fullListRecord = createMoldingSampleRecord('已完成', 'BP-FULL-LIST-001', 2)
