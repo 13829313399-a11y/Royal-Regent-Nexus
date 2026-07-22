@@ -21,6 +21,7 @@ describe('systemApi', () => {
     const api = createSystemApi(client)
 
     await api.listNotifications()
+    await api.listNotifications({ changed_after: '2026-07-22T08:25:00.000Z' })
     await api.updateNotification('notice-1', { status: 'handled' })
     await api.listRegistrationRequests('pending')
     await api.approveRegistrationRequest('registration-1', {
@@ -44,6 +45,7 @@ describe('systemApi', () => {
 
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       'get /system/notifications',
+      'get /system/notifications?changed_after=2026-07-22T08%3A25%3A00.000Z',
       'patch /system/notifications/notice-1',
       'get /system/registration-requests?status=pending',
       'post /system/registration-requests/registration-1/approve',
@@ -54,7 +56,7 @@ describe('systemApi', () => {
       'get /system/roles',
       'get /system/positions',
     ])
-    expect(calls[3].data).toEqual({
+    expect(calls[4].data).toEqual({
       system_position_role_id: 'engineer',
       profile: {
         display_name: '张三',
@@ -66,6 +68,6 @@ describe('systemApi', () => {
       },
       review_comment: '资料完整',
     })
-    expect(calls[7].data).toEqual({ temporary_password: '123456', notification_id: 'notice-reset-1' })
+    expect(calls[8].data).toEqual({ temporary_password: '123456', notification_id: 'notice-reset-1' })
   })
 })

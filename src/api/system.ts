@@ -128,10 +128,21 @@ export interface SystemNotificationResponse {
   handled_at: string
 }
 
+export interface SystemNotificationFilters {
+  changed_after?: string
+}
+
 export function createSystemApi(client: SystemHttpClient = http) {
   return {
-    async listNotifications() {
-      const response = await client.get<SystemNotificationResponse[]>('/system/notifications')
+    async listNotifications(filters: SystemNotificationFilters = {}) {
+      const params = new URLSearchParams()
+      if (filters.changed_after) {
+        params.set('changed_after', filters.changed_after)
+      }
+      const query = params.toString()
+      const response = await client.get<SystemNotificationResponse[]>(
+        query ? `/system/notifications?${query}` : '/system/notifications',
+      )
       return response.data
     },
     async updateNotification(notificationId: string, payload: SystemNotificationUpdateRequest) {

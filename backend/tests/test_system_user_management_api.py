@@ -943,6 +943,39 @@ def test_system_notification_access_is_limited_to_targeted_accounts(monkeypatch)
         assert update_response.status_code == 403
 
 
+def test_system_notification_feed_supports_incremental_changes_without_changing_legacy_list(monkeypatch):
+    with make_client(monkeypatch) as client:
+        client.post("/api/auth/register", json=register_payload("incremental-system-notification"))
+        login(client, "admin")
+
+        legacy_response = client.get("/api/system/notifications")
+        assert legacy_response.status_code == 200
+        legacy_notifications = legacy_response.json()
+        assert legacy_notifications
+
+        future_response = client.get(
+            "/api/system/notifications",
+            params={"changed_after": "2099-01-01T00:00:00+08:00"},
+        )
+        assert future_response.status_code == 200
+        assert future_response.json() == []
+
+        historical_response = client.get(
+            "/api/system/notifications",
+            params={"changed_after": "2000-01-01T00:00:00+08:00"},
+        )
+        assert historical_response.status_code == 200
+        assert [item["id"] for item in historical_response.json()] == [
+            item["id"] for item in legacy_notifications
+        ]
+
+        invalid_response = client.get(
+            "/api/system/notifications",
+            params={"changed_after": "not-a-timestamp"},
+        )
+        assert invalid_response.status_code == 422
+
+
 def test_handled_system_notification_cannot_be_downgraded_to_read(monkeypatch):
     with make_client(monkeypatch) as client:
         client.post("/api/auth/register", json=register_payload("terminal-system-notification"))
