@@ -14,7 +14,7 @@ from app.models.internal_quote import InternalQuote, InternalQuoteSection
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v2"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v3"
 TEMPLATE_VERSION = P3_TEMPLATE_VERSION
 STRUCTURED_DATA_SCHEMA_VERSION = "internal-quote-structured-data-v1"
 STRUCTURED_DATA_CHUNK_SIZE = 30000
@@ -699,8 +699,8 @@ def _build_summary_sheet(
     carton_price_factor = _float_value(reference_snapshot.get("paper_price_factor"), 2.7)
     packaging_rows = (
         ("外箱:", *carton_dimensions),
-        ("内箱", *_dimensions(sales_payload.get("color_box_size_cm"))),
-        ("产品尺寸", *_dimensions(sales_payload.get("product_size_cm"))),
+        ("彩盒尺寸 (in)", *_dimensions(sales_payload.get("color_box_size_in") or sales_payload.get("color_box_size_cm"))),
+        ("产品尺寸 (in)", *_dimensions(sales_payload.get("product_size_in") or sales_payload.get("product_size_cm"))),
         ("CUFT:", f"=K{packaging_start_row}*L{packaging_start_row}*M{packaging_start_row}/1728", "", ""),
         ("纸板价", f"=K{packaging_start_row}*L{packaging_start_row}*3.5/1000", "", ""),
         (

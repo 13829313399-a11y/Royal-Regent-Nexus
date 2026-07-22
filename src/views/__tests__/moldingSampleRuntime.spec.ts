@@ -1661,29 +1661,30 @@ describe('molding sample runtime error handling', () => {
     expect(printArea).not.toContain('RMB 120.00')
     expect(printArea).not.toContain('HKD 111.11')
     expect(printArea).toContain('BP-PRINT-002')
-    expect(printArea).toContain('Royal Regent Nexus')
+    expect(printArea).toContain('ROYAL REGENT NEXUS')
     expect(printArea).toContain('工程啤办通知单')
-    expect(printArea).toContain('完整单据数据')
+    expect(printArea).not.toContain('完整单据数据')
     expect(printArea).toContain('产品 / 客户')
     expect(printArea).toContain('产品编号')
     expect(printArea.indexOf('产品 / 客户')).toBeLessThan(printArea.indexOf('产品编号'))
     expect(printArea).toContain('开单日期')
     expect(printArea).not.toContain('业务开单日期')
-    expect(printArea).toContain('模具资料')
+    expect(printArea).toContain('模具信息')
     expect(printArea).toContain('原料与颜色')
-    expect(printArea).toContain('用量概览')
+    expect(printArea).toContain('用量（kg）')
     expect(printArea).toContain('领料重量')
     expect(printArea).toContain('预计料费(HKD)')
     expect(printArea).toContain('实际料费(HKD)')
-    expect(printArea).toContain('签核栏')
-    expect(printArea).toContain('经办确认')
-    expect(printArea).toContain('主管审核')
-    expect(printArea).toContain('啤机确认')
-    expect(printArea).toContain('T0 阶段')
-    expect(printArea).toContain('共 1 条模具明细')
-    expect(printArea).toContain('模具完整明细')
+    expect(printArea).not.toContain('签核栏')
+    expect(printArea).not.toContain('经办确认')
+    expect(printArea).not.toContain('主管审核')
+    expect(printArea).not.toContain('啤机确认')
+    expect(printArea).not.toContain('来源厂 → 承接生产厂')
+    expect(printArea).toContain('T0 · 啤办')
+    expect(printArea).toContain('共 1 项模具明细')
+    expect(printArea).toContain('模具明细')
     expect(printArea).not.toContain('扫码查看单据')
-    expect(printArea).toContain('第 1 / 1 页')
+    expect(printArea).not.toContain('一单一页')
 
     await getButtonByExactText(wrapper, '确认打印').trigger('click')
     expect(printSpy).toHaveBeenCalledTimes(1)
@@ -1874,23 +1875,30 @@ describe('molding sample runtime error handling', () => {
     expect(printSpy).not.toHaveBeenCalled()
     expect(preview).toContain('BP-PROD-PRINT-001')
     expect(preview).toContain('70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料')
-    expect(preview).toContain('试料 · 不计结余')
+    expect(preview).toContain('试料')
     expect(printArea).toContain('70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料')
     expect(printArea).not.toContain('legacy material text')
-    expect(printArea).toContain('试料 · 不计结余')
+    expect(printArea).toContain('试料')
     expect(printArea).toContain('650 × 450 × 380 mm')
     expect(printArea).toContain('在厂')
-    expect(printArea).toContain('2026-07-18')
+    expect(printArea).toContain('2026-07-22')
+    expect(printArea).not.toContain('2026-07-18')
     expect(printArea).toContain('黑色 / PMS Black')
-    expect(printArea).toContain('1/1 · 30 啤')
+    expect(printArea).toContain('1/1 套 · 30 啤')
     expect(printArea).toContain('15.00 kg')
     expect(printArea).toContain('工程首件确认')
     expect(printArea).not.toContain('工程审核通过后下发至啤机部执行；打印内容仅包含工程部填写资料。')
-    expect(printArea).toContain('来源 → 承接：华兴 → 华兴')
-    expect(printArea).toContain('来源厂 → 承接生产厂')
-    expect(printArea).toContain('单据归属来源厂（华兴），生产执行承接厂（华兴）')
-    expect(printArea).toContain('派厂时间')
-    expect(printArea).toContain('2026-07-01 08:00:00')
+    expect(printArea).not.toContain('回模')
+    expect(printArea).not.toContain('来源 → 承接')
+    expect(printArea).not.toContain('来源厂 → 承接生产厂')
+    expect(printArea).not.toContain('单据归属来源厂')
+    expect(printArea).not.toContain('派厂时间')
+    expect(printArea).not.toContain('2026-07-01 08:00:00')
+    expect(printArea).not.toContain('填写部 / 发至')
+    expect(printArea).not.toContain('工程 / 审核主管')
+    expect(printArea).not.toContain('业务开单日期')
+    expect(printArea).not.toContain('产品编号')
+    expect(printArea).not.toContain('阶段 / 类型')
     expect(printArea).not.toContain('14.20 kg')
     expect(printArea).not.toContain('啤机接收')
     expect(preview).not.toContain('文件编号')
@@ -3526,6 +3534,94 @@ describe('molding sample runtime error handling', () => {
 
     expect(mockedMoldingSampleApi.deleteOrder).toHaveBeenCalledWith('BP-WITHDRAW-UI')
     expect(wrapper.text()).toContain('啤办单 BP-WITHDRAW-UI 已删除')
+
+    wrapper.unmount()
+  })
+
+  it('shows delete for an engineering supervisor across every business-allowed order status', async () => {
+    const allowedStatuses: MoldingSampleStatus[] = [
+      '待审核',
+      '待生产',
+      '生产中',
+      '已完成',
+      '已驳回',
+      '已撤回',
+    ]
+    const records = allowedStatuses.map((status, index) => {
+      const record = createMoldingSampleRecord(status, `BP-SUPERVISOR-DELETE-${index + 1}`, index + 1)
+      record.order.eng_name = '其他工程师'
+      return record
+    })
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程主管'],
+      permissions: ['molding_sample:read', 'molding_sample:supervisor_review'],
+      factoryScopes: ['huaxing'],
+      displayName: '华兴工程主管',
+      department: 'engineering',
+    })
+
+    for (const record of records) {
+      await getButtonByText(wrapper, record.order.id).trigger('click')
+      await nextTick()
+      expect(getButtonByText(wrapper, '删除啤办单').exists()).toBe(true)
+      await getButtonByExactText(wrapper, '返回看板').trigger('click')
+      await nextTick()
+    }
+
+    wrapper.unmount()
+  })
+
+  it('shows delete for the opening engineer across every business-allowed order status', async () => {
+    const allowedStatuses: MoldingSampleStatus[] = [
+      '待审核',
+      '待生产',
+      '生产中',
+      '已完成',
+      '已驳回',
+      '已撤回',
+    ]
+    const records = allowedStatuses.map((status, index) =>
+      createMoldingSampleRecord(status, `BP-OWNER-DELETE-${index + 1}`, index + 1),
+    )
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce(records)
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程部'],
+      permissions: ['molding_sample:read', 'molding_sample:delete_draft'],
+      factoryScopes: ['huaxing'],
+      displayName: '测试账号',
+      department: 'engineering',
+    })
+
+    for (const record of records) {
+      await getButtonByText(wrapper, record.order.id).trigger('click')
+      await nextTick()
+      expect(getButtonByText(wrapper, '删除啤办单').exists()).toBe(true)
+      await getButtonByExactText(wrapper, '返回看板').trigger('click')
+      await nextTick()
+    }
+
+    wrapper.unmount()
+  })
+
+  it('keeps a waiting-manager-review order admin-only for deletion', async () => {
+    const record = createMoldingSampleRecord('待经理审核', 'BP-WAITING-MANAGER-DELETE-UI')
+    mockedMoldingSampleApi.listOrders.mockResolvedValueOnce([record])
+
+    const wrapper = await mountRuntimeView(MoldingSampleView, {
+      roles: ['工程主管'],
+      permissions: ['molding_sample:read', 'molding_sample:supervisor_review'],
+      factoryScopes: ['huaxing'],
+      displayName: '华兴工程主管',
+      department: 'engineering',
+    })
+
+    await getButtonByText(wrapper, record.order.id).trigger('click')
+    await nextTick()
+
+    expect(wrapper.findAll('button').some((button) => button.text().includes('删除啤办单'))).toBe(false)
 
     wrapper.unmount()
   })

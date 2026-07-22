@@ -117,6 +117,10 @@ BOARD_SOURCE_STATUSES: dict[MoldingSampleBoardStatus, tuple[str, ...]] = {
 
 INITIAL_ORDER_STATUS = "待审核"
 LOCKED_STATUSES = {"待经理审核", "待生产", "生产中", "已完成"}
+OWNER_OR_SUPERVISOR_DELETE_STATUSES = frozenset(
+    {"待审核", "待生产", "生产中", "已完成", "已驳回", "已撤回"}
+)
+MANAGER_DELETE_STATUSES = frozenset({"待审核", "已驳回", "已撤回"})
 PRODUCTION_TASK_STATUSES = frozenset({"待生产", "生产中", "已完成"})
 DISPATCHABLE_STATUSES = frozenset({"待审核", "待经理审核", "已驳回", "已撤回", "待生产"})
 MOLDING_FACTORY_CAPABILITIES: dict[str, dict[str, object]] = {
@@ -1889,13 +1893,41 @@ def ensure_order_write_allowed(
 
 def ensure_order_delete_allowed(db: Session, order: MoldingSampleOrder, current_user: AuthContext) -> None:
     ensure_molding_local_write(db, current_user, order.factory_id)
-    if order.status in LOCKED_STATUSES:
+
+    if has_permission_for_departments(
+        current_user,
+        "system:user_manage",
+        order.factory_id,
+        MANAGEMENT_DEPARTMENTS,
+    ):
+        return
+
+    if order.status not in OWNER_OR_SUPERVISOR_DELETE_STATUSES:
+        raise HTTPException(status_code=403, detail="当前状态仅管理员可以删除啤办单")
+
+    if has_permission_for_departments(
+        current_user,
+        "molding_sample:supervisor_review",
+        order.factory_id,
+        ENGINEERING_DEPARTMENTS,
+    ):
+        return
+
+    if (
+        order.status in MANAGER_DELETE_STATUSES
+        and has_permission_for_departments(
+            current_user,
+            "molding_sample:manager_review",
+            order.factory_id,
+            MANAGEMENT_DEPARTMENTS,
+        )
+    ):
         ensure_permission_for_departments(
             db,
             current_user,
-            "system:user_manage",
+            "molding_sample:delete_draft",
             order.factory_id,
-            MANAGEMENT_DEPARTMENTS,
+            ENGINEERING_EDIT_DEPARTMENTS,
         )
         return
 
@@ -1907,16 +1939,11 @@ def ensure_order_delete_allowed(db: Session, order: MoldingSampleOrder, current_
         ENGINEERING_EDIT_DEPARTMENTS,
     )
 
-    if has_permission_for_departments(
-        current_user,
-        "molding_sample:manager_review",
-        order.factory_id,
-        MANAGEMENT_DEPARTMENTS,
-    ):
-        return
-
     if not is_opening_engineer(order, current_user):
-        raise HTTPException(status_code=403, detail="普通工程师只能删除本人创建的啤办单")
+        raise HTTPException(
+            status_code=403,
+            detail="只有具备主管审核权限的账号可以删除他人单据，普通工程师只能删除本人创建的啤办单",
+        )
 
 
 def update_order(db: Session, order_id: str, payload: MoldingSampleEditRequest, current_user: AuthContext) -> MoldingSampleOrder:

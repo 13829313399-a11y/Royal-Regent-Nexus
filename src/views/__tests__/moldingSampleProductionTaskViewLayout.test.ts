@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const source = readFileSync(join(process.cwd(), 'src/views/MoldingSampleProductionTaskView.vue'), 'utf8')
+const productionPrintSource = readFileSync(join(process.cwd(), 'src/components/molding/print/MoldingSampleProductionPrintDocument.vue'), 'utf8')
+const printCssSource = readFileSync(join(process.cwd(), 'src/components/molding/print/moldingSamplePrint.css'), 'utf8')
 
 for (const requiredCopy of [
   '啤办生产任务单',
@@ -53,7 +55,7 @@ for (const requiredCopy of [
   '保存中...',
   '工程啤办单',
 ]) {
-  assert.match(source, new RegExp(requiredCopy))
+  assert.match(`${source}\n${productionPrintSource}`, new RegExp(requiredCopy))
 }
 
 for (const requiredImplementation of [
@@ -144,7 +146,6 @@ for (const requiredImplementation of [
   'getOrderFactoryRouteLabel',
   'getOrderFactoryOwnershipLabel',
   'production_assigned_at',
-  'molding-sample-task-print-ownership',
   'selectedFactoryHasMoldingDepartment',
   'data-testid="molding-sample-cross-factory-tracking"',
   'data-testid="molding-sample-cross-factory-tracking-link"',
@@ -199,9 +200,16 @@ assert.match(source, /data-testid="production-full-item-usage-section"[\s\S]*实
 assert.match(source, /data-testid="production-full-item-cost-grid"/)
 assert.match(source, /data-testid="production-task-search-input"[\s\S]*type="search"[\s\S]*aria-label="模糊搜索生产任务"/)
 assert.match(source, /function matchesProductionTaskSearch\([\s\S]*record\.order\.factory_id[\s\S]*getMoldingSampleFactoryLabel\(record\.order\.factory_id\)[\s\S]*productionFactoryId[\s\S]*getMoldingSampleFactoryLabel\(productionFactoryId\)[\s\S]*tokens\.every/)
-assert.match(source, /data-testid="molding-sample-task-print-preview-notice"[\s\S]*getOrderFactoryOwnershipLabel\(record\.order\)[\s\S]*派厂时间[\s\S]*record\.order\.production_assigned_at/)
 assert.doesNotMatch(source, /系统(?:提交|更新)时间（北京时间）/)
-assert.match(source, /class="molding-sample-task-print-root hidden"[\s\S]*molding-sample-task-print-ownership[\s\S]*getOrderFactoryOwnershipLabel\(record\.order\)[\s\S]*派厂时间[\s\S]*record\.order\.production_assigned_at/)
+assert.equal((source.match(/<MoldingSampleProductionPrintDocument/g) ?? []).length, 2, 'preview and print should use the same production document component')
+assert.match(source, /<\/main>\s*<MoldingSampleProductionPrintDocument[\s\S]*class="hidden"/)
+assert.match(productionPrintSource, /啤机部生产任务单[\s\S]*注意事项 \/ 开单事由[\s\S]*工程模具明细/)
+assert.match(productionPrintSource, /模具信息[\s\S]*工程时点[\s\S]*用料与颜色[\s\S]*数量 \/ 需料[\s\S]*工程备注/)
+assert.doesNotMatch(productionPrintSource, /回模|来源厂|承接生产厂|单据归属|派厂时间|填写部 \/ 发至|工程 \/ 审核主管|业务开单日期|产品编号|阶段 \/ 类型/)
+assert.match(printCssSource, /body\.molding-sample-task-printing #app > :not\(\.molding-print-production-root\)/)
+assert.match(printCssSource, /\.molding-print-table thead \{\s*display: table-header-group;/)
+assert.match(printCssSource, /\.molding-print-table tr \{\s*break-inside: avoid;\s*page-break-inside: avoid;/)
+assert.doesNotMatch(printCssSource, /height:\s*273mm|overflow:\s*hidden/)
 assert.match(source, /interface TaskPrintRouteSnapshot \{[\s\S]*originFactoryId: string[\s\S]*productionFactoryId: string[\s\S]*productionAssignmentVersion: number[\s\S]*productionAssignedAt: string/)
 assert.match(source, /async function confirmTaskPrint\(\) \{[\s\S]*resolveCurrentTaskPrintRecords\(\)[\s\S]*printableTaskRecords\.value = \[\.\.\.currentRecords\][\s\S]*await nextTick\(\)[\s\S]*resolveCurrentTaskPrintRecords\(\)[\s\S]*window\.print\(\)/)
 assert.match(source, /watch\(taskEntries,[\s\S]*resolveCurrentTaskPrintRecords\(\)[\s\S]*invalidateTaskPrintPreview\(\)[\s\S]*\{ deep: true \}\)/)
@@ -235,45 +243,30 @@ assert.match(source, /\.production-full-item-master \{[\s\S]*overflow: clip;/)
 assert.doesNotMatch(source, /border-2 border-teal/)
 assert.match(source, /@media \(prefers-reduced-motion: reduce\)/)
 assert.doesNotMatch(source, /<table class="w-full min-w-\[860px\] text-\[12px\]">/)
-assert.match(source, /<\/main>\s*<section class="molding-sample-task-print-root hidden"/)
-assert.match(source, /#app > :not\(\.molding-sample-task-print-root\) \{ display: none !important; \}/)
-assert.match(source, /body\.molding-sample-task-printing #app > \.molding-sample-task-print-root \{ display: block !important; position: static !important;/)
-assert.match(source, /body\.molding-sample-task-printing #app \{ min-height: 0 !important; height: auto !important;/)
-assert.match(source, /@page \{ size: A4 landscape; margin: 5mm; \}/)
-assert.match(source, /width: calc\(297mm - 10mm\) !important; max-width: none !important;/)
-assert.match(source, /molding-sample-task-print-table \{ width: 100%;/)
-assert.match(source, /molding-sample-task-print-index \{ width: 3%; \}/)
-assert.match(source, /molding-sample-task-print-mold \{ width: 25%; \}/)
-assert.match(source, /molding-sample-task-print-timing \{ width: 17%; \}/)
-assert.match(source, /molding-sample-task-print-material \{ width: 27%; \}/)
-assert.match(source, /molding-sample-task-print-quantity \{ width: 12%; \}/)
-assert.match(source, /molding-sample-task-print-notes \{ width: 16%; \}/)
-assert.doesNotMatch(source, /min-height: 196mm/)
-assert.match(source, /v-for="\(record, recordIndex\) in printableTaskRecords"/)
-assert.match(source, /data-testid="molding-sample-task-print-notice"/)
-assert.match(source, /molding-sample-task-print-page \{[\s\S]*min-height: 0; height: auto;[\s\S]*break-inside: auto;/)
-assert.match(source, /molding-sample-task-print-page\.is-short \{ break-inside: avoid-page; page-break-inside: avoid; \}/)
-assert.doesNotMatch(source, /molding-sample-task-print-page[^\{]*\{[^}]*break-after:\s*page;/)
-assert.match(source, /molding-sample-task-print-table thead \{ display: table-header-group; \}/)
-assert.match(source, /molding-sample-task-print-table tr \{ break-inside: avoid-page; page-break-inside: avoid; \}/)
+assert.match(source, /<\/main>\s*<MoldingSampleProductionPrintDocument[\s\S]*class="hidden"/)
+assert.match(source, /@media print \{ @page \{ size: A4 landscape; margin: 6mm; \} \}/)
+assert.match(productionPrintSource, /v-for="\(record, recordIndex\) in records"/)
+assert.match(productionPrintSource, /molding-sample-task-print-notice/)
+assert.match(printCssSource, /\.molding-print-page \{[\s\S]*min-height: 0 !important;[\s\S]*height: auto !important;[\s\S]*overflow: visible !important;/)
+assert.match(printCssSource, /\.molding-print-col-production-mold \{ width: 24%; \}/)
+assert.match(printCssSource, /\.molding-print-col-production-timing \{ width: 14%; \}/)
+assert.match(printCssSource, /\.molding-print-col-production-material \{ width: 27%; \}/)
+assert.match(printCssSource, /\.molding-print-col-production-quantity \{ width: 14%; \}/)
+assert.match(printCssSource, /\.molding-print-col-production-notes \{ width: 17%; \}/)
 assert.match(source, /getTaskPrintDensityClass/)
-assert.match(source, /molding-sample-task-print-page\.is-compact/)
-assert.match(source, /molding-sample-task-print-page\.is-dense/)
-assert.match(source, /min-w-\[720px\] w-full border-collapse text-left text-\[14px\] leading-5/)
-assert.match(source, /molding-sample-task-print-root \{[\s\S]*font-size: 11pt; line-height: 1\.38;/)
-assert.match(source, /molding-sample-task-print-meta \{[\s\S]*font-size: 11pt;/)
-assert.match(source, /molding-sample-task-print-reason \{[\s\S]*font-size: 11pt;/)
-assert.match(source, /molding-sample-task-print-table \{[\s\S]*font-size: 11pt; line-height: 1\.38;/)
-assert.match(source, /molding-sample-task-print-table th \{[\s\S]*font-size: 10\.5pt;/)
-assert.match(source, /molding-sample-task-print-table td > span \{[\s\S]*font-size: 10pt;/)
-assert.match(source, /is-compact \.molding-sample-task-print-table \{[\s\S]*font-size: 10\.5pt;/)
-assert.match(source, /is-dense \.molding-sample-task-print-table \{[\s\S]*font-size: 10pt;/)
-assert.match(source, /is-dense \.molding-sample-task-print-table td > span \{ font-size: 9\.5pt; \}/)
-assert.doesNotMatch(source, /font-size:\s*8(?:\.5)?pt;/)
-assert.doesNotMatch(source, /molding-sample-task-print-footer/)
-assert.match(source, /formatMaterialComposition\(resolveMaterialComponents\(item\)\)/)
-assert.match(source, /试料 · 不计结余/)
-assert.doesNotMatch(source, /molding-sample-task-print-signatures/)
+assert.match(printCssSource, /molding-print-production-page\.is-compact/)
+assert.match(printCssSource, /molding-print-production-page\.is-dense/)
+assert.match(printCssSource, /\.molding-print-root \{[\s\S]*font-size: 10\.5pt;[\s\S]*line-height: 1\.4;/)
+assert.match(printCssSource, /\.molding-print-table \{[\s\S]*font-size: 10\.5pt;[\s\S]*line-height: 1\.4;/)
+assert.match(printCssSource, /\.molding-print-table th \{[\s\S]*font-size: 10pt;/)
+assert.match(printCssSource, /\.molding-print-table td > span \{[\s\S]*font-size: 9\.5pt;/)
+for (const match of printCssSource.matchAll(/font-size:\s*([0-9.]+)pt/g)) {
+  assert.ok(Number(match[1]) >= 9.5, `print font size must stay readable: ${match[0]}`)
+}
+assert.doesNotMatch(productionPrintSource, /molding-sample-task-print-footer/)
+assert.match(productionPrintSource, /formatMaterialComposition\(components\)/)
+assert.match(productionPrintSource, /试料/)
+assert.doesNotMatch(productionPrintSource, /molding-sample-task-print-signatures/)
 assert.doesNotMatch(source, /molding-sample-task-print-handoff/)
 assert.doesNotMatch(source, /本任务单由工程部下发给啤机部执行/)
 assert.doesNotMatch(source, /啤机确认机台/)

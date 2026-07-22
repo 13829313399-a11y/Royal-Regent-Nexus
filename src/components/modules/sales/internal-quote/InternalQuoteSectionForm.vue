@@ -848,19 +848,19 @@ function addCaixingCostRow() { sales.value.customer_quote_fields.caixing.cost_ro
         </div>
         <div class="dimension-grid">
           <article class="dimension-card">
-            <strong>产品尺寸 (cm，可不填)</strong>
+            <strong>产品尺寸 (in，可不填)</strong>
             <div class="inline-fields">
-              <label><span>长 L</span><input v-model.number="sales.product_size_cm.length" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品长度 CM"></label>
-              <label><span>宽 W</span><input v-model.number="sales.product_size_cm.width" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品宽度 CM"></label>
-              <label><span>高 H</span><input v-model.number="sales.product_size_cm.height" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品高度 CM"></label>
+              <label><span>长 L</span><input v-model.number="sales.product_size_in.length" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品长度 IN"></label>
+              <label><span>宽 W</span><input v-model.number="sales.product_size_in.width" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品宽度 IN"></label>
+              <label><span>高 H</span><input v-model.number="sales.product_size_in.height" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品高度 IN"></label>
             </div>
           </article>
           <article class="dimension-card">
-            <strong>彩盒尺寸 (cm)</strong>
+            <strong>彩盒尺寸 (in)</strong>
             <div class="inline-fields">
-              <label><span>长 L</span><input v-model.number="sales.color_box_size_cm.length" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩盒长度 CM"></label>
-              <label><span>宽 W</span><input v-model.number="sales.color_box_size_cm.width" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩盒宽度 CM"></label>
-              <label><span>高 H</span><input v-model.number="sales.color_box_size_cm.height" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩盒高度 CM"></label>
+              <label><span>长 L</span><input v-model.number="sales.color_box_size_in.length" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩盒长度 IN"></label>
+              <label><span>宽 W</span><input v-model.number="sales.color_box_size_in.width" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩盒宽度 IN"></label>
+              <label><span>高 H</span><input v-model.number="sales.color_box_size_in.height" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩盒高度 IN"></label>
             </div>
           </article>
         </div>

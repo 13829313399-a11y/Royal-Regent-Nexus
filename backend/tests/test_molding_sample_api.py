@@ -1767,6 +1767,77 @@ def test_engineer_can_only_edit_and_delete_orders_they_created(enforce_client):
     assert client.delete("/api/injection/BP-ENGINEER-OWNER-001").status_code == 204
 
 
+@pytest.mark.parametrize(
+    ("status", "suffix"),
+    [
+        ("待审核", "pending"),
+        ("待生产", "waiting-production"),
+        ("生产中", "producing"),
+        ("已完成", "completed"),
+        ("已驳回", "rejected"),
+        ("已撤回", "withdrawn"),
+    ],
+)
+def test_opening_engineer_can_delete_order_in_business_allowed_statuses(enforce_client, status, suffix):
+    client = enforce_client
+    order_id = f"BP-OWNER-DELETE-{suffix.upper()}"
+    login_as(client, "engineer")
+    assert client.post("/api/injection", json=sample_order_payload(order_id)).status_code == 201
+    set_board_order_state(order_id, status=status)
+
+    delete_response = client.delete(f"/api/injection/{order_id}")
+
+    assert delete_response.status_code == 204, delete_response.text
+
+
+@pytest.mark.parametrize(
+    ("status", "suffix"),
+    [
+        ("待审核", "pending"),
+        ("待生产", "waiting-production"),
+        ("生产中", "producing"),
+        ("已完成", "completed"),
+        ("已驳回", "rejected"),
+        ("已撤回", "withdrawn"),
+    ],
+)
+def test_engineering_supervisor_can_delete_other_engineers_order_in_business_allowed_statuses(
+    enforce_client,
+    status,
+    suffix,
+):
+    client = enforce_client
+    order_id = f"BP-SUPERVISOR-DELETE-{suffix.upper()}"
+    login_as(client, "engineer")
+    assert client.post("/api/injection", json=sample_order_payload(order_id)).status_code == 201
+    set_board_order_state(order_id, status=status)
+
+    login_as(client, "supervisor")
+    delete_response = client.delete(f"/api/injection/{order_id}")
+
+    assert delete_response.status_code == 204, delete_response.text
+
+
+def test_waiting_manager_review_order_remains_admin_only_for_delete(enforce_client):
+    client = enforce_client
+    order_id = "BP-WAITING-MANAGER-DELETE-001"
+    login_as(client, "engineer")
+    assert client.post("/api/injection", json=sample_order_payload(order_id)).status_code == 201
+    set_board_order_state(order_id, status="待经理审核")
+
+    owner_response = client.delete(f"/api/injection/{order_id}")
+    assert owner_response.status_code == 403
+    assert "仅管理员" in owner_response.json()["detail"]
+
+    login_as(client, "supervisor")
+    supervisor_response = client.delete(f"/api/injection/{order_id}")
+    assert supervisor_response.status_code == 403
+    assert "仅管理员" in supervisor_response.json()["detail"]
+
+    login_as(client, "admin")
+    assert client.delete(f"/api/injection/{order_id}").status_code == 204
+
+
 def test_molding_clerk_cannot_edit_or_delete_engineering_draft(enforce_client):
     client = enforce_client
     login_as(client, "engineer")
@@ -3530,7 +3601,6 @@ def test_engineering_edit_delete_permissions_use_login_role(client):
     locked_payload = sample_order_payload("BP-LOCK-001")
     locked_payload["order"]["product_name"] = "普通工程误改"
     assert client.put("/api/injection/BP-LOCK-001", json=locked_payload).status_code == 403
-    assert client.delete("/api/injection/BP-LOCK-001").status_code == 403
 
     login_as(client, "manager")
     manager_payload = sample_order_payload("BP-LOCK-001")
@@ -3538,6 +3608,9 @@ def test_engineering_edit_delete_permissions_use_login_role(client):
     manager_edit_response = client.put("/api/injection/BP-LOCK-001", json=manager_payload)
     assert manager_edit_response.status_code == 200
     assert manager_edit_response.json()["order"]["product_name"] == "经理修正名称"
+
+    login_as(client, "engineer")
+    assert client.delete("/api/injection/BP-LOCK-001").status_code == 204
 
 
 def test_completed_order_header_edit_preserves_material_settlement_snapshot(client):
@@ -3595,7 +3668,7 @@ def test_completed_order_header_edit_preserves_material_settlement_snapshot(clie
     assert "先撤回完成" in rejected_response.json()["detail"]
 
 
-def test_only_admin_can_delete_locked_molding_sample_order(client):
+def test_admin_can_delete_locked_molding_sample_order_when_manager_cannot(client):
     login_as(client, "engineer")
     client.post("/api/injection", json=sample_order_payload("BP-ADMIN-DELETE-001"))
 
