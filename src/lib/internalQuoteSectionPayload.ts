@@ -333,14 +333,21 @@ export interface CaixingCustomerQuoteFields {
   cost_rows: CaixingCustomerCostRow[]
 }
 export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields }
+export interface SalesShippingPricing {
+  markup_x?: number
+  divisor?: number
+  freight_pct?: number
+  lifting_pct?: number
+}
 export interface SalesPayload {
   paper_price_factor: number
   flat_card_price_factor?: number
   packaging_materials: SalesPackagingMaterialRow[]
-  product_size_cm: SalesDimensions
-  color_box_size_cm: SalesDimensions
+  product_size_in: SalesDimensions
+  color_box_size_in: SalesDimensions
   cartons: SalesCartonRow[]
   freight_calc: SalesFreightCalculation
+  shipping?: SalesShippingPricing
   additional_tax_hkd?: number
   indonesia_freight_hkd?: number
   tax_categories?: SalesTaxRow[]
@@ -916,12 +923,17 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     && source.flat_card_price_factor !== ''
     && source.flat_card_price_factor != null
   const freightSource = objectValue(source.freight_calc)
+  const shippingSource = objectValue(source.shipping)
+  const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping')
   return {
     paper_price_factor: paperPriceFactor,
     ...(hasFlatCardPriceFactor ? { flat_card_price_factor: numberValue(source.flat_card_price_factor, paperPriceFactor) } : {}),
     packaging_materials: packagingMaterialRows(source.packaging_materials),
-    product_size_cm: dimensions(source.product_size_cm),
-    color_box_size_cm: dimensions(source.color_box_size_cm),
+    // The historical keys were suffixed `_cm`, although the desk values were
+    // entered as inches. Migrate them one-for-one; converting by 2.54 here
+    // would corrupt existing quotes such as 5.25 × 8.75 × 3.
+    product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
+    color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
     cartons: cartonRows(source.cartons),
     freight_calc: {
       enabled: booleanValue(freightSource.enabled, true),
@@ -930,6 +942,14 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       ...Object.fromEntries(salesFreightRouteDefinitions
         .map(({ key }) => [key, numberValue(freightSource[key], defaultSalesFreightCalculation[key])])),
     } as SalesFreightCalculation,
+    ...(hasShippingPricing ? {
+      shipping: {
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'markup_x') ? { markup_x: numberValue(shippingSource.markup_x, 1.2) } : {}),
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'divisor') ? { divisor: numberValue(shippingSource.divisor, .98) } : {}),
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'freight_pct') ? { freight_pct: numberValue(shippingSource.freight_pct, 48) } : {}),
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'lifting_pct') ? { lifting_pct: numberValue(shippingSource.lifting_pct, 52) } : {}),
+      },
+    } : {}),
     ...(hasLegacySalesCostFields ? {
       additional_tax_hkd: numberValue(source.additional_tax_hkd),
       indonesia_freight_hkd: numberValue(source.indonesia_freight_hkd),
