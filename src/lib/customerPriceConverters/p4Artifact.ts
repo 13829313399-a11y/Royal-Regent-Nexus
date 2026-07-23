@@ -44,6 +44,17 @@ export interface P4InternalQuoteArtifact {
   sections: Record<P4SectionCode, P4InternalQuoteSection>
 }
 
+export interface P4ArtifactMetadata {
+  quoteNo?: string
+  versionLabel?: string
+  customer?: string
+  quantity?: number
+  productName?: string
+  factoryAndWorkshop?: string
+  formulaVersion?: string
+  referenceSnapshotId?: string
+}
+
 interface StructuredChunkRow {
   recordType: string
   code: string
@@ -164,7 +175,32 @@ function reconstructJson(
   }
 }
 
-export function parseP4InternalQuoteArtifact(buffer: ArrayBuffer): P4InternalQuoteArtifact {
+function readApprovalManifest(rows: XlsxCellValue[][]) {
+  const headerIndex = rows.findIndex((row) => text(row?.[0]) === '清单字段' && text(row?.[1]) === '值')
+  if (headerIndex < 0) return new Map<string, string>()
+
+  const manifest = new Map<string, string>()
+  rows.slice(headerIndex + 1).forEach((row) => {
+    const key = text(row?.[0])
+    if (key) manifest.set(key, text(row?.[1]))
+  })
+  return manifest
+}
+
+function visibleProductName(rows: XlsxCellValue[][]) {
+  for (const row of rows.slice(0, 12)) {
+    const value = text(row?.[0])
+    if (value.length > 2 && value.endsWith('报价')) {
+      return value.slice(0, -2).trim()
+    }
+  }
+  return ''
+}
+
+export function parseP4InternalQuoteArtifact(
+  buffer: ArrayBuffer,
+  handoffMetadata: P4ArtifactMetadata = {},
+): P4InternalQuoteArtifact {
   let workbook: ReturnType<typeof parseXlsxWorkbook>
   try {
     workbook = parseXlsxWorkbook(buffer)
@@ -186,6 +222,33 @@ export function parseP4InternalQuoteArtifact(buffer: ArrayBuffer): P4InternalQuo
   }
   if (text(approval.rows[4]?.[1]) !== '最终业务放行完成，可交接客价转换台') {
     throw new P4ArtifactValidationError('P4 放行边界标记缺失或已被修改')
+  }
+  const approvalManifest = readApprovalManifest(approval.rows)
+  const formulaVersion = approvalManifest.get('formula_version') || text(approval.rows[1]?.[3])
+  const referenceSnapshotId = approvalManifest.get('reference_snapshot_id') || text(approval.rows[2]?.[1])
+  if (!formulaVersion) {
+    throw new P4ArtifactValidationError('审批与版本清单缺少公式版本')
+  }
+  if (!referenceSnapshotId) {
+    throw new P4ArtifactValidationError('审批与版本清单缺少参考快照')
+  }
+  if (handoffMetadata.formulaVersion && text(handoffMetadata.formulaVersion) !== formulaVersion) {
+    throw new P4ArtifactValidationError('交接清单公式版本与工作簿审批清单不一致')
+  }
+  if (handoffMetadata.referenceSnapshotId && text(handoffMetadata.referenceSnapshotId) !== referenceSnapshotId) {
+    throw new P4ArtifactValidationError('交接清单参考快照与工作簿审批清单不一致')
+  }
+
+  const isLegacySummaryLayout = text(summary.rows[1]?.[0]) === '报价编号'
+  if (isLegacySummaryLayout) {
+    const summaryFormulaVersion = text(summary.rows[2]?.[5])
+    const summaryReferenceSnapshotId = text(summary.rows[2]?.[7])
+    if (summaryFormulaVersion && summaryFormulaVersion !== formulaVersion) {
+      throw new P4ArtifactValidationError('报价明细公式版本与审批清单不一致')
+    }
+    if (summaryReferenceSnapshotId && summaryReferenceSnapshotId !== referenceSnapshotId) {
+      throw new P4ArtifactValidationError('报价明细参考快照与审批清单不一致')
+    }
   }
 
   const structured = requiredSheet(workbook, '结构化数据')
@@ -232,11 +295,11 @@ export function parseP4InternalQuoteArtifact(buffer: ArrayBuffer): P4InternalQuo
       if (text(calculation.calculation_hash as XlsxCellValue) !== metadata.calculationHash) {
         throw new P4ArtifactValidationError(`${metadata.name || code} 计算 hash 与结构化清单不一致`)
       }
-      if (text(calculation.formula_version as XlsxCellValue) !== text(summary.rows[2]?.[5])) {
-        throw new P4ArtifactValidationError(`${metadata.name || code} 公式版本与报价清单不一致`)
+      if (text(calculation.formula_version as XlsxCellValue) !== formulaVersion) {
+        throw new P4ArtifactValidationError(`${metadata.name || code} 公式版本与审批清单不一致`)
       }
-      if (text(calculation.reference_snapshot_id as XlsxCellValue) !== text(summary.rows[2]?.[7])) {
-        throw new P4ArtifactValidationError(`${metadata.name || code} 参考快照与报价清单不一致`)
+      if (text(calculation.reference_snapshot_id as XlsxCellValue) !== referenceSnapshotId) {
+        throw new P4ArtifactValidationError(`${metadata.name || code} 参考快照与审批清单不一致`)
       }
     }
     sections[code] = {
@@ -256,14 +319,14 @@ export function parseP4InternalQuoteArtifact(buffer: ArrayBuffer): P4InternalQuo
   return {
     templateVersion,
     structuredDataSchemaVersion,
-    quoteNo: text(summary.rows[1]?.[1]),
-    versionLabel: text(summary.rows[1]?.[3]),
-    customer: text(summary.rows[1]?.[5]),
-    quantity: numberValue(summary.rows[1]?.[7]),
-    productName: text(summary.rows[2]?.[1]),
-    factoryAndWorkshop: text(summary.rows[2]?.[3]),
-    formulaVersion: text(summary.rows[2]?.[5]),
-    referenceSnapshotId: text(summary.rows[2]?.[7]),
+    quoteNo: text(handoffMetadata.quoteNo) || (isLegacySummaryLayout ? text(summary.rows[1]?.[1]) : ''),
+    versionLabel: text(handoffMetadata.versionLabel) || (isLegacySummaryLayout ? text(summary.rows[1]?.[3]) : ''),
+    customer: text(handoffMetadata.customer) || (isLegacySummaryLayout ? text(summary.rows[1]?.[5]) : ''),
+    quantity: numberValue(handoffMetadata.quantity ?? (isLegacySummaryLayout ? summary.rows[1]?.[7] : 0)),
+    productName: text(handoffMetadata.productName) || (isLegacySummaryLayout ? text(summary.rows[2]?.[1]) : visibleProductName(summary.rows)),
+    factoryAndWorkshop: text(handoffMetadata.factoryAndWorkshop) || (isLegacySummaryLayout ? text(summary.rows[2]?.[3]) : ''),
+    formulaVersion,
+    referenceSnapshotId,
     referenceSnapshot,
     sections,
   }

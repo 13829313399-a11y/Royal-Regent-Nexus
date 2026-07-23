@@ -11,6 +11,8 @@ const apiMock = vi.hoisted(() => ({
   clone: vi.fn(),
   addParticipation: vi.fn(),
   removeParticipation: vi.fn(),
+  updateHeader: vi.fn(),
+  archiveQuote: vi.fn(),
   listBusinessOwners: vi.fn(),
   listCustomers: vi.fn(),
   createCustomer: vi.fn(),
@@ -124,6 +126,12 @@ function quote(overrides: Partial<ApiInternalQuote> = {}): ApiInternalQuote {
     sections: sectionCodes.map(section),
     ...overrides,
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
 }
 
 describe('internal quote desk real API state', () => {
@@ -247,6 +255,49 @@ describe('internal quote desk real API state', () => {
     expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, 10, .99, 3, 11.5, 11.5, 6, 8.26, 11.5])
   })
 
+  it('does not publish a detail view when the authoritative summary fails', async () => {
+    apiMock.getSummary.mockRejectedValueOnce(new Error('汇总服务不可用'))
+    const store = useInternalQuoteDeskStore()
+
+    const loaded = await store.loadQuote('quote-1')
+
+    expect(loaded).toBeUndefined()
+    expect(store.getQuoteById('quote-1')).toBeUndefined()
+    expect(store.errorMessage).toContain('报价权威汇总读取不完整')
+    expect(store.errorMessage).toContain('汇总服务不可用')
+  })
+
+  it('keeps the detail usable but reports optional attachment degradation', async () => {
+    apiMock.listAttachments.mockRejectedValueOnce(new Error('附件服务超时'))
+    const store = useInternalQuoteDeskStore()
+
+    const loaded = await store.loadQuote('quote-1')
+
+    expect(loaded?.factoryPriceHkd).toBe(88.8)
+    expect(store.errorMessage).toContain('附件读取失败')
+    expect(store.errorMessage).toContain('附件服务超时')
+  })
+
+  it('ignores an older detail response after navigating to another quote', async () => {
+    const first = deferred<ApiInternalQuote>()
+    apiMock.get.mockImplementation((quoteId: string) => (
+      quoteId === 'quote-old'
+        ? first.promise
+        : Promise.resolve(quote({ id: 'quote-new', quote_no: 'IQ-NEW' }))
+    ))
+    const store = useInternalQuoteDeskStore()
+
+    const oldRequest = store.loadQuote('quote-old')
+    const fresh = await store.loadQuote('quote-new')
+    first.resolve(quote({ id: 'quote-old', quote_no: 'IQ-OLD' }))
+    const stale = await oldRequest
+
+    expect(fresh?.id).toBe('quote-new')
+    expect(stale).toBeUndefined()
+    expect(store.getQuoteById('quote-new')?.quoteNo).toBe('IQ-NEW')
+    expect(store.getQuoteById('quote-old')).toBeUndefined()
+  })
+
   it('creates and clones with a stable business-owner identity', async () => {
     const store = useInternalQuoteDeskStore()
     const payload = {
@@ -306,6 +357,16 @@ describe('internal quote desk real API state', () => {
     expect(apiMock.removeParticipation).toHaveBeenCalledWith('quote-1', 3, ['painting'])
     expect(apiMock.get).toHaveBeenCalledWith('quote-1')
     expect(() => store.addComment('quote-1', '本地评论')).toThrow('尚未提供协作评论接口')
+  })
+
+  it('does not report a mutation as complete when the authoritative refresh fails', async () => {
+    apiMock.get.mockRejectedValueOnce(new Error('详情读取失败'))
+    const store = useInternalQuoteDeskStore()
+
+    await expect(store.saveSection('quote-1', 'engineering', 1, { molds: [] }))
+      .rejects.toThrow('操作已在服务端成功，但页面未能读取最新报价')
+    expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
+    expect(store.errorMessage).toContain('详情读取失败')
   })
 
   it('updates quote-scoped FX through the optimistic header revision and reloads the snapshot', async () => {

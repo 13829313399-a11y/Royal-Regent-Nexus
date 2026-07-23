@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
+from app.core.time import parse_business_timestamp
 from app.db import get_db
 from app.schemas.system import (
     RegistrationApproveRequest,
@@ -33,10 +34,18 @@ router = APIRouter(prefix="/api/system")
 
 @router.get("/notifications", response_model=list[SystemNotificationOut])
 def notifications(
+    changed_after: str | None = Query(default=None, max_length=64),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return list_system_notifications(db, current_user)
+    normalized_changed_after = None
+    if changed_after:
+        parsed_changed_after = parse_business_timestamp(changed_after)
+        if parsed_changed_after is None:
+            raise HTTPException(status_code=422, detail="通知增量游标格式无效")
+        normalized_changed_after = parsed_changed_after.strftime("%Y-%m-%d %H:%M:%S")
+
+    return list_system_notifications(db, current_user, changed_after=normalized_changed_after)
 
 
 @router.patch("/notifications/{notification_id}", response_model=SystemNotificationOut)

@@ -654,6 +654,11 @@ def upload_attachment(
     ensure_section_permission(db, user, quote.factory_id, department, "edit")
     section = _get_section(db, quote.id, department)
     _ensure_section_participates(section)
+    if section.status not in {"draft", "rejected"}:
+        raise HTTPException(
+            status_code=409,
+            detail="当前分段已提交或审核完成，请先返回修改或合法重开后再上传附件",
+        )
     clean_name = safe_file_name(file_name)
     _extension, content_type = _validate_attachment(clean_name, content)
     sha256 = digest(content)

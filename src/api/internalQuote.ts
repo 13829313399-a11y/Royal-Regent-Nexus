@@ -5,6 +5,7 @@ export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
   post<T = unknown>(url: string, data?: unknown, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
   put<T = unknown>(url: string, data?: unknown, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
+  patch<T = unknown>(url: string, data?: unknown, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
   delete<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
 }
 
@@ -416,6 +417,29 @@ export interface InternalQuoteCloneRequest {
   participating_sections?: InternalQuoteSectionCode[]
 }
 
+export interface InternalQuoteHeaderUpdateRequest {
+  revision: number
+  product_name: string
+  customer: string
+  qty: number
+  business_owner_id: string
+  business_owner_name: string
+  target_customer_price: string
+  target_date: string
+  remark: string
+}
+
+const quoteStatusQueryMap: Record<string, string> = {
+  pending_review: 'section_reviewing',
+  fully_approved: 'ready_for_final_review',
+  final_pending: 'final_reviewing',
+  released: 'fully_approved',
+}
+
+function backendQuoteStatus(status: string | undefined) {
+  return status ? (quoteStatusQueryMap[status] ?? status) : ''
+}
+
 export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
   return {
     async list(factoryId: string, options: { status?: string; keyword?: string; customer?: string; page?: number; pageSize?: number } = {}) {
@@ -425,7 +449,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
           include_sections: true,
           page: options.page ?? 1,
           page_size: options.pageSize ?? 10,
-          ...(options.status ? { status: options.status } : {}),
+          ...(options.status ? { status: backendQuoteStatus(options.status) } : {}),
           ...(options.keyword ? { keyword: options.keyword } : {}),
           ...(options.customer ? { customer: options.customer } : {}),
         },
@@ -454,6 +478,14 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       await client.delete(`/internal-quotes/${quoteId}`, {
         params: { revision },
       })
+    },
+    async updateHeader(quoteId: string, payload: InternalQuoteHeaderUpdateRequest) {
+      const response = await client.patch<ApiInternalQuote>(`/internal-quotes/${quoteId}`, payload)
+      return response.data
+    },
+    async archiveQuote(quoteId: string, revision: number, reason: string) {
+      const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/archive`, { revision, reason })
+      return response.data
     },
     async addParticipation(quoteId: string, revision: number, addSections: InternalQuoteSectionCode[]) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/participation`, {

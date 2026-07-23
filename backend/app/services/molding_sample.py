@@ -1516,6 +1516,7 @@ def list_notifications(
     factory_id: str | None = None,
     order_id: str | None = None,
     status: str | None = None,
+    changed_after: str | None = None,
 ) -> list[MoldingSampleNotification]:
     ensure_permission(db, current_user, "molding_sample:notification_read")
     statement = select(MoldingSampleNotification)
@@ -1529,6 +1530,14 @@ def list_notifications(
         statement = statement.where(MoldingSampleNotification.order_id == order_id)
     if status:
         statement = statement.where(MoldingSampleNotification.status == status)
+    if changed_after:
+        statement = statement.where(
+            or_(
+                MoldingSampleNotification.created_at >= changed_after,
+                MoldingSampleNotification.read_at >= changed_after,
+                MoldingSampleNotification.handled_at >= changed_after,
+            )
+        )
 
     notifications = list(
         db.scalars(

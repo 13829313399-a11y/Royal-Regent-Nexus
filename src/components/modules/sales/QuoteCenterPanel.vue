@@ -643,6 +643,16 @@ function configuredCustomerId(customerName: string): P4ConfiguredCustomerId | nu
     : null
 }
 
+function handoffManifestText(handoff: CustomerPriceInternalQuoteArtifact, key: string) {
+  const value = handoff.artifact_manifest[key]
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
+function handoffManifestNumber(handoff: CustomerPriceInternalQuoteArtifact, key: string) {
+  const value = Number(handoff.artifact_manifest[key])
+  return Number.isFinite(value) ? value : 0
+}
+
 async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, blob: Blob) {
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryGeneration = factoryGeneration
@@ -662,6 +672,15 @@ async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, bl
     workbook,
     handoff.file_name,
     customerId,
+    {
+      quoteNo: handoff.quote_no,
+      versionLabel: handoff.version_label,
+      customer: handoff.customer,
+      quantity: handoffManifestNumber(handoff, 'qty'),
+      productName: handoffManifestText(handoff, 'product_name'),
+      formulaVersion: handoffManifestText(handoff, 'formula_version'),
+      referenceSnapshotId: handoffManifestText(handoff, 'reference_snapshot_id'),
+    },
   )
   preparedP4Conversions.set(handoff.id, {
     handoff,

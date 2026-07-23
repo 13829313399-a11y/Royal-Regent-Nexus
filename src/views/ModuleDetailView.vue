@@ -15,7 +15,6 @@ import {
 } from '@/data/enterpriseMock'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
-import InjectionSchedulingDashboard from '@/components/modules/injection/InjectionSchedulingDashboard.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'
 import TodoQueue from '@/components/modules/TodoQueue.vue'
 import { useAppStore } from '@/stores/app'
@@ -38,7 +37,6 @@ const currentModule = computed(() => {
   return getFactoryScopedModule(module, activeFactory.value.id)
 })
 
-const isInjectionScheduling = computed(() => currentModule.value.id === 'injection-scheduling')
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
 const departmentCenterRoute = computed(() => getFactoryScopedRoute(
   getDepartmentRoute(currentDepartmentId.value),
@@ -124,10 +122,7 @@ watch(currentDepartmentId, (departmentId) => {
 
     <div class="grid gap-6 xl:grid-cols-[1fr_360px]">
       <div class="space-y-6">
-        <InjectionSchedulingDashboard v-if="isInjectionScheduling" />
-
-        <template v-else>
-          <SectionPanel
+        <SectionPanel
             title="模块页面结构"
             subtitle="点击模块入口后，建议直接进入这个层级，再往下细分业务分区"
           >
@@ -186,7 +181,6 @@ watch(currentDepartmentId, (departmentId) => {
               </article>
             </div>
           </SectionPanel>
-        </template>
       </div>
 
       <aside class="space-y-6">

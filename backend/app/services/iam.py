@@ -121,7 +121,6 @@ MODULE_NAMES = {
     "molding_sample": "啤办管理",
     "carton_mark": "箱唛管理",
     "customer_price": "客户报价",
-    "injection_schedule": "啤机排产",
     "internal_quote": "内部报价台",
     "system": "系统管理",
 }

@@ -195,6 +195,37 @@ def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_p
         assert listed.json()[0]["sections"] == []
 
 
+def test_quote_header_can_only_change_before_section_work_starts(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_header_editor", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="HEADER-EDIT"),
+        )
+        assert created.status_code == 201, created.text
+        quote = created.json()
+
+        updated = client.patch(
+            f"/api/internal-quotes/{quote['id']}",
+            json={"revision": quote["header_revision"], "product_name": "填写前修正产品名"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["product_name"] == "填写前修正产品名"
+        assert updated.json()["header_revision"] == quote["header_revision"] + 1
+
+        saved = client.put(
+            f"/api/internal-quotes/{quote['id']}/sections/sales",
+            json={"revision": 1, "payload": {"currency": "HKD", "confirmed": True}},
+        )
+        assert saved.status_code == 200, saved.text
+        blocked = client.patch(
+            f"/api/internal-quotes/{quote['id']}",
+            json={"revision": updated.json()["header_revision"], "qty": 2000},
+        )
+        assert blocked.status_code == 409
+        assert "协作填写前" in blocked.json()["detail"]
+
+
 def test_quote_delete_allows_creator_or_local_sales_supervisor_and_protects_released_records(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_delete_creator", "sales_customer_owner", "sales-business")
@@ -750,6 +781,10 @@ def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monke
             and item["payload"].get("event") == "quote_created"
             and item["payload"].get("department") == "sales"
         )
+        assert created_notification["payload"]["route"] == (
+            f"/modules/sales-business/internal-quote-desk/{quote_id}/collaboration"
+            "?factory=huaxing&section=sales"
+        )
         direct_handle = client.patch(
             f"/api/system/notifications/{created_notification['id']}",
             json={"status": "handled"},
@@ -806,6 +841,10 @@ def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monke
             if item["payload"].get("quote_id") == quote_id
             and item["payload"].get("event") == "section_submitted"
             and item["payload"].get("department") == "sales"
+        )
+        assert review_notification["payload"]["route"] == (
+            f"/modules/sales-business/internal-quote-desk/{quote_id}/collaboration"
+            "?factory=huaxing&section=sales"
         )
         assert review_notification["status"] == "unread"
         approved = client.post(

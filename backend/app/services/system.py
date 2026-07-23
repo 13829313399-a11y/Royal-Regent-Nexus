@@ -3,7 +3,7 @@ import logging
 import secrets
 
 from fastapi import HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -904,8 +904,21 @@ def reset_user_password(
     return user_to_out(db, user)
 
 
-def list_system_notifications(db: Session, current_user: AuthContext) -> list[SystemNotificationOut]:
-    notifications = db.scalars(select(SystemNotification).order_by(SystemNotification.created_at.desc())).all()
+def list_system_notifications(
+    db: Session,
+    current_user: AuthContext,
+    changed_after: str | None = None,
+) -> list[SystemNotificationOut]:
+    statement = select(SystemNotification)
+    if changed_after:
+        statement = statement.where(
+            or_(
+                SystemNotification.created_at >= changed_after,
+                SystemNotification.read_at >= changed_after,
+                SystemNotification.handled_at >= changed_after,
+            )
+        )
+    notifications = db.scalars(statement.order_by(SystemNotification.created_at.desc())).all()
     return [
         notification_to_out(notification)
         for notification in notifications

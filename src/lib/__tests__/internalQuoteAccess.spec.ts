@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canEditAllInternalQuoteSections,
   canReviewInternalQuoteSections,
   isForeignFactory,
   isInternalQuoteReadOnly,
@@ -16,6 +17,29 @@ function accessChecker(options: { primaryFactory: string; canRead: boolean; canO
     canAny: () => options.canOperate,
   }
 }
+
+describe('internal quote cross-section edit boundary', () => {
+  function checker(allowedPermission: string) {
+    return {
+      currentUser: { id: 'editor', profile: { primary_factory_id: 'huaxing' } },
+      can: (permission: string, factoryId?: string, department?: string) => (
+        permission === allowedPermission
+        && factoryId === 'huaxing'
+        && department === (permission.includes('sales') ? 'sales-business' : 'engineering')
+      ),
+      canAny: () => false,
+    }
+  }
+
+  it('allows business and engineering edit roles to fill every quote section', () => {
+    expect(canEditAllInternalQuoteSections(checker('internal_quote:sales_edit'), 'huaxing')).toBe(true)
+    expect(canEditAllInternalQuoteSections(checker('internal_quote:engineering_edit'), 'huaxing')).toBe(true)
+  })
+
+  it('does not promote a department-only editor to cross-section edit', () => {
+    expect(canEditAllInternalQuoteSections(checker('internal_quote:molding_edit'), 'huaxing')).toBe(false)
+  })
+})
 
 describe('internal quote read-only presentation boundary', () => {
   it('does not label a home-factory responsibility department as read-only when it can edit a section', () => {

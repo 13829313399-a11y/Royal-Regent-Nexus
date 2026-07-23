@@ -1060,6 +1060,26 @@ function p4DisneyPurchasedParts(artifact: P4InternalQuoteArtifact) {
     else productRows.push(result)
   })
 
+  const salesPackagingRows = p4Rows(artifact.sections.sales.payload.packaging_materials)
+  const salesPackagingCalculations = p4Rows(artifact.sections.sales.calculation.line_breakdown)
+    .filter((row) => row.kind === 'packaging_material')
+  salesPackagingRows.forEach((row, index) => {
+    const quantity = p4Number(row.quantity)
+    const internalUnitPrice = p4Number(row.unit_price_rmb)
+    if (quantity <= 0 && internalUnitPrice <= 0) return
+    const perPartCostUsd = p4Positive(row.disney_unit_price_usd, `业务包装材料第 ${index + 1} 行缺少迪士尼报客单价 USD`)
+    const included = p4Positive(row.disney_included, `业务包装材料第 ${index + 1} 行 Included 必须大于 0`)
+    const totalCostUsd = perPartCostUsd * included
+    packageRows.push({
+      description: p4Text(row.disney_description) || translateDescription(p4Text(row.item)),
+      perPartCostUsd,
+      included,
+      subtotalUsd: roundUnit(totalCostUsd),
+      totalCostUsd: roundUnit(totalCostUsd),
+      internalCostUsd: roundUnit(p4Number(salesPackagingCalculations[index]?.amount_hkd) / hkdPerUsd),
+    })
+  })
+
   const salesCartons = p4Rows(artifact.sections.sales.payload.cartons)
   const cartonOwner = salesCartons.length > 0 ? artifact.sections.sales : artifact.sections.engineering
   const cartons = salesCartons.length > 0

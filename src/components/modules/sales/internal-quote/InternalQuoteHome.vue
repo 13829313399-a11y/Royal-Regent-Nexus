@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  Archive,
   ArrowRight,
   BarChart3,
   CheckCircle2,
@@ -25,6 +26,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import InternalQuoteCreateDialog from './InternalQuoteCreateDialog.vue'
 import InternalQuoteBaselineDialog from './InternalQuoteBaselineDialog.vue'
+import InternalQuoteComparisonDialog from './InternalQuoteComparisonDialog.vue'
 import InternalQuoteCustomerDialog from './InternalQuoteCustomerDialog.vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { useAppStore } from '@/stores/app'
@@ -59,6 +61,15 @@ const customerDialogFactoryGeneration = ref(0)
 const deleteTarget = ref<InternalQuote>()
 const deleteDialogError = ref('')
 const deletingQuoteId = ref('')
+const archiveTarget = ref<InternalQuote>()
+const archiveReason = ref('')
+const archiveDialogError = ref('')
+const archivingQuoteId = ref('')
+const comparisonQuotes = ref<InternalQuote[]>([])
+const comparisonDialogOpen = ref(false)
+const comparisonLoading = ref(false)
+const comparisonError = ref('')
+const comparisonLimit = 5
 const activeFactory = computed(() => (
   appStore.activeFactory.id === 'group'
     ? appStore.activeProductionFactory
@@ -102,6 +113,10 @@ const createUnavailableMessage = computed(() => {
   if (canCreateCurrentFactory.value && !quoteStore.factoryCustomers.length) return '当前厂区暂无客户，请业务主管先维护客户资料'
   return '当前账号没有新建内部报价权限'
 })
+const comparisonQuoteIds = computed(() => new Set(comparisonQuotes.value.map((quote) => quote.id)))
+const comparisonButtonTitle = computed(() => comparisonQuotes.value.length >= 2
+  ? `对比已选择的 ${comparisonQuotes.value.length} 张报价`
+  : '至少选择 2 张报价后才能对比')
 
 const periodOptions: Array<{ value: InternalQuoteDashboardPeriod; label: string; shortLabel: string }> = [
   { value: 'week', label: '本周统计', shortLabel: '周' },
@@ -288,6 +303,58 @@ function openQuote(quote: InternalQuote) {
   void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/${target}`))
 }
 
+function isQuoteSelectedForComparison(quote: InternalQuote) {
+  return comparisonQuoteIds.value.has(quote.id)
+}
+
+function comparisonSelectionDisabled(quote: InternalQuote) {
+  return !isQuoteSelectedForComparison(quote) && comparisonQuotes.value.length >= comparisonLimit
+}
+
+function toggleQuoteComparison(quote: InternalQuote) {
+  if (quote.factoryId !== activeFactoryId.value) return
+  if (isQuoteSelectedForComparison(quote)) {
+    comparisonQuotes.value = comparisonQuotes.value.filter((item) => item.id !== quote.id)
+    if (comparisonQuotes.value.length < 2) comparisonDialogOpen.value = false
+    return
+  }
+  if (comparisonQuotes.value.length >= comparisonLimit) return
+  comparisonQuotes.value = [...comparisonQuotes.value, quote]
+}
+
+function clearQuoteComparison() {
+  comparisonDialogOpen.value = false
+  comparisonQuotes.value = []
+}
+
+async function openQuoteComparison() {
+  if (comparisonQuotes.value.length < 2) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = quoteStore.factoryContextGeneration
+  const quoteIds = comparisonQuotes.value.map((quote) => quote.id)
+  comparisonLoading.value = true
+  comparisonError.value = ''
+  try {
+    const refreshed = await Promise.all(quoteIds.map((quoteId) => quoteStore.loadQuoteForComparison(quoteId)))
+    if (!quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedGeneration)) return
+    if (refreshed.some((quote) => quote.factoryId !== requestedFactoryId)) {
+      throw new Error('所选报价不属于当前厂区，请重新选择。')
+    }
+    comparisonQuotes.value = refreshed
+    comparisonDialogOpen.value = true
+  } catch (error) {
+    if (quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedGeneration)) {
+      comparisonError.value = `报价对比读取失败：${getApiErrorMessage(error)}`
+    }
+  } finally {
+    comparisonLoading.value = false
+  }
+}
+
+function closeQuoteComparison() {
+  comparisonDialogOpen.value = false
+}
+
 function approvedCount(quote: InternalQuote) {
   return quote.sections.filter((section) => section.isRequired && ['approved', 'not_applicable'].includes(section.status)).length
 }
@@ -363,6 +430,65 @@ function deleteButtonTitle(quote: InternalQuote) {
     : '删除内部报价'
 }
 
+function canArchiveQuote(quote: InternalQuote) {
+  return quote.factoryId === activeFactoryId.value
+    && quote.status !== 'archived'
+    && !isForeignFactory(authStore, quote.factoryId)
+    && authStore.can('internal_quote:archive', quote.factoryId, 'sales-business')
+}
+
+function openArchiveDialog(quote: InternalQuote) {
+  if (!canArchiveQuote(quote)) return
+  archiveTarget.value = quote
+  archiveReason.value = ''
+  archiveDialogError.value = ''
+}
+
+function closeArchiveDialog() {
+  if (archivingQuoteId.value) return
+  archiveTarget.value = undefined
+  archiveReason.value = ''
+  archiveDialogError.value = ''
+}
+
+function resetArchiveDialog() {
+  archiveTarget.value = undefined
+  archiveReason.value = ''
+  archiveDialogError.value = ''
+}
+
+async function confirmArchiveQuote() {
+  const quote = archiveTarget.value
+  const reason = archiveReason.value.trim()
+  if (!quote || !canArchiveQuote(quote)) return
+  if (!reason) {
+    archiveDialogError.value = '请填写归档原因。'
+    return
+  }
+  const requestedFactoryId = quote.factoryId
+  const requestedGeneration = quoteStore.factoryContextGeneration
+  archiveDialogError.value = ''
+  archivingQuoteId.value = quote.id
+  try {
+    await quoteStore.archiveQuote(quote.id, quote.headerRevision, reason)
+    if (!quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedGeneration)) return
+    comparisonQuotes.value = comparisonQuotes.value.filter((item) => item.id !== quote.id)
+    if (comparisonQuotes.value.length < 2) comparisonDialogOpen.value = false
+    resetArchiveDialog()
+    await Promise.all([
+      loadQuotePage(quoteStore.quoteListPage, requestedFactoryId),
+      quoteStore.loadDashboard(requestedFactoryId, statsPeriod.value),
+    ])
+  } catch (error) {
+    if (
+      archiveTarget.value?.id === quote.id
+      && quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedGeneration)
+    ) archiveDialogError.value = getApiErrorMessage(error)
+  } finally {
+    if (archivingQuoteId.value === quote.id) archivingQuoteId.value = ''
+  }
+}
+
 function openDeleteDialog(quote: InternalQuote) {
   if (!canDeleteQuote(quote) || deleteIsProtected(quote)) return
   deleteTarget.value = quote
@@ -393,6 +519,8 @@ async function confirmDeleteQuote() {
     const nextPage = quoteStore.quotes.length > 1 || quoteStore.quoteListPage <= 1
       ? quoteStore.quoteListPage
       : quoteStore.quoteListPage - 1
+    comparisonQuotes.value = comparisonQuotes.value.filter((item) => item.id !== quote.id)
+    if (comparisonQuotes.value.length < 2) comparisonDialogOpen.value = false
     resetDeleteDialog()
     await Promise.all([
       loadQuotePage(nextPage, requestedFactoryId),
@@ -502,6 +630,8 @@ watch(activeFactoryId, async (factoryId) => {
   closePricingBaseline()
   closeCustomerDialog()
   resetDeleteDialog()
+  resetArchiveDialog()
+  clearQuoteComparison()
   dialogError.value = ''
   if (listFilterTimer) {
     clearTimeout(listFilterTimer)
@@ -513,6 +643,11 @@ watch(activeFactoryId, async (factoryId) => {
   void loadPage(factoryId)
   await nextTick()
   suppressFilterReload = false
+})
+watch(() => quoteStore.quotes, (currentQuotes) => {
+  if (!comparisonQuotes.value.length) return
+  const currentById = new Map(currentQuotes.map((quote) => [quote.id, quote]))
+  comparisonQuotes.value = comparisonQuotes.value.map((quote) => currentById.get(quote.id) ?? quote)
 })
 watch([query, statusFilter, customerFilter], () => {
   if (suppressFilterReload) return
@@ -557,6 +692,7 @@ onBeforeUnmount(() => {
 
     <p v-if="quoteStore.errorMessage" class="quote-page-message error" role="alert">{{ quoteStore.errorMessage }}</p>
     <p v-if="quoteStore.dashboardErrorMessage" class="quote-page-message error" role="alert">统计数据读取失败：{{ quoteStore.dashboardErrorMessage }}</p>
+    <p v-if="comparisonError" class="quote-page-message error" role="alert">{{ comparisonError }}</p>
 
     <section class="quote-dashboard-heading" aria-label="报价统计周期">
       <div>
@@ -658,16 +794,25 @@ onBeforeUnmount(() => {
             title="维护当前厂区客户"
             @click="openCustomerDialog"
           ><Users aria-hidden="true" />客户资料</button>
+          <button
+            type="button"
+            class="quote-compare-button"
+            :disabled="comparisonQuotes.length < 2 || comparisonLoading"
+            :title="comparisonButtonTitle"
+            @click="openQuoteComparison"
+          ><BarChart3 aria-hidden="true" />{{ comparisonLoading ? '读取最新报价…' : '报价对比' }} <span>{{ comparisonQuotes.length }}/{{ comparisonLimit }}</span></button>
+          <button v-if="comparisonQuotes.length" type="button" class="quote-comparison-clear" title="清空对比选择" @click="clearQuoteComparison">清空</button>
           <button type="button" class="quote-clear-filter" title="重置筛选" @click="clearFilters"><RotateCcw aria-hidden="true" /></button>
         </div>
       </header>
 
       <div class="quote-table-scroll">
         <table class="quote-table">
-          <thead><tr><th>报价号</th><th>产品 / 客户</th><th>发起</th><th>版本</th><th>状态</th><th>分段进度</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+          <thead><tr><th class="quote-select-column"><span class="sr-only">选择对比</span></th><th>报价号</th><th>产品 / 客户</th><th>发起</th><th>版本</th><th>状态</th><th>分段进度</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
           <tbody>
             <template v-if="!quoteStore.listLoading">
-            <tr v-for="quote in quoteStore.quotes" :key="quote.id" @dblclick="openQuote(quote)">
+            <tr v-for="quote in quoteStore.quotes" :key="quote.id" :class="{ 'comparison-selected': isQuoteSelectedForComparison(quote) }" @dblclick="openQuote(quote)">
+              <td class="quote-select-cell"><input type="checkbox" :checked="isQuoteSelectedForComparison(quote)" :disabled="comparisonSelectionDisabled(quote)" :aria-label="`选择 ${quote.quoteNo} 进行报价对比`" @click.stop @dblclick.stop @change="toggleQuoteComparison(quote)"></td>
               <td><button type="button" class="quote-number" @click="openQuote(quote)">{{ quote.quoteNo }}</button></td>
               <td><strong>{{ quote.productName }}</strong><span>{{ quote.customer }}</span></td>
               <td><span class="quote-initiator">{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}</span><small>{{ quote.initiatorName }}</small></td>
@@ -696,13 +841,22 @@ onBeforeUnmount(() => {
                     :aria-label="deleteButtonTitle(quote)"
                     @click.stop="openDeleteDialog(quote)"
                   ><Trash2 aria-hidden="true" /></button>
+                  <button
+                    v-if="canArchiveQuote(quote)"
+                    type="button"
+                    class="archive"
+                    :disabled="archivingQuoteId === quote.id"
+                    title="归档报价并保留审计记录"
+                    aria-label="归档报价并保留审计记录"
+                    @click.stop="openArchiveDialog(quote)"
+                  ><Archive aria-hidden="true" /></button>
                   <button type="button" class="primary" title="进入报价" aria-label="进入报价" @click="openQuote(quote)"><ArrowRight aria-hidden="true" /></button>
                 </div>
               </td>
             </tr>
-            <tr v-if="!quoteStore.quotes.length"><td colspan="8" class="quote-empty">没有符合筛选条件的内部报价。</td></tr>
+            <tr v-if="!quoteStore.quotes.length"><td colspan="9" class="quote-empty">没有符合筛选条件的内部报价。</td></tr>
             </template>
-            <tr v-else><td colspan="8" class="quote-empty">正在按页读取内部报价…</td></tr>
+            <tr v-else><td colspan="9" class="quote-empty">正在按页读取内部报价…</td></tr>
           </tbody>
         </table>
       </div>
@@ -735,6 +889,24 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
+    <div v-if="archiveTarget" class="quote-delete-backdrop" @click.self="closeArchiveDialog">
+      <section class="quote-delete-dialog quote-archive-dialog" role="dialog" aria-modal="true" aria-labelledby="quote-archive-title">
+        <div class="quote-delete-icon"><Archive aria-hidden="true" /></div>
+        <div>
+          <h2 id="quote-archive-title">确认归档内部报价？</h2>
+          <p>即将归档 <strong>{{ archiveTarget.quoteNo }}</strong> · {{ archiveTarget.productName }}（{{ archiveTarget.versionLabel }}）。报价、附件、放行和导出记录都会保留，可继续审计，但不能再参与业务操作。</p>
+          <label class="quote-archive-reason">归档原因<textarea v-model="archiveReason" rows="3" maxlength="500" placeholder="请说明取消或归档原因" /></label>
+          <p v-if="archiveDialogError" class="quote-delete-error" role="alert">{{ archiveDialogError }}</p>
+          <footer>
+            <button type="button" :disabled="Boolean(archivingQuoteId)" @click="closeArchiveDialog">取消</button>
+            <button type="button" class="archive" :disabled="Boolean(archivingQuoteId)" @click="confirmArchiveQuote">
+              {{ archivingQuoteId ? '正在归档…' : '确认归档' }}
+            </button>
+          </footer>
+        </div>
+      </section>
+    </div>
+
     <InternalQuoteCreateDialog
       :open="createDialogOpen"
       :mode="dialogMode"
@@ -748,6 +920,12 @@ onBeforeUnmount(() => {
       :allowed-initiator-departments="allowedInitiatorDepartments"
       @close="closeCreateDialog"
       @confirm="handleConfirm"
+    />
+    <InternalQuoteComparisonDialog
+      :open="comparisonDialogOpen"
+      :quotes="comparisonQuotes"
+      :factory-name="activeFactoryName"
+      @close="closeQuoteComparison"
     />
     <InternalQuoteBaselineDialog
       :open="baselineDialogOpen"
@@ -784,9 +962,10 @@ onBeforeUnmount(() => {
 .quote-dashboard-grid{display:grid;grid-template-columns:minmax(270px,.85fr) minmax(350px,1.15fr) minmax(350px,1.15fr);gap:12px;transition:opacity .2s}.quote-dashboard-grid[aria-busy=true]{opacity:.62}.quote-chart-card{min-width:0;overflow:hidden;border:1px solid #dbe5ea;border-radius:14px;background:#fff;box-shadow:0 12px 30px rgb(15 23 42/.045)}.quote-chart-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #edf2f5;background:linear-gradient(180deg,#fff,#fbfdfe);padding:13px 14px}.quote-chart-card>header>div{display:flex;align-items:center;gap:8px}.quote-chart-card>header svg{width:18px;flex:0 0 auto;color:#0f766e}.quote-chart-card>header span{display:grid;gap:2px}.quote-chart-card>header strong{color:#0f172a;font-size:12px}.quote-chart-card>header small{color:#94a3b8;font-size:10px}.quote-chart-card>header em{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;font-style:normal;white-space:nowrap}.quote-chart-empty{display:grid;min-height:190px;place-items:center;padding:20px;color:#94a3b8;font-size:11px}.quote-status-chart-body{display:grid;grid-template-columns:160px minmax(0,1fr);align-items:center;gap:12px;padding:18px 14px}.quote-status-donut{display:grid;width:144px;height:144px;place-items:center;border-radius:50%;box-shadow:inset 0 0 0 26px #fff,0 8px 24px rgb(37 99 235/.08);transition:background .28s}.quote-status-donut>span{display:grid;text-align:center}.quote-status-donut strong{color:#0f172a;font-size:26px;line-height:1}.quote-status-donut small{margin-top:5px;color:#94a3b8;font-size:10px;font-weight:800}.quote-status-legend{display:grid;gap:5px;margin:0}.quote-status-legend>div{display:flex;align-items:center;justify-content:space-between;gap:8px;border-radius:8px;padding:8px}.quote-status-legend>div:hover{background:#f8fafc}.quote-status-legend dt{display:flex;align-items:center;gap:7px;color:#475569;font-size:11px;font-weight:800}.quote-status-legend dt i{width:8px;height:8px;flex:0 0 auto;border-radius:99px}.quote-status-legend dd{display:flex;align-items:baseline;gap:7px;margin:0}.quote-status-legend dd strong{color:#0f172a;font-size:13px}.quote-status-legend dd span{color:#94a3b8;font-size:9px}.quote-horizontal-bars,.quote-speed-plot{display:grid;max-height:250px;gap:10px;overflow:auto;padding:14px}.quote-horizontal-row{display:grid;gap:6px}.quote-horizontal-row>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}.quote-horizontal-row strong,.quote-speed-meta strong{overflow:hidden;color:#334155;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.quote-horizontal-row span,.quote-speed-meta span{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px;white-space:nowrap}.quote-horizontal-track{height:9px;overflow:hidden;border-radius:99px;background:#eef2f6}.quote-horizontal-track i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#0f766e,#2dd4bf);box-shadow:0 0 12px rgb(20 184 166/.2);animation:quote-chart-grow .45s ease-out both}.quote-speed-scale{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:7px;color:#94a3b8;font-size:9px;font-weight:800}.quote-speed-scale i{height:1px;background:linear-gradient(90deg,#14b8a6,#cbd5e1,#f59e0b)}.quote-speed-row{display:grid;grid-template-columns:minmax(120px,.72fr) minmax(170px,1.28fr);align-items:center;gap:10px}.quote-speed-meta{display:grid;gap:3px;min-width:0}.quote-speed-track{position:relative;height:22px;border-radius:99px;background:linear-gradient(90deg,rgb(20 184 166/.11),rgb(245 158 11/.11))}.quote-speed-track::before{position:absolute;top:10px;right:8%;left:8%;height:2px;background:linear-gradient(90deg,#5eead4,#fbbf24);content:''}.quote-speed-track>i{position:absolute;top:5px;width:12px;height:12px;border:3px solid #fff;border-radius:99px;background:#0f766e;box-shadow:0 2px 8px rgb(15 118 110/.35);transform:translateX(-50%);transition:left .3s}.quote-speed-track>i span{position:absolute;right:50%;bottom:15px;display:none;border-radius:5px;background:#0f172a;padding:3px 5px;color:#fff;font-size:8px;font-style:normal;white-space:nowrap;transform:translateX(50%)}.quote-speed-row:hover .quote-speed-track>i span{display:block}.quote-speed-note{margin:0;border-top:1px solid #eef2f6;background:#f8fafc;padding:8px 14px;color:#64748b;font-size:9px;line-height:1.5}.quote-progress-chart{grid-column:1/-1}.quote-progress-bars{display:grid;max-height:320px;overflow:auto}.quote-progress-bars button{display:grid;grid-template-columns:minmax(220px,.9fr) minmax(300px,1.6fr) 92px 20px;align-items:center;gap:14px;border:0;border-top:1px solid #eef2f6;background:#fff;padding:11px 14px;text-align:left;transition:background .16s}.quote-progress-bars button:first-child{border-top:0}.quote-progress-bars button:hover{background:#f8fafc}.quote-progress-title,.quote-progress-value{display:grid;gap:3px;min-width:0}.quote-progress-title strong{color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}.quote-progress-title small{overflow:hidden;color:#64748b;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.quote-progress-track{height:10px;overflow:hidden;border-radius:99px;background:#e8eef2}.quote-progress-track i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#2563eb,#14b8a6);animation:quote-chart-grow .45s ease-out both}.quote-progress-value{text-align:right}.quote-progress-value strong{color:#0f172a;font-size:12px}.quote-progress-value small{color:#94a3b8;font-size:9px}.quote-progress-bars button>svg{width:16px;color:#94a3b8;transition:color .16s,transform .16s}.quote-progress-bars button:hover>svg{color:#0f766e;transform:translateX(2px)}
 @keyframes quote-chart-grow{from{width:0}}
 .quote-list-panel{overflow:hidden;border:1px solid #dbe5ea;border-radius:14px;background:#fff;box-shadow:0 16px 38px rgb(15 23 42/.05)}.quote-list-toolbar{display:flex;align-items:center;gap:14px;padding:13px;border-bottom:1px solid #e2e8f0}.quote-search-box{display:flex;min-width:280px;flex:1;align-items:center;gap:8px;border:1px solid #dbe5ea;border-radius:9px;background:#f8fafc;padding:0 11px;color:#94a3b8}.quote-search-box:focus-within{border-color:#14b8a6;background:#fff;box-shadow:0 0 0 3px rgb(20 184 166/.08)}.quote-search-box svg{width:16px}.quote-search-box input{min-width:0;flex:1;border:0;background:transparent;padding:9px 0;color:#0f172a;font-size:12px;outline:0}.quote-filters{display:flex;align-items:center;gap:8px;color:#94a3b8}.quote-filters>svg{width:16px}.quote-filters select{height:36px;border:1px solid #dbe5ea;border-radius:9px;background:#fff;padding:0 28px 0 10px;color:#475569;font-size:11px;font-weight:700}.quote-clear-filter{display:grid;width:36px;height:36px;place-items:center;border:1px solid #dbe5ea;border-radius:9px;background:#fff;color:#64748b}.quote-clear-filter:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-clear-filter svg{width:15px}
-.quote-customer-button{display:inline-flex;height:36px;align-items:center;gap:6px;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-size:11px;font-weight:900;white-space:nowrap}.quote-customer-button:hover{border-color:#2dd4bf;background:#ccfbf1}.quote-customer-button:disabled{cursor:wait;opacity:.55}.quote-customer-button svg{width:15px}
-.quote-table-scroll{overflow:auto}.quote-table{width:100%;min-width:1120px;border-collapse:collapse;text-align:left}.quote-table th{background:#f1f5f9;padding:10px 12px;color:#64748b;font-size:9px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.quote-table td{border-top:1px solid #eef2f6;padding:11px 12px;color:#334155;font-size:11px;vertical-align:middle}.quote-table tbody tr{transition:background .15s}.quote-table tbody tr:hover{background:#f8fafc}.quote-table td:nth-child(2) strong{display:block;color:#0f172a;font-size:12px}.quote-table td:nth-child(2) span,.quote-table small{display:block;margin-top:3px;color:#94a3b8;font-size:10px}.quote-number{border:0;background:transparent;padding:0;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;font-weight:900}.quote-number:hover{text-decoration:underline}.quote-initiator,.quote-version{display:inline-flex;border-radius:999px;background:#f1f5f9;padding:4px 7px;color:#475569;font-size:9px;font-weight:900}.quote-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:color-mix(in srgb,var(--tone) 10%,white);padding:5px 8px;color:var(--tone);font-size:9px;font-weight:900;white-space:nowrap}.quote-status i{width:6px;height:6px;border-radius:99px;background:currentColor}.quote-progress-cell{display:flex;min-width:120px;align-items:center;gap:8px}.quote-progress-cell>div{height:6px;flex:1;overflow:hidden;border-radius:99px;background:#e2e8f0}.quote-progress-cell>div span{display:block;height:100%;border-radius:99px;background:#0d9488}.quote-progress-cell strong{color:#475569;font-size:10px}.quote-date{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;white-space:nowrap}.quote-row-actions{display:flex;justify-content:flex-end;gap:5px}.quote-row-actions button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b}.quote-row-actions button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-row-actions button:disabled{cursor:not-allowed;border-color:#e2e8f0;background:#f8fafc;color:#cbd5e1}.quote-row-actions button.primary{border-color:#0f766e;background:#0f766e;color:#fff}.quote-row-actions button.danger{border-color:#fecaca;color:#dc2626}.quote-row-actions button.danger:hover:not(:disabled){border-color:#ef4444;background:#fef2f2;color:#b91c1c}.quote-row-actions svg{width:14px}.quote-empty{padding:40px!important;text-align:center;color:#94a3b8!important}.quote-table-footer{display:grid;grid-template-columns:minmax(260px,1fr) auto minmax(240px,1fr);align-items:center;gap:12px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:9px 13px;color:#64748b;font-size:10px}.quote-table-footer>span:last-child{text-align:right}.quote-pagination{display:flex;align-items:center;justify-content:center;gap:8px}.quote-pagination button{display:inline-flex;height:30px;align-items:center;gap:4px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 9px;color:#475569;font-size:10px;font-weight:800}.quote-pagination button:hover:not(:disabled){border-color:#5eead4;background:#f0fdfa;color:#0f766e}.quote-pagination button:disabled{cursor:not-allowed;opacity:.42}.quote-pagination button svg{width:13px}.quote-pagination strong{min-width:72px;color:#334155;text-align:center;font-size:10px}
+.quote-customer-button,.quote-compare-button{display:inline-flex;height:36px;align-items:center;gap:6px;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-size:11px;font-weight:900;white-space:nowrap}.quote-customer-button:hover,.quote-compare-button:hover:not(:disabled){border-color:#2dd4bf;background:#ccfbf1}.quote-customer-button:disabled{cursor:wait;opacity:.55}.quote-compare-button:disabled{cursor:not-allowed;border-color:#e2e8f0;background:#f8fafc;color:#94a3b8}.quote-customer-button svg,.quote-compare-button svg{width:15px}.quote-compare-button span{border-radius:999px;background:rgb(15 118 110/.1);padding:2px 5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-comparison-clear{height:36px;border:0;background:transparent;padding:0 3px;color:#64748b;font-size:10px;font-weight:800}.quote-comparison-clear:hover{color:#dc2626}
+.quote-table-scroll{overflow:auto}.quote-table{width:100%;min-width:1160px;border-collapse:collapse;text-align:left}.quote-table th{background:#f1f5f9;padding:10px 12px;color:#64748b;font-size:9px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.quote-table td{border-top:1px solid #eef2f6;padding:11px 12px;color:#334155;font-size:11px;vertical-align:middle}.quote-table tbody tr{transition:background .15s}.quote-table tbody tr:hover{background:#f8fafc}.quote-table tbody tr.comparison-selected{background:#f0fdfa}.quote-table tbody tr.comparison-selected:hover{background:#ccfbf1}.quote-select-column,.quote-select-cell{width:38px;padding-right:4px!important;text-align:center}.quote-select-cell input{width:15px;height:15px;margin:0;accent-color:#0f766e}.quote-select-cell input:disabled{cursor:not-allowed;opacity:.35}.quote-table td:nth-child(3) strong{display:block;color:#0f172a;font-size:12px}.quote-table td:nth-child(3) span,.quote-table small{display:block;margin-top:3px;color:#94a3b8;font-size:10px}.quote-number{border:0;background:transparent;padding:0;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;font-weight:900}.quote-number:hover{text-decoration:underline}.quote-initiator,.quote-version{display:inline-flex;border-radius:999px;background:#f1f5f9;padding:4px 7px;color:#475569;font-size:9px;font-weight:900}.quote-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:color-mix(in srgb,var(--tone) 10%,white);padding:5px 8px;color:var(--tone);font-size:9px;font-weight:900;white-space:nowrap}.quote-status i{width:6px;height:6px;border-radius:99px;background:currentColor}.quote-progress-cell{display:flex;min-width:120px;align-items:center;gap:8px}.quote-progress-cell>div{height:6px;flex:1;overflow:hidden;border-radius:99px;background:#e2e8f0}.quote-progress-cell>div span{display:block;height:100%;border-radius:99px;background:#0d9488}.quote-progress-cell strong{color:#475569;font-size:10px}.quote-date{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;white-space:nowrap}.quote-row-actions{display:flex;justify-content:flex-end;gap:5px}.quote-row-actions button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b}.quote-row-actions button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-row-actions button:disabled{cursor:not-allowed;border-color:#e2e8f0;background:#f8fafc;color:#cbd5e1}.quote-row-actions button.primary{border-color:#0f766e;background:#0f766e;color:#fff}.quote-row-actions button.danger{border-color:#fecaca;color:#dc2626}.quote-row-actions button.danger:hover:not(:disabled){border-color:#ef4444;background:#fef2f2;color:#b91c1c}.quote-row-actions svg{width:14px}.quote-empty{padding:40px!important;text-align:center;color:#94a3b8!important}.quote-table-footer{display:grid;grid-template-columns:minmax(260px,1fr) auto minmax(240px,1fr);align-items:center;gap:12px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:9px 13px;color:#64748b;font-size:10px}.quote-table-footer>span:last-child{text-align:right}.quote-pagination{display:flex;align-items:center;justify-content:center;gap:8px}.quote-pagination button{display:inline-flex;height:30px;align-items:center;gap:4px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 9px;color:#475569;font-size:10px;font-weight:800}.quote-pagination button:hover:not(:disabled){border-color:#5eead4;background:#f0fdfa;color:#0f766e}.quote-pagination button:disabled{cursor:not-allowed;opacity:.42}.quote-pagination button svg{width:13px}.quote-pagination strong{min-width:72px;color:#334155;text-align:center;font-size:10px}
 .quote-delete-backdrop{position:fixed;z-index:90;display:grid;inset:0;place-items:center;background:rgb(15 23 42/.52);padding:20px;backdrop-filter:blur(2px)}.quote-delete-dialog{display:grid;width:min(520px,100%);grid-template-columns:44px 1fr;gap:14px;border:1px solid #fecaca;border-radius:16px;background:#fff;padding:20px;box-shadow:0 24px 70px rgb(15 23 42/.28)}.quote-delete-icon{display:grid;width:44px;height:44px;place-items:center;border-radius:12px;background:#fef2f2;color:#dc2626}.quote-delete-icon svg{width:21px}.quote-delete-dialog h2{margin:1px 0 8px;color:#0f172a;font-size:18px}.quote-delete-dialog p{margin:0;color:#475569;font-size:12px;line-height:1.7}.quote-delete-dialog p strong{color:#0f172a}.quote-delete-dialog .quote-delete-rule{margin-top:10px;border-radius:8px;background:#fff7ed;padding:8px 10px;color:#9a3412;font-size:11px}.quote-delete-dialog .quote-delete-error{margin-top:10px;border:1px solid #fecaca;border-radius:8px;background:#fef2f2;padding:8px 10px;color:#b91c1c;font-size:11px}.quote-delete-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}.quote-delete-dialog footer button{min-width:84px;height:36px;border:1px solid #dbe5ea;border-radius:9px;background:#fff;color:#475569;font-size:11px;font-weight:900}.quote-delete-dialog footer button:hover:not(:disabled){background:#f8fafc}.quote-delete-dialog footer button.danger{border-color:#dc2626;background:#dc2626;color:#fff}.quote-delete-dialog footer button.danger:hover:not(:disabled){background:#b91c1c}.quote-delete-dialog footer button:disabled{cursor:wait;opacity:.55}
+.quote-row-actions button.archive{border-color:#fed7aa;color:#c2410c}.quote-row-actions button.archive:hover:not(:disabled){border-color:#fb923c;background:#fff7ed;color:#9a3412}.quote-archive-dialog{border-color:#fed7aa}.quote-archive-dialog .quote-delete-icon{background:#fff7ed;color:#c2410c}.quote-archive-reason{display:grid;gap:6px;margin-top:12px;color:#475569;font-size:11px;font-weight:850}.quote-archive-reason textarea{resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;color:#0f172a;font:inherit;font-weight:500;line-height:1.5;outline:0}.quote-archive-reason textarea:focus{border-color:#fb923c;box-shadow:0 0 0 3px rgb(251 146 60/.12)}.quote-delete-dialog footer button.archive{border-color:#c2410c;background:#c2410c;color:#fff}.quote-delete-dialog footer button.archive:hover:not(:disabled){background:#9a3412}
 @media(max-width:1300px){.quote-dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-speed-chart{grid-column:1/-1}.quote-speed-plot{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-speed-scale{grid-column:1/-1}}
 @media(max-width:1100px){.quote-kpi-grid{grid-template-columns:repeat(2,1fr)}.quote-list-toolbar{align-items:stretch;flex-direction:column}.quote-filters{flex-wrap:wrap}.quote-filters select{flex:1}.quote-clear-filter{flex:0 0 auto}.quote-progress-bars button{grid-template-columns:minmax(180px,.85fr) minmax(220px,1.3fr) 82px 18px}}
 @media(max-width:820px){.quote-dashboard-grid{grid-template-columns:1fr}.quote-speed-chart,.quote-progress-chart{grid-column:auto}.quote-speed-plot{grid-template-columns:1fr}.quote-dashboard-heading{align-items:stretch;flex-direction:column}.quote-period-switch{align-self:flex-start}.quote-progress-bars button{grid-template-columns:1fr 70px 18px}.quote-progress-title{grid-column:1/-1}.quote-progress-track{grid-column:1}.quote-progress-value{grid-column:2}.quote-progress-bars button>svg{grid-column:3}}

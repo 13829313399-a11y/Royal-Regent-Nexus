@@ -42,15 +42,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v3"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v5"
     assert len(definitions) == 29
     assert len({item.role_id for item in definitions}) == 29
     assert len({(item.department, item.name) for item in definitions}) == 29
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 67
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 60
+    assert len(registered_codes) == 65
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 58
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -87,7 +87,7 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 60
+    assert len(general_manager.permission_codes) == 58
     assert set(general_manager.permission_codes) == set(
         permission_codes.BUSINESS_PERMISSION_CODES
     )
@@ -135,6 +135,14 @@ def test_fixed_system_position_definition_contract():
     assert sales_manager.permission_codes == sales_supervisor.permission_codes
     assert set(sales_business.permission_codes) < set(sales_supervisor.permission_codes)
 
+    painting_clerk = positions.get_system_position("position_painting_clerk")
+    painting_supervisor = positions.get_system_position("position_painting_supervisor")
+    painting_manager = positions.get_system_position("position_painting_manager")
+    assert "internal_quote:painting_edit" in painting_clerk.permission_codes
+    assert "internal_quote:painting_review" not in painting_clerk.permission_codes
+    assert "internal_quote:painting_review" in painting_supervisor.permission_codes
+    assert painting_manager.permission_codes == painting_supervisor.permission_codes
+
     molding_clerk = positions.get_system_position("position_molding_clerk")
     molding_supervisor = positions.get_system_position("position_molding_supervisor")
     molding_manager = positions.get_system_position("position_molding_manager")
@@ -156,11 +164,15 @@ def test_fixed_system_position_definition_contract():
     production_supervisor = positions.get_system_position(
         "position_production_supervisor"
     )
-    assert "injection_schedule:import" in production_supervisor.permission_codes
     assert "internal_quote:molding_review" in production_supervisor.permission_codes
     assert not (
         positions.PRODUCTION_TASK_OPERATE_PERMISSION_CODES
         & set(production_supervisor.permission_codes)
+    )
+    assert all(
+        not permission.startswith("injection_schedule:")
+        for definition in positions.SYSTEM_POSITION_DEFINITIONS
+        for permission in definition.permission_codes
     )
 
     assert all(

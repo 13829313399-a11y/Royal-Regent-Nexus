@@ -19,7 +19,7 @@ INTERNAL_QUOTE_SECTION_DEPARTMENTS = {
     "engineering": ENGINEERING_DEPARTMENTS,
     "electronic": ("electronic",),
     "molding": PRODUCTION_DEPARTMENTS,
-    "painting": ("painting",),
+    "painting": ("production", "painting"),
     "slush": ("slush",),
     "sewing": ("sewing",),
     "assembly": ("assembly",),
@@ -123,7 +123,6 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         guidance="必须配置在全部厂区 / 全部部门范围，并同时拥有跨厂查看权限",
     ),
 }
-
 
 INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "internal_quote:read": ScopePolicy(INTERNAL_QUOTE_ALL_DEPARTMENTS),

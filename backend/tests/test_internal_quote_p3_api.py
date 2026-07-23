@@ -309,6 +309,33 @@ def test_p3_attachment_validates_magic_deduplicates_and_downloads(monkeypatch):
         assert downloaded.content == image
         assert downloaded.headers["x-content-sha256"] == attachment["sha256"]
 
+        saved = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/engineering",
+            json={
+                "revision": 1,
+                "payload": {
+                    "materials": [
+                        {"item": "五金件", "category": "hardware", "quantity": "2", "unit_price_rmb": "8.5"}
+                    ],
+                    "molds": [],
+                    "production_mold_fees": [],
+                },
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/engineering/submit",
+            json={"revision": 2},
+        )
+        assert submitted.status_code == 200, submitted.text
+        late_upload = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "engineering"},
+            files={"file": ("提交后新增.png", image + b"late", "image/png")},
+        )
+        assert late_upload.status_code == 409
+        assert "重开" in late_upload.json()["detail"]
+
 
 def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatch):
     with make_client(monkeypatch) as client:

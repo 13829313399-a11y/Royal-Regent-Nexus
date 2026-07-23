@@ -16,7 +16,7 @@ from app.services.permission_codes import (
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v3"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v5"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -84,8 +84,6 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
     "customer_price:compare",
-    "injection_schedule:read",
-    "injection_schedule:import",
     "internal_quote:read",
     "internal_quote:create",
     "internal_quote:clone",
@@ -193,8 +191,6 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:audit_read",
     "molding_sample:notification_read",
-    "injection_schedule:read",
-    "injection_schedule:import",
     "internal_quote:read",
     "internal_quote:summary_read",
     "internal_quote:timeline_read",
@@ -207,12 +203,23 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
     "molding_sample:export",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:notification_read",
-    "injection_schedule:read",
-    "injection_schedule:import",
     "internal_quote:read",
     "internal_quote:summary_read",
     "internal_quote:timeline_read",
     "internal_quote:molding_edit",
+)
+
+PAINTING_CLERK_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
+    "internal_quote:read",
+    "internal_quote:summary_read",
+    "internal_quote:timeline_read",
+    "internal_quote:painting_edit",
+)
+
+PAINTING_SUPERVISOR_PERMISSION_CODES = (
+    *PAINTING_CLERK_PERMISSION_CODES,
+    "internal_quote:painting_review",
 )
 
 # 啤机职位可跨厂只读查看正式工程啤办看板与明细，但只操作
@@ -338,7 +345,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=400,
-        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
+        description="全厂只读查看啤办生产任务；参与本厂报价协同",
         permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -347,7 +354,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=410,
-        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
+        description="全厂只读查看啤办生产任务；参与本厂报价协同",
         permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -356,7 +363,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=420,
-        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
+        description="全厂只读查看啤办生产任务；参与本厂报价协同",
         permission_codes=PRODUCTION_CLERK_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -365,8 +372,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=430,
-        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="全厂只读查看啤办生产任务；本厂填写并复核喷油报价",
+        permission_codes=PAINTING_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_painting_supervisor",
@@ -374,8 +381,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=440,
-        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="全厂只读查看啤办生产任务；本厂填写并复核喷油报价",
+        permission_codes=PAINTING_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_painting_clerk",
@@ -383,8 +390,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=450,
-        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="全厂只读查看啤办生产任务；本厂填写喷油报价，不含复核权",
+        permission_codes=PAINTING_CLERK_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_molding_manager",

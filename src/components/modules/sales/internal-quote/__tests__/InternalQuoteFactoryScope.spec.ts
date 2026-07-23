@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthMeResponse } from '@/api/auth'
 import type { ApiInternalQuote, ApiInternalQuoteCustomer, ApiInternalQuotePricingBaseline } from '@/api/internalQuote'
 import InternalQuoteBaselineDialog from '@/components/modules/sales/internal-quote/InternalQuoteBaselineDialog.vue'
+import InternalQuoteComparisonDialog from '@/components/modules/sales/internal-quote/InternalQuoteComparisonDialog.vue'
 import InternalQuoteCreateDialog from '@/components/modules/sales/internal-quote/InternalQuoteCreateDialog.vue'
 import InternalQuoteCustomerDialog from '@/components/modules/sales/internal-quote/InternalQuoteCustomerDialog.vue'
 import InternalQuoteHome from '@/components/modules/sales/internal-quote/InternalQuoteHome.vue'
@@ -15,12 +16,14 @@ import type { InternalQuoteCreatePayload } from '@/types/internalQuoteDesk'
 const routerPushMock = vi.hoisted(() => vi.fn())
 const internalQuoteApiMock = vi.hoisted(() => ({
   list: vi.fn(),
+  get: vi.fn(),
   listBusinessOwners: vi.fn(),
   listCustomers: vi.fn(),
   createCustomer: vi.fn(),
   updateCustomer: vi.fn(),
   deleteCustomer: vi.fn(),
   deleteQuote: vi.fn(),
+  archiveQuote: vi.fn(),
   create: vi.fn(),
   clone: vi.fn(),
   getPricingBaseline: vi.fn(),
@@ -184,12 +187,14 @@ describe('InternalQuoteHome factory permission boundary', () => {
     setActivePinia(createPinia())
     routerPushMock.mockReset()
     internalQuoteApiMock.list.mockReset().mockResolvedValue([])
+    internalQuoteApiMock.get.mockReset()
     internalQuoteApiMock.listBusinessOwners.mockReset().mockResolvedValue([])
     internalQuoteApiMock.listCustomers.mockReset().mockImplementation((factoryId: string) => Promise.resolve([apiCustomer(factoryId)]))
     internalQuoteApiMock.createCustomer.mockReset()
     internalQuoteApiMock.updateCustomer.mockReset()
     internalQuoteApiMock.deleteCustomer.mockReset()
     internalQuoteApiMock.deleteQuote.mockReset()
+    internalQuoteApiMock.archiveQuote.mockReset()
     internalQuoteApiMock.create.mockReset()
     internalQuoteApiMock.clone.mockReset()
     internalQuoteApiMock.getPricingBaseline.mockReset()
@@ -316,6 +321,65 @@ describe('InternalQuoteHome factory permission boundary', () => {
     const ownerWrapper = mount(InternalQuoteHome, { global: { plugins: [ownerPinia] } })
     await flushPromises()
     expect(ownerWrapper.find('button[aria-label="删除内部报价"]').exists()).toBe(false)
+  })
+
+  it('offers archival to the local sales supervisor and requires a reason', async () => {
+    internalQuoteApiMock.list.mockResolvedValue([apiQuote('huaxing', 'ARCHIVE-ME')])
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().applySession(salesSession('huaxing', false, false, true))
+    useAppStore().setActiveFactory('huaxing')
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.get('button[aria-label="归档报价并保留审计记录"]').trigger('click')
+    expect(wrapper.text()).toContain('确认归档内部报价')
+    const confirmButton = wrapper.findAll('.quote-archive-dialog footer button')
+      .find((button) => button.text().includes('确认归档'))!
+    await confirmButton.trigger('click')
+
+    expect(wrapper.text()).toContain('请填写归档原因')
+    expect(internalQuoteApiMock.archiveQuote).not.toHaveBeenCalled()
+  })
+
+  it('selects multiple quotes for comparison and clears the selection on factory switch', async () => {
+    internalQuoteApiMock.list.mockImplementation((factoryId: string) => Promise.resolve(
+      factoryId === 'huaxing'
+        ? [apiQuote('huaxing', 'COMPARE-A'), apiQuote('huaxing', 'COMPARE-B')]
+        : [],
+    ))
+    internalQuoteApiMock.get.mockImplementation((quoteId: string) => Promise.resolve(apiQuote('huaxing', quoteId)))
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().applySession(salesSession())
+    const appStore = useAppStore()
+    appStore.setActiveFactory('huaxing')
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    const compareButton = wrapper.get('.quote-compare-button')
+    expect(compareButton.attributes('disabled')).toBeDefined()
+    const selectors = wrapper.findAll('.quote-select-cell input')
+    expect(selectors).toHaveLength(2)
+    await selectors[0].setValue(true)
+    await selectors[1].setValue(true)
+
+    expect(compareButton.attributes('disabled')).toBeUndefined()
+    expect(compareButton.text()).toContain('2/5')
+    await compareButton.trigger('click')
+    await flushPromises()
+    const comparisonDialog = wrapper.findComponent(InternalQuoteComparisonDialog)
+    expect(comparisonDialog.props('open')).toBe(true)
+    expect(comparisonDialog.props('quotes').map((quote: { id: string }) => quote.id)).toEqual([
+      'COMPARE-A',
+      'COMPARE-B',
+    ])
+
+    appStore.setActiveFactory('huadeng')
+    await flushPromises()
+    expect(comparisonDialog.props('open')).toBe(false)
+    expect(wrapper.get('.quote-compare-button').text()).toContain('0/5')
   })
 
   it('ignores slow foreign responses and keeps create locked until home-factory owners are ready', async () => {

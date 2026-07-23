@@ -1,10 +1,13 @@
 from contextlib import asynccontextmanager
+import logging
+import re
+from time import perf_counter
+from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.api.auth import router as auth_router
 from app.api.carton_mark import router as carton_mark_router
-from app.api.injection_schedule import router as injection_schedule_router
 from app.api.internal_quote import (
     customer_price_artifact_router,
     router as internal_quote_router,
@@ -19,6 +22,9 @@ from app.core.config import settings
 from app.db import init_db
 
 
+request_timing_logger = logging.getLogger("uvicorn.error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -26,9 +32,49 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def record_request_timing(request: Request, call_next):
+    started_at = perf_counter()
+    supplied_request_id = request.headers.get("x-request-id", "").strip()
+    request_id = (
+        supplied_request_id
+        if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", supplied_request_id)
+        else uuid4().hex
+    )
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (perf_counter() - started_at) * 1000
+        request_timing_logger.error(
+            "request_timing method=%s path=%s status=500 duration_ms=%.2f request_id=%s",
+            request.method,
+            request.url.path,
+            duration_ms,
+            request_id,
+        )
+        raise
+
+    duration_ms = (perf_counter() - started_at) * 1000
+    response.headers["X-Request-ID"] = request_id
+    response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
+    if request.url.path != "/health":
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        request_timing_logger.info(
+            "request_timing method=%s path=%s status=%s duration_ms=%.2f request_id=%s",
+            request.method,
+            route_path,
+            response.status_code,
+            duration_ms,
+            request_id,
+        )
+    return response
+
+
 app.include_router(auth_router)
 app.include_router(carton_mark_router)
-app.include_router(injection_schedule_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
