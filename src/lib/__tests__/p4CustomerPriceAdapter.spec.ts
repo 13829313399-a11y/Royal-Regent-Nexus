@@ -31,15 +31,21 @@ function p4Workbook(
   includeCustomerFields = true,
   customer: 'BuzzBee' | '迪士尼' | 'Dickie' = 'BuzzBee',
   inactiveCodes: P4SectionCode[] = [],
+  unifiedSummary = false,
 ) {
   const isDisney = customer === '迪士尼'
   const isDicky = customer === 'Dickie'
-  const summary: XlsxCellInput[][] = Array.from({ length: 6 }, () => [])
-  summary[1] = ['报价编号', isDisney ? 'IQ-P4-DISNEY-001' : isDicky ? 'IQ-P4-DICKIE-001' : 'IQ-P4-BB-001', '版本', 'V1', '客户', customer, '数量', 3000]
-  summary[2] = ['产品', isDisney ? 'Indiana Jones Vehicle' : isDicky ? 'Disney Cable Car' : '火堆套装', '厂区/车间', 'huaxing/华兴', '公式版本', 'rr2-2026-v1', '参考快照', 'IQREF-1']
+  const summary: XlsxCellInput[][] = Array.from({ length: unifiedSummary ? 8 : 6 }, () => [])
+  if (unifiedSummary) {
+    summary[7] = [isDisney ? 'Indiana Jones Vehicle报价' : isDicky ? 'Disney Cable Car报价' : '火堆套装报价']
+  } else {
+    summary[1] = ['报价编号', isDisney ? 'IQ-P4-DISNEY-001' : isDicky ? 'IQ-P4-DICKIE-001' : 'IQ-P4-BB-001', '版本', 'V1', '客户', customer, '数量', 3000]
+    summary[2] = ['产品', isDisney ? 'Indiana Jones Vehicle' : isDicky ? 'Disney Cable Car' : '火堆套装', '厂区/车间', 'huaxing/华兴', '公式版本', 'rr2-2026-v1', '参考快照', 'IQREF-1']
+  }
 
   const approval: XlsxCellInput[][] = Array.from({ length: 8 }, () => [])
-  approval[1] = ['模板版本', templateVersion]
+  approval[1] = ['模板版本', templateVersion, '公式版本', 'rr2-2026-v1']
+  approval[2] = ['参考快照', 'IQREF-1', '报价头revision', 2]
   approval[3] = ['导出阶段', 'P4 最终业务放行']
   approval[4] = ['边界说明', '最终业务放行完成，可交接客价转换台']
 
@@ -56,7 +62,7 @@ function p4Workbook(
       ? {
           injection_lines: [{
             item: isDisney ? '车面' : '水箱盖', material: isDisney ? 'ABS' : 'LDPE', grade: isDisney ? '750SW' : 'G812', net_weight_g: isDisney ? 28 : 4,
-            loss_rate_percent: 3, machine_code: isDisney ? '14A' : '18A', sets: 1, target_output: 2800, quantity: 1,
+            loss_rate_percent: 3, machine_code: isDisney ? '14A' : unifiedSummary ? '14A-16A' : '18A', sets: 1, target_output: 2800, quantity: 1,
             ...(isDisney ? { disney_mold_no: 'M01', disney_resin_cost_usd_kg: 2.16, disney_cycle_time_seconds: 39, disney_labor_rate_usd_hr: 8.12 } : {}),
           }],
           blow_lines: [],
@@ -78,7 +84,9 @@ function p4Workbook(
         : code === 'sales'
           ? {
               paper_price_factor: 2.75,
-              packaging_materials: isDisney ? [] : [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '' }],
+              packaging_materials: isDisney
+                ? [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '', disney_description: 'Color Box', disney_unit_price_usd: .12, disney_included: 1 }]
+                : [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '' }],
               product_size_cm: { length: 12, width: 8, height: 4 },
               color_box_size_cm: { length: 13, width: 9, height: 5 },
               cartons: [{ item: '外箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [], ...(isDisney ? { disney_unit_price_usd: .062 } : {}) }],
@@ -116,10 +124,10 @@ function p4Workbook(
       : code === 'sales'
         ? {
             line_breakdown: [
-              ...(!isDisney ? [{ kind: 'packaging_material', owner: 'sales', item: '彩盒', category: 'color_box_inner_card', tax_rate_percent: '10.0000', amount_hkd: '1.1765' }] : []),
+              { kind: 'packaging_material', owner: 'sales', item: '彩盒', category: 'color_box_inner_card', tax_rate_percent: '10.0000', amount_hkd: '1.1765' },
               { kind: 'carton', owner: 'sales', item: '外箱', per_piece_hkd: '2.3265', cuft: '1.7892' },
             ],
-            totals: { packaging_material_hkd: isDisney ? '0.0000' : '1.1765', carton_hkd: '2.3265', carton_cuft: '1.7892', total_hkd: isDisney ? '2.3265' : '3.5030' },
+            totals: { packaging_material_hkd: '1.1765', carton_hkd: '2.3265', carton_cuft: '1.7892', total_hkd: '3.5030' },
           }
       : { line_breakdown: [], totals: { total_hkd: '0.0000' } }
     Object.assign(calculation, {
@@ -157,6 +165,35 @@ describe('P4 customer price adapter', () => {
     const cartonRow = exportedSheet.rows.find((row) => row?.[0] === 'CARTON SIZE')
     expect(cartonRow?.[5]).toBe(3.35)
     expect(cartonRow?.[6]).toBe(3.4505)
+  })
+
+  it('reads the unified desk layout from the stable approval manifest and handoff metadata', () => {
+    const source = p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, 'BuzzBee', [], true)
+    const prepared = prepareP4CustomerConversion(
+      source,
+      'IQ-P4-BB-UNIFIED.xlsx',
+      'buzzbee',
+      {
+        quoteNo: 'IQ-P4-BB-UNIFIED',
+        versionLabel: 'V2',
+        customer: 'BuzzBee',
+        quantity: 3000,
+        productName: '火堆套装',
+        formulaVersion: 'rr2-2026-v1',
+        referenceSnapshotId: 'IQREF-1',
+      },
+    )
+
+    expect(prepared.artifact).toMatchObject({
+      quoteNo: 'IQ-P4-BB-UNIFIED',
+      versionLabel: 'V2',
+      customer: 'BuzzBee',
+      quantity: 3000,
+      productName: '火堆套装',
+      formulaVersion: 'rr2-2026-v1',
+      referenceSnapshotId: 'IQREF-1',
+    })
+    expect(prepared.result.sheets[0].productName).toBe('火堆套装')
   })
 
   it('rejects legacy P4 v1 before one-time consumption', () => {
@@ -198,6 +235,9 @@ describe('P4 customer price adapter', () => {
       cycleTimeSeconds: 39,
     })
     expect(prepared.result.sheets[0].quoteData.decoRows[0]).toMatchObject({ applicationType: 'Whole Item', operations: 34 })
+    expect(prepared.result.sheets[0].quoteData.purchasedPackageParts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ description: 'Color Box', perPartCostUsd: .12, included: 1 }),
+    ]))
     expect(prepared.result.sheets[0].quoteData.moq5000Usd).toBe(2.84)
 
     const output = createDisneyCustomerQuoteWorkbook(

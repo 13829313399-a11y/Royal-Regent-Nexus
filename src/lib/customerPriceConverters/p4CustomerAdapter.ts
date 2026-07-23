@@ -16,6 +16,7 @@ import {
 } from './caixing'
 import {
   parseP4InternalQuoteArtifact,
+  type P4ArtifactMetadata,
   type P4InternalQuoteArtifact,
 } from './p4Artifact'
 
@@ -69,8 +70,9 @@ export function prepareP4CustomerConversion(
   buffer: ArrayBuffer,
   sourceFileName: string,
   customerId: P4ConfiguredCustomerId,
+  handoffMetadata: P4ArtifactMetadata = {},
 ): P4PreparedCustomerConversion {
-  const artifact = parseP4InternalQuoteArtifact(buffer)
+  const artifact = parseP4InternalQuoteArtifact(buffer, handoffMetadata)
   if (!customerNameMatches(customerId, artifact.customer)) {
     throw new P4CustomerMappingError(`受控文件客户“${artifact.customer || '未填写'}”与当前客户模板不一致`)
   }

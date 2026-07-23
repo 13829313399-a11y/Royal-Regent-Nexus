@@ -209,6 +209,19 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
     "internal_quote:molding_edit",
 )
 
+PAINTING_CLERK_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
+    "internal_quote:read",
+    "internal_quote:summary_read",
+    "internal_quote:timeline_read",
+    "internal_quote:painting_edit",
+)
+
+PAINTING_SUPERVISOR_PERMISSION_CODES = (
+    *PAINTING_CLERK_PERMISSION_CODES,
+    "internal_quote:painting_review",
+)
+
 # 啤机职位可跨厂只读查看正式工程啤办看板与明细，但只操作
 # “啤办生产任务单”。范围模式负责区分文员的“跨厂查看 / 本厂操作”
 # 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
@@ -359,8 +372,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=430,
-        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="全厂只读查看啤办生产任务；本厂填写并复核喷油报价",
+        permission_codes=PAINTING_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_painting_supervisor",
@@ -368,8 +381,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=440,
-        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="全厂只读查看啤办生产任务；本厂填写并复核喷油报价",
+        permission_codes=PAINTING_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_painting_clerk",
@@ -377,8 +390,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=450,
-        description="全厂只读查看啤办生产任务；喷油业务模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="全厂只读查看啤办生产任务；本厂填写喷油报价，不含复核权",
+        permission_codes=PAINTING_CLERK_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_molding_manager",

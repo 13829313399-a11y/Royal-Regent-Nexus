@@ -135,6 +135,14 @@ def test_fixed_system_position_definition_contract():
     assert sales_manager.permission_codes == sales_supervisor.permission_codes
     assert set(sales_business.permission_codes) < set(sales_supervisor.permission_codes)
 
+    painting_clerk = positions.get_system_position("position_painting_clerk")
+    painting_supervisor = positions.get_system_position("position_painting_supervisor")
+    painting_manager = positions.get_system_position("position_painting_manager")
+    assert "internal_quote:painting_edit" in painting_clerk.permission_codes
+    assert "internal_quote:painting_review" not in painting_clerk.permission_codes
+    assert "internal_quote:painting_review" in painting_supervisor.permission_codes
+    assert painting_manager.permission_codes == painting_supervisor.permission_codes
+
     molding_clerk = positions.get_system_position("position_molding_clerk")
     molding_supervisor = positions.get_system_position("position_molding_supervisor")
     molding_manager = positions.get_system_position("position_molding_manager")

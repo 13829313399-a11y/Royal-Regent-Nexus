@@ -140,7 +140,7 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).not.toContain('engineering.cartons')
     expect(sectionFormSource).not.toContain('addEngineeringCarton')
     expect(sectionFormSource).toContain('统一填入格式：Huaxing Demo')
-    expect(sectionFormSource).toContain('客户名称仅决定最终报客价的输出模板')
+    expect(sectionFormSource).toContain('当前客户的报客模板专属字段只用于最终转换')
     for (const text of ['板块圆点导航', 'form-block-tooltip', 'blockIsReady', "'ready' : 'pending'", 'scrollIntoView', 'getInternalQuoteFormBlocks']) expect(sectionFormSource).toContain(text)
     for (const text of ['top:50vh', 'width:16px', 'grid-column:1;grid-row:2', 'without reserving a side column']) expect(sectionFormSource).toContain(text)
     expect(sectionFormSource).toContain('content:"";pointer-events:none')
@@ -151,9 +151,13 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).not.toContain('grid-row:2/span 80')
     expect(sectionEditorSource).toContain('.quote-section-editor{min-width:0;overflow:clip')
     expect(sectionEditorSource).not.toContain('.quote-section-editor{min-width:0;overflow:hidden')
-    for (const customerFlag of ['isBuzzBee', 'isDisney', 'isDickie', 'isCaixing']) {
+    expect(sectionFormSource).toContain("const isBuzzBee = computed(() => normalizedCustomer.value === 'buzzbee')")
+    expect(sectionFormSource).toContain("const isDisney = computed(() => ['disney', '迪士尼'].includes(normalizedCustomer.value))")
+    expect(sectionFormSource).toContain("const isCaixing = computed(() => ['caixing', '彩星'].includes(normalizedCustomer.value))")
+    for (const customerFlag of ['isDickie']) {
       expect(sectionFormSource).toContain(`const ${customerFlag} = computed(() => false)`)
     }
+    for (const text of ['迪士尼采购件客户字段部分', '迪士尼模具客户字段部分', '迪士尼注塑客户参数部分', '迪士尼包装件客户字段部分', 'row.disney_unit_price_usd', 'carton.disney_unit_price_usd']) expect(sectionFormSource).toContain(text)
     for (const text of ['协作评论', '业务操作时间线', '浏览记录', '短时间刷新会去重', '客人目标价', 'quote.targetCustomerPrice']) expect(activitySource).toContain(text)
     for (const text of ['调整汇率', '保存汇率', '保存会生成新 revision', 'updateFx']) expect(activitySource).toContain(text)
     for (const text of ['保存码数', 'save-quote-markup', 'updateMarkup', '码数最多保留 2 位小数']) expect(activitySource).toContain(text)
