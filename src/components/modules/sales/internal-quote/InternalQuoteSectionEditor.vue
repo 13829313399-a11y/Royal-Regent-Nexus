@@ -4,7 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/api/internalQuote'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
-import { cloneInternalQuotePayload, normalizeInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, normalizeInternalQuotePayload, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
@@ -30,7 +30,7 @@ const actionReason = ref('')
 const reasonAction = ref<'reject' | 'na' | 'reopen'>()
 const localMessage = ref('')
 const localError = ref('')
-const supportsQuickQuote = computed(() => ['painting', 'sewing'].includes(props.section.code))
+const supportsQuickQuote = computed(() => ['electronic', 'painting', 'sewing'].includes(props.section.code))
 const isQuickQuoteMode = computed(() => draftPayload.value.quote_mode === 'quick')
 const quickQuoteButtonLabel = computed(() => {
   if (!isQuickQuoteMode.value) return '快捷报价'
@@ -41,6 +41,10 @@ function toggleQuickQuoteMode() {
   if (!editable.value || !supportsQuickQuote.value) return
   const nextMode = isQuickQuoteMode.value ? 'detail' : 'quick'
   const next: Record<string, unknown> = { ...draftPayload.value, quote_mode: nextMode }
+  if (props.section.code === 'electronic' && nextMode === 'quick') {
+    const quickRows = Array.isArray(next.quick_quotes) ? next.quick_quotes : []
+    if (!quickRows.length) next.quick_quotes = [{ item: '', unit_price_rmb: 0, tax_rate_percent: 13, remark: '' }]
+  }
   if (props.section.code === 'sewing' && nextMode === 'quick') {
     const quickRows = Array.isArray(next.quick_quotes) ? next.quick_quotes : []
     if (!quickRows.length) next.quick_quotes = [{ doll_name: '', unit_price_hkd: 0 }]
@@ -178,19 +182,25 @@ async function saveDraft(showMessage = true, reason = '') {
   }
 }
 
-async function saveSalesMarkup(markup: number) {
-  if (props.section.code !== 'sales') throw new Error('当前不是业务部分段，无法合并保存码数。')
-  if (!editable.value) throw new Error('业务部分段当前不可编辑，请先重开后再保存码数。')
+async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: number, activeMarkup: number, miscRatio: number) {
+  if (props.section.code !== 'sales') throw new Error('当前不是业务部分段，无法合并保存码数与杂项。')
+  if (!editable.value) throw new Error('业务部分段当前不可编辑，请先重开后再保存码数与杂项。')
   const shipping = draftPayload.value.shipping && typeof draftPayload.value.shipping === 'object' && !Array.isArray(draftPayload.value.shipping)
     ? draftPayload.value.shipping as Record<string, unknown>
     : {}
   draftPayload.value = normalizeInternalQuotePayload('sales', {
     ...draftPayload.value,
-    shipping: { ...shipping, markup_x: Number(markup.toFixed(2)) },
+    shipping: {
+      ...shipping,
+      markup_x: Number(activeMarkup.toFixed(2)),
+      markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)) })),
+      selected_markup_moq: selectedMoq,
+      misc_ratio: Number(miscRatio.toFixed(4)),
+    },
   })
-  const result = await saveDraft(false, '在协作侧栏保存报价码数')
-  if (!result) throw new Error(localError.value || '保存码数失败。')
-  localMessage.value = `业务部当前草稿与码数已保存，服务端已生成 revision ${result.revision} 并重新计算。`
+  const result = await saveDraft(false, '在协作侧栏保存分段 MOQ 码数与杂项系数')
+  if (!result) throw new Error(localError.value || '保存码数与杂项失败。')
+  localMessage.value = `业务部当前草稿、分段 MOQ 码数与杂项系数已保存，服务端已生成 revision ${result.revision} 并重新计算。`
   return result
 }
 

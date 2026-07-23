@@ -4,6 +4,31 @@ import InternalQuoteSectionForm from '@/components/modules/sales/internal-quote/
 import { calculateCartonCuft, normalizeInternalQuotePayload, type SalesPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('InternalQuoteSectionForm dimension units', () => {
+  it('adds business testing-fee MOQ tiers and calculates each USD unit price', async () => {
+    const payload = normalizeInternalQuotePayload('sales', {}) as unknown as SalesPayload
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'sales',
+        modelValue: payload as unknown as Record<string, unknown>,
+        disabled: false,
+      },
+    })
+
+    expect(wrapper.get('[aria-label="业务部测试费单价 USD 1"]').text()).toBe('0.0000')
+    await wrapper.get('button[aria-label="新增业务部测试费 MOQ"]').trigger('click')
+    await wrapper.get('input[aria-label="业务部测试费用 USD"]').setValue('1250')
+    await wrapper.get('input[aria-label="业务部测试费 MOQ 1"]').setValue('5000')
+    await wrapper.get('input[aria-label="业务部测试费 MOQ 2"]').setValue('10000')
+
+    expect(payload.testing_fee_total_usd).toBe(1250)
+    expect(payload.testing_fee_moqs).toEqual([5000, 10000])
+    expect(wrapper.get('[aria-label="业务部测试费单价 USD 1"]').text()).toBe('0.2500')
+    expect(wrapper.get('[aria-label="业务部测试费单价 USD 2"]').text()).toBe('0.1250')
+
+    await wrapper.get('button[aria-label="删除业务部测试费 MOQ 2"]').trigger('click')
+    expect(payload.testing_fee_moqs).toEqual([5000])
+  })
+
   it('edits color-box and carton dimensions in cm while preserving canonical inch calculations', async () => {
     const payload = normalizeInternalQuotePayload('sales', {
       color_box_size_in: { length: 10, width: 5, height: 4 },
@@ -32,5 +57,30 @@ describe('InternalQuoteSectionForm dimension units', () => {
     await wrapper.get('input[aria-label="纸箱长度 cm"]').setValue('25.4')
     expect(payload.cartons[0].length_in).toBe(10)
     expect(calculateCartonCuft(payload.cartons[0])).toBeCloseTo(originalCuft / 2)
+  })
+
+  it('shows freight and lifting HKD from the frozen pricing baseline without quote-level editors', () => {
+    const payload = normalizeInternalQuotePayload('sales', {
+      cartons: [{ item: '主纸箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [] }],
+    }) as unknown as SalesPayload
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'sales',
+        modelValue: payload as unknown as Record<string, unknown>,
+        disabled: false,
+        referenceSnapshot: {
+          freight: {
+            routes: [{ route_key: 'sz40', route_name: '深圳 40 柜', capacity_key: 'cap_40', freight_hkd: '6500', lifting_hkd: '1100' }],
+          },
+        },
+      },
+    })
+
+    expect(wrapper.get('output[aria-label="深圳 40 柜运费"]').text()).toBe('6500')
+    expect(wrapper.get('output[aria-label="深圳 40 柜吊柜费"]').text()).toBe('1100')
+    expect(wrapper.find('input[aria-label="深圳 40 柜运费"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="深圳 40 柜吊柜费"]').exists()).toBe(false)
+    expect(wrapper.find('output[aria-label="HK 20 尺柜运费"]').exists()).toBe(false)
+    expect(payload.freight_calc).not.toHaveProperty('hk40')
   })
 })

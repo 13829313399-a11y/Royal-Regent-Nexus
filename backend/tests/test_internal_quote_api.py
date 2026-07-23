@@ -21,6 +21,16 @@ ALL_SECTION_CODES = [
     "sewing",
     "assembly",
 ]
+DEFAULT_FREIGHT_ROUTES = [
+    {"route_key": "hk40", "route_name": "HK 40 柜", "capacity_key": "cap_40", "freight_hkd": "8000", "lifting_hkd": "0"},
+    {"route_key": "hk20", "route_name": "HK 20 柜", "capacity_key": "cap_20", "freight_hkd": "7100", "lifting_hkd": "0"},
+    {"route_key": "yt40", "route_name": "YT 40 柜", "capacity_key": "cap_40", "freight_hkd": "7200", "lifting_hkd": "0"},
+    {"route_key": "yt20", "route_name": "YT 20 柜", "capacity_key": "cap_20", "freight_hkd": "6000", "lifting_hkd": "0"},
+    {"route_key": "hk10t", "route_name": "HK 10 吨车", "capacity_key": "cap_10t", "freight_hkd": "14900", "lifting_hkd": "0"},
+    {"route_key": "yt10t", "route_name": "YT 10 吨车", "capacity_key": "cap_10t", "freight_hkd": "11500", "lifting_hkd": "0"},
+    {"route_key": "hk5t", "route_name": "HK 5 吨车", "capacity_key": "cap_5t", "freight_hkd": "12500", "lifting_hkd": "0"},
+    {"route_key": "yt5t", "route_name": "YT 5 吨车", "capacity_key": "cap_5t", "freight_hkd": "11000", "lifting_hkd": "0"},
+]
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -377,6 +387,72 @@ def test_section_live_preview_uses_authoritative_calculator_without_persisting(m
         assert stale.json()["detail"]["current_revision"] == 2
 
 
+def test_sales_markup_selection_and_misc_ratio_survive_save_detail_and_summary_reload(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_sales_pricing_persistence", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="SALES-PRICING-PERSIST"),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        payload = {
+            "paper_price_factor": 2.75,
+            "testing_fee_total_usd": 1250,
+            "testing_fee_moqs": [5000, 10000],
+            "packaging_materials": [],
+            "product_size_in": {"length": 0, "width": 0, "height": 0},
+            "color_box_size_unit": "inch",
+            "color_box_size_in": {"length": 0, "width": 0, "height": 0},
+            "cartons": [],
+            "freight_calc": {"enabled": False},
+            "shipping": {
+                "markup_x": 1.25,
+                "markup_tiers": [
+                    {"moq": 3000, "markup_x": 1.25},
+                    {"moq": 5000, "markup_x": 1.20},
+                    {"moq": 10000, "markup_x": 1.15},
+                ],
+                "selected_markup_moq": 3000,
+                "misc_ratio": 0.035,
+            },
+        }
+
+        saved = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 1, "payload": payload, "reason": "保存人工选档和杂项"},
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["payload"]["shipping"]["misc_ratio"] == 0.035
+        assert saved.json()["payload"]["shipping"]["selected_markup_moq"] == 3000
+        assert saved.json()["payload"]["testing_fee_total_usd"] == 1250
+        assert saved.json()["payload"]["testing_fee_moqs"] == [5000, 10000]
+        assert saved.json()["calculation"]["totals"]["testing_fee_moqs"] == ["5000.0000", "10000.0000"]
+        assert saved.json()["calculation"]["totals"]["testing_fee_tiers"] == [
+            {"moq": "5000.0000", "unit_price_usd": "0.2500"},
+            {"moq": "10000.0000", "unit_price_usd": "0.1250"},
+        ]
+        assert saved.json()["calculation"]["totals"]["testing_fee_unit_usd"] == "0.2500"
+
+        detail = client.get(f"/api/internal-quotes/{quote_id}")
+        assert detail.status_code == 200, detail.text
+        sales = next(item for item in detail.json()["sections"] if item["department"] == "sales")
+        assert sales["payload"]["shipping"]["misc_ratio"] == 0.035
+        assert sales["payload"]["shipping"]["selected_markup_moq"] == 3000
+        assert sales["payload"]["testing_fee_total_usd"] == 1250
+        assert sales["payload"]["testing_fee_moqs"] == [5000, 10000]
+        assert sales["calculation"]["totals"]["testing_fee_moqs"] == ["5000.0000", "10000.0000"]
+        assert sales["calculation"]["totals"]["testing_fee_unit_usd"] == "0.2500"
+
+        summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
+        assert summary.status_code == 200, summary.text
+        pricing = summary.json()["rr2_cost_summary"]["shipping_pricing"]
+        assert pricing["misc_ratio"] == "0.0350"
+        assert pricing["active_markup_moq"] == "3000.0000"
+        assert pricing["markup"] == "1.2500"
+        assert [item["is_active"] for item in pricing["markup_tiers"]] == [True, False, False]
+
+
 def test_factory_customers_are_readable_but_only_managed_by_local_sales_supervisor(monkeypatch):
     with make_client(monkeypatch) as client:
         owner_profile = login(
@@ -503,6 +579,7 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
             "machine": "800T",
             "shift_price_hkd": "4500",
         }
+        assert initial.json()["freight_routes"] == DEFAULT_FREIGHT_ROUTES
 
         forbidden = client.put(
             "/api/internal-quotes/pricing-baseline",
@@ -512,6 +589,7 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
                 "workshop_name": "华兴",
                 "material_prices": [{"material": "ABS", "grade": "750SW", "price_hkd_lb": "9.25"}],
                 "machine_prices": [{"machine_range": "4A-6A", "machine": "80T", "shift_price_hkd": "999"}],
+                "freight_routes": DEFAULT_FREIGHT_ROUTES,
             },
         )
         assert forbidden.status_code == 403
@@ -534,12 +612,28 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
                 "workshop_name": "华兴",
                 "material_prices": [{"material": "ABS", "grade": "750SW", "price_hkd_lb": "9.25"}],
                 "machine_prices": [{"machine_range": "4A-6A", "machine": "80T", "shift_price_hkd": "999"}],
+                "freight_routes": [
+                    {**DEFAULT_FREIGHT_ROUTES[0], "route_name": "香港 40 柜", "freight_hkd": "8200", "lifting_hkd": "1300"},
+                    *DEFAULT_FREIGHT_ROUTES[2:],
+                    {"route_key": "sz40", "route_name": "深圳 40 柜", "capacity_key": "cap_40", "freight_hkd": "6500", "lifting_hkd": "1100"},
+                ],
             },
         )
         assert saved.status_code == 200, saved.text
         assert saved.json()["source_type"] == "custom"
         assert saved.json()["revision"] == 2
         assert saved.json()["updated_by_name"] == "iq_baseline_supervisor"
+        saved_routes = saved.json()["freight_routes"]
+        assert len(saved_routes) == 8
+        assert saved_routes[0] == {
+            "route_key": "hk40",
+            "route_name": "香港 40 柜",
+            "capacity_key": "cap_40",
+            "freight_hkd": "8200",
+            "lifting_hkd": "1300",
+        }
+        assert all(row["route_key"] != "hk20" for row in saved_routes)
+        assert saved_routes[-1]["route_key"] == "sz40"
 
         db_module = importlib.import_module("app.db")
         baseline_service = importlib.import_module("app.services.internal_quote_baseline")
@@ -553,6 +647,7 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
         assert preserved.json()["revision"] == 2
         assert preserved.json()["updated_by_name"] == "iq_baseline_supervisor"
         assert preserved.json()["material_prices"][0]["price_hkd_lb"] == "9.25"
+        assert preserved.json()["freight_routes"] == saved_routes
 
         stale = client.put(
             "/api/internal-quotes/pricing-baseline",
@@ -579,6 +674,7 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
         assert snapshot.json()["snapshot"]["pricing_baseline_revision"] == 2
         assert snapshot.json()["snapshot"]["material_prices"]["ABS|750SW"] == "9.25"
         assert snapshot.json()["snapshot"]["machine_prices"][0]["shift_price_hkd"] == "999"
+        assert snapshot.json()["snapshot"]["freight"]["routes"] == saved_routes
 
         logout(client)
         engineering_profile = login(

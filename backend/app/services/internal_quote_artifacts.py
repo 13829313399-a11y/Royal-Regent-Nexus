@@ -230,6 +230,11 @@ def create_import_preview(
         "header_row": parsed.header_row,
         "row_count": parsed.row_count,
         "rmb_hkd_rate": str(fx_value),
+        # Keep the original workbook only inside the server-side preview
+        # record.  The public preview contract deliberately omits this field.
+        # Confirmation materializes it as a normal quote attachment so the
+        # final controlled XLSX can append every uploaded worksheet intact.
+        "source_workbook_base64": base64.b64encode(content).decode("ascii"),
         "payload_fragment": parsed.payload_fragment,
         "diff_summary": {
             "target_revision": section.revision,
@@ -261,7 +266,7 @@ def create_import_preview(
         source_sha256=digest(content),
         source_size_bytes=len(content),
         status="previewed",
-        preview_schema_version="p3-v2",
+        preview_schema_version="p3-v3",
         preview_json=canonical_json(preview),
         target_revision=section.revision,
         confirm_mode="",
@@ -509,6 +514,61 @@ def _materialize_imported_mold_images(
     return materialized_count
 
 
+def _materialize_imported_source_workbook(
+    db: Session,
+    quote: InternalQuote,
+    section: InternalQuoteSection,
+    batch: InternalQuoteImportBatch,
+    preview: dict[str, Any],
+    user: AuthContext,
+) -> str:
+    encoded = str(preview.get("source_workbook_base64", ""))
+    if not encoded:
+        return ""
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError, binascii.Error) as error:
+        raise HTTPException(
+            status_code=400,
+            detail="导入预览中的原始 Excel 数据无效，请重新上传报价单",
+        ) from error
+    if digest(content) != batch.source_sha256:
+        raise HTTPException(
+            status_code=400,
+            detail="导入预览中的原始 Excel 校验失败，请重新上传报价单",
+        )
+    _extension, content_type = _validate_attachment(batch.source_file_name, content)
+    attachment = db.scalar(
+        select(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.quote_id == quote.id,
+            InternalQuoteAttachment.department == section.department,
+            InternalQuoteAttachment.sha256 == batch.source_sha256,
+        )
+    )
+    if attachment is None:
+        attachment = InternalQuoteAttachment(
+            id=f"IQATT-{uuid4().hex}",
+            quote_id=quote.id,
+            factory_id=quote.factory_id,
+            department=section.department,
+            file_name=batch.source_file_name,
+            content_type=content_type,
+            size_bytes=len(content),
+            sha256=batch.source_sha256,
+            content=content,
+            uploaded_by=user.id,
+            uploaded_by_name=user.display_name,
+            uploaded_at=now_text(),
+        )
+        db.add(attachment)
+        db.flush()
+    # The materialized attachment becomes the single durable binary source.
+    # Removing the temporary base64 copy keeps confirmed preview rows compact.
+    preview.pop("source_workbook_base64", None)
+    batch.preview_json = canonical_json(preview)
+    return attachment.id
+
+
 def confirm_import_batch(
     db: Session,
     quote_id: str,
@@ -543,6 +603,14 @@ def confirm_import_batch(
     if not isinstance(fragment, dict):
         raise HTTPException(status_code=400, detail="导入预览批次结构无效")
     effective_mode = "replace" if batch.import_type == "electronic" else payload.mode
+    source_workbook_attachment_id = _materialize_imported_source_workbook(
+        db,
+        quote,
+        section,
+        batch,
+        preview,
+        user,
+    )
     embedded_image_count = 0
     if batch.import_type == "mold":
         embedded_image_count = _materialize_imported_mold_images(
@@ -609,6 +677,7 @@ def confirm_import_batch(
                 "import_type": batch.import_type,
                 "mode": effective_mode,
                 "source_sha256": batch.source_sha256,
+                "source_workbook_attachment_id": source_workbook_attachment_id,
                 "embedded_image_count": embedded_image_count,
             },
             ensure_ascii=False,
@@ -931,6 +1000,14 @@ def create_controlled_export(
     _ensure_active(quote)
     _ensure_export_permission(db, quote, user)
     sections = _export_sections(db, quote)
+    attachments = db.scalars(
+        select(InternalQuoteAttachment)
+        .where(InternalQuoteAttachment.quote_id == quote.id)
+        .order_by(
+            InternalQuoteAttachment.uploaded_at,
+            InternalQuoteAttachment.id,
+        )
+    ).all()
     required = [section for section in sections if section.is_required]
     incomplete = [
         section.department
@@ -1027,6 +1104,16 @@ def create_controlled_export(
         "final_reviewed_by": quote.final_reviewed_by if is_final_release else "",
         "final_reviewed_by_name": quote.final_reviewed_by_name if is_final_release else "",
         "final_reviewed_at": quote.final_reviewed_at if is_final_release else "",
+        "spreadsheet_attachments": [
+            {
+                "id": attachment.id,
+                "department": attachment.department,
+                "file_name": attachment.file_name,
+                "sha256": attachment.sha256,
+            }
+            for attachment in attachments
+            if Path(attachment.file_name).suffix.lower() in IMPORT_EXTENSIONS
+        ],
     }
     manifest["manifest_sha256"] = content_hash(manifest)
     reference_set = db.scalar(
@@ -1037,7 +1124,7 @@ def create_controlled_export(
     )
     reference_snapshot = _json_object(reference_set.snapshot_json) if reference_set else {}
     cost_context = _cost_context(db, quote)
-    rr2_cost_summary = _rr2_cost_summary(sections, cost_context, reference_snapshot)
+    rr2_cost_summary = _rr2_cost_summary(sections, cost_context, reference_snapshot, quote.qty)
     content = build_internal_quote_workbook(
         quote,
         sections,
@@ -1045,6 +1132,7 @@ def create_controlled_export(
         reference_snapshot,
         rr2_cost_summary,
         cost_context,
+        attachments,
     )
     record = InternalQuoteExportFile(
         id=f"IQEXP-{uuid4().hex}",

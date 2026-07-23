@@ -214,6 +214,7 @@ class InternalQuotePricingBaseline(Base):
     workshop_name: Mapped[str] = mapped_column(String(128), default="")
     material_prices_json: Mapped[str] = mapped_column(Text, default="[]")
     machine_prices_json: Mapped[str] = mapped_column(Text, default="[]")
+    freight_routes_json: Mapped[str] = mapped_column(Text, default="[]")
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(64), index=True)
     created_by_name: Mapped[str] = mapped_column(String(128))
