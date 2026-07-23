@@ -1932,6 +1932,28 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   const clear = (rowNumber: number, columnIndexes: number[]) => {
     columnIndexes.forEach((columnIndex) => patch(ref(columnIndex, rowNumber), null))
   }
+  const clearFormula = (cellRef: string) => patch(cellRef, null, undefined, true)
+
+  // The approved Disney template keeps calculation formulas in the empty
+  // Paper/Wood/Fabric reserve rows. Those sections are not supplied by the
+  // current internal-quote mapping, so their blank denominators would display
+  // #DIV/0! throughout an otherwise valid customer quote. Preserve the
+  // template layout and styles while removing formulas only from these
+  // deliberately unused rows.
+  for (const [startRow, endRow, totalRow] of [
+    [47, 56, 57],
+    [104, 113, 114],
+    [134, 143, 144],
+  ] as const) {
+    for (let rowNumber = startRow; rowNumber <= endRow; rowNumber += 1) {
+      ;['Q', 'R', 'X', 'Z'].forEach((column) => clearFormula(`${column}${rowNumber}`))
+    }
+    ;['G', 'R', 'X', 'Z'].forEach((column) => clearFormula(`${column}${totalRow}`))
+  }
+  for (let rowNumber = 89; rowNumber <= 98; rowNumber += 1) {
+    ;['N', 'O', 'U', 'W'].forEach((column) => clearFormula(`${column}${rowNumber}`))
+  }
+  ;['O', 'U', 'W'].forEach((column) => clearFormula(`${column}99`))
 
   patch('C8', data.metadata.itemName)
   const numericItemNumber = Number(data.metadata.itemNumber)
@@ -2130,7 +2152,7 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
   formula('C226', 0, 'G129-E129', 48)
   formula('D226', 0, 'C226/E129', 48)
   formula('C228', 0, 'G159-E159', 48)
-  formula('D228', '#DIV/0!', 'C228/E159', 48, 'e')
+  formula('D228', 0, 'IFERROR(C228/E159,0)', 48, undefined, true)
   formula('C229', 0, 'G174-E174', 48)
   formula('D229', 0, 'C229/E174', 48)
   formula('C230', 0, 'G189-E189', 48)

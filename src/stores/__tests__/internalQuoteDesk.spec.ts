@@ -254,7 +254,7 @@ describe('internal quote desk real API state', () => {
     expect(loaded?.rr2CostSummary.t2.map((item) => item.label)).toEqual(['彩盒/内咭', '未减税前码数', '减税后码数', '电池', '利宝', '电镀', '其他外购', '纸箱', '运费', '吊柜费', '杂项'])
     expect(loaded?.rr2CostSummary.t3.map((item) => item.label)).toEqual(['啤工', '喷油工', '油漆', '装配工', '不含人工成本', '人工比例', '毛利', '毛利率', '利润', '利润率', '总成本'])
     expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣类13%', '吸塑类6%', '运费类9%', '含税13%类'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, 10, .99, 3, 11.5, 11.5, 6, 8.26, 11.5])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 3, 11.5, 11.5, 6, 8.26, 11.5])
   })
 
   it('does not publish a detail view when the authoritative summary fails', async () => {

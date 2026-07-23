@@ -1665,6 +1665,15 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
             raise CalculationInputError(f"减税第 {index + 1} 行格式无效")
         code = str(row.get("code", "")).strip()
         category_amount = decimal_value(row.get("amount_hkd"), "减税分类金额")
+        if code == "carton":
+            result["line_breakdown"].append({
+                "kind": "tax",
+                "code": code,
+                "amount_hkd": decimal_text(category_amount),
+                "rate": None,
+                "deduction_hkd": None,
+            })
+            continue
         rate_source = row.get("rate")
         if rate_source in (None, ""):
             if not isinstance(tax_rates, dict) or code not in tax_rates:

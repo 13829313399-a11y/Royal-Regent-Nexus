@@ -1065,7 +1065,9 @@ def _rr2_cost_summary(
     tax_specs = (
         ("tax13", "含税13%类成本", tax_13_cost, None),
         ("labor13", "人工类13%", injection_labor + t3_values["painting_labor"] + t3_values["assembly_labor"], None),
-        ("carton", "纸箱类", t2_values["carton"], _summary_decimal(tax_rates.get("carton"), "0.10") * 100),
+        # Carton is carried as a cost category only.  It is intentionally
+        # excluded from tax deduction in the authoritative summary.
+        ("carton", "纸箱类", t2_values["carton"], None),
         ("tax1", "含税1%", t2_values["plating"], _summary_decimal(tax_rates.get("tax_1_percent"), "0.0099") * 100),
         ("slush3", "搪胶类3%", t1_values["slush"], _summary_decimal(tax_rates.get("slush"), "0.03") * 100),
         ("sewhair13", "车发类13%", t1_values["sewing_hair"], _summary_decimal(tax_rates.get("sewing_hair"), "0.115") * 100),

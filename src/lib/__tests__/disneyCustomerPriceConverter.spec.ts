@@ -520,7 +520,7 @@ describe('Disney customer price converter', () => {
     expect(getCellFormula(outputXml, 'C226')).toBe('G129-E129')
     expect(getCellFormula(outputXml, 'D226')).toBe('C226/E129')
     expect(getCellFormula(outputXml, 'C228')).toBe('G159-E159')
-    expect(getCellFormula(outputXml, 'D228')).toBe('C228/E159')
+    expect(getCellFormula(outputXml, 'D228')).toBe('IFERROR(C228/E159,0)')
     expect(getCellFormula(outputXml, 'C229')).toBe('G174-E174')
     expect(getCellFormula(outputXml, 'D229')).toBe('C229/E174')
     expect(getCellFormula(outputXml, 'A233')).toBe('IFERROR(C232,0)')
@@ -538,8 +538,11 @@ describe('Disney customer price converter', () => {
     for (const ref of ['M19', 'M20', 'M21', 'M22', 'M23', 'M24']) {
       expect(getCellXml(outputXml, ref)).toContain('t="inlineStr"')
     }
-    expect(getCellBody(outputXml, 'D228')).toContain('<v>#DIV/0!</v>')
-    expect(outputXml).toMatch(/<c r="D228" t="e"[^>]*>/)
+    expect(getCellBody(outputXml, 'D228')).toContain('<v>0</v>')
+    expect(outputXml).not.toMatch(/<c r="D228" t="e"[^>]*>/)
+    for (const ref of ['Q47', 'R47', 'X47', 'Z47', 'N89', 'O89', 'U89', 'W89', 'Q104', 'R104', 'X104', 'Z104', 'Q134', 'R134', 'X134', 'Z134']) {
+      expect(getCellFormula(outputXml, ref)).toBe('')
+    }
     expect(outputXml).toMatch(/<c r="A233" t="str"[^>]*><f>IFERROR\(C232,0\)<\/f><v><\/v><\/c>/)
   })
 })

@@ -113,7 +113,8 @@ def test_rr2_cost_summary_keeps_exact_four_table_fields_and_reference_tax_column
     assert tax_rows["tax13"]["rate_percent"] is None
     assert tax_rows["tax13"]["deduction_hkd"] is None
     assert tax_rows["labor13"]["rate_percent"] is None
-    assert tax_rows["carton"]["rate_percent"] == "10.0000"
+    assert tax_rows["carton"]["rate_percent"] is None
+    assert tax_rows["carton"]["deduction_hkd"] is None
     assert tax_rows["tax1"]["rate_percent"] == "0.9900"
     assert tax_rows["freight9"]["amount_hkd"] == "0.0000"
     assert rows_by_key(result["t1"])["base_price"]["value"] == "60.0000"

@@ -33,6 +33,22 @@ function artifact(productType: 'plastic' | 'plush' = 'plastic'): P4InternalQuote
     referenceSnapshot: { fx: { hkd_usd: 7.8 } },
     sections: {
       sales: section('sales', {
+        testing_fee_total_usd: 1500,
+        testing_fee_moqs: [3000, 5000, 10000],
+        shipping: {
+          markup_tiers: [
+            { moq: 3000, markup_x: 1.18 },
+            { moq: 5000, markup_x: 1.17 },
+            { moq: 10000, markup_x: 1.15 },
+          ],
+          selected_markup_moq: 5000,
+          misc_ratio: .02,
+        },
+        freight_calc: {
+          enabled: true,
+          hk40: 8000,
+          hk20: 7100,
+        },
         customer_quote_fields: {
           caixing: {
             product_type: productType,
@@ -96,6 +112,12 @@ describe('Caixing P4 customer adapter', () => {
     expect(toolRow?.[1]).toBe(productType === 'plastic' ? 'IN' : 'RC')
     expect(toolRow?.[4]).toBe(productType === 'plastic' ? 53_623.53 : 14_220)
     expect(toolRow?.[15]).toBe(productType === 'plastic' ? 26 : 155)
+    const customerText = workbook.sheets
+      .flatMap((sheet) => sheet.rows)
+      .flat()
+      .map((value) => String(value ?? ''))
+      .join('\n')
+    expect(customerText).not.toMatch(/测试费用|吊柜费|报价（MOQ|杂项/)
   }, 30_000)
 
   it('rejects mismatched customer mold prices before consumption', () => {
