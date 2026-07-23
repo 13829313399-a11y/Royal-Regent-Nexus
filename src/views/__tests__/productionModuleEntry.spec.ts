@@ -13,6 +13,24 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
+  it('keeps the injection scheduling hub as a rebuild placeholder only', () => {
+    const placeholderBlock = enterpriseSource.match(
+      /id: 'injection-scheduling'[\s\S]*?\n      },/,
+    )?.[0]
+
+    expect(placeholderBlock).toBeDefined()
+    expect(placeholderBlock).toContain("title: '注塑排产中枢'")
+    expect(placeholderBlock).toContain("status: '待重建'")
+    expect(placeholderBlock).toContain("stats: '旧版已清除 · 暂无业务数据'")
+    expect(placeholderBlock).toContain(
+      "route: getDepartmentRoute('production', 'injection-scheduling')",
+    )
+    expect(placeholderBlock).not.toContain('href:')
+
+    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).not.toContain('InjectionSchedulingView.vue')
+  })
+
   it('keeps the molding sample production task wired to the real task page', () => {
     expect(enterpriseSource).toMatch(/id: 'molding-sample-production-task'/)
     expect(enterpriseSource).toMatch(/title: '啤办生产任务单'/)

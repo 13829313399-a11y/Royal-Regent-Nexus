@@ -782,6 +782,28 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     panelSubtitle: '承载生产计划、啤办任务和各车间生产管理模块',
     modules: [
       {
+        id: 'injection-scheduling',
+        title: '注塑排产中枢',
+        owner: '生产部 / PMC / 计划',
+        summary: '旧版功能已清除，保留模块入口，等待重新规划前端、后端与数据模型',
+        status: '待重建',
+        statusTone: 'amber',
+        stats: '旧版已清除 · 暂无业务数据',
+        icon: Boxes,
+        route: getDepartmentRoute('production', 'injection-scheduling'),
+        statusMetrics: [
+          { label: '前端', value: '待重建', tone: 'amber' },
+          { label: '后端', value: '待重建', tone: 'amber' },
+          { label: '数据', value: '已清除', tone: 'blue' },
+        ],
+        todos: ['重新确认第一阶段范围与验收口径', '新实现不复用已删除的旧接口和旧数据库表'],
+        children: [
+          { label: '需求重审', summary: '重新确认角色、流程、数据来源和验收范围' },
+          { label: '架构重建', summary: '重新设计前端、后端、权限和数据模型' },
+          { label: '分阶段验收', summary: '按导入、看板、排产和执行闭环逐步交付' },
+        ],
+      },
+      {
         id: 'production-plan',
         title: '生产计划管理',
         owner: '计划排程',
