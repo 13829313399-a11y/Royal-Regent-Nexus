@@ -818,8 +818,14 @@ def test_sales_scenario_and_blocking_reference_warnings():
         factory_price_hkd="10",
         mold_amortization_usd="1",
     )
-    assert sales["totals"]["tax_deduction_hkd"] == "2.0000"
-    assert sales["totals"]["after_tax_cost_hkd"] == "8.0000"
+    assert sales["totals"]["tax_deduction_hkd"] == "0.0000"
+    assert sales["totals"]["after_tax_cost_hkd"] == "10.0000"
+    carton_tax_line = next(
+        row for row in sales["line_breakdown"]
+        if row.get("kind") == "tax" and row.get("code") == "carton"
+    )
+    assert carton_tax_line["rate"] is None
+    assert carton_tax_line["deduction_hkd"] is None
     assert sales["totals"]["scenarios"][0]["total_usd"] == "3.6688"
 
     misc_ratio = calculate(

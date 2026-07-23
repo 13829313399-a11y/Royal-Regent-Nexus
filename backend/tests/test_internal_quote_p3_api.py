@@ -442,8 +442,9 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
                     section.calculation_json = json.dumps({
                         "status": "valid",
                         "line_breakdown": [],
-                        "totals": {
-                            "testing_fee_total_usd": "1500",
+                            "totals": {
+                                "carton_hkd": "0.38",
+                                "testing_fee_total_usd": "1500",
                             "testing_fee_tiers": [
                                 {"moq": "3000", "unit_price_usd": "0.5"},
                                 {"moq": "5000", "unit_price_usd": "0.3"},
@@ -479,7 +480,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
-        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v5"
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v6"
         assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
@@ -530,6 +531,34 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert quote_sheet.cell(test_header_row, 15).value == 1500
         assert [quote_sheet.cell(test_header_row + offset, 14).value for offset in range(1, 4)] == [3000, 5000, 10000]
         assert quote_sheet.cell(test_header_row + 1, 16).value == f"=O{test_header_row + 1}*D{quote_rows['报价（MOQ3K）'] - 2}"
+        function_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if str(quote_sheet.cell(row, 14).value or "").startswith("功能介绍：")
+        )
+        color_title_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 14).value == "彩盒价格"
+        )
+        assert color_title_row == function_row + 9
+        assert all(
+            quote_sheet.cell(function_row + 8, column).value is None
+            for column in range(14, 18)
+        )
+        carton_detail_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 2).value == "纸箱"
+        )
+        assert quote_sheet.cell(carton_detail_row, 1).value in (None, "")
+        tax_header_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 3).value == "人民币外购件成本"
+        )
+        carton_tax_column = next(
+            column for column in range(6, 15)
+            if quote_sheet.cell(tax_header_row, column).value == "纸箱类"
+        )
+        assert quote_sheet.cell(tax_header_row + 1, carton_tax_column).value in (None, "")
+        assert quote_sheet.cell(tax_header_row + 3, carton_tax_column).value in (None, "")
         summary_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 3).value == "旺季价")
         assert quote_sheet.cell(summary_row + 1, 4).value == f"=D{quote_rows['报价（MOQ10K）']}"
         assert quote_sheet["Q6"].value == 0.035

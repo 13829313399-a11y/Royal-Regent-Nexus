@@ -22,7 +22,7 @@ from app.models.internal_quote import (
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v5"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v6"
 TEMPLATE_VERSION = P3_TEMPLATE_VERSION
 STRUCTURED_DATA_SCHEMA_VERSION = "internal-quote-structured-data-v1"
 STRUCTURED_DATA_CHUNK_SIZE = 30000
@@ -582,7 +582,7 @@ def _build_summary_sheet(
                 ("吸塑类4%", _tax_rate(reference_snapshot, "blister", 0.04)),
                 ("运费含税9%", _tax_rate(reference_snapshot, "freight_tax_9", 0.0826)),
                 ("含税13%类", _tax_rate(reference_snapshot, "tax_13_percent", 0.115)),
-                ("纸箱类", _tax_rate(reference_snapshot, "carton", 0.0821)),
+                ("纸箱类", ""),
             ),
         ),
     )
@@ -787,7 +787,7 @@ def _build_summary_sheet(
     add_detail("¥13%", "其他外购", "工程辅料/外购", cost_context.get("auxiliary_hkd"))
     add_detail("¥13%", "其他外购", "包装辅材", packaging_auxiliary)
     add_detail("¥13%", "彩盒/内卡", "彩盒/内卡", color_box_amount)
-    add_detail("¥10%", "纸箱", "纸箱", cost_context.get("carton_hkd"))
+    add_detail("", "纸箱", "纸箱", cost_context.get("carton_hkd"))
 
     detail_start_row = mold_total_row + 4
     detail_slots = max(1, len(detail_rows))
@@ -924,7 +924,9 @@ def _build_summary_sheet(
         _dict_value(sales_payload.get("customer_quote_fields", {})).get("buzzbee", {})
     )
     color_tiers = _list_of_dicts(color_box.get("color_box_tiers", []))[:2]
-    color_title_row = function_end_row + 1
+    # Match the reference template: keep one completely blank row between
+    # the function-introduction box and the color-box quotation block.
+    color_title_row = function_end_row + 2
     sheet.merge_cells(
         start_row=color_title_row,
         start_column=side_start_column,
@@ -1428,7 +1430,12 @@ def _build_summary_sheet(
             number_format = amount_format
         elif 6 <= column <= 14:
             key = tax_keys[column - 6]
-            value = _percent_fraction(t4.get(key, {}).get("rate_percent"))
+            rate_percent = t4.get(key, {}).get("rate_percent")
+            value = (
+                ""
+                if key == "carton"
+                else _percent_fraction(rate_percent)
+            )
             number_format = "0.00%"
         elif column == 15:
             value = "合计减税"
@@ -1474,10 +1481,13 @@ def _build_summary_sheet(
         "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
     }
     for column, key in enumerate(tax_keys, start=6):
-        amount_reference = tax_amount_references[key]
-        sheet.cell(deduction_row, column).value = (
-            f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
-        )
+        if key == "carton":
+            sheet.cell(deduction_row, column).value = ""
+        else:
+            amount_reference = tax_amount_references[key]
+            sheet.cell(deduction_row, column).value = (
+                f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
+            )
     sheet.cell(deduction_row, 15).value = f"=SUM(F{deduction_row}:N{deduction_row})"
     sheet.cell(deduction_row, 16).value = f"=N{third_value_row}-O{deduction_row}"
 

@@ -208,6 +208,7 @@ const MARKUPS = {
 
 const ADDITIONAL_PART_KEYWORDS = /子弹|波波球|波波|加值件|附加件/
 const SKIP_COST_DESCRIPTION = /^[×÷=*\/]$|报客价|目标价|相差|旺季价|按出厂|占货价|减税|料价成本|含税|不含人工|毛利|利润|总成本|外购件成本|未减税|减税后|人民币|港币|RMB|HKD|US\$|USD/i
+const INTERNAL_ONLY_COST_BOUNDARY = /^(?:运费|吊柜费|报价[（(]|包含测试费用)/
 
 function toText(value: XlsxCellValue) {
   return String(value ?? '').trim()
@@ -274,7 +275,10 @@ function findInjectionHeaderRow(rows: XlsxCellValue[][]) {
 }
 
 function cleanProductName(title: string, fallback: string) {
-  const cleaned = title.replace(/[（(][^）)]*[）)]/g, '').trim()
+  const cleaned = title
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/报价$/, '')
+    .trim()
   return cleaned || fallback.replace(/明细$/, '').trim() || fallback || '报价'
 }
 
@@ -372,6 +376,14 @@ function parseInternalSheet(rows: XlsxCellValue[][], sheetName: string): BuzzBee
       const description = toText(row[2])
       const internalValue = toNumber(row[3])
       const customerValueHint = toNumber(row[4])
+
+      // The unified internal-quote layout appends route freight, lifting fees,
+      // MOQ scenarios, and testing-fee summaries directly after the customer
+      // cost details. BuzzBee's own workbook has no matching fields for those
+      // internal-only blocks, and freight is the final ordered detail category.
+      if (INTERNAL_ONLY_COST_BOUNDARY.test(category)) {
+        break
+      }
 
       const isBlank = !category && !description && !internalValue && !customerValueHint
       if (isBlank) {
@@ -536,7 +548,13 @@ function convertToClientData(parsed: BuzzBeeInternalSheet): BuzzBeeQuoteData {
       sprayTotal += internal * markup
       return
     }
-    if (category === '纸箱' || category.includes('彩盒') || category === '杂项' || category.includes('运费')) return
+    if (
+      category === '纸箱'
+      || category.includes('彩盒')
+      || category === '杂项'
+      || category.includes('运费')
+      || category.includes('吊柜费')
+    ) return
 
     const { qty, desc } = cleanPurchaseDescription(row.description)
     const customerAmount = row.customerValueHint || internal * markup

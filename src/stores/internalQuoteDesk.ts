@@ -233,7 +233,7 @@ const rr2T3Fields = [
   ['total_cost', '总成本', undefined],
 ] as const
 const rr2T4Fields = [
-  ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', 10],
+  ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', null],
   ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类13%', 11.5],
   ['sewcloth13', '车衣类13%', 11.5], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
   ['tax13b', '含税13%类', 11.5],

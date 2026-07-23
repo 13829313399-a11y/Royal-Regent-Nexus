@@ -84,6 +84,23 @@ function p4Workbook(
         : code === 'sales'
           ? {
               paper_price_factor: 2.75,
+              testing_fee_total_usd: 1500,
+              testing_fee_moqs: [3000, 5000, 10000],
+              freight_calc: {
+                enabled: true,
+                routes: [
+                  { key: 'hk_40', name: 'HK 40 柜', capacity_type: 'container_40', freight_hkd: 8000, lift_fee_hkd: 1200 },
+                ],
+              },
+              shipping: {
+                markup_tiers: [
+                  { moq: 3000, markup_x: 1.18 },
+                  { moq: 5000, markup_x: 1.17 },
+                  { moq: 10000, markup_x: 1.15 },
+                ],
+                selected_markup_moq: 3000,
+                misc_ratio: 0.02,
+              },
               packaging_materials: isDisney
                 ? [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '', disney_description: 'Color Box', disney_unit_price_usd: .12, disney_included: 1 }]
                 : [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '' }],
@@ -244,7 +261,8 @@ describe('P4 customer price adapter', () => {
       prepared.result,
       readFileSync('public/templates/disney-customer-quote-template.bin'),
     )
-    const tier = parseXlsxWorkbook(asArrayBuffer(output)).sheets[0]
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+    const tier = parsed.sheets[0]
     expect(tier.rows[8][2]).toBe(1000142435)
     expect(tier.rows[18][1]).toBe('1000142435-01')
     expect(tier.rows[18][2]).toBe(8900)
@@ -255,6 +273,12 @@ describe('P4 customer price adapter', () => {
     expect(tier.rows[235][5]).toBe(3.08)
     expect(tier.rows[236][5]).toBe(2.84)
     expect(tier.rows[237][5]).toBe(2.64)
+    const customerWorkbookText = parsed.sheets
+      .flatMap((sheet) => sheet.rows)
+      .flat()
+      .map((value) => String(value ?? ''))
+      .join('\n')
+    expect(customerWorkbookText).not.toMatch(/测试费用|吊柜费|报价（MOQ|杂项|HK 40 柜/)
   })
 
   it('drives the Dickie customer template from complete P4-only fields', () => {
