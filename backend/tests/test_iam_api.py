@@ -539,7 +539,7 @@ def test_scoped_manager_cross_scope_change_requires_direct_superadmin_action(mon
                 "reason": "申请跨厂查看排产",
                 "overrides": [
                     {
-                        "permission_code": "injection_schedule:read",
+                        "permission_code": "carton_mark:read",
                         "effect": "allow",
                         "factory_id": "huadeng",
                         "department": "engineering",
@@ -693,7 +693,7 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         assert invalid_preview.status_code == 400
         assert "范围不相容" in invalid_preview.json()["detail"]
 
-        desired_codes = sorted(set(role_access["permission_codes"]) | {"injection_schedule:read"})
+        desired_codes = sorted(set(role_access["permission_codes"]) | {"carton_mark:read"})
 
         preview = client.post(
             "/api/iam/roles/engineer/access/preview",
@@ -705,7 +705,7 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         )
         assert preview.status_code == 200, preview.text
         assert preview.json()["affected_user_count"] == 1
-        assert any(item["permission_code"] == "injection_schedule:read" for item in preview.json()["diffs"])
+        assert any(item["permission_code"] == "carton_mark:read" for item in preview.json()["diffs"])
 
         commit = client.post(
             "/api/iam/roles/engineer/access/commit",
@@ -719,7 +719,7 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         assert commit.json()["authorization_version"] == role_access["version"] + 1
 
         updated_role = client.get("/api/iam/roles/engineer/access").json()
-        assert "injection_schedule:read" in updated_role["permission_codes"]
+        assert "carton_mark:read" in updated_role["permission_codes"]
         updated_user = client.get(f"/api/iam/users/{engineer_id}/access").json()
         assert updated_user["authorization_version"] == 2
 
@@ -753,7 +753,7 @@ def test_permission_catalog_supports_active_inactive_and_all(monkeypatch):
         assert inactive_code not in {item["code"] for item in default_active.json()}
         assert inactive_code not in {item["code"] for item in explicit_active.json()}
         assert {item["code"] for item in inactive.json()} == {inactive_code}
-        assert len(all_permissions.json()) == 66
+        assert len(all_permissions.json()) == 65
         inactive_item = next(
             item for item in all_permissions.json() if item["code"] == inactive_code
         )
@@ -780,14 +780,14 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert all(item["is_editable"] is False for item in positions)
         assert all(item["source"] == "code" for item in positions)
         assert all(item["scope_mode_locked"] is True for item in positions)
-        assert all(item["definition_version"] == "fixed-v3" for item in positions)
+        assert all(item["definition_version"] == "fixed-v5" for item in positions)
         assert all(len(item["definition_hash"]) == 64 for item in positions)
 
         general_manager = next(
             item for item in positions if item["id"] == "position_general_manager"
         )
         assert general_manager["scope_mode"] == "cross_factory_operate"
-        assert general_manager["permission_count"] == 59
+        assert general_manager["permission_count"] == 58
 
         detail = client.get(
             "/api/iam/roles/position_general_manager/access"
@@ -797,7 +797,7 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert detail.json()["source"] == "code"
         assert detail.json()["scope_mode_locked"] is True
         assert detail.json()["definition_hash"] == general_manager["definition_hash"]
-        assert len(detail.json()["permission_codes"]) == 59
+        assert len(detail.json()["permission_codes"]) == 58
         assert not any(
             code.startswith("system:") for code in detail.json()["permission_codes"]
         )
@@ -1041,7 +1041,7 @@ def test_role_template_commit_rejects_changed_binding_snapshot(monkeypatch, bind
                 "base_version": role_access["version"],
                 "reason": "验证绑定用户快照",
                 "permission_codes": sorted(
-                    set(role_access["permission_codes"]) | {"injection_schedule:read"}
+                    set(role_access["permission_codes"]) | {"carton_mark:read"}
                 ),
             },
         )
@@ -1119,7 +1119,7 @@ def test_system_position_preview_replaces_legacy_grants_and_overrides(monkeypatc
                     updated_at=now,
                 )
             )
-            permission = db.query(models.AuthPermission).filter_by(code="injection_schedule:read").one()
+            permission = db.query(models.AuthPermission).filter_by(code="carton_mark:read").one()
             db.add(
                 models.AuthUserPermissionOverride(
                     id="legacy-position-override",
@@ -1357,7 +1357,7 @@ def test_system_position_cleanup_revokes_future_dated_grants(monkeypatch):
                     updated_at=now,
                 )
             )
-            permission = db.query(models.AuthPermission).filter_by(code="injection_schedule:read").one()
+            permission = db.query(models.AuthPermission).filter_by(code="carton_mark:read").one()
             db.add(
                 models.AuthUserPermissionOverride(
                     id=future_override_id,

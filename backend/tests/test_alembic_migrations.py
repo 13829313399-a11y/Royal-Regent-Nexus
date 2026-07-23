@@ -40,6 +40,9 @@ INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION = "20260718_0026"
 RAW_MATERIAL_SHARED_MIGRATION_REVISION = "20260720_0027"
 MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION = "20260720_0028"
 INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION = "20260721_0029"
+INJECTION_SCHEDULE_HUB_MIGRATION_REVISION = "20260722_0030"
+INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION = "20260723_0031"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -91,7 +94,15 @@ def test_alembic_has_single_molding_sample_head():
     config = Config(str(ALEMBIC_INI))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == [INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION]
+    assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    injection_removal_revision = script.get_revision(
+        INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION
+    )
+    assert injection_removal_revision.down_revision == INJECTION_SCHEDULE_HUB_MIGRATION_REVISION
+
+    injection_hub_revision = script.get_revision(INJECTION_SCHEDULE_HUB_MIGRATION_REVISION)
+    assert injection_hub_revision.down_revision == INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
 
     customer_revision = script.get_revision(
         INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
@@ -418,7 +429,9 @@ def test_internal_quote_customer_migration_seeds_factories_and_backfills_history
         )
         connection.commit()
 
-    run_alembic("upgrade", "head")
+    # Keep this historical migration's downgrade contract isolated from later
+    # injection-scheduling revisions.
+    run_alembic("upgrade", INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
@@ -459,6 +472,180 @@ def test_internal_quote_customer_migration_seeds_factories_and_backfills_history
         assert connection.execute(
             "SELECT customer FROM internal_quotes WHERE id = 'IQ-CUSTOMER-HISTORY'"
         ).fetchone() == ("历史客户",)
+
+
+def test_injection_schedule_hub_migration_preserves_legacy_snapshot_without_activation(tmp_path):
+    database_path = tmp_path / "injection_schedule_hub_0030.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_import_batches (
+                id, factory_id, import_type, source_file_name, business_date,
+                status, summary_json, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-import",
+                "huaxing",
+                "daily_schedule",
+                "legacy.xlsx",
+                "2026-06-30",
+                "imported",
+                "{}",
+                "legacy-user",
+                "2026-07-08 08:00:00",
+            ),
+        )
+        connection.commit()
+
+    run_alembic("upgrade", INJECTION_SCHEDULE_HUB_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            INJECTION_SCHEDULE_HUB_MIGRATION_REVISION,
+        )
+        assert connection.execute(
+            "SELECT status, revision, source_sha256, activated_at FROM injection_schedule_import_batches WHERE id = 'legacy-import'"
+        ).fetchone() == ("legacy_snapshot", 1, "", "")
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        assert {
+            "injection_schedule_import_diffs",
+            "injection_machine_masters",
+            "injection_mold_masters",
+            "injection_order_tasks",
+            "injection_schedule_versions",
+            "injection_schedule_assignments",
+            "injection_schedule_audit_logs",
+            "injection_shift_outputs",
+            "injection_machine_downtimes",
+        } <= tables
+        assert connection.execute("SELECT COUNT(*) FROM injection_order_tasks").fetchone() == (0,)
+
+
+def test_injection_schedule_removal_migration_drops_module_schema_and_permissions(tmp_path):
+    database_path = tmp_path / "injection_schedule_removal_0031.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INJECTION_SCHEDULE_HUB_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO auth_permissions (id, code, name, description) VALUES (?, ?, ?, ?)",
+            ("perm-injection-test", "injection_schedule:read", "test", ""),
+        )
+        connection.execute(
+            "INSERT INTO auth_iam_state (key, value_json, updated_at) VALUES (?, ?, ?)",
+            ("legacy_read_compat_v1_completed", "{}", "2026-07-23 09:30:00"),
+        )
+        connection.commit()
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            HEAD_MIGRATION_REVISION,
+        )
+        injection_tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'injection_%'"
+        ).fetchall()
+        assert injection_tables == []
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_iam_state WHERE key = 'legacy_read_compat_v1_completed'"
+        ).fetchone() == (0,)
+
+
+def test_injection_schedule_hub_postgresql_offline_sql_contains_forward_schema():
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            f"{INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION}:{INJECTION_SCHEDULE_HUB_MIGRATION_REVISION}",
+            "--sql",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout.lower()
+    for table_name in (
+        "injection_order_tasks",
+        "injection_schedule_versions",
+        "injection_schedule_assignments",
+        "injection_schedule_audit_logs",
+    ):
+        assert f"create table {table_name}" in sql
+    assert "alter table injection_schedule_import_batches add column source_sha256" in sql
+
+
+def test_injection_schedule_removal_postgresql_offline_sql_drops_module_schema():
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            f"{INJECTION_SCHEDULE_HUB_MIGRATION_REVISION}:{INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION}",
+            "--sql",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout.lower()
+    assert "delete from auth_permissions where code like 'injection_schedule:" in sql
+    for table_name in (
+        "injection_schedule_import_batches",
+        "injection_schedule_versions",
+        "injection_order_tasks",
+        "injection_machine_masters",
+    ):
+        assert f"drop table {table_name}" in sql
 
 
 def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
@@ -1045,7 +1232,7 @@ def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
             "internal_quote:export": "operate",
         }
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
+            HEAD_MIGRATION_REVISION,
         )
 
 
@@ -1171,7 +1358,7 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
             "SELECT quote_no FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'"
         ).fetchone() == ("LEGACY-P1",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
+            HEAD_MIGRATION_REVISION,
         )
 
 
@@ -1349,7 +1536,7 @@ def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
             "SELECT file_name FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'"
         ).fetchone() == ("历史导出.xlsx",)
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
+            HEAD_MIGRATION_REVISION,
         )
 
 
@@ -1415,7 +1602,7 @@ def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,)
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
         assert {
             row[1]
             for row in connection.execute(
@@ -1631,7 +1818,11 @@ def test_molding_sample_dispatch_upgrade_backfills_scope_and_preserves_rows(tmp_
         }
         connection.commit()
 
-    migrated = _run_dispatch_alembic(database_path, "upgrade", "head")
+    migrated = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
+    )
     assert migrated.returncode == 0, migrated.stderr
 
     with sqlite3.connect(database_path) as connection:

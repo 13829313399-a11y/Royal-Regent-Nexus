@@ -16,7 +16,7 @@ from app.services.permission_codes import (
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v3"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v5"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -84,8 +84,6 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
     "customer_price:compare",
-    "injection_schedule:read",
-    "injection_schedule:import",
     "internal_quote:read",
     "internal_quote:create",
     "internal_quote:clone",
@@ -193,8 +191,6 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:audit_read",
     "molding_sample:notification_read",
-    "injection_schedule:read",
-    "injection_schedule:import",
     "internal_quote:read",
     "internal_quote:summary_read",
     "internal_quote:timeline_read",
@@ -207,8 +203,6 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
     "molding_sample:export",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:notification_read",
-    "injection_schedule:read",
-    "injection_schedule:import",
     "internal_quote:read",
     "internal_quote:summary_read",
     "internal_quote:timeline_read",
@@ -338,7 +332,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=400,
-        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
+        description="全厂只读查看啤办生产任务；参与本厂报价协同",
         permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -347,7 +341,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=410,
-        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
+        description="全厂只读查看啤办生产任务；参与本厂报价协同",
         permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -356,7 +350,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="production",
         department_name="生产部（啤喷装）",
         sort_order=420,
-        description="全厂只读查看啤办生产任务；本厂啤机排产与报价协同",
+        description="全厂只读查看啤办生产任务；参与本厂报价协同",
         permission_codes=PRODUCTION_CLERK_PERMISSION_CODES,
     ),
     SystemPositionDefinition(

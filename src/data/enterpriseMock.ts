@@ -777,35 +777,10 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
   production: {
     departmentId: 'production',
     heroTitle: '生产模块中心',
-    heroSubtitle: '把排产、执行、回报、外发和配置从普通入口升级为生产调度中心',
+    heroSubtitle: '集中承载生产计划、车间执行、任务回报和外发协同',
     panelTitle: '生产部模块',
-    panelSubtitle: '优先承载注塑排产这类重流程、重数据、重可视化的业务模块',
+    panelSubtitle: '承载生产计划、啤办任务和各车间生产管理模块',
     modules: [
-      {
-        id: 'injection-scheduling',
-        title: '注塑排产中枢',
-        owner: '生产部 / PMC / 计划',
-        summary: '订单导入、智能排机、结转延续、日报、入库、历史反哺一体化',
-        status: '试运行',
-        statusTone: 'teal',
-        stats: '待排 86 · 结转 12 · 异常 4',
-        icon: Boxes,
-        href: getDepartmentRoute('production', 'injection-scheduling'),
-        route: getDepartmentRoute('production', 'injection-scheduling'),
-        statusMetrics: [
-          { label: '待排', value: '86', tone: 'amber' },
-          { label: '结转', value: '12', tone: 'blue' },
-          { label: '异常', value: '4', tone: 'red' },
-        ],
-        todos: ['先改成驾驶舱 + 数据中心 + 排机执行分区', '待补机台与模具原始主数据'],
-        children: [
-          { label: '驾驶舱', summary: '聚合待排、结转、异常、机台负载和班次达成' },
-          { label: '数据中心', summary: '统一订单、机台、模具目标和历史生产主数据' },
-          { label: '排机执行', summary: '承接智能排机、人工微调、顺序重排和结转延续' },
-          { label: '回报中心', summary: '汇总日报、入库、月结和执行结果回写' },
-          { label: '配置中心', summary: '维护规则参数、模具映射、权限和责任人' },
-        ],
-      },
       {
         id: 'production-plan',
         title: '生产计划管理',
@@ -821,7 +796,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
           { label: '月计划', value: '3', tone: 'blue' },
           { label: '待调整', value: '7', tone: 'amber' },
         ],
-        todos: ['和排产中枢打通上游数据', '补跨厂区计划对比'],
+        todos: ['补生产执行数据衔接', '补跨厂区计划对比'],
         children: [
           { label: '月计划', summary: '承接月度排产与产能拆分' },
           { label: '日计划', summary: '细化到日的执行计划和插单处理' },
@@ -865,7 +840,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
           { label: '线体', value: '6', tone: 'teal' },
           { label: '工单', value: '14', tone: 'blue' },
         ],
-        todos: ['与注塑排产共享交接节拍', '补喷油异常回写'],
+        todos: ['补上游工序交接节拍', '补喷油异常回写'],
         children: [
           { label: '工单池', summary: '集中管理喷油工单和优先级' },
           { label: '线体看板', summary: '观察线体产能、负载和异常' },
@@ -873,7 +848,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         ],
       },
     ],
-    quickCandidates: ['注塑生产驾驶舱', '停机异常池', '班次达成看板', '换模节拍分析'],
+    quickCandidates: ['生产计划驾驶舱', '停机异常池', '班次达成看板', '工序节拍分析'],
     permissionRows: [
       { role: '生产主管', view: true, edit: true, approve: true },
       { role: '计划员', view: true, edit: true, approve: false },
@@ -881,7 +856,6 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
       { role: '车间文员', view: true, edit: true, approve: false },
     ],
     todos: [
-      { id: 'SCH-301', title: '注塑排产结构改造', meta: '先完成模块注册和驾驶舱入口' },
       { id: 'REP-098', title: '白夜班日报对齐', meta: '目标值和实际回报口径待统一' },
       { id: 'OUT-021', title: '外发回收异常', meta: '2 家供应商交期回收延迟' },
     ],
