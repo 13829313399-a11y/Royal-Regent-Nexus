@@ -280,6 +280,13 @@ function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
       freightSharePercent: numberValue(shipping?.freight_share_percent),
       liftSharePercent: numberValue(shipping?.lift_share_percent),
       markup: numberValue(shipping?.markup),
+      activeMarkupMoq: numberValue(shipping?.active_markup_moq),
+      markupTiers: (shipping?.markup_tiers ?? []).map((tier) => ({
+        moq: numberValue(tier.moq),
+        markup: numberValue(tier.markup),
+        isActive: Boolean(tier.is_active),
+      })),
+      miscRatio: numberValue(shipping?.misc_ratio, .02),
       settlement: numberValue(shipping?.settlement),
       factoryPriceHkd: numberValue(shipping?.factory_price_hkd),
       additionalTaxHkd: numberValue(shipping?.additional_tax_hkd),
@@ -1014,8 +1021,43 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
     },
-    saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {
-      return this.executeMutation(quoteId, () => internalQuoteApi.saveSection(quoteId, sectionCode, revision, payload, reason))
+    async saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {
+      const result = await this.executeMutation(
+        quoteId,
+        () => internalQuoteApi.saveSection(quoteId, sectionCode, revision, payload, reason),
+      ) as ApiInternalQuoteSection
+      if (sectionCode === 'sales') {
+        const quote = this.getQuoteById(quoteId)
+        const shipping = result.payload.shipping && typeof result.payload.shipping === 'object' && !Array.isArray(result.payload.shipping)
+          ? result.payload.shipping as Record<string, unknown>
+          : {}
+        if (quote && Object.prototype.hasOwnProperty.call(shipping, 'misc_ratio')) {
+          const miscRatio = Number(shipping.misc_ratio)
+          if (Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio <= 1) {
+            quote.rr2CostSummary.shippingPricing.miscRatio = miscRatio
+          }
+        }
+        const tierRows = Array.isArray(shipping.markup_tiers) ? shipping.markup_tiers : []
+        const tiers = tierRows.flatMap((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+          const row = value as Record<string, unknown>
+          const moq = Number(row.moq)
+          const markup = Number(row.markup_x)
+          return Number.isFinite(moq) && moq > 0 && Number.isFinite(markup) && markup > 0
+            ? [{ moq, markup }]
+            : []
+        })
+        const selectedMoq = Number(shipping.selected_markup_moq)
+        if (quote && tiers.length && tiers.some((tier) => tier.moq === selectedMoq)) {
+          quote.rr2CostSummary.shippingPricing.activeMarkupMoq = selectedMoq
+          quote.rr2CostSummary.shippingPricing.markupTiers = tiers.map((tier) => ({
+            ...tier,
+            isActive: tier.moq === selectedMoq,
+          }))
+          quote.rr2CostSummary.shippingPricing.markup = tiers.find((tier) => tier.moq === selectedMoq)!.markup
+        }
+      }
+      return result
     },
     submitSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitSection(quoteId, sectionCode, revision))

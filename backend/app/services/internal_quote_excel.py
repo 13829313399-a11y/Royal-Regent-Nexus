@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+from copy import copy
 import json
 import re
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Iterable
+from zipfile import BadZipFile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, quote_sheetname
+from openpyxl.utils.exceptions import InvalidFileException
 
-from app.models.internal_quote import InternalQuote, InternalQuoteSection
+from app.models.internal_quote import (
+    InternalQuote,
+    InternalQuoteAttachment,
+    InternalQuoteSection,
+)
 
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v3"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v5"
 TEMPLATE_VERSION = P3_TEMPLATE_VERSION
 STRUCTURED_DATA_SCHEMA_VERSION = "internal-quote-structured-data-v1"
 STRUCTURED_DATA_CHUNK_SIZE = 30000
@@ -262,6 +270,135 @@ def _template_style_range(
             )
 
 
+def _replace_border_sides(
+    cell,
+    *,
+    left: Side | None = None,
+    right: Side | None = None,
+    top: Side | None = None,
+    bottom: Side | None = None,
+) -> None:
+    current = cell.border
+    cell.border = Border(
+        left=current.left if left is None else left,
+        right=current.right if right is None else right,
+        top=current.top if top is None else top,
+        bottom=current.bottom if bottom is None else bottom,
+    )
+
+
+def _apply_outline_border(
+    sheet,
+    min_row: int,
+    max_row: int,
+    min_column: int,
+    max_column: int,
+    side: Side,
+) -> None:
+    for column in range(min_column, max_column + 1):
+        _replace_border_sides(sheet.cell(min_row, column), top=side)
+        _replace_border_sides(sheet.cell(max_row, column), bottom=side)
+    for row in range(min_row, max_row + 1):
+        _replace_border_sides(sheet.cell(row, min_column), left=side)
+        _replace_border_sides(sheet.cell(row, max_column), right=side)
+
+
+def _positive_integer(value: object) -> int | None:
+    numeric = _float_value(value)
+    if numeric <= 0 or not numeric.is_integer():
+        return None
+    return int(numeric)
+
+
+def _moq_label(value: object) -> str:
+    moq = _positive_integer(value)
+    if moq is None:
+        return "MOQ"
+    if moq % 1000 == 0:
+        return f"MOQ{moq // 1000}K"
+    return f"MOQ{moq:,}"
+
+
+def _shipping_markup_tiers(
+    shipping: dict[str, Any],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for source in _list_of_dicts(shipping.get("markup_tiers", [])):
+        moq = _positive_integer(source.get("moq"))
+        markup = _float_value(source.get("markup"), _float_value(source.get("markup_x")))
+        if moq is None or markup <= 0:
+            continue
+        rows.append(
+            {
+                "moq": moq,
+                "markup": markup,
+                "is_active": bool(source.get("is_active")),
+            }
+        )
+    if not rows:
+        rows = [
+            {
+                "moq": _positive_integer(shipping.get("active_markup_moq")) or 10000,
+                "markup": _float_value(shipping.get("markup"), 1.2),
+                "is_active": True,
+            }
+        ]
+    rows.sort(key=lambda row: int(row["moq"]))
+    if not any(bool(row["is_active"]) for row in rows):
+        active_moq = _positive_integer(shipping.get("active_markup_moq"))
+        selected = next((row for row in rows if row["moq"] == active_moq), rows[-1])
+        selected["is_active"] = True
+    return rows
+
+
+def _testing_fee_values(
+    sales_section: InternalQuoteSection | None,
+    sales_payload: dict[str, Any],
+) -> tuple[float, list[dict[str, object]]]:
+    totals = _dict_value(_section_calculation(sales_section).get("totals", {}))
+    total_usd = _float_value(
+        totals.get(
+            "testing_fee_total_usd",
+            sales_payload.get("testing_fee_total_usd"),
+        )
+    )
+    rows = _list_of_dicts(totals.get("testing_fee_tiers", []))
+    if not rows:
+        raw_moqs = sales_payload.get("testing_fee_moqs")
+        if not isinstance(raw_moqs, list):
+            legacy_moq = sales_payload.get("testing_fee_moq")
+            raw_moqs = [] if legacy_moq in (None, "") else [legacy_moq]
+        rows = [
+            {
+                "moq": value,
+                "unit_price_usd": (
+                    total_usd / moq
+                    if (moq := _positive_integer(value)) is not None
+                    else 0
+                ),
+            }
+            for value in raw_moqs
+        ]
+    result: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for source in rows:
+        moq = _positive_integer(source.get("moq"))
+        if moq is None or moq in seen:
+            continue
+        seen.add(moq)
+        result.append(
+            {
+                "moq": moq,
+                "unit_price_usd": _float_value(
+                    source.get("unit_price_usd"),
+                    total_usd / moq if total_usd else 0.0,
+                ),
+            }
+        )
+    result.sort(key=lambda row: int(row["moq"]))
+    return total_usd, result
+
+
 def _dimensions(value: object) -> tuple[float | str, float | str, float | str]:
     source = _dict_value(value)
     return (
@@ -269,6 +406,21 @@ def _dimensions(value: object) -> tuple[float | str, float | str, float | str]:
         _number(source.get("width", source.get("width_cm", ""))),
         _number(source.get("height", source.get("height_cm", ""))),
     )
+
+
+def _dimension_unit(value: object) -> str:
+    return "cm" if str(value or "").strip().lower() == "cm" else "inch"
+
+
+def _inch_value_for_unit(value: object, unit: str) -> float | str:
+    parsed = _number(value)
+    if not isinstance(parsed, float):
+        return ""
+    return round(parsed * 2.54, 4) if unit == "cm" else parsed
+
+
+def _dimensions_for_unit(value: object, unit: str) -> tuple[float | str, float | str, float | str]:
+    return tuple(_inch_value_for_unit(item, unit) for item in _dimensions(value))
 
 
 def _style_title(sheet, title: str, end_column: int) -> None:
@@ -341,30 +493,44 @@ def _build_summary_sheet(
     rr2_cost_summary: dict[str, Any],
     cost_context: dict[str, Any],
 ) -> None:
-    """Render the released internal quote in the established A:R desk layout.
-
-    The system-facing JSON/revision sheets remain in the workbook for adapters,
-    but this first sheet is the only visible business sheet and intentionally
-    mirrors the long-used internal quotation template.
-    """
+    """Render the current internal-quote template with dynamic detail anchors."""
 
     sheet = workbook.active
     sheet.title = "报价明细"
     sheet.sheet_view.showGridLines = True
     by_code = {section.department: section for section in sections}
-    sales_payload = _section_payload(by_code.get("sales"))
+    sales_section = by_code.get("sales")
+    sales_payload = _section_payload(sales_section)
     shipping = _dict_value(rr2_cost_summary.get("shipping_pricing", {}))
     t1 = _rr2_values(rr2_cost_summary, "t1")
     t2 = _rr2_values(rr2_cost_summary, "t2")
     t3 = _rr2_values(rr2_cost_summary, "t3")
     t4 = _rr2_tax_rows(rr2_cost_summary)
-    summary_totals = _dict_value(rr2_cost_summary.get("totals", {}))
+    markup_tiers = _shipping_markup_tiers(shipping)
+    active_tier = next((row for row in markup_tiers if row.get("is_active")), markup_tiers[-1])
+    testing_fee_total_usd, testing_fee_tiers = _testing_fee_values(
+        sales_section,
+        sales_payload,
+    )
 
-    # A1:R6 — frozen material, machine, tax, carton and exchange references.
-    materials = _reference_materials(reference_snapshot)[:20]
+    all_shipping_rows = _list_of_dicts(shipping.get("rows", []))
+    if all_shipping_rows and str(all_shipping_rows[0].get("name") or "") == "出厂价":
+        route_rows = all_shipping_rows[1:]
+    else:
+        route_rows = all_shipping_rows
+    route_start_column = 5
+    route_end_column = route_start_column + len(route_rows) - 1
+    side_start_column = max(14, route_end_column + 2)
+    side_end_column = side_start_column + 3
+    outer_right_column = max(18, side_end_column)
+
+    # A1:R6 — latest frozen materials/machines, tax references, carton factors
+    # and exchange values.  The extra R column keeps HKD/USD and selected MOQ
+    # visible and auditable without crowding the reference template's C:Q grid.
+    materials = _reference_materials(reference_snapshot)[:18]
     machines = _reference_machines(reference_snapshot)[:10]
     for row in range(1, 7):
-        for column in range(3, 19):
+        for column in range(3, outer_right_column + 1):
             _template_cell(
                 sheet,
                 row,
@@ -377,11 +543,16 @@ def _build_summary_sheet(
             )
         sheet.row_dimensions[row].height = 12.75 if row < 6 else 13.5
 
-    reference_blocks = ((1, materials[:10]), (3, materials[10:20]), (5, machines))
-    for header_row, rows in reference_blocks:
+    for header_row, start_index, end_index, start_column in (
+        (1, 0, 10, 4),
+        (3, 10, 18, 4),
+        (5, 0, 10, 4),
+    ):
+        source = machines if header_row == 5 else materials
+        rows = source[start_index:end_index]
         sheet.cell(header_row, 3).value = "机型" if header_row == 5 else "料型"
         sheet.cell(header_row + 1, 3).value = "单价/元" if header_row == 5 else "单价/P"
-        for offset, (label, price) in enumerate(rows, start=4):
+        for offset, (label, price) in enumerate(rows, start=start_column):
             sheet.cell(header_row, offset).value = label
             sheet.cell(header_row + 1, offset).value = price
             sheet.cell(header_row + 1, offset).number_format = (
@@ -389,56 +560,73 @@ def _build_summary_sheet(
             )
 
     fx = _dict_value(reference_snapshot.get("fx", {}))
-    tax_reference_rows = (
+    sheet["L3"] = "汇率"
+    sheet["L4"] = _float_value(fx.get("rmb_hkd"), 0.85)
+    sheet["L4"].number_format = "0.00"
+    sheet["M3"] = "人工"
+    sheet["M4"] = _float_value(reference_snapshot.get("assembly_labor_base_hkd"), 260)
+    sheet["M4"].number_format = "#,##0"
+    top_tax_rows = (
         (
             1,
             (
+                ("含税1%", _tax_rate(reference_snapshot, "tax_1_percent", 0.0099)),
                 ("搪胶类3%", _tax_rate(reference_snapshot, "slush", 0.03)),
-                ("车发类", _tax_rate(reference_snapshot, "sewing_hair", 0.115)),
-                ("车衣类", _tax_rate(reference_snapshot, "sewing_clothes", 0.115)),
-                ("吸塑类", _tax_rate(reference_snapshot, "blister", 0.06)),
-                ("含税13%类", _tax_rate(reference_snapshot, "tax_13_percent", 0.115)),
+                ("车发类5%", _tax_rate(reference_snapshot, "sewing_hair", 0.05)),
+                ("车衣类", _tax_rate(reference_snapshot, "sewing_clothes", 0.0)),
             ),
         ),
         (
             3,
             (
-                ("汇率", _float_value(fx.get("rmb_hkd"), 0.85)),
-                ("纸箱系数", _float_value(reference_snapshot.get("paper_price_factor"), 2.7)),
-                ("装工", _float_value(reference_snapshot.get("assembly_labor_base_hkd"), 260)),
+                ("吸塑类4%", _tax_rate(reference_snapshot, "blister", 0.04)),
                 ("运费含税9%", _tax_rate(reference_snapshot, "freight_tax_9", 0.0826)),
-                ("纸箱类", _tax_rate(reference_snapshot, "carton", 0.10)),
-            ),
-        ),
-        (
-            5,
-            (
-                ("港币兑美元", _float_value(fx.get("hkd_usd"), 7.8)),
-                ("人民币兑美元", _float_value(fx.get("rmb_usd"), 7.0)),
-                ("加价倍数", _float_value(shipping.get("markup"), _float_value(reference_snapshot.get("markup"), 1.2))),
-                ("结算点数", _float_value(shipping.get("settlement"), _float_value(reference_snapshot.get("settlement"), 0.98))),
-                ("杂项", _float_value(reference_snapshot.get("misc_ratio"), 0.02)),
+                ("含税13%类", _tax_rate(reference_snapshot, "tax_13_percent", 0.115)),
+                ("纸箱类", _tax_rate(reference_snapshot, "carton", 0.0821)),
             ),
         ),
     )
-    for header_row, rows in tax_reference_rows:
+    for header_row, rows in top_tax_rows:
         for column, (label, value) in enumerate(rows, start=14):
             sheet.cell(header_row, column).value = label
             sheet.cell(header_row + 1, column).value = value
-            if header_row == 1:
-                sheet.cell(header_row + 1, column).number_format = "0.00%"
-            elif header_row == 3:
-                sheet.cell(header_row + 1, column).number_format = (
-                    "0.00%" if column in {17, 18} else ("#,##0" if column == 16 else "0.00")
-                )
-            else:
-                sheet.cell(header_row + 1, column).number_format = (
-                    "0.00%" if column == 18 else "0.00"
-                )
+            sheet.cell(header_row + 1, column).number_format = "0.00%"
 
-    # A8:R8 — product quotation title.
-    sheet.merge_cells("A8:R8")
-    title = sheet["A8"]
+    paper_factor = _float_value(
+        sales_payload.get("paper_price_factor"),
+        _float_value(reference_snapshot.get("paper_price_factor"), 2.7),
+    )
+    flat_card_factor = _float_value(
+        sales_payload.get("flat_card_price_factor"),
+        _float_value(reference_snapshot.get("carton_b3b_factor"), 1.65),
+    )
+    for column, (label, value, number_format) in enumerate(
+        (
+            ("纸箱（B=B）", paper_factor, "0.00"),
+            ("纸箱（B3B）", flat_card_factor, "0.00"),
+            ("纸箱（B1B）", _float_value(reference_snapshot.get("carton_b1b_factor"), 3.2), "0.00"),
+            ("杂项", _float_value(shipping.get("misc_ratio"), 0.02), "0.00%"),
+        ),
+        start=14,
+    ):
+        sheet.cell(5, column).value = label
+        sheet.cell(6, column).value = value
+        sheet.cell(6, column).number_format = number_format
+    sheet["R3"] = "港币兑美元"
+    sheet["R4"] = _float_value(shipping.get("hkd_usd"), _float_value(fx.get("hkd_usd"), 7.8))
+    sheet["R4"].number_format = "0.00"
+    sheet["R5"] = "本单MOQ"
+    sheet["R6"] = int(active_tier["moq"])
+    sheet["R6"].number_format = "#,##0"
+
+    # A7:R7 — product quotation title.
+    sheet.merge_cells(
+        start_row=7,
+        start_column=1,
+        end_row=7,
+        end_column=outer_right_column,
+    )
+    title = sheet.cell(7, 1)
     title.value = f"{quote.product_name or quote.quote_no}报价"
     title.font = Font(name="宋体", size=14, bold=False, color=TEMPLATE_BLUE)
     title.alignment = Alignment(horizontal="center", vertical="center")
@@ -448,46 +636,49 @@ def _build_summary_sheet(
         top=TEMPLATE_MEDIUM,
         bottom=TEMPLATE_MEDIUM,
     )
-    sheet.row_dimensions[8].height = 27
+    sheet.row_dimensions[7].height = 27
 
-    # A9:M — molding/injection detail with at least six input rows.
-    mold_headers = ("", "", "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", "", "报客价")
+    # A8:L — molding/injection detail.  At least six rows are kept so the
+    # sparse-product sample remains easy to inspect and can be adjusted later.
+    mold_headers = (
+        "",
+        "",
+        "名称",
+        "料型",
+        "料重(G)",
+        "料价(G)",
+        "机型",
+        "1出几套",
+        "目标数",
+        "啤工",
+        "料金额",
+        "报价啤工",
+    )
     for column, header in enumerate(mold_headers, start=1):
         _template_cell(
             sheet,
-            9,
+            8,
             column,
             header,
-            bold=False,
-            color=TEMPLATE_RED if column not in {1, 2, 12} else TEMPLATE_BLACK,
+            color=TEMPLATE_RED if column not in {1, 2} else TEMPLATE_BLACK,
             wrap_text=False,
         )
-    sheet.cell(9, 1).border = Border(
-        left=TEMPLATE_MEDIUM,
-        right=TEMPLATE_THIN,
-        bottom=TEMPLATE_THIN,
-    )
-    sheet.cell(9, 13).border = Border(
-        left=TEMPLATE_THIN,
-        right=TEMPLATE_MEDIUM,
-        bottom=TEMPLATE_THIN,
-    )
-
     mold_lines = _calculation_lines(by_code.get("molding"), "injection")
     if not mold_lines:
-        mold_lines = _list_of_dicts(_section_payload(by_code.get("engineering")).get("molds", []))
+        mold_lines = _list_of_dicts(
+            _section_payload(by_code.get("engineering")).get("molds", [])
+        )
     mold_slots = max(6, len(mold_lines))
-    mold_start_row = 10
+    mold_start_row = 9
     mold_end_row = mold_start_row + mold_slots - 1
     for index in range(mold_slots):
         row_index = mold_start_row + index
         line = mold_lines[index] if index < len(mold_lines) else {}
-        material = _safe_text(line.get("material") or line.get("material_type") or "")
         values = (
             index + 1 if line else "",
             "",
             _safe_text(line.get("item") or line.get("chinese_name") or line.get("mold_no") or ""),
-            material,
+            _safe_text(line.get("material") or line.get("material_type") or ""),
             _number(line.get("loss_weight_g", line.get("net_weight_g", ""))),
             _number(line.get("material_price_hkd_g", "")),
             _safe_text(line.get("machine_code") or line.get("machine_name") or ""),
@@ -495,8 +686,7 @@ def _build_summary_sheet(
             _number(line.get("target_output", "")),
             _number(line.get("molding_cost_hkd", "")),
             _number(line.get("material_cost_hkd", "")),
-            "",
-            _number(line.get("customer_price_hkd", line.get("unit_amount_hkd", ""))),
+            _number(line.get("customer_price_hkd", "")),
         )
         for column, value in enumerate(values, start=1):
             _template_cell(
@@ -504,7 +694,6 @@ def _build_summary_sheet(
                 row_index,
                 column,
                 value,
-                color=TEMPLATE_BLACK,
                 horizontal="left" if column in {2, 3, 4} else "center",
                 wrap_text=False,
                 number_format=(
@@ -513,86 +702,36 @@ def _build_summary_sheet(
                     else "0.0000_ "
                     if column in {6, 10, 12}
                     else "0.000_ "
-                    if column in {11, 13}
+                    if column == 11
                     else None
                 ),
-                font_name="Times New Roman" if column in {1, 5, 6, 8, 9, 10, 11, 12, 13} else "宋体",
+                font_name="Times New Roman" if column in {1, 5, 6, 8, 9, 10, 11, 12} else "宋体",
             )
-        sheet.cell(row_index, 1).border = Border(
-            left=TEMPLATE_MEDIUM,
-            right=TEMPLATE_THIN,
-            top=TEMPLATE_THIN,
-            bottom=TEMPLATE_THIN,
-        )
-        sheet.cell(row_index, 13).border = Border(
-            left=TEMPLATE_THIN,
-            right=TEMPLATE_MEDIUM,
-            top=TEMPLATE_THIN,
-            bottom=TEMPLATE_THIN,
-        )
-        if line and values[12] == "":
-            sheet.cell(row_index, 13).value = f"=SUM(J{row_index}:K{row_index})"
-            sheet.cell(row_index, 13).number_format = "0.000_ "
+        if line and values[11] == "":
+            sheet.cell(row_index, 12).value = f"=J{row_index}*1.15"
+            sheet.cell(row_index, 12).number_format = "0.0000_ "
         sheet.row_dimensions[row_index].height = 15
-
     mold_total_row = mold_end_row + 1
-    for column in range(1, 14):
-        _template_cell(
-            sheet,
-            mold_total_row,
-            column,
-            "",
-            color=TEMPLATE_RED,
-            wrap_text=False,
-            font_name="Times New Roman" if column in {1, 5, 6, 8, 9, 10, 11, 12, 13} else "宋体",
-        )
+    for column in range(1, 13):
+        _template_cell(sheet, mold_total_row, column, "", color=TEMPLATE_RED, wrap_text=False)
     sheet.cell(mold_total_row, 3).value = "模具合计"
-    sheet.cell(mold_total_row, 3).font = Font(name="宋体", size=10, bold=True, color=TEMPLATE_BLUE)
-    for column in (5, 10, 11, 13):
+    sheet.cell(mold_total_row, 3).font = Font(
+        name="宋体",
+        size=10,
+        bold=True,
+        color=TEMPLATE_BLUE,
+    )
+    for column in (5, 10, 11, 12):
         letter = get_column_letter(column)
-        sheet.cell(mold_total_row, column).value = f"=SUM({letter}{mold_start_row}:{letter}{mold_end_row})"
-        sheet.cell(mold_total_row, column).number_format = "0.0000_ " if column == 10 else "0.000_ "
-    sheet.cell(mold_total_row, 1).border = Border(
-        left=TEMPLATE_MEDIUM,
-        right=TEMPLATE_THIN,
-        top=TEMPLATE_THIN,
-        bottom=TEMPLATE_THIN,
-    )
-    sheet.cell(mold_total_row, 13).border = Border(
-        left=TEMPLATE_THIN,
-        right=TEMPLATE_MEDIUM,
-        top=TEMPLATE_THIN,
-        bottom=TEMPLATE_THIN,
-    )
-
-    shipping_header_row = mold_total_row + 1
-    shipping_value_row = shipping_header_row + 1
-    shipping_rows = _list_of_dicts(shipping.get("rows", []))
-    for offset in range(5):
-        column = 4 + offset
-        source = shipping_rows[offset] if offset < len(shipping_rows) else {}
-        label = source.get("name") or ("出厂价" if offset == 0 else "")
-        _template_cell(
-            sheet,
-            shipping_header_row,
-            column,
-            _safe_text(label),
-            color=TEMPLATE_RED,
-            wrap_text=False,
-            border=None,
+        sheet.cell(mold_total_row, column).value = (
+            f"=SUM({letter}{mold_start_row}:{letter}{mold_end_row})"
         )
-        _template_cell(
-            sheet,
-            shipping_value_row,
-            column,
-            _number(source.get("after_settlement_hkd", source.get("total_hkd", ""))),
-            color=TEMPLATE_BLACK,
-            number_format="0.00_);[Red]\\(0.00\\)",
-            wrap_text=False,
-            border=None,
+        sheet.cell(mold_total_row, column).number_format = (
+            "0.0000_ " if column in {10, 12} else "0.000_ "
         )
+    _apply_outline_border(sheet, 8, mold_total_row, 1, 12, TEMPLATE_MEDIUM)
 
-    # A:D cost detail, with the authoritative released amount in column D.
+    # A:D — sorted authoritative cost detail.
     detail_rows: list[tuple[str, str, str, float]] = []
 
     def add_detail(tax_tag: str, category: str, description: str, amount: object) -> None:
@@ -624,49 +763,35 @@ def _build_summary_sheet(
         - sewing_cloth
     )
     packaging_total = _float_value(cost_context.get("packaging_material_hkd"))
-    color_box_amount = min(max(t2.get("color_box", 0.0), 0.0), max(packaging_total, 0.0))
+    color_box_amount = min(
+        max(t2.get("color_box", 0.0), 0.0),
+        max(packaging_total, 0.0),
+    )
     packaging_auxiliary = packaging_total - color_box_amount
 
-    # Business ordering follows the desk template.  Sub-types omitted from the
-    # category column remain identifiable in column C without introducing a
-    # second, competing sort order.
     add_detail("¥13%", "料价", "料价", molding_material)
     add_detail("", "啤工", "啤工", molding_labor)
-    add_detail(
-        "",
-        "啤工",
-        "注塑未分类成本",
-        molding_adjustment,
-    )
+    add_detail("", "啤工", "注塑未分类成本", molding_adjustment)
     add_detail("", "装配工", "装工", cost_context.get("assembly_hkd"))
     add_detail("", "装配工", "包装", cost_context.get("packing_labor_hkd"))
     add_detail("", "喷油工", "喷油人工", painting_labor)
-    add_detail(
-        "",
-        "喷油工",
-        "喷油未分类成本",
-        painting_adjustment,
-    )
+    add_detail("", "喷油工", "喷油未分类成本", painting_adjustment)
     add_detail("¥13%", "油漆", "油漆", paint_material)
     add_detail("¥3%", "搪胶", "搪胶", cost_context.get("slush_hkd"))
     add_detail("", "吹气", "吹气", molding_blow)
     add_detail("¥13%", "五金", "五金", cost_context.get("hardware_hkd"))
-
-    # Other purchases: functional items first, packaging auxiliaries last.
     add_detail("¥13%", "其他外购", "电子", cost_context.get("electronic_hkd"))
     add_detail("¥13%", "其他外购", "车发", sewing_hair)
     add_detail("¥13%", "其他外购", "车衣", sewing_cloth)
     add_detail("", "其他外购", "车缝未分类成本", sewing_adjustment)
     add_detail("¥13%", "其他外购", "工程辅料/外购", cost_context.get("auxiliary_hkd"))
-    add_detail("", "其他外购", "附加税/杂项", shipping.get("additional_tax_hkd"))
     add_detail("¥13%", "其他外购", "包装辅材", packaging_auxiliary)
     add_detail("¥13%", "彩盒/内卡", "彩盒/内卡", color_box_amount)
     add_detail("¥10%", "纸箱", "纸箱", cost_context.get("carton_hkd"))
-    add_detail("¥9%", "运费", "印尼运费", cost_context.get("indonesia_freight_hkd"))
 
-    detail_start_row = mold_total_row + 3
-    detail_slots = max(19, len(detail_rows))
-    detail_end_row = detail_start_row + detail_slots - 1
+    detail_start_row = mold_total_row + 4
+    detail_slots = max(1, len(detail_rows))
+    detail_data_end_row = detail_start_row + detail_slots - 1
     for index in range(detail_slots):
         row_index = detail_start_row + index
         values = detail_rows[index] if index < len(detail_rows) else ("", "", "", "")
@@ -676,7 +801,6 @@ def _build_summary_sheet(
                 row_index,
                 column,
                 value,
-                color=TEMPLATE_BLACK,
                 horizontal="left" if column in {2, 3} else "center",
                 wrap_text=False,
                 size=11 if column in {2, 4} else 10,
@@ -686,159 +810,452 @@ def _build_summary_sheet(
             )
         sheet.row_dimensions[row_index].height = 15
 
-    # J:M — size/carton/flat-card/packing details.
+    # Adaptive right-side packaging/function/color-box/test blocks.  Short
+    # details move these blocks upward; full details retain the reference's
+    # seven-row visual offset.
+    packaging_offset = min(7, max(0, len(detail_rows) - 8))
+    packaging_start_row = detail_start_row + packaging_offset
     cartons = _list_of_dicts(sales_payload.get("cartons", []))
     carton = cartons[0] if cartons else {}
-    carton_line = next((row for row in _calculation_lines(by_code.get("sales"), "carton")), {})
-    carton_dimensions = (
-        _number(carton.get("length_in", "")),
-        _number(carton.get("width_in", "")),
-        _number(carton.get("height_in", "")),
+    carton_unit = _dimension_unit(carton.get("size_unit"))
+    color_box_unit = _dimension_unit(sales_payload.get("color_box_size_unit"))
+    carton_dimensions = tuple(
+        _inch_value_for_unit(carton.get(field, ""), carton_unit)
+        for field in ("length_in", "width_in", "height_in")
     )
-    packaging_start_row = detail_start_row
-    carton_price_factor = _float_value(reference_snapshot.get("paper_price_factor"), 2.7)
+    dimension_columns = [side_start_column + offset for offset in range(1, 4)]
+    dimension_letters = [get_column_letter(column) for column in dimension_columns]
+    carton_inputs = [
+        f"{dimension_letters[index]}{packaging_start_row}"
+        + ("/2.54" if carton_unit == "cm" else "")
+        for index in range(3)
+    ]
     packaging_rows = (
-        ("外箱:", *carton_dimensions),
-        ("彩盒尺寸 (in)", *_dimensions(sales_payload.get("color_box_size_in") or sales_payload.get("color_box_size_cm"))),
-        ("产品尺寸 (in)", *_dimensions(sales_payload.get("product_size_in") or sales_payload.get("product_size_cm"))),
-        ("CUFT:", f"=K{packaging_start_row}*L{packaging_start_row}*M{packaging_start_row}/1728", "", ""),
-        ("纸板价", f"=K{packaging_start_row}*L{packaging_start_row}*3.5/1000", "", ""),
+        (f"外箱 ({carton_unit}):", *carton_dimensions),
         (
-            "箱价：",
-            f"=(K{packaging_start_row}+L{packaging_start_row}+2)*(L{packaging_start_row}+M{packaging_start_row}+1)*{carton_price_factor}*2/1000",
+            f"彩盒尺寸 ({color_box_unit})",
+            *_dimensions_for_unit(
+                sales_payload.get("color_box_size_in")
+                or sales_payload.get("color_box_size_cm"),
+                color_box_unit,
+            ),
+        ),
+        (
+            "产品尺寸 (in)",
+            *_dimensions(
+                sales_payload.get("product_size_in")
+                or sales_payload.get("product_size_cm")
+            ),
+        ),
+        (
+            "CUFT:",
+            f"={carton_inputs[0]}*{carton_inputs[1]}*{carton_inputs[2]}/1728",
             "",
             "",
         ),
-        ("", "", "", ""),
+        (
+            "纸板价",
+            f"={carton_inputs[0]}*{carton_inputs[1]}*3.5/1000",
+            "",
+            "",
+        ),
+        (
+            "箱价：",
+            f"=({carton_inputs[0]}+{carton_inputs[1]}+2)"
+            f"*({carton_inputs[1]}+{carton_inputs[2]}+1)*$N$6*2/1000",
+            "",
+            "",
+        ),
         ("装箱：", _number(carton.get("qty_per_carton", "")), "PCS/1CTN", ""),
-        ("合计", f"=IFERROR(K{packaging_start_row + 5}/K{packaging_start_row + 7},0)", "", ""),
+        (
+            "合计",
+            f"=IFERROR({dimension_letters[0]}{packaging_start_row + 5}"
+            f"/{dimension_letters[0]}{packaging_start_row + 6},0)",
+            "",
+            "",
+        ),
     )
     for offset, values in enumerate(packaging_rows):
-        row_index = detail_start_row + offset
-        for column, value in enumerate(values, start=10):
+        row_index = packaging_start_row + offset
+        for column, value in enumerate(values, start=side_start_column):
             _template_cell(
                 sheet,
                 row_index,
                 column,
                 value,
-                color=TEMPLATE_BLUE if column == 10 and offset == 8 else TEMPLATE_BLACK,
-                horizontal="left" if column in {10, 11} and offset >= 3 else "center",
+                color=TEMPLATE_BLUE if column == side_start_column and offset == 7 else TEMPLATE_BLACK,
+                horizontal="left" if column in {side_start_column, side_start_column + 1} and offset >= 3 else "center",
                 wrap_text=False,
-                size=11 if column in {11, 12} and offset < 3 else (9 if offset == 5 else 10),
-                number_format="0.000_ " if column == 11 and offset in {3, 4, 5, 8} else None,
-                font_name="Times New Roman" if column in {11, 12, 13} and offset < 3 else "宋体",
+                size=11 if column in dimension_columns and offset < 3 else 10,
+                number_format=(
+                    "0.000_ "
+                    if column == side_start_column + 1 and offset in {3, 4, 5, 7}
+                    else None
+                ),
+                font_name="Times New Roman" if column in dimension_columns and offset < 3 else "宋体",
             )
 
-    subtotal_row = detail_end_row + 1
-    markup_row = subtotal_row + 1
-    settlement_row = subtotal_row + 2
-    quote_row = subtotal_row + 3
-    target_row = subtotal_row + 4
-    difference_row = subtotal_row + 5
-    difference_percent_row = subtotal_row + 6
-
-    function_start_row = detail_start_row + 10
-    function_end_row = subtotal_row
-    _template_style_range(sheet, function_start_row, function_end_row, 10, 18)
+    function_start_row = packaging_start_row + len(packaging_rows) + 1
+    function_end_row = function_start_row + 7
+    _template_style_range(
+        sheet,
+        function_start_row,
+        function_end_row,
+        side_start_column,
+        side_end_column,
+    )
     sheet.merge_cells(
         start_row=function_start_row,
-        start_column=10,
+        start_column=side_start_column,
         end_row=function_end_row,
-        end_column=18,
+        end_column=side_end_column,
     )
-    function_cell = sheet.cell(function_start_row, 10)
+    function_cell = sheet.cell(function_start_row, side_start_column)
     function_cell.value = f"功能介绍：{quote.remark or ''}"
     function_cell.font = Font(name="宋体", size=12, color=TEMPLATE_RED)
-    function_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    function_cell.alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
+    )
     function_cell.border = TEMPLATE_BORDER
 
-    for row_index in (subtotal_row, markup_row, settlement_row, quote_row, target_row, difference_row, difference_percent_row):
-        for column in range(3, 5):
-            _template_cell(
-                sheet,
-                row_index,
-                column,
-                "",
-                color=TEMPLATE_BLACK,
-                wrap_text=False,
-                border=None,
-            )
-    sheet.cell(subtotal_row, 4).value = f"=SUM(D{detail_start_row}:D{detail_end_row})"
-    sheet.cell(markup_row, 3).value = "×"
-    sheet.cell(markup_row, 4).value = _float_value(shipping.get("markup"), 1.2)
-    sheet.cell(settlement_row, 3).value = "÷"
-    sheet.cell(settlement_row, 4).value = _float_value(shipping.get("settlement"), 0.98)
-    sheet.cell(quote_row, 3).value = "报客价："
-    sheet.cell(quote_row, 4).value = f"=D{subtotal_row}*D{markup_row}/D{settlement_row}"
-    sheet.cell(target_row, 3).value = "目标价："
-    sheet.cell(target_row, 4).value = _price_number(quote.target_customer_price)
-    sheet.cell(difference_row, 3).value = "相差金额："
-    sheet.cell(difference_row, 4).value = f'=IF(D{target_row}="","",D{quote_row}-D{target_row})'
-    sheet.cell(difference_percent_row, 3).value = "相差百分比："
-    sheet.cell(difference_percent_row, 4).value = (
-        f'=IF(OR(D{target_row}="",D{target_row}=0),"",D{difference_row}/D{target_row})'
+    color_box = _dict_value(
+        _dict_value(sales_payload.get("customer_quote_fields", {})).get("buzzbee", {})
     )
-    for row_index in range(subtotal_row, difference_percent_row + 1):
-        sheet.cell(row_index, 3).font = Font(name="宋体", size=10, color=TEMPLATE_BLACK)
-        sheet.cell(row_index, 4).font = Font(name="宋体", size=11, color=TEMPLATE_BLACK)
-        sheet.cell(row_index, 4).number_format = (
-            "0.00%" if row_index == difference_percent_row else "0.00_);[Red]\\(0.00\\)"
-        )
-    sheet.cell(markup_row, 3).alignment = Alignment(horizontal="right", vertical="center")
-    sheet.cell(settlement_row, 3).alignment = Alignment(horizontal="right", vertical="center")
-    sheet.cell(settlement_row, 4).border = Border(bottom=TEMPLATE_THIN)
-    sheet.cell(quote_row, 4).font = Font(name="宋体", size=11, color=TEMPLATE_RED)
-    sheet.cell(target_row, 4).font = Font(name="宋体", size=10, bold=True, color=TEMPLATE_RED)
-    sheet.cell(difference_percent_row, 4).font = Font(name="宋体", size=10, bold=True, color=TEMPLATE_RED)
-    for row_index in (target_row, difference_row, difference_percent_row):
-        sheet.row_dimensions[row_index].height = 24
-
-    # Color-box tiers sit beside the customer/target price block.
-    color_box = _dict_value(_dict_value(sales_payload.get("customer_quote_fields", {})).get("buzzbee", {}))
     color_tiers = _list_of_dicts(color_box.get("color_box_tiers", []))[:2]
-    for column, label in enumerate(("报客彩盒", "报客彩盒FSC", "MOQ数量"), start=10):
-        _template_cell(
-            sheet,
-            settlement_row,
-            column,
-            label,
-            color=TEMPLATE_BLACK,
-            size=9 if column == 11 else 10,
-            wrap_text=False,
-        )
+    color_title_row = function_end_row + 1
+    sheet.merge_cells(
+        start_row=color_title_row,
+        start_column=side_start_column,
+        end_row=color_title_row,
+        end_column=side_start_column + 2,
+    )
+    _template_cell(
+        sheet,
+        color_title_row,
+        side_start_column,
+        "彩盒价格",
+        wrap_text=False,
+    )
+    color_header_row = color_title_row + 1
+    for column, label in enumerate(
+        ("报客彩盒", "报客彩盒FSC", "MOQ数量"),
+        start=side_start_column,
+    ):
+        _template_cell(sheet, color_header_row, column, label, wrap_text=False)
     for offset in range(2):
-        row_index = quote_row + offset
+        row_index = color_header_row + 1 + offset
         tier = color_tiers[offset] if offset < len(color_tiers) else {}
-        values = (
-            _number(tier.get("quote_price_hkd", "")),
-            _number(tier.get("fsc_price_hkd", "")),
-            _safe_text(tier.get("moq", "")),
-        )
-        for column, value in enumerate(values, start=10):
+        for column, value in enumerate(
+            (
+                _number(tier.get("quote_price_hkd", "")),
+                _number(tier.get("fsc_price_hkd", "")),
+                _safe_text(tier.get("moq", "")),
+            ),
+            start=side_start_column,
+        ):
             _template_cell(
                 sheet,
                 row_index,
                 column,
                 value,
                 color=TEMPLATE_RED,
-                size=11 if column == 11 else 10,
                 wrap_text=False,
-                number_format="0.00_);[Red]\\(0.00\\)" if column in {10, 11} else None,
+                number_format=(
+                    "0.00_);[Red]\\(0.00\\)"
+                    if column in {side_start_column, side_start_column + 1}
+                    else None
+                ),
+            )
+    color_end_row = color_header_row + 2
+
+    testing_display_rows = testing_fee_tiers or [
+        {"moq": int(tier["moq"]), "unit_price_usd": 0.0}
+        for tier in markup_tiers
+    ]
+    test_header_row = color_end_row + 3
+    _template_cell(
+        sheet,
+        test_header_row,
+        side_start_column,
+        "测试费用",
+        wrap_text=False,
+    )
+    _template_cell(
+        sheet,
+        test_header_row,
+        side_start_column + 1,
+        testing_fee_total_usd,
+        wrap_text=False,
+        number_format='"US$"#,##0.00',
+    )
+    _template_cell(
+        sheet,
+        test_header_row,
+        side_start_column + 2,
+        "",
+        wrap_text=False,
+    )
+
+    misc_row = detail_data_end_row + 1
+    for column, value in enumerate(
+        (
+            "",
+            "杂项",
+            "杂项",
+            _float_value(cost_context.get("indonesia_freight_hkd"))
+            + _float_value(shipping.get("additional_tax_hkd")),
+        ),
+        start=1,
+    ):
+        _template_cell(
+            sheet,
+            misc_row,
+            column,
+            value,
+            horizontal="left" if column in {2, 3} else "center",
+            wrap_text=False,
+            number_format="0.000" if column == 4 else None,
+            border=Border(left=TEMPLATE_MEDIUM) if column == 1 else None,
+        )
+    for offset, route in enumerate(route_rows):
+        _template_cell(
+            sheet,
+            misc_row,
+            route_start_column + offset,
+            _safe_text(route.get("name") or route.get("item") or f"运输方案{offset + 1}"),
+            wrap_text=False,
+            border=None,
+        )
+    freight_row = misc_row + 1
+    lifting_row = misc_row + 2
+    for row_index, label, value_key in (
+        (freight_row, "运费", "freight_hkd"),
+        (lifting_row, "吊柜费", "lift_hkd"),
+    ):
+        _template_cell(
+            sheet,
+            row_index,
+            2,
+            label,
+            horizontal="left",
+            wrap_text=False,
+            border=Border(left=TEMPLATE_MEDIUM),
+        )
+        _template_cell(
+            sheet,
+            row_index,
+            3,
+            label,
+            horizontal="left",
+            wrap_text=False,
+            border=None,
+        )
+        _template_cell(sheet, row_index, 4, "", border=None)
+        for offset, route in enumerate(route_rows):
+            _template_cell(
+                sheet,
+                row_index,
+                route_start_column + offset,
+                _number(route.get(value_key, "")),
+                wrap_text=False,
+                number_format="0.00",
+                border=None,
             )
 
-    # C:P — formula-driven summary bands, retaining the reference workbook's
-    # compact yellow headers and thin black grid.
-    summary_start_row = difference_percent_row + 2
+    subtotal_row = lifting_row + 1
+    price_columns = [4, *range(route_start_column, route_end_column + 1)]
+    for column in price_columns:
+        _template_cell(
+            sheet,
+            subtotal_row,
+            column,
+            "",
+            bold=True,
+            wrap_text=False,
+            number_format="0.00",
+            border=Border(bottom=TEMPLATE_THIN),
+        )
+    sheet.cell(subtotal_row, 4).value = f"=SUM(D{detail_start_row}:D{misc_row})"
+    for column in range(route_start_column, route_end_column + 1):
+        letter = get_column_letter(column)
+        sheet.cell(subtotal_row, column).value = (
+            f"=$D${subtotal_row}+{letter}{freight_row}+{letter}{lifting_row}"
+        )
+
+    settlement = _float_value(shipping.get("settlement"), 0.98)
+    pricing_rows: list[dict[str, int | float]] = []
+    pricing_start_row = subtotal_row + 1
+    for index, tier in enumerate(markup_tiers):
+        markup_row = pricing_start_row + index * 6
+        settlement_row = markup_row + 1
+        quote_row = markup_row + 2
+        usd_row = markup_row + 3
+        included_row = markup_row + 4
+        pricing_rows.append(
+            {
+                "moq": int(tier["moq"]),
+                "markup": float(tier["markup"]),
+                "markup_row": markup_row,
+                "settlement_row": settlement_row,
+                "quote_row": quote_row,
+                "usd_row": usd_row,
+                "included_row": included_row,
+            }
+        )
+        _template_cell(sheet, markup_row, 3, "×", border=None, horizontal="right")
+        _template_cell(sheet, settlement_row, 3, "÷", border=None, horizontal="right")
+        _template_cell(
+            sheet,
+            quote_row,
+            2,
+            f"报价（{_moq_label(tier['moq'])}）",
+            horizontal="left",
+            wrap_text=False,
+            border=Border(bottom=TEMPLATE_THIN),
+        )
+        _template_cell(
+            sheet,
+            included_row,
+            2,
+            "包含测试费用（US）：",
+            horizontal="left",
+            wrap_text=False,
+            border=None,
+        )
+        for column in price_columns:
+            letter = get_column_letter(column)
+            _template_cell(
+                sheet,
+                markup_row,
+                column,
+                float(tier["markup"]),
+                wrap_text=False,
+                number_format="0.00",
+                border=None,
+            )
+            _template_cell(
+                sheet,
+                settlement_row,
+                column,
+                settlement,
+                wrap_text=False,
+                number_format="0.00",
+                border=Border(bottom=TEMPLATE_THIN),
+            )
+            _template_cell(
+                sheet,
+                quote_row,
+                column,
+                f"={letter}{subtotal_row}*{letter}{markup_row}/{letter}{settlement_row}",
+                bold=True,
+                wrap_text=False,
+                number_format="0.00",
+                border=Border(bottom=TEMPLATE_THIN),
+            )
+            _template_cell(
+                sheet,
+                usd_row,
+                column,
+                f"={letter}{quote_row}/$R$4",
+                bold=True,
+                wrap_text=False,
+                number_format="0.00",
+                border=None,
+            )
+            _template_cell(
+                sheet,
+                included_row,
+                column,
+                f"={letter}{usd_row}",
+                bold=True,
+                wrap_text=False,
+                number_format="0.00",
+                border=None,
+            )
+    pricing_end_row = pricing_rows[-1]["included_row"]
+    pricing_by_moq = {int(row["moq"]): row for row in pricing_rows}
+    active_pricing = pricing_by_moq.get(int(active_tier["moq"]), pricing_rows[-1])
+
+    test_adjusted_cells: dict[int, str] = {}
+    for offset, test_tier in enumerate(testing_display_rows, start=1):
+        row_index = test_header_row + offset
+        moq = int(test_tier["moq"])
+        _template_cell(
+            sheet,
+            row_index,
+            side_start_column,
+            moq,
+            wrap_text=False,
+            number_format="#,##0",
+        )
+        _template_cell(
+            sheet,
+            row_index,
+            side_start_column + 1,
+            _float_value(test_tier.get("unit_price_usd")),
+            wrap_text=False,
+            number_format='"US$"0.00',
+        )
+        pricing = pricing_by_moq.get(moq)
+        if pricing is not None:
+            adjusted_formula = (
+                f"={get_column_letter(side_start_column + 1)}{row_index}"
+                f"*D{pricing['markup_row']}"
+            )
+        else:
+            adjusted_formula = (
+                f"={get_column_letter(side_start_column + 1)}{row_index}"
+                f"*D{active_pricing['markup_row']}"
+            )
+        _template_cell(
+            sheet,
+            row_index,
+            side_start_column + 2,
+            adjusted_formula,
+            wrap_text=False,
+            number_format='"US$"0.00',
+        )
+        test_adjusted_cells[moq] = (
+            f"${get_column_letter(side_start_column + 2)}${row_index}"
+        )
+    test_end_row = test_header_row + len(testing_display_rows)
+    for pricing in pricing_rows:
+        adjusted_reference = test_adjusted_cells.get(int(pricing["moq"]))
+        if adjusted_reference is None:
+            continue
+        for column in price_columns:
+            letter = get_column_letter(column)
+            sheet.cell(int(pricing["included_row"]), column).value = (
+                f"={letter}{pricing['usd_row']}+{adjusted_reference}"
+            )
+
+    # C:P — formula-driven summary, anchored below whichever of the adaptive
+    # left/right regions is longer.
+    summary_start_row = max(
+        int(pricing_end_row),
+        test_end_row,
+        color_end_row,
+        function_end_row,
+    ) + 2
     amount_format = "0.00_);[Red]\\(0.00\\)"
-    detail_category_range = f"$B${detail_start_row}:$B${detail_end_row}"
-    detail_description_range = f"$C${detail_start_row}:$C${detail_end_row}"
-    detail_amount_range = f"$D${detail_start_row}:$D${detail_end_row}"
+    detail_category_range = f"$B${detail_start_row}:$B${misc_row}"
+    detail_description_range = f"$C${detail_start_row}:$C${misc_row}"
+    detail_amount_range = f"$D${detail_start_row}:$D${misc_row}"
 
     def sum_category(label_cell: str) -> str:
         return f"=SUMIF({detail_category_range},{label_cell},{detail_amount_range})"
 
     def sum_description(description: str) -> str:
         return f'=SUMIF({detail_description_range},"{description}",{detail_amount_range})'
+
+    def sum_category_or_authoritative(label_cell: str, fallback: object) -> str:
+        fallback_value = format(_float_value(fallback), ".10g")
+        return (
+            f"=IF(COUNTIF({detail_category_range},{label_cell})>0,"
+            f"SUMIF({detail_category_range},{label_cell},{detail_amount_range}),{fallback_value})"
+        )
 
     def style_summary_pair(
         header_row: int,
@@ -887,7 +1304,7 @@ def _build_summary_sheet(
         ["旺季价", "货价", "料价", "吹气", "搪胶", "车发", "车衣", "五金", "电子", "马达", "吸塑", "彩盒/内卡"],
         [
             "按出厂货价核",
-            f"=D{quote_row}",
+            f"=D{active_pricing['quote_row']}",
             sum_category(f"E{first_header_row}"),
             sum_category(f"F{first_header_row}"),
             sum_category(f"G{first_header_row}"),
@@ -915,14 +1332,14 @@ def _build_summary_sheet(
             f'=SUMIF($D${mold_start_row}:$D${mold_end_row},"*ABS*",$K${mold_start_row}:$K${mold_end_row})',
             f"=IFERROR(D{first_value_row}/N{third_value_row},0)",
             f"=IFERROR(D{first_value_row}/P{deduction_row},0)",
-            t2.get("battery", 0.0),
-            t2.get("libao", 0.0),
+            sum_category_or_authoritative(f"F{second_header_row}", t2.get("battery", 0.0)),
+            sum_category_or_authoritative(f"G{second_header_row}", t2.get("libao", 0.0)),
             t2.get("plating", 0.0),
             t2.get("other_buy", 0.0),
             sum_category(f"J{second_header_row}"),
-            t2.get("freight", 0.0),
-            t2.get("cabinet", 0.0),
-            f'=SUMIF({detail_category_range},"运费",{detail_amount_range})+SUMIF({detail_description_range},"附加税/杂项",{detail_amount_range})',
+            0.0,
+            0.0,
+            f"=D{first_value_row}*$Q$6",
             f"=SUM(E{first_value_row}:N{first_value_row},F{second_value_row}:M{second_value_row},G{third_value_row})",
         ],
     )
@@ -986,12 +1403,25 @@ def _build_summary_sheet(
         )
 
     tax_amount_row = tax_header_row + 1
+    domestic_material_literal = format(_float_value(t1.get("dom_mat", 0.0)), ".10g")
+    glue_bag_literal = format(_float_value(t1.get("glue_bag", 0.0)), ".10g")
+    rmb_purchase_formula = (
+        f"=SUM({domestic_material_literal},H{first_value_row},I{first_value_row},"
+        f"J{first_value_row},K{first_value_row},L{first_value_row},N{first_value_row},"
+        f"F{second_value_row},G{second_value_row},H{second_value_row},I{second_value_row},"
+        f"J{second_value_row},M{second_value_row},G{third_value_row},{glue_bag_literal})"
+    )
+    tax_13_formula = (
+        f"=SUM({domestic_material_literal},J{first_value_row},L{first_value_row},"
+        f"N{first_value_row},F{second_value_row},G{second_value_row},I{second_value_row},"
+        f"G{third_value_row},{glue_bag_literal})"
+    )
     for column in range(3, 17):
         if column == 3:
-            value: object = _float_value(summary_totals.get("rmb_purchase_cost_hkd"))
+            value: object = rmb_purchase_formula
             number_format = amount_format
         elif column == 4:
-            value = _float_value(t4.get("tax13", {}).get("amount_hkd"))
+            value = tax_13_formula
             number_format = amount_format
         elif column == 5:
             value = ""
@@ -1032,9 +1462,22 @@ def _build_summary_sheet(
             wrap_text=False,
             number_format=amount_format,
         )
+    tax_amount_references = {
+        "tax1": f"H{second_value_row}",
+        "slush3": f"G{first_value_row}",
+        "sewhair13": f"H{first_value_row}",
+        "sewcloth13": f"I{first_value_row}",
+        "suction6": f"M{first_value_row}",
+        "freight9": f"K{second_value_row}",
+        "tax13b": f"D{tax_amount_row}",
+        "carton": f"J{second_value_row}",
+        "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
+    }
     for column, key in enumerate(tax_keys, start=6):
-        amount = _float_value(t4.get(key, {}).get("amount_hkd"))
-        sheet.cell(deduction_row, column).value = f"={amount}*{get_column_letter(column)}{tax_amount_row}"
+        amount_reference = tax_amount_references[key]
+        sheet.cell(deduction_row, column).value = (
+            f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
+        )
     sheet.cell(deduction_row, 15).value = f"=SUM(F{deduction_row}:N{deduction_row})"
     sheet.cell(deduction_row, 16).value = f"=N{third_value_row}-O{deduction_row}"
 
@@ -1061,6 +1504,8 @@ def _build_summary_sheet(
     }
     for column, width in widths.items():
         sheet.column_dimensions[column].width = width
+    for column in range(19, outer_right_column + 1):
+        sheet.column_dimensions[get_column_letter(column)].width = 13
     for row in range(summary_start_row, deduction_row + 1):
         sheet.row_dimensions[row].height = 15
     for row in (summary_start_row + 2, summary_start_row + 5, summary_start_row + 8):
@@ -1069,7 +1514,7 @@ def _build_summary_sheet(
     workbook.calculation.calcMode = "auto"
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
-    sheet.freeze_panes = "A9"
+    sheet.freeze_panes = "A8"
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
@@ -1079,7 +1524,25 @@ def _build_summary_sheet(
     sheet.page_margins.right = 0.2
     sheet.page_margins.top = 0.35
     sheet.page_margins.bottom = 0.35
-    sheet.print_area = f"A1:R{deduction_row}"
+    _apply_outline_border(
+        sheet,
+        1,
+        deduction_row,
+        1,
+        outer_right_column,
+        TEMPLATE_MEDIUM,
+    )
+    _apply_outline_border(
+        sheet,
+        7,
+        7,
+        1,
+        outer_right_column,
+        TEMPLATE_MEDIUM,
+    )
+    sheet.print_area = (
+        f"A1:{get_column_letter(outer_right_column)}{deduction_row}"
+    )
     sheet.sheet_properties.outlinePr.summaryBelow = True
 
 
@@ -1380,6 +1843,180 @@ def _build_approval_sheet(
     _finish_sheet(sheet, (24, 24, 20, 16, 18, 18, 20, 22))
 
 
+def _unique_sheet_title(raw_title: str, used_titles: set[str]) -> str:
+    cleaned = re.sub(r"[\[\]:*?/\\\x00-\x1f]", " ", raw_title).strip().strip("'")
+    cleaned = re.sub(r"\s+", " ", cleaned) or "上传表格"
+    base = cleaned[:31]
+    candidate = base
+    suffix = 2
+    while candidate.casefold() in used_titles:
+        marker = f"-{suffix}"
+        candidate = f"{base[:31 - len(marker)]}{marker}"
+        suffix += 1
+    used_titles.add(candidate.casefold())
+    return candidate
+
+
+def _rewrite_attachment_formula(
+    formula: object,
+    sheet_names: dict[str, str],
+) -> object:
+    if not isinstance(formula, str) or not formula.startswith("="):
+        return formula
+    rendered = formula
+    for old_name, new_name in sheet_names.items():
+        if old_name == new_name:
+            continue
+        old_quoted = f"{quote_sheetname(old_name)}!"
+        new_quoted = f"{quote_sheetname(new_name)}!"
+        rendered = rendered.replace(old_quoted, new_quoted)
+        rendered = rendered.replace(f"{old_name}!", new_quoted)
+    return rendered
+
+
+def _copy_attachment_worksheet(
+    source,
+    target,
+    sheet_names: dict[str, str],
+) -> None:
+    for row in source.iter_rows():
+        for source_cell in row:
+            target_cell = target.cell(source_cell.row, source_cell.column)
+            target_cell.value = _rewrite_attachment_formula(
+                source_cell.value,
+                sheet_names,
+            )
+            if source_cell.has_style:
+                # Style-array indexes are workbook-local.  Copy the concrete
+                # objects so openpyxl registers them in the destination book.
+                target_cell.font = copy(source_cell.font)
+                target_cell.fill = copy(source_cell.fill)
+                target_cell.border = copy(source_cell.border)
+                target_cell.alignment = copy(source_cell.alignment)
+                target_cell.protection = copy(source_cell.protection)
+                target_cell.number_format = source_cell.number_format
+            if source_cell.hyperlink is not None:
+                target_cell._hyperlink = copy(source_cell.hyperlink)
+            if source_cell.comment is not None:
+                target_cell.comment = copy(source_cell.comment)
+
+    for merged_range in source.merged_cells.ranges:
+        target.merge_cells(str(merged_range))
+    for index, dimension in source.row_dimensions.items():
+        target_dimension = target.row_dimensions[index]
+        target_dimension.height = dimension.height
+        target_dimension.hidden = dimension.hidden
+        target_dimension.outlineLevel = dimension.outlineLevel
+        target_dimension.collapsed = dimension.collapsed
+    for index, dimension in source.column_dimensions.items():
+        target_dimension = target.column_dimensions[index]
+        target_dimension.width = dimension.width
+        target_dimension.hidden = dimension.hidden
+        target_dimension.bestFit = dimension.bestFit
+        target_dimension.outlineLevel = dimension.outlineLevel
+        target_dimension.collapsed = dimension.collapsed
+
+    target.freeze_panes = source.freeze_panes
+    target.sheet_view.showGridLines = source.sheet_view.showGridLines
+    target.sheet_view.zoomScale = source.sheet_view.zoomScale
+    target.sheet_format.defaultRowHeight = source.sheet_format.defaultRowHeight
+    target.sheet_format.defaultColWidth = source.sheet_format.defaultColWidth
+    target.page_margins = copy(source.page_margins)
+    target.page_setup = copy(source.page_setup)
+    target.print_options = copy(source.print_options)
+    target.sheet_properties = copy(source.sheet_properties)
+    target.auto_filter.ref = source.auto_filter.ref
+    target.data_validations = copy(source.data_validations)
+    target.conditional_formatting = copy(source.conditional_formatting)
+
+    for image in getattr(source, "_images", []):
+        try:
+            copied_image = copy(image)
+            copied_image.anchor = copy(image.anchor)
+            target.add_image(copied_image)
+        except Exception:
+            # Cell values and styles remain authoritative even when a source
+            # drawing uses a format that openpyxl cannot clone across books.
+            continue
+    for chart in getattr(source, "_charts", []):
+        try:
+            copied_chart = copy(chart)
+            copied_chart.anchor = copy(chart.anchor)
+            target.add_chart(copied_chart)
+        except Exception:
+            continue
+
+
+def _append_spreadsheet_attachment_sheets(
+    workbook: Workbook,
+    attachments: list[InternalQuoteAttachment],
+) -> list[str]:
+    appended_titles: list[str] = []
+    used_titles = {sheet.title.casefold() for sheet in workbook.worksheets}
+    supported_suffixes = {".xlsx", ".xlsm"}
+    seen_hashes: set[str] = set()
+    for attachment in attachments:
+        suffix = Path(attachment.file_name).suffix.lower()
+        if suffix not in supported_suffixes or attachment.sha256 in seen_hashes:
+            continue
+        seen_hashes.add(attachment.sha256)
+        try:
+            source_workbook = load_workbook(
+                BytesIO(attachment.content),
+                data_only=False,
+                read_only=False,
+                keep_links=False,
+            )
+        except (BadZipFile, InvalidFileException, OSError, ValueError, KeyError):
+            title = _unique_sheet_title(
+                f"{Path(attachment.file_name).stem}-附件异常",
+                used_titles,
+            )
+            sheet = workbook.create_sheet(title)
+            _style_title(sheet, "上传表格未能嵌入", 4)
+            _body_row(
+                sheet,
+                3,
+                (
+                    "文件名",
+                    _safe_text(attachment.file_name),
+                    "SHA-256",
+                    _safe_text(attachment.sha256),
+                ),
+            )
+            _body_row(
+                sheet,
+                4,
+                ("说明", "该文件仍保留在系统附件中，请重新另存为有效 xlsx 后上传。"),
+            )
+            _finish_sheet(sheet, (18, 56, 18, 66))
+            appended_titles.append(title)
+            continue
+
+        try:
+            source_sheets = list(source_workbook.worksheets)
+            stem = Path(attachment.file_name).stem
+            sheet_names: dict[str, str] = {}
+            for source_sheet in source_sheets:
+                raw_title = (
+                    stem
+                    if len(source_sheets) == 1
+                    else f"{stem}-{source_sheet.title}"
+                )
+                sheet_names[source_sheet.title] = _unique_sheet_title(
+                    raw_title,
+                    used_titles,
+                )
+            for source_sheet in source_sheets:
+                target = workbook.create_sheet(sheet_names[source_sheet.title])
+                _copy_attachment_worksheet(source_sheet, target, sheet_names)
+                target.sheet_state = "visible"
+                appended_titles.append(target.title)
+        finally:
+            source_workbook.close()
+    return appended_titles
+
+
 def build_internal_quote_workbook(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
@@ -1387,6 +2024,7 @@ def build_internal_quote_workbook(
     reference_snapshot: dict[str, Any] | None = None,
     rr2_cost_summary: dict[str, Any] | None = None,
     cost_context: dict[str, Any] | None = None,
+    attachments: list[InternalQuoteAttachment] | None = None,
 ) -> bytes:
     workbook = Workbook()
     workbook.properties.creator = "Royal Regent Nexus"
@@ -1408,6 +2046,7 @@ def build_internal_quote_workbook(
     _build_approval_sheet(workbook, quote, sections, manifest)
     for technical_sheet in workbook.worksheets[1:]:
         technical_sheet.sheet_state = "veryHidden"
+    _append_spreadsheet_attachment_sheets(workbook, attachments or [])
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True

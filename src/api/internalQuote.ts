@@ -151,6 +151,9 @@ export interface ApiInternalQuoteSummary {
       freight_share_percent: string
       lift_share_percent: string
       markup: string
+      active_markup_moq?: string
+      markup_tiers?: Array<{ moq: string; markup: string; is_active: boolean }>
+      misc_ratio: string
       settlement: string
       factory_price_hkd: string
       additional_tax_hkd: string
@@ -368,6 +371,14 @@ export interface ApiInternalQuoteMachineBaselineRow {
   shift_price_hkd: string
 }
 
+export interface ApiInternalQuoteFreightBaselineRow {
+  route_key: string
+  route_name: string
+  capacity_key: 'cap_10t' | 'cap_5t' | 'cap_40' | 'cap_20'
+  freight_hkd: string
+  lifting_hkd: string
+}
+
 export interface ApiInternalQuotePricingBaseline {
   factory_id: string
   workshop_code: string
@@ -376,6 +387,7 @@ export interface ApiInternalQuotePricingBaseline {
   source_type: 'default' | 'custom'
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
   machine_prices: ApiInternalQuoteMachineBaselineRow[]
+  freight_routes: ApiInternalQuoteFreightBaselineRow[]
   updated_by: string
   updated_by_name: string
   updated_at: string
@@ -386,6 +398,7 @@ export interface InternalQuotePricingBaselineUpdateRequest {
   workshop_name: string
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
   machine_prices: ApiInternalQuoteMachineBaselineRow[]
+  freight_routes: ApiInternalQuoteFreightBaselineRow[]
 }
 
 export interface InternalQuoteCreateRequest {

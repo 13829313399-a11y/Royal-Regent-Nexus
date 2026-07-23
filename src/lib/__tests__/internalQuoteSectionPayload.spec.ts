@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, defaultSalesFreightCalculation, normalizeInternalQuotePayload, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type PaintingPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type PaintingPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
@@ -11,12 +11,17 @@ describe('internal quote section payload normalization', () => {
     expect(fresh).toHaveProperty('customer_quote_fields')
     expect(fresh).toMatchObject({
       paper_price_factor: 2.75,
+      testing_fee_total_usd: 0,
+      testing_fee_moqs: [0],
       packaging_materials: [],
       product_size_in: { length: 0, width: 0, height: 0 },
+      color_box_size_unit: 'inch',
       color_box_size_in: { length: 0, width: 0, height: 0 },
       cartons: [],
-      freight_calc: { enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883, hk40: 8000, yt5t: 11000 },
+      freight_calc: { enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883 },
     })
+    expect(fresh.freight_calc).not.toHaveProperty('hk40')
+    expect(fresh.freight_calc).not.toHaveProperty('yt5t')
     expect(fresh).not.toHaveProperty('flat_card_price_factor')
     expect(fresh).not.toHaveProperty('product_size_cm')
     expect(fresh).not.toHaveProperty('color_box_size_cm')
@@ -26,9 +31,41 @@ describe('internal quote section payload normalization', () => {
       flat_card_price_factor: 2.3,
     })
     expect(normalizeInternalQuotePayload('sales', {
-      shipping: { markup_x: '1.15', divisor: '.98', freight_pct: '48', lifting_pct: '52' },
+      testing_fee_total_usd: '1250',
+      testing_fee_moq: '5000',
     })).toMatchObject({
-      shipping: { markup_x: 1.15, divisor: .98, freight_pct: 48, lifting_pct: 52 },
+      testing_fee_total_usd: 1250,
+      testing_fee_moqs: [5000],
+    })
+    expect(normalizeInternalQuotePayload('sales', {
+      testing_fee_total_usd: '1250',
+      testing_fee_moqs: ['3000', '5000', 10000],
+    })).toMatchObject({
+      testing_fee_total_usd: 1250,
+      testing_fee_moqs: [3000, 5000, 10000],
+    })
+    expect(calculateSalesTestingFeeUnitUsd(1250, 5000)).toBe(.25)
+    expect(calculateSalesTestingFeeUnitUsd(1250, 0)).toBe(0)
+    expect(normalizeInternalQuotePayload('sales', {
+      shipping: {
+        markup_x: '1.15',
+        markup_tiers: [{ moq: '3000', markup_x: '1.25' }, { moq: '5000', markup_x: '1.20' }, { moq: '10000', markup_x: '1.15' }],
+        selected_markup_moq: '5000',
+        misc_ratio: '.035',
+        divisor: '.98',
+        freight_pct: '48',
+        lifting_pct: '52',
+      },
+    })).toMatchObject({
+      shipping: {
+        markup_x: 1.15,
+        markup_tiers: [{ moq: 3000, markup_x: 1.25 }, { moq: 5000, markup_x: 1.2 }, { moq: 10000, markup_x: 1.15 }],
+        selected_markup_moq: 5000,
+        misc_ratio: .035,
+        divisor: .98,
+        freight_pct: 48,
+        lifting_pct: 52,
+      },
     })
     expect(normalizeInternalQuotePayload('sales', {
       product_size_cm: { length: '5.25', width: '8.75', height: '3' },
@@ -49,6 +86,35 @@ describe('internal quote section payload normalization', () => {
       tax_categories: [{ code: 'legacy', amount_hkd: 5, rate: .13 }],
       scenarios: [{ name: '旧场景', capacity_cuft: 1980 }],
     })
+  })
+
+  it('creates the three default MOQ tiers and selects the highest reached tier', () => {
+    const tiers = createDefaultSalesMarkupTiers(1.2)
+    tiers[0]!.markup_x = 1.3
+    tiers[1]!.markup_x = 1.25
+    tiers[2]!.markup_x = 1.15
+    expect(tiers.map((tier) => tier.moq)).toEqual([3000, 5000, 10000])
+    expect(salesMarkupTierForQuantity(tiers, 2000)).toEqual({ moq: 3000, markup_x: 1.3 })
+    expect(salesMarkupTierForQuantity(tiers, 7000)).toEqual({ moq: 5000, markup_x: 1.25 })
+    expect(salesMarkupTierForQuantity(tiers, 10000)).toEqual({ moq: 10000, markup_x: 1.15 })
+    expect(salesMarkupTierForQuantity(tiers, 50000)).toEqual({ moq: 10000, markup_x: 1.15 })
+  })
+
+  it('preserves cm/inch display units while keeping calculation dimensions in canonical inches', () => {
+    const normalized = normalizeInternalQuotePayload('sales', {
+      color_box_size_unit: 'cm',
+      color_box_size_in: { length: 10, width: 5, height: 4 },
+      cartons: [{ item: '主纸箱', size_unit: 'cm', length_in: 20, width_in: 10, height_in: 8, qty_per_carton: 2, flat_cards: [] }],
+    })
+    expect(normalized).toMatchObject({
+      color_box_size_unit: 'cm',
+      color_box_size_in: { length: 10, width: 5, height: 4 },
+      cartons: [{ size_unit: 'cm', length_in: 20, width_in: 10, height_in: 8 }],
+    })
+    expect(dimensionValueFromInches(10, 'cm')).toBe(25.4)
+    expect(dimensionValueToInches(25.4, 'cm')).toBe(10)
+    expect(dimensionValueFromInches(10, 'inch')).toBe(10)
+    expect(dimensionValueToInches(10, 'inch')).toBe(10)
   })
 
   it('previews the accepted carton, flat-card, CUFT and per-piece formulas', () => {
@@ -81,6 +147,24 @@ describe('internal quote section payload normalization', () => {
     expect(hk40.capacityCuft).toBe(1980)
     expect(hk40.totalCartons).toBe(Math.round(1980 / calculateCartonCuft({ length_in: 14, width_in: 9.25, height_in: 23.875 })))
     expect(hk40.perPieceHkd).toBeCloseTo(8000 / hk40.totalCartons / 2)
+    const baselineOptions = calculateSalesFreightOptions(
+      normalizeInternalQuotePayload('sales', {}).freight_calc,
+      { length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 },
+      salesFreightReferenceRoutesFromSnapshot({
+        routes: [{ route_key: 'sz40', route_name: '深圳 40 柜', capacity_key: 'cap_40', freight_hkd: '6500', lifting_hkd: '1100' }],
+      }),
+    )
+    expect(baselineOptions).toHaveLength(1)
+    expect(baselineOptions[0]).toMatchObject({
+      key: 'sz40',
+      label: '深圳 40 柜',
+      freightCostHkd: 6500,
+      liftingCostHkd: 1100,
+    })
+    expect(baselineOptions[0].freightPerPieceHkd).toBeCloseTo(6500 / baselineOptions[0].totalCartons / 2)
+    expect(baselineOptions[0].liftingPerPieceHkd).toBeCloseTo(1100 / baselineOptions[0].totalCartons / 2)
+    expect(baselineOptions[0].perPieceHkd).toBeCloseTo(7600 / baselineOptions[0].totalCartons / 2)
+    expect(salesFreightReferenceRoutesFromSnapshot({ cost_hkd: { hk_container_40: '8200' } })[0].freightCostHkd).toBe(8200)
     expect(calculateSalesFreightOptions(defaultSalesFreightCalculation).every((option) => option.totalCartons === 0 && option.perPieceHkd === 0)).toBe(true)
     expect(calculateSalesFreightOptions({ ...defaultSalesFreightCalculation, enabled: false }, carton)).toEqual([])
     expect(normalizeInternalQuotePayload('sales', { freight_calc: { enabled: false, cap_40: 1980.6 } })).toMatchObject({
@@ -138,7 +222,7 @@ describe('internal quote section payload normalization', () => {
       customer_quote_fields: { buzzbee: { color_box_tiers: [{ quote_price_hkd: '6.70', fsc_price_hkd: '6.90', moq: 'MOQ3000' }] } },
     })).toMatchObject({
       packaging_materials: [{ item: '彩盒', category: 'color_box_inner_card', quantity: 2, unit_price_rmb: 3.4, tax_rate_percent: 10, remark: 'FSC' }],
-      freight_calc: { cap_40: 2000, hk40: 8200, cap_10t: 1166, yt5t: 11000 },
+      freight_calc: { cap_40: 2000, hk40: 8200, cap_10t: 1166 },
       scenarios: [{ name: '盐田', freight_share: .48, lift_share: .52, markup: 1.2, settlement: .98 }],
       customer_quote_fields: { buzzbee: { color_box_tiers: [{ quote_price_hkd: 6.7, fsc_price_hkd: 6.9, moq: 'MOQ3000' }] } },
     })
@@ -272,6 +356,32 @@ describe('internal quote section payload normalization', () => {
     expect(summary.taxDifferenceRmb).toBeCloseTo(2.51625 * .13 - .936 / 1.13 * .13)
     expect(summary.quoteRmb).toBeCloseTo(2.7576242)
     expect(summary.quoteHkd).toBeCloseTo(3.2442638)
+  })
+
+  it('normalizes electronic quick rows and excludes preserved detail rows from the active quote', () => {
+    const electronic = normalizeInternalQuotePayload('electronic', {
+      quote_mode: 'quick',
+      quick_quotes: [
+        { name: '主控板', price_rmb: '10', tax_rate_percent: '13', note: '含税' },
+        { item: '喇叭', unit_price_rmb: '5', tax_rate_percent: '0', remark: '不含税' },
+      ],
+      components: [{ item: '保留明细', quantity: 1, unit_price_rmb: 999, tax_rate_percent: 13 }],
+      profit_rate_percent: 10,
+    }) as unknown as ElectronicPayload
+
+    expect(electronic).toMatchObject({
+      quote_mode: 'quick',
+      quick_quotes: [
+        { item: '主控板', unit_price_rmb: 10, tax_rate_percent: 13, remark: '含税' },
+        { item: '喇叭', unit_price_rmb: 5, tax_rate_percent: 0, remark: '不含税' },
+      ],
+      pricing_currency: 'RMB',
+    })
+    const summary = calculateElectronicSummary(electronic, .85)
+    expect(summary.componentCostRmb).toBe(15)
+    expect(summary.deductibleInputTaxRmb).toBeCloseTo(10 / 1.13 * .13)
+    expect(summary.quoteRmb).toBeCloseTo(17.5940133)
+    expect(summary.quoteHkd).toBeCloseTo(20.6988392)
   })
 
   it('normalizes the complete mold sheet and production allocation contract', () => {

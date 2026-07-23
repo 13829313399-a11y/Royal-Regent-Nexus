@@ -73,6 +73,20 @@ function engineeringBlocks(payload: EngineeringPayload): InternalQuoteFormBlock[
 }
 
 function electronicBlocks(payload: ElectronicPayload): InternalQuoteFormBlock[] {
+  if (payload.quote_mode === 'quick') {
+    const quickRows = payload.quick_quotes ?? []
+    const complete = quickRows.length > 0 && quickRows.every((row) => Boolean(
+      text(row.item)
+      && positive(row.unit_price_rmb)
+      && Number.isFinite(Number(row.tax_rate_percent))
+      && Number(row.tax_rate_percent) >= 0
+      && Number(row.tax_rate_percent) <= 100,
+    ))
+    return [
+      block('components', '电子快捷报价部分', 'required', quickRows.length > 0, complete, '必须；至少一项，零件名称、RMB 单价和 0–100% 税点必填'),
+      block('electronic-summary', '电子成本汇总部分', 'automatic', true, true, '自动计算；快捷行按每件用量 1 计价，邦定、贴片、人工、测试、包装费用按实际选填'),
+    ]
+  }
   const complete = payload.components.length > 0 && payload.components.every(electronicRowComplete)
   return [
     block('components', '电子零件部分', 'required', payload.components.length > 0, complete, '必须；至少一项，名称、用量、RMB 单价必填'),
@@ -148,6 +162,13 @@ function assemblyBlocks(payload: AssemblyPayload): InternalQuoteFormBlock[] {
 }
 
 function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
+  const testingFeeMoqs = payload.testing_fee_moqs?.length
+    ? payload.testing_fee_moqs
+    : payload.testing_fee_moq != null ? [payload.testing_fee_moq] : []
+  const hasTestingFee = positive(payload.testing_fee_total_usd) || testingFeeMoqs.some(positive)
+  const testingFeeComplete = positive(payload.testing_fee_total_usd)
+    && testingFeeMoqs.length > 0
+    && testingFeeMoqs.every(positive)
   const packagingComplete = payload.packaging_materials.length > 0 && payload.packaging_materials.every((row) => Boolean(
     text(row.item) && text(row.specification) && positive(row.quantity) && positive(row.unit_price_rmb),
   ))
@@ -159,16 +180,15 @@ function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
     && row.flat_cards.every((card) => text(card.name) && positive(card.length_in) && positive(card.width_in) && positive(card.quantity)),
   ))
   const capacityKeys = ['cap_10t', 'cap_5t', 'cap_40', 'cap_20'] as const
-  const routeKeys = ['hk40', 'hk20', 'yt40', 'yt20', 'hk10t', 'yt10t', 'hk5t', 'yt5t'] as const
   const freightComplete = payload.freight_calc.enabled === false || (
     capacityKeys.every((key) => positive(payload.freight_calc[key]))
-    && routeKeys.every((key) => positive(payload.freight_calc[key]))
     && cartonsComplete
   )
   return [
+    block('testing-fee', '测试费部分', 'optional', hasTestingFee, testingFeeComplete, '可选；填写测试费用 USD 后，每个 MOQ 必须大于 0，各档单价 USD 由系统自动计算'),
     block('packaging-materials', '包装材料部分', 'optional', payload.packaging_materials.length > 0, packagingComplete, '可选；填写时名称、规格、类别、用量、RMB 单价必填'),
-    block('cartons', '纸箱计算与包装尺寸部分', 'required', payload.cartons.length > 0 || colorBoxDimensionsComplete, colorBoxDimensionsComplete && cartonsComplete, '必须；彩盒三维尺寸（in）、至少一个纸箱尺寸和每箱数量必填；产品尺寸（in）和平卡可选'),
-    block('freight', '运费计算部分', 'required', true, freightComplete, '必须二选一：完整填写容量及运费，或明确切换为“客户自提”'),
+    block('cartons', '纸箱计算与包装尺寸部分', 'required', payload.cartons.length > 0 || colorBoxDimensionsComplete, colorBoxDimensionsComplete && cartonsComplete, '必须；彩盒三维尺寸、至少一个纸箱尺寸和每箱数量必填，彩盒与纸箱可分别选择 cm 或 inch；产品尺寸（in）和平卡可选'),
+    block('freight', '运费计算部分', 'required', true, freightComplete, '必须二选一：完整填写容量并使用报价基数运费及吊柜费，或明确切换为“客户自提”'),
   ]
 }
 

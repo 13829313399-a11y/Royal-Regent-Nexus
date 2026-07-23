@@ -144,11 +144,39 @@ def test_rr2_shipping_price_uses_48_52_markup_settlement_and_mold_share_when_ena
     assert yt40["total_with_mold_usd"] == "9.7476"
 
 
-def test_rr2_shipping_price_uses_markup_saved_in_the_sales_section():
+def test_rr2_shipping_price_uses_explicit_freight_and_lifting_baseline_amounts():
+    sections = summary_sections(freight_enabled=True)
+    sales = next(item for item in sections if item.department == "sales")
+    calculation = json.loads(sales.calculation_json)
+    calculation["totals"]["freight_options"][0].update({
+        "has_lifting_fee": True,
+        "freight_per_piece_hkd": "6",
+        "lifting_per_piece_hkd": "4",
+        "per_piece_hkd": "10",
+    })
+    sales.calculation_json = json.dumps(calculation, ensure_ascii=False)
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1"), "mold_amortization_usd": Decimal("0.25")},
+        SNAPSHOT,
+    )
+
+    t2 = rows_by_key(result["t2"])
+    assert t2["freight"]["value"] == "6.0000"
+    assert t2["cabinet"]["value"] == "4.0000"
+    assert rows_by_key(result["t4"])["freight9"]["amount_hkd"] == "6.0000"
+    yt40 = result["shipping_pricing"]["rows"][1]
+    assert yt40["freight_hkd"] == "6.0000"
+    assert yt40["lift_hkd"] == "4.0000"
+    assert yt40["with_freight_hkd"] == "60.5000"
+
+
+def test_rr2_shipping_price_uses_markup_and_misc_ratio_saved_in_the_sales_section():
     sections = summary_sections(freight_enabled=True)
     sales = next(item for item in sections if item.department == "sales")
     sales_payload = json.loads(sales.payload_json)
-    sales_payload["shipping"] = {"markup_x": "1.15"}
+    sales_payload["shipping"] = {"markup_x": "1.15", "misc_ratio": "0.035"}
     sales.payload_json = json.dumps(sales_payload, ensure_ascii=False)
 
     result = _rr2_cost_summary(
@@ -159,7 +187,69 @@ def test_rr2_shipping_price_uses_markup_saved_in_the_sales_section():
 
     shipping = result["shipping_pricing"]
     assert shipping["markup"] == "1.1500"
+    assert shipping["misc_ratio"] == "0.0350"
     assert shipping["rows"][1]["after_markup_hkd"] == "69.5750"
+
+
+def test_rr2_shipping_price_selects_the_highest_moq_tier_reached_by_quote_quantity():
+    sections = summary_sections(freight_enabled=True)
+    sales = next(item for item in sections if item.department == "sales")
+    sales_payload = json.loads(sales.payload_json)
+    sales_payload["shipping"] = {
+        "markup_x": "1.99",
+        "markup_tiers": [
+            {"moq": 3000, "markup_x": "1.30"},
+            {"moq": 5000, "markup_x": "1.25"},
+            {"moq": 10000, "markup_x": "1.15"},
+        ],
+    }
+    sales.payload_json = json.dumps(sales_payload, ensure_ascii=False)
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1"), "mold_amortization_usd": Decimal("0.25")},
+        SNAPSHOT,
+        7000,
+    )
+
+    shipping = result["shipping_pricing"]
+    assert shipping["markup"] == "1.2500"
+    assert shipping["active_markup_moq"] == "5000.0000"
+    assert shipping["markup_tiers"] == [
+        {"moq": "3000.0000", "markup": "1.3000", "is_active": False},
+        {"moq": "5000.0000", "markup": "1.2500", "is_active": True},
+        {"moq": "10000.0000", "markup": "1.1500", "is_active": False},
+    ]
+    assert shipping["rows"][1]["after_markup_hkd"] == "75.6250"
+
+
+def test_rr2_shipping_price_uses_the_manually_selected_tier_instead_of_quantity_default():
+    sections = summary_sections(freight_enabled=True)
+    sales = next(item for item in sections if item.department == "sales")
+    sales_payload = json.loads(sales.payload_json)
+    sales_payload["shipping"] = {
+        "markup_x": "1.99",
+        "markup_tiers": [
+            {"moq": 3000, "markup_x": "1.30"},
+            {"moq": 5000, "markup_x": "1.25"},
+            {"moq": 10000, "markup_x": "1.15"},
+        ],
+        "selected_markup_moq": 3000,
+    }
+    sales.payload_json = json.dumps(sales_payload, ensure_ascii=False)
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1"), "mold_amortization_usd": Decimal("0.25")},
+        SNAPSHOT,
+        10000,
+    )
+
+    shipping = result["shipping_pricing"]
+    assert shipping["markup"] == "1.3000"
+    assert shipping["active_markup_moq"] == "3000.0000"
+    assert shipping["markup_tiers"][0]["is_active"] is True
+    assert shipping["markup_tiers"][2]["is_active"] is False
 
 
 def test_rr2_cost_summary_uses_quick_painting_labor_and_tax_inclusive_paint_exactly():

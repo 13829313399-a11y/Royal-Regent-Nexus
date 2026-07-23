@@ -8,7 +8,7 @@ export const internalQuoteSectionDefinitions: Array<{
   dependencies: string[]
   departments: string[]
 }> = [
-  { code: 'sales', label: '业务部', owner: '业务核价', formulaHint: '填写包装材料、产品、彩盒、纸箱、平卡及运费资料；CUFT、纸箱成本与八个备选运输方案由服务端权威计算，客户自提时可关闭运费计算。', dependencies: ['冻结汇率快照', '业务部包装材料、纸箱、平卡与可选运费资料'], departments: ['sales-business'] },
+  { code: 'sales', label: '业务部', owner: '业务核价', formulaHint: '填写包装材料、产品、彩盒、纸箱、平卡及运费资料；CUFT、纸箱成本与各备选运输方案由服务端权威计算，客户自提时可关闭运费计算。', dependencies: ['冻结汇率快照', '业务部包装材料、纸箱、平卡与可选运费资料'], departments: ['sales-business'] },
   { code: 'engineering', label: '工程部', owner: '工程核价', formulaHint: '模具总价 ÷ 分摊数量；人民币价格按冻结汇率转换为港币。', dependencies: ['模具报价单', 'RMB/HKD 汇率', '分摊数量'], departments: ['engineering'] },
   { code: 'electronic', label: '电子部', owner: '电子核价', formulaHint: '人民币零件与邦定/贴片/人工/测试/包装成本，自动计算利润、抵税差额、税负及含税港币报价。', dependencies: ['电子报价单', '利润率', '冻结汇率'], departments: ['electronic'] },
   { code: 'molding', label: '啤机部', owner: '啤机核价', formulaHint: '注塑：净重 ×（1 + 损耗%）× 冻结材料价 ÷ 454 + 冻结机型台班价 ÷ 套数 ÷ 目标数；吹气按料价、吹工、披锋及利润倍率计算。', dependencies: ['工程模具资料', '材料价快照', '机型价快照'], departments: ['production', 'molding'] },

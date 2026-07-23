@@ -157,6 +157,10 @@ MOLDING_SAMPLE_DISPATCH_REQUIRED_TABLES = {"molding_sample_dispatch_logs"}
 INTERNAL_QUOTE_CUSTOMER_REVISION = "20260721_0029"
 INTERNAL_QUOTE_CUSTOMER_PREVIOUS_REVISION = "20260720_0028"
 INTERNAL_QUOTE_CUSTOMER_TABLE = "internal_quote_customers"
+INTERNAL_QUOTE_BASELINE_FREIGHT_REVISION = "20260723_0030"
+INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION = "20260721_0029"
+INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
+INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -242,6 +246,42 @@ def ensure_internal_quote_customer_schema_ready() -> None:
     )
 
 
+def ensure_internal_quote_baseline_freight_schema_ready() -> None:
+    """Refuse to start an existing quote database before the freight-baseline migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if INTERNAL_QUOTE_BASELINE_TABLE not in table_names:
+            return
+
+        current_revision = None
+        if "alembic_version" in table_names:
+            current_revision = connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar_one_or_none()
+        columns = {
+            column["name"]
+            for column in inspector.get_columns(INTERNAL_QUOTE_BASELINE_TABLE)
+        }
+        if (
+            INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN in columns
+            and current_revision != INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION
+        ):
+            return
+
+    missing = (
+        f"revision:{current_revision}"
+        if current_revision == INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION
+        else f"column:{INTERNAL_QUOTE_BASELINE_TABLE}.{INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN}"
+    )
+    raise RuntimeError(
+        "检测到内部报价数据库尚未完成报价基数运费迁移 "
+        f"{INTERNAL_QUOTE_BASELINE_FREIGHT_REVISION}；缺少：{missing}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -304,6 +344,7 @@ def init_db() -> None:
 
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
+    ensure_internal_quote_baseline_freight_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

@@ -58,10 +58,19 @@ describe('internal quote form block progress', () => {
     })
 
     expect(result).toMatchObject({
+      'testing-fee': 'optional',
       'packaging-materials': 'optional',
       cartons: 'complete',
       freight: 'complete',
     })
+  })
+
+  it('tracks the optional business testing fee once either USD total or MOQ is entered', () => {
+    expect(statuses('sales', {})['testing-fee']).toBe('optional')
+    expect(statuses('sales', { testing_fee_total_usd: 1250 })['testing-fee']).toBe('partial')
+    expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moqs: [5000, 0] })['testing-fee']).toBe('partial')
+    expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moqs: [5000, 10000] })['testing-fee']).toBe('complete')
+    expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moq: 5000 })['testing-fee']).toBe('complete')
   })
 
   it('accepts customer pickup as a complete freight choice', () => {
@@ -80,7 +89,11 @@ describe('internal quote form block progress', () => {
     }).components).toBe('complete')
   })
 
-  it('tracks painting and sewing quick quotes with their dedicated required fields', () => {
+  it('tracks electronic, painting and sewing quick quotes with their dedicated required fields', () => {
+    expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '', unit_price_rmb: 10, tax_rate_percent: 13 }] }).components).toBe('partial')
+    expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '主控板', unit_price_rmb: 10, tax_rate_percent: 101 }] }).components).toBe('partial')
+    expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '主控板', unit_price_rmb: 10, tax_rate_percent: 13 }] }).components).toBe('complete')
+
     expect(statuses('painting', { quote_mode: 'quick', quick_quote: {} }).painting).toBe('missing')
     expect(statuses('painting', { quote_mode: 'quick', quick_quote: { spray_labor_hkd: 2, paint_hkd: 3 } }).painting).toBe('complete')
 

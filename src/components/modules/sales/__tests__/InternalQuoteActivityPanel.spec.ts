@@ -12,6 +12,7 @@ function quote(): InternalQuote {
     fxHkdUsd: 7.8,
     fxRmbUsd: 7.75,
     factoryPriceHkd: 100,
+    quantity: 10000,
     targetCustomerPrice: '无',
     formulaVersion: 'rr2-2026-v1',
     referenceSnapshotId: 'IQREF-1',
@@ -79,48 +80,80 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
 
     expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 140.40')
     expect(wrapper.get('[data-testid="live-cost-hkd"]').text()).toBe('HKD 117.00')
-    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup"]').element.value).toBe('1.20')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-moq-0"]').element.value).toBe('3000')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-moq-1"]').element.value).toBe('5000')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-moq-2"]').element.value).toBe('10000')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.20')
+    expect(wrapper.get('.quote-markup-tier-row.active').text()).toContain('本单采用')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-misc"]').element.value).toBe('2.00')
     expect(wrapper.text()).toContain('实时试算 · 未保存')
     expect(wrapper.text()).toContain('RMB 119.34')
     expect(wrapper.text()).toContain('USD 18.00')
     expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('目标余量 USD 2.00')
     expect(wrapper.text()).toContain('已保存成本 HKD 100.00 · 成本变化 +17.00')
 
-    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.33')
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.33')
     expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 155.61')
     expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('目标余量 USD 0.05')
     expect(wrapper.get('.quote-live-cost').classes()).toContain('proximity-4')
 
-    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.50')
+    await wrapper.get('[data-testid="live-quote-markup-moq-2"]').setValue('12000')
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 155.61')
+    expect(wrapper.findAll('.quote-markup-tier-row')[2]!.classes()).toContain('active')
+    await wrapper.get('[data-testid="select-quote-markup-tier-1"]').trigger('click')
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 140.40')
+    expect(wrapper.findAll('.quote-markup-tier-row')[1]!.classes()).toContain('active')
+    await wrapper.get('[data-testid="live-quote-markup-1"]').setValue('1.50')
     expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('已超目标 USD 2.50')
     expect(wrapper.get('.quote-live-cost').classes()).toContain('over')
-    expect(wrapper.text()).toContain('码数与实时试算仅用于调价参考')
+    expect(wrapper.text()).toContain('跟客可主动选择本单采用的 MOQ 档')
   })
 
-  it('shows an explicit save action for authorized users and emits a normalized changed markup', async () => {
+  it('saves normalized markup and misc ratio together for authorized users', async () => {
     const wrapper = mount(InternalQuoteActivityPanel, {
       props: { quote: quote(), readOnly: true, canEditMarkup: true },
     })
     const saveButton = wrapper.get('[data-testid="save-quote-markup"]')
     expect(saveButton.attributes('disabled')).toBeDefined()
 
-    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.15')
+    await wrapper.get('[data-testid="select-quote-markup-tier-0"]').trigger('click')
+    await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.15')
+    await wrapper.get('[data-testid="live-quote-misc"]').setValue('3.5')
     expect(saveButton.attributes('disabled')).toBeUndefined()
     await saveButton.trigger('click')
 
-    expect(wrapper.emitted('updateMarkup')).toEqual([[{ markup: '1.15' }]])
+    expect(wrapper.emitted('updateMarkup')).toEqual([[
+      {
+        markupTiers: [
+          { moq: '3000', markup: '1.15' },
+          { moq: '5000', markup: '1.20' },
+          { moq: '10000', markup: '1.20' },
+        ],
+        selectedMoq: '3000',
+        miscRatio: '0.0350',
+      },
+    ]])
   })
 
   it('validates markup precision, explains locked sales states, and hides persistence from viewers', async () => {
     const wrapper = mount(InternalQuoteActivityPanel, {
       props: { quote: quote(), canEditMarkup: true },
     })
-    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.155')
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.155')
     expect(wrapper.text()).toContain('码数最多保留 2 位小数')
     expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
 
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.20')
+    await wrapper.get('[data-testid="live-quote-misc"]').setValue('2.555')
+    expect(wrapper.text()).toContain('杂项系数最多保留 2 位小数')
+    expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-testid="live-quote-misc"]').setValue('101')
+    expect(wrapper.text()).toContain('杂项系数必须在 0% 至 100% 之间')
+
+    await wrapper.get('[data-testid="live-quote-misc"]').setValue('2.00')
     await wrapper.setProps({ markupBlockedReason: '请先重开业务部分段。' })
-    await wrapper.get('[data-testid="live-quote-markup"]').setValue('1.15')
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.15')
     expect(wrapper.text()).toContain('请先重开业务部分段')
     expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
 
