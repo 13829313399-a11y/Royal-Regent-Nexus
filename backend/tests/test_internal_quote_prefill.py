@@ -89,6 +89,37 @@ def test_engineering_refresh_updates_owned_values_without_overwriting_molding_va
     assert len(refreshed["injection_lines"]) == 1
 
 
+def test_split_engineering_row_stays_editable_without_creating_a_third_projection() -> None:
+    engineering = {"molds": [{"mold_no": "M12", "chinese_name": "挂钩", "color": "Orange"}]}
+    first = prefill_molding_from_engineering(engineering, {"injection_lines": []})
+    original = first["injection_lines"][0]
+    original["engineering_sync_disabled"] = True
+    original["engineering_synced_fields"] = []
+    original["item"] = "挂钩左件"
+    original["mold_no"] = "M12-A"
+    clone = {
+        **original,
+        "engineering_source_key": "",
+        "engineering_sync_disabled": True,
+        "engineering_synced_fields": [],
+        "item": "挂钩右件",
+        "mold_no": "M12-B",
+    }
+    first["injection_lines"].append(clone)
+
+    refreshed = prefill_molding_from_engineering(
+        {"molds": [{"mold_no": "M12", "chinese_name": "工程名称已改变", "color": "Blue"}]},
+        first,
+    )
+
+    assert len(refreshed["injection_lines"]) == 2
+    assert refreshed["injection_lines"][0]["item"] == "挂钩左件"
+    assert refreshed["injection_lines"][0]["mold_no"] == "M12-A"
+    assert refreshed["injection_lines"][0]["engineering_synced_fields"] == []
+    assert refreshed["injection_lines"][1]["item"] == "挂钩右件"
+    assert refreshed["injection_lines"][1]["mold_no"] == "M12-B"
+
+
 def test_disney_mold_no_prefills_matching_molding_row() -> None:
     result = prefill_molding_from_engineering(
         {"molds": [{"mold_no": "M01", "chinese_name": "车面", "disney_mold_no": "D-M01"}]},

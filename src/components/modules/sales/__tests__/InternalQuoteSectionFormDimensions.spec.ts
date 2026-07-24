@@ -83,4 +83,37 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(wrapper.find('output[aria-label="HK 20 尺柜运费"]').exists()).toBe(false)
     expect(payload.freight_calc).not.toHaveProperty('hk40')
   })
+
+  it('switches independently between both fees, freight only, and neither fee', async () => {
+    const payload = normalizeInternalQuotePayload('sales', {
+      cartons: [{ item: '主纸箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [] }],
+    }) as unknown as SalesPayload
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'sales',
+        modelValue: payload as unknown as Record<string, unknown>,
+        disabled: false,
+        referenceSnapshot: {
+          freight: {
+            routes: [{ route_key: 'sz40', route_name: '深圳 40 柜', capacity_key: 'cap_40', freight_hkd: '6500', lifting_hkd: '1100' }],
+          },
+        },
+      },
+    })
+
+    await wrapper.get('input[aria-label="启用吊柜费计算"]').setValue(false)
+    expect(payload.freight_calc).toMatchObject({ enabled: true, freight_enabled: true, lifting_enabled: false })
+    expect(wrapper.get('output[aria-label="深圳 40 柜运费"]').text()).toBe('6500')
+    expect(wrapper.get('output[aria-label="深圳 40 柜吊柜费"]').text()).toBe('0')
+
+    await wrapper.get('input[aria-label="启用运费计算"]').setValue(false)
+    expect(payload.freight_calc).toMatchObject({ enabled: false, freight_enabled: false, lifting_enabled: false })
+    expect(wrapper.text()).toContain('本单不计算运费和吊柜费')
+    expect(wrapper.find('output[aria-label="深圳 40 柜运费"]').exists()).toBe(false)
+
+    await wrapper.get('input[aria-label="启用运费计算"]').setValue(true)
+    await wrapper.get('input[aria-label="启用吊柜费计算"]').setValue(true)
+    expect(payload.freight_calc).toMatchObject({ enabled: true, freight_enabled: true, lifting_enabled: true })
+    expect(wrapper.get('output[aria-label="深圳 40 柜吊柜费"]').text()).toBe('1100')
+  })
 })

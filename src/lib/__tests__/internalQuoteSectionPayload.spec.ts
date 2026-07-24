@@ -18,7 +18,7 @@ describe('internal quote section payload normalization', () => {
       color_box_size_unit: 'inch',
       color_box_size_in: { length: 0, width: 0, height: 0 },
       cartons: [],
-      freight_calc: { enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883 },
+      freight_calc: { enabled: true, freight_enabled: true, lifting_enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883 },
     })
     expect(fresh.freight_calc).not.toHaveProperty('hk40')
     expect(fresh.freight_calc).not.toHaveProperty('yt5t')
@@ -164,11 +164,22 @@ describe('internal quote section payload normalization', () => {
     expect(baselineOptions[0].freightPerPieceHkd).toBeCloseTo(6500 / baselineOptions[0].totalCartons / 2)
     expect(baselineOptions[0].liftingPerPieceHkd).toBeCloseTo(1100 / baselineOptions[0].totalCartons / 2)
     expect(baselineOptions[0].perPieceHkd).toBeCloseTo(7600 / baselineOptions[0].totalCartons / 2)
+    const freightOnlyOptions = calculateSalesFreightOptions(
+      { ...defaultSalesFreightCalculation, freight_enabled: true, lifting_enabled: false },
+      { length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 },
+      salesFreightReferenceRoutesFromSnapshot({
+        routes: [{ route_key: 'sz40', route_name: '深圳 40 柜', capacity_key: 'cap_40', freight_hkd: '6500', lifting_hkd: '1100' }],
+      }),
+    )
+    expect(freightOnlyOptions[0].freightCostHkd).toBe(6500)
+    expect(freightOnlyOptions[0].liftingCostHkd).toBe(0)
+    expect(freightOnlyOptions[0].liftingPerPieceHkd).toBe(0)
+    expect(freightOnlyOptions[0].perPieceHkd).toBeCloseTo(6500 / freightOnlyOptions[0].totalCartons / 2)
     expect(salesFreightReferenceRoutesFromSnapshot({ cost_hkd: { hk_container_40: '8200' } })[0].freightCostHkd).toBe(8200)
     expect(calculateSalesFreightOptions(defaultSalesFreightCalculation).every((option) => option.totalCartons === 0 && option.perPieceHkd === 0)).toBe(true)
     expect(calculateSalesFreightOptions({ ...defaultSalesFreightCalculation, enabled: false }, carton)).toEqual([])
     expect(normalizeInternalQuotePayload('sales', { freight_calc: { enabled: false, cap_40: 1980.6 } })).toMatchObject({
-      freight_calc: { enabled: false, cap_40: 1981 },
+      freight_calc: { enabled: false, freight_enabled: false, lifting_enabled: false, cap_40: 1981 },
     })
   })
 

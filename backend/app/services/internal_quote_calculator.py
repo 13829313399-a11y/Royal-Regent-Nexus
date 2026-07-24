@@ -1457,10 +1457,16 @@ def _sales_freight_options(
         return []
     if not isinstance(freight_source, dict):
         raise CalculationInputError("运费与吊柜费计算格式无效")
-    freight_enabled = freight_source.get("enabled", True)
+    legacy_enabled = freight_source.get("enabled", True)
+    if not isinstance(legacy_enabled, bool):
+        raise CalculationInputError("是否启用运输费用计算必须为布尔值")
+    freight_enabled = freight_source.get("freight_enabled", legacy_enabled) if legacy_enabled else False
+    lifting_enabled = freight_source.get("lifting_enabled", legacy_enabled) if legacy_enabled else False
     if not isinstance(freight_enabled, bool):
-        raise CalculationInputError("是否启用运费与吊柜费计算必须为布尔值")
-    if not freight_enabled:
+        raise CalculationInputError("是否启用运费计算必须为布尔值")
+    if not isinstance(lifting_enabled, bool):
+        raise CalculationInputError("是否启用吊柜费计算必须为布尔值")
+    if not freight_enabled and not lifting_enabled:
         return []
     cartons = payload.get("cartons", []) or []
     if not cartons:
@@ -1524,14 +1530,22 @@ def _sales_freight_options(
         )
         if capacity_cuft != capacity_cuft.to_integral_value():
             raise CalculationInputError(f"{label}容量必须为整数")
-        freight_cost_hkd = decimal_value(
-            freight_source.get(route_key),
-            f"{label}运费",
-            str(cost_default),
+        freight_cost_hkd = (
+            decimal_value(
+                freight_source.get(route_key),
+                f"{label}运费",
+                str(cost_default),
+            )
+            if freight_enabled
+            else ZERO
         )
-        lifting_cost_hkd = decimal_value(
-            lifting_default,
-            f"{label}吊柜费",
+        lifting_cost_hkd = (
+            decimal_value(
+                lifting_default,
+                f"{label}吊柜费",
+            )
+            if lifting_enabled
+            else ZERO
         )
         if freight_cost_hkd < ZERO:
             raise CalculationInputError(f"{label}运费不能小于 0")
@@ -1556,11 +1570,13 @@ def _sales_freight_options(
             "freight_cost_hkd": decimal_text(freight_cost_hkd),
             "lifting_cost_hkd": decimal_text(lifting_cost_hkd),
             "has_lifting_fee": has_lifting_fee,
+            "freight_enabled": freight_enabled,
+            "lifting_enabled": lifting_enabled,
             "total_cartons": decimal_text(total_cartons),
             "freight_per_piece_hkd": decimal_text(freight_per_piece_hkd),
             "lifting_per_piece_hkd": decimal_text(lifting_per_piece_hkd),
             "per_piece_hkd": decimal_text(per_piece_hkd),
-            "formula": "（运费 + 吊柜费）分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量",
+            "formula": "已启用的运费与吊柜费分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量；未启用项按 0 计算",
         }
         options.append(option)
         result["line_breakdown"].append(option)

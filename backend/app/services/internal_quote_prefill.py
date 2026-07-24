@@ -151,12 +151,20 @@ def prefill_molding_from_engineering(
         source_mold_no = _match_token(source.get("mold_no"))
         if source_mold_no:
             for index, row in enumerate(existing):
-                if index not in used_existing and _match_token(row.get("mold_no")) == source_mold_no:
+                if (
+                    index not in used_existing
+                    and row.get("engineering_sync_disabled") is not True
+                    and _match_token(row.get("mold_no")) == source_mold_no
+                ):
                     return index
         source_name = _match_token(source.get("item") or source.get("chinese_name"))
         if source_name:
             for index, row in enumerate(existing):
-                if index not in used_existing and _match_token(row.get("item")) == source_name:
+                if (
+                    index not in used_existing
+                    and row.get("engineering_sync_disabled") is not True
+                    and _match_token(row.get("item")) == source_name
+                ):
                     return index
         return None
 
@@ -187,6 +195,12 @@ def prefill_molding_from_engineering(
         else:
             used_existing.add(existing_index)
             row = existing[existing_index]
+
+        if row.get("engineering_sync_disabled") is True:
+            row["engineering_source_key"] = source_key
+            row["engineering_synced_fields"] = []
+            projected.append(row)
+            continue
 
         synced_fields: list[str] = []
 

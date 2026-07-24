@@ -9,6 +9,7 @@ import type {
   SewingPayload,
   SlushPayload,
 } from '@/lib/internalQuoteSectionPayload'
+import { salesFreightCalculationModes } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 export type InternalQuoteBlockStatus = 'missing' | 'partial' | 'complete' | 'optional' | 'automatic'
@@ -180,7 +181,8 @@ function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
     && row.flat_cards.every((card) => text(card.name) && positive(card.length_in) && positive(card.width_in) && positive(card.quantity)),
   ))
   const capacityKeys = ['cap_10t', 'cap_5t', 'cap_40', 'cap_20'] as const
-  const freightComplete = payload.freight_calc.enabled === false || (
+  const freightModes = salesFreightCalculationModes(payload.freight_calc)
+  const freightComplete = (!freightModes.freightEnabled && !freightModes.liftingEnabled) || (
     capacityKeys.every((key) => positive(payload.freight_calc[key]))
     && cartonsComplete
   )
@@ -188,7 +190,7 @@ function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
     block('testing-fee', '测试费部分', 'optional', hasTestingFee, testingFeeComplete, '可选；填写测试费用 USD 后，每个 MOQ 必须大于 0，各档单价 USD 由系统自动计算'),
     block('packaging-materials', '包装材料部分', 'optional', payload.packaging_materials.length > 0, packagingComplete, '可选；填写时名称、规格、类别、用量、RMB 单价必填'),
     block('cartons', '纸箱计算与包装尺寸部分', 'required', payload.cartons.length > 0 || colorBoxDimensionsComplete, colorBoxDimensionsComplete && cartonsComplete, '必须；彩盒三维尺寸、至少一个纸箱尺寸和每箱数量必填，彩盒与纸箱可分别选择 cm 或 inch；产品尺寸（in）和平卡可选'),
-    block('freight', '运费计算部分', 'required', true, freightComplete, '必须二选一：完整填写容量并使用报价基数运费及吊柜费，或明确切换为“客户自提”'),
+    block('freight', '运费计算部分', 'required', true, freightComplete, '运费与吊柜费可独立启用；启用任一项时须完整填写容量和主纸箱资料，两项都关闭时不计运输费用'),
   ]
 }
 
