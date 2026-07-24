@@ -8,6 +8,46 @@ const freightRoutes = [
 ]
 
 describe('InternalQuoteBaselineDialog', () => {
+  it('shows one large pricing region at a time through three clickable tabs', async () => {
+    const wrapper = mount(InternalQuoteBaselineDialog, {
+      props: {
+        open: true,
+        busy: false,
+        canEdit: true,
+        baseline: {
+          factory_id: 'huaxing',
+          workshop_code: 'huaxing-workshop',
+          workshop_name: '华兴',
+          revision: 1,
+          source_type: 'custom',
+          material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '8.50' }],
+          machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '940' }],
+          freight_routes: freightRoutes.map((row) => ({ ...row })),
+          updated_by: 'system',
+          updated_by_name: '系统导入',
+          updated_at: '2026-07-18 11:24:14',
+        },
+      },
+      global: { stubs: { Teleport: true } },
+    })
+
+    expect(wrapper.get('#quote-baseline-panel-materials').isVisible()).toBe(true)
+    expect(wrapper.get('#quote-baseline-panel-machines').isVisible()).toBe(false)
+    expect(wrapper.get('#quote-baseline-panel-freight').isVisible()).toBe(false)
+
+    await wrapper.get('[data-testid="baseline-tab-machines"]').trigger('click')
+    expect(wrapper.get('[data-testid="baseline-tab-materials"]').attributes('aria-selected')).toBe('false')
+    expect(wrapper.get('[data-testid="baseline-tab-machines"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.get('#quote-baseline-panel-materials').attributes('style')).toContain('display: none')
+    expect(wrapper.get('#quote-baseline-panel-machines').attributes('style')).toBe('')
+
+    await wrapper.get('[data-testid="baseline-tab-freight"]').trigger('click')
+    expect(wrapper.get('[data-testid="baseline-tab-machines"]').attributes('aria-selected')).toBe('false')
+    expect(wrapper.get('[data-testid="baseline-tab-freight"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.get('#quote-baseline-panel-machines').attributes('style')).toContain('display: none')
+    expect(wrapper.get('#quote-baseline-panel-freight').attributes('style')).toBe('')
+  })
+
   it('normalizes edited number inputs before emitting the save payload', async () => {
     const wrapper = mount(InternalQuoteBaselineDialog, {
       props: {

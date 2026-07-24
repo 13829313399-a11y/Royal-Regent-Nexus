@@ -171,6 +171,8 @@ export interface InternalQuoteRr2CostSummary {
   afterDeductionCostHkd: number
   shippingPricing: {
     enabled: boolean
+    freightEnabled: boolean
+    liftingEnabled: boolean
     freightSharePercent: number
     liftSharePercent: number
     markup: number

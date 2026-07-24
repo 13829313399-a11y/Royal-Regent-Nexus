@@ -148,6 +148,8 @@ export interface ApiInternalQuoteSummary {
     totals: { rmb_purchase_cost_hkd: string; total_deduction_hkd: string; after_deduction_cost_hkd: string }
     shipping_pricing: {
       enabled: boolean
+      freight_enabled?: boolean
+      lifting_enabled?: boolean
       freight_share_percent: string
       lift_share_percent: string
       markup: string

@@ -156,6 +156,7 @@ export interface ElectronicSummary {
 export interface InjectionRow {
   engineering_source_key?: string
   engineering_synced_fields?: string[]
+  engineering_sync_disabled?: boolean
   item: string
   mold_no: string
   material: string
@@ -282,7 +283,11 @@ export interface SalesTaxRow { code: string; amount_hkd: number; rate: number | 
 export interface SalesScenario { name: string; capacity_cuft: number; freight_cost_hkd: number; carton_cuft: number; qty_per_carton: number; freight_share: number; lift_share: number; markup: number; settlement: number }
 export type SalesFreightCapacityKey = 'cap_10t' | 'cap_5t' | 'cap_40' | 'cap_20'
 export type LegacySalesFreightRouteKey = 'hk40' | 'hk20' | 'yt40' | 'yt20' | 'hk10t' | 'yt10t' | 'hk5t' | 'yt5t'
-export type SalesFreightCalculation = { enabled: boolean } & Record<SalesFreightCapacityKey, number> & Partial<Record<LegacySalesFreightRouteKey, number>>
+export type SalesFreightCalculation = {
+  enabled: boolean
+  freight_enabled?: boolean
+  lifting_enabled?: boolean
+} & Record<SalesFreightCapacityKey, number> & Partial<Record<LegacySalesFreightRouteKey, number>>
 export interface SalesFreightRouteDefinition {
   key: string
   label: string
@@ -320,6 +325,8 @@ export const defaultSalesFreightCosts: Record<LegacySalesFreightRouteKey, number
 }
 export const defaultSalesFreightCalculation: SalesFreightCalculation = {
   enabled: true,
+  freight_enabled: true,
+  lifting_enabled: true,
   cap_10t: 1166,
   cap_5t: 750,
   cap_40: 1980,
@@ -676,16 +683,17 @@ export function calculateSalesFreightOptions(
   carton?: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'height_in' | 'qty_per_carton'>,
   referenceRoutes: SalesFreightReferenceRoute[] = defaultSalesFreightReferenceRoutes,
 ): SalesFreightOption[] {
-  if (!freight.enabled) return []
+  const { freightEnabled, liftingEnabled } = salesFreightCalculationModes(freight)
+  if (!freightEnabled && !liftingEnabled) return []
   const cartonCuft = carton ? calculateCartonCuft(carton) : 0
   const quantity = carton ? positivePreviewNumber(carton.qty_per_carton) : 0
   const legacyValues = freight as SalesFreightCalculation & Record<string, unknown>
   return referenceRoutes.map((definition) => {
     const capacityCuft = positivePreviewNumber(freight[definition.capacityKey])
-    const freightCostHkd = positivePreviewNumber(
+    const freightCostHkd = freightEnabled ? positivePreviewNumber(
       legacyValues[definition.key] ?? definition.freightCostHkd,
-    )
-    const liftingCostHkd = positivePreviewNumber(definition.liftingCostHkd)
+    ) : 0
+    const liftingCostHkd = liftingEnabled ? positivePreviewNumber(definition.liftingCostHkd) : 0
     const totalCartons = cartonCuft && capacityCuft ? Math.max(Math.round(capacityCuft / cartonCuft), 1) : 0
     const freightPerPieceHkd = totalCartons && quantity ? freightCostHkd / totalCartons / quantity : 0
     const liftingPerPieceHkd = totalCartons && quantity ? liftingCostHkd / totalCartons / quantity : 0
@@ -700,6 +708,15 @@ export function calculateSalesFreightOptions(
       perPieceHkd: freightPerPieceHkd + liftingPerPieceHkd,
     }
   })
+}
+
+export function salesFreightCalculationModes(freight: Pick<SalesFreightCalculation, 'enabled' | 'freight_enabled' | 'lifting_enabled'>) {
+  const legacyEnabled = freight.enabled !== false
+  if (!legacyEnabled) return { freightEnabled: false, liftingEnabled: false }
+  return {
+    freightEnabled: typeof freight.freight_enabled === 'boolean' ? freight.freight_enabled : legacyEnabled,
+    liftingEnabled: typeof freight.lifting_enabled === 'boolean' ? freight.lifting_enabled : legacyEnabled,
+  }
 }
 
 export function calculateSalesTestingFeeUnitUsd(totalUsd: unknown, moq: unknown) {
@@ -1008,6 +1025,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         engineering_synced_fields: Array.isArray(row.engineering_synced_fields)
           ? row.engineering_synced_fields.filter((field): field is string => typeof field === 'string')
           : [],
+        engineering_sync_disabled: booleanValue(row.engineering_sync_disabled, false),
         item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), material: textValue(row.material), grade: textValue(row.grade ?? row.material_grade), color: textValue(row.color),
         net_weight_g: numberValue(row.net_weight_g ?? row.weight_g), loss_rate_percent: numberValue(row.loss_rate_percent, injectionLossRate),
         machine_name: textValue(row.machine_name ?? row.machine), machine_code: textValue(row.machine_code ?? row.machine_model), cavity: textValue(row.cavity),
@@ -1118,6 +1136,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     && source.flat_card_price_factor !== ''
     && source.flat_card_price_factor != null
   const freightSource = objectValue(source.freight_calc)
+  const legacyFreightEnabled = booleanValue(freightSource.enabled, true)
+  const normalizedFreightEnabled = legacyFreightEnabled && booleanValue(freightSource.freight_enabled, true)
+  const normalizedLiftingEnabled = legacyFreightEnabled && booleanValue(freightSource.lifting_enabled, true)
   const shippingSource = objectValue(source.shipping)
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping')
   return {
@@ -1134,7 +1155,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
     cartons: cartonRows(source.cartons),
     freight_calc: {
-      enabled: booleanValue(freightSource.enabled, true),
+      enabled: normalizedFreightEnabled || normalizedLiftingEnabled,
+      freight_enabled: normalizedFreightEnabled,
+      lifting_enabled: normalizedLiftingEnabled,
       ...Object.fromEntries(salesFreightCapacityDefinitions
         .map(({ key }) => [key, positiveIntegerValue(freightSource[key], defaultSalesFreightCalculation[key])])),
       ...Object.fromEntries(salesFreightRouteDefinitions

@@ -277,6 +277,8 @@ function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
     afterDeductionCostHkd: numberValue(source?.totals.after_deduction_cost_hkd),
     shippingPricing: {
       enabled: shipping?.enabled ?? false,
+      freightEnabled: shipping?.freight_enabled ?? shipping?.enabled ?? false,
+      liftingEnabled: shipping?.lifting_enabled ?? shipping?.enabled ?? false,
       freightSharePercent: numberValue(shipping?.freight_share_percent),
       liftSharePercent: numberValue(shipping?.lift_share_percent),
       markup: numberValue(shipping?.markup),

@@ -669,7 +669,45 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert baseline_sz40["freight_per_piece_hkd"] == "2.9359"
     assert baseline_sz40["lifting_per_piece_hkd"] == "0.4968"
     assert baseline_sz40["per_piece_hkd"] == "3.4327"
-    assert baseline_sz40["formula"] == "（运费 + 吊柜费）分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量"
+    assert baseline_sz40["formula"] == "已启用的运费与吊柜费分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量；未启用项按 0 计算"
+
+    freight_only = calculate_section(
+        "sales",
+        {
+            "freight_calc": {
+                "enabled": True,
+                "freight_enabled": True,
+                "lifting_enabled": False,
+                "cap_40": "1980",
+            },
+            "cartons": [{
+                "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                "qty_per_carton": "2", "flat_cards": [],
+            }],
+        },
+        {
+            **SNAPSHOT,
+            "freight": {
+                "capacity_cuft": {"container_40": "1980"},
+                "routes": [{
+                    "route_key": "sz40",
+                    "route_name": "深圳 40 柜",
+                    "capacity_key": "cap_40",
+                    "freight_hkd": "6500",
+                    "lifting_hkd": "1100",
+                }],
+            },
+        },
+        "IQREF-FREIGHT-ONLY",
+        context={"factory_price_hkd": "0"},
+    )
+    freight_only_sz40 = freight_only["totals"]["freight_options"][0]
+    assert freight_only_sz40["freight_enabled"] is True
+    assert freight_only_sz40["lifting_enabled"] is False
+    assert freight_only_sz40["freight_per_piece_hkd"] == "2.9359"
+    assert freight_only_sz40["lifting_cost_hkd"] == "0.0000"
+    assert freight_only_sz40["lifting_per_piece_hkd"] == "0.0000"
+    assert freight_only_sz40["per_piece_hkd"] == "2.9359"
 
     self_pickup = calculate(
         "sales",

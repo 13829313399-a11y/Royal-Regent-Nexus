@@ -991,18 +991,24 @@ def _rr2_cost_summary(
 
     freight_source = sales_payload.get("freight_calc", {})
     freight_source = freight_source if isinstance(freight_source, dict) else {}
-    freight_enabled = freight_source.get("enabled", True) is not False
+    legacy_transport_enabled = freight_source.get("enabled", True) is not False
+    freight_charge_enabled = legacy_transport_enabled and freight_source.get("freight_enabled", True) is not False
+    lifting_charge_enabled = legacy_transport_enabled and freight_source.get("lifting_enabled", True) is not False
+    freight_enabled = freight_charge_enabled or lifting_charge_enabled
     freight_options = sales_totals.get("freight_options", [])
     freight_options = [row for row in freight_options if isinstance(row, dict)] if isinstance(freight_options, list) else []
 
     def transport_parts(row: dict[str, object]) -> tuple[Decimal, Decimal]:
         if row.get("has_lifting_fee") is True:
             return (
-                _summary_decimal(row.get("freight_per_piece_hkd")),
-                _summary_decimal(row.get("lifting_per_piece_hkd")),
+                _summary_decimal(row.get("freight_per_piece_hkd")) if freight_charge_enabled else Decimal("0"),
+                _summary_decimal(row.get("lifting_per_piece_hkd")) if lifting_charge_enabled else Decimal("0"),
             )
         legacy_total = _summary_decimal(row.get("per_piece_hkd"))
-        return legacy_total * freight_share, legacy_total * lift_share
+        return (
+            legacy_total * freight_share if freight_charge_enabled else Decimal("0"),
+            legacy_total * lift_share if lifting_charge_enabled else Decimal("0"),
+        )
 
     yt40 = next((
         row for row in freight_options
@@ -1170,6 +1176,8 @@ def _rr2_cost_summary(
         },
         "shipping_pricing": {
             "enabled": freight_enabled,
+            "freight_enabled": freight_charge_enabled,
+            "lifting_enabled": lifting_charge_enabled,
             "freight_share_percent": decimal_text(freight_share * 100),
             "lift_share_percent": decimal_text(lift_share * 100),
             "markup": decimal_text(markup),
