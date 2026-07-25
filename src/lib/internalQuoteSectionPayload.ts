@@ -769,6 +769,23 @@ function electronicCalculationRows(payload: ElectronicPayload): ElectronicCompon
   }))
 }
 
+export function createDefaultSalesCarton(item = '主纸箱'): SalesCartonRow {
+  return {
+    item,
+    size_unit: 'inch',
+    length_in: 0,
+    width_in: 0,
+    height_in: 0,
+    qty_per_carton: 1,
+    flat_cards: [],
+  }
+}
+
+function salesCartonRows(value: unknown): SalesCartonRow[] {
+  const normalized = cartonRows(value)
+  return normalized.length ? normalized : [createDefaultSalesCarton()]
+}
+
 export function calculateElectronicQuickUnitPriceHkd(row: ElectronicQuickQuoteRow, rmbHkdRate: unknown) {
   const rate = positivePreviewNumber(rmbHkdRate)
   return rate ? positivePreviewNumber(row.unit_price_rmb) / rate : 0
@@ -1153,7 +1170,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
     color_box_size_unit: normalizeSalesDimensionUnit(source.color_box_size_unit),
     color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
-    cartons: cartonRows(source.cartons),
+    cartons: salesCartonRows(source.cartons),
     freight_calc: {
       enabled: normalizedFreightEnabled || normalizedLiftingEnabled,
       freight_enabled: normalizedFreightEnabled,
