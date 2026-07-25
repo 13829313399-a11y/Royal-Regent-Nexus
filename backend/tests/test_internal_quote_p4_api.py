@@ -183,7 +183,7 @@ def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifac
         final_export = result["export"]
         assert final_export["template_version"] == "internal-quote-p4-v2"
         assert final_export["release_stage"] == "p4_final_approved"
-        assert final_export["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v6"
+        assert final_export["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v7"
         assert final_export["export_manifest"]["p4_final_release_required"] is False
         assert final_export["export_manifest"]["final_reviewed_by"] == submitter["id"]
 
@@ -290,7 +290,7 @@ def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifac
         assert handoff["status"] == "available"
         assert handoff["artifact_manifest"]["release_revision"] == 1
         assert handoff["artifact_manifest"]["template_version"] == "internal-quote-p4-v2"
-        assert handoff["artifact_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v6"
+        assert handoff["artifact_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v7"
         assert handoff["sha256"] == final_export["sha256"]
 
         artifact_download = client.get(
@@ -420,7 +420,7 @@ def test_p4_legacy_layout_export_is_refreshed_without_replacing_release_handoff(
         refreshed = refreshed_response.json()
         assert refreshed["id"] != legacy_export["id"]
         assert refreshed["template_version"] == "internal-quote-p4-v2"
-        assert refreshed["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v6"
+        assert refreshed["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v7"
 
         downloaded = client.get(
             f"/api/internal-quotes/{quote_id}/exports/{refreshed['id']}/download"
@@ -453,7 +453,7 @@ def test_p4_legacy_layout_export_is_refreshed_without_replacing_release_handoff(
         assert preserved_handoff["id"] == legacy_handoff_id
         assert preserved_handoff["export_id"] == refreshed["id"]
         assert preserved_handoff["status"] == "available"
-        assert preserved_handoff["artifact_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v6"
+        assert preserved_handoff["artifact_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v7"
 
 
 def test_p4_final_rejection_is_immutable_and_can_be_resubmitted(monkeypatch):

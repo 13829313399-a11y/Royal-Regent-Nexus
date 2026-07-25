@@ -22,7 +22,7 @@ from app.models.internal_quote import (
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v6"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v7"
 TEMPLATE_VERSION = P3_TEMPLATE_VERSION
 STRUCTURED_DATA_SCHEMA_VERSION = "internal-quote-structured-data-v1"
 STRUCTURED_DATA_CHUNK_SIZE = 30000
@@ -317,6 +317,60 @@ def _moq_label(value: object) -> str:
     if moq % 1000 == 0:
         return f"MOQ{moq // 1000}K"
     return f"MOQ{moq:,}"
+
+
+def _compact_number_label(value: object) -> str:
+    numeric = _number(value)
+    if not isinstance(numeric, float):
+        return _safe_text(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.4f}".rstrip("0").rstrip(".")
+
+
+def _assembly_group_detail_rows(
+    section: InternalQuoteSection | None,
+    expected_total: object,
+) -> list[tuple[str, str, str, float]]:
+    if section is None or section.calculation_status != "valid":
+        return []
+    summaries = _list_of_dicts(
+        _section_calculation(section).get("group_summaries", [])
+    )
+    if not summaries:
+        return []
+
+    rows: list[tuple[str, str, str, float]] = []
+    calculated_total = 0.0
+    for index, summary in enumerate(summaries, start=1):
+        category = str(summary.get("category") or "assembly").strip().lower()
+        if category not in {"assembly", "packaging"}:
+            return []
+        amount = _float_value(summary.get("amount_hkd_pcs"))
+        if amount < 0:
+            return []
+        calculated_total += amount
+
+        raw_group = str(summary.get("group") or "").strip()
+        prefix = "包装" if category == "packaging" else "组装"
+        if not raw_group:
+            group_label = f"{prefix}{index}"
+        elif raw_group.startswith(prefix) or (
+            category == "assembly" and raw_group.startswith("装配")
+        ):
+            group_label = raw_group
+        else:
+            group_label = f"{prefix}{raw_group}"
+        description = (
+            f"{group_label}（{_compact_number_label(summary.get('total_persons'))}人/"
+            f"{_compact_number_label(summary.get('standard_work_hours'))}h/"
+            f"{_compact_number_label(summary.get('production_qty'))}）"
+        )
+        rows.append(("", "装配工", description, amount))
+
+    expected = _float_value(expected_total)
+    tolerance = max(0.001, 0.0001 * len(rows))
+    return rows if abs(calculated_total - expected) <= tolerance else []
 
 
 def _shipping_markup_tiers(
@@ -772,8 +826,21 @@ def _build_summary_sheet(
     add_detail("¥13%", "料价", "料价", molding_material)
     add_detail("", "啤工", "啤工", molding_labor)
     add_detail("", "啤工", "注塑未分类成本", molding_adjustment)
-    add_detail("", "装配工", "装工", cost_context.get("assembly_hkd"))
-    add_detail("", "装配工", "包装", cost_context.get("packing_labor_hkd"))
+    assembly_total = (
+        _float_value(cost_context.get("assembly_hkd"))
+        + _float_value(cost_context.get("packing_labor_hkd"))
+    )
+    assembly_group_rows = _assembly_group_detail_rows(
+        by_code.get("assembly"),
+        assembly_total,
+    )
+    if assembly_group_rows:
+        detail_rows.extend(
+            row for row in assembly_group_rows if abs(row[3]) >= 0.0005
+        )
+    else:
+        add_detail("", "装配工", "装工", cost_context.get("assembly_hkd"))
+        add_detail("", "装配工", "包装", cost_context.get("packing_labor_hkd"))
     add_detail("", "喷油工", "喷油人工", painting_labor)
     add_detail("", "喷油工", "喷油未分类成本", painting_adjustment)
     add_detail("¥13%", "油漆", "油漆", paint_material)
