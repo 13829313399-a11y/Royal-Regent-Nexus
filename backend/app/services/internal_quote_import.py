@@ -222,7 +222,7 @@ def find_header(
         "electronic": ("零件名称", "规格", "用量"),
         "molding": ("模具名称|货名", "啤净重|日产量|预估料重", "材质|用料"),
         "sewing": ("物料名称|布料名称", "裁片部位|部位", "用量|用量/码", "价钱|总价钱"),
-        "assembly": ("工序名称", "人数"),
+        "assembly": ("工序名称|做工名称", "人数"),
         "painting": ("名称|位置", "夹模|移印|散枪|边模|抹油|擦PP水"),
         "slush": ("产品编号|产品编码|货号", "胶件名称|零件名称|产品名称", "材料|材质", "用量|数量"),
     }[import_type]
@@ -237,7 +237,7 @@ def find_header(
             "electronic": "未找到零件名称/规格/用量表头",
             "molding": "未找到注塑的模具名称/啤净重表头或吹气的货名/日产量表头",
             "sewing": "未找到布料名称/部位/用量/价钱表头",
-            "assembly": "未找到工序名称/人数表头",
+            "assembly": "未找到工序名称或做工名称/人数表头",
             "painting": "未找到名称/位置及喷油工序表头",
             "slush": "未找到产品编号/胶件名称/材料/用量表头",
         }[import_type]
@@ -1033,6 +1033,124 @@ def _assembly_pairs(header: list[object]) -> list[tuple[int, int, str]]:
     return pairs
 
 
+def _workshop_assembly_columns(header: list[object]) -> dict[str, int] | None:
+    columns = {
+        "group": preferred_column_index(header, ("货号或图片",)),
+        "process": preferred_column_index(header, ("做工名称",)),
+        "production_qty": preferred_column_index(header, ("总目标数量",)),
+        "persons": preferred_column_index(header, ("人数",)),
+        "remark": preferred_column_index(
+            header,
+            ("备注（看图、手办、样板、参考办）", "备注"),
+        ),
+    }
+    required = ("group", "process", "production_qty", "persons")
+    if any(columns[key] is None for key in required):
+        return None
+    return {
+        key: int(value)
+        for key, value in columns.items()
+        if value is not None
+    }
+
+
+def _parse_workshop_assembly(
+    rows: list[list[object]],
+    header_index: int,
+    *,
+    columns: dict[str, int],
+    fallback_qty: Decimal,
+) -> tuple[dict[str, Any], int, list[str]]:
+    raw_groups: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    packaging_started = False
+    warnings: list[str] = []
+    conflicting_qty_groups: set[str] = set()
+    total_rows = 0
+
+    for source_row, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        group_name = text(value_at(row, columns["group"]))
+        process_name = text(value_at(row, columns["process"]))
+        production_qty = number(value_at(row, columns["production_qty"]))
+        persons = number(value_at(row, columns["persons"]))
+        if not process_name:
+            # 车间表以蓝灰合计行结束当前区域：D/E 为空，F 为本区人数合计。
+            # 重置当前组，确保后续即使使用相同产品名称也仍按新区域建组。
+            if not group_name and production_qty is None and persons is not None and persons > 0:
+                current = None
+            continue
+        if persons is None or persons <= 0:
+            continue
+        if re.search(r"做工名称|工序名称|车间填写|不用填|合计|小计|总计", process_name):
+            if re.search(r"合计|小计|总计", process_name):
+                current = None
+            continue
+
+        if group_name:
+            if "包装" in group_name:
+                packaging_started = True
+            category = "packaging" if packaging_started else "assembly"
+            if (
+                current is None
+                or current["name"] != group_name
+                or current["category"] != category
+            ):
+                current = {
+                    "name": group_name,
+                    "category": category,
+                    "_production_qty": None,
+                    "teams": "1.0000",
+                    "processes": [],
+                }
+                raw_groups.append(current)
+        if current is None:
+            warnings.append(f"第 {source_row} 行 {process_name} 未找到 C 列所属区域，已跳过")
+            continue
+
+        if production_qty is not None and production_qty > 0:
+            current_qty = current.get("_production_qty")
+            if current_qty is None:
+                current["_production_qty"] = production_qty
+            elif production_qty != current_qty and current["name"] not in conflicting_qty_groups:
+                warnings.append(
+                    f"{current['name']} 区域 E 列出现多个每日生产数量，"
+                    f"预览采用首个值 {decimal_text(current_qty)}"
+                )
+                conflicting_qty_groups.add(current["name"])
+
+        current["processes"].append(
+            {
+                "name": process_name,
+                "persons": decimal_text(persons),
+                "remark": text(value_at(row, columns.get("remark"))),
+                "source_row": source_row,
+            }
+        )
+        total_rows += 1
+
+    groups: list[dict[str, Any]] = []
+    for group in raw_groups:
+        if not group["processes"]:
+            continue
+        production_qty = group.pop("_production_qty", None)
+        if production_qty is None:
+            production_qty = max(fallback_qty, Decimal("1"))
+            warnings.append(
+                f"{group['name']} 未识别 E 列每日生产数量，"
+                f"预览按报价数量 {decimal_text(production_qty)} 填入"
+            )
+        group["production_qty"] = decimal_text(production_qty)
+        groups.append(group)
+
+    if not groups:
+        raise ValueError("已识别装工表头，但没有解析到装配或包装工序")
+    warnings.append(
+        "已按 C 列区域、D 列做工名称、E 列每日生产数量、F 列工艺人数导入；"
+        "C 列首次出现“包装”后，该区域及后续区域归入包装部分"
+    )
+    return {"groups": groups}, total_rows, warnings
+
+
 def _parse_assembly(
     rows: list[list[object]],
     header_index: int,
@@ -1040,6 +1158,15 @@ def _parse_assembly(
     fallback_qty: Decimal,
     **_: object,
 ) -> tuple[dict[str, Any], int, list[str]]:
+    workshop_columns = _workshop_assembly_columns(rows[header_index])
+    if workshop_columns is not None:
+        return _parse_workshop_assembly(
+            rows,
+            header_index,
+            columns=workshop_columns,
+            fallback_qty=fallback_qty,
+        )
+
     groups: list[dict[str, Any]] = []
     warnings: list[str] = []
     total_rows = 0

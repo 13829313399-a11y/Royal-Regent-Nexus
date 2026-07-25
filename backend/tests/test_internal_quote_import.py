@@ -548,6 +548,96 @@ def test_assembly_import_builds_process_groups_and_uses_quote_qty_fallback():
     assert any("报价数量" in warning for warning in parsed.warnings)
 
 
+def test_assembly_import_maps_workshop_regions_and_switches_to_packaging_from_column_c():
+    header = [
+        "报客价/港币",
+        "报价人",
+        "货号或图片",
+        "做工名称",
+        "总目标数量",
+        "人数",
+        "写报表的工价(￥)",
+        "正班时间",
+        "正班生产目标数",
+        "正班8小时工资",
+        "加班时间",
+        "加班生产数",
+        "加班工资",
+        "合计工资(含加班)",
+        "用量",
+        "合计工价($)",
+        "报客工价(HK$)",
+        "报价人工标准",
+        "车间标准工资(不含加班)",
+        "报价日期",
+        "备注（看图、手办、样板、参考办）",
+    ]
+
+    def detail(
+        group: str | None,
+        process: str | None,
+        production_qty: int | None,
+        persons: int | None,
+        remark: str = "手办报价",
+    ) -> list[object]:
+        row: list[object] = [None] * len(header)
+        row[2] = group
+        row[3] = process
+        row[4] = production_qty
+        row[5] = persons
+        row[20] = remark
+        return row
+
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+            [
+                header,
+                ["车间填写", "车间填写", "车间填写", "车间填写", "车间填写", "车间填写"],
+                detail("组装马桶", "测试IC板", 3000, 1),
+                detail(None, "焊喇叭", 3000, 2),
+                detail(None, None, None, 3, ""),
+                detail("组装马桶", "剪软管", 3000, 1),
+                detail(None, "装箱/杂工", 3000, 2),
+                detail(None, None, None, 3, ""),
+                detail("包装公仔", "彩盒印日期码", 3000, 1),
+                detail(None, "折彩盒", 3000, 6),
+                detail(None, None, None, 7, ""),
+                detail("出口配件", "封箱", None, 2),
+            ],
+            title="组装",
+        ),
+        "assembly",
+        fallback_qty=Decimal("5000"),
+    )
+
+    groups = parsed.payload_fragment["groups"]
+    assert parsed.header_row == 1
+    assert parsed.row_count == 7
+    assert [group["name"] for group in groups] == [
+        "组装马桶",
+        "组装马桶",
+        "包装公仔",
+        "出口配件",
+    ]
+    assert [group["category"] for group in groups] == [
+        "assembly",
+        "assembly",
+        "packaging",
+        "packaging",
+    ]
+    assert [group["production_qty"] for group in groups] == [
+        "3000.0000",
+        "3000.0000",
+        "3000.0000",
+        "5000.0000",
+    ]
+    assert [row["persons"] for row in groups[0]["processes"]] == ["1.0000", "2.0000"]
+    assert groups[1]["processes"][1]["name"] == "装箱/杂工"
+    assert groups[1]["processes"][1]["remark"] == "手办报价"
+    assert any("出口配件" in warning and "报价数量" in warning for warning in parsed.warnings)
+    assert any("C 列区域" in warning and "F 列工艺人数" in warning for warning in parsed.warnings)
+
+
 def test_binary_xls_is_rejected_by_p3_parser():
     with pytest.raises(ValueError, match="xlsx/xlsm"):
         parse_internal_quote_workbook(b"\xD0\xCF\x11\xE0fake", "mold")
