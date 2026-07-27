@@ -18,14 +18,6 @@ function grantUsesScopedPositionContract(grant: AuthGrant) {
 
 const crossFactoryReadLocalOnlyPermissions = new Set([
   'molding_sample:notification_read',
-  'injection_schedule:read',
-])
-
-const injectionScheduleOwnFactoryPermissions = new Set([
-  'injection_schedule:read',
-  'injection_schedule:edit',
-  'injection_schedule:publish',
-  'injection_schedule:config',
 ])
 
 const systemPositionCrossFactoryReadPermissions = new Set([
@@ -65,12 +57,6 @@ function grantDepartmentMatches(grant: AuthGrant, permission: string, department
 function grantFactoryMatches(grant: AuthGrant, permission: string, factoryId?: string) {
   if (!factoryId) return true
 
-  if (
-    permission.startsWith('injection_schedule:')
-    && permission !== 'injection_schedule:cross_factory_read'
-  ) {
-    return grant.factory_id === factoryId
-  }
   if (grant.scope_mode === 'cross_factory_operate') return true
   if (
     systemPositionCrossFactoryReadPermissions.has(permission)
@@ -278,18 +264,6 @@ export const useAuthStore = defineStore('auth', {
       )
       if (hasWildcardAdmin) {
         return true
-      }
-
-      if (factoryId && injectionScheduleOwnFactoryPermissions.has(permission)) {
-        const injectionGrants = this.grants.filter((grant) =>
-          grant.permissions.includes(permission),
-        )
-        if (
-          injectionGrants.length > 0
-          && !injectionGrants.some((grant) => grant.factory_id === factoryId)
-        ) {
-          return false
-        }
       }
 
       if (this.authzMode !== 'enforce') {

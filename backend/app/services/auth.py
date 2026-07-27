@@ -47,7 +47,6 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
-    INJECTION_SCHEDULE_PERMISSION_CODES,
     INTERNAL_QUOTE_PERMISSION_CODES,
     INTERNAL_QUOTE_SECTION_CODES,
 )
@@ -73,21 +72,6 @@ INTERNAL_QUOTE_BASELINE_GRANT_MARKER = "internal_quote_baseline_grant_v1_complet
 INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER = "internal_quote_customer_grant_v1_completed"
 INTERNAL_QUOTE_CUSTOMER_PERMISSION = "internal_quote:customer_manage"
 INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
-INJECTION_SCHEDULE_DEFAULT_GRANT_MARKER = (
-    "injection_schedule_phase2_default_grant_v1_completed"
-)
-INJECTION_SCHEDULE_DEFAULT_ROLE_PERMISSIONS = {
-    "molding_clerk": (
-        "injection_schedule:read",
-        "injection_schedule:edit",
-    ),
-    "molding_supervisor": (
-        "injection_schedule:read",
-        "injection_schedule:edit",
-        "injection_schedule:publish",
-        "injection_schedule:config",
-    ),
-}
 INTERNAL_QUOTE_BASELINE_ROLE_PERMISSIONS = {
     "sales_customer_owner": ("internal_quote:baseline_read",),
     "sales_customer_supervisor": (
@@ -267,7 +251,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_fillback",
         "molding_sample:production_complete",
         "molding_sample:notification_read",
-        *INJECTION_SCHEDULE_DEFAULT_ROLE_PERMISSIONS["molding_clerk"],
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_clerk"],
     },
     "molding_production_observer": {
@@ -317,7 +300,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_complete",
         "molding_sample:audit_read",
         "molding_sample:notification_read",
-        *INJECTION_SCHEDULE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
     },
     "admin": set(APPLICATION_PERMISSIONS),
@@ -694,9 +676,6 @@ def permission_catalog_values(code: str, sort_order: int) -> dict[str, str | int
         or code in {
             "molding_sample:cross_factory_read",
             "molding_sample:cross_factory_cost_read",
-            "injection_schedule:publish",
-            "injection_schedule:config",
-            "injection_schedule:cross_factory_read",
         }
         or normalized_action in high_risk_actions
         or "delete" in normalized_action
@@ -1276,87 +1255,6 @@ def seed_internal_quote_customer_grants_once(db: Session, now: str) -> int:
     return created_count
 
 
-def seed_injection_schedule_default_grants_once(db: Session, now: str) -> int:
-    """Grant the approved local Phase 2 permissions to existing legacy roles once."""
-    if db.get(AuthIamState, INJECTION_SCHEDULE_DEFAULT_GRANT_MARKER) is not None:
-        return 0
-
-    permissions_by_code = {
-        permission.code: permission
-        for permission in db.scalars(
-            select(AuthPermission).where(
-                AuthPermission.code.in_(INJECTION_SCHEDULE_PERMISSION_CODES)
-            )
-        ).all()
-    }
-    created_count = 0
-    updated_role_ids: set[str] = set()
-    for role_id, permission_codes in INJECTION_SCHEDULE_DEFAULT_ROLE_PERMISSIONS.items():
-        if db.get(AuthRole, role_id) is None:
-            continue
-        for permission_code in permission_codes:
-            permission = permissions_by_code.get(permission_code)
-            if permission is None:
-                continue
-            role_permission_id = f"{role_id}:{permission.id}"
-            if db.get(AuthRolePermission, role_permission_id) is not None:
-                continue
-            db.add(
-                AuthRolePermission(
-                    id=role_permission_id,
-                    role_id=role_id,
-                    permission_id=permission.id,
-                )
-            )
-            created_count += 1
-            updated_role_ids.add(role_id)
-
-    db.flush()
-    if updated_role_ids:
-        for role_id in updated_role_ids:
-            metadata = db.get(AuthRoleMetadata, role_id)
-            if metadata is not None:
-                metadata.version += 1
-                metadata.updated_at = now
-        affected_user_ids = {
-            binding.user_id
-            for binding in db.scalars(
-                select(AuthUserRole).where(
-                    AuthUserRole.role_id.in_(updated_role_ids)
-                )
-            ).all()
-        }
-        for user_id in affected_user_ids:
-            revision = db.get(AuthUserAuthorizationRevision, user_id)
-            if revision is None:
-                db.add(
-                    AuthUserAuthorizationRevision(
-                        user_id=user_id,
-                        revision=1,
-                        updated_at=now,
-                    )
-                )
-            else:
-                revision.revision += 1
-                revision.updated_at = now
-
-    db.add(
-        AuthIamState(
-            key=INJECTION_SCHEDULE_DEFAULT_GRANT_MARKER,
-            value_json=json.dumps(
-                {
-                    "completed_at": now,
-                    "created_role_permission_count": created_count,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            updated_at=now,
-        )
-    )
-    return created_count
-
-
 def seed_legacy_export_compat_once(db: Session, now: str) -> int:
     if db.get(AuthIamState, LEGACY_EXPORT_COMPAT_MARKER) is not None:
         return 0
@@ -1571,7 +1469,6 @@ def seed_auth_defaults(db: Session) -> None:
     seed_internal_quote_release_grants_once(db, now)
     seed_internal_quote_baseline_grants_once(db, now)
     seed_internal_quote_customer_grants_once(db, now)
-    seed_injection_schedule_default_grants_once(db, now)
     seed_legacy_export_compat_once(db, now)
     reconcile_system_position_catalog(db, now=now)
     ensure_authz_startup_safety(db)

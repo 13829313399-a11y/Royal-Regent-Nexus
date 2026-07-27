@@ -41,14 +41,6 @@ CUSTOMER_PRICE_PERMISSION_CODES = (
     "customer_price:compare",
 )
 
-INJECTION_SCHEDULE_PERMISSION_CODES = (
-    "injection_schedule:read",
-    "injection_schedule:edit",
-    "injection_schedule:publish",
-    "injection_schedule:config",
-    "injection_schedule:cross_factory_read",
-)
-
 INTERNAL_QUOTE_SECTION_CODES = (
     "sales",
     "engineering",
@@ -97,7 +89,6 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 
 BUSINESS_PERMISSION_CODES = (
     *MOLDING_SAMPLE_PERMISSION_CODES,
-    *INJECTION_SCHEDULE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,

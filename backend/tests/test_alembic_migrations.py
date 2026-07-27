@@ -48,7 +48,8 @@ INJECTION_SCHEDULE_PHASE3_MIGRATION_REVISION = "20260723_0034"
 INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION = "20260725_0035"
 INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION = "20260723_0030"
 MERGED_HEAD_MIGRATION_REVISION = "20260727_0036"
-HEAD_MIGRATION_REVISION = MERGED_HEAD_MIGRATION_REVISION
+INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION = "20260727_0037"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -102,7 +103,12 @@ def test_alembic_has_single_molding_sample_head():
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
 
-    merged_head_revision = script.get_revision(HEAD_MIGRATION_REVISION)
+    removal_revision = script.get_revision(
+        INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION
+    )
+    assert removal_revision.down_revision == MERGED_HEAD_MIGRATION_REVISION
+
+    merged_head_revision = script.get_revision(MERGED_HEAD_MIGRATION_REVISION)
     assert set(merged_head_revision.down_revision) == {
         INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,
         INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION,
@@ -483,7 +489,7 @@ def test_internal_quote_customer_migration_seeds_factories_and_backfills_history
 
     # Keep this historical migration's downgrade contract isolated from later
     # injection-scheduling revisions.
-    run_alembic("upgrade", INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION)
+    run_alembic("upgrade", INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
@@ -680,10 +686,10 @@ def test_injection_schedule_phase2_upgrade_rebuilds_scoped_schema_and_preserves_
         )
         connection.commit()
 
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            HEAD_MIGRATION_REVISION,
+            INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,
         )
         assert connection.execute(
             "SELECT COUNT(*) FROM auth_audit_logs WHERE action = 'phase2_preflight'"
@@ -996,11 +1002,11 @@ def test_injection_schedule_delivery_snapshot_upgrade_backfills_existing_tasks(
             """
         ).fetchone() == ("2026-08-18",)
 
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,)
         assert connection.execute(
             """
             SELECT delivery_due_date_snapshot
@@ -2205,90 +2211,112 @@ def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(
         }
 
 
-def test_sqlite_phase4_schema_gate_preserves_0033_then_allows_upgrade(tmp_path):
-    database_path = tmp_path / "injection_schedule_phase4_schema_gate.db"
+def test_injection_schedule_rebuild_removal_drops_schema_permissions_and_marker(
+    tmp_path,
+):
+    database_path = tmp_path / "injection_schedule_rebuild_removal_0037.db"
     initial_upgrade = _run_dispatch_alembic(
         database_path,
         "upgrade",
-        INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION,
+        MERGED_HEAD_MIGRATION_REVISION,
     )
     assert initial_upgrade.returncode == 0, initial_upgrade.stderr
-    schema_before_startup = _sqlite_schema_signature(database_path)
 
-    blocked_startup = _run_dispatch_init_db(database_path)
-    assert blocked_startup.returncode != 0
-    startup_output = f"{blocked_startup.stdout}\n{blocked_startup.stderr}"
-    assert INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION in startup_output
-    assert "注塑排产 Phase 4 Alembic 迁移" in startup_output
-    assert "table:injection_schedule_actual_corrections" in startup_output
-    assert "column:injection_order_masters.priority_code" in startup_output
-    assert _sqlite_schema_signature(database_path) == schema_before_startup
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO auth_permissions (id, code, name, description)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "perm-injection-rebuild-test",
+                "injection_schedule:read",
+                "test",
+                "",
+            ),
+        )
+        injection_tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND (
+                    name LIKE 'injection_schedule_%'
+                    OR name LIKE 'injection_%_masters'
+                  )
+                """
+            ).fetchall()
+        }
+        assert {
+            "injection_schedule_tasks",
+            "injection_schedule_shift_actuals",
+            "injection_schedule_actual_corrections",
+        } <= injection_tables
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
+        ).fetchone()[0] > 0
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO auth_iam_state (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            (
+                "injection_schedule_phase2_default_grant_v1_completed",
+                "{}",
+                "2026-07-27 00:00:00",
+            ),
+        )
+        unrelated_counts = {
+            table_name: connection.execute(
+                f'SELECT COUNT(*) FROM "{table_name}"'
+            ).fetchone()[0]
+            for table_name in (
+                "auth_users",
+                "molding_sample_orders",
+                "internal_quotes",
+                "raw_materials",
+            )
+        }
+        connection.commit()
 
-    migrated = _run_dispatch_alembic(database_path, "upgrade", "head")
-    assert migrated.returncode == 0, migrated.stderr
-    allowed_startup = _run_dispatch_init_db(database_path)
-    assert allowed_startup.returncode == 0, allowed_startup.stderr
+    removed = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert removed.returncode == 0, removed.stderr
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)
-        assert {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info('injection_schedule_tasks')"
-            ).fetchall()
-        } >= {
-            "color_rank_snapshot",
-            "recommendation_context_hash",
-            "execution_status",
-            "protected",
-        }
-        assert "priority_code" in {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info('injection_order_masters')"
-            ).fetchall()
-        }
-        assert {
-            "injection_schedule_actual_corrections",
-            "injection_schedule_replan_runs",
-            "injection_schedule_shift_actuals",
-        } <= {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
-        task_table_sql = connection.execute(
+        assert connection.execute(
             """
-            SELECT sql
+            SELECT COUNT(*)
             FROM sqlite_master
-            WHERE type = 'table' AND name = 'injection_schedule_tasks'
+            WHERE type = 'table'
+              AND (
+                name LIKE 'injection_schedule_%'
+                OR name LIKE 'injection_%_masters'
+              )
             """
-        ).fetchone()[0].lower()
-        assert "ck_injection_schedule_task_source" in task_table_sql
-        assert "ck_injection_schedule_task_execution_status" in task_table_sql
-        actual_foreign_keys = connection.execute(
-            "PRAGMA foreign_key_list('injection_schedule_shift_actuals')"
-        ).fetchall()
-        actual_foreign_key_groups: dict[
-            int,
-            set[tuple[str, str]],
-        ] = {}
-        for row in actual_foreign_keys:
-            actual_foreign_key_groups.setdefault(row[0], set()).add(
-                (row[3], row[4])
-            )
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_iam_state WHERE key LIKE 'injection_schedule%'"
+        ).fetchone() == (0,)
         assert {
-            ("task_id", "id"),
-            ("version_id", "version_id"),
-            ("factory_id", "factory_id"),
-        } in actual_foreign_key_groups.values()
-        assert {
-            ("source_task_id", "id"),
-            ("source_version_id", "version_id"),
-            ("factory_id", "factory_id"),
-        } in actual_foreign_key_groups.values()
+            table_name: connection.execute(
+                f'SELECT COUNT(*) FROM "{table_name}"'
+            ).fetchone()[0]
+            for table_name in unrelated_counts
+        } == unrelated_counts
+
+    allowed_startup = _run_dispatch_init_db(database_path)
+    assert allowed_startup.returncode == 0, allowed_startup.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
+        ).fetchone() == (0,)
 
 
 def _insert_dispatch_test_order(
@@ -2490,7 +2518,7 @@ def test_molding_sample_dispatch_upgrade_backfills_scope_and_preserves_rows(tmp_
     migrated = _run_dispatch_alembic(
         database_path,
         "upgrade",
-        INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,
+        INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION,
     )
     assert migrated.returncode == 0, migrated.stderr
 

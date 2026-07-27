@@ -13,32 +13,23 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('wires the Phase 2 injection scheduling hub to its protected full-page route', () => {
-    const moduleBlock = enterpriseSource.match(
-      /id: 'injection-production-hub'[\s\S]*?\n      },/,
+  it('keeps the injection scheduling hub as a rebuild placeholder only', () => {
+    const placeholderBlock = enterpriseSource.match(
+      /id: 'injection-scheduling'[\s\S]*?\n      },/,
     )?.[0]
 
-    expect(moduleBlock).toBeDefined()
-    expect(moduleBlock).toContain("title: '注塑排产中枢'")
-    expect(moduleBlock).toContain("status: 'Phase 2'")
-    expect(moduleBlock).toContain("stats: '版本化排产 · 厂区隔离'")
-    expect(moduleBlock).toContain(
-      "route: '/modules/production/injection-production-hub'",
+    expect(placeholderBlock).toBeDefined()
+    expect(placeholderBlock).toContain("title: '注塑排产中枢'")
+    expect(placeholderBlock).toContain("status: '待重建'")
+    expect(placeholderBlock).toContain("stats: '前后端已清除 · 暂无业务数据'")
+    expect(placeholderBlock).toContain(
+      "route: getDepartmentRoute('production', 'injection-scheduling')",
     )
-    expect(moduleBlock).not.toContain('href:')
+    expect(placeholderBlock).not.toContain('href:')
 
-    expect(routerSource).toContain("path: '/modules/production/injection-production-hub'")
-    expect(routerSource).toContain("name: 'injection-production-hub'")
-    expect(routerSource).toContain("InjectionProductionHubView.vue")
-    expect(routerSource).toMatch(
-      /path: '\/modules\/production\/injection-production-hub'[\s\S]{0,260}fullPage: true/,
-    )
-    expect(routerSource).toMatch(
-      /path: '\/modules\/production\/injection-scheduling'[\s\S]{0,260}injection-production-hub/,
-    )
-    expect(routerSource).toMatch(
-      /name: 'injection-production-hub'[\s\S]{0,360}injection_schedule:read[\s\S]{0,160}enforcePermissions: true/,
-    )
+    expect(routerSource).not.toContain("path: '/modules/production/injection-production-hub'")
+    expect(routerSource).not.toContain('InjectionProductionHubView.vue')
+    expect(routerSource).not.toContain('injection_schedule:')
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {
