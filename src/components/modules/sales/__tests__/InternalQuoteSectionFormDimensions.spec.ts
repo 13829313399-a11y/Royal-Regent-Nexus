@@ -4,6 +4,31 @@ import InternalQuoteSectionForm from '@/components/modules/sales/internal-quote/
 import { calculateCartonCuft, normalizeInternalQuotePayload, type SalesPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('InternalQuoteSectionForm dimension units', () => {
+  it('always provides one base carton while keeping the add-carton action', async () => {
+    const payload = normalizeInternalQuotePayload('sales', {}) as unknown as SalesPayload
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'sales',
+        modelValue: payload as unknown as Record<string, unknown>,
+        disabled: false,
+      },
+    })
+
+    expect(payload.cartons).toHaveLength(1)
+    expect(payload.cartons[0]).toMatchObject({ item: '主纸箱', size_unit: 'inch', qty_per_carton: 1 })
+    expect(wrapper.text()).toContain('基础纸箱')
+    expect(wrapper.get('button[aria-label="删除纸箱 1"]').attributes('disabled')).toBeDefined()
+
+    const addButton = wrapper.findAll('button').find((button) => button.text().includes('新增纸箱'))!
+    await addButton.trigger('click')
+
+    expect(payload.cartons).toHaveLength(2)
+    expect(payload.cartons[1].item).toBe('纸箱 2')
+    expect(wrapper.get('button[aria-label="删除纸箱 1"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('button[aria-label="删除纸箱 2"]').trigger('click')
+    expect(payload.cartons).toHaveLength(1)
+  })
+
   it('adds business testing-fee MOQ tiers and calculates each USD unit price', async () => {
     const payload = normalizeInternalQuotePayload('sales', {}) as unknown as SalesPayload
     const wrapper = mount(InternalQuoteSectionForm, {
