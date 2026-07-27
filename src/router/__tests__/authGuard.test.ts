@@ -27,3 +27,4 @@ assert.match(source, /path:\s*'\/modules\/production\/molding-sample-tasks'[\s\S
 assert.match(source, /path:\s*'\/modules\/production\/injection-scheduling'[\s\S]{0,360}permissions:\s*\[['"]injection_schedule:read['"]\]/)
 assert.match(source, /path:\s*'\/modules\/pmc-warehouse\/raw-material-management'[\s\S]{0,360}permissions:\s*\[['"]molding_sample:raw_material_write['"]\]/)
 assert.match(source, /path:\s*'\/modules\/sales-business\/customer-price-conversion'[\s\S]{0,360}permissions:\s*\[['"]customer_price:read['"]\]/)
+assert.match(source, /path:\s*'\/modules\/sales-business\/po-schedule-intake'[\s\S]{0,360}permissions:\s*\[['"]customer_order:read['"]\]/)

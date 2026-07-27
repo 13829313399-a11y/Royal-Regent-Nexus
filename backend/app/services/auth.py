@@ -265,6 +265,8 @@ ROLE_PERMISSIONS = {
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
+        "customer_order:read",
+        "customer_order:export",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["sales_customer_owner"],
     },
     "sales_customer_supervisor": {
@@ -272,6 +274,8 @@ ROLE_PERMISSIONS = {
         "customer_price:import_internal_quote",
         "customer_price:export_customer_quote",
         "customer_price:compare",
+        "customer_order:read",
+        "customer_order:export",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["sales_customer_supervisor"],
     },
     "factory_permission_admin": {
