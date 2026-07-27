@@ -157,6 +157,18 @@ const routes: RouteRecordRaw[] = [
     redirect: '/modules/sales-business',
   },
   {
+    path: '/modules/sales-business/po-schedule-intake',
+    name: 'customer-order-center',
+    component: () => import('@/views/CustomerOrderCenterView.vue'),
+    meta: {
+      title: '客户订单中心',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['customer_order:read'],
+      enforcePermissions: true,
+    },
+  },
+  {
     path: '/modules/pmc-warehouse/carton-mark-check',
     name: 'carton-mark-template',
     component: () => import('@/views/CartonMarkTemplateView.vue'),
