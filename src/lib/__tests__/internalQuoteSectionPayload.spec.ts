@@ -17,7 +17,15 @@ describe('internal quote section payload normalization', () => {
       product_size_in: { length: 0, width: 0, height: 0 },
       color_box_size_unit: 'inch',
       color_box_size_in: { length: 0, width: 0, height: 0 },
-      cartons: [],
+      cartons: [{
+        item: '主纸箱',
+        size_unit: 'inch',
+        length_in: 0,
+        width_in: 0,
+        height_in: 0,
+        qty_per_carton: 1,
+        flat_cards: [],
+      }],
       freight_calc: { enabled: true, freight_enabled: true, lifting_enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883 },
     })
     expect(fresh.freight_calc).not.toHaveProperty('hk40')
@@ -26,6 +34,15 @@ describe('internal quote section payload normalization', () => {
     expect(fresh).not.toHaveProperty('product_size_cm')
     expect(fresh).not.toHaveProperty('color_box_size_cm')
     expect(fresh).not.toHaveProperty('shipping')
+    expect(normalizeInternalQuotePayload('sales', { cartons: [] }).cartons).toEqual([{
+      item: '主纸箱',
+      size_unit: 'inch',
+      length_in: 0,
+      width_in: 0,
+      height_in: 0,
+      qty_per_carton: 1,
+      flat_cards: [],
+    }])
     expect(normalizeInternalQuotePayload('sales', { paper_price_factor: 2.8, flat_card_price_factor: 2.3 })).toMatchObject({
       paper_price_factor: 2.8,
       flat_card_price_factor: 2.3,

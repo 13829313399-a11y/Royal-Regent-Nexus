@@ -76,7 +76,7 @@ describe('internal quote form block progress', () => {
   it('accepts customer pickup as a complete freight choice', () => {
     const result = statuses('sales', { freight_calc: { enabled: false } })
     expect(result.freight).toBe('complete')
-    expect(result.cartons).toBe('missing')
+    expect(result.cartons).toBe('partial')
   })
 
   it('does not mark nested electronic rows complete until every child is priced', () => {
