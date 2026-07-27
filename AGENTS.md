@@ -78,24 +78,26 @@ Do not run `git commit`, create commits, push branches, or open pull requests un
 
 When code changes are made without an explicit Git operation request, leave them as working-tree changes and report the changed files plus verification results.
 
-## Required Update After Work
+## Project Memory Maintenance
 
-After completing an implementation or requirement change, the agent must update `PROJECT_MEMORY.md` with:
+`PROJECT_MEMORY.md` is Codex's current, long-lived understanding of this repository. It is a current-state cognition cache, not a task log, Git history, or chronological implementation journal.
 
-- the requirement or requirement change
-- the implementation summary
-- files changed
-- verification performed
-- any confirmed decisions
-- any assumptions or follow-up that matter for future work
+After completing work, the agent must first decide whether the work changed a fact that remains useful for future tasks, such as a current requirement, architecture decision, data contract, security or permission boundary, deployment constraint, active risk, or unresolved limitation.
 
-If implementation and verification differ, record both clearly.
+1. If no long-lived fact changed, do not update `PROJECT_MEMORY.md`.
+2. If a long-lived fact changed, search for the existing canonical fact and update it in place.
+3. Add a new section only when the fact is genuinely new and has no existing canonical location.
+4. During the same edit, remove or replace superseded, contradictory, duplicated, obsolete, or resolved facts.
+
+Do not append a dated entry merely because a task was completed. Do not record per-task file lists, routine verification commands, Git operations, temporary debugging details, or completed follow-ups unless they define a current constraint or an unresolved limitation that future work still needs.
+
+Write memory as the current truth. If implementation and verification differ, record the difference only when it remains an active limitation or risk.
 
 ## If Memory Is Missing Or Ambiguous
 
 If `PROJECT_MEMORY.md` is missing, unreadable, or conflicts with the newest user instruction, the agent must stop and clarify before making broad changes.
 
-The newest direct user instruction takes priority, but the final state should still be recorded in `PROJECT_MEMORY.md`.
+The newest direct user instruction takes priority. Update `PROJECT_MEMORY.md` only when that instruction changes a long-lived fact, following the in-place maintenance rules above.
 
 ## Minimal Checklist
 
@@ -109,5 +111,6 @@ Before editing:
 After editing:
 
 1. Verify the change with the smallest relevant check.
-2. Update `PROJECT_MEMORY.md`.
-3. Report what was implemented and what was verified.
+2. Decide whether the work changed a long-lived fact.
+3. If it did, update the existing fact in place and remove stale or duplicated facts; otherwise leave `PROJECT_MEMORY.md` unchanged.
+4. Report what was implemented and what was verified.
