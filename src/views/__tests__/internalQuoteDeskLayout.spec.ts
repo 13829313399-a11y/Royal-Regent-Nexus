@@ -102,6 +102,9 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionEditorSource).toContain('class="template-download"')
     expect(sectionEditorSource).toContain('下载模板')
     expect(sectionEditorSource).toContain('downloadImportTemplate(props.quote.id, target.type, target.fileName)')
+    for (const fileName of ['展兴模具--工模报价表.xlsx', '装工.xlsx', '五金1.xlsx', '喷油报价单.xlsx', '电子报价单.xlsx', '车缝报价单.xlsx']) {
+      expect(sectionEditorSource).toContain(`fileName: '${fileName}'`)
+    }
     expect(sectionEditorSource).toContain('handleUploadFile')
     expect(sectionEditorSource).toContain('detectImportPreview')
     expect(sectionEditorSource).toContain('for (const option of importOptions.value)')

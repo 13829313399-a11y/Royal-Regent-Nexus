@@ -96,15 +96,15 @@ type ImportOption = {
 }
 const importOptions = computed<ImportOption[]>(() => ({
   engineering: [
-    { type: 'hardware', label: '五金报价单', fileName: '工程部五金报价导入模板-2026.07.xlsx' },
-    { type: 'mold', label: '模具报价单 / 合同', fileName: '工程部模具报价导入模板-2026.07.xlsx' },
+    { type: 'hardware', label: '五金报价单', fileName: '五金1.xlsx' },
+    { type: 'mold', label: '模具报价单 / 合同', fileName: '展兴模具--工模报价表.xlsx' },
   ],
-  electronic: [{ type: 'electronic', label: '电子报价单', fileName: '电子部报价导入模板-2026.07.xlsx' }],
+  electronic: [{ type: 'electronic', label: '电子报价单', fileName: '电子报价单.xlsx' }],
   molding: [{ type: 'molding', label: '啤机报价单', fileName: '啤机部报价导入模板-2026.07.xlsx' }],
-  painting: [{ type: 'painting', label: '喷油报价单', fileName: '喷油部报价导入模板-2026.07.xlsx' }],
+  painting: [{ type: 'painting', label: '喷油报价单', fileName: '喷油报价单.xlsx' }],
   slush: [{ type: 'slush', label: '搪胶报价单', fileName: '搪胶部报价导入模板-2026.07.xlsx' }],
-  sewing: [{ type: 'sewing', label: '车缝报价单', fileName: '车缝部报价导入模板-2026.07.xlsx' }],
-  assembly: [{ type: 'assembly', label: '生产排拉工序表', fileName: '装配部排拉工序导入模板-2026.07.xlsx' }],
+  sewing: [{ type: 'sewing', label: '车缝报价单', fileName: '车缝报价单.xlsx' }],
+  assembly: [{ type: 'assembly', label: '生产排拉工序表', fileName: '装工.xlsx' }],
 } as Partial<Record<InternalQuoteSectionCode, ImportOption[]>>)[props.section.code] ?? [])
 
 function importOption(type: ApiInternalQuoteImportPreview['import_type']) {

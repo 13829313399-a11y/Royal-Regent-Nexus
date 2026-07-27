@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -9,6 +10,19 @@ from openpyxl.utils import get_column_letter
 
 TEMPLATE_VERSION = "2026.07"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+FIXED_TEMPLATE_DIRECTORY = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "internal_quote_import_templates"
+)
+FIXED_TEMPLATE_FILE_NAMES = {
+    "mold": "展兴模具--工模报价表.xlsx",
+    "assembly": "装工.xlsx",
+    "hardware": "五金1.xlsx",
+    "painting": "喷油报价单.xlsx",
+    "electronic": "电子报价单.xlsx",
+    "sewing": "车缝报价单.xlsx",
+}
 
 TEMPLATE_LABELS = {
     "mold": "工程部模具报价",
@@ -155,6 +169,21 @@ def build_internal_quote_import_template(import_type: str) -> tuple[bytes, str]:
     label = TEMPLATE_LABELS.get(import_type)
     if label is None:
         raise ValueError("不支持的内部报价导入模板类型")
+
+    fixed_file_name = FIXED_TEMPLATE_FILE_NAMES.get(import_type)
+    if fixed_file_name is not None:
+        template_path = FIXED_TEMPLATE_DIRECTORY / fixed_file_name
+        try:
+            content = template_path.read_bytes()
+        except OSError as error:
+            raise RuntimeError(
+                f"内部报价固定模板缺失：{fixed_file_name}"
+            ) from error
+        if not content.startswith(b"PK"):
+            raise RuntimeError(
+                f"内部报价固定模板格式无效：{fixed_file_name}"
+            )
+        return content, fixed_file_name
 
     workbook = Workbook()
     if import_type == "molding":
