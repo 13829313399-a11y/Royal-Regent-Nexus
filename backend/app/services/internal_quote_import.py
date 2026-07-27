@@ -9,6 +9,7 @@ from io import BytesIO
 from typing import Any, Callable
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 
 IMPORT_TYPE_DEPARTMENTS = {
@@ -159,9 +160,9 @@ def workbook_embedded_images(
     """Extract floating Excel images anchored to a specific worksheet column.
 
     openpyxl exposes worksheet drawing images separately from cell values.  The
-    old importer only saw an empty U cell and wrote a textual cell reference;
-    this function preserves the actual image bytes and their anchor row so the
-    confirmation step can attach them to the corresponding mold record.
+    importer otherwise sees only an empty picture cell; this function preserves
+    the actual image bytes and their visual row so the confirmation step can
+    attach them to the corresponding mold record.
     """
     try:
         workbook = load_workbook(BytesIO(content), data_only=True, read_only=False)
@@ -173,11 +174,48 @@ def workbook_embedded_images(
         if sheet_name not in workbook.sheetnames:
             return []
         sheet = workbook[sheet_name]
+
+        def row_height_emu(row_number: int) -> int:
+            row_height_points = (
+                sheet.row_dimensions[row_number].height
+                or sheet.sheet_format.defaultRowHeight
+                or 15
+            )
+            return max(int(float(row_height_points) * 12700), 1)
+
+        def marker_absolute_y(marker: object) -> int:
+            marker_row = int(getattr(marker, "row", 0) or 0)
+            return (
+                sum(row_height_emu(row_number) for row_number in range(1, marker_row + 1))
+                + int(getattr(marker, "rowOff", 0) or 0)
+            )
+
+        def row_at_y(position_emu: int, last_row: int) -> int:
+            cumulative = 0
+            for row_number in range(1, max(last_row, 1) + 1):
+                cumulative += row_height_emu(row_number)
+                if position_emu < cumulative:
+                    return row_number
+            return max(last_row, 1)
+
         for image in getattr(sheet, "_images", []):
-            marker = getattr(getattr(image, "anchor", None), "_from", None)
+            anchor = getattr(image, "anchor", None)
+            marker = getattr(anchor, "_from", None)
             if marker is None:
                 continue
             row = int(marker.row) + 1
+            end_marker = getattr(anchor, "to", None)
+            if end_marker is not None:
+                # Use the picture's vertical center rather than only its top-left
+                # anchor. Supplier files may start an image at the bottom of the
+                # preceding tall row while the picture visibly occupies the next
+                # mold row.
+                start_y = marker_absolute_y(marker)
+                end_y = marker_absolute_y(end_marker)
+                row = row_at_y(
+                    (start_y + end_y) // 2,
+                    max(sheet.max_row, int(end_marker.row) + 1),
+                )
             column = int(marker.col) + 1
             if column != source_column or row < min_source_row:
                 continue
@@ -193,11 +231,12 @@ def workbook_embedded_images(
             else:
                 extension, content_type = ".png", "image/png"
             row_counts[row] = row_counts.get(row, 0) + 1
+            column_letter = get_column_letter(source_column)
             extracted.append(
                 EmbeddedWorkbookImage(
                     source_row=row,
                     source_column=column,
-                    file_name=f"模具图片-U{row}-{row_counts[row]}{extension}",
+                    file_name=f"模具图片-{column_letter}{row}-{row_counts[row]}{extension}",
                     content_type=content_type,
                     content=content_bytes,
                 )
@@ -217,7 +256,10 @@ def find_header(
     import_type: str,
 ) -> tuple[str, list[list[object]], int]:
     patterns = {
-        "mold": ("模号|模具编号|MOLDNO|产品名称", "名称|模价|总价|材质|材料|AMOUNT"),
+        "mold": (
+            "模号|模具编号|MOLDNO|产品名称|ITEMDESCRIPTION|项目内容",
+            "名称|模价|总价|材质|材料|AMOUNT|MOULDPRICES",
+        ),
         "hardware": ("零件名称", "规格", "用量", "单价"),
         "electronic": ("零件名称", "规格", "用量"),
         "molding": ("模具名称|货名", "啤净重|日产量|预估料重", "材质|用料"),
@@ -232,7 +274,7 @@ def find_header(
                 return sheet_name, rows, index
     raise ValueError(
         {
-            "mold": "未找到模具编号/名称/价格表头",
+            "mold": "未找到模具编号/名称/价格表头，请使用展兴模具--工模报价表.xlsx格式",
             "hardware": "未找到零件名称/规格/用量/单价表头，请使用五金1.xlsx格式",
             "electronic": "未找到零件名称/规格/用量表头",
             "molding": "未找到注塑的模具名称/啤净重表头或吹气的货名/日产量表头",
@@ -297,9 +339,17 @@ def _parse_mold(
         and "GATE" in layout_token(18)
         and "PICTURES" in layout_token(20)
     )
+    is_zhanxing_mold_layout = (
+        len(header) >= 11
+        and "ITEMDESCRIPTION" in layout_token(1)
+        and "MATERIAL" in layout_token(2)
+        and "CAVITIES" in layout_token(3)
+        and "MOULDPRICES" in layout_token(7)
+        and ("日产能" in layout_token(9) or "机台大小" in layout_token(9))
+    )
     columns = {
         "mold_no": column_index(header, ("模号", "模具编号", "客人模具编号", "MOLD NO")),
-        "name": column_index(header, ("产品名称", "零件名称", "配件名称", "模具名称", "加工内容", "DESCRIPTION", "名称")),
+        "name": column_index(header, ("产品名称", "零件名称", "配件名称", "模具名称", "加工内容", "ITEM DESCRIPTION", "项目内容", "DESCRIPTION", "名称")),
         "chinese_name": column_index(header, ("中文名称", "中文名", "CHINESE NAME")),
         "material": column_index(header, ("产品材质", "塑胶原料", "胶料类型", "材质", "材料")),
         "material_type": column_index(header, ("料型", "材料类型", "MAT'L", "MAT’L")),
@@ -335,6 +385,28 @@ def _parse_mold(
             "process": 18,
             "image": 20,
         })
+    if is_zhanxing_mold_layout:
+        # 展兴工模报价表由业务确认使用固定 B–K 列：
+        # B 中文名称、C 料型、D 出模数、E 套数、F 图片、G 模具尺寸、
+        # H 模价 RMB、I 模胚材质、J 日产能/机台大小、K 净重。
+        columns.update({
+            "mold_no": None,
+            "name": 1,
+            "chinese_name": 1,
+            "material": None,
+            "material_type": 2,
+            "cavity": 3,
+            "sets": 4,
+            "image": 5,
+            "mold_size": 6,
+            "mold_specification": None,
+            "price": 7,
+            "mold_base_material": 8,
+            "machine": None,
+            "target": None,
+            "weight": 10,
+            "note": 11,
+        })
     warnings: list[str] = []
     molds: list[dict[str, Any]] = []
     last_mold_no = ""
@@ -352,12 +424,34 @@ def _parse_mold(
         joined = "".join(text(cell) for cell in row)
         if re.search(r"^[一二三四五六七八九十]、.+部分", joined):
             break
+        if (
+            is_zhanxing_mold_layout
+            and re.search(r"工模.*注塑模", normalized(value_at(row, 0)))
+        ):
+            break
         if re.search(r"^(合计|小计|总计|说明|备注|客户确认|签名)", joined):
             continue
         raw_mold_no = text(value_at(row, columns["mold_no"]))
         name = text(value_at(row, columns["name"]))
         chinese_name = text(value_at(row, columns["chinese_name"]))
         price = number(value_at(row, columns["price"]))
+        combined_capacity_machine = (
+            text(value_at(row, 9)) if is_zhanxing_mold_layout else ""
+        )
+        machine_code = text(value_at(row, columns["machine"]))
+        target_output = number(value_at(row, columns["target"]), Decimal("0"))
+        if combined_capacity_machine:
+            capacity_machine_parts = re.split(
+                r"[/／]",
+                combined_capacity_machine,
+                maxsplit=1,
+            )
+            target_output = number(capacity_machine_parts[0], Decimal("0"))
+            machine_code = (
+                text(capacity_machine_parts[1])
+                if len(capacity_machine_parts) > 1
+                else ""
+            )
         continuation_values = (
             name,
             chinese_name,
@@ -366,8 +460,8 @@ def _parse_mold(
             text(value_at(row, columns["weight"])),
             text(value_at(row, columns["cavity"])),
             text(value_at(row, columns["sets"])),
-            text(value_at(row, columns["machine"])),
-            text(value_at(row, columns["target"])),
+            machine_code,
+            combined_capacity_machine or text(value_at(row, columns["target"])),
             text(value_at(row, columns["mold_base_type"])),
             text(value_at(row, columns["mold_base_material"])),
             text(value_at(row, columns["structure"])),
@@ -412,8 +506,8 @@ def _parse_mold(
                 "material_type": text(value_at(row, columns["material_type"])),
                 "net_weight_g": decimal_text(number(value_at(row, columns["weight"]), Decimal("0"))),
                 "cavity": text(value_at(row, columns["cavity"])),
-                "machine_code": text(value_at(row, columns["machine"])),
-                "target_output": decimal_text(number(value_at(row, columns["target"]), Decimal("0"))),
+                "machine_code": machine_code,
+                "target_output": decimal_text(target_output),
                 "mold_base_type": text(value_at(row, columns["mold_base_type"])),
                 "mold_base_material": text(value_at(row, columns["mold_base_material"])),
                 "structure": text(value_at(row, columns["structure"])),
@@ -438,10 +532,20 @@ def _parse_mold(
         amortization_qty = max(fallback_qty, Decimal("1"))
         warnings.append(f"未识别模具分摊数量，预览按报价数量 {decimal_text(amortization_qty)} 填入")
     embedded_count = sum(len(items) for items in (embedded_images_by_row or {}).values())
+    image_column_label = (
+        get_column_letter(columns["image"] + 1)
+        if columns["image"] is not None
+        else ""
+    )
     if embedded_count:
-        warnings.append(f"已识别并提取 U 列 {embedded_count} 张嵌入图片；确认导入后将自动保存到对应模具行")
+        warnings.append(
+            f"已识别并提取 {image_column_label} 列 {embedded_count} 张嵌入图片；"
+            "确认导入后将自动保存到对应模具行"
+        )
     elif is_water_table_layout:
         warnings.append("U 列未识别到可提取的嵌入图片；如源表图片为链接，请改为嵌入图片后重试")
+    elif is_zhanxing_mold_layout:
+        warnings.append("F 列未识别到可提取的嵌入图片；如源表图片为链接，请改为嵌入图片后重试")
     else:
         warnings.append("嵌入模具图片不自动写入报价，请在对应工程分段上传图片附件")
     return {"molds": molds, "amortization_qty": decimal_text(amortization_qty)}, len(molds), warnings
@@ -1286,10 +1390,14 @@ def parse_internal_quote_workbook(
     embedded_images: list[EmbeddedWorkbookImage] = []
     embedded_images_by_row: dict[int, list[EmbeddedWorkbookImage]] = {}
     if import_type == "mold":
+        image_column = column_index(
+            rows[header_index],
+            ("图片", "图  片", "IMAGE", "PICTURES"),
+        )
         embedded_images = workbook_embedded_images(
             content,
             sheet_name,
-            source_column=21,
+            source_column=(image_column + 1) if image_column is not None else 21,
             min_source_row=header_index + 2,
         )
         for image in embedded_images:

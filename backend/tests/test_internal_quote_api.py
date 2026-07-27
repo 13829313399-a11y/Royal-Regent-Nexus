@@ -2,6 +2,7 @@ import importlib
 import sys
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import quote as url_quote
 from uuid import uuid4
 
 import pytest
@@ -143,7 +144,7 @@ def test_mapped_import_template_download_requires_quote_access_and_returns_xlsx(
         assert created.status_code == 201, created.text
         quote_id = created.json()["id"]
 
-        response = client.get(f"/api/internal-quotes/{quote_id}/imports/mold/template")
+        response = client.get(f"/api/internal-quotes/{quote_id}/imports/molding/template")
         assert response.status_code == 200, response.text
         assert response.content.startswith(b"PK")
         assert response.headers["content-type"].startswith(
@@ -151,6 +152,30 @@ def test_mapped_import_template_download_requires_quote_access_and_returns_xlsx(
         )
         assert response.headers["content-disposition"].startswith("attachment; filename*=UTF-8''")
         assert response.headers["content-disposition"].endswith("-2026.07.xlsx")
+
+        fixed_templates = {
+            "mold": "展兴模具--工模报价表.xlsx",
+            "assembly": "装工.xlsx",
+            "hardware": "五金1.xlsx",
+            "painting": "喷油报价单.xlsx",
+            "electronic": "电子报价单.xlsx",
+            "sewing": "车缝报价单.xlsx",
+        }
+        for import_type, file_name in fixed_templates.items():
+            fixed_response = client.get(
+                f"/api/internal-quotes/{quote_id}/imports/{import_type}/template"
+            )
+            assert fixed_response.status_code == 200, fixed_response.text
+            assert fixed_response.content == (
+                BACKEND_DIR
+                / "app"
+                / "data"
+                / "internal_quote_import_templates"
+                / file_name
+            ).read_bytes()
+            assert fixed_response.headers["content-disposition"] == (
+                f"attachment; filename*=UTF-8''{url_quote(file_name)}"
+            )
 
         invalid = client.get(f"/api/internal-quotes/{quote_id}/imports/unknown/template")
         assert invalid.status_code == 400
