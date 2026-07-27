@@ -124,6 +124,30 @@ MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
 }
 
+INJECTION_SCHEDULE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    "injection_schedule:read": ScopePolicy(
+        PRODUCTION_DEPARTMENTS,
+        guidance="仅在本厂生产部（啤喷装）/啤机范围读取正式排产",
+    ),
+    "injection_schedule:edit": ScopePolicy(
+        PRODUCTION_DEPARTMENTS,
+        guidance="仅在本厂生产部（啤喷装）/啤机范围维护草稿",
+    ),
+    "injection_schedule:publish": ScopePolicy(
+        (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
+        guidance="仅本厂啤机主管、经理或总务范围可发布",
+    ),
+    "injection_schedule:config": ScopePolicy(
+        (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
+        guidance="仅本厂啤机主管、经理或总务范围可确认导入及维护主数据",
+    ),
+    "injection_schedule:cross_factory_read": ScopePolicy(
+        ("*",),
+        requires_global_factory=True,
+        guidance="必须配置在全部厂区 / 全部部门范围，且只允许读取",
+    ),
+}
+
 INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "internal_quote:read": ScopePolicy(INTERNAL_QUOTE_ALL_DEPARTMENTS),
     "internal_quote:create": ScopePolicy(("sales-business", "engineering")),
@@ -193,7 +217,13 @@ ROLE_SCOPE_POLICIES.update(
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
     return MOLDING_PERMISSION_SCOPE_POLICIES.get(
         permission_code,
-        INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(permission_code, ScopePolicy()),
+        INJECTION_SCHEDULE_PERMISSION_SCOPE_POLICIES.get(
+            permission_code,
+            INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                permission_code,
+                ScopePolicy(),
+            ),
+        ),
     )
 
 

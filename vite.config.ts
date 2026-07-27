@@ -6,9 +6,25 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   server: {
+    watch: {
+      ignored: [
+        '**/.tmp/**',
+        '**/.pytest_cache/**',
+        '**/backend/**',
+        '**/outputs/**',
+      ],
+    },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    proxy: {
+      '/api': {
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },

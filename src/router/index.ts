@@ -74,6 +74,29 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/injection-production-hub',
+    name: 'injection-production-hub',
+    component: () => import('@/views/InjectionProductionHubView.vue'),
+    meta: {
+      title: '注塑排产中枢',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: [
+        'injection_schedule:read',
+        'injection_schedule:cross_factory_read',
+      ],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/modules/production/injection-scheduling',
+    redirect: (to) => ({
+      path: '/modules/production/injection-production-hub',
+      query: to.query,
+      replace: true,
+    }),
+  },
+  {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',
     component: () => import('@/views/RawMaterialManagementView.vue'),

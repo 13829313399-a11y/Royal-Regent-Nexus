@@ -157,6 +157,91 @@ MOLDING_SAMPLE_DISPATCH_REQUIRED_TABLES = {"molding_sample_dispatch_logs"}
 INTERNAL_QUOTE_CUSTOMER_REVISION = "20260721_0029"
 INTERNAL_QUOTE_CUSTOMER_PREVIOUS_REVISION = "20260720_0028"
 INTERNAL_QUOTE_CUSTOMER_TABLE = "internal_quote_customers"
+INJECTION_SCHEDULE_PHASE4_REVISION = "20260725_0035"
+INJECTION_SCHEDULE_PHASE3_REVISION = "20260723_0034"
+INJECTION_SCHEDULE_PHASE2_REVISION = "20260723_0033"
+INJECTION_SCHEDULE_REMOVAL_REVISION = "20260723_0031"
+INJECTION_SCHEDULE_PHASE2_SCHEMA_REVISION = "20260723_0032"
+INJECTION_SCHEDULE_PHASE2_REQUIRED_TABLES = {
+    "injection_schedule_import_batches",
+    "injection_schedule_import_issues",
+    "injection_machine_masters",
+    "injection_mold_masters",
+    "injection_order_masters",
+    "injection_schedule_factory_states",
+    "injection_schedule_rule_configs",
+    "injection_schedule_versions",
+    "injection_schedule_tasks",
+    "injection_schedule_validation_runs",
+    "injection_schedule_validation_items",
+    "injection_schedule_audit_events",
+}
+INJECTION_SCHEDULE_PHASE4_REQUIRED_TABLES = (
+    INJECTION_SCHEDULE_PHASE2_REQUIRED_TABLES
+    | {
+        "injection_schedule_actual_corrections",
+        "injection_schedule_replan_runs",
+        "injection_schedule_shift_actuals",
+    }
+)
+INJECTION_SCHEDULE_PHASE3_REQUIRED_COLUMNS = {
+    "injection_machine_masters": {"screw_type"},
+    "injection_mold_masters": {
+        "mold_thickness_mm",
+        "required_opening_stroke_mm",
+        "required_screw_type",
+    },
+    "injection_order_masters": {
+        "color_rank",
+        "downstream_urgency",
+        "warehouse_buffer_hours",
+        "downstream_buffer_hours",
+        "special_handling_reason",
+    },
+    "injection_schedule_versions": {"rule_config_revision"},
+    "injection_schedule_tasks": {
+        "delivery_due_date_snapshot",
+        "color_snapshot",
+        "color_rank_snapshot",
+        "material_snapshot",
+        "source",
+        "recommendation_score",
+        "score_breakdown_json",
+        "constraint_snapshot_json",
+        "recommendation_context_hash",
+    },
+}
+INJECTION_SCHEDULE_PHASE4_REQUIRED_COLUMNS = {
+    **INJECTION_SCHEDULE_PHASE3_REQUIRED_COLUMNS,
+    "injection_order_masters": (
+        INJECTION_SCHEDULE_PHASE3_REQUIRED_COLUMNS.get(
+            "injection_order_masters",
+            set(),
+        )
+        | {"priority_code"}
+    ),
+    "injection_schedule_tasks": (
+        INJECTION_SCHEDULE_PHASE3_REQUIRED_COLUMNS.get(
+            "injection_schedule_tasks",
+            set(),
+        )
+        | {"execution_status", "protected"}
+    ),
+    "injection_schedule_replan_runs": {"affected_task_ids_json"},
+    "injection_schedule_shift_actuals": {
+        "source_version_id",
+        "source_task_id",
+        "lineage_sequence",
+        "last_correction_request_id",
+        "last_correction_payload_hash",
+    },
+    "injection_schedule_actual_corrections": {
+        "actual_id",
+        "request_id",
+        "payload_hash",
+        "response_json",
+    },
+}
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -242,6 +327,57 @@ def ensure_internal_quote_customer_schema_ready() -> None:
     )
 
 
+def ensure_injection_schedule_phase4_schema_ready() -> None:
+    """Do not let create_all silently bypass the forward-only Phase 4 migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "auth_users" not in table_names:
+            return
+
+        current_revision = None
+        if "alembic_version" in table_names:
+            current_revision = connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar_one_or_none()
+        missing_tables = sorted(
+            INJECTION_SCHEDULE_PHASE4_REQUIRED_TABLES - table_names
+        )
+        missing_columns: list[str] = []
+        for table_name, required_columns in (
+            INJECTION_SCHEDULE_PHASE4_REQUIRED_COLUMNS.items()
+        ):
+            if table_name not in table_names:
+                continue
+            existing_columns = {
+                column["name"] for column in inspector.get_columns(table_name)
+            }
+            missing_columns.extend(
+                f"column:{table_name}.{column_name}"
+                for column_name in sorted(required_columns - existing_columns)
+            )
+        pending_revision = current_revision in {
+            INJECTION_SCHEDULE_REMOVAL_REVISION,
+            INJECTION_SCHEDULE_PHASE2_SCHEMA_REVISION,
+            INJECTION_SCHEDULE_PHASE2_REVISION,
+            INJECTION_SCHEDULE_PHASE3_REVISION,
+        }
+        if not missing_tables and not missing_columns and not pending_revision:
+            return
+
+    missing = [f"table:{table_name}" for table_name in missing_tables]
+    missing.extend(missing_columns)
+    if pending_revision:
+        missing.insert(0, f"revision:{current_revision}")
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产 Phase 4 Alembic 迁移 "
+        f"{INJECTION_SCHEDULE_PHASE4_REVISION}；缺少："
+        f"{', '.join(missing) or 'migration revision'}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -291,6 +427,7 @@ def ensure_sqlite_legacy_columns() -> None:
 def init_db() -> None:
     from app.models import auth  # noqa: F401
     from app.models import internal_quote  # noqa: F401
+    from app.models import injection_schedule  # noqa: F401
     from app.models import molding_sample  # noqa: F401
     from app.models import pricing  # noqa: F401
     from app.models import raw_material  # noqa: F401
@@ -303,6 +440,7 @@ def init_db() -> None:
 
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
+    ensure_injection_schedule_phase4_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

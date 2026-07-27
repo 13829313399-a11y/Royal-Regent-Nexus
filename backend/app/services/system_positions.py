@@ -16,7 +16,7 @@ from app.services.permission_codes import (
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v5"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v6"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -76,6 +76,11 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "molding_sample:price_update",
     "molding_sample:audit_read",
     "molding_sample:notification_read",
+    "injection_schedule:read",
+    "injection_schedule:edit",
+    "injection_schedule:publish",
+    "injection_schedule:config",
+    "injection_schedule:cross_factory_read",
     "carton_mark:read",
     "carton_mark:template_upload",
     "carton_mark:photo_upload",
@@ -232,9 +237,15 @@ MOLDING_CLERK_PERMISSION_CODES = (
     "molding_sample:production_fillback",
     "molding_sample:production_complete",
     "molding_sample:notification_read",
+    "injection_schedule:read",
+    "injection_schedule:edit",
 )
 
-MOLDING_SUPERVISOR_PERMISSION_CODES = MOLDING_CLERK_PERMISSION_CODES
+MOLDING_SUPERVISOR_PERMISSION_CODES = (
+    *MOLDING_CLERK_PERMISSION_CODES,
+    "injection_schedule:publish",
+    "injection_schedule:config",
+)
 
 WAREHOUSE_PERMISSION_CODES = (
     "molding_sample:read",
@@ -708,8 +719,12 @@ def validate_system_position_definitions() -> None:
         and molding_clerk.permission_codes == MOLDING_CLERK_PERMISSION_CODES
         and molding_supervisor.scope_mode == CROSS_FACTORY_OPERATE_SCOPE
         and molding_manager.scope_mode == CROSS_FACTORY_OPERATE_SCOPE
-        and molding_supervisor.permission_codes == MOLDING_CLERK_PERMISSION_CODES
-        and molding_manager.permission_codes == MOLDING_CLERK_PERMISSION_CODES
+        and molding_supervisor.permission_codes == MOLDING_SUPERVISOR_PERMISSION_CODES
+        and molding_manager.permission_codes == MOLDING_SUPERVISOR_PERMISSION_CODES
+        and "injection_schedule:cross_factory_read"
+        not in molding_supervisor.permission_codes
+        and "injection_schedule:cross_factory_read"
+        not in molding_manager.permission_codes
     ):
         raise RuntimeError("啤机文员、主管、经理的生产任务权限关系无效")
 

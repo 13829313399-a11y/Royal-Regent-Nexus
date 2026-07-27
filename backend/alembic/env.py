@@ -19,6 +19,7 @@ from app.core.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models import auth  # noqa: F401,E402
 from app.models import internal_quote  # noqa: F401,E402
+from app.models import injection_schedule  # noqa: F401,E402
 from app.models import molding_sample  # noqa: F401,E402
 from app.models import pricing  # noqa: F401,E402
 from app.models import raw_material  # noqa: F401,E402

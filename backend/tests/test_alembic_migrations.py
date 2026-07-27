@@ -42,7 +42,11 @@ MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION = "20260720_0028"
 INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION = "20260721_0029"
 INJECTION_SCHEDULE_HUB_MIGRATION_REVISION = "20260722_0030"
 INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION = "20260723_0031"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION
+INJECTION_SCHEDULE_PHASE2_SCHEMA_MIGRATION_REVISION = "20260723_0032"
+INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION = "20260723_0033"
+INJECTION_SCHEDULE_PHASE3_MIGRATION_REVISION = "20260723_0034"
+INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION = "20260725_0035"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -95,6 +99,38 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    injection_phase4_revision = script.get_revision(
+        INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION
+    )
+    assert (
+        injection_phase4_revision.down_revision
+        == INJECTION_SCHEDULE_PHASE3_MIGRATION_REVISION
+    )
+
+    injection_phase3_revision = script.get_revision(
+        INJECTION_SCHEDULE_PHASE3_MIGRATION_REVISION
+    )
+    assert (
+        injection_phase3_revision.down_revision
+        == INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION
+    )
+
+    injection_phase2_revision = script.get_revision(
+        INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION
+    )
+    assert (
+        injection_phase2_revision.down_revision
+        == INJECTION_SCHEDULE_PHASE2_SCHEMA_MIGRATION_REVISION
+    )
+
+    injection_phase2_schema_revision = script.get_revision(
+        INJECTION_SCHEDULE_PHASE2_SCHEMA_MIGRATION_REVISION
+    )
+    assert (
+        injection_phase2_schema_revision.down_revision
+        == INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION
+    )
 
     injection_removal_revision = script.get_revision(
         INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION
@@ -567,10 +603,10 @@ def test_injection_schedule_removal_migration_drops_module_schema_and_permission
         )
         connection.commit()
 
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            HEAD_MIGRATION_REVISION,
+            INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION,
         )
         injection_tables = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'injection_%'"
@@ -582,6 +618,408 @@ def test_injection_schedule_removal_migration_drops_module_schema_and_permission
         assert connection.execute(
             "SELECT COUNT(*) FROM auth_iam_state WHERE key = 'legacy_read_compat_v1_completed'"
         ).fetchone() == (0,)
+
+
+def test_injection_schedule_phase2_upgrade_rebuilds_scoped_schema_and_preserves_existing_rows(
+    tmp_path,
+):
+    database_path = tmp_path / "injection_schedule_phase2_0032.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO auth_audit_logs (
+                user_id, username, action, detail, ip_address, user_agent, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "system",
+                "system",
+                "phase2_preflight",
+                "{}",
+                "",
+                "",
+                "2026-07-23 15:59:00",
+            ),
+        )
+        connection.commit()
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_audit_logs WHERE action = 'phase2_preflight'"
+        ).fetchone() == (1,)
+
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert {
+            "injection_schedule_import_batches",
+            "injection_schedule_import_issues",
+            "injection_machine_masters",
+            "injection_mold_masters",
+            "injection_order_masters",
+            "injection_schedule_factory_states",
+            "injection_schedule_rule_configs",
+            "injection_schedule_versions",
+            "injection_schedule_tasks",
+            "injection_schedule_validation_runs",
+            "injection_schedule_validation_items",
+            "injection_schedule_audit_events",
+            "injection_schedule_replan_runs",
+            "injection_schedule_shift_actuals",
+            "injection_schedule_actual_corrections",
+        } <= tables
+
+        import_batch_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_schedule_import_batches')"
+            ).fetchall()
+        }
+        assert {
+            "source_content",
+            "source_sha256",
+            "confirm_reason",
+            "draft_version_id",
+        } <= import_batch_columns
+
+        task_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_schedule_tasks')"
+            ).fetchall()
+        }
+        assert {
+            "order_no_snapshot",
+            "product_code_snapshot",
+            "product_name_snapshot",
+            "delivery_due_date_snapshot",
+            "mold_code_snapshot",
+            "color_snapshot",
+            "color_rank_snapshot",
+            "material_snapshot",
+            "machine_code_snapshot",
+            "source",
+            "recommendation_score",
+            "score_breakdown_json",
+            "constraint_snapshot_json",
+            "recommendation_context_hash",
+        } <= task_columns
+
+        machine_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_machine_masters')"
+            ).fetchall()
+        }
+        assert {"screw_type"} <= machine_columns
+        mold_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_mold_masters')"
+            ).fetchall()
+        }
+        assert {
+            "mold_thickness_mm",
+            "required_opening_stroke_mm",
+            "required_screw_type",
+        } <= mold_columns
+        order_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_order_masters')"
+            ).fetchall()
+        }
+        assert {
+            "color_rank",
+            "downstream_urgency",
+            "warehouse_buffer_hours",
+            "downstream_buffer_hours",
+            "special_handling_reason",
+            "priority_code",
+        } <= order_columns
+        version_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_schedule_versions')"
+            ).fetchall()
+        }
+        assert {"rule_config_revision"} <= version_columns
+
+        task_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list('injection_schedule_tasks')"
+        ).fetchall()
+        grouped_foreign_keys: dict[int, set[tuple[str, str]]] = {}
+        for row in task_foreign_keys:
+            grouped_foreign_keys.setdefault(row[0], set()).add((row[3], row[4]))
+        assert {("version_id", "id"), ("factory_id", "factory_id")} in (
+            grouped_foreign_keys.values()
+        )
+        assert {("order_id", "id"), ("factory_id", "factory_id")} in (
+            grouped_foreign_keys.values()
+        )
+        assert {("machine_id", "id"), ("factory_id", "factory_id")} in (
+            grouped_foreign_keys.values()
+        )
+
+        published_index_sql = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name = 'uq_injection_schedule_one_published_per_factory'
+            """
+        ).fetchone()
+        assert published_index_sql is not None
+        assert "WHERE status = 'published'" in published_index_sql[0]
+        audit_triggers = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND tbl_name = 'injection_schedule_audit_events'
+                """
+            ).fetchall()
+        }
+        assert audit_triggers == {
+            "trg_injection_schedule_audit_no_update",
+            "trg_injection_schedule_audit_no_delete",
+        }
+
+
+def test_injection_schedule_delivery_snapshot_upgrade_backfills_existing_tasks(
+    tmp_path,
+):
+    database_path = tmp_path / "injection_schedule_delivery_snapshot_0033.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), *arguments],
+            cwd=BACKEND_DIR,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_alembic("upgrade", INJECTION_SCHEDULE_PHASE2_SCHEMA_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        task_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_schedule_tasks')"
+            ).fetchall()
+        }
+        assert "delivery_due_date_snapshot" not in task_columns
+        connection.execute(
+            """
+            INSERT INTO injection_machine_masters (
+                id, factory_id, machine_code
+            ) VALUES (?, ?, ?)
+            """,
+            ("machine-existing", "huaxing", "M-001"),
+        )
+        connection.execute(
+            """
+            INSERT INTO injection_order_masters (
+                id, factory_id, natural_key, delivery_due_date,
+                color, pigment, material, priority_flag,
+                order_qty, outstanding_qty
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "order-existing",
+                "huaxing",
+                "existing-order-key",
+                "2026-08-18",
+                "黑色",
+                "BK-LEGACY",
+                "ABS",
+                "特急▲",
+                100,
+                100,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_rule_configs (
+                factory_id, config_json, revision
+            ) VALUES (?, ?, ?)
+            """,
+            (
+                "huaxing",
+                '{"color_transition_matrix":[{"from_code":"*","to_code":"*","minutes":99}]}',
+                7,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO injection_order_masters (
+                id, factory_id, natural_key, delivery_due_date,
+                color, pigment, material, priority_flag,
+                order_qty, outstanding_qty
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "order-color-fallback",
+                "huaxing",
+                "color-fallback-key",
+                "2026-08-20",
+                "白色",
+                "",
+                "PP",
+                "P2",
+                80,
+                80,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_versions (
+                id, factory_id, version_no, name, status, plan_base_at,
+                rules_snapshot_json, created_by, created_by_name, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "version-existing",
+                "huaxing",
+                1,
+                "existing",
+                "draft",
+                "2026-07-23 08:00:00",
+                '{"color_transition_matrix":[{"from_code":"*","to_code":"*","minutes":30}]}',
+                "admin",
+                "管理员",
+                "2026-07-23 08:00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_tasks (
+                id, factory_id, version_id, order_id, machine_id,
+                sequence_no, planned_qty, order_revision_snapshot,
+                machine_revision_snapshot
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "task-existing",
+                "huaxing",
+                "version-existing",
+                "order-existing",
+                "machine-existing",
+                0,
+                100,
+                1,
+                1,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_tasks (
+                id, factory_id, version_id, order_id, machine_id,
+                sequence_no, planned_qty, order_revision_snapshot,
+                machine_revision_snapshot
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "task-color-fallback",
+                "huaxing",
+                "version-existing",
+                "order-color-fallback",
+                "machine-existing",
+                1,
+                80,
+                1,
+                1,
+            ),
+        )
+        connection.commit()
+
+    run_alembic("upgrade", INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION,)
+        assert connection.execute(
+            """
+            SELECT delivery_due_date_snapshot
+            FROM injection_schedule_tasks
+            WHERE id = 'task-existing'
+            """
+        ).fetchone() == ("2026-08-18",)
+
+    run_alembic("upgrade", "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,)
+        assert connection.execute(
+            """
+            SELECT delivery_due_date_snapshot
+            FROM injection_schedule_tasks
+            WHERE id = 'task-existing'
+            """
+        ).fetchone() == ("2026-08-18",)
+        assert connection.execute(
+            """
+            SELECT color_snapshot, color_rank_snapshot, material_snapshot, source
+            FROM injection_schedule_tasks
+            WHERE id = 'task-existing'
+            """
+        ).fetchone() == ("BK-LEGACY", None, "ABS", "legacy")
+        assert connection.execute(
+            """
+            SELECT color_snapshot, color_rank_snapshot, material_snapshot, source
+            FROM injection_schedule_tasks
+            WHERE id = 'task-color-fallback'
+            """
+        ).fetchone() == ("白色", None, "PP", "legacy")
+        assert connection.execute(
+            "SELECT COUNT(*) FROM injection_schedule_tasks"
+        ).fetchone() == (2,)
+        assert connection.execute(
+            """
+            SELECT rule_config_revision
+            FROM injection_schedule_versions
+            WHERE id = 'version-existing'
+            """
+        ).fetchone() == (0,)
+        assert connection.execute(
+            """
+            SELECT id, priority_flag, priority_code
+            FROM injection_order_masters
+            ORDER BY id
+            """
+        ).fetchall() == [
+            ("order-color-fallback", "P2", "P2"),
+            ("order-existing", "特急▲", "P0"),
+        ]
 
 
 def test_injection_schedule_hub_postgresql_offline_sql_contains_forward_schema():
@@ -646,6 +1084,129 @@ def test_injection_schedule_removal_postgresql_offline_sql_drops_module_schema()
         "injection_machine_masters",
     ):
         assert f"drop table {table_name}" in sql
+
+
+def test_injection_schedule_phase2_postgresql_offline_sql_contains_scoped_schema():
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            f"{INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION}:{INJECTION_SCHEDULE_PHASE3_MIGRATION_REVISION}",
+            "--sql",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout.lower()
+    for table_name in (
+        "injection_schedule_import_batches",
+        "injection_schedule_import_issues",
+        "injection_machine_masters",
+        "injection_mold_masters",
+        "injection_order_masters",
+        "injection_schedule_factory_states",
+        "injection_schedule_rule_configs",
+        "injection_schedule_versions",
+        "injection_schedule_tasks",
+        "injection_schedule_validation_runs",
+        "injection_schedule_validation_items",
+        "injection_schedule_audit_events",
+    ):
+        assert f"create table {table_name}" in sql
+    assert "fk_injection_schedule_task_version_factory" in sql
+    assert "fk_injection_schedule_task_order_factory" in sql
+    assert "fk_injection_schedule_task_machine_factory" in sql
+    assert "uq_injection_schedule_one_published_per_factory" in sql
+    assert "where status = 'published'" in sql
+    assert (
+        "alter table injection_schedule_tasks add column "
+        "delivery_due_date_snapshot" in sql
+    )
+    assert "reject_injection_schedule_audit_mutation" in sql
+    assert "before update or delete on injection_schedule_audit_events" in sql
+
+
+def test_injection_schedule_phase4_postgresql_offline_sql_contains_execution_schema():
+    env = os.environ.copy()
+    env["DATABASE_URL"] = (
+        "postgresql+psycopg://postgres:postgres@localhost:5432/"
+        "royal_regent_nexus"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            (
+                f"{INJECTION_SCHEDULE_PHASE3_MIGRATION_REVISION}:"
+                f"{INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION}"
+            ),
+            "--sql",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout.lower()
+    assert (
+        "alter table injection_schedule_tasks add column "
+        "execution_status varchar(32)" in sql
+    )
+    assert (
+        "alter table injection_schedule_tasks add column protected boolean" in sql
+    )
+    assert (
+        "alter table injection_order_masters add column "
+        "priority_code varchar(2)" in sql
+    )
+    assert "ck_injection_order_priority_code" in sql
+    assert "ix_injection_order_masters_priority_code" in sql
+    assert "ck_injection_schedule_task_source" in sql
+    assert "ck_injection_schedule_task_execution_status" in sql
+    assert "uq_injection_schedule_task_id_version_factory" in sql
+    assert (
+        "create index ix_injection_schedule_tasks_execution_status "
+        "on injection_schedule_tasks (execution_status)" in sql
+    )
+    assert (
+        "create index ix_injection_schedule_tasks_protected "
+        "on injection_schedule_tasks (protected)" in sql
+    )
+    assert "create table injection_schedule_replan_runs" in sql
+    assert "ck_injection_replan_run_distinct_versions" in sql
+    assert "ck_injection_replan_run_context_hash" in sql
+    assert "ix_injection_schedule_replan_runs_context_hash" in sql
+    assert "create table injection_schedule_shift_actuals" in sql
+    assert "lineage_sequence integer not null" in sql
+    assert "uq_injection_shift_actual_source_task_sequence" in sql
+    assert "ck_injection_shift_actual_authoritative_balance" in sql
+    assert "ck_injection_shift_actual_correction_trace" in sql
+    assert "fk_injection_shift_actual_task_version_factory" in sql
+    assert "fk_injection_shift_actual_source_task_version_factory" in sql
+    assert "ix_injection_schedule_shift_actuals_lineage_sequence" in sql
+    assert "create table injection_schedule_actual_corrections" in sql
+    assert "uq_injection_actual_correction_factory_request" in sql
+    assert "uq_injection_actual_correction_actual_revision" in sql
+    assert "ck_injection_actual_correction_revision" in sql
+    assert "ck_injection_actual_correction_request_id" in sql
+    assert "ck_injection_actual_correction_response" in sql
+    assert "ix_injection_schedule_actual_corrections_actual_id" in sql
 
 
 def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
@@ -1620,6 +2181,92 @@ def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+
+
+def test_sqlite_phase4_schema_gate_preserves_0033_then_allows_upgrade(tmp_path):
+    database_path = tmp_path / "injection_schedule_phase4_schema_gate.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+    schema_before_startup = _sqlite_schema_signature(database_path)
+
+    blocked_startup = _run_dispatch_init_db(database_path)
+    assert blocked_startup.returncode != 0
+    startup_output = f"{blocked_startup.stdout}\n{blocked_startup.stderr}"
+    assert INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION in startup_output
+    assert "注塑排产 Phase 4 Alembic 迁移" in startup_output
+    assert "table:injection_schedule_actual_corrections" in startup_output
+    assert "column:injection_order_masters.priority_code" in startup_output
+    assert _sqlite_schema_signature(database_path) == schema_before_startup
+
+    migrated = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert migrated.returncode == 0, migrated.stderr
+    allowed_startup = _run_dispatch_init_db(database_path)
+    assert allowed_startup.returncode == 0, allowed_startup.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,)
+        assert {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_schedule_tasks')"
+            ).fetchall()
+        } >= {
+            "color_rank_snapshot",
+            "recommendation_context_hash",
+            "execution_status",
+            "protected",
+        }
+        assert "priority_code" in {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_order_masters')"
+            ).fetchall()
+        }
+        assert {
+            "injection_schedule_actual_corrections",
+            "injection_schedule_replan_runs",
+            "injection_schedule_shift_actuals",
+        } <= {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        task_table_sql = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'injection_schedule_tasks'
+            """
+        ).fetchone()[0].lower()
+        assert "ck_injection_schedule_task_source" in task_table_sql
+        assert "ck_injection_schedule_task_execution_status" in task_table_sql
+        actual_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list('injection_schedule_shift_actuals')"
+        ).fetchall()
+        actual_foreign_key_groups: dict[
+            int,
+            set[tuple[str, str]],
+        ] = {}
+        for row in actual_foreign_keys:
+            actual_foreign_key_groups.setdefault(row[0], set()).add(
+                (row[3], row[4])
+            )
+        assert {
+            ("task_id", "id"),
+            ("version_id", "version_id"),
+            ("factory_id", "factory_id"),
+        } in actual_foreign_key_groups.values()
+        assert {
+            ("source_task_id", "id"),
+            ("source_version_id", "version_id"),
+            ("factory_id", "factory_id"),
+        } in actual_foreign_key_groups.values()
 
 
 def _insert_dispatch_test_order(
