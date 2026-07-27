@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.internal_quote import InternalQuotePricingBaseline
 from app.schemas.internal_quote import (
+    InternalQuoteFreightBaselineRow,
     InternalQuoteMachineBaselineRow,
     InternalQuoteMaterialBaselineRow,
     InternalQuotePricingBaselineOut,
@@ -19,8 +20,10 @@ from app.services.auth import (
     now_text,
 )
 from app.services.internal_quote_calculator import (
+    DEFAULT_FREIGHT,
     DEFAULT_MACHINE_PRICES,
     DEFAULT_MATERIAL_PRICES,
+    FREIGHT_ROUTE_DEFINITIONS,
 )
 
 
@@ -55,6 +58,20 @@ def _default_machine_rows() -> list[InternalQuoteMachineBaselineRow]:
     ]
 
 
+def _default_freight_routes() -> list[InternalQuoteFreightBaselineRow]:
+    return [
+        InternalQuoteFreightBaselineRow(
+            route_key=route_key,
+            route_name=label,
+            capacity_key=capacity_key,
+            freight_hkd=DEFAULT_FREIGHT["cost_hkd"][default_cost_key],
+            lifting_hkd="0",
+        )
+        for route_key, label, capacity_key, _default_capacity_key, default_cost_key
+        in FREIGHT_ROUTE_DEFINITIONS
+    ]
+
+
 def _json_rows(value: str, row_type):
     try:
         rows = json.loads(value)
@@ -63,6 +80,33 @@ def _json_rows(value: str, row_type):
     if not isinstance(rows, list):
         return []
     return [row_type.model_validate(row) for row in rows if isinstance(row, dict)]
+
+
+def _json_freight_routes(value: str) -> list[InternalQuoteFreightBaselineRow]:
+    try:
+        stored = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        stored = []
+    if isinstance(stored, list):
+        routes: list[InternalQuoteFreightBaselineRow] = []
+        for row in stored:
+            if not isinstance(row, dict):
+                continue
+            try:
+                routes.append(InternalQuoteFreightBaselineRow.model_validate(row))
+            except ValueError:
+                continue
+        if routes:
+            return routes
+    # Compatibility with the initial fixed-key implementation used before the
+    # dynamic route list was released.
+    if isinstance(stored, dict):
+        routes = _default_freight_routes()
+        return [
+            row.model_copy(update={"freight_hkd": str(stored.get(row.route_key, row.freight_hkd))})
+            for row in routes
+        ]
+    return _default_freight_routes()
 
 
 def _baseline_out(
@@ -79,6 +123,7 @@ def _baseline_out(
             source_type="default",
             material_prices=_default_material_rows(),
             machine_prices=_default_machine_rows(),
+            freight_routes=_default_freight_routes(),
             updated_by="",
             updated_by_name="",
             updated_at="",
@@ -97,6 +142,7 @@ def _baseline_out(
             baseline.machine_prices_json,
             InternalQuoteMachineBaselineRow,
         ),
+        freight_routes=_json_freight_routes(baseline.freight_routes_json),
         updated_by=baseline.updated_by,
         updated_by_name=baseline.updated_by_name,
         updated_at=baseline.updated_at,
@@ -139,6 +185,11 @@ def seed_internal_quote_pricing_baseline_defaults(db: Session) -> None:
             ),
             machine_prices_json=json.dumps(
                 [row.model_dump() for row in _default_machine_rows()],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            freight_routes_json=json.dumps(
+                [row.model_dump() for row in _default_freight_routes()],
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -207,6 +258,16 @@ def update_pricing_baseline(
         ensure_ascii=False,
         sort_keys=True,
     )
+    freight_routes = (
+        payload.freight_routes
+        if payload.freight_routes is not None
+        else _json_freight_routes(baseline.freight_routes_json if baseline is not None else "[]")
+    )
+    freight_routes_json = json.dumps(
+        [row.model_dump() for row in freight_routes],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     if baseline is None:
         baseline = InternalQuotePricingBaseline(
             id=f"IQB-{uuid4().hex.upper()}",
@@ -215,6 +276,7 @@ def update_pricing_baseline(
             workshop_name=payload.workshop_name,
             material_prices_json=material_prices_json,
             machine_prices_json=machine_prices_json,
+            freight_routes_json=freight_routes_json,
             revision=1,
             created_by=user.id,
             created_by_name=user.display_name,
@@ -228,6 +290,7 @@ def update_pricing_baseline(
         baseline.workshop_name = payload.workshop_name
         baseline.material_prices_json = material_prices_json
         baseline.machine_prices_json = machine_prices_json
+        baseline.freight_routes_json = freight_routes_json
         baseline.revision += 1
         baseline.updated_by = user.id
         baseline.updated_by_name = user.display_name
@@ -241,7 +304,8 @@ def update_pricing_baseline(
         detail=(
             f"报价基数更新：{factory_id}/{workshop_code}，"
             f"revision {current_revision}->{baseline.revision}，"
-            f"材料 {len(payload.material_prices)} 项，机型 {len(payload.machine_prices)} 项"
+            f"材料 {len(payload.material_prices)} 项，机型 {len(payload.machine_prices)} 项，"
+            f"运输方案 {len(freight_routes)} 项"
         ),
         request=request,
     )

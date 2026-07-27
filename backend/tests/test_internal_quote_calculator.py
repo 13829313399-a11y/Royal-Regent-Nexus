@@ -202,6 +202,30 @@ def test_electronic_rmb_contract_recalculates_tax_and_hkd_quote_from_snapshot():
     assert electronic["totals"]["total_hkd"] == "3.2443"
 
 
+def test_electronic_quick_quote_uses_requested_fields_and_ignores_detail_rows():
+    electronic = calculate(
+        "electronic",
+        {
+            "quote_mode": "quick",
+            "quick_quotes": [
+                {"item": "主控板", "unit_price_rmb": "10", "tax_rate_percent": "13", "remark": "含税"},
+                {"item": "喇叭", "unit_price_rmb": "5", "tax_rate_percent": "0", "remark": "不含税"},
+            ],
+            "components": [
+                {"item": "保留明细", "quantity": "1", "unit_price_rmb": "999", "tax_rate_percent": "13"},
+            ],
+            "profit_rate_percent": "10",
+        },
+    )
+
+    assert electronic["status"] == "valid"
+    assert electronic["currency_totals"] == {"HKD": "20.6988", "RMB": "17.5940", "USD": "0.0000"}
+    assert electronic["totals"]["component_rmb"] == "15.0000"
+    assert [row["item"] for row in electronic["line_breakdown"]] == ["主控板", "喇叭"]
+    assert electronic["line_breakdown"][0]["unit_price_hkd"] == "11.7647"
+    assert electronic["line_breakdown"][0]["quantity"] == "1.0000"
+
+
 def test_painting_slush_sewing_and_assembly_decimal_vectors():
     painting = calculate(
         "painting",
@@ -602,10 +626,88 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert freight_options[0]["carton_cuft"] == "1.7892"
     assert freight_options[0]["qty_per_carton"] == "2.0000"
     assert freight_options[0]["total_cartons"] == "1107.0000"
+    assert freight_options[0]["freight_per_piece_hkd"] == "3.6134"
+    assert freight_options[0]["lifting_cost_hkd"] == "0.0000"
+    assert freight_options[0]["lifting_per_piece_hkd"] == "0.0000"
     assert freight_options[0]["per_piece_hkd"] == "3.6134"
     assert freight_options[-1]["item"] == "YT 5 吨车"
     assert optional_product_dimensions["totals"]["total_hkd"] == "2.7416"
     assert len(optional_product_dimensions["line_breakdown"]) == 9
+
+    baseline_freight = calculate_section(
+        "sales",
+        {
+            "freight_calc": {"cap_40": "1980"},
+            "cartons": [{
+                "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                "qty_per_carton": "2", "flat_cards": [],
+            }],
+        },
+        {
+            **SNAPSHOT,
+            "freight": {
+                "capacity_cuft": {"container_40": "1980"},
+                "routes": [{
+                    "route_key": "sz40",
+                    "route_name": "深圳 40 柜",
+                    "capacity_key": "cap_40",
+                    "freight_hkd": "6500",
+                    "lifting_hkd": "1100",
+                }],
+            },
+        },
+        "IQREF-FREIGHT-BASELINE",
+        context={"factory_price_hkd": "0"},
+    )
+    assert len(baseline_freight["totals"]["freight_options"]) == 1
+    baseline_sz40 = baseline_freight["totals"]["freight_options"][0]
+    assert baseline_sz40["route_key"] == "sz40"
+    assert baseline_sz40["item"] == "深圳 40 柜"
+    assert baseline_sz40["freight_cost_hkd"] == "6500.0000"
+    assert baseline_sz40["lifting_cost_hkd"] == "1100.0000"
+    assert baseline_sz40["has_lifting_fee"] is True
+    assert baseline_sz40["freight_per_piece_hkd"] == "2.9359"
+    assert baseline_sz40["lifting_per_piece_hkd"] == "0.4968"
+    assert baseline_sz40["per_piece_hkd"] == "3.4327"
+    assert baseline_sz40["formula"] == "已启用的运费与吊柜费分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量；未启用项按 0 计算"
+
+    freight_only = calculate_section(
+        "sales",
+        {
+            "freight_calc": {
+                "enabled": True,
+                "freight_enabled": True,
+                "lifting_enabled": False,
+                "cap_40": "1980",
+            },
+            "cartons": [{
+                "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                "qty_per_carton": "2", "flat_cards": [],
+            }],
+        },
+        {
+            **SNAPSHOT,
+            "freight": {
+                "capacity_cuft": {"container_40": "1980"},
+                "routes": [{
+                    "route_key": "sz40",
+                    "route_name": "深圳 40 柜",
+                    "capacity_key": "cap_40",
+                    "freight_hkd": "6500",
+                    "lifting_hkd": "1100",
+                }],
+            },
+        },
+        "IQREF-FREIGHT-ONLY",
+        context={"factory_price_hkd": "0"},
+    )
+    freight_only_sz40 = freight_only["totals"]["freight_options"][0]
+    assert freight_only_sz40["freight_enabled"] is True
+    assert freight_only_sz40["lifting_enabled"] is False
+    assert freight_only_sz40["freight_per_piece_hkd"] == "2.9359"
+    assert freight_only_sz40["lifting_cost_hkd"] == "0.0000"
+    assert freight_only_sz40["lifting_per_piece_hkd"] == "0.0000"
+    assert freight_only_sz40["per_piece_hkd"] == "2.9359"
 
     self_pickup = calculate(
         "sales",
@@ -654,6 +756,87 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert missing["warnings"][0]["code"] == "sales_carton_missing"
 
 
+def test_sales_testing_fee_calculates_multiple_moq_unit_prices_without_changing_hkd_cost():
+    payload = {
+        "testing_fee_total_usd": "1250",
+        "testing_fee_moqs": ["5000", "10000"],
+        "freight_calc": {"enabled": False},
+        "cartons": [{
+            "item": "主纸箱",
+            "length_in": "10",
+            "width_in": "5",
+            "height_in": "4",
+            "qty_per_carton": "10",
+            "flat_cards": [],
+        }],
+    }
+    sales = calculate("sales", payload, factory_price_hkd="20")
+    baseline = calculate(
+        "sales",
+        {**payload, "testing_fee_total_usd": "0", "testing_fee_moqs": ["0"]},
+        factory_price_hkd="20",
+    )
+
+    assert sales["status"] == "valid"
+    assert sales["currency_totals"]["USD"] == "0.2500"
+    assert sales["currency_totals"]["HKD"] == baseline["currency_totals"]["HKD"]
+    assert sales["totals"]["testing_fee_total_usd"] == "1250.0000"
+    assert sales["totals"]["testing_fee_moqs"] == ["5000.0000", "10000.0000"]
+    assert sales["totals"]["testing_fee_tiers"] == [
+        {"moq": "5000.0000", "unit_price_usd": "0.2500"},
+        {"moq": "10000.0000", "unit_price_usd": "0.1250"},
+    ]
+    assert sales["totals"]["testing_fee_moq"] == "5000.0000"
+    assert sales["totals"]["testing_fee_unit_usd"] == "0.2500"
+    assert sales["totals"]["factory_price_hkd"] == baseline["totals"]["factory_price_hkd"]
+    assert sales["line_breakdown"][0] == {
+        "kind": "sales_testing_fee",
+        "owner": "sales",
+        "item": "测试费",
+        "total_usd": "1250.0000",
+        "moq": "5000.0000",
+        "unit_price_usd": "0.2500",
+        "tiers": [
+            {"moq": "5000.0000", "unit_price_usd": "0.2500"},
+            {"moq": "10000.0000", "unit_price_usd": "0.1250"},
+        ],
+        "formula": "测试费用 USD ÷ MOQ 数量",
+        "reference_only": True,
+    }
+
+    legacy = calculate(
+        "sales",
+        {**payload, "testing_fee_moqs": None, "testing_fee_moq": "5000"},
+        factory_price_hkd="20",
+    )
+    assert legacy["totals"]["testing_fee_moqs"] == ["5000.0000"]
+    assert legacy["totals"]["testing_fee_unit_usd"] == "0.2500"
+
+    with pytest.raises(CalculationInputError, match="第 2 档 MOQ 必须大于 0"):
+        calculate(
+            "sales",
+            {
+                "testing_fee_total_usd": "1250",
+                "testing_fee_moqs": ["5000", "0"],
+                "freight_calc": {"enabled": False},
+                "cartons": payload["cartons"],
+            },
+            factory_price_hkd="20",
+        )
+
+    with pytest.raises(CalculationInputError, match="MOQ 不能重复"):
+        calculate(
+            "sales",
+            {
+                "testing_fee_total_usd": "1250",
+                "testing_fee_moqs": ["5000", "5000"],
+                "freight_calc": {"enabled": False},
+                "cartons": payload["cartons"],
+            },
+            factory_price_hkd="20",
+        )
+
+
 def test_sales_scenario_and_blocking_reference_warnings():
     sales = calculate(
         "sales",
@@ -673,9 +856,85 @@ def test_sales_scenario_and_blocking_reference_warnings():
         factory_price_hkd="10",
         mold_amortization_usd="1",
     )
-    assert sales["totals"]["tax_deduction_hkd"] == "2.0000"
-    assert sales["totals"]["after_tax_cost_hkd"] == "8.0000"
+    assert sales["totals"]["tax_deduction_hkd"] == "0.0000"
+    assert sales["totals"]["after_tax_cost_hkd"] == "10.0000"
+    carton_tax_line = next(
+        row for row in sales["line_breakdown"]
+        if row.get("kind") == "tax" and row.get("code") == "carton"
+    )
+    assert carton_tax_line["rate"] is None
+    assert carton_tax_line["deduction_hkd"] is None
     assert sales["totals"]["scenarios"][0]["total_usd"] == "3.6688"
+
+    misc_ratio = calculate(
+        "sales",
+        {"shipping": {"misc_ratio": "0.035"}, "freight_calc": {"enabled": False}},
+        factory_price_hkd="10",
+    )
+    assert misc_ratio["totals"]["misc_ratio"] == "0.0350"
+
+    tiered_markup = calculate(
+        "sales",
+        {
+            "shipping": {
+                "markup_x": "1.20",
+                "markup_tiers": [
+                    {"moq": 3000, "markup_x": "1.30"},
+                    {"moq": 5000, "markup_x": "1.25"},
+                    {"moq": 10000, "markup_x": "1.15"},
+                ],
+                "selected_markup_moq": 5000,
+            },
+            "freight_calc": {"enabled": False},
+        },
+        factory_price_hkd="10",
+    )
+    assert tiered_markup["totals"]["total_hkd"] == "0.0000"
+
+    with pytest.raises(CalculationInputError, match="MOQ 必须由小到大排列"):
+        calculate(
+            "sales",
+            {
+                "shipping": {
+                    "markup_tiers": [
+                        {"moq": 5000, "markup_x": "1.20"},
+                        {"moq": 3000, "markup_x": "1.30"},
+                    ],
+                },
+                "freight_calc": {"enabled": False},
+            },
+            factory_price_hkd="10",
+        )
+
+    with pytest.raises(CalculationInputError, match="本单采用的 MOQ 必须来自分段码数档位"):
+        calculate(
+            "sales",
+            {
+                "shipping": {
+                    "markup_tiers": [
+                        {"moq": 3000, "markup_x": "1.30"},
+                        {"moq": 5000, "markup_x": "1.20"},
+                    ],
+                    "selected_markup_moq": 10000,
+                },
+                "freight_calc": {"enabled": False},
+            },
+            factory_price_hkd="10",
+        )
+
+    historical_empty_shipping = calculate(
+        "sales",
+        {"shipping": None, "freight_calc": {"enabled": False}},
+        factory_price_hkd="10",
+    )
+    assert historical_empty_shipping["totals"]["misc_ratio"] == "0.0200"
+
+    with pytest.raises(CalculationInputError, match="杂项系数必须在 0% 至 100% 之间"):
+        calculate(
+            "sales",
+            {"shipping": {"misc_ratio": "1.01"}, "freight_calc": {"enabled": False}},
+            factory_price_hkd="10",
+        )
 
     missing_reference = calculate(
         "molding",

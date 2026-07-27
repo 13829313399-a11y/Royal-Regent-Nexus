@@ -1,5 +1,6 @@
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
@@ -8,7 +9,11 @@ from PIL import Image as PillowImage
 
 from app.services.internal_quote_artifacts import _merge_import_payload
 from app.services.internal_quote_import import find_header, parse_internal_quote_workbook, workbook_rows
-from app.services.internal_quote_templates import TEMPLATE_LABELS, build_internal_quote_import_template
+from app.services.internal_quote_templates import (
+    FIXED_TEMPLATE_FILE_NAMES,
+    TEMPLATE_LABELS,
+    build_internal_quote_import_template,
+)
 
 
 def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> bytes:
@@ -29,6 +34,20 @@ def test_downloadable_import_template_uses_a_header_recognized_by_its_parser(imp
 
     assert content.startswith(b"PK")
     assert file_name.endswith(".xlsx")
+    if import_type in FIXED_TEMPLATE_FILE_NAMES:
+        assert file_name == FIXED_TEMPLATE_FILE_NAMES[import_type]
+        expected_path = (
+            Path(__file__).resolve().parents[1]
+            / "app"
+            / "data"
+            / "internal_quote_import_templates"
+            / file_name
+        )
+        assert content == expected_path.read_bytes()
+        parsed = parse_internal_quote_workbook(content, import_type)
+        assert parsed.row_count > 0
+        return
+
     sheet_name, _rows, header_index = find_header(workbook_rows(content), import_type)
     assert sheet_name == TEMPLATE_LABELS[import_type]
     assert header_index == 0
@@ -139,6 +158,58 @@ def test_mold_import_extracts_embedded_picture_bytes_and_maps_them_to_source_row
     assert parsed.payload_fragment["molds"][0]["image_reference"] == "模具图片-U3-1.png"
     assert parsed.payload_fragment["molds"][0]["image_attachment_ids"] == []
     assert any("已识别并提取 U 列 1 张嵌入图片" in warning for warning in parsed.warnings)
+
+
+def test_mold_import_maps_zhanxing_fixed_template_columns_and_embedded_images():
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "data"
+        / "internal_quote_import_templates"
+        / FIXED_TEMPLATE_FILE_NAMES["mold"]
+    )
+    parsed = parse_internal_quote_workbook(
+        template_path.read_bytes(),
+        "mold",
+        fallback_qty=Decimal("3000"),
+    )
+
+    assert parsed.target_department == "engineering"
+    assert parsed.sheet_name == "01"
+    assert parsed.header_row == 11
+    assert parsed.row_count == 3
+    assert parsed.payload_fragment["amortization_qty"] == "3000.0000"
+    assert [
+        (
+            row["item"],
+            row["chinese_name"],
+            row["material_type"],
+            row["cavity"],
+            row["quantity"],
+            row["mold_size"],
+            row["cost_rmb"],
+            row["mold_base_material"],
+            row["target_output"],
+            row["machine_code"],
+            row["net_weight_g"],
+            row["image_reference"],
+        )
+        for row in parsed.payload_fragment["molds"]
+    ] == [
+        ("水桌主体", "水桌主体", "PP", "1", "1.0000", "90*90*80", "237000.0000", "718H", "3000.0000", "150T", "32.0000", "模具图片-F12-1.png"),
+        ("顶部桌面", "顶部桌面", "PP", "1", "1.0000", "60*60*56", "100000.0000", "718H", "3000.0000", "150T", "25.0000", "模具图片-F13-1.png"),
+        ("腿", "腿", "PP", "2", "0.6700", "65*65*56", "103000.0000", "718H", "3000.0000", "60-80T", "17.0000", "模具图片-F14-1.png"),
+    ]
+    assert [
+        (image.source_row, image.file_name)
+        for image in parsed.embedded_images
+    ] == [
+        (12, "模具图片-F12-1.png"),
+        (13, "模具图片-F13-1.png"),
+        (14, "模具图片-F14-1.png"),
+    ]
+    assert all(image.content.startswith(b"\x89PNG\r\n\x1a\n") for image in parsed.embedded_images)
+    assert any("已识别并提取 F 列 3 张嵌入图片" in warning for warning in parsed.warnings)
 
 
 def test_electronic_import_converts_rmb_and_maps_extra_parameters():
@@ -546,6 +617,96 @@ def test_assembly_import_builds_process_groups_and_uses_quote_qty_fallback():
     assert process["persons"] == "4.0000"
     assert process["remark"] == "检查极性"
     assert any("报价数量" in warning for warning in parsed.warnings)
+
+
+def test_assembly_import_maps_workshop_regions_and_switches_to_packaging_from_column_c():
+    header = [
+        "报客价/港币",
+        "报价人",
+        "货号或图片",
+        "做工名称",
+        "总目标数量",
+        "人数",
+        "写报表的工价(￥)",
+        "正班时间",
+        "正班生产目标数",
+        "正班8小时工资",
+        "加班时间",
+        "加班生产数",
+        "加班工资",
+        "合计工资(含加班)",
+        "用量",
+        "合计工价($)",
+        "报客工价(HK$)",
+        "报价人工标准",
+        "车间标准工资(不含加班)",
+        "报价日期",
+        "备注（看图、手办、样板、参考办）",
+    ]
+
+    def detail(
+        group: str | None,
+        process: str | None,
+        production_qty: int | None,
+        persons: int | None,
+        remark: str = "手办报价",
+    ) -> list[object]:
+        row: list[object] = [None] * len(header)
+        row[2] = group
+        row[3] = process
+        row[4] = production_qty
+        row[5] = persons
+        row[20] = remark
+        return row
+
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+            [
+                header,
+                ["车间填写", "车间填写", "车间填写", "车间填写", "车间填写", "车间填写"],
+                detail("组装马桶", "测试IC板", 3000, 1),
+                detail(None, "焊喇叭", 3000, 2),
+                detail(None, None, None, 3, ""),
+                detail("组装马桶", "剪软管", 3000, 1),
+                detail(None, "装箱/杂工", 3000, 2),
+                detail(None, None, None, 3, ""),
+                detail("包装公仔", "彩盒印日期码", 3000, 1),
+                detail(None, "折彩盒", 3000, 6),
+                detail(None, None, None, 7, ""),
+                detail("出口配件", "封箱", None, 2),
+            ],
+            title="组装",
+        ),
+        "assembly",
+        fallback_qty=Decimal("5000"),
+    )
+
+    groups = parsed.payload_fragment["groups"]
+    assert parsed.header_row == 1
+    assert parsed.row_count == 7
+    assert [group["name"] for group in groups] == [
+        "组装马桶",
+        "组装马桶",
+        "包装公仔",
+        "出口配件",
+    ]
+    assert [group["category"] for group in groups] == [
+        "assembly",
+        "assembly",
+        "packaging",
+        "packaging",
+    ]
+    assert [group["production_qty"] for group in groups] == [
+        "3000.0000",
+        "3000.0000",
+        "3000.0000",
+        "5000.0000",
+    ]
+    assert [row["persons"] for row in groups[0]["processes"]] == ["1.0000", "2.0000"]
+    assert groups[1]["processes"][1]["name"] == "装箱/杂工"
+    assert groups[1]["processes"][1]["remark"] == "手办报价"
+    assert any("出口配件" in warning and "报价数量" in warning for warning in parsed.warnings)
+    assert any("C 列区域" in warning and "F 列工艺人数" in warning for warning in parsed.warnings)
 
 
 def test_binary_xls_is_rejected_by_p3_parser():

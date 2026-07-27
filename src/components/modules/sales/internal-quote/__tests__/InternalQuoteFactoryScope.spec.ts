@@ -149,6 +149,7 @@ function pricingBaseline(factoryId: string, revision = 1): ApiInternalQuotePrici
     updated_at: '2026-07-20 10:00:00',
     material_prices: [{ material: `${factoryId}-ABS`, grade: '750SW', price_hkd_lb: '9.25' }],
     machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '999' }],
+    freight_routes: [{ route_key: 'hk40', route_name: 'HK 40 柜', capacity_key: 'cap_40', freight_hkd: '8000', lifting_hkd: '0' }],
   }
 }
 
@@ -611,6 +612,7 @@ describe('InternalQuoteHome factory permission boundary', () => {
       workshop_name: '华康C',
       material_prices: [{ material: 'C-ABS', grade: '750SW', price_hkd_lb: '10.00' }],
       machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '1000' }],
+      freight_routes: [{ route_key: 'hk40', route_name: '香港 40 柜', capacity_key: 'cap_40' as const, freight_hkd: '8200', lifting_hkd: '1200' }],
     })
     await Promise.resolve()
     expect(internalQuoteApiMock.updatePricingBaseline).toHaveBeenCalledWith(

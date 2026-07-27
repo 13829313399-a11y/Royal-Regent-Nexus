@@ -46,7 +46,9 @@ INJECTION_SCHEDULE_PHASE2_SCHEMA_MIGRATION_REVISION = "20260723_0032"
 INJECTION_SCHEDULE_PHASE2_MIGRATION_REVISION = "20260723_0033"
 INJECTION_SCHEDULE_PHASE3_MIGRATION_REVISION = "20260723_0034"
 INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION = "20260725_0035"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION
+INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION = "20260723_0030"
+MERGED_HEAD_MIGRATION_REVISION = "20260727_0036"
+HEAD_MIGRATION_REVISION = MERGED_HEAD_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -100,6 +102,12 @@ def test_alembic_has_single_molding_sample_head():
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
 
+    merged_head_revision = script.get_revision(HEAD_MIGRATION_REVISION)
+    assert set(merged_head_revision.down_revision) == {
+        INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,
+        INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION,
+    }
+
     injection_phase4_revision = script.get_revision(
         INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION
     )
@@ -139,6 +147,14 @@ def test_alembic_has_single_molding_sample_head():
 
     injection_hub_revision = script.get_revision(INJECTION_SCHEDULE_HUB_MIGRATION_REVISION)
     assert injection_hub_revision.down_revision == INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
+
+    freight_revision = script.get_revision(
+        INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION
+    )
+    assert freight_revision.down_revision == INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
+    freight_content = Path(freight_revision.path).read_text(encoding="utf-8")
+    assert "internal_quote_pricing_baselines" in freight_content
+    assert "freight_routes_json" in freight_content
 
     customer_revision = script.get_revision(
         INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
@@ -471,7 +487,13 @@ def test_internal_quote_customer_migration_seeds_factories_and_backfills_history
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,)
+        ).fetchone() == (INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION,)
+        assert "freight_routes_json" in {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('internal_quote_pricing_baselines')"
+            ).fetchall()
+        }
         counts = dict(connection.execute(
             """
             SELECT factory_id, COUNT(*)
@@ -661,7 +683,7 @@ def test_injection_schedule_phase2_upgrade_rebuilds_scoped_schema_and_preserves_
     run_alembic("upgrade", "head")
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,
+            HEAD_MIGRATION_REVISION,
         )
         assert connection.execute(
             "SELECT COUNT(*) FROM auth_audit_logs WHERE action = 'phase2_preflight'"
@@ -978,7 +1000,7 @@ def test_injection_schedule_delivery_snapshot_upgrade_backfills_existing_tasks(
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,)
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
         assert connection.execute(
             """
             SELECT delivery_due_date_snapshot
@@ -2209,7 +2231,7 @@ def test_sqlite_phase4_schema_gate_preserves_0033_then_allows_upgrade(tmp_path):
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,)
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
         assert {
             row[1]
             for row in connection.execute(
@@ -2475,7 +2497,7 @@ def test_molding_sample_dispatch_upgrade_backfills_scope_and_preserves_rows(tmp_
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION,)
+        ).fetchone() == (INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION,)
         assert connection.execute(
             """
             SELECT id, factory_id, production_factory_id,

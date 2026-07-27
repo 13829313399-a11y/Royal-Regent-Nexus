@@ -22,6 +22,7 @@ const props = withDefaults(defineProps<{
   backTo?: string
   backLabel?: string
   factoryContext?: 'production' | 'all'
+  wideLayout?: boolean
 }>(), {
   searchPlaceholder: '',
   metrics: () => [],
@@ -29,6 +30,7 @@ const props = withDefaults(defineProps<{
   backTo: '',
   backLabel: '返回业务部',
   factoryContext: 'production',
+  wideLayout: false,
 })
 
 const appStore = useAppStore()
@@ -47,7 +49,7 @@ const salesDepartmentRoute = computed(() => getFactoryScopedRoute(
 </script>
 
 <template>
-  <div class="sales-workbench min-h-screen text-slate-950">
+  <div class="sales-workbench min-h-screen text-slate-950" :class="{ 'sales-workbench--wide': wideLayout }">
     <header class="sales-topbar">
       <div class="sales-topbar-inner">
         <RouterLink v-if="backTo" :to="scopedBackTo" class="sales-topbar-back">
@@ -107,9 +109,15 @@ const salesDepartmentRoute = computed(() => getFactoryScopedRoute(
 
 <style scoped>
 .sales-workbench {
+  --sales-workbench-max-width: 1680px;
+
   background:
     radial-gradient(circle at top left, rgb(13 148 136 / 12%), transparent 34%),
     linear-gradient(180deg, #f8fafc 0%, #eef4f8 100%);
+}
+
+.sales-workbench--wide {
+  --sales-workbench-max-width: 1840px;
 }
 
 .sales-topbar {
@@ -123,7 +131,7 @@ const salesDepartmentRoute = computed(() => getFactoryScopedRoute(
 
 .sales-topbar-inner {
   display: flex;
-  width: min(100%, 1680px);
+  width: min(100%, var(--sales-workbench-max-width));
   min-height: 62px;
   margin: 0 auto;
   align-items: center;
@@ -242,7 +250,7 @@ const salesDepartmentRoute = computed(() => getFactoryScopedRoute(
 }
 
 .sales-page {
-  width: min(100%, 1680px);
+  width: min(100%, var(--sales-workbench-max-width));
   margin: 0 auto;
   padding: 24px 40px 56px;
 }

@@ -247,12 +247,12 @@ watch([quoteId, canFinalApprove], () => {
     </section>
 
     <section v-if="shippingPricing.enabled" class="quote-logistics-panel">
-      <header><div><Ship aria-hidden="true" /><span><strong>出货价算价</strong><small>业务启用运费时展示；客户自提时本板块完全隐藏</small></span></div><em>出货数量 {{ quote.quantity.toLocaleString('zh-CN') }} PCS</em></header>
+      <header><div><Ship aria-hidden="true" /><span><strong>出货价算价</strong><small>已启用：{{ [shippingPricing.freightEnabled ? '运费' : '', shippingPricing.liftingEnabled ? '吊柜费' : ''].filter(Boolean).join('、') }}</small></span></div><em>出货数量 {{ quote.quantity.toLocaleString('zh-CN') }} PCS</em></header>
       <p class="shipping-formula">出货底价 = 出厂价 {{ shippingPricing.factoryPriceHkd.toFixed(4) }} + 附加税 {{ shippingPricing.additionalTaxHkd.toFixed(4) }} = <b>{{ shippingPricing.shippingFloorHkd.toFixed(4) }} HKD</b>；各场景再 × 码点 ÷ 找数，模具分摊在 USD 层加入。</p>
       <div class="business-table-scroll shipping-price-scroll"><table class="business-summary-table shipping-price-table"><thead><tr><th>项</th><th v-for="row in shippingPricing.rows" :key="row.name">{{ row.name }}</th></tr></thead><tbody>
         <tr><th>出货底价 HKD</th><td v-for="row in shippingPricing.rows" :key="`floor-${row.name}`">{{ row.shippingFloorHkd.toFixed(4) }}</td></tr>
-        <tr><th>运费（{{ shippingPricing.freightSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`freight-${row.name}`">{{ row.freightHkd.toFixed(4) }}</td></tr>
-        <tr><th>吊柜费（{{ shippingPricing.liftSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`lift-${row.name}`">{{ row.liftHkd.toFixed(4) }}</td></tr>
+        <tr v-if="shippingPricing.freightEnabled"><th>运费（{{ shippingPricing.freightSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`freight-${row.name}`">{{ row.freightHkd.toFixed(4) }}</td></tr>
+        <tr v-if="shippingPricing.liftingEnabled"><th>吊柜费（{{ shippingPricing.liftSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`lift-${row.name}`">{{ row.liftHkd.toFixed(4) }}</td></tr>
         <tr class="calculated"><th>含运 HKD</th><td v-for="row in shippingPricing.rows" :key="`ship-${row.name}`">{{ row.withFreightHkd.toFixed(4) }}</td></tr>
         <tr><th>码点 ×（{{ shippingPricing.markup.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`markup-${row.name}`">{{ row.afterMarkupHkd.toFixed(4) }}</td></tr>
         <tr><th>找数 ÷（{{ shippingPricing.settlement.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`settlement-${row.name}`">{{ row.afterSettlementHkd.toFixed(4) }}</td></tr>

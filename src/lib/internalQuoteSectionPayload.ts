@@ -82,8 +82,9 @@ export interface SalesPackagingMaterialRow {
   disney_unit_price_usd: number
   disney_included: number
 }
+export type SalesDimensionUnit = 'cm' | 'inch'
 export interface SalesFlatCardRow { name: string; length_in: number; width_in: number; quantity: number }
-export interface SalesCartonRow { item: string; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
+export interface SalesCartonRow { item: string; size_unit?: SalesDimensionUnit; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
 export type EngineeringFlatCardRow = SalesFlatCardRow
 export type EngineeringCartonRow = SalesCartonRow
 export interface EngineeringPayload {
@@ -101,6 +102,15 @@ export interface EngineeringPayload {
   cartons?: EngineeringCartonRow[]
 }
 
+export type InternalQuoteEntryMode = 'detail' | 'quick'
+
+export interface ElectronicQuickQuoteRow {
+  item: string
+  unit_price_rmb: number
+  tax_rate_percent: number
+  remark: string
+}
+
 export interface ElectronicComponentRow {
   item: string
   specification: string
@@ -115,6 +125,8 @@ export interface ElectronicComponentRow {
 }
 export interface ElectronicPayload {
   pricing_currency?: 'RMB'
+  quote_mode: InternalQuoteEntryMode
+  quick_quotes: ElectronicQuickQuoteRow[]
   components: ElectronicComponentRow[]
   bonding_rmb?: number
   smt_rmb?: number
@@ -144,6 +156,7 @@ export interface ElectronicSummary {
 export interface InjectionRow {
   engineering_source_key?: string
   engineering_synced_fields?: string[]
+  engineering_sync_disabled?: boolean
   item: string
   mold_no: string
   material: string
@@ -211,7 +224,6 @@ export interface PaintingRow {
   source_row?: number
 }
 export interface DisneyDecorationRow { application_type: string; rate_per_op_usd: number; operations: number }
-export type InternalQuoteEntryMode = 'detail' | 'quick'
 export interface PaintingQuickQuote { spray_labor_hkd: number; paint_hkd: number; paint_tax_rate_percent: 13 }
 export interface PaintingPayload {
   quote_mode: InternalQuoteEntryMode
@@ -270,24 +282,38 @@ export interface AssemblyPayload { groups: AssemblyGroup[]; labor_base_hkd: numb
 export interface SalesTaxRow { code: string; amount_hkd: number; rate: number | '' }
 export interface SalesScenario { name: string; capacity_cuft: number; freight_cost_hkd: number; carton_cuft: number; qty_per_carton: number; freight_share: number; lift_share: number; markup: number; settlement: number }
 export type SalesFreightCapacityKey = 'cap_10t' | 'cap_5t' | 'cap_40' | 'cap_20'
-export type SalesFreightRouteKey = 'hk40' | 'hk20' | 'yt40' | 'yt20' | 'hk10t' | 'yt10t' | 'hk5t' | 'yt5t'
-export type SalesFreightCalculation = { enabled: boolean } & Record<SalesFreightCapacityKey | SalesFreightRouteKey, number>
-export interface SalesFreightOption {
-  key: SalesFreightRouteKey
+export type LegacySalesFreightRouteKey = 'hk40' | 'hk20' | 'yt40' | 'yt20' | 'hk10t' | 'yt10t' | 'hk5t' | 'yt5t'
+export type SalesFreightCalculation = {
+  enabled: boolean
+  freight_enabled?: boolean
+  lifting_enabled?: boolean
+} & Record<SalesFreightCapacityKey, number> & Partial<Record<LegacySalesFreightRouteKey, number>>
+export interface SalesFreightRouteDefinition {
+  key: string
   label: string
   feeLabel: string
+  liftingFeeLabel: string
+  capacityKey: SalesFreightCapacityKey
+}
+export interface SalesFreightReferenceRoute extends SalesFreightRouteDefinition {
+  freightCostHkd: number
+  liftingCostHkd: number
+}
+export interface SalesFreightOption {
+  key: string
+  label: string
+  feeLabel: string
+  liftingFeeLabel: string
   capacityKey: SalesFreightCapacityKey
   capacityCuft: number
   freightCostHkd: number
+  liftingCostHkd: number
   totalCartons: number
+  freightPerPieceHkd: number
+  liftingPerPieceHkd: number
   perPieceHkd: number
 }
-export const defaultSalesFreightCalculation: SalesFreightCalculation = {
-  enabled: true,
-  cap_10t: 1166,
-  cap_5t: 750,
-  cap_40: 1980,
-  cap_20: 883,
+export const defaultSalesFreightCosts: Record<LegacySalesFreightRouteKey, number> = {
   hk40: 8000,
   hk20: 7100,
   yt40: 7200,
@@ -297,22 +323,78 @@ export const defaultSalesFreightCalculation: SalesFreightCalculation = {
   hk5t: 12500,
   yt5t: 11000,
 }
+export const defaultSalesFreightCalculation: SalesFreightCalculation = {
+  enabled: true,
+  freight_enabled: true,
+  lifting_enabled: true,
+  cap_10t: 1166,
+  cap_5t: 750,
+  cap_40: 1980,
+  cap_20: 883,
+  ...defaultSalesFreightCosts,
+}
 export const salesFreightCapacityDefinitions: Array<{ key: SalesFreightCapacityKey; label: string }> = [
   { key: 'cap_10t', label: '10 吨车容量' },
   { key: 'cap_5t', label: '5 吨车容量' },
   { key: 'cap_40', label: '40 尺柜容量' },
   { key: 'cap_20', label: '20 尺柜容量' },
 ]
-export const salesFreightRouteDefinitions: Array<{ key: SalesFreightRouteKey; label: string; feeLabel: string; capacityKey: SalesFreightCapacityKey }> = [
-  { key: 'hk40', label: 'HK 40 柜', capacityKey: 'cap_40', feeLabel: 'HK 40 尺柜运费 + 吊柜费' },
-  { key: 'hk20', label: 'HK 20 柜', capacityKey: 'cap_20', feeLabel: 'HK 20 尺柜运费 + 吊柜费' },
-  { key: 'yt40', label: 'YT 40 柜', capacityKey: 'cap_40', feeLabel: 'YT 40 尺柜运费 + 吊柜费' },
-  { key: 'yt20', label: 'YT 20 柜', capacityKey: 'cap_20', feeLabel: 'YT 20 尺柜运费 + 吊柜费' },
-  { key: 'hk10t', label: 'HK 10 吨车', capacityKey: 'cap_10t', feeLabel: 'HK 10 吨车运费' },
-  { key: 'yt10t', label: 'YT 10 吨车', capacityKey: 'cap_10t', feeLabel: 'YT 10 吨车运费' },
-  { key: 'hk5t', label: 'HK 5 吨车', capacityKey: 'cap_5t', feeLabel: 'HK 5 吨车运费' },
-  { key: 'yt5t', label: 'YT 5 吨车', capacityKey: 'cap_5t', feeLabel: 'YT 5 吨车运费' },
+export const salesFreightRouteDefinitions: Array<SalesFreightRouteDefinition & { key: LegacySalesFreightRouteKey }> = [
+  { key: 'hk40', label: 'HK 40 柜', capacityKey: 'cap_40', feeLabel: 'HK 40 尺柜运费', liftingFeeLabel: 'HK 40 尺柜吊柜费' },
+  { key: 'hk20', label: 'HK 20 柜', capacityKey: 'cap_20', feeLabel: 'HK 20 尺柜运费', liftingFeeLabel: 'HK 20 尺柜吊柜费' },
+  { key: 'yt40', label: 'YT 40 柜', capacityKey: 'cap_40', feeLabel: 'YT 40 尺柜运费', liftingFeeLabel: 'YT 40 尺柜吊柜费' },
+  { key: 'yt20', label: 'YT 20 柜', capacityKey: 'cap_20', feeLabel: 'YT 20 尺柜运费', liftingFeeLabel: 'YT 20 尺柜吊柜费' },
+  { key: 'hk10t', label: 'HK 10 吨车', capacityKey: 'cap_10t', feeLabel: 'HK 10 吨车运费', liftingFeeLabel: 'HK 10 吨车吊柜费' },
+  { key: 'yt10t', label: 'YT 10 吨车', capacityKey: 'cap_10t', feeLabel: 'YT 10 吨车运费', liftingFeeLabel: 'YT 10 吨车吊柜费' },
+  { key: 'hk5t', label: 'HK 5 吨车', capacityKey: 'cap_5t', feeLabel: 'HK 5 吨车运费', liftingFeeLabel: 'HK 5 吨车吊柜费' },
+  { key: 'yt5t', label: 'YT 5 吨车', capacityKey: 'cap_5t', feeLabel: 'YT 5 吨车运费', liftingFeeLabel: 'YT 5 吨车吊柜费' },
 ]
+export const salesFreightSnapshotCostKeys: Record<LegacySalesFreightRouteKey, string> = {
+  hk40: 'hk_container_40',
+  hk20: 'hk_container_20',
+  yt40: 'yt_container_40',
+  yt20: 'yt_container_20',
+  hk10t: 'hk_truck_10t',
+  yt10t: 'yt_truck_10t',
+  hk5t: 'hk_truck_5t',
+  yt5t: 'yt_truck_5t',
+}
+export const defaultSalesFreightReferenceRoutes: SalesFreightReferenceRoute[] = salesFreightRouteDefinitions.map((route) => ({
+  ...route,
+  freightCostHkd: defaultSalesFreightCosts[route.key],
+  liftingCostHkd: 0,
+}))
+
+export function salesFreightReferenceRoutesFromSnapshot(value: unknown): SalesFreightReferenceRoute[] {
+  const freight = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+  const routeRows = Array.isArray(freight.routes) ? freight.routes : []
+  const capacityKeys = new Set<SalesFreightCapacityKey>(salesFreightCapacityDefinitions.map(({ key }) => key))
+  const seen = new Set<string>()
+  const routes = routeRows.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const row = value as Record<string, unknown>
+    const key = String(row.route_key ?? '').trim()
+    const label = String(row.route_name ?? '').trim()
+    const capacityKey = String(row.capacity_key ?? '') as SalesFreightCapacityKey
+    const freightCostHkd = Number(row.freight_hkd)
+    const liftingCostHkd = Number(row.lifting_hkd ?? 0)
+    if (!key || seen.has(key.toLocaleLowerCase()) || !label || !capacityKeys.has(capacityKey) || !Number.isFinite(freightCostHkd) || freightCostHkd < 0 || !Number.isFinite(liftingCostHkd) || liftingCostHkd < 0) return []
+    seen.add(key.toLocaleLowerCase())
+    return [{ key, label, feeLabel: `${label}运费`, liftingFeeLabel: `${label}吊柜费`, capacityKey, freightCostHkd, liftingCostHkd }]
+  })
+  if (routes.length) return routes
+
+  const legacyCosts = freight.cost_hkd && typeof freight.cost_hkd === 'object' && !Array.isArray(freight.cost_hkd)
+    ? freight.cost_hkd as Record<string, unknown>
+    : {}
+  return defaultSalesFreightReferenceRoutes.map((route) => {
+    const legacyKey = route.key as LegacySalesFreightRouteKey
+    const value = Number(legacyCosts[salesFreightSnapshotCostKeys[legacyKey]])
+    return { ...route, freightCostHkd: Number.isFinite(value) && value >= 0 ? value : route.freightCostHkd, liftingCostHkd: 0 }
+  })
+}
 export interface BuzzBeeColorBoxTier { quote_price_hkd: number; fsc_price_hkd: number; moq: string }
 export interface DisneyCustomerQuoteFields { item_number: string; quote_date: string; revision: number; minimum_order_qty: number; moq_prices_usd: { qty_3000: number; qty_5000: number; qty_10000: number }; transportation_usd: number; model_cost_usd: number; setup_charge_usd: number }
 export interface DickieProductQuoteRow { line_no: number; item_text_en: string; units_per_carton: string; carton_cbm: number; color_box_size_cm: string; carton_size_cm: string; production_moq: string; price_40h_hkd: number; price_20h_hkd: number; price_lcl_hkd: number }
@@ -336,8 +418,15 @@ export interface CaixingCustomerQuoteFields {
   cost_rows: CaixingCustomerCostRow[]
 }
 export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields }
+export interface SalesMarkupTier {
+  moq: number
+  markup_x: number
+}
 export interface SalesShippingPricing {
   markup_x?: number
+  markup_tiers?: SalesMarkupTier[]
+  selected_markup_moq?: number
+  misc_ratio?: number
   divisor?: number
   freight_pct?: number
   lifting_pct?: number
@@ -345,8 +434,12 @@ export interface SalesShippingPricing {
 export interface SalesPayload {
   paper_price_factor: number
   flat_card_price_factor?: number
+  testing_fee_total_usd: number
+  testing_fee_moqs: number[]
+  testing_fee_moq?: number
   packaging_materials: SalesPackagingMaterialRow[]
   product_size_in: SalesDimensions
+  color_box_size_unit?: SalesDimensionUnit
   color_box_size_in: SalesDimensions
   cartons: SalesCartonRow[]
   freight_calc: SalesFreightCalculation
@@ -375,6 +468,35 @@ function numberValue(value: unknown, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+export const defaultSalesMarkupMoqs = [3000, 5000, 10000] as const
+
+export function createDefaultSalesMarkupTiers(markup = 1.2): SalesMarkupTier[] {
+  const normalizedMarkup = Number.isFinite(markup) && markup > 0 ? markup : 1.2
+  return defaultSalesMarkupMoqs.map((moq) => ({ moq, markup_x: normalizedMarkup }))
+}
+
+export function normalizeSalesMarkupTiers(value: unknown, fallbackMarkup = 1.2): SalesMarkupTier[] {
+  if (!Array.isArray(value) || !value.length) return createDefaultSalesMarkupTiers(fallbackMarkup)
+  return value.map((item) => {
+    const row = objectValue(item)
+    return {
+      moq: numberValue(row.moq),
+      markup_x: numberValue(row.markup_x, fallbackMarkup),
+    }
+  })
+}
+
+export function salesMarkupTierForQuantity(tiers: SalesMarkupTier[], quantity: unknown): SalesMarkupTier {
+  const normalized = tiers
+    .filter((tier) => Number.isFinite(tier.moq) && tier.moq > 0 && Number.isFinite(tier.markup_x) && tier.markup_x > 0)
+    .slice()
+    .sort((left, right) => left.moq - right.moq)
+  if (!normalized.length) return createDefaultSalesMarkupTiers()[0]!
+  const qty = Number(quantity)
+  if (!Number.isFinite(qty) || qty <= 0) return normalized[0]!
+  return normalized.reduce((selected, tier) => tier.moq <= qty ? tier : selected, normalized[0]!)
+}
+
 function booleanValue(value: unknown, fallback: boolean) {
   if (typeof value === 'boolean') return value
   if (value === 'true') return true
@@ -387,6 +509,14 @@ function positiveIntegerValue(value: unknown, fallback: number) {
   return parsed > 0 ? Math.max(Math.round(parsed), 1) : parsed
 }
 
+function testingFeeMoqValues(value: unknown, legacyValue: unknown): number[] {
+  if (Array.isArray(value)) {
+    const normalized = value.map((item) => positiveIntegerValue(item, 0))
+    return normalized.length ? normalized : [0]
+  }
+  return [positiveIntegerValue(legacyValue, 0)]
+}
+
 function dimensions(value: unknown): SalesDimensions {
   const source = objectValue(value)
   return {
@@ -394,6 +524,10 @@ function dimensions(value: unknown): SalesDimensions {
     width: numberValue(source.width),
     height: numberValue(source.height),
   }
+}
+
+export function normalizeSalesDimensionUnit(value: unknown): SalesDimensionUnit {
+  return String(value ?? '').trim().toLowerCase() === 'cm' ? 'cm' : 'inch'
 }
 
 function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
@@ -419,6 +553,7 @@ function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
 function cartonRows(value: unknown): SalesCartonRow[] {
   return rows(value).map((row) => ({
     item: textValue(row.item),
+    size_unit: normalizeSalesDimensionUnit(row.size_unit),
     length_in: numberValue(row.length_in),
     width_in: numberValue(row.width_in),
     height_in: numberValue(row.height_in),
@@ -438,6 +573,16 @@ function cartonRows(value: unknown): SalesCartonRow[] {
 function positivePreviewNumber(value: unknown) {
   const parsed = numberValue(value)
   return parsed > 0 ? parsed : 0
+}
+
+export function dimensionValueFromInches(value: unknown, unit: SalesDimensionUnit) {
+  const inches = numberValue(value)
+  return unit === 'cm' ? Number((inches * 2.54).toFixed(4)) : inches
+}
+
+export function dimensionValueToInches(value: unknown, unit: SalesDimensionUnit) {
+  const displayValue = numberValue(value)
+  return unit === 'cm' ? Number((displayValue / 2.54).toFixed(6)) : displayValue
 }
 
 export function calculateCartonCuft(carton: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'height_in'>) {
@@ -536,17 +681,48 @@ export function calculateCartonUnitCostHkd(carton: SalesCartonRow, paperPriceFac
 export function calculateSalesFreightOptions(
   freight: SalesFreightCalculation,
   carton?: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'height_in' | 'qty_per_carton'>,
+  referenceRoutes: SalesFreightReferenceRoute[] = defaultSalesFreightReferenceRoutes,
 ): SalesFreightOption[] {
-  if (!freight.enabled) return []
+  const { freightEnabled, liftingEnabled } = salesFreightCalculationModes(freight)
+  if (!freightEnabled && !liftingEnabled) return []
   const cartonCuft = carton ? calculateCartonCuft(carton) : 0
   const quantity = carton ? positivePreviewNumber(carton.qty_per_carton) : 0
-  return salesFreightRouteDefinitions.map((definition) => {
+  const legacyValues = freight as SalesFreightCalculation & Record<string, unknown>
+  return referenceRoutes.map((definition) => {
     const capacityCuft = positivePreviewNumber(freight[definition.capacityKey])
-    const freightCostHkd = positivePreviewNumber(freight[definition.key])
+    const freightCostHkd = freightEnabled ? positivePreviewNumber(
+      legacyValues[definition.key] ?? definition.freightCostHkd,
+    ) : 0
+    const liftingCostHkd = liftingEnabled ? positivePreviewNumber(definition.liftingCostHkd) : 0
     const totalCartons = cartonCuft && capacityCuft ? Math.max(Math.round(capacityCuft / cartonCuft), 1) : 0
-    const perPieceHkd = totalCartons && quantity ? freightCostHkd / totalCartons / quantity : 0
-    return { ...definition, capacityCuft, freightCostHkd, totalCartons, perPieceHkd }
+    const freightPerPieceHkd = totalCartons && quantity ? freightCostHkd / totalCartons / quantity : 0
+    const liftingPerPieceHkd = totalCartons && quantity ? liftingCostHkd / totalCartons / quantity : 0
+    return {
+      ...definition,
+      capacityCuft,
+      freightCostHkd,
+      liftingCostHkd,
+      totalCartons,
+      freightPerPieceHkd,
+      liftingPerPieceHkd,
+      perPieceHkd: freightPerPieceHkd + liftingPerPieceHkd,
+    }
   })
+}
+
+export function salesFreightCalculationModes(freight: Pick<SalesFreightCalculation, 'enabled' | 'freight_enabled' | 'lifting_enabled'>) {
+  const legacyEnabled = freight.enabled !== false
+  if (!legacyEnabled) return { freightEnabled: false, liftingEnabled: false }
+  return {
+    freightEnabled: typeof freight.freight_enabled === 'boolean' ? freight.freight_enabled : legacyEnabled,
+    liftingEnabled: typeof freight.lifting_enabled === 'boolean' ? freight.lifting_enabled : legacyEnabled,
+  }
+}
+
+export function calculateSalesTestingFeeUnitUsd(totalUsd: unknown, moq: unknown) {
+  const total = positivePreviewNumber(totalUsd)
+  const quantity = positivePreviewNumber(moq)
+  return quantity > 0 ? total / quantity : 0
 }
 
 export function calculateElectronicUnitPriceRmb(row: ElectronicComponentRow, rmbHkdRate: unknown) {
@@ -580,6 +756,45 @@ function electronicRowsSummary(rows: ElectronicComponentRow[], rmbHkdRate: unkno
   }, { componentCostRmb: 0, deductibleInputTaxRmb: 0 })
 }
 
+function electronicCalculationRows(payload: ElectronicPayload): ElectronicComponentRow[] {
+  if (payload.quote_mode !== 'quick') return payload.components
+  return (payload.quick_quotes ?? []).map((row) => ({
+    item: row.item,
+    specification: '',
+    quantity: 1,
+    unit_price_rmb: row.unit_price_rmb,
+    tax_rate_percent: row.tax_rate_percent,
+    remark: row.remark,
+    children: [],
+  }))
+}
+
+export function createDefaultSalesCarton(item = '主纸箱'): SalesCartonRow {
+  return {
+    item,
+    size_unit: 'inch',
+    length_in: 0,
+    width_in: 0,
+    height_in: 0,
+    qty_per_carton: 1,
+    flat_cards: [],
+  }
+}
+
+function salesCartonRows(value: unknown): SalesCartonRow[] {
+  const normalized = cartonRows(value)
+  return normalized.length ? normalized : [createDefaultSalesCarton()]
+}
+
+export function calculateElectronicQuickUnitPriceHkd(row: ElectronicQuickQuoteRow, rmbHkdRate: unknown) {
+  const rate = positivePreviewNumber(rmbHkdRate)
+  return rate ? positivePreviewNumber(row.unit_price_rmb) / rate : 0
+}
+
+export function calculateElectronicQuickSubtotalRmb(payload: ElectronicPayload) {
+  return (payload.quick_quotes ?? []).reduce((total, row) => total + positivePreviewNumber(row.unit_price_rmb), 0)
+}
+
 export function electronicExtraRmb(
   payload: ElectronicPayload,
   rmbField: 'bonding_rmb' | 'smt_rmb' | 'labor_rmb' | 'testing_rmb' | 'packaging_rmb',
@@ -592,7 +807,7 @@ export function electronicExtraRmb(
 
 export function calculateElectronicSummary(payload: ElectronicPayload, rmbHkdRate: unknown): ElectronicSummary {
   const rate = positivePreviewNumber(rmbHkdRate)
-  const component = electronicRowsSummary(payload.components, rate)
+  const component = electronicRowsSummary(electronicCalculationRows(payload), rate)
   const extras = electronicExtraRmb(payload, 'bonding_rmb', 'bonding_hkd', rate)
     + electronicExtraRmb(payload, 'smt_rmb', 'smt_hkd', rate)
     + electronicExtraRmb(payload, 'labor_rmb', 'labor_hkd', rate)
@@ -790,11 +1005,19 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     }
   }
   if (code === 'electronic') {
-    const usesRmbContract = source.pricing_currency === 'RMB'
+    const usesRmbContract = source.quote_mode === 'quick'
+      || source.pricing_currency === 'RMB'
       || ['bonding_rmb', 'smt_rmb', 'labor_rmb', 'testing_rmb', 'packaging_rmb'].some((key) => Object.prototype.hasOwnProperty.call(source, key))
       || rows(source.components).some((row) => Object.prototype.hasOwnProperty.call(row, 'unit_price_rmb'))
       || !Object.keys(source).length
     return {
+      quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
+      quick_quotes: rows(source.quick_quotes).map((row) => ({
+        item: textValue(row.item ?? row.name),
+        unit_price_rmb: numberValue(row.unit_price_rmb ?? row.price_rmb),
+        tax_rate_percent: numberValue(row.tax_rate_percent, 13),
+        remark: textValue(row.remark ?? row.note),
+      })),
       components: electronicRows(source.components),
       ...(usesRmbContract
         ? {
@@ -819,6 +1042,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         engineering_synced_fields: Array.isArray(row.engineering_synced_fields)
           ? row.engineering_synced_fields.filter((field): field is string => typeof field === 'string')
           : [],
+        engineering_sync_disabled: booleanValue(row.engineering_sync_disabled, false),
         item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), material: textValue(row.material), grade: textValue(row.grade ?? row.material_grade), color: textValue(row.color),
         net_weight_g: numberValue(row.net_weight_g ?? row.weight_g), loss_rate_percent: numberValue(row.loss_rate_percent, injectionLossRate),
         machine_name: textValue(row.machine_name ?? row.machine), machine_code: textValue(row.machine_code ?? row.machine_model), cavity: textValue(row.cavity),
@@ -929,28 +1153,45 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     && source.flat_card_price_factor !== ''
     && source.flat_card_price_factor != null
   const freightSource = objectValue(source.freight_calc)
+  const legacyFreightEnabled = booleanValue(freightSource.enabled, true)
+  const normalizedFreightEnabled = legacyFreightEnabled && booleanValue(freightSource.freight_enabled, true)
+  const normalizedLiftingEnabled = legacyFreightEnabled && booleanValue(freightSource.lifting_enabled, true)
   const shippingSource = objectValue(source.shipping)
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping')
   return {
     paper_price_factor: paperPriceFactor,
     ...(hasFlatCardPriceFactor ? { flat_card_price_factor: numberValue(source.flat_card_price_factor, paperPriceFactor) } : {}),
+    testing_fee_total_usd: numberValue(source.testing_fee_total_usd),
+    testing_fee_moqs: testingFeeMoqValues(source.testing_fee_moqs, source.testing_fee_moq),
     packaging_materials: packagingMaterialRows(source.packaging_materials),
     // The historical keys were suffixed `_cm`, although the desk values were
     // entered as inches. Migrate them one-for-one; converting by 2.54 here
     // would corrupt existing quotes such as 5.25 × 8.75 × 3.
     product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
+    color_box_size_unit: normalizeSalesDimensionUnit(source.color_box_size_unit),
     color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
-    cartons: cartonRows(source.cartons),
+    cartons: salesCartonRows(source.cartons),
     freight_calc: {
-      enabled: booleanValue(freightSource.enabled, true),
+      enabled: normalizedFreightEnabled || normalizedLiftingEnabled,
+      freight_enabled: normalizedFreightEnabled,
+      lifting_enabled: normalizedLiftingEnabled,
       ...Object.fromEntries(salesFreightCapacityDefinitions
         .map(({ key }) => [key, positiveIntegerValue(freightSource[key], defaultSalesFreightCalculation[key])])),
       ...Object.fromEntries(salesFreightRouteDefinitions
-        .map(({ key }) => [key, numberValue(freightSource[key], defaultSalesFreightCalculation[key])])),
+        .flatMap(({ key }) => Object.prototype.hasOwnProperty.call(freightSource, key)
+          ? [[key, numberValue(freightSource[key], defaultSalesFreightCosts[key])]]
+          : [])),
     } as SalesFreightCalculation,
     ...(hasShippingPricing ? {
       shipping: {
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'markup_x') ? { markup_x: numberValue(shippingSource.markup_x, 1.2) } : {}),
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'markup_tiers')
+          ? { markup_tiers: normalizeSalesMarkupTiers(shippingSource.markup_tiers, numberValue(shippingSource.markup_x, 1.2)) }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'selected_markup_moq')
+          ? { selected_markup_moq: numberValue(shippingSource.selected_markup_moq) }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'misc_ratio') ? { misc_ratio: numberValue(shippingSource.misc_ratio, .02) } : {}),
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'divisor') ? { divisor: numberValue(shippingSource.divisor, .98) } : {}),
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'freight_pct') ? { freight_pct: numberValue(shippingSource.freight_pct, 48) } : {}),
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'lifting_pct') ? { lifting_pct: numberValue(shippingSource.lifting_pct, 52) } : {}),

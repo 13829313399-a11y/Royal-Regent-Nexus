@@ -44,7 +44,7 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     const row = wrapper.find('.moldingInjectionTable tbody tr')
     const textarea = row.find('textarea')
     const selects = row.findAll('select')
-    const deleteButton = row.find('button.icon')
+    const deleteButton = row.find('button[aria-label="删除第 1 行注塑明细"]')
 
     expect(wrapper.text()).toContain('已同步 1 项模具')
     expect(textarea.attributes('disabled')).toBeDefined()
@@ -114,5 +114,49 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(modelValue.injection_lines[0].material).toBe('1#PP')
     expect(modelValue.injection_lines[0].grade).toBe('7032 E3')
     expect(wrapper.findAll('.moldingInjectionTable .snapshot-cell').map((cell) => cell.text())).toEqual(['0.015', '2.083', '0.675', '2.758'])
+  })
+
+  it('copies an engineering-projected row and unlocks both rows for mold splitting', async () => {
+    const modelValue = moldingModel()
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'molding',
+        modelValue,
+        referenceSnapshot,
+        'onUpdate:modelValue': () => undefined,
+      },
+    })
+
+    await wrapper.get('button[aria-label="复制第 1 行注塑明细"]').trigger('click')
+
+    expect(modelValue.injection_lines).toHaveLength(2)
+    expect(modelValue.injection_lines[0]).toMatchObject({
+      item: '挂钩',
+      mold_no: 'M12',
+      engineering_source_key: 'mold-no:M12#1',
+      engineering_synced_fields: [],
+      engineering_sync_disabled: true,
+    })
+    expect(modelValue.injection_lines[1]).toMatchObject({
+      item: '挂钩',
+      mold_no: 'M12',
+      engineering_source_key: '',
+      engineering_synced_fields: [],
+      engineering_sync_disabled: true,
+    })
+
+    const rows = wrapper.findAll('.moldingInjectionTable tbody tr')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].find('textarea').attributes('disabled')).toBeUndefined()
+    expect(rows[1].find('textarea').attributes('disabled')).toBeUndefined()
+    await rows[0].find('textarea').setValue('挂钩左件')
+    await rows[1].find('textarea').setValue('挂钩右件')
+    await rows[0].find('input').setValue('M12-A')
+    await rows[1].find('input').setValue('M12-B')
+
+    expect(modelValue.injection_lines.map((row) => [row.item, row.mold_no])).toEqual([
+      ['挂钩左件', 'M12-A'],
+      ['挂钩右件', 'M12-B'],
+    ])
   })
 })
