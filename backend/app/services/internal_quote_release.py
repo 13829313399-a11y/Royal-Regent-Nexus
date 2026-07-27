@@ -114,7 +114,7 @@ def _release_manifest(
         raise HTTPException(
             status_code=409,
             detail={
-                "message": "八个必需分段全部通过且计算有效后才能提交最终放行",
+                "message": "全部参与分段通过且计算有效后才能提交最终放行",
                 "incomplete_sections": incomplete,
                 "invalid_calculations": invalid,
             },

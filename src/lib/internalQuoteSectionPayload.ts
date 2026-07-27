@@ -3,6 +3,7 @@ import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 export type DisneyPurchasedSection = 'product' | 'package'
 export type EngineeringMaterialCategory = 'hardware' | 'auxiliary' | 'packaging'
 export type EngineeringAuxiliaryCategory = '五金' | '吸塑' | '胶袋' | '彩盒/内卡' | '电池' | '利宝' | '电镀' | '其他外购'
+export type UnitPriceSourceCurrency = 'RMB' | 'HKD'
 export interface EngineeringMaterialRow {
   item: string
   category: EngineeringMaterialCategory
@@ -11,6 +12,8 @@ export interface EngineeringMaterialRow {
   quantity: number
   unit: string
   unit_price_rmb: number
+  unit_price_hkd?: number
+  unit_price_source_currency?: UnitPriceSourceCurrency
   material: string
   surface_treatment: string
   supplier: string
@@ -76,6 +79,8 @@ export interface SalesPackagingMaterialRow {
   category: SalesPackagingCategory
   quantity: number
   unit_price_rmb: number
+  unit_price_hkd?: number
+  unit_price_source_currency?: UnitPriceSourceCurrency
   tax_rate_percent: number
   remark: string
   disney_description: string
@@ -244,6 +249,16 @@ export interface SlushRow {
   source_row?: number
 }
 export interface SlushPayload { lines: SlushRow[] }
+
+export interface HairRow {
+  name: string
+  craft: string
+  weight_g: number
+  unit_price_hkd: number
+  unit: string
+  remark: string
+}
+export interface HairPayload { lines: HairRow[] }
 
 export interface SewingMaterialRow {
   item: string
@@ -533,6 +548,7 @@ export function normalizeSalesDimensionUnit(value: unknown): SalesDimensionUnit 
 function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
   return rows(value).map((row) => {
     const category = textValue(row.category)
+    const unitPriceSourceCurrency = normalizeUnitPriceSourceCurrency(row)
     return {
       item: textValue(row.item),
       specification: textValue(row.specification),
@@ -541,6 +557,8 @@ function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
         : 'other_purchase',
       quantity: numberValue(row.quantity),
       unit_price_rmb: numberValue(row.unit_price_rmb),
+      unit_price_hkd: numberValue(row.unit_price_hkd),
+      unit_price_source_currency: unitPriceSourceCurrency,
       tax_rate_percent: numberValue(row.tax_rate_percent),
       remark: textValue(row.remark),
       disney_description: textValue(row.disney_description),
@@ -575,6 +593,47 @@ function positivePreviewNumber(value: unknown) {
   return parsed > 0 ? parsed : 0
 }
 
+function normalizeUnitPriceSourceCurrency(row: Record<string, unknown>): UnitPriceSourceCurrency {
+  const explicit = textValue(row.unit_price_source_currency).toUpperCase()
+  if (explicit === 'HKD') return 'HKD'
+  if (explicit === 'RMB') return 'RMB'
+  const hasRmb = Object.prototype.hasOwnProperty.call(row, 'unit_price_rmb')
+    && row.unit_price_rmb !== ''
+    && row.unit_price_rmb != null
+  const hasHkd = Object.prototype.hasOwnProperty.call(row, 'unit_price_hkd')
+    && row.unit_price_hkd !== ''
+    && row.unit_price_hkd != null
+  return !hasRmb && hasHkd ? 'HKD' : 'RMB'
+}
+
+type DualCurrencyUnitPrice = {
+  unit_price_rmb?: number
+  unit_price_hkd?: number
+  unit_price_source_currency?: UnitPriceSourceCurrency
+}
+
+function calculateDualCurrencyUnitPrices(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  const rate = positivePreviewNumber(rmbHkdRate)
+  const unitPriceRmb = positivePreviewNumber(row.unit_price_rmb)
+  const unitPriceHkd = positivePreviewNumber(row.unit_price_hkd)
+  const sourceCurrency = row.unit_price_source_currency === 'HKD'
+    || (!unitPriceRmb && unitPriceHkd && row.unit_price_source_currency !== 'RMB')
+    ? 'HKD'
+    : 'RMB'
+  if (sourceCurrency === 'HKD') {
+    return {
+      sourceCurrency,
+      unitPriceHkd,
+      unitPriceRmb: rate && unitPriceHkd ? unitPriceHkd * rate : 0,
+    }
+  }
+  return {
+    sourceCurrency,
+    unitPriceRmb,
+    unitPriceHkd: rate && unitPriceRmb ? unitPriceRmb / rate : 0,
+  }
+}
+
 export function dimensionValueFromInches(value: unknown, unit: SalesDimensionUnit) {
   const inches = numberValue(value)
   return unit === 'cm' ? Number((inches * 2.54).toFixed(4)) : inches
@@ -592,22 +651,28 @@ export function calculateCartonCuft(carton: Pick<SalesCartonRow, 'length_in' | '
   return length && width && height ? length * width * height / 1728 : 0
 }
 
-export function calculatePackagingMaterialUnitHkd(row: Pick<SalesPackagingMaterialRow, 'unit_price_rmb'>, rmbHkdRate: unknown) {
-  const rate = positivePreviewNumber(rmbHkdRate)
-  const unitPrice = positivePreviewNumber(row.unit_price_rmb)
-  return rate && unitPrice ? unitPrice / rate : 0
+export function calculatePackagingMaterialUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  return calculateDualCurrencyUnitPrices(row, rmbHkdRate).unitPriceRmb
 }
 
-export function calculatePackagingMaterialAmountHkd(row: Pick<SalesPackagingMaterialRow, 'quantity' | 'unit_price_rmb'>, rmbHkdRate: unknown) {
+export function calculatePackagingMaterialUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  return calculateDualCurrencyUnitPrices(row, rmbHkdRate).unitPriceHkd
+}
+
+export function calculatePackagingMaterialAmountHkd(row: Pick<SalesPackagingMaterialRow, 'quantity'> & DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   const quantity = positivePreviewNumber(row.quantity)
   return quantity * calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
 }
 
-export function calculateEngineeringMaterialUnitHkd(row: Pick<EngineeringMaterialRow, 'unit_price_rmb'>, rmbHkdRate: unknown) {
+export function calculateEngineeringMaterialUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  return calculatePackagingMaterialUnitRmb(row, rmbHkdRate)
+}
+
+export function calculateEngineeringMaterialUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   return calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
 }
 
-export function calculateEngineeringMaterialAmountHkd(row: Pick<EngineeringMaterialRow, 'quantity' | 'unit_price_rmb'>, rmbHkdRate: unknown) {
+export function calculateEngineeringMaterialAmountHkd(row: Pick<EngineeringMaterialRow, 'quantity'> & DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   return calculatePackagingMaterialAmountHkd(row, rmbHkdRate)
 }
 
@@ -666,9 +731,9 @@ export function calculateCartonPriceHkd(carton: Pick<SalesCartonRow, 'length_in'
 export function calculateFlatCardPriceHkd(flatCard: Pick<SalesFlatCardRow, 'length_in' | 'width_in' | 'quantity'>, flatCardPriceFactor: unknown) {
   const length = positivePreviewNumber(flatCard.length_in)
   const width = positivePreviewNumber(flatCard.width_in)
-  const quantity = positivePreviewNumber(flatCard.quantity) || 1
+  const quantity = positivePreviewNumber(flatCard.quantity)
   const factor = positivePreviewNumber(flatCardPriceFactor)
-  return length && width && factor ? (length + 1) * (width + 1) * 2 * factor / 1000 * quantity : 0
+  return length && width && factor && quantity ? length * width * factor * quantity / 1000 : 0
 }
 
 export function calculateCartonUnitCostHkd(carton: SalesCartonRow, paperPriceFactor: unknown, flatCardPriceFactor: unknown = paperPriceFactor) {
@@ -900,6 +965,14 @@ export function calculateSlushTotalRmb(payload: SlushPayload, rmbHkdRate: unknow
   return calculateSlushTotalHkd(payload) * positivePreviewNumber(rmbHkdRate)
 }
 
+export function calculateHairRowAmountHkd(row: HairRow) {
+  return positivePreviewNumber(row.unit_price_hkd)
+}
+
+export function calculateHairTotalHkd(payload: HairPayload) {
+  return payload.lines.reduce((total, row) => total + calculateHairRowAmountHkd(row), 0)
+}
+
 export function calculateSewingBasePriceRmb(row: SewingMaterialRow) {
   return Math.max(Number(row.usage) || 0, 0) * Math.max(Number(row.unit_price_rmb) || 0, 0)
 }
@@ -986,6 +1059,10 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         return {
           item: textValue(row.item), category, purpose: textValue(row.purpose), specification: textValue(row.specification ?? row.spec),
           quantity: numberValue(row.quantity ?? row.qty), unit: textValue(row.unit), unit_price_rmb: numberValue(row.unit_price_rmb),
+          ...(category === 'hardware' ? {} : {
+            unit_price_hkd: numberValue(row.unit_price_hkd),
+            unit_price_source_currency: normalizeUnitPriceSourceCurrency(row),
+          }),
           material: textValue(row.material), surface_treatment: textValue(row.surface_treatment), supplier: textValue(row.supplier), contact: textValue(row.contact),
           auxiliary_category: auxiliaryCategory, tax_rate_percent: category === 'hardware' ? 13 : numberValue(row.tax_rate_percent ?? row.tax_pct), remark: textValue(row.remark ?? row.note),
           disney_description: textValue(row.disney_description), disney_section: textValue(row.disney_section) === 'package' ? 'package' : 'product', disney_unit_price_usd: numberValue(row.disney_unit_price_usd), disney_included: numberValue(row.disney_included, 1),
@@ -1089,6 +1166,16 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       unit_price_hkd: numberValue(row.unit_price_hkd),
       remark: textValue(row.remark ?? row.note),
       ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
+    })),
+  }
+  if (code === 'hair') return {
+    lines: rows(source.lines).map((row) => ({
+      name: textValue(row.name ?? row.item),
+      craft: textValue(row.craft ?? row.process),
+      weight_g: numberValue(row.weight_g ?? row.net_weight_g),
+      unit_price_hkd: numberValue(row.unit_price_hkd ?? row.price_hkd),
+      unit: textValue(row.unit),
+      remark: textValue(row.remark ?? row.note),
     })),
   }
   if (code === 'sewing') {

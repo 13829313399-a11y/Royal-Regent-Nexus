@@ -45,7 +45,12 @@ def test_downloadable_import_template_uses_a_header_recognized_by_its_parser(imp
         )
         assert content == expected_path.read_bytes()
         parsed = parse_internal_quote_workbook(content, import_type)
-        assert parsed.row_count > 0
+        if import_type == "mold":
+            assert parsed.sheet_name == "01"
+            assert parsed.header_row == 11
+            assert parsed.row_count == 0
+        else:
+            assert parsed.row_count > 0
         return
 
     sheet_name, _rows, header_index = find_header(workbook_rows(content), import_type)
@@ -160,16 +165,49 @@ def test_mold_import_extracts_embedded_picture_bytes_and_maps_them_to_source_row
     assert any("已识别并提取 U 列 1 张嵌入图片" in warning for warning in parsed.warnings)
 
 
+def zhanxing_workbook_with_image() -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "01"
+    for _ in range(10):
+        sheet.append([])
+    sheet.append([
+        "Item No. 模号",
+        "Item Description 项目内容",
+        "Material 原料",
+        "Cavities 件",
+        "Up套",
+        "图片",
+        "Mould Size(L*W*H) 工模尺寸",
+        "Mould Prices 模价(RMB)",
+        "钢材/钢料硬度",
+        "产能/机型",
+        "胶件重量（g)",
+        "Remark备注",
+    ])
+    sheet.append([
+        "M-01", "水桌主体", "PP", 1, 1, None,
+        "90*90*80", 237000, "718H", "3000/150T", 32, "热流道",
+    ])
+    image_bytes = BytesIO()
+    PillowImage.new("RGB", (4, 4), color=(16, 118, 110)).save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+    image = WorksheetImage(image_bytes)
+    image.anchor = "F12"
+    sheet.add_image(image)
+    sheet.append(["M-02", "顶部桌面", "PP", 1, 1, None, "60*60*56", 100000, "718H", "3000/150T", 25, "细水口"])
+    sheet.append(["M-03", "腿", "PP", 2, .67, None, "65*65*56", 103000, "718H", "3000/60-80T", 17, ""])
+    sheet.append([])
+    sheet.append(["工模 ( 注塑模) - 套"])
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
 def test_mold_import_maps_zhanxing_fixed_template_columns_and_embedded_images():
-    template_path = (
-        Path(__file__).resolve().parents[1]
-        / "app"
-        / "data"
-        / "internal_quote_import_templates"
-        / FIXED_TEMPLATE_FILE_NAMES["mold"]
-    )
     parsed = parse_internal_quote_workbook(
-        template_path.read_bytes(),
+        zhanxing_workbook_with_image(),
         "mold",
         fallback_qty=Decimal("3000"),
     )
@@ -182,6 +220,7 @@ def test_mold_import_maps_zhanxing_fixed_template_columns_and_embedded_images():
     assert [
         (
             row["item"],
+            row["mold_no"],
             row["chinese_name"],
             row["material_type"],
             row["cavity"],
@@ -196,20 +235,18 @@ def test_mold_import_maps_zhanxing_fixed_template_columns_and_embedded_images():
         )
         for row in parsed.payload_fragment["molds"]
     ] == [
-        ("水桌主体", "水桌主体", "PP", "1", "1.0000", "90*90*80", "237000.0000", "718H", "3000.0000", "150T", "32.0000", "模具图片-F12-1.png"),
-        ("顶部桌面", "顶部桌面", "PP", "1", "1.0000", "60*60*56", "100000.0000", "718H", "3000.0000", "150T", "25.0000", "模具图片-F13-1.png"),
-        ("腿", "腿", "PP", "2", "0.6700", "65*65*56", "103000.0000", "718H", "3000.0000", "60-80T", "17.0000", "模具图片-F14-1.png"),
+        ("水桌主体", "M-01", "水桌主体", "PP", "1", "1.0000", "90*90*80", "237000.0000", "718H", "3000.0000", "150T", "32.0000", "模具图片-F12-1.png"),
+        ("顶部桌面", "M-02", "顶部桌面", "PP", "1", "1.0000", "60*60*56", "100000.0000", "718H", "3000.0000", "150T", "25.0000", ""),
+        ("腿", "M-03", "腿", "PP", "2", "0.6700", "65*65*56", "103000.0000", "718H", "3000.0000", "60-80T", "17.0000", ""),
     ]
     assert [
         (image.source_row, image.file_name)
         for image in parsed.embedded_images
     ] == [
         (12, "模具图片-F12-1.png"),
-        (13, "模具图片-F13-1.png"),
-        (14, "模具图片-F14-1.png"),
     ]
     assert all(image.content.startswith(b"\x89PNG\r\n\x1a\n") for image in parsed.embedded_images)
-    assert any("已识别并提取 F 列 3 张嵌入图片" in warning for warning in parsed.warnings)
+    assert any("已识别并提取 F 列 1 张嵌入图片" in warning for warning in parsed.warnings)
 
 
 def test_electronic_import_converts_rmb_and_maps_extra_parameters():

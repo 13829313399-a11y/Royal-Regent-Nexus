@@ -454,6 +454,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             "painting",
             "slush",
             "sewing",
+            "hair",
             "assembly",
         }
         source_attachment = workbook_bytes_with_linked_sheets()
@@ -639,6 +640,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             "报价明细",
             "电子明细",
             "车缝明细",
+            "车发明细",
             "装配明细",
             "审批与版本",
             "工程核价依据-报价明细",
@@ -735,7 +737,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert quote_sheet["R6"].value == 10000
         assert all(
             workbook[name].sheet_state == "veryHidden"
-            for name in ("电子明细", "车缝明细", "装配明细", "审批与版本")
+            for name in ("电子明细", "车缝明细", "车发明细", "装配明细", "审批与版本")
         )
         assert workbook["工程核价依据-报价明细"].sheet_state == "visible"
         assert workbook["工程核价依据-报价明细"]["A1"].value == "上传源表"
@@ -749,6 +751,9 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 15)] == [
             "产品组", "类型", "#", "布料名称", "部位", "工艺", "裁片数", "用量/码",
             "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注", "来源行",
+        ]
+        assert [workbook["车发明细"].cell(3, column).value for column in range(1, 9)] == [
+            "#", "名称", "工艺", "重量(g)", "单价(HKD)", "单位", "备注", "金额(HKD)",
         ]
         assert workbook["审批与版本"]["B5"].value == "最终业务放行与客价交接在 P4 实施"
         workbook.close()

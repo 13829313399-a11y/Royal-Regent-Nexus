@@ -14,6 +14,7 @@ export const internalQuoteSectionDefinitions: Array<{
   { code: 'molding', label: '啤机部', owner: '啤机核价', formulaHint: '注塑：净重 ×（1 + 损耗%）× 冻结材料价 ÷ 454 + 冻结机型台班价 ÷ 套数 ÷ 目标数；吹气按料价、吹工、披锋及利润倍率计算。', dependencies: ['工程模具资料', '材料价快照', '机型价快照'], departments: ['production', 'molding'] },
   { code: 'painting', label: '喷油部', owner: '喷油核价', formulaHint: '夹模、移印、散枪、边模、油色、浸油、抹油、擦PP水八类工序数量 × 单价。', dependencies: ['喷油报价单'], departments: ['production', 'painting'] },
   { code: 'slush', label: '搪胶部', owner: '搪胶核价', formulaHint: '行总价 HKD = 用量 PC × 单价 HKD；合计 RMB 按冻结汇率换算。', dependencies: ['产品编号', '胶件名称', '材料', '料重', '日产量 24H', '用量'], departments: ['slush'] },
-  { code: 'sewing', label: '车缝部', owner: '车缝核价', formulaHint: '价钱 RMB = 用量/码 × 物料价；总价钱再乘码点，裁片数只作记录。', dependencies: ['产品组', '类型', '布料名称', '部位', '工艺', '裁片数', '用量/码'], departments: ['sewing'] },
+  { code: 'sewing', label: '车缝部', owner: '车缝核价', formulaHint: '价钱 RMB = 用量/码 × 物料价；总价钱再乘码点，裁片数只作记录。历史车发分类继续兼容，新报价请使用独立车发部。', dependencies: ['产品组', '布料名称', '部位', '工艺', '裁片数', '用量/码'], departments: ['sewing'] },
+  { code: 'hair', label: '车发部', owner: '车发核价', formulaHint: '每行单价 HKD 直接计入成品车发成本；重量、工艺与单位作为报价依据记录。', dependencies: ['名称', '工艺', '重量（g）', '单价（HKD）', '单位'], departments: ['hair'] },
   { code: 'assembly', label: '装配部', owner: '装配核价', formulaHint: '人工基数 × 总人数 × 小组数 ÷ 生产量；人工基数和标准工时均可调整，组装与包装分别汇总。', dependencies: ['生产排拉工序表'], departments: ['assembly'] },
 ]

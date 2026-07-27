@@ -124,6 +124,41 @@ def test_rr2_cost_summary_keeps_exact_four_table_fields_and_reference_tax_column
     assert result["shipping_pricing"]["rows"] == []
 
 
+def test_rr2_cost_summary_prefers_standalone_hair_and_falls_back_to_legacy_sewing_hair():
+    legacy_sections = summary_sections(freight_enabled=False)
+    legacy_sections.append(
+        SimpleNamespace(
+            department="hair",
+            is_required=False,
+            calculation_status="pending",
+            payload_json="{}",
+            calculation_json="{}",
+        )
+    )
+    legacy = _rr2_cost_summary(
+        legacy_sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+    )
+    assert rows_by_key(legacy["t1"])["sewing_hair"]["value"] == "4.0000"
+
+    standalone_sections = summary_sections(freight_enabled=False)
+    standalone_sections.append(
+        section(
+            "hair",
+            {"lines": [{"name": "公仔头发", "craft": "植发", "weight_g": 18.5, "unit_price_hkd": 2.35, "unit": "PCS"}]},
+            {"total_hkd": "2.35"},
+            [{"kind": "hair", "item": "公仔头发", "amount_hkd": "2.35"}],
+        )
+    )
+    standalone = _rr2_cost_summary(
+        standalone_sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+    )
+    assert rows_by_key(standalone["t1"])["sewing_hair"]["value"] == "2.3500"
+
+
 def test_rr2_shipping_price_uses_48_52_markup_settlement_and_mold_share_when_enabled():
     result = _rr2_cost_summary(
         summary_sections(freight_enabled=True),

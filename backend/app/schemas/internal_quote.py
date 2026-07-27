@@ -15,10 +15,11 @@ InternalQuoteSectionCode = Literal[
     "painting",
     "slush",
     "sewing",
+    "hair",
     "assembly",
 ]
 MANDATORY_SECTION_CODES = ("sales", "engineering", "assembly")
-OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing")
+OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing", "hair")
 SECTION_CODE_ORDER = MANDATORY_SECTION_CODES[:2] + OPTIONAL_SECTION_CODES + MANDATORY_SECTION_CODES[2:]
 
 
