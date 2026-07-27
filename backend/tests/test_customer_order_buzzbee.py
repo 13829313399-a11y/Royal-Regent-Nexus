@@ -20,6 +20,22 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
+def test_customer_order_runtime_dependencies_are_declared_for_production():
+    production_requirements = {
+        line.strip()
+        for line in (BACKEND_DIR / "requirements.prod.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert {
+        "xlrd>=2.0.1,<3",
+        "msoffcrypto-tool>=5.4,<6",
+        "lxml>=5,<7",
+    } <= production_requirements
+
+
 def make_client(monkeypatch) -> TestClient:
     TEST_TMP_DIR.mkdir(exist_ok=True)
     database_url = f"sqlite:///{TEST_TMP_DIR / f'customer_order_{uuid4().hex}.db'}"
