@@ -13,22 +13,23 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('keeps the injection scheduling hub as a rebuild placeholder only', () => {
-    const placeholderBlock = enterpriseSource.match(
+  it('wires the injection scheduling hub to the front-end preview route', () => {
+    const moduleBlock = enterpriseSource.match(
       /id: 'injection-scheduling'[\s\S]*?\n      },/,
     )?.[0]
 
-    expect(placeholderBlock).toBeDefined()
-    expect(placeholderBlock).toContain("title: '注塑排产中枢'")
-    expect(placeholderBlock).toContain("status: '待重建'")
-    expect(placeholderBlock).toContain("stats: '前后端已清除 · 暂无业务数据'")
-    expect(placeholderBlock).toContain(
+    expect(moduleBlock).toBeDefined()
+    expect(moduleBlock).toContain("title: '注塑排产中枢'")
+    expect(moduleBlock).toContain("status: '前端预览'")
+    expect(moduleBlock).toContain("stats: '华兴 Mock 快照 · 后端未接入'")
+    expect(moduleBlock).toContain(
       "route: getDepartmentRoute('production', 'injection-scheduling')",
     )
-    expect(placeholderBlock).not.toContain('href:')
-
-    expect(routerSource).not.toContain("path: '/modules/production/injection-production-hub'")
-    expect(routerSource).not.toContain('InjectionProductionHubView.vue')
+    expect(moduleBlock).not.toContain('href:')
+    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).toContain("name: 'injection-scheduling-hub'")
+    expect(routerSource).toContain("InjectionSchedulingHubView.vue")
+    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,280}fullPage: true/)
     expect(routerSource).not.toContain('injection_schedule:')
   })
 

@@ -41,7 +41,9 @@ backend/data/*.sqlite3
 !/AGENTS.md
 !/AGENTS.MD
 !/PROJECT_MEMORY.md
+!/design-qa.md
 !/docs/aliyun-docker-deploy.md
+!/docs/injection-production-hub-context-memory.md
 !/docs/business/internal-quote-collaboration-design.md
 !/docs/business/internal-quote-l6-release-readiness.md
 
