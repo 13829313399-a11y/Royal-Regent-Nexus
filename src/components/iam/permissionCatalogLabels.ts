@@ -73,6 +73,8 @@ const PERMISSION_LABELS: Record<string, string> = {
   'customer_price:export_customer_quote': '导出客户报价',
   'customer_price:import_internal_quote': '导入内部报价',
   'customer_price:read': '查看报价中心',
+  'customer_order:read': '查看客户订单中心',
+  'customer_order:export': '确认并导出客户排期',
   'injection_schedule:import': '导入啤机排产',
   'injection_schedule:read': '查看啤机排产',
   'molding_sample:audit_read': '查看啤办敏感操作审计',
