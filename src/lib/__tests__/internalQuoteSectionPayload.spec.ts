@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type PaintingPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
@@ -148,10 +148,11 @@ describe('internal quote section payload normalization', () => {
     }
     expect(calculateCartonCuft(carton)).toBeCloseTo(0.1157407)
     expect(calculateCartonPriceHkd(carton, 2.75)).toBeCloseTo(0.935)
-    expect(calculateFlatCardPriceHkd(carton.flat_cards[0], 2.75)).toBeCloseTo(0.495)
-    expect(calculateFlatCardPriceHkd(carton.flat_cards[0], 1.5)).toBeCloseTo(0.27)
-    expect(calculateCartonUnitCostHkd(carton, 2.75)).toBeCloseTo(0.143)
-    expect(calculateCartonUnitCostHkd(carton, 2.75, 1.5)).toBeCloseTo(0.1205)
+    expect(calculateFlatCardPriceHkd(carton.flat_cards[0], 2.75)).toBeCloseTo(0.176)
+    expect(calculateFlatCardPriceHkd(carton.flat_cards[0], 1.5)).toBeCloseTo(0.096)
+    expect(calculateFlatCardPriceHkd({ length_in: 10, width_in: 5, quantity: 1 }, 2.75)).toBeCloseTo(0.1375)
+    expect(calculateCartonUnitCostHkd(carton, 2.75)).toBeCloseTo(0.1111)
+    expect(calculateCartonUnitCostHkd(carton, 2.75, 1.5)).toBeCloseTo(0.1031)
 
     const freightOptions = calculateSalesFreightOptions(defaultSalesFreightCalculation, {
       length_in: 14,
@@ -200,6 +201,50 @@ describe('internal quote section payload normalization', () => {
     })
   })
 
+  it('uses the selected RMB or HKD source price for packaging and auxiliary materials', () => {
+    const packagingPayload = normalizeInternalQuotePayload('sales', {
+      packaging_materials: [{
+        item: '吸塑罩',
+        category: 'blister',
+        quantity: 2,
+        unit_price_hkd: 4,
+        unit_price_source_currency: 'HKD',
+      }],
+    }) as unknown as SalesPayload
+    const packagingHkd = packagingPayload.packaging_materials[0]
+    expect(packagingHkd).toMatchObject({
+      unit_price_rmb: 0,
+      unit_price_hkd: 4,
+      unit_price_source_currency: 'HKD',
+    })
+    expect(calculatePackagingMaterialUnitRmb(packagingHkd, .85)).toBeCloseTo(3.4)
+    expect(calculatePackagingMaterialUnitHkd(packagingHkd, .85)).toBe(4)
+    expect(calculatePackagingMaterialAmountHkd(packagingHkd, .85)).toBe(8)
+
+    const engineeringPayload = normalizeInternalQuotePayload('engineering', {
+      materials: [{
+        item: '胶袋',
+        category: 'auxiliary',
+        quantity: 3,
+        unit_price_hkd: 1.5,
+      }],
+    }) as unknown as EngineeringPayload
+    const auxiliaryHkd = engineeringPayload.materials[0]
+    expect(auxiliaryHkd).toMatchObject({
+      unit_price_source_currency: 'HKD',
+      unit_price_hkd: 1.5,
+    })
+    expect(calculateEngineeringMaterialUnitRmb(auxiliaryHkd, .85)).toBeCloseTo(1.275)
+    expect(calculateEngineeringMaterialAmountHkd(auxiliaryHkd, .85)).toBeCloseTo(4.5)
+
+    const historicalPayload = normalizeInternalQuotePayload('sales', {
+      packaging_materials: [{ item: '彩盒', category: 'color_box_inner_card', quantity: 2, unit_price_rmb: 3.4 }],
+    }) as unknown as SalesPayload
+    const historicalRmb = historicalPayload.packaging_materials[0]
+    expect(historicalRmb.unit_price_source_currency).toBe('RMB')
+    expect(calculatePackagingMaterialUnitHkd(historicalRmb, .85)).toBeCloseTo(4)
+  })
+
   it('clones deeply reactive Vue sales forms into plain save payloads', () => {
     const form = reactive({
       scenarios: [{ name: '盐田', capacity_cuft: 1980, carton_cuft: 2, qty_per_carton: 6 }],
@@ -241,6 +286,7 @@ describe('internal quote section payload normalization', () => {
     expect(normalizeInternalQuotePayload('painting', { rows: [{ item: '头部', position: '正面', image: '头部.png', note: '对色板', operations: { clamp: { quantity: 2, unit_price_hkd: 3 } } }] })).toMatchObject({ rows: [{ name: '头部', position: '正面', image_reference: '头部.png', remark: '对色板', operations: { clamp: { quantity: 2, unit_price_hkd: 3 }, wipe: { quantity: 0, unit_price_hkd: 0 }, pp_water: { quantity: 0, unit_price_hkd: 0 } } }] })
     expect(normalizeInternalQuotePayload('slush', { lines: [{ product_no: 'RC-01', name: '手臂', material: 'PVC', net_weight_g: '35', daily_output: '8000', usage: '2', unit_price_hkd: '4.5', note: '透明', source_row: '8' }] })).toEqual({ lines: [{ product_code: 'RC-01', item: '手臂', material: 'PVC', weight_g: 35, daily_output_24h: 8000, quantity: 2, unit_price_hkd: 4.5, remark: '透明', source_row: 8 }] })
     expect(normalizeInternalQuotePayload('sewing', { groups: [{ name: '衣服', category: '车衣', items: [{ fabric: '绒布', part: '身体', craft: '电绣', pieces: '4', qty: '0.25', mat_price: '12', markup: '1.1', note: '红色', supplier: 'A', source_row: '8' }] }] })).toEqual({ quote_mode: 'detail', quick_quotes: [], groups: [{ name: '衣服', category: 'clothes', labor_rmb: 0, materials: [{ item: '绒布', part: '身体', craft: '电绣', pieces: 4, usage: 0.25, unit_price_rmb: 12, markup: 1.1, remark: '红色', supplier: 'A', source_row: 8 }] }] })
+    expect(normalizeInternalQuotePayload('hair', { lines: [{ item: '公仔头发', process: '植发', weight_g: '18.5', unit_price_hkd: '2.35', unit: 'PCS', note: '棕色' }] })).toEqual({ lines: [{ name: '公仔头发', craft: '植发', weight_g: 18.5, unit_price_hkd: 2.35, unit: 'PCS', remark: '棕色' }] })
     expect(normalizeInternalQuotePayload('assembly', { groups: [{ name: '包装', category: 'packaging', processes: [{ name: '入袋', persons: 2, teams: 1, production_qty: 100, note: '检查封口' }] }] })).toMatchObject({ labor_base_hkd: 260, standard_work_hours: 11, groups: [{ category: 'packaging', production_qty: 100, teams: 1, processes: [{ name: '入袋', persons: 2, remark: '检查封口' }] }] })
     expect(normalizeInternalQuotePayload('assembly', { labor_base_hkd: 285, standard_work_hours: 10.5, groups: [] })).toMatchObject({ labor_base_hkd: 285, standard_work_hours: 10.5 })
     expect(normalizeInternalQuotePayload('sales', {
@@ -336,6 +382,18 @@ describe('internal quote section payload normalization', () => {
     expect(calculateSlushRowAmount(payload.lines[0])).toBeCloseTo(7.2)
     expect(calculateSlushTotalHkd(payload)).toBeCloseTo(10.2)
     expect(calculateSlushTotalRmb(payload, .85)).toBeCloseTo(8.67)
+  })
+
+  it('previews standalone hair unit prices and the department HKD total', () => {
+    const payload = normalizeInternalQuotePayload('hair', {
+      lines: [
+        { name: '公仔头发', craft: '植发', weight_g: 18.5, unit_price_hkd: 2.35, unit: 'PCS' },
+        { name: '尾巴毛', craft: '车发', weight_g: 3, unit_price_hkd: .65, unit: 'PCS' },
+      ],
+    }) as HairPayload
+
+    expect(calculateHairRowAmountHkd(payload.lines[0])).toBeCloseTo(2.35)
+    expect(calculateHairTotalHkd(payload)).toBeCloseTo(3)
   })
 
   it('previews sewing base price, markup total, labor de-duplication and frozen-rate HKD', () => {

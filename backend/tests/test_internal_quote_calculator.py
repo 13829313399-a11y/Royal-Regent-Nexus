@@ -71,7 +71,7 @@ def test_engineering_electronic_and_molding_decimal_vectors():
         "hardware_hkd": "20.0000",
         "auxiliary_hkd": "0.0000",
         "packaging_hkd": "0.0000",
-        "carton_hkd": "0.1115",
+        "carton_hkd": "0.1111",
         "carton_cuft": "0.1157",
         "mold_quote_total_rmb": "1000.0000",
         "mold_quote_total_hkd": "1176.4706",
@@ -85,7 +85,7 @@ def test_engineering_electronic_and_molding_decimal_vectors():
         "testing_share_usd": "0.0000",
         "mold_amortization_rmb": "10.0000",
         "mold_amortization_usd": "1.2403",
-        "total_hkd": "20.1115",
+        "total_hkd": "20.1111",
     }
     electronic = calculate(
         "electronic",
@@ -261,6 +261,44 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
     assert slush["line_breakdown"][0]["weight_g"] == "35.0000"
     assert slush["line_breakdown"][0]["formula"] == "quantity * unit_price_hkd"
 
+    hair = calculate(
+        "hair",
+        {
+            "lines": [
+                {
+                    "name": "公仔头发",
+                    "craft": "植发",
+                    "weight_g": "18.5",
+                    "unit_price_hkd": "2.35",
+                    "unit": "PCS",
+                    "remark": "棕色",
+                },
+                {
+                    "name": "尾巴毛",
+                    "craft": "车发",
+                    "weight_g": "3",
+                    "unit_price_hkd": "0.65",
+                    "unit": "PCS",
+                    "remark": "",
+                },
+            ]
+        },
+    )
+    assert hair["status"] == "valid"
+    assert hair["totals"] == {"total_hkd": "3.0000"}
+    assert hair["currency_totals"]["HKD"] == "3.0000"
+    assert hair["line_breakdown"][0] == {
+        "kind": "hair",
+        "item": "公仔头发",
+        "craft": "植发",
+        "weight_g": "18.5000",
+        "unit_price_hkd": "2.3500",
+        "unit": "PCS",
+        "remark": "棕色",
+        "formula": "unit_price_hkd",
+        "amount_hkd": "2.3500",
+    }
+
     sewing = calculate(
         "sewing",
         {
@@ -381,6 +419,25 @@ def test_incomplete_quick_quotes_can_be_saved_but_block_submission():
     incomplete_sewing = calculate("sewing", {"quote_mode": "quick", "quick_quotes": [{"doll_name": "", "unit_price_hkd": 2}]})
     assert incomplete_sewing["status"] == "blocked"
     assert incomplete_sewing["warnings"][0]["code"] == "sewing_quick_quote_incomplete"
+
+
+def test_incomplete_hair_rows_can_be_saved_but_block_submission():
+    result = calculate(
+        "hair",
+        {
+            "lines": [
+                {
+                    "name": "",
+                    "craft": "植发",
+                    "weight_g": "0",
+                    "unit_price_hkd": "2",
+                    "unit": "",
+                }
+            ]
+        },
+    )
+    assert result["status"] == "blocked"
+    assert result["warnings"][0]["code"] == "hair_line_incomplete"
 
 
 def test_assembly_group_inputs_follow_reference_summary_formula():
@@ -544,10 +601,10 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert sales["totals"]["base_factory_price_hkd"] == "20.0000"
     assert sales["totals"]["packaging_material_hkd"] == "8.0000"
     assert sales["totals"]["packaging_material_rmb"] == "6.8000"
-    assert sales["totals"]["carton_hkd"] == "0.1430"
+    assert sales["totals"]["carton_hkd"] == "0.1111"
     assert sales["totals"]["carton_cuft"] == "0.1157"
-    assert sales["totals"]["factory_price_hkd"] == "28.1430"
-    assert sales["totals"]["total_hkd"] == "8.1430"
+    assert sales["totals"]["factory_price_hkd"] == "28.1111"
+    assert sales["totals"]["total_hkd"] == "8.1111"
     assert sales["line_breakdown"][0] == {
         "kind": "packaging_material",
         "owner": "sales",
@@ -557,10 +614,12 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         "quantity": "2.0000",
         "unit_price_rmb": "3.4000",
         "unit_price_hkd": "4.0000",
+        "unit_price_source_currency": "RMB",
         "tax_rate_percent": "10.0000",
         "amount_rmb": "6.8000",
         "amount_hkd": "8.0000",
         "remark": "FSC",
+        "formula": "用量 × 单价 RMB ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）",
     }
     assert sales["line_breakdown"][1] == {
         "kind": "carton",
@@ -569,8 +628,8 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         "paper_price_factor": "2.7500",
         "flat_card_price_factor": "2.7500",
         "carton_price_hkd": "0.9350",
-        "flat_card_price_hkd": "0.4950",
-        "per_piece_hkd": "0.1430",
+        "flat_card_price_hkd": "0.1760",
+        "per_piece_hkd": "0.1111",
         "cuft": "0.1157",
         "qty_per_carton": "10.0000",
     }
@@ -591,8 +650,30 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         factory_price_hkd="20",
     )
     assert adjusted["line_breakdown"][0]["flat_card_price_factor"] == "1.5000"
-    assert adjusted["line_breakdown"][0]["flat_card_price_hkd"] == "0.2700"
-    assert adjusted["totals"]["carton_hkd"] == "0.1205"
+    assert adjusted["line_breakdown"][0]["flat_card_price_hkd"] == "0.0960"
+    assert adjusted["totals"]["carton_hkd"] == "0.1031"
+
+    with pytest.raises(CalculationInputError, match="平卡第 1 行用量 必须大于 0"):
+        calculate(
+            "sales",
+            {
+                "paper_price_factor": "2.75",
+                "cartons": [{
+                    "item": "主纸箱",
+                    "length_in": "10",
+                    "width_in": "5",
+                    "height_in": "4",
+                    "qty_per_carton": "10",
+                    "flat_cards": [{
+                        "name": "主平卡",
+                        "length_in": "8",
+                        "width_in": "4",
+                        "quantity": "0",
+                    }],
+                }],
+            },
+            factory_price_hkd="20",
+        )
 
     optional_product_dimensions = calculate(
         "sales",
@@ -615,8 +696,8 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         factory_price_hkd="0",
     )
     assert optional_product_dimensions["status"] == "valid"
-    assert optional_product_dimensions["totals"]["carton_hkd"] == "2.7416"
-    assert optional_product_dimensions["line_breakdown"][0]["per_piece_hkd"] == "2.7416"
+    assert optional_product_dimensions["totals"]["carton_hkd"] == "2.5013"
+    assert optional_product_dimensions["line_breakdown"][0]["per_piece_hkd"] == "2.5013"
     freight_options = optional_product_dimensions["totals"]["freight_options"]
     assert len(freight_options) == 8
     assert freight_options[0]["kind"] == "freight_reference"
@@ -631,7 +712,7 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert freight_options[0]["lifting_per_piece_hkd"] == "0.0000"
     assert freight_options[0]["per_piece_hkd"] == "3.6134"
     assert freight_options[-1]["item"] == "YT 5 吨车"
-    assert optional_product_dimensions["totals"]["total_hkd"] == "2.7416"
+    assert optional_product_dimensions["totals"]["total_hkd"] == "2.5013"
     assert len(optional_product_dimensions["line_breakdown"]) == 9
 
     baseline_freight = calculate_section(
@@ -754,6 +835,71 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     )
     assert missing["status"] == "blocked"
     assert missing["warnings"][0]["code"] == "sales_carton_missing"
+
+
+def test_auxiliary_and_packaging_materials_accept_hkd_source_prices():
+    engineering = calculate(
+        "engineering",
+        {
+            "materials": [{
+                "item": "胶袋",
+                "category": "auxiliary",
+                "auxiliary_category": "胶袋",
+                "quantity": "3",
+                "unit_price_rmb": "999",
+                "unit_price_hkd": "2",
+                "unit_price_source_currency": "HKD",
+                "tax_rate_percent": "13",
+            }],
+            "molds": [],
+        },
+    )
+    material = engineering["line_breakdown"][0]
+    assert material["unit_price_source_currency"] == "HKD"
+    assert material["unit_price_hkd"] == "2.0000"
+    assert material["unit_price_rmb"] == "1.7000"
+    assert material["amount_hkd"] == "6.0000"
+    assert material["amount_rmb"] == "5.1000"
+    assert engineering["totals"]["auxiliary_hkd"] == "6.0000"
+    assert material["formula"].startswith("用量 × 单价 HKD")
+
+    sales = calculate(
+        "sales",
+        {
+            "packaging_materials": [{
+                "item": "吸塑罩",
+                "category": "blister",
+                "quantity": "2",
+                "unit_price_hkd": "4",
+                "tax_rate_percent": "6",
+            }],
+        },
+        factory_price_hkd="20",
+        mold_amortization_usd="0",
+    )
+    packaging = sales["line_breakdown"][0]
+    assert packaging["unit_price_source_currency"] == "HKD"
+    assert packaging["unit_price_hkd"] == "4.0000"
+    assert packaging["unit_price_rmb"] == "3.4000"
+    assert packaging["amount_hkd"] == "8.0000"
+    assert sales["totals"]["packaging_material_hkd"] == "8.0000"
+    assert sales["totals"]["packaging_material_rmb"] == "6.8000"
+
+    with pytest.raises(CalculationInputError, match="输入币种必须是 RMB 或 HKD"):
+        calculate(
+            "sales",
+            {
+                "packaging_materials": [{
+                    "item": "彩盒",
+                    "category": "color_box_inner_card",
+                    "quantity": "1",
+                    "unit_price_rmb": "3.4",
+                    "unit_price_source_currency": "USD",
+                }],
+            },
+            factory_price_hkd="20",
+            mold_amortization_usd="0",
+        )
 
 
 def test_sales_testing_fee_calculates_multiple_moq_unit_prices_without_changing_hkd_cost():

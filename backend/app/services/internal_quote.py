@@ -82,6 +82,7 @@ SECTION_DEFINITIONS = (
     ("painting", "喷油部", ("production", "painting")),
     ("slush", "搪胶部", ("slush",)),
     ("sewing", "车缝部", ("sewing",)),
+    ("hair", "车发部", ("hair",)),
     ("assembly", "装配部", ("assembly",)),
 )
 SECTION_NAMES = {code: name for code, name, _ in SECTION_DEFINITIONS}
@@ -758,6 +759,7 @@ def _cost_context(
         "indonesia_freight_hkd": indonesia_freight,
         "slush_hkd": value("slush"),
         "sewing_hkd": value("sewing"),
+        "hair_hkd": value("hair"),
         "carton_hkd": value("sales", "carton_hkd") if sales_has_cartons else value("engineering", "carton_hkd"),
         "mold_amortization_usd": value("engineering", "mold_amortization_usd"),
     }
@@ -946,6 +948,12 @@ def _rr2_cost_summary(
         paint_material = painting_total * Decimal("0.30")
     slush_total = _summary_decimal(totals("slush").get("total_hkd"))
     sewing_totals = totals("sewing")
+    hair_section = by_code.get("hair")
+    hair_total = (
+        _summary_decimal(totals("hair").get("total_hkd"))
+        if hair_section is not None and hair_section.is_required
+        else _summary_decimal(sewing_totals.get("hair_hkd"))
+    )
     assembly_totals = totals("assembly")
     hardware_total = _summary_decimal(totals("engineering").get("hardware_hkd"))
     electronic_total = _summary_decimal(totals("electronic").get("total_hkd"))
@@ -1022,7 +1030,7 @@ def _rr2_cost_summary(
         "dom_mat": domestic_material,
         "blow": _summary_decimal(molding_totals.get("blow_hkd")),
         "slush": slush_total,
-        "sewing_hair": _summary_decimal(sewing_totals.get("hair_hkd")),
+        "sewing_hair": hair_total,
         "sewing_cloth": _summary_decimal(sewing_totals.get("clothes_hkd")),
         "hardware": max(hardware_total - hardware_motor, Decimal("0")),
         "electronic": max(electronic_total - electronic_motor, Decimal("0")),

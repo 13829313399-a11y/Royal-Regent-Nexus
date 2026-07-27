@@ -39,7 +39,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- Alembic has one current head: `20260727_0037`.
+- Alembic has one current head: `20260727_0038`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -126,11 +126,18 @@ Internal quotes are persistent and factory-scoped. Collaboration is organized in
 - Painting
 - Slush
 - Sewing
+- Hair
 - Assembly
 
 Sales, engineering and assembly are mandatory in the current schema; the other sections are optional. Draft or rejected sections are editable, review states are reviewable, and approved or not-applicable sections are complete.
 
 The domain uses optimistic revisions, immutable revision/audit records, frozen reference snapshots, server-side decimal calculations, dependency invalidation and controlled release. A final release or downstream handoff is no longer valid when its source revisions, reference snapshot, formulas or dependencies change.
+
+Hair is a standalone optional internal-quote section. Its rows record name, craft, positive weight in grams, positive HKD unit price, unit and remark; the authoritative section total is the sum of HKD unit prices. Historical sewing payloads may still contain `category=hair`, but new forms use the standalone hair section and summaries prefer it whenever that section participates.
+
+Engineering auxiliary-material rows and sales packaging-material rows accept either RMB or HKD as the entered unit-price currency. `unit_price_source_currency` identifies the authoritative input, the other unit price is derived from the quote's frozen RMB/HKD rate, and legacy rows without that field continue to prefer RMB unless they contain only an HKD price. Hardware rows remain RMB-input only.
+
+Sales flat-card rows carry an explicit positive quantity. Frontend preview and server-authoritative calculation both use `length_in × width_in × flat_card_price_factor × quantity ÷ 1000`; the configured flat-card factor defaults to the carton paper-price factor, and legacy rows without quantity default to `1`.
 
 Customer-price artifacts are derived from approved structured quote data through customer-specific converters. Factory-scoped customer masters and pricing baselines remain separate from the internal collaboration state. Customer-facing outputs must not expose internal commercial fields outside the converter whitelist.
 
@@ -184,6 +191,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260723_0027` merged per-factory raw-material masters into the global master. Its data transformation is irreversible without a pre-migration backup.
 - Migration `20260723_0028` introduced production-factory dispatch and factory-scoped inventory behavior. Its preflight rejects ambiguous Huakang C/D production history and unscoped inventory; rollback requires a backup.
 - Migration `20260727_0037` removes the rebuilt injection-scheduling tables, permissions, IAM markers and PostgreSQL audit trigger. Its downgrade is intentionally blocked; recovery requires a backup from before removal.
+- Migration `20260727_0038` adds an empty optional standalone hair section and immutable initial revision to every historical internal quote; downgrade is allowed only while those migrated hair sections remain untouched.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 
 ## 8. Active Known Issues

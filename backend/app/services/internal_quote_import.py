@@ -345,7 +345,11 @@ def _parse_mold(
         and "MATERIAL" in layout_token(2)
         and "CAVITIES" in layout_token(3)
         and "MOULDPRICES" in layout_token(7)
-        and ("日产能" in layout_token(9) or "机台大小" in layout_token(9))
+        and (
+            "日产能" in layout_token(9)
+            or "机台大小" in layout_token(9)
+            or ("产能" in layout_token(9) and "机型" in layout_token(9))
+        )
     )
     columns = {
         "mold_no": column_index(header, ("模号", "模具编号", "客人模具编号", "MOLD NO")),
@@ -386,11 +390,12 @@ def _parse_mold(
             "image": 20,
         })
     if is_zhanxing_mold_layout:
-        # 展兴工模报价表由业务确认使用固定 B–K 列：
-        # B 中文名称、C 料型、D 出模数、E 套数、F 图片、G 模具尺寸、
-        # H 模价 RMB、I 模胚材质、J 日产能/机台大小、K 净重。
+        # 展兴工模报价表使用固定 A–L 列：
+        # A 模号、B 中文名称、C 料型、D 出模数、E 套数、F 图片、
+        # G 模具尺寸、H 模价 RMB、I 模胚材质、J 产能/机型、
+        # K 净重、L 备注。
         columns.update({
-            "mold_no": None,
+            "mold_no": 0,
             "name": 1,
             "chinese_name": 1,
             "material": None,
@@ -523,6 +528,13 @@ def _parse_mold(
             }
         )
     if not molds:
+        if is_zhanxing_mold_layout:
+            amortization_qty = max(fallback_qty, Decimal("1"))
+            warnings.append("展兴工模报价模板尚未填写模具明细")
+            return {
+                "molds": [],
+                "amortization_qty": decimal_text(amortization_qty),
+            }, 0, warnings
         raise ValueError("已识别模具表头，但没有解析到模具明细")
 
     amortization_qty = explicit_amortization

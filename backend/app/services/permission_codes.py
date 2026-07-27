@@ -54,6 +54,7 @@ INTERNAL_QUOTE_SECTION_CODES = (
     "painting",
     "slush",
     "sewing",
+    "hair",
     "assembly",
 )
 

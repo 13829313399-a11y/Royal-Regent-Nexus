@@ -356,6 +356,7 @@ ALLOWED_DEPARTMENTS = {
     "carton",
     "sales-business",
     "sewing",
+    "hair",
     "slush",
 }
 

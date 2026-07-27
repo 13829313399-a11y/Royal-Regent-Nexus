@@ -49,7 +49,8 @@ INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION = "20260725_0035"
 INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION = "20260723_0030"
 MERGED_HEAD_MIGRATION_REVISION = "20260727_0036"
 INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION = "20260727_0037"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION
+INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION = "20260727_0038"
+HEAD_MIGRATION_REVISION = INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -102,6 +103,22 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    hair_revision = script.get_revision(
+        INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION
+    )
+    assert (
+        hair_revision.down_revision
+        == INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION
+    )
+    hair_content = Path(hair_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "initial_hair_section_migration",
+        "internal_quote_sections",
+        "internal_quote_section_revisions",
+        "'车发部'",
+    ):
+        assert expected in hair_content
 
     removal_revision = script.get_revision(
         INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION

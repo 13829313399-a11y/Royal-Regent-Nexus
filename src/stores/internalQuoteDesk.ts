@@ -474,7 +474,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
     versionComparisons: {} as Record<string, ApiInternalQuoteVersionComparison>,
-    frontendNotice: 'L2 已接通八段专用表单、revision 状态流、五类 Excel 预览确认、附件、最终放行和受控导出；正式金额仍以服务端计算快照为准。',
+    frontendNotice: 'L2 已接通九段专用表单、revision 状态流、Excel 预览确认、附件、最终放行和受控导出；正式金额仍以服务端计算快照为准。',
   }),
   getters: {
     getQuoteById: (state) => (quoteId: string) => state.quotes.find((quote) => quote.id === quoteId),

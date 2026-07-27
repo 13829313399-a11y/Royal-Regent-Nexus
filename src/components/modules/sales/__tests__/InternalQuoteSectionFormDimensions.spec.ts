@@ -29,6 +29,36 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(payload.cartons).toHaveLength(1)
   })
 
+  it('edits flat-card quantity and recalculates the price with exact dimensions', async () => {
+    const payload = normalizeInternalQuotePayload('sales', {
+      paper_price_factor: 2.75,
+      cartons: [{
+        item: '主纸箱',
+        length_in: 10,
+        width_in: 5,
+        height_in: 4,
+        qty_per_carton: 10,
+        flat_cards: [{ name: '平卡1', length_in: 10, width_in: 5, quantity: 1 }],
+      }],
+    }) as unknown as SalesPayload
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'sales',
+        modelValue: payload as unknown as Record<string, unknown>,
+        disabled: false,
+      },
+    })
+
+    const quantityInput = wrapper.get('input[aria-label="平卡 1 用量"]')
+    expect(quantityInput.element).toHaveProperty('value', '1')
+    expect(wrapper.text()).toContain('0.138')
+
+    await quantityInput.setValue('2')
+
+    expect(payload.cartons[0].flat_cards[0].quantity).toBe(2)
+    expect(wrapper.text()).toContain('0.275')
+  })
+
   it('adds business testing-fee MOQ tiers and calculates each USD unit price', async () => {
     const payload = normalizeInternalQuotePayload('sales', {}) as unknown as SalesPayload
     const wrapper = mount(InternalQuoteSectionForm, {

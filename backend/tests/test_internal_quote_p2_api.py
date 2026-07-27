@@ -71,6 +71,23 @@ def test_business_and_engineering_roles_can_edit_all_sections_while_department_r
             json={"revision": 1, "payload": MOLDING_PAYLOAD},
         )
         assert sales_edits_molding.status_code == 200, sales_edits_molding.text
+        sales_edits_hair = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/hair",
+            json={
+                "revision": 1,
+                "payload": {
+                    "lines": [{
+                        "name": "公仔头发",
+                        "craft": "植发",
+                        "weight_g": 18,
+                        "unit_price_hkd": 2.5,
+                        "unit": "PCS",
+                        "remark": "",
+                    }]
+                },
+            },
+        )
+        assert sales_edits_hair.status_code == 200, sales_edits_hair.text
 
         logout(client)
         login(client, "iq_cross_engineer", "engineer", "engineering")
@@ -117,6 +134,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
             "painting",
             "slush",
             "sewing",
+            "hair",
             "assembly",
         }
 

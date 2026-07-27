@@ -32,6 +32,7 @@ function p4Workbook(
   customer: 'BuzzBee' | '迪士尼' | 'Dickie' = 'BuzzBee',
   inactiveCodes: P4SectionCode[] = [],
   unifiedSummary = false,
+  omitStandaloneHair = false,
 ) {
   const isDisney = customer === '迪士尼'
   const isDicky = customer === 'Dickie'
@@ -56,7 +57,7 @@ function p4Workbook(
     structured.push([type, code, name, isRequired ? 'approved' : 'draft', 2, isRequired ? 'valid' : 'pending', 'current', isRequired ? `${code}-hash` : '', 1, 1, JSON.stringify(value), isRequired ? '是' : '否'])
   }
   addRecord('reference_snapshot', 'quote', '报价参考快照', { fx: { hkd_usd: 7.8 } })
-  P4_SECTION_CODES.forEach((code) => {
+  P4_SECTION_CODES.filter((code) => !(omitStandaloneHair && code === 'hair')).forEach((code) => {
     const isRequired = !inactiveCodes.includes(code)
     const payload = code === 'molding'
       ? {
@@ -182,6 +183,24 @@ describe('P4 customer price adapter', () => {
     const cartonRow = exportedSheet.rows.find((row) => row?.[0] === 'CARTON SIZE')
     expect(cartonRow?.[5]).toBe(3.35)
     expect(cartonRow?.[6]).toBe(3.4505)
+  })
+
+  it('keeps pre-hair P4 v2 artifacts readable as an inactive standalone hair section', () => {
+    const source = p4Workbook(
+      P4_ARTIFACT_TEMPLATE_VERSION,
+      true,
+      'BuzzBee',
+      [],
+      false,
+      true,
+    )
+    const artifact = parseP4InternalQuoteArtifact(source)
+    expect(artifact.sections.hair).toMatchObject({
+      name: '车发部',
+      isRequired: false,
+      calculationStatus: 'pending',
+    })
+    expect(() => prepareP4CustomerConversion(source, 'IQ-P4-LEGACY-BB.xlsx', 'buzzbee')).not.toThrow()
   })
 
   it('reads the unified desk layout from the stable approval manifest and handoff metadata', () => {

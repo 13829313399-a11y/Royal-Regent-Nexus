@@ -34,6 +34,7 @@ SECTION_ORDER = (
     "painting",
     "slush",
     "sewing",
+    "hair",
     "assembly",
 )
 
@@ -1735,6 +1736,45 @@ def _build_sewing_sheet(workbook: Workbook, section: InternalQuoteSection | None
     _finish_sheet(sheet, (24, 12, 7, 30, 16, 12, 12, 14, 16, 16, 12, 18, 30, 12))
 
 
+def _build_hair_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
+    sheet = workbook.create_sheet("车发明细")
+    _style_title(sheet, "车发报价明细", 8)
+    _header_row(sheet, 3, ("#", "名称", "工艺", "重量(g)", "单价(HKD)", "单位", "备注", "金额(HKD)"))
+    row_index = 4
+    payload = _json_object(section.payload_json) if section else {}
+    calculation = _json_object(section.calculation_json) if section else {}
+    breakdown = calculation.get("line_breakdown", [])
+    amounts = [
+        _number(row.get("amount_hkd"))
+        for row in breakdown
+        if isinstance(row, dict) and row.get("kind") == "hair"
+    ] if isinstance(breakdown, list) else []
+    for item_index, row in enumerate(
+        payload.get("lines", []) if isinstance(payload.get("lines", []), list) else [],
+        start=1,
+    ):
+        if not isinstance(row, dict):
+            continue
+        amount = amounts[item_index - 1] if item_index - 1 < len(amounts) else _number(row.get("unit_price_hkd"))
+        _body_row(
+            sheet,
+            row_index,
+            (
+                item_index,
+                _safe_text(row.get("name", row.get("item", ""))),
+                _safe_text(row.get("craft", row.get("process", ""))),
+                _number(row.get("weight_g")),
+                _number(row.get("unit_price_hkd")),
+                _safe_text(row.get("unit", "")),
+                _safe_text(row.get("remark", row.get("note", ""))),
+                amount,
+            ),
+            amount_columns={4, 5, 8},
+        )
+        row_index += 1
+    _finish_sheet(sheet, (8, 28, 24, 14, 16, 14, 32, 16))
+
+
 def _build_assembly_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
     sheet = workbook.create_sheet("装配明细")
     _style_title(sheet, "装配排拉工序明细", 8)
@@ -2117,6 +2157,7 @@ def build_internal_quote_workbook(
     by_code = {section.department: section for section in sections}
     _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {})
     _build_sewing_sheet(workbook, by_code.get("sewing"))
+    _build_hair_sheet(workbook, by_code.get("hair"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
     if manifest.get("release_stage") == "p4_final_approved":
         _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {})

@@ -22,6 +22,7 @@ INTERNAL_QUOTE_SECTION_DEPARTMENTS = {
     "painting": ("production", "painting"),
     "slush": ("slush",),
     "sewing": ("sewing",),
+    "hair": ("hair",),
     "assembly": ("assembly",),
 }
 INTERNAL_QUOTE_ALL_DEPARTMENTS = tuple(

@@ -44,7 +44,7 @@ const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
-const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing']
+const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing', 'hair']
 const availableOptionalSections = computed(() => quote.value.sections.filter((section) => !section.isRequired && optionalSectionCodes.includes(section.code)))
 const activeSectionCode = computed<InternalQuoteSectionCode>(() => {
   const requested = String(route.query.section ?? '') as InternalQuoteSectionCode
