@@ -86,7 +86,6 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_price:compare",
                         "customer_price:read",
                         "customer_order:read",
-                        "injection_schedule:read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",
@@ -1061,8 +1060,6 @@ def test_general_manager_business_matrix_and_system_denials_across_authz_modes(
             ("molding_sample:create", "huadeng", "engineering"),
             ("molding_sample:raw_material_write", "huadeng", "pmc-warehouse"),
             ("molding_sample:inventory_issue", "huaxing", "pmc-warehouse"),
-            ("injection_schedule:read", "huadeng", "production"),
-            ("injection_schedule:import", "huadeng", "production"),
             ("carton_mark:template_upload", "huadeng", "carton"),
             ("carton_mark:photo_upload", "huaxing", "qa"),
             ("internal_quote:read", "huadeng", "sales-business"),
@@ -1108,180 +1105,6 @@ def test_general_manager_business_matrix_and_system_denials_across_authz_modes(
             )
 
 
-def test_legacy_read_compat_backfills_only_eligible_existing_users_once(monkeypatch):
-    with make_client(monkeypatch):
-        db_module = importlib.import_module("app.db")
-        auth_models = importlib.import_module("app.models.auth")
-        auth_service = importlib.import_module("app.services.auth")
-
-        def add_historical_user(
-            db,
-            suffix: str,
-            *,
-            user_status: str,
-            role_id: str,
-            request_status: str,
-            factory_id: str = "huaxing",
-            department: str = "engineering",
-            incomplete_profile: bool = False,
-        ) -> str:
-            user_id = f"legacy-user-{suffix}"
-            now = auth_service.now_text()
-            salt, password_hash = auth_service.make_password_hash("Strong123")
-            db.add(
-                auth_models.AuthUser(
-                    id=user_id,
-                    username=f"legacy-{suffix}",
-                    display_name=f"历史用户 {suffix}",
-                    password_salt=salt,
-                    password_hash=password_hash,
-                    status=user_status,
-                    force_password_change=0,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            db.flush()
-            db.add(
-                auth_models.AuthRegistrationRequest(
-                    id=f"registration-{suffix}",
-                    user_id=user_id,
-                    username=f"legacy-{suffix}",
-                    display_name=f"历史用户 {suffix}",
-                    phone="13800000000",
-                    email="",
-                    factory_id=factory_id,
-                    department=department,
-                    position="工程师",
-                    status=request_status,
-                    submitted_at=now,
-                    reviewed_at=now if request_status in {"approved", "rejected"} else "",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            db.add(
-                auth_models.AuthUserRole(
-                    id=f"{user_id}:{role_id}:{factory_id}:{department}",
-                    user_id=user_id,
-                    role_id=role_id,
-                    factory_id=factory_id,
-                    department=department,
-                )
-            )
-            if incomplete_profile:
-                db.add(
-                    auth_models.EmployeeProfile(
-                        user_id=user_id,
-                        primary_factory_id="",
-                        primary_department="",
-                        position="工程师",
-                        phone="13800000000",
-                        confirmation_status="confirmed",
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-            return user_id
-
-        with db_module.SessionLocal() as db:
-            marker = db.get(auth_models.AuthIamState, auth_service.LEGACY_READ_COMPAT_MARKER)
-            assert marker is not None
-            db.delete(marker)
-            db.flush()
-
-            eligible_active = add_historical_user(
-                db,
-                "eligible-active",
-                user_status="active",
-                role_id="engineer",
-                request_status="approved",
-            )
-            eligible_suspended = add_historical_user(
-                db,
-                "eligible-suspended",
-                user_status="suspended",
-                role_id="engineer",
-                request_status="approved",
-            )
-            existing_read = add_historical_user(
-                db,
-                "existing-read",
-                user_status="active",
-                role_id="molding_clerk",
-                request_status="approved",
-                department="production",
-            )
-            incomplete = add_historical_user(
-                db,
-                "incomplete",
-                user_status="active",
-                role_id="engineer",
-                request_status="approved",
-                incomplete_profile=True,
-            )
-            pending = add_historical_user(
-                db,
-                "pending",
-                user_status="pending",
-                role_id="engineer",
-                request_status="pending",
-            )
-            rejected = add_historical_user(
-                db,
-                "rejected",
-                user_status="rejected",
-                role_id="engineer",
-                request_status="rejected",
-            )
-            left = add_historical_user(
-                db,
-                "left",
-                user_status="left",
-                role_id="engineer",
-                request_status="approved",
-            )
-            admin_user = add_historical_user(
-                db,
-                "admin",
-                user_status="active",
-                role_id="admin",
-                request_status="approved",
-                factory_id="*",
-                department="system",
-            )
-            db.commit()
-
-            auth_service.seed_auth_defaults(db)
-
-            compat_overrides = db.query(auth_models.AuthUserPermissionOverride).filter_by(
-                source_type="legacy_read_compat",
-                status="active",
-            ).all()
-            assert {item.user_id for item in compat_overrides} == {eligible_active, eligible_suspended}
-            assert all(item.effect == "allow" for item in compat_overrides)
-            assert all(item.valid_until == "" for item in compat_overrides)
-            assert all(item.reason == "历史登录可读兼容" for item in compat_overrides)
-            assert db.get(auth_models.AuthIamState, auth_service.LEGACY_READ_COMPAT_MARKER) is not None
-            assert {existing_read, incomplete, pending, rejected, left, admin_user}.isdisjoint(
-                {item.user_id for item in compat_overrides}
-            )
-
-            late_user = add_historical_user(
-                db,
-                "late-user",
-                user_status="active",
-                role_id="engineer",
-                request_status="approved",
-            )
-            db.commit()
-            auth_service.seed_auth_defaults(db)
-            assert db.query(auth_models.AuthUserPermissionOverride).filter_by(
-                user_id=late_user,
-                source_type="legacy_read_compat",
-            ).count() == 0
-
-
 def test_authz_writes_require_enforce_mode(monkeypatch):
     with pytest.raises(RuntimeError, match="AUTHZ_WRITES_ENABLED=true requires AUTHZ_MODE=enforce"):
         make_client(monkeypatch, AUTHZ_MODE="legacy", AUTHZ_WRITES_ENABLED="true")
@@ -1293,7 +1116,7 @@ def test_active_configurable_override_blocks_legacy_and_shadow_but_allows_enforc
         auth_models = importlib.import_module("app.models.auth")
         auth_service = importlib.import_module("app.services.auth")
         with db_module.SessionLocal() as db:
-            permission = db.query(auth_models.AuthPermission).filter_by(code="injection_schedule:read").one()
+            permission = db.query(auth_models.AuthPermission).filter_by(code="carton_mark:read").one()
             now = auth_service.now_text()
             db.add(
                 auth_models.AuthUserPermissionOverride(

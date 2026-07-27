@@ -1,477 +1,207 @@
-import type { Tone } from '@/data/enterpriseMock'
+import type { SchedulingSnapshot } from '@/types/injectionScheduling'
 
-export type InjectionSectionId =
-  | 'monthly-plan'
-  | 'order-import'
-  | 'smart-scheduling'
-  | 'scheduling-results'
-  | 'daily-report'
-  | 'inbound-orders'
-  | 'master-data'
-
-export interface InjectionMetric {
-  label: string
-  value: string
-  detail: string
-  tone: Tone
+export const huaxingSchedulingSnapshot: SchedulingSnapshot = {
+  factoryId: 'huaxing',
+  sourceLabel: '华兴啤机日排版表1(2).xlsx',
+  snapshotAt: '2026-07-21 10:06',
+  notice: '工作簿内 TODAY() 的缓存值为 2026-07-21；当前页面仅按该快照演示，正式导入须由后端重新计算。',
+  kpis: [
+    { label: '机台总数', value: '71', detail: '旧机 + 新机', tone: 'default' },
+    { label: '已有排程', value: '64', detail: '90.1% 机台', tone: 'teal' },
+    { label: '已排任务', value: '263', detail: '当前 + 后续任务', tone: 'default' },
+    { label: '待排订单', value: '38', detail: '尚未上机', tone: 'amber' },
+    { label: '交期异常', value: '130', detail: '交期差 < 0', tone: 'red' },
+    { label: '剩余订单数', value: '1,864,396', detail: 'SUM(欠数)', tone: 'default' },
+  ],
+  machines: [
+    {
+      id: 'old-1',
+      name: '旧1',
+      machineType: '50A',
+      tonnage: '400T',
+      capability: '普通',
+      armType: '双臂五轴',
+      restriction: '暂无特殊限制',
+      load: 0,
+      state: 'idle',
+      taskIds: [],
+    },
+    {
+      id: 'old-2',
+      name: '旧2',
+      machineType: '32A',
+      tonnage: '320T',
+      capability: '高速',
+      armType: '双臂五轴',
+      restriction: '抽芯不行',
+      load: 83,
+      state: 'running',
+      taskIds: ['t-201', 't-202', 't-203', 't-204', 't-205'],
+    },
+    {
+      id: 'old-3',
+      name: '旧3',
+      machineType: '32A',
+      tonnage: '320T',
+      capability: '高速',
+      armType: '单臂三轴',
+      restriction: 'PC 螺杆',
+      load: 80,
+      state: 'risk',
+      taskIds: ['t-301', 't-302'],
+    },
+    {
+      id: 'old-9',
+      name: '旧9',
+      machineType: '18A',
+      tonnage: '200T',
+      capability: '高速',
+      armType: '双臂五轴',
+      restriction: '无',
+      load: 80,
+      state: 'urgent',
+      taskIds: ['t-901', 't-902'],
+    },
+    {
+      id: 'new-22',
+      name: '新22',
+      machineType: '12A',
+      tonnage: '150T',
+      capability: '高速',
+      armType: '单臂三轴',
+      restriction: '无',
+      load: 79,
+      state: 'running',
+      taskIds: ['t-2201'],
+    },
+    {
+      id: 'new-37',
+      name: '新37',
+      machineType: '5A',
+      tonnage: '50T',
+      capability: '全电动机',
+      armType: '单臂三轴',
+      restriction: '不可抽芯',
+      load: 84,
+      state: 'risk',
+      taskIds: ['t-3701', 't-3702', 't-3703', 't-3704'],
+    },
+  ],
+  tasks: [
+    {
+      id: 't-201', machineId: 'old-2', moldNo: 'GT1214', productName: '自卸车、消防车车轮/座椅',
+      orderNo: 'FFD442145', color: '黑色', quantity: 3528, completedQuantity: 3410, dailyTarget: 1400,
+      startAt: '07-21 10:06', endAt: '07-21 12:07', dueLabel: '逾期 0.5天', risk: 'overdue',
+      sequence: 1, current: true, locked: true, remark: '当前生产任务，排程锁定。',
+    },
+    {
+      id: 't-202', machineId: 'old-2', moldNo: 'GT1214', productName: '自卸车、消防车车轮/座椅',
+      orderNo: 'FFD442174', color: '黑色', quantity: 1505, completedQuantity: 0, dailyTarget: 1400,
+      startAt: '07-21 12:07', endAt: '07-22 13:55', dueLabel: '逾期 1.6天', risk: 'overdue',
+      sequence: 2, current: false, locked: false,
+    },
+    {
+      id: 't-203', machineId: 'old-2', moldNo: 'GT1214', productName: '自卸车、消防车车轮/座椅',
+      orderNo: 'FFD442178', color: '黑色', quantity: 2505, completedQuantity: 0, dailyTarget: 1400,
+      startAt: '07-22 13:55', endAt: '07-24 08:52', dueLabel: '余量 +3.6天', risk: 'normal',
+      sequence: 3, current: false, locked: false,
+    },
+    {
+      id: 't-204', machineId: 'old-2', moldNo: 'GT1214', productName: '车轮补单',
+      orderNo: 'FFD442179', color: '黑色', quantity: 2005, completedQuantity: 0, dailyTarget: 1400,
+      startAt: '07-24 08:52', endAt: '07-25 19:14', dueLabel: '余量 +2.2天', risk: 'warning',
+      sequence: 4, current: false, locked: false,
+    },
+    {
+      id: 't-205', machineId: 'old-2', moldNo: 'GT1214', productName: '座椅补单',
+      orderNo: 'FFD442180', color: '黑色', quantity: 2505, completedQuantity: 0, dailyTarget: 1400,
+      startAt: '07-25 19:14', endAt: '07-27 14:11', dueLabel: '余量 +0.4天', risk: 'warning',
+      sequence: 5, current: false, locked: false,
+    },
+    {
+      id: 't-301', machineId: 'old-3', moldNo: 'PAMT-01M-01', productName: '水箱',
+      orderNo: 'BJB250791', color: '透明', quantity: 30000, completedQuantity: 23765, dailyTarget: 1400,
+      startAt: '07-21 10:06', endAt: '07-25 20:59', dueLabel: '逾期 53.9天', risk: 'overdue',
+      sequence: 1, current: true, locked: true,
+    },
+    {
+      id: 't-302', machineId: 'old-3', moldNo: 'PAMT-01M-01', productName: '水箱',
+      orderNo: 'BJB251245', color: '透明', quantity: 60000, completedQuantity: 0, dailyTarget: 1400,
+      startAt: '07-25 20:59', endAt: '09-06 17:33', dueLabel: '逾期 18.7天', risk: 'overdue',
+      sequence: 2, current: false, locked: false,
+    },
+    {
+      id: 't-901', machineId: 'old-9', moldNo: 'MNVN-19M-06', productName: '包装底座',
+      orderNo: 'DG002', color: '黄色', quantity: 100000, completedQuantity: 12210, dailyTarget: 3800,
+      startAt: '07-21 10:06', endAt: '08-13 12:34', dueLabel: '余量 +7.5天', risk: 'urgent',
+      sequence: 1, current: true, locked: true,
+    },
+    {
+      id: 't-902', machineId: 'old-9', moldNo: 'MNVN-19M-06', productName: '包装底座补数',
+      orderNo: '啤机补数', color: '黄色', quantity: 1680, completedQuantity: 0, dailyTarget: 3800,
+      startAt: '08-16 12:34', endAt: '08-16 23:10', dueLabel: '余量 +4.0天', risk: 'normal',
+      sequence: 2, current: false, locked: false,
+    },
+    {
+      id: 't-2201', machineId: 'new-22', moldNo: 'MNVN-14M-03', productName: '方形唱片座',
+      orderNo: 'DG002', color: '深棕色', quantity: 50000, completedQuantity: 14600, dailyTarget: 4000,
+      startAt: '07-21 10:06', endAt: '07-30 06:30', dueLabel: '余量 +21.7天', risk: 'normal',
+      sequence: 1, current: true, locked: true,
+    },
+    {
+      id: 't-3701', machineId: 'new-37', moldNo: 'JP45801-19', productName: '赛车女孩 LIGHTNING 牌仔面',
+      orderNo: 'E260707-05', color: '金属银色', quantity: 1850, completedQuantity: 0, dailyTarget: 4000,
+      startAt: '07-21 10:06', endAt: '07-21 21:12', dueLabel: '逾期 3.9天', risk: 'overdue',
+      sequence: 1, current: true, locked: true,
+    },
+    {
+      id: 't-3702', machineId: 'new-37', moldNo: 'JP45801-19-1', productName: 'BUZZ 牌仔面 / 牌仔底',
+      orderNo: 'E260707-05', color: '冷灰', quantity: 1700, completedQuantity: 0, dailyTarget: 4000,
+      startAt: '07-21 22:20', endAt: '07-22 08:32', dueLabel: '逾期 4.4天', risk: 'overdue',
+      sequence: 2, current: false, locked: false,
+    },
+    {
+      id: 't-3703', machineId: 'new-37', moldNo: 'T01-BL201-00200000', productName: '上连接环 / 前连接环',
+      orderNo: '啤机补数', color: '黄色', quantity: 900, completedQuantity: 0, dailyTarget: 3600,
+      startAt: '07-22 09:39', endAt: '07-22 15:39', dueLabel: '逾期 373.6天', risk: 'overdue',
+      sequence: 3, current: false, locked: false,
+    },
+    {
+      id: 't-3704', machineId: 'new-37', moldNo: '20 330 7003-09', productName: '车头顶灯 / 左右侧灯片',
+      orderNo: 'BJB251285', color: '透明红', quantity: 3000, completedQuantity: 0, dailyTarget: 4000,
+      startAt: '07-22 15:39', endAt: '07-23 09:39', dueLabel: '余量 +21.6天', risk: 'normal',
+      sequence: 4, current: false, locked: false,
+    },
+  ],
+  backlog: [
+    {
+      id: 'b-350', moldNo: 'TY-2407-08', productName: '越野车前保险杠', orderNo: 'BJB251366',
+      color: '哑黑', quantity: 8200, dailyTarget: 3600, requiredDate: '2026-07-29',
+      urgency: 'urgent', machineType: '18A', candidates: [
+        { machineId: 'old-9', score: 94, title: '优先推荐', reasons: ['吨位与机械手匹配', '预计 8 月 17 日可插入'], warning: '当前有特急长单，需主管确认插单。' },
+        { machineId: 'old-2', score: 78, title: '备选机台', reasons: ['产能可覆盖', '同色系换模损失较低'] },
+      ],
+    },
+    {
+      id: 'b-351', moldNo: 'JP45801-21', productName: '赛车女孩侧裙', orderNo: 'E260710-03',
+      color: '金属银色', quantity: 4200, dailyTarget: 4000, requiredDate: '2026-07-27',
+      urgency: 'urgent', machineType: '5A', candidates: [
+        { machineId: 'new-37', score: 97, title: '同系列优先', reasons: ['同订单同色，无需清机', '模具尺寸完全匹配'] },
+        { machineId: 'new-22', score: 63, title: '跨机型备选', reasons: ['产能有余量'], warning: '需工艺确认锁模力。' },
+      ],
+    },
+    {
+      id: 'b-352', moldNo: 'GT1226', productName: '消防车工具箱盖', orderNo: 'FFD442228',
+      color: '红色', quantity: 5600, dailyTarget: 3000, requiredDate: '2026-08-02',
+      urgency: 'normal', machineType: '32A', candidates: [
+        { machineId: 'old-2', score: 89, title: '规格匹配', reasons: ['32A 机台', '预计交期余量 1.8 天'] },
+        { machineId: 'old-3', score: 71, title: '可用备选', reasons: ['吨位匹配'], warning: 'PC 螺杆配置需换装。' },
+      ],
+    },
+  ],
 }
 
-export interface ShiftSummary {
-  shift: string
-  date: string
-  completion: number
-  machineRunning: string
-  carryOver: string
-  alert: string
+export function cloneHuaxingSchedulingSnapshot() {
+  return structuredClone(huaxingSchedulingSnapshot)
 }
 
-export interface MachineLoad {
-  machine: string
-  utilization: number
-  mold: string
-  material: string
-  tone: Tone
-  queueDepth: string
-}
-
-export interface ColorTransitionRisk {
-  machine: string
-  route: string[]
-  risk: string
-  tone: Tone
-}
-
-export interface DataSourceStatus {
-  name: string
-  freshness: string
-  status: string
-  statusTone: Tone
-  summary: string
-}
-
-export interface ExecutionTask {
-  title: string
-  meta: string
-  tone: Tone
-}
-
-export interface InjectionStage {
-  title: string
-  owner: string
-  detail: string
-  state: 'done' | 'active' | 'pending'
-}
-
-export interface InjectionNavItem {
-  id: InjectionSectionId
-  label: string
-  summary: string
-}
-
-export interface DataCenterDataset {
-  name: string
-  owner: string
-  freshness: string
-  completeness: number
-  status: string
-  statusTone: Tone
-  summary: string
-  issues: string[]
-}
-
-export interface OrderSnapshotRow {
-  orderNo: string
-  productCode: string
-  moldName: string
-  color: string
-  material: string
-  quantity: string
-  due: string
-  state: string
-  tone: Tone
-}
-
-export interface MachineProfileRow {
-  machine: string
-  tonnage: string
-  armType: string
-  workshop: string
-  status: string
-  tone: Tone
-  fit: string
-}
-
-export interface MoldTargetRow {
-  moldCode: string
-  target24h: string
-  target11h: string
-  source: string
-  health: string
-  tone: Tone
-}
-
-export interface ExecutionOrderRow {
-  machine: string
-  orderNo: string
-  moldName: string
-  color: string
-  target24h: string
-  shortage: string
-  priority: string
-  tone: Tone
-}
-
-export interface ExecutionRuleMetric {
-  label: string
-  value: string
-  detail: string
-  tone: Tone
-}
-
-export interface ExecutionConstraintRow {
-  machine: string
-  workshop: string
-  tonnage: string
-  robot: string
-  limit: string
-  action: string
-  tone: Tone
-}
-
-export interface ExecutionCandidateRow {
-  orderNo: string
-  moldCode: string
-  recommendedMachine: string
-  backupMachine: string
-  reason: string
-  blocker: string
-  tone: Tone
-}
-
-export interface ExecutionScheduleRow {
-  orderNo: string
-  machine: string
-  startWindow: string
-  endWindow: string
-  shiftPlan: string
-  expectedOutput: string
-  dependency: string
-  tone: Tone
-}
-
-export interface ManualActionRow {
-  title: string
-  reason: string
-  owner: string
-  action: string
-  tone: Tone
-}
-
-export interface ReportingMetric {
-  label: string
-  value: string
-  detail: string
-  tone: Tone
-}
-
-export interface ShiftReportRow {
-  machine: string
-  worker: string
-  target11h: string
-  actual: string
-  variance: string
-  downtime: string
-  tone: Tone
-}
-
-export interface ShiftReportTemplateField {
-  label: string
-  required: boolean
-  source: string
-  summary: string
-}
-
-export interface ShiftReportTemplateGroup {
-  title: string
-  owner: string
-  fields: ShiftReportTemplateField[]
-}
-
-export interface ShiftReportImportMappingRow {
-  sourceColumn: string
-  targetField: string
-  required: boolean
-  sample: string
-  rule: string
-  tone: Tone
-}
-
-export interface WarehouseInboundRow {
-  deliveryCode: string
-  orderNo: string
-  shots: string
-  materialKg: string
-  pmc: string
-  status: string
-  tone: Tone
-}
-
-export interface WritebackRuleCard {
-  title: string
-  owner: string
-  trigger: string
-  summary: string
-  status: string
-  tone: Tone
-  items: string[]
-}
-
-export interface WritebackKeyMatchRow {
-  stage: string
-  businessKey: string
-  sourceKey: string
-  targetRecord: string
-  status: string
-  blocker: string
-  tone: Tone
-}
-
-export interface ConfigRuleCard {
-  title: string
-  owner: string
-  summary: string
-  status: string
-  tone: Tone
-  items: string[]
-}
-
-export interface PendingOrderField {
-  label: string
-  required: boolean
-  source: string
-  summary: string
-}
-
-export interface PendingOrderFieldGroup {
-  title: string
-  owner: string
-  fields: PendingOrderField[]
-}
-
-export interface PendingOrderValidationRule {
-  label: string
-  hit: string
-  detail: string
-  tone: Tone
-}
-
-export interface OrderImportTask {
-  step: string
-  owner: string
-  status: string
-  detail: string
-  tone: Tone
-}
-
-export interface PendingOrderDetailRow {
-  orderNo: string
-  customer: string
-  productName: string
-  moldCode: string
-  productCode?: string
-  color: string
-  colorPowder?: string
-  material: string
-  quantity: string
-  orderQuantity?: string
-  producedQuantity?: string
-  shortageQuantity?: string
-  planTarget?: string
-  dueDate: string
-  cavity: string
-  unitWeight: string
-  netWeight?: string
-  remainingMaterialKg?: string
-  source: string
-  planner: string
-  machineAdvice: string
-  machineModel?: string
-  armType?: string
-  remark?: string
-  moldSize?: string
-  issue: string
-  tone: Tone
-}
-
-export interface MachineMasterRow {
-  machine: string
-  tonnage: string
-  screw: string
-  robot: string
-  workshop: string
-  processRange: string
-  colorPolicy: string
-  activeMolds: string
-  maintenance: string
-  status: string
-  tone: Tone
-}
-
-export interface MoldTargetDetailRow {
-  customer: string
-  catalogStatus: string
-  moldCode: string
-  productName: string
-  cavity: string
-  cycleTime: string
-  target24h: string
-  target11h: string
-  preferredMachine: string
-  source: string
-  lastVerified: string
-  health: string
-  tone: Tone
-}
-
-export interface MoldMachineMappingRow {
-  moldCode: string
-  customer: string
-  productName: string
-  candidatePool: string
-  recommendedMachine: string
-  backupMachine: string
-  status: string
-  detail: string
-  tone: Tone
-}
-
-export interface ShiftReportChecklistItem {
-  title: string
-  owner: string
-  status: string
-  detail: string
-  tone: Tone
-}
-
-export interface ShiftHandoverRow {
-  shift: string
-  machine: string
-  orderNo: string
-  carryOverQty: string
-  nextOwner: string
-  note: string
-  tone: Tone
-}
-
-export interface InboundWritebackRow {
-  deliveryCode: string
-  orderNo: string
-  inboundQty: string
-  shortageAfter: string
-  warehouseStatus: string
-  erpStatus: string
-  schedulerStatus: string
-  owner: string
-  tone: Tone
-}
-
-export interface InjectionModuleData {
-  sectionNav: InjectionNavItem[]
-  overviewMetrics: InjectionMetric[]
-  shiftSummaries: ShiftSummary[]
-  machineLoad: MachineLoad[]
-  colorTransitionRisks: ColorTransitionRisk[]
-  dataSourceStatus: DataSourceStatus[]
-  executionTasks: ExecutionTask[]
-  workflowStages: InjectionStage[]
-  dataCenterDatasets: DataCenterDataset[]
-  orderSnapshotRows: OrderSnapshotRow[]
-  machineProfileRows: MachineProfileRow[]
-  moldTargetRows: MoldTargetRow[]
-  executionQueueRows: ExecutionOrderRow[]
-  executionRuleMetrics: ExecutionRuleMetric[]
-  executionConstraintRows: ExecutionConstraintRow[]
-  executionCandidateRows: ExecutionCandidateRow[]
-  executionScheduleRows: ExecutionScheduleRow[]
-  manualActionRows: ManualActionRow[]
-  reportingMetrics: ReportingMetric[]
-  shiftReportRows: ShiftReportRow[]
-  shiftReportTemplateGroups: ShiftReportTemplateGroup[]
-  shiftReportImportMappingRows: ShiftReportImportMappingRow[]
-  warehouseInboundRows: WarehouseInboundRow[]
-  writebackRuleCards: WritebackRuleCard[]
-  writebackKeyMatchRows: WritebackKeyMatchRow[]
-  configRuleCards: ConfigRuleCard[]
-  pendingOrderFieldGroups: PendingOrderFieldGroup[]
-  pendingOrderValidationRules: PendingOrderValidationRule[]
-  orderImportTasks: OrderImportTask[]
-  pendingOrderDetailRows: PendingOrderDetailRow[]
-  machineMasterRows: MachineMasterRow[]
-  moldTargetDetailRows: MoldTargetDetailRow[]
-  moldMachineMappingRows: MoldMachineMappingRow[]
-  shiftReportChecklistItems: ShiftReportChecklistItem[]
-  shiftHandoverRows: ShiftHandoverRow[]
-  inboundWritebackRows: InboundWritebackRow[]
-}
-
-export const injectionSectionNav: InjectionNavItem[] = [
-  {
-    id: 'monthly-plan',
-    label: '驾驶舱',
-    summary: '总览待排、结转、机台负载、交期风险和重点异常。',
-  },
-  {
-    id: 'smart-scheduling',
-    label: '排机工作台',
-    summary: '导入订单、查看智能待排明细、人工确认机台并提交主管审核。',
-  },
-  {
-    id: 'daily-report',
-    label: '日报回报',
-    summary: '啤机部文员按已排机模号填写产量、停机、欠数和结转交接。',
-  },
-  {
-    id: 'inbound-orders',
-    label: '入库回写',
-    summary: '确认入库数量，刷新欠数、ERP 状态和订单池。',
-  },
-  {
-    id: 'master-data',
-    label: '基础资料',
-    summary: '查看机台档案、工艺范围、保养和当前状态。',
-  },
-]
-
-export const injectionPendingOrderFieldGroups: PendingOrderFieldGroup[] = [
-  {
-    title: '订单识别字段',
-    owner: '文员 / 计划',
-    fields: [
-      { label: '单号', required: true, source: 'PDF / Excel', summary: '排产、入库、回写三端统一主键。' },
-      { label: '客户 / 款号', required: true, source: '订单主表', summary: '区分业务优先级和同款合并。' },
-      { label: '产品编码', required: true, source: 'ERP', summary: '关联模具、BOM 与历史命中。' },
-      { label: '交期', required: true, source: '业务下单', summary: '决定待排优先级和插单判断。' },
-    ],
-  },
-  {
-    title: '工艺匹配字段',
-    owner: '工程 / 生产',
-    fields: [
-      { label: '模具编码', required: true, source: '模具台账', summary: '用于同模同机和目标产能计算。' },
-      { label: '穴数', required: true, source: '模具台账', summary: '影响单班产出和欠数折算。' },
-      { label: '单位啤重', required: true, source: '历史数据库', summary: '用于机台适配和材料损耗估算。' },
-      { label: '颜色 / 色粉号', required: true, source: '生产单', summary: '用于颜色切换顺序判断。' },
-      { label: '料型', required: true, source: 'BOM', summary: '用于工艺限制和特殊机台筛选。' },
-    ],
-  },
-  {
-    title: '排程执行字段',
-    owner: '计划员',
-    fields: [
-      { label: '待排数量', required: true, source: '业务欠数', summary: '决定本轮排机欠数。' },
-      { label: '结转标记', required: true, source: '上一班回报', summary: '是否锁原机台延续。' },
-      { label: '建议机台', required: false, source: '历史学习', summary: '给智能排机初步命中。' },
-      { label: '插单等级', required: false, source: 'PMC / 业务', summary: '重点插单可提高优先级。' },
-    ],
-  },
-]

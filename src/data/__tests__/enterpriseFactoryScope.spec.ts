@@ -10,14 +10,6 @@ import {
   getMoldingSampleRecord as getWorkflowMoldingSampleRecord,
   moldingSampleFactoryRecords as workflowMoldingSampleFactoryRecords,
 } from '@/data/moldingSampleWorkflowMock'
-import {
-  getInjectionFactoryConfig,
-  injectionFactoryRegistry,
-} from '@/factories/injection/registry'
-import {
-  getInjectionFactoryData,
-  injectionFactoryDataRegistry,
-} from '@/factories/injection/dataRegistry'
 
 type EnterpriseMoldingRecord = {
   factoryId: string
@@ -29,17 +21,6 @@ type WorkflowMoldingRecord = {
   factory_id: string
   order: { factory_id: string }
   items: unknown[]
-}
-
-type InjectionConfigRecord = {
-  factoryId: string
-  moduleTitle: string
-  workspaceSummary: string
-}
-
-type InjectionDataRecord = {
-  overviewMetrics: Array<{ detail: string }>
-  dataSourceStatus: Array<{ summary: string }>
 }
 
 const expectedPhysicalFactoryIds = [
@@ -82,25 +63,18 @@ describe('enterprise factory registry scope', () => {
     for (const registry of [
       enterpriseMoldingSampleFactoryRecords,
       workflowMoldingSampleFactoryRecords,
-      injectionFactoryRegistry,
-      injectionFactoryDataRegistry,
     ]) {
       expect(sortedKeys(registry)).toEqual([...expectedPhysicalFactoryIds].sort())
     }
   })
 
   it.each(Object.entries(newFactoryNames))(
-    'keeps %s enterprise, molding and injection data independent',
+    'keeps %s enterprise and molding data independent',
     (factoryId, factoryName) => {
       const enterpriseRegistry = enterpriseMoldingSampleFactoryRecords as unknown as Record<string, EnterpriseMoldingRecord>
       const workflowRegistry = workflowMoldingSampleFactoryRecords as unknown as Record<string, WorkflowMoldingRecord>
-      const injectionConfigRegistry = injectionFactoryRegistry as unknown as Record<string, InjectionConfigRecord>
-      const injectionDataRegistry = injectionFactoryDataRegistry as unknown as Record<string, InjectionDataRecord>
-
       const enterpriseRecord = enterpriseRegistry[factoryId]
       const workflowRecord = workflowRegistry[factoryId]
-      const injectionConfig = injectionConfigRegistry[factoryId]
-      const injectionData = injectionDataRegistry[factoryId]
 
       expect(enterpriseRecord).toBeDefined()
       expect(enterpriseRecord.factoryId).toBe(factoryId)
@@ -121,20 +95,6 @@ describe('enterprise factory registry scope', () => {
       expect(JSON.stringify(workflowRecord)).toContain(factoryName)
       expect(JSON.stringify(workflowRecord)).not.toContain('华兴')
 
-      expect(injectionConfig).toBeDefined()
-      expect(injectionConfig.factoryId).toBe(factoryId)
-      expect(injectionConfig).toBe(getInjectionFactoryConfig(factoryId as never))
-      expect(injectionConfig).not.toBe(injectionConfigRegistry.huaxing)
-      expect(`${injectionConfig.moduleTitle} ${injectionConfig.workspaceSummary}`).toContain(factoryName)
-      expect(`${injectionConfig.moduleTitle} ${injectionConfig.workspaceSummary}`).not.toContain('华兴')
-
-      expect(injectionData).toBeDefined()
-      expect(injectionData).toBe(getInjectionFactoryData(factoryId as never))
-      expect(injectionData).not.toBe(injectionDataRegistry.huaxing)
-      expect(injectionData.overviewMetrics).not.toBe(injectionDataRegistry.huaxing.overviewMetrics)
-      expect(injectionData.dataSourceStatus).not.toBe(injectionDataRegistry.huaxing.dataSourceStatus)
-      expect(JSON.stringify(injectionData)).toContain(factoryName)
-      expect(JSON.stringify(injectionData)).not.toContain('华兴')
     },
   )
 
@@ -142,8 +102,6 @@ describe('enterprise factory registry scope', () => {
     const registries = [
       enterpriseMoldingSampleFactoryRecords,
       workflowMoldingSampleFactoryRecords,
-      injectionFactoryRegistry,
-      injectionFactoryDataRegistry,
     ] as Array<Record<string, unknown>>
 
     for (const registry of registries) {

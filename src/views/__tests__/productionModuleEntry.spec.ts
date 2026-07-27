@@ -11,9 +11,28 @@ const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/CustomerPriceArtifactPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
-const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 
 describe('production module entry', () => {
+  it('wires the injection scheduling hub to the front-end preview route', () => {
+    const moduleBlock = enterpriseSource.match(
+      /id: 'injection-scheduling'[\s\S]*?\n      },/,
+    )?.[0]
+
+    expect(moduleBlock).toBeDefined()
+    expect(moduleBlock).toContain("title: '注塑排产中枢'")
+    expect(moduleBlock).toContain("status: '前端预览'")
+    expect(moduleBlock).toContain("stats: '华兴 Mock 快照 · 后端未接入'")
+    expect(moduleBlock).toContain(
+      "route: getDepartmentRoute('production', 'injection-scheduling')",
+    )
+    expect(moduleBlock).not.toContain('href:')
+    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).toContain("name: 'injection-scheduling-hub'")
+    expect(routerSource).toContain("InjectionSchedulingHubView.vue")
+    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,280}fullPage: true/)
+    expect(routerSource).not.toContain('injection_schedule:')
+  })
+
   it('keeps the molding sample production task wired to the real task page', () => {
     expect(enterpriseSource).toMatch(/id: 'molding-sample-production-task'/)
     expect(enterpriseSource).toMatch(/title: '啤办生产任务单'/)
@@ -231,17 +250,4 @@ describe('production module entry', () => {
     expect(quoteCenterPanelSource).not.toContain('{{ currentWorkshop }}')
   })
 
-  it('uses scoped can decisions for injection schedule reads and imports', () => {
-    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'/)
-    expect(routerSource).toMatch(/permissions: \['injection_schedule:read'\][\s\S]{0,80}enforcePermissions: true/)
-    expect(injectionSchedulingViewSource).toContain("import { useAuthStore } from '@/stores/auth'")
-    expect(injectionSchedulingViewSource).toContain('const authStore = useAuthStore()')
-    expect(injectionSchedulingViewSource).toContain("authStore.can('injection_schedule:import', selectedFactoryId.value, 'production')")
-    expect(injectionSchedulingViewSource).toContain("authStore.can('injection_schedule:import', selectedFactoryId.value, 'molding')")
-    expect(injectionSchedulingViewSource).toContain('canImportDailySchedule')
-    expect(injectionSchedulingViewSource).toContain('当前账号没有导入排产权限，仅可浏览排产数据')
-    expect(injectionSchedulingViewSource).toContain(':disabled="!canImportDailySchedule"')
-    expect(injectionSchedulingViewSource).toContain(':aria-disabled="!canImportDailySchedule"')
-    expect(injectionSchedulingViewSource).toContain(':disabled="isImportingDailySchedule || !canImportDailySchedule"')
-  })
 })

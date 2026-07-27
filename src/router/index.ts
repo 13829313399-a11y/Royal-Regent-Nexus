@@ -63,14 +63,12 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/modules/production/injection-scheduling',
-    name: 'injection-scheduling',
-    component: () => import('@/views/InjectionSchedulingView.vue'),
+    name: 'injection-scheduling-hub',
+    component: () => import('@/views/InjectionSchedulingHubView.vue'),
     meta: {
-      title: '注塑生产中枢',
+      title: '注塑排产中枢',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['injection_schedule:read'],
-      enforcePermissions: true,
     },
   },
   {

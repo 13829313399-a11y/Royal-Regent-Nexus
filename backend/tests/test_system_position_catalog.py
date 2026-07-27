@@ -42,15 +42,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v3"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v5"
     assert len(definitions) == 29
     assert len({item.role_id for item in definitions}) == 29
     assert len({(item.department, item.name) for item in definitions}) == 29
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 69
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 62
+    assert len(registered_codes) == 67
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 60
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -87,7 +87,7 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 62
+    assert len(general_manager.permission_codes) == 60
     assert set(general_manager.permission_codes) == set(
         permission_codes.BUSINESS_PERMISSION_CODES
     )
@@ -166,13 +166,16 @@ def test_fixed_system_position_definition_contract():
     production_supervisor = positions.get_system_position(
         "position_production_supervisor"
     )
-    assert "injection_schedule:import" in production_supervisor.permission_codes
     assert "internal_quote:molding_review" in production_supervisor.permission_codes
     assert not (
         positions.PRODUCTION_TASK_OPERATE_PERMISSION_CODES
         & set(production_supervisor.permission_codes)
     )
-
+    assert all(
+        not permission.startswith("injection_schedule:")
+        for definition in positions.SYSTEM_POSITION_DEFINITIONS
+        for permission in definition.permission_codes
+    )
     assert all(
         "molding_sample:raw_material_write"
         in positions.get_system_position(role_id).permission_codes

@@ -55,8 +55,6 @@ from app.services.system_position_reconcile import reconcile_system_position_cat
 
 SESSION_COOKIE_NAME = "rr_session"
 logger = logging.getLogger(__name__)
-LEGACY_READ_COMPAT_MARKER = "legacy_read_compat_v1_completed"
-LEGACY_READ_COMPAT_PERMISSION = "injection_schedule:read"
 LEGACY_EXPORT_COMPAT_MARKER = "legacy_export_compat_v1_completed"
 LEGACY_EXPORT_COMPAT_PERMISSION = "molding_sample:export"
 RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER = "raw_material_write_default_grant_v1_completed"
@@ -253,8 +251,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_fillback",
         "molding_sample:production_complete",
         "molding_sample:notification_read",
-        "injection_schedule:read",
-        "injection_schedule:import",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_clerk"],
     },
     "molding_production_observer": {
@@ -298,7 +294,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_fillback",
         "molding_sample:production_complete",
         "molding_sample:notification_read",
-        "injection_schedule:read",
     },
     "molding_supervisor": {
         "molding_sample:read",
@@ -309,8 +304,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_complete",
         "molding_sample:audit_read",
         "molding_sample:notification_read",
-        "injection_schedule:read",
-        "injection_schedule:import",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
     },
     "admin": set(APPLICATION_PERMISSIONS),
@@ -1266,115 +1259,6 @@ def seed_internal_quote_customer_grants_once(db: Session, now: str) -> int:
     return created_count
 
 
-def seed_legacy_read_compat_once(db: Session, now: str) -> int:
-    if db.get(AuthIamState, LEGACY_READ_COMPAT_MARKER) is not None:
-        return 0
-
-    # Flush sidecar backfills so canonical contexts see the same state that will
-    # be committed with the one-time completion marker.
-    db.flush()
-    permission = db.scalar(select(AuthPermission).where(AuthPermission.code == LEGACY_READ_COMPAT_PERMISSION))
-    created_count = 0
-    if permission is not None:
-        users = list(
-            db.scalars(
-                select(AuthUser)
-                .where(AuthUser.status.in_({"active", "suspended"}))
-                .order_by(AuthUser.id)
-            ).all()
-        )
-        for user in users:
-            approved_request = db.scalar(
-                select(AuthRegistrationRequest)
-                .where(
-                    AuthRegistrationRequest.user_id == user.id,
-                    AuthRegistrationRequest.status == "approved",
-                )
-                .order_by(
-                    AuthRegistrationRequest.reviewed_at.desc(),
-                    AuthRegistrationRequest.updated_at.desc(),
-                    AuthRegistrationRequest.id.desc(),
-                )
-                .limit(1)
-            )
-            profile = db.get(EmployeeProfile, user.id)
-            if (
-                approved_request is None
-                or profile is None
-                or not profile.primary_factory_id
-                or not profile.primary_department
-            ):
-                continue
-
-            admin_binding_id = db.scalar(
-                select(AuthUserRole.id)
-                .join(AuthRole, AuthRole.id == AuthUserRole.role_id)
-                .where(AuthUserRole.user_id == user.id, AuthRole.code == "admin")
-                .limit(1)
-            )
-            if admin_binding_id is not None:
-                continue
-
-            context = build_auth_context(db, user)
-            if can(
-                context,
-                LEGACY_READ_COMPAT_PERMISSION,
-                profile.primary_factory_id,
-                profile.primary_department,
-            ):
-                continue
-
-            identity = ":".join(
-                (
-                    user.id,
-                    permission.id,
-                    profile.primary_factory_id,
-                    profile.primary_department,
-                )
-            )
-            override_id = f"legacy-read-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:40]}"
-            if db.get(AuthUserPermissionOverride, override_id) is not None:
-                continue
-            db.add(
-                AuthUserPermissionOverride(
-                    id=override_id,
-                    user_id=user.id,
-                    permission_id=permission.id,
-                    effect="allow",
-                    factory_id=profile.primary_factory_id,
-                    department=profile.primary_department,
-                    status="active",
-                    valid_from=now,
-                    valid_until="",
-                    reason="历史登录可读兼容",
-                    source_type="legacy_read_compat",
-                    source_id=approved_request.id,
-                    created_by_user_id="",
-                    approved_by_user_id="",
-                    revoked_by_user_id="",
-                    revoked_at="",
-                    revoke_reason="",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            created_count += 1
-
-    db.add(
-        AuthIamState(
-            key=LEGACY_READ_COMPAT_MARKER,
-            value_json=json.dumps(
-                {"completed_at": now, "created_override_count": created_count},
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            updated_at=now,
-        )
-    )
-    db.flush()
-    return created_count
-
-
 def seed_legacy_export_compat_once(db: Session, now: str) -> int:
     if db.get(AuthIamState, LEGACY_EXPORT_COMPAT_MARKER) is not None:
         return 0
@@ -1494,7 +1378,7 @@ def ensure_authz_startup_safety(db: Session) -> None:
                 AuthUserPermissionOverride.status == "active",
                 AuthUserPermissionOverride.effect.in_({"allow", "deny"}),
                 AuthUserPermissionOverride.source_type.notin_(
-                    {"legacy_read_compat", "legacy_export_compat"}
+                    {"legacy_export_compat"}
                 ),
             )
         ).all()
@@ -1589,7 +1473,6 @@ def seed_auth_defaults(db: Session) -> None:
     seed_internal_quote_release_grants_once(db, now)
     seed_internal_quote_baseline_grants_once(db, now)
     seed_internal_quote_customer_grants_once(db, now)
-    seed_legacy_read_compat_once(db, now)
     seed_legacy_export_compat_once(db, now)
     reconcile_system_position_catalog(db, now=now)
     ensure_authz_startup_safety(db)

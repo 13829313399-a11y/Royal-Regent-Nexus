@@ -752,4 +752,5 @@ describe('authStore scoped permission decisions', () => {
 
     expect(store.can('maintenance:read')).toBe(false)
   })
+
 })

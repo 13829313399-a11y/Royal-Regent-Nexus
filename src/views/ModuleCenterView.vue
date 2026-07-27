@@ -58,16 +58,6 @@ const visibleModules = computed(() => {
       }
     }
 
-    if (currentDepartmentId.value === 'production' && module.id === 'injection-scheduling') {
-      const route = getFactoryScopedRoute('/modules/production/injection-scheduling', factory.id)
-
-      return {
-        ...scopedModule,
-        href: route,
-        route,
-      }
-    }
-
     if (currentDepartmentId.value === 'production' && module.id === 'molding-sample-production-task') {
       const route = getFactoryScopedRoute('/modules/production/molding-sample-tasks', factory.id)
 
