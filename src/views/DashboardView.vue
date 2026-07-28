@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 </script>
 
 <template>
-  <div class="app-page space-y-6">
+  <div class="app-page dashboard-page space-y-6">
     <PageHeader
       eyebrow="Group Operations"
       title="集团运营总览"
@@ -30,11 +30,11 @@ import { Button } from '@/components/ui/button'
       </template>
     </PageHeader>
 
-    <div class="reveal-grid grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <div class="dashboard-metrics reveal-grid grid gap-4">
       <MetricCard v-for="metric in overviewMetrics" :key="metric.label" :metric="metric" />
     </div>
 
-    <div class="grid gap-6 xl:grid-cols-[1fr_350px]">
+    <div class="dashboard-primary-grid grid gap-6">
       <FactoryHeatmap />
       <CrossFactoryTimeline />
     </div>
@@ -42,3 +42,31 @@ import { Button } from '@/components/ui/button'
     <ModuleHealthPanel />
   </div>
 </template>
+
+<style scoped>
+.dashboard-page {
+  container: dashboard-page / inline-size;
+}
+
+.dashboard-metrics {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container dashboard-page (min-width: 36rem) {
+  .dashboard-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container dashboard-page (min-width: 62rem) {
+  .dashboard-metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container dashboard-page (min-width: 68rem) {
+  .dashboard-primary-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 350px);
+  }
+}
+</style>

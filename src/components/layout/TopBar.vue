@@ -70,7 +70,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
 
 <template>
   <header class="sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
-    <div class="flex min-h-[72px] items-center gap-2.5 px-3 sm:gap-3 sm:px-4 2xl:gap-5 2xl:px-6">
+    <div class="flex min-h-16 items-center gap-2.5 px-3 sm:min-h-[72px] sm:gap-3 sm:px-4 2xl:gap-5 2xl:px-6">
       <button
         ref="navigationTriggerRef"
         type="button"
@@ -83,8 +83,8 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         <Menu class="size-4.5" aria-hidden="true" />
       </button>
 
-      <RouterLink to="/" class="flex min-w-0 items-center gap-3 sm:min-w-[200px] 2xl:min-w-[236px]">
-        <span class="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-lg">
+      <RouterLink to="/" class="flex min-w-0 items-center gap-2.5 sm:min-w-[184px] 2xl:min-w-[236px] 2xl:gap-3">
+        <span class="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-lg sm:size-14 2xl:size-16">
           <img
             :src="brandLogoSrc"
             alt="Huadeng Group logo"
@@ -97,7 +97,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         </span>
       </RouterLink>
 
-      <div class="hidden h-9 min-w-[220px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200/90 bg-slate-50/75 px-3 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition-colors hover:border-slate-300 hover:bg-white lg:flex">
+      <div class="hidden h-9 min-w-[180px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200/90 bg-slate-50/75 px-3 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition-colors hover:border-slate-300 hover:bg-white lg:flex xl:min-w-[220px]">
         <Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" />
         <span class="truncate text-sm text-slate-500">{{ searchPlaceholder }}</span>
       </div>
