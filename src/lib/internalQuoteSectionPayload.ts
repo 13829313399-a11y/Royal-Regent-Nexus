@@ -302,13 +302,14 @@ export type SalesFreightCalculation = {
   enabled: boolean
   freight_enabled?: boolean
   lifting_enabled?: boolean
-} & Record<SalesFreightCapacityKey, number> & Partial<Record<LegacySalesFreightRouteKey, number>>
+} & Record<SalesFreightCapacityKey, number>
+  & Record<string, number | boolean | undefined>
 export interface SalesFreightRouteDefinition {
   key: string
   label: string
   feeLabel: string
   liftingFeeLabel: string
-  capacityKey: SalesFreightCapacityKey
+  capacityKey: string
 }
 export interface SalesFreightReferenceRoute extends SalesFreightRouteDefinition {
   freightCostHkd: number
@@ -319,7 +320,7 @@ export interface SalesFreightOption {
   label: string
   feeLabel: string
   liftingFeeLabel: string
-  capacityKey: SalesFreightCapacityKey
+  capacityKey: string
   capacityCuft: number
   freightCostHkd: number
   liftingCostHkd: number
@@ -385,17 +386,16 @@ export function salesFreightReferenceRoutesFromSnapshot(value: unknown): SalesFr
     ? value as Record<string, unknown>
     : {}
   const routeRows = Array.isArray(freight.routes) ? freight.routes : []
-  const capacityKeys = new Set<SalesFreightCapacityKey>(salesFreightCapacityDefinitions.map(({ key }) => key))
   const seen = new Set<string>()
   const routes = routeRows.flatMap((value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return []
     const row = value as Record<string, unknown>
     const key = String(row.route_key ?? '').trim()
     const label = String(row.route_name ?? '').trim()
-    const capacityKey = String(row.capacity_key ?? '') as SalesFreightCapacityKey
+    const capacityKey = String(row.capacity_key ?? '').trim()
     const freightCostHkd = Number(row.freight_hkd)
     const liftingCostHkd = Number(row.lifting_hkd ?? 0)
-    if (!key || seen.has(key.toLocaleLowerCase()) || !label || !capacityKeys.has(capacityKey) || !Number.isFinite(freightCostHkd) || freightCostHkd < 0 || !Number.isFinite(liftingCostHkd) || liftingCostHkd < 0) return []
+    if (!key || seen.has(key.toLocaleLowerCase()) || !label || !capacityKey || !Number.isFinite(freightCostHkd) || freightCostHkd < 0 || !Number.isFinite(liftingCostHkd) || liftingCostHkd < 0) return []
     seen.add(key.toLocaleLowerCase())
     return [{ key, label, feeLabel: `${label}运费`, liftingFeeLabel: `${label}吊柜费`, capacityKey, freightCostHkd, liftingCostHkd }]
   })
@@ -1241,6 +1241,18 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   const legacyFreightEnabled = booleanValue(freightSource.enabled, true)
   const normalizedFreightEnabled = legacyFreightEnabled && booleanValue(freightSource.freight_enabled, true)
   const normalizedLiftingEnabled = legacyFreightEnabled && booleanValue(freightSource.lifting_enabled, true)
+  const standardFreightKeys = new Set<string>([
+    'enabled',
+    'freight_enabled',
+    'lifting_enabled',
+    ...salesFreightCapacityDefinitions.map(({ key }) => key),
+    ...salesFreightRouteDefinitions.map(({ key }) => key),
+  ])
+  const customFreightCapacityValues = Object.fromEntries(
+    Object.entries(freightSource)
+      .filter(([key, value]) => key.trim() && !standardFreightKeys.has(key) && typeof value !== 'boolean')
+      .map(([key, value]) => [key, positiveIntegerValue(value, 0)]),
+  )
   const shippingSource = objectValue(source.shipping)
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping')
   return {
@@ -1260,6 +1272,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       enabled: normalizedFreightEnabled || normalizedLiftingEnabled,
       freight_enabled: normalizedFreightEnabled,
       lifting_enabled: normalizedLiftingEnabled,
+      ...customFreightCapacityValues,
       ...Object.fromEntries(salesFreightCapacityDefinitions
         .map(({ key }) => [key, positiveIntegerValue(freightSource[key], defaultSalesFreightCalculation[key])])),
       ...Object.fromEntries(salesFreightRouteDefinitions

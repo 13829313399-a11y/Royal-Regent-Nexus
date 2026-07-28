@@ -52,7 +52,12 @@ const isDisney = computed(() => ['disney', '迪士尼'].includes(normalizedCusto
 const isDickie = computed(() => false)
 const isCaixing = computed(() => ['caixing', '彩星'].includes(normalizedCustomer.value))
 const isThreeSixty = computed(() => ['360', 'threesixty'].includes(normalizedCustomer.value))
-const formBlocks = computed(() => getInternalQuoteFormBlocks(props.code, model.value))
+const referenceFreightRoutes = computed(() => salesFreightReferenceRoutesFromSnapshot(props.referenceSnapshot?.freight))
+const formBlocks = computed(() => getInternalQuoteFormBlocks(
+  props.code,
+  model.value,
+  referenceFreightRoutes.value.map(({ capacityKey }) => capacityKey),
+))
 const completedBlockCount = computed(() => formBlocks.value.filter((item) => ['complete', 'automatic', 'optional'].includes(item.status)).length)
 const activeBlockId = ref('')
 function blockIsReady(status: string) { return ['complete', 'automatic', 'optional'].includes(status) }
@@ -329,7 +334,15 @@ function updateCartonSizeUnit(carton: SalesCartonRow, event: Event) {
 }
 const packagingMaterialTotal = computed(() => sales.value.packaging_materials.reduce((total, row) => total + calculatePackagingMaterialAmountHkd(row, props.rmbHkdRate), 0))
 const primaryCarton = computed(() => sales.value.cartons[0])
-const referenceFreightRoutes = computed(() => salesFreightReferenceRoutesFromSnapshot(props.referenceSnapshot?.freight))
+const freightCapacityDefinitions = computed(() => {
+  const seen = new Set<string>()
+  return referenceFreightRoutes.value.flatMap(({ capacityKey }) => {
+    if (seen.has(capacityKey)) return []
+    seen.add(capacityKey)
+    const known = salesFreightCapacityDefinitions.find(({ key }) => key === capacityKey)
+    return [{ key: capacityKey, label: known?.label ?? capacityKey }]
+  })
+})
 const freightCalculationEnabled = computed<boolean>({
   get: () => salesFreightCalculationModes(sales.value.freight_calc).freightEnabled,
   set: (value) => {
@@ -350,7 +363,7 @@ const freightSourceCuft = computed(() => primaryCarton.value ? calculateCartonCu
 function calculated(value: number) { return fixedDecimal(value, 3) }
 function measured(value: number) { return value.toFixed(4) }
 function whole(value: number) { return Math.round(value).toString() }
-function normalizeFreightCapacity(key: keyof Pick<SalesPayload['freight_calc'], 'cap_10t' | 'cap_5t' | 'cap_40' | 'cap_20'>) {
+function normalizeFreightCapacity(key: string) {
   const value = Number(sales.value.freight_calc[key])
   sales.value.freight_calc[key] = Number.isFinite(value) && value > 0 ? Math.max(Math.round(value), 1) : 0
 }
@@ -1110,7 +1123,7 @@ function addDickieMaterialPrice() {
           </div>
           <div v-else class="freight-source-strip freight-source-missing">请先在“纸箱计算与包装尺寸”新增主纸箱，运费和吊柜费结果将自动联动。</div>
           <div class="inline-fields four freight-capacity-fields">
-            <label v-for="capacity in salesFreightCapacityDefinitions" :key="capacity.key">
+            <label v-for="capacity in freightCapacityDefinitions" :key="capacity.key">
               <span>{{ capacity.label }}（CUFT，整数）</span>
               <input v-model.number="sales.freight_calc[capacity.key]" :disabled="disabled" type="number" min="1" step="1" :aria-label="capacity.label" @blur="normalizeFreightCapacity(capacity.key)">
             </label>
