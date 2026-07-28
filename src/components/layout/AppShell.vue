@@ -64,12 +64,12 @@ onBeforeUnmount(() => {
       :navigation-open="isMobileNavigationOpen"
       @toggle-navigation="isMobileNavigationOpen = !isMobileNavigationOpen"
     />
-    <div class="flex">
+    <div class="app-shell-content flex min-w-0">
       <SidebarNav
         :mobile-open="isMobileNavigationOpen"
         @close="isMobileNavigationOpen = false"
       />
-      <main id="app-content" class="app-main flex-1 px-4 py-6 sm:px-6 lg:py-7 xl:px-10 xl:py-8">
+      <main id="app-content" class="app-main w-full max-w-full flex-1 px-4 py-6 sm:px-6 lg:py-7 xl:px-8 xl:py-8 2xl:px-10">
         <RouterView v-slot="{ Component }">
           <Transition name="route-page" mode="out-in">
             <component :is="Component" />

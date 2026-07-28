@@ -16,6 +16,7 @@ const styleSource = readSource('src/style.css')
 const buttonSource = readSource('src/components/ui/button/index.ts')
 const approvalWorkbenchSource = readSource('src/views/ApprovalWorkbenchView.vue')
 const approvalTableSource = readSource('src/components/workbench/ApprovalTable.vue')
+const dashboardSource = readSource('src/views/DashboardView.vue')
 
 describe('enterprise UI shell contract', () => {
   it('provides a responsive mobile navigation without changing route-driven content', () => {
@@ -49,6 +50,11 @@ describe('enterprise UI shell contract', () => {
     expect(styleSource).toContain('@media (prefers-reduced-motion: reduce)')
     expect(styleSource).toContain('.enterprise-panel')
     expect(styleSource).toContain('.route-page-enter-active')
+    expect(styleSource).toContain('overflow-x: clip')
+    expect(appShellSource).toContain('class="app-shell-content flex min-w-0"')
+    expect(sidebarSource).toContain('lg:w-[88px]')
+    expect(sidebarSource).toContain('2xl:w-[260px]')
+    expect(sidebarSource).toContain('lg:sr-only 2xl:not-sr-only')
     expect(topBarSource).toContain('<NotificationCenter />')
     expect(notificationCenterSource).toContain("left: '12px'")
     expect(notificationCenterSource).toContain("right: '12px'")
@@ -56,6 +62,15 @@ describe('enterprise UI shell contract', () => {
     expect(notificationCenterSource).toContain('class="fixed z-[70]')
     expect(accountMenuSource).toContain('fixed left-3 right-3 top-[68px]')
     expect(accountMenuSource).toContain('sm:w-[calc(100vw-1.5rem)] sm:max-w-80')
+  })
+
+  it('adapts dashboard columns to the available content width', () => {
+    expect(dashboardSource).toContain('container: dashboard-page / inline-size')
+    expect(dashboardSource).toContain('@container dashboard-page (min-width: 36rem)')
+    expect(dashboardSource).toContain('@container dashboard-page (min-width: 62rem)')
+    expect(dashboardSource).toContain('@container dashboard-page (min-width: 68rem)')
+    expect(dashboardSource).not.toContain('md:grid-cols-2 xl:grid-cols-4')
+    expect(dashboardSource).not.toContain('xl:grid-cols-[1fr_350px]')
   })
 
   it('exposes the requested primary, secondary, soft, ghost, and destructive button hierarchy', () => {

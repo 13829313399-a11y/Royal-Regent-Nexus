@@ -63,17 +63,23 @@
     position: relative;
     isolation: isolate;
     min-height: 100vh;
+    overflow-x: clip;
     color: oklch(0.21 0.025 240);
   }
 
   .app-shell::before {
     position: fixed;
-    inset: 72px 0 auto 260px;
+    inset: 72px 0 auto 0;
     z-index: -1;
     height: 280px;
     background: radial-gradient(circle at 22% 0%, oklch(0.88 0.04 182 / 34%), transparent 62%);
     content: '';
     pointer-events: none;
+  }
+
+  .app-shell-content {
+    width: 100%;
+    max-width: 100%;
   }
 
   .app-main {
@@ -83,6 +89,7 @@
 
   .app-page {
     width: 100%;
+    min-width: 0;
     max-width: 1720px;
     margin-inline: auto;
   }
@@ -298,9 +305,15 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
-@media (max-width: 1023px) {
+@media (min-width: 1024px) {
   .app-shell::before {
-    inset-inline: 0;
+    inset-inline: 88px 0;
+  }
+}
+
+@media (min-width: 1536px) {
+  .app-shell::before {
+    inset-inline: 260px 0;
   }
 }
 
