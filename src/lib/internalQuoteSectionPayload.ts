@@ -416,23 +416,21 @@ export interface DickieProductQuoteRow { line_no: number; item_text_en: string; 
 export interface DickieRemarkLine { line_no: number; text_en: string }
 export interface DickieMaterialPrice { material: string; price_hkd_lb: number }
 export interface DickieCustomerQuoteFields { client_name: string; quote_date: string; attention: string; revision: string; from_name: string; project_name_en: string; first_shot_time: string; finish_time: string; product_rows: DickieProductQuoteRow[]; remark_lines: DickieRemarkLine[]; material_prices_hkd: DickieMaterialPrice[] }
-export type CaixingCustomerCostGroup = 'special' | 'electronic' | 'purchase' | 'packing' | 'carton' | 'fabric' | 'spraying' | 'tampo' | 'assembly' | 'packout' | 'rooting' | 'sewing' | 'special_offer'
-export interface CaixingCustomerCostRow { group: CaixingCustomerCostGroup; tax_tag: string; category: string; description: string; base_cost_hkd: number; customer_cost_hkd: number }
 export interface CaixingCustomerQuoteFields {
   product_type: 'plastic' | 'plush'
   item_number: string
   item_name: string
   quote_date: string
-  carton_length_in: number
-  carton_width_in: number
-  carton_height_in: number
-  carton_cuft: number
-  carton_cbm: number
-  pcs_per_carton: number
-  carton_price_hkd: number
-  cost_rows: CaixingCustomerCostRow[]
 }
-export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields }
+export interface ThreeSixtyCustomerQuoteFields {
+  ms_brand: string
+  prepared_by: string
+  quote_date: string
+  revision: string
+  first_etd: string
+  freight_route_key: string
+}
+export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
 export interface SalesMarkupTier {
   moq: number
   markup_x: number
@@ -1334,17 +1332,14 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         item_number: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_number),
         item_name: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_name),
         quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).quote_date),
-        carton_length_in: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_length_in),
-        carton_width_in: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_width_in),
-        carton_height_in: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_height_in),
-        carton_cuft: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_cuft),
-        carton_cbm: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_cbm),
-        pcs_per_carton: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).pcs_per_carton),
-        carton_price_hkd: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_price_hkd),
-        cost_rows: rows(objectValue(objectValue(source.customer_quote_fields).caixing).cost_rows).map((row) => ({
-          group: ['special', 'electronic', 'purchase', 'packing', 'carton', 'fabric', 'spraying', 'tampo', 'assembly', 'packout', 'rooting', 'sewing', 'special_offer'].includes(textValue(row.group)) ? textValue(row.group) : 'purchase',
-          tax_tag: textValue(row.tax_tag), category: textValue(row.category), description: textValue(row.description), base_cost_hkd: numberValue(row.base_cost_hkd), customer_cost_hkd: numberValue(row.customer_cost_hkd),
-        })),
+      },
+      three_sixty: {
+        ms_brand: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).ms_brand),
+        prepared_by: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).prepared_by) || '郑大能',
+        quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).quote_date),
+        revision: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).revision) || '0',
+        first_etd: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).first_etd),
+        freight_route_key: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).freight_route_key),
       },
     },
   }

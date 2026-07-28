@@ -15,12 +15,16 @@ import {
   type CaixingConversionResult,
 } from './caixing'
 import {
+  convertThreeSixtyP4InternalQuote,
+  type ThreeSixtyConversionResult,
+} from './threeSixty'
+import {
   parseP4InternalQuoteArtifact,
   type P4ArtifactMetadata,
   type P4InternalQuoteArtifact,
 } from './p4Artifact'
 
-export type P4ConfiguredCustomerId = 'buzzbee' | 'disney' | 'dicky' | 'caixing'
+export type P4ConfiguredCustomerId = 'buzzbee' | 'disney' | 'dicky' | 'caixing' | 'three-sixty'
 
 export interface P4BuzzBeePreparedConversion {
   customerId: 'buzzbee'
@@ -46,7 +50,13 @@ export interface P4CaixingPreparedConversion {
   result: CaixingConversionResult
 }
 
-export type P4PreparedCustomerConversion = P4BuzzBeePreparedConversion | P4DisneyPreparedConversion | P4DickyPreparedConversion | P4CaixingPreparedConversion
+export interface P4ThreeSixtyPreparedConversion {
+  customerId: 'three-sixty'
+  artifact: P4InternalQuoteArtifact
+  result: ThreeSixtyConversionResult
+}
+
+export type P4PreparedCustomerConversion = P4BuzzBeePreparedConversion | P4DisneyPreparedConversion | P4DickyPreparedConversion | P4CaixingPreparedConversion | P4ThreeSixtyPreparedConversion
 
 export class P4CustomerMappingError extends Error {
   constructor(message: string) {
@@ -62,6 +72,7 @@ function customerNameMatches(customerId: P4ConfiguredCustomerId, value: string) 
     disney: ['迪士尼', 'disney'],
     dicky: ['dickie', 'dicky'],
     caixing: ['彩星', 'caixing'],
+    'three-sixty': ['360', 'threesixty'],
   }
   return accepted[customerId].includes(normalized)
 }
@@ -106,6 +117,18 @@ export function prepareP4CustomerConversion(
     } catch (error) {
       if (error instanceof P4CustomerMappingError) throw error
       throw new P4CustomerMappingError(error instanceof Error ? error.message : 'Dickie P4 映射失败')
+    }
+  }
+  if (customerId === 'three-sixty') {
+    try {
+      return {
+        customerId,
+        artifact,
+        result: convertThreeSixtyP4InternalQuote(artifact, sourceFileName),
+      }
+    } catch (error) {
+      if (error instanceof P4CustomerMappingError) throw error
+      throw new P4CustomerMappingError(error instanceof Error ? error.message : '360 P4 映射失败')
     }
   }
   try {
