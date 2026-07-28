@@ -114,6 +114,8 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "internal_quote:slush_review",
     "internal_quote:sewing_edit",
     "internal_quote:sewing_review",
+    "internal_quote:hair_edit",
+    "internal_quote:hair_review",
     "internal_quote:assembly_edit",
     "internal_quote:assembly_review",
 )

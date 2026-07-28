@@ -20,6 +20,7 @@ ALL_SECTION_CODES = [
     "painting",
     "slush",
     "sewing",
+    "hair",
     "assembly",
 ]
 DEFAULT_FREIGHT_ROUTES = [
@@ -181,7 +182,7 @@ def test_mapped_import_template_download_requires_quote_access_and_returns_xlsx(
         assert invalid.status_code == 400
 
 
-def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_participate(monkeypatch):
+def test_sales_create_keeps_all_section_slots_but_only_mandatory_departments_participate(monkeypatch):
     with make_client(monkeypatch) as client:
         anonymous = client.get("/api/internal-quotes?factory_id=huaxing")
         assert anonymous.status_code == 401
@@ -200,7 +201,7 @@ def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_p
         assert quote["initiator_department"] == "sales-business"
         assert quote["business_owner_name"] == "业务负责人"
         assert quote["target_customer_price"] == "USD 3.50"
-        assert len(quote["sections"]) == 8
+        assert len(quote["sections"]) == 9
         assert [section["department"] for section in quote["sections"]] == [
             "sales",
             "engineering",
@@ -209,6 +210,7 @@ def test_sales_create_keeps_eight_section_slots_but_only_mandatory_departments_p
             "painting",
             "slush",
             "sewing",
+            "hair",
             "assembly",
         ]
         assert all(section["status"] == "draft" and section["revision"] == 1 for section in quote["sections"])
@@ -1482,7 +1484,7 @@ def test_internal_quote_list_can_opt_in_to_section_progress(monkeypatch):
         )
         assert expanded.status_code == 200
         row = next(item for item in expanded.json() if item["id"] == created["id"])
-        assert len(row["sections"]) == 8
+        assert len(row["sections"]) == 9
         assert all(section["revision"] == 1 for section in row["sections"])
 
 
@@ -1508,7 +1510,7 @@ def test_internal_quote_list_page_loads_only_ten_rows_and_reports_remaining_page
         assert first_page["page_size"] == 10
         assert first_page["total_pages"] == 2
         assert len(first_page["items"]) == 10
-        assert all(len(item["sections"]) == 8 for item in first_page["items"])
+        assert all(len(item["sections"]) == 9 for item in first_page["items"])
         assert first_page["customers"] == ["分页客户A", "分页客户B"]
 
         second = client.get(

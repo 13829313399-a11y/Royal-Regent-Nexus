@@ -10,7 +10,7 @@ function statuses(code: Parameters<typeof normalizeInternalQuotePayload>[0], val
 
 describe('internal quote form block progress', () => {
   it('uses the same 部分 suffix for every department block navigation title', () => {
-    const codes = ['engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'assembly', 'sales'] as const
+    const codes = ['engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'hair', 'assembly', 'sales'] as const
     for (const code of codes) {
       const payload = normalizeInternalQuotePayload(code, {})
       expect(getInternalQuoteFormBlocks(code, payload).every((item) => item.title.endsWith('部分'))).toBe(true)
@@ -32,6 +32,10 @@ describe('internal quote form block progress', () => {
     expect(statuses('engineering', {
       materials: [{ category: 'hardware', item: '螺丝', quantity: 2, unit_price_rmb: 0.35 }],
     }).hardware).toBe('complete')
+
+    expect(statuses('engineering', {
+      materials: [{ category: 'auxiliary', item: '胶袋', quantity: 2, unit_price_hkd: 1.5 }],
+    }).auxiliary).toBe('complete')
 
     expect(statuses('engineering', {
       mold_allocation_enabled: false,
@@ -63,6 +67,18 @@ describe('internal quote form block progress', () => {
       cartons: 'complete',
       freight: 'complete',
     })
+  })
+
+  it('accepts HKD as the entered packaging-material unit price', () => {
+    expect(statuses('sales', {
+      packaging_materials: [{
+        item: '彩盒',
+        specification: '四彩',
+        category: 'color_box_inner_card',
+        quantity: 2,
+        unit_price_hkd: 4,
+      }],
+    })['packaging-materials']).toBe('complete')
   })
 
   it('tracks the optional business testing fee once either USD total or MOQ is entered', () => {
@@ -99,6 +115,16 @@ describe('internal quote form block progress', () => {
 
     expect(statuses('sewing', { quote_mode: 'quick', quick_quotes: [{ doll_name: '公仔 A', unit_price_hkd: 0 }] }).sewing).toBe('partial')
     expect(statuses('sewing', { quote_mode: 'quick', quick_quotes: [{ doll_name: '公仔 A', unit_price_hkd: 4.25 }] }).sewing).toBe('complete')
+  })
+
+  it('requires every started standalone hair row to include its full quotation evidence', () => {
+    expect(statuses('hair', {})).toEqual({ hair: 'missing' })
+    expect(statuses('hair', {
+      lines: [{ name: '公仔头发', craft: '植发', weight_g: 18.5, unit_price_hkd: 2.35 }],
+    })).toEqual({ hair: 'partial' })
+    expect(statuses('hair', {
+      lines: [{ name: '公仔头发', craft: '植发', weight_g: 18.5, unit_price_hkd: 2.35, unit: 'PCS' }],
+    })).toEqual({ hair: 'complete' })
   })
 
   it('tracks assembly summary, assembly work and packaging work independently', () => {

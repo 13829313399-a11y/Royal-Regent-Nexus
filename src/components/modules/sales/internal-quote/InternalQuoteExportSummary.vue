@@ -50,9 +50,9 @@ const exportStatusLabel = computed(() => {
   if (canExport.value) return '已最终放行，可导出'
   return isForeignQuote.value ? '跨厂只读，不能导出' : '无受控导出权限'
 })
-const componentLabels: Record<string, string> = { molding_hkd: '啤机', painting_hkd: '喷油', electronic_hkd: '电子', hardware_hkd: '五金', auxiliary_hkd: '辅料', packaging_material_hkd: '包装材料', assembly_hkd: '组装人工', packing_labor_hkd: '包装人工', indonesia_freight_hkd: '印尼运费', slush_hkd: '搪胶', sewing_hkd: '车缝', carton_hkd: '纸箱' }
+const componentLabels: Record<string, string> = { molding_hkd: '啤机', painting_hkd: '喷油', electronic_hkd: '电子', hardware_hkd: '五金', auxiliary_hkd: '辅料', packaging_material_hkd: '包装材料', assembly_hkd: '组装人工', packing_labor_hkd: '包装人工', indonesia_freight_hkd: '印尼运费', slush_hkd: '搪胶', sewing_hkd: '车缝', hair_hkd: '车发', carton_hkd: '纸箱' }
 const visibleComponents = computed(() => Object.entries(quote.value.summaryComponents).map(([key, amount]) => ({ key, label: componentLabels[key] ?? key, amount })).filter((item) => item.amount !== 0).slice(0, 3))
-const workbookSheets = ['报价明细', '电子明细', '车缝明细', '装配明细', '审批与版本']
+const workbookSheets = ['报价明细', '电子明细', '车缝明细', '车发明细', '装配明细', '审批与版本']
 
 async function confirmExport() {
   message.value = ''

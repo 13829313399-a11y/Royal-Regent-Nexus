@@ -35,6 +35,7 @@ const sectionDefinitions: Array<{ code: InternalQuoteSectionCode; label: string 
   { code: 'painting', label: '喷油部' },
   { code: 'slush', label: '搪胶部' },
   { code: 'sewing', label: '车缝部' },
+  { code: 'hair', label: '车发部' },
   { code: 'assembly', label: '装配部' },
 ]
 

@@ -259,10 +259,11 @@ def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifac
                 "electronic",
                 "molding",
                 "painting",
-                "slush",
-                "sewing",
-                "assembly",
-            )
+                    "slush",
+                    "sewing",
+                    "hair",
+                    "assembly",
+                )
         }
         snapshot_parts = sorted(
             (row for row in structured_rows if row[0] == "reference_snapshot" and row[1] == "quote"),

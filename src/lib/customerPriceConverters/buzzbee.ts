@@ -868,7 +868,9 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
   const slush = p4Total(artifact, 'slush')
   if (slush > 0) costRows.push({ taxTag: '', category: '搪胶', description: '搪胶件', internalValue: slush, customerValueHint: 0 })
   const clothes = p4Total(artifact, 'sewing', 'clothes_hkd')
-  const hair = p4Total(artifact, 'sewing', 'hair_hkd')
+  const hair = artifact.sections.hair.isRequired
+    ? p4Total(artifact, 'hair')
+    : p4Total(artifact, 'sewing', 'hair_hkd')
   if (clothes > 0) costRows.push({ taxTag: '', category: '车衣', description: '车衣材料及人工', internalValue: clothes, customerValueHint: 0 })
   if (hair > 0) costRows.push({ taxTag: '', category: '车发', description: '车发材料及人工', internalValue: hair, customerValueHint: 0 })
   const assembly = p4Total(artifact, 'assembly', 'assembly_hkd')

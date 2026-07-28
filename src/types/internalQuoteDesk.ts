@@ -6,6 +6,7 @@ export type InternalQuoteSectionCode =
   | 'painting'
   | 'slush'
   | 'sewing'
+  | 'hair'
   | 'assembly'
 
 export type InternalQuoteSectionStatus =
