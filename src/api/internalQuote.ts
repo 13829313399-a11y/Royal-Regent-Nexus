@@ -376,7 +376,7 @@ export interface ApiInternalQuoteMachineBaselineRow {
 export interface ApiInternalQuoteFreightBaselineRow {
   route_key: string
   route_name: string
-  capacity_key: 'cap_10t' | 'cap_5t' | 'cap_40' | 'cap_20'
+  capacity_key: string
   freight_hkd: string
   lifting_hkd: string
 }

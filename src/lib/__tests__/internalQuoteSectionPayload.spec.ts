@@ -194,6 +194,20 @@ describe('internal quote section payload normalization', () => {
     expect(baselineOptions[0].freightPerPieceHkd).toBeCloseTo(6500 / baselineOptions[0].totalCartons / 2)
     expect(baselineOptions[0].liftingPerPieceHkd).toBeCloseTo(1100 / baselineOptions[0].totalCartons / 2)
     expect(baselineOptions[0].perPieceHkd).toBeCloseTo(7600 / baselineOptions[0].totalCartons / 2)
+    const customCapacityFreight = normalizeInternalQuotePayload('sales', {
+      freight_calc: { '8 吨车容量': 1200 },
+    }).freight_calc
+    const customCapacityOptions = calculateSalesFreightOptions(
+      customCapacityFreight,
+      { length_in: 12, width_in: 12, height_in: 12, qty_per_carton: 10 },
+      salesFreightReferenceRoutesFromSnapshot({
+        routes: [{ route_key: 'hk8t', route_name: 'HK 8 吨车', capacity_key: '8 吨车容量', freight_hkd: '6000', lifting_hkd: '800' }],
+      }),
+    )
+    expect(customCapacityFreight['8 吨车容量']).toBe(1200)
+    expect(customCapacityOptions).toHaveLength(1)
+    expect(customCapacityOptions[0]).toMatchObject({ capacityKey: '8 吨车容量', capacityCuft: 1200, totalCartons: 1200 })
+    expect(customCapacityOptions[0].perPieceHkd).toBeCloseTo(6800 / 1200 / 10)
     const freightOnlyOptions = calculateSalesFreightOptions(
       { ...defaultSalesFreightCalculation, freight_enabled: true, lifting_enabled: false },
       { length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 },

@@ -232,11 +232,11 @@ class InternalQuoteMachineBaselineRow(BaseModel):
 class InternalQuoteFreightBaselineRow(BaseModel):
     route_key: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
     route_name: str = Field(min_length=1, max_length=128)
-    capacity_key: Literal["cap_10t", "cap_5t", "cap_40", "cap_20"]
+    capacity_key: str = Field(min_length=1, max_length=128)
     freight_hkd: str
     lifting_hkd: str = "0"
 
-    @field_validator("route_key", "route_name")
+    @field_validator("route_key", "route_name", "capacity_key")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()

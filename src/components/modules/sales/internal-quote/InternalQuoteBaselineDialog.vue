@@ -36,7 +36,7 @@ const displayFactoryName = computed(() =>
 const defaultFreightRoutes = defaultSalesFreightReferenceRoutes.map((route) => ({
   route_key: route.key,
   route_name: route.label,
-  capacity_key: route.capacityKey,
+  capacity_key: salesFreightCapacityDefinitions.find(({ key }) => key === route.capacityKey)?.label ?? route.capacityKey,
   freight_hkd: String(route.freightCostHkd),
   lifting_hkd: String(route.liftingCostHkd),
 }))
@@ -55,7 +55,10 @@ function resetForm() {
   form.workshop_name = baseline?.workshop_name ?? displayFactoryName.value
   form.material_prices = (baseline?.material_prices ?? []).map((row) => ({ ...row }))
   form.machine_prices = (baseline?.machine_prices ?? []).map((row) => ({ ...row }))
-  form.freight_routes = (baseline?.freight_routes ?? defaultFreightRoutes).map((row) => ({ ...row }))
+  form.freight_routes = (baseline?.freight_routes ?? defaultFreightRoutes).map((row) => ({
+    ...row,
+    capacity_key: capacityTypeLabel(row.capacity_key),
+  }))
   localError.value = ''
   activeTab.value = 'materials'
 }
@@ -81,10 +84,25 @@ function addFreightRoute() {
   form.freight_routes.push({
     route_key: `route_${Date.now().toString(36)}_${freightRouteSequence}`,
     route_name: '',
-    capacity_key: 'cap_40',
+    capacity_key: '',
     freight_hkd: '',
     lifting_hkd: '',
   })
+}
+
+function normalizedCapacityType(value: string) {
+  const trimmed = value.trim()
+  const comparable = trimmed.replace(/\s+/g, '').toLocaleLowerCase()
+  const known = salesFreightCapacityDefinitions.find(({ key, label }) => (
+    key.toLocaleLowerCase() === comparable
+    || label.replace(/\s+/g, '').toLocaleLowerCase() === comparable
+  ))
+  return known?.key ?? trimmed
+}
+
+function capacityTypeLabel(value: string) {
+  const normalized = normalizedCapacityType(value)
+  return salesFreightCapacityDefinitions.find(({ key }) => key === normalized)?.label ?? value.trim()
 }
 
 function normalizedPrice(value: string | number) {
@@ -130,7 +148,7 @@ function validate(
     return `请完整填写第 ${invalidMachineIndex + 1} 项机型范围、机型和大于 0 的每班价格`
   }
   const invalidFreightIndex = freightRoutes.findIndex((row) => (
-    !row.route_key.trim() || !row.route_name.trim()
+    !row.route_key.trim() || !row.route_name.trim() || !row.capacity_key.trim()
     || !nonnegativePrice(row.freight_hkd) || !nonnegativePrice(row.lifting_hkd)
   ))
   if (invalidFreightIndex >= 0) return `请完整填写第 ${invalidFreightIndex + 1} 项运输方案、容量类型，以及大于或等于 0 的运费和吊柜费 HKD`
@@ -172,7 +190,7 @@ function save() {
     freight_routes: form.freight_routes.map((row) => ({
       route_key: row.route_key.trim(),
       route_name: row.route_name.trim(),
-      capacity_key: row.capacity_key,
+      capacity_key: normalizedCapacityType(row.capacity_key),
       freight_hkd: normalizedPrice(row.freight_hkd),
       lifting_hkd: normalizedPrice(row.lifting_hkd),
     })),
@@ -274,9 +292,14 @@ function save() {
                     <tr v-for="(row, index) in form.freight_routes" :key="row.route_key">
                       <td><input v-model="row.route_name" :data-testid="`freight-name-${index}`" :disabled="!canEdit" maxlength="128" aria-label="运输方案名称"></td>
                       <td>
-                        <select v-model="row.capacity_key" :data-testid="`freight-capacity-${index}`" :disabled="!canEdit" aria-label="容量类型">
-                          <option v-for="option in salesFreightCapacityDefinitions" :key="option.key" :value="option.key">{{ option.label }}</option>
-                        </select>
+                        <input
+                          v-model="row.capacity_key"
+                          :data-testid="`freight-capacity-${index}`"
+                          :disabled="!canEdit"
+                          maxlength="128"
+                          placeholder="例如：40 尺柜容量"
+                          aria-label="容量类型"
+                        >
                       </td>
                       <td><input v-model="row.freight_hkd" :data-testid="`freight-cost-${row.route_key}`" :disabled="!canEdit" type="number" min="0" step="1" :aria-label="`${row.route_name || `第 ${index + 1} 项`}运费 HKD`"></td>
                       <td><input v-model="row.lifting_hkd" :data-testid="`lifting-cost-${row.route_key}`" :disabled="!canEdit" type="number" min="0" step="1" :aria-label="`${row.route_name || `第 ${index + 1} 项`}吊柜费 HKD`"></td>

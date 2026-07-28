@@ -136,7 +136,7 @@ def _stored_freight_routes(value: str) -> list[dict[str, str]]:
                 not route_key
                 or route_key.lower() in route_keys
                 or not route_name
-                or capacity_key not in FREIGHT_CAPACITY_DEFAULT_KEYS
+                or not capacity_key
                 or not freight_hkd
                 or not lifting_hkd
             ):
@@ -174,7 +174,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "cartons": [{"item": "text", "size_unit": "cm|inch display/input preference", "length_in": "decimal>0 canonical inch", "width_in": "decimal>0 canonical inch", "height_in": "decimal>0 canonical inch", "qty_per_carton": "decimal>0", "flat_cards": [{"name": "text", "length_in": "decimal>0", "width_in": "decimal>0", "quantity": "decimal>0; default 1 for legacy rows; price = length × width × flat-card price factor × quantity ÷ 1000"}]}],
         "freight_calc": {
             "enabled": "boolean; default true",
-            "cap_10t|cap_5t|cap_40|cap_20": "decimal>0 CUFT",
+            "capacity type keys": "decimal>0 CUFT; defaults include cap_10t|cap_5t|cap_40|cap_20 and pricing-baseline custom labels",
             "route key fields": "legacy quote override decimal>=0 HKD; absent uses frozen pricing-baseline route list and freight",
             "source": "first sales carton CUFT and qty_per_carton",
         },
@@ -1604,11 +1604,15 @@ def _sales_freight_options(
         label = str(row.get("route_name", "")).strip()
         capacity_key = str(row.get("capacity_key", "")).strip()
         default_capacity_key = FREIGHT_CAPACITY_DEFAULT_KEYS.get(capacity_key)
-        if not route_key or not label or default_capacity_key is None:
+        if not route_key or not label or not capacity_key:
             continue
-        capacity_default = capacity_defaults.get(
-            default_capacity_key,
-            DEFAULT_FREIGHT["capacity_cuft"][default_capacity_key],
+        capacity_default = (
+            capacity_defaults.get(
+                default_capacity_key,
+                DEFAULT_FREIGHT["capacity_cuft"][default_capacity_key],
+            )
+            if default_capacity_key is not None
+            else "0"
         )
         cost_default = row.get("freight_hkd", "0")
         has_lifting_fee = "lifting_hkd" in row

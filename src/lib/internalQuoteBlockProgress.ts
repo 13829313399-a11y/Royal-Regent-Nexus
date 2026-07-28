@@ -175,7 +175,10 @@ function assemblyBlocks(payload: AssemblyPayload): InternalQuoteFormBlock[] {
   ]
 }
 
-function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
+function salesBlocks(
+  payload: SalesPayload,
+  freightCapacityKeys: string[] = ['cap_10t', 'cap_5t', 'cap_40', 'cap_20'],
+): InternalQuoteFormBlock[] {
   const testingFeeMoqs = payload.testing_fee_moqs?.length
     ? payload.testing_fee_moqs
     : payload.testing_fee_moq != null ? [payload.testing_fee_moq] : []
@@ -193,7 +196,7 @@ function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
     text(row.item) && positive(row.length_in) && positive(row.width_in) && positive(row.height_in) && positive(row.qty_per_carton)
     && row.flat_cards.every((card) => text(card.name) && positive(card.length_in) && positive(card.width_in) && positive(card.quantity)),
   ))
-  const capacityKeys = ['cap_10t', 'cap_5t', 'cap_40', 'cap_20'] as const
+  const capacityKeys = [...new Set(freightCapacityKeys.filter((key) => key.trim()))]
   const freightModes = salesFreightCalculationModes(payload.freight_calc)
   const freightComplete = (!freightModes.freightEnabled && !freightModes.liftingEnabled) || (
     capacityKeys.every((key) => positive(payload.freight_calc[key]))
@@ -207,7 +210,11 @@ function salesBlocks(payload: SalesPayload): InternalQuoteFormBlock[] {
   ]
 }
 
-export function getInternalQuoteFormBlocks(code: InternalQuoteSectionCode, payload: Record<string, unknown>): InternalQuoteFormBlock[] {
+export function getInternalQuoteFormBlocks(
+  code: InternalQuoteSectionCode,
+  payload: Record<string, unknown>,
+  salesFreightCapacityKeys?: string[],
+): InternalQuoteFormBlock[] {
   if (code === 'engineering') return engineeringBlocks(payload as unknown as EngineeringPayload)
   if (code === 'electronic') return electronicBlocks(payload as unknown as ElectronicPayload)
   if (code === 'molding') return moldingBlocks(payload as unknown as MoldingPayload)
@@ -216,7 +223,7 @@ export function getInternalQuoteFormBlocks(code: InternalQuoteSectionCode, paylo
   if (code === 'sewing') return sewingBlocks(payload as unknown as SewingPayload)
   if (code === 'hair') return hairBlocks(payload as unknown as HairPayload)
   if (code === 'assembly') return assemblyBlocks(payload as unknown as AssemblyPayload)
-  return salesBlocks(payload as unknown as SalesPayload)
+  return salesBlocks(payload as unknown as SalesPayload, salesFreightCapacityKeys)
 }
 
 export const internalQuoteBlockStatusLabels: Record<InternalQuoteBlockStatus, string> = {
