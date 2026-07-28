@@ -22,6 +22,7 @@ INTERNAL_QUOTE_SECTION_DEPARTMENTS = {
     "painting": ("production", "painting"),
     "slush": ("slush",),
     "sewing": ("sewing",),
+    "hair": ("hair",),
     "assembly": ("assembly",),
 }
 INTERNAL_QUOTE_ALL_DEPARTMENTS = tuple(
@@ -143,6 +144,14 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "customer_price:import_internal_quote": ScopePolicy(("sales-business",)),
     "customer_price:export_customer_quote": ScopePolicy(("sales-business",)),
     "customer_price:compare": ScopePolicy(("sales-business",)),
+    "customer_order:read": ScopePolicy(
+        ("sales-business",),
+        guidance="仅在业务部范围查看客户订单与排期数据",
+    ),
+    "customer_order:export": ScopePolicy(
+        ("sales-business",),
+        guidance="仅在业务部范围确认订单并导出客户排期",
+    ),
     **{
         f"internal_quote:{section_code}_{action}": ScopePolicy(departments)
         for section_code, departments in INTERNAL_QUOTE_SECTION_DEPARTMENTS.items()

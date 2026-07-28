@@ -161,12 +161,14 @@ describe('internal quote desk real API state', () => {
       source_type: 'default', updated_by: '', updated_by_name: '', updated_at: '',
       material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '8.50' }],
       machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '940' }],
+      freight_routes: [{ route_key: 'hk40', route_name: 'HK 40 柜', capacity_key: 'cap_40', freight_hkd: '8000', lifting_hkd: '0' }],
     })
     apiMock.updatePricingBaseline.mockResolvedValue({
       factory_id: 'huaxing', workshop_code: 'huaxing-workshop', workshop_name: '华兴', revision: 1,
       source_type: 'custom', updated_by: 'supervisor', updated_by_name: '业务主管', updated_at: '2026-07-18 14:00',
       material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '9.25' }],
       machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '999' }],
+      freight_routes: [{ route_key: 'hk40', route_name: '香港 40 柜', capacity_key: 'cap_40', freight_hkd: '8200', lifting_hkd: '1200' }],
     })
     apiMock.get.mockResolvedValue(quote())
     apiMock.getTimeline.mockResolvedValue({
@@ -252,7 +254,7 @@ describe('internal quote desk real API state', () => {
     expect(loaded?.rr2CostSummary.t2.map((item) => item.label)).toEqual(['彩盒/内咭', '未减税前码数', '减税后码数', '电池', '利宝', '电镀', '其他外购', '纸箱', '运费', '吊柜费', '杂项'])
     expect(loaded?.rr2CostSummary.t3.map((item) => item.label)).toEqual(['啤工', '喷油工', '油漆', '装配工', '不含人工成本', '人工比例', '毛利', '毛利率', '利润', '利润率', '总成本'])
     expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣类13%', '吸塑类6%', '运费类9%', '含税13%类'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, 10, .99, 3, 11.5, 11.5, 6, 8.26, 11.5])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 3, 11.5, 11.5, 6, 8.26, 11.5])
   })
 
   it('does not publish a detail view when the authoritative summary fails', async () => {
@@ -322,6 +324,7 @@ describe('internal quote desk real API state', () => {
       workshop_name: '华兴',
       material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '9.25' }],
       machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '999' }],
+      freight_routes: [{ route_key: 'hk40', route_name: '香港 40 柜', capacity_key: 'cap_40' as const, freight_hkd: '8200', lifting_hkd: '1200' }],
     }
     const saved = await store.updatePricingBaseline('huaxing', 'huaxing-workshop', payload)
 
@@ -357,6 +360,35 @@ describe('internal quote desk real API state', () => {
     expect(apiMock.removeParticipation).toHaveBeenCalledWith('quote-1', 3, ['painting'])
     expect(apiMock.get).toHaveBeenCalledWith('quote-1')
     expect(() => store.addComment('quote-1', '本地评论')).toThrow('尚未提供协作评论接口')
+  })
+
+  it('keeps the saved miscellaneous ratio and selected markup tier after the authoritative refresh', async () => {
+    const salesPayload = {
+      shipping: {
+        markup_x: 1.15,
+        markup_tiers: [
+          { moq: 3000, markup_x: 1.25 },
+          { moq: 5000, markup_x: 1.20 },
+          { moq: 10000, markup_x: 1.15 },
+        ],
+        selected_markup_moq: 10000,
+        misc_ratio: .035,
+      },
+    }
+    apiMock.saveSection.mockResolvedValue({
+      ...section('sales', 0),
+      revision: 5,
+      payload: salesPayload,
+    })
+    const store = useInternalQuoteDeskStore()
+
+    await store.saveSection('quote-1', 'sales', 4, salesPayload, '保存分段码数与杂项')
+
+    const saved = store.getQuoteById('quote-1')!
+    expect(saved.rr2CostSummary.shippingPricing.miscRatio).toBe(.035)
+    expect(saved.rr2CostSummary.shippingPricing.activeMarkupMoq).toBe(10000)
+    expect(saved.rr2CostSummary.shippingPricing.markup).toBe(1.15)
+    expect(saved.rr2CostSummary.shippingPricing.markupTiers.map((tier) => tier.isActive)).toEqual([false, false, true])
   })
 
   it('does not report a mutation as complete when the authoritative refresh fails', async () => {

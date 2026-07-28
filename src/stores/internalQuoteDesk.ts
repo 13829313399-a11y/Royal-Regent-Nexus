@@ -233,7 +233,7 @@ const rr2T3Fields = [
   ['total_cost', '总成本', undefined],
 ] as const
 const rr2T4Fields = [
-  ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', 10],
+  ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', null],
   ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类13%', 11.5],
   ['sewcloth13', '车衣类13%', 11.5], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
   ['tax13b', '含税13%类', 11.5],
@@ -277,9 +277,18 @@ function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
     afterDeductionCostHkd: numberValue(source?.totals.after_deduction_cost_hkd),
     shippingPricing: {
       enabled: shipping?.enabled ?? false,
+      freightEnabled: shipping?.freight_enabled ?? shipping?.enabled ?? false,
+      liftingEnabled: shipping?.lifting_enabled ?? shipping?.enabled ?? false,
       freightSharePercent: numberValue(shipping?.freight_share_percent),
       liftSharePercent: numberValue(shipping?.lift_share_percent),
       markup: numberValue(shipping?.markup),
+      activeMarkupMoq: numberValue(shipping?.active_markup_moq),
+      markupTiers: (shipping?.markup_tiers ?? []).map((tier) => ({
+        moq: numberValue(tier.moq),
+        markup: numberValue(tier.markup),
+        isActive: Boolean(tier.is_active),
+      })),
+      miscRatio: numberValue(shipping?.misc_ratio, .02),
       settlement: numberValue(shipping?.settlement),
       factoryPriceHkd: numberValue(shipping?.factory_price_hkd),
       additionalTaxHkd: numberValue(shipping?.additional_tax_hkd),
@@ -465,7 +474,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
     versionComparisons: {} as Record<string, ApiInternalQuoteVersionComparison>,
-    frontendNotice: 'L2 已接通八段专用表单、revision 状态流、五类 Excel 预览确认、附件、最终放行和受控导出；正式金额仍以服务端计算快照为准。',
+    frontendNotice: 'L2 已接通九段专用表单、revision 状态流、Excel 预览确认、附件、最终放行和受控导出；正式金额仍以服务端计算快照为准。',
   }),
   getters: {
     getQuoteById: (state) => (quoteId: string) => state.quotes.find((quote) => quote.id === quoteId),
@@ -1014,8 +1023,43 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
     },
-    saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {
-      return this.executeMutation(quoteId, () => internalQuoteApi.saveSection(quoteId, sectionCode, revision, payload, reason))
+    async saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {
+      const result = await this.executeMutation(
+        quoteId,
+        () => internalQuoteApi.saveSection(quoteId, sectionCode, revision, payload, reason),
+      ) as ApiInternalQuoteSection
+      if (sectionCode === 'sales') {
+        const quote = this.getQuoteById(quoteId)
+        const shipping = result.payload.shipping && typeof result.payload.shipping === 'object' && !Array.isArray(result.payload.shipping)
+          ? result.payload.shipping as Record<string, unknown>
+          : {}
+        if (quote && Object.prototype.hasOwnProperty.call(shipping, 'misc_ratio')) {
+          const miscRatio = Number(shipping.misc_ratio)
+          if (Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio <= 1) {
+            quote.rr2CostSummary.shippingPricing.miscRatio = miscRatio
+          }
+        }
+        const tierRows = Array.isArray(shipping.markup_tiers) ? shipping.markup_tiers : []
+        const tiers = tierRows.flatMap((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+          const row = value as Record<string, unknown>
+          const moq = Number(row.moq)
+          const markup = Number(row.markup_x)
+          return Number.isFinite(moq) && moq > 0 && Number.isFinite(markup) && markup > 0
+            ? [{ moq, markup }]
+            : []
+        })
+        const selectedMoq = Number(shipping.selected_markup_moq)
+        if (quote && tiers.length && tiers.some((tier) => tier.moq === selectedMoq)) {
+          quote.rr2CostSummary.shippingPricing.activeMarkupMoq = selectedMoq
+          quote.rr2CostSummary.shippingPricing.markupTiers = tiers.map((tier) => ({
+            ...tier,
+            isActive: tier.moq === selectedMoq,
+          }))
+          quote.rr2CostSummary.shippingPricing.markup = tiers.find((tier) => tier.moq === selectedMoq)!.markup
+        }
+      }
+      return result
     },
     submitSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitSection(quoteId, sectionCode, revision))

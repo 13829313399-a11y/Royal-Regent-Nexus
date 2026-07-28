@@ -32,6 +32,7 @@ function p4Workbook(
   customer: 'BuzzBee' | '迪士尼' | 'Dickie' = 'BuzzBee',
   inactiveCodes: P4SectionCode[] = [],
   unifiedSummary = false,
+  omitStandaloneHair = false,
 ) {
   const isDisney = customer === '迪士尼'
   const isDicky = customer === 'Dickie'
@@ -56,7 +57,7 @@ function p4Workbook(
     structured.push([type, code, name, isRequired ? 'approved' : 'draft', 2, isRequired ? 'valid' : 'pending', 'current', isRequired ? `${code}-hash` : '', 1, 1, JSON.stringify(value), isRequired ? '是' : '否'])
   }
   addRecord('reference_snapshot', 'quote', '报价参考快照', { fx: { hkd_usd: 7.8 } })
-  P4_SECTION_CODES.forEach((code) => {
+  P4_SECTION_CODES.filter((code) => !(omitStandaloneHair && code === 'hair')).forEach((code) => {
     const isRequired = !inactiveCodes.includes(code)
     const payload = code === 'molding'
       ? {
@@ -84,6 +85,23 @@ function p4Workbook(
         : code === 'sales'
           ? {
               paper_price_factor: 2.75,
+              testing_fee_total_usd: 1500,
+              testing_fee_moqs: [3000, 5000, 10000],
+              freight_calc: {
+                enabled: true,
+                routes: [
+                  { key: 'hk_40', name: 'HK 40 柜', capacity_type: 'container_40', freight_hkd: 8000, lift_fee_hkd: 1200 },
+                ],
+              },
+              shipping: {
+                markup_tiers: [
+                  { moq: 3000, markup_x: 1.18 },
+                  { moq: 5000, markup_x: 1.17 },
+                  { moq: 10000, markup_x: 1.15 },
+                ],
+                selected_markup_moq: 3000,
+                misc_ratio: 0.02,
+              },
               packaging_materials: isDisney
                 ? [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '', disney_description: 'Color Box', disney_unit_price_usd: .12, disney_included: 1 }]
                 : [{ item: '彩盒', specification: '四彩印刷', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 10, remark: '' }],
@@ -167,6 +185,24 @@ describe('P4 customer price adapter', () => {
     expect(cartonRow?.[6]).toBe(3.4505)
   })
 
+  it('keeps pre-hair P4 v2 artifacts readable as an inactive standalone hair section', () => {
+    const source = p4Workbook(
+      P4_ARTIFACT_TEMPLATE_VERSION,
+      true,
+      'BuzzBee',
+      [],
+      false,
+      true,
+    )
+    const artifact = parseP4InternalQuoteArtifact(source)
+    expect(artifact.sections.hair).toMatchObject({
+      name: '车发部',
+      isRequired: false,
+      calculationStatus: 'pending',
+    })
+    expect(() => prepareP4CustomerConversion(source, 'IQ-P4-LEGACY-BB.xlsx', 'buzzbee')).not.toThrow()
+  })
+
   it('reads the unified desk layout from the stable approval manifest and handoff metadata', () => {
     const source = p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, 'BuzzBee', [], true)
     const prepared = prepareP4CustomerConversion(
@@ -244,7 +280,8 @@ describe('P4 customer price adapter', () => {
       prepared.result,
       readFileSync('public/templates/disney-customer-quote-template.bin'),
     )
-    const tier = parseXlsxWorkbook(asArrayBuffer(output)).sheets[0]
+    const parsed = parseXlsxWorkbook(asArrayBuffer(output))
+    const tier = parsed.sheets[0]
     expect(tier.rows[8][2]).toBe(1000142435)
     expect(tier.rows[18][1]).toBe('1000142435-01')
     expect(tier.rows[18][2]).toBe(8900)
@@ -255,6 +292,12 @@ describe('P4 customer price adapter', () => {
     expect(tier.rows[235][5]).toBe(3.08)
     expect(tier.rows[236][5]).toBe(2.84)
     expect(tier.rows[237][5]).toBe(2.64)
+    const customerWorkbookText = parsed.sheets
+      .flatMap((sheet) => sheet.rows)
+      .flat()
+      .map((value) => String(value ?? ''))
+      .join('\n')
+    expect(customerWorkbookText).not.toMatch(/测试费用|吊柜费|报价（MOQ|杂项|HK 40 柜/)
   })
 
   it('drives the Dickie customer template from complete P4-only fields', () => {

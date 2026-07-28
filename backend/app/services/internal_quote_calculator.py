@@ -94,20 +94,95 @@ FREIGHT_ROUTE_DEFINITIONS = (
     ("yt5t", "YT 5 吨车", "cap_5t", "truck_5t", "yt_truck_5t"),
 )
 
+FREIGHT_CAPACITY_DEFAULT_KEYS = {
+    "cap_10t": "truck_10t",
+    "cap_5t": "truck_5t",
+    "cap_40": "container_40",
+    "cap_20": "container_20",
+}
+
+
+def _default_freight_routes() -> list[dict[str, str]]:
+    return [
+        {
+            "route_key": route_key,
+            "route_name": label,
+            "capacity_key": capacity_key,
+            "freight_hkd": DEFAULT_FREIGHT["cost_hkd"][default_cost_key],
+            "lifting_hkd": "0",
+        }
+        for route_key, label, capacity_key, _default_capacity_key, default_cost_key
+        in FREIGHT_ROUTE_DEFINITIONS
+    ]
+
+
+def _stored_freight_routes(value: str) -> list[dict[str, str]]:
+    try:
+        stored = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        stored = []
+    if isinstance(stored, list):
+        routes: list[dict[str, str]] = []
+        route_keys: set[str] = set()
+        for row in stored:
+            if not isinstance(row, dict):
+                continue
+            route_key = str(row.get("route_key", "")).strip()
+            route_name = str(row.get("route_name", "")).strip()
+            capacity_key = str(row.get("capacity_key", "")).strip()
+            freight_hkd = str(row.get("freight_hkd", "")).strip()
+            lifting_hkd = str(row.get("lifting_hkd", "0")).strip()
+            if (
+                not route_key
+                or route_key.lower() in route_keys
+                or not route_name
+                or capacity_key not in FREIGHT_CAPACITY_DEFAULT_KEYS
+                or not freight_hkd
+                or not lifting_hkd
+            ):
+                continue
+            route_keys.add(route_key.lower())
+            routes.append({
+                "route_key": route_key,
+                "route_name": route_name,
+                "capacity_key": capacity_key,
+                "freight_hkd": freight_hkd,
+                "lifting_hkd": lifting_hkd,
+            })
+        if routes:
+            return routes
+    # Compatibility with the unreleased fixed-key baseline representation.
+    if isinstance(stored, dict):
+        return [
+            {**row, "freight_hkd": str(stored.get(row["route_key"], row["freight_hkd"])).strip()}
+            for row in _default_freight_routes()
+        ]
+    return _default_freight_routes()
+
 SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     "sales": {
         "paper_price_factor": "decimal>0; default 2.75",
         "flat_card_price_factor": "decimal>0; defaults to paper_price_factor",
-        "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
+        "testing_fee_total_usd": "decimal>=0; optional business testing-fee total",
+        "testing_fee_moqs": "list of positive integer MOQ tiers when testing_fee_total_usd>0",
+        "testing_fee_moq": "legacy single MOQ; read when testing_fee_moqs is absent",
+        "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; RMB source or derived", "unit_price_hkd": "decimal>=0; HKD source or derived", "unit_price_source_currency": "RMB|HKD; omitted legacy rows prefer RMB unless only HKD exists", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
         "product_size_in": {"length": "optional decimal>0 inch", "width": "optional decimal>0 inch", "height": "optional decimal>0 inch"},
-        "color_box_size_in": {"length": "decimal>0 inch", "width": "decimal>0 inch", "height": "decimal>0 inch"},
+        "color_box_size_unit": "cm|inch; display/input preference, default inch",
+        "color_box_size_in": {"length": "decimal>0 canonical inch", "width": "decimal>0 canonical inch", "height": "decimal>0 canonical inch"},
         "legacy_dimension_aliases": "product_size_cm/color_box_size_cm remain readable as historical inch-valued keys",
-        "cartons": [{"item": "text", "length_in": "decimal>0", "width_in": "decimal>0", "height_in": "decimal>0", "qty_per_carton": "decimal>0", "flat_cards": "list"}],
+        "cartons": [{"item": "text", "size_unit": "cm|inch display/input preference", "length_in": "decimal>0 canonical inch", "width_in": "decimal>0 canonical inch", "height_in": "decimal>0 canonical inch", "qty_per_carton": "decimal>0", "flat_cards": [{"name": "text", "length_in": "decimal>0", "width_in": "decimal>0", "quantity": "decimal>0; default 1 for legacy rows; price = length × width × flat-card price factor × quantity ÷ 1000"}]}],
         "freight_calc": {
             "enabled": "boolean; default true",
             "cap_10t|cap_5t|cap_40|cap_20": "decimal>0 CUFT",
-            "hk40|hk20|yt40|yt20|hk10t|yt10t|hk5t|yt5t": "decimal>=0 HKD",
+            "route key fields": "legacy quote override decimal>=0 HKD; absent uses frozen pricing-baseline route list and freight",
             "source": "first sales carton CUFT and qty_per_carton",
+        },
+        "shipping": {
+            "markup_x": "legacy/current selected 0.01..9.99",
+            "markup_tiers": [{"moq": "positive integer, ascending", "markup_x": "0.01..9.99"}],
+            "selected_markup_moq": "optional MOQ value that must exist in markup_tiers",
+            "misc_ratio": "0..1; default 0.02",
         },
         "additional_tax_hkd": "decimal>=0",
         "indonesia_freight_hkd": "decimal>=0",
@@ -169,7 +244,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         },
     },
     "engineering": {
-        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging; hardware is fixed", "specification": "text", "auxiliary_category": "五金(fixed for hardware)|吸塑|胶袋|彩盒/内卡|电池|利宝|电镀|其他外购", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "hardware fixed 13; others decimal>=0; record only", "remark": "text", "legacy_fields": "purpose/unit/material/surface_treatment/supplier/contact remain readable but are not editable or imported", "disney_description": "text", "disney_section": "product|package", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>=0"}],
+        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging; hardware is fixed", "specification": "text", "auxiliary_category": "五金(fixed for hardware)|吸塑|胶袋|彩盒/内卡|电池|利宝|电镀|其他外购", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; hardware source, auxiliary RMB source or derived", "unit_price_hkd": "decimal>=0; auxiliary HKD source or derived", "unit_price_source_currency": "RMB|HKD for auxiliary; omitted legacy rows prefer RMB unless only HKD exists", "tax_rate_percent": "hardware fixed 13; others decimal>=0; record only", "remark": "text", "legacy_fields": "purpose/unit/material/surface_treatment/supplier/contact remain readable but are not editable or imported", "disney_description": "text", "disney_section": "product|package", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>=0"}],
         "molds": [{"item": "text", "mold_no": "text", "chinese_name": "text", "mold_base_type": "text", "mold_base_material": "text", "structure": "text", "process": "text", "material": "text", "material_type": "text", "color": "text", "cavity": "text", "quantity": "sets; record only", "net_weight_g": "decimal>=0", "cycle_time_seconds": "decimal>=0", "mold_size": "text", "mold_specification": "text", "image_reference": "section attachment name/reference", "cost_rmb": "whole-mold quote RMB", "remark": "text", "disney_mold_no": "text", "disney_parts": "text", "disney_material": "text", "disney_cavities": "decimal>0", "disney_parts_per_shot": "decimal>0", "disney_tool_cost_usd": "decimal>=0", "dickie_project_name_en": "English text", "dickie_mold_no": "text", "dickie_parts_en": "English text", "dickie_resin": "text", "dickie_mold_size": "text", "dickie_mold_material": "text", "dickie_cavities": "decimal>0", "dickie_parts_per_shot": "decimal>0", "dickie_mold_cost_hkd": "decimal>0", "dickie_remark_en": "English text", "caixing_tool_plan_ref": "text", "caixing_mold_cost_hkd": "decimal>=0", "caixing_customer_mold_cost_hkd": "decimal>0"}],
         "mold_allocation_enabled": "boolean; default true; false preserves inputs but excludes all production mold/prototype/testing allocation",
         "production_mold_costs": [{"item": "text", "cost_rmb": "decimal>=0"}],
@@ -184,14 +259,16 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "electronic": {
         "pricing_currency": "RMB for the current contract; legacy HKD payloads remain readable",
-        "components": [{"item": "text", "specification": "text", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "default 13", "remark": "text", "children": "recursive list"}],
+        "quote_mode": "detail|quick; legacy defaults detail",
+        "quick_quotes": [{"item": "text", "unit_price_rmb": "decimal>0", "unit_price_hkd": "calculated from frozen RMB/HKD rate", "tax_rate_percent": "0..100; default 13", "remark": "text"}],
+        "components": [{"item": "text", "specification": "text", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0", "tax_rate_percent": "default 13", "remark": "text", "children": "recursive list; retained but ignored while quick mode is active"}],
         "bonding_rmb": "decimal>=0",
         "smt_rmb": "decimal>=0",
         "labor_rmb": "decimal>=0",
         "testing_rmb": "decimal>=0",
         "packaging_rmb": "decimal>=0",
         "profit_rate_percent": "default 10",
-        "formula": "tax difference = profit-inclusive price * 13% - component input-tax credit; tax payable = tax difference * 10%",
+        "formula": "quick rows use quantity 1; tax difference = profit-inclusive price * 13% - component input-tax credit; tax payable = tax difference * 10%",
         "legacy_fields": "unit_price_hkd, *_hkd and tax_credit_difference_hkd remain readable",
     },
     "molding": {
@@ -203,6 +280,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
     "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices; detail mode price RMB = usage * material price * markup, then HKD = RMB / frozen rate"},
+    "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
     "assembly": {
         "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "processes": [{"name": "text", "persons": "decimal>=0", "remark": "text"}]}],
         "labor_base_hkd": "default 260; adjustable",
@@ -246,6 +324,23 @@ def decimal_text(value: Decimal) -> str:
     return format(amount(value), "f")
 
 
+def dual_currency_unit_prices(
+    row: dict[str, Any],
+    fx: Decimal,
+    field: str,
+) -> tuple[Decimal, Decimal, str]:
+    source_currency = str(row.get("unit_price_source_currency", "")).strip().upper()
+    if source_currency not in {"", "RMB", "HKD"}:
+        raise CalculationInputError(f"{field}输入币种必须是 RMB 或 HKD")
+    has_rmb = row.get("unit_price_rmb") not in (None, "")
+    has_hkd = row.get("unit_price_hkd") not in (None, "")
+    if source_currency == "HKD" or (not source_currency and not has_rmb and has_hkd):
+        unit_price_hkd = decimal_value(row.get("unit_price_hkd"), f"{field}港币单价")
+        return unit_price_hkd * fx, unit_price_hkd, "HKD"
+    unit_price_rmb = decimal_value(row.get("unit_price_rmb"), f"{field}人民币单价")
+    return unit_price_rmb, unit_price_rmb / fx, "RMB"
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -274,6 +369,7 @@ def build_reference_snapshot(
         )
     material_rows = DEFAULT_MATERIAL_PRICES
     machine_rows = DEFAULT_MACHINE_PRICES
+    freight_routes = _default_freight_routes()
     baseline_revision = 0
     if baseline is not None:
         try:
@@ -282,6 +378,10 @@ def build_reference_snapshot(
         except (TypeError, json.JSONDecodeError):
             stored_material_rows = []
             stored_machine_rows = []
+        try:
+            freight_routes = _stored_freight_routes(baseline.freight_routes_json)
+        except AttributeError:
+            freight_routes = _default_freight_routes()
         if isinstance(stored_material_rows, list) and stored_material_rows:
             material_rows = tuple(
                 (
@@ -323,10 +423,15 @@ def build_reference_snapshot(
         "assembly_labor_base_hkd": "260",
         "assembly_standard_work_hours": "11",
         "tax_rates": DEFAULT_TAX_RATES,
-        "freight": DEFAULT_FREIGHT,
+        "freight": {
+            "capacity_cuft": dict(DEFAULT_FREIGHT["capacity_cuft"]),
+            "cost_hkd": dict(DEFAULT_FREIGHT["cost_hkd"]),
+            "routes": freight_routes,
+        },
         "freight_share": "0.48",
         "lift_share": "0.52",
         "markup": "1.2",
+        "misc_ratio": "0.02",
         "settlement": "0.98",
     }
 
@@ -409,12 +514,24 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
         if not isinstance(row, dict):
             raise CalculationInputError(f"工程材料第 {index + 1} 行格式无效")
         quantity = decimal_value(row.get("quantity"), f"工程材料第 {index + 1} 行数量")
-        unit_price = decimal_value(row.get("unit_price_rmb"), f"工程材料第 {index + 1} 行人民币单价")
-        line_rmb = quantity * unit_price
-        line_hkd = line_rmb / fx
         category = str(row.get("category", "auxiliary"))
         if category not in category_hkd:
             raise CalculationInputError(f"工程材料第 {index + 1} 行分类无效")
+        if category == "hardware":
+            unit_price_rmb = decimal_value(
+                row.get("unit_price_rmb"),
+                f"工程材料第 {index + 1} 行人民币单价",
+            )
+            unit_price_hkd = unit_price_rmb / fx
+            source_currency = "RMB"
+        else:
+            unit_price_rmb, unit_price_hkd, source_currency = dual_currency_unit_prices(
+                row,
+                fx,
+                f"工程材料第 {index + 1} 行",
+            )
+        line_rmb = quantity * unit_price_rmb
+        line_hkd = quantity * unit_price_hkd
         tax_rate = (
             Decimal("13")
             if category == "hardware"
@@ -431,12 +548,17 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
             "specification": str(row.get("specification", row.get("spec", ""))),
             "quantity": decimal_text(quantity),
             "unit": str(row.get("unit", "")),
-            "unit_price_rmb": decimal_text(unit_price),
-            "unit_price_hkd": decimal_text(unit_price / fx),
+            "unit_price_rmb": decimal_text(unit_price_rmb),
+            "unit_price_hkd": decimal_text(unit_price_hkd),
+            "unit_price_source_currency": source_currency,
             "tax_rate_percent": decimal_text(tax_rate),
             "amount_rmb": decimal_text(line_rmb),
             "amount_hkd": decimal_text(line_hkd),
-            "formula": "用量 × 单价 RMB ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）",
+            "formula": (
+                "用量 × 单价 HKD；RMB = HKD × 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+                if source_currency == "HKD"
+                else "用量 × 单价 RMB ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+            ),
         })
 
     mold_quote_total_rmb = ZERO
@@ -552,8 +674,8 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
                 raise CalculationInputError(f"纸箱第 {index + 1} 行平卡 {flat_index + 1} 格式无效")
             flat_length = positive_value(flat.get("length_in"), "平卡长度")
             flat_width = positive_value(flat.get("width_in"), "平卡宽度")
-            flat_qty = decimal_value(flat.get("quantity"), "平卡数量", "1")
-            flat_total += (flat_length + 1) * (flat_width + 1) * 2 / 1000 * flat_qty
+            flat_qty = positive_value(flat.get("quantity"), "平卡数量", "1")
+            flat_total += flat_length * flat_width * paper_factor * flat_qty / 1000
         per_piece = (carton_price + flat_total) / qty_per_carton
         carton_total_hkd += per_piece
         carton_cuft += length * width * height / 1728
@@ -670,16 +792,35 @@ def _component_cost_rmb(
     return total_rmb, deductible_input_tax_rmb
 
 
+def _electronic_calculation_rows(payload: dict[str, Any]) -> Any:
+    if str(payload.get("quote_mode", "detail")) != "quick":
+        return payload.get("components", [])
+    quick_rows = payload.get("quick_quotes", [])
+    if not isinstance(quick_rows, list):
+        return quick_rows
+    return [
+        {
+            **row,
+            "specification": "",
+            "quantity": "1",
+            "children": [],
+        }
+        if isinstance(row, dict) else row
+        for row in quick_rows
+    ]
+
+
 def _electronic(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
-    uses_rmb_contract = payload.get("pricing_currency") == "RMB" or any(
+    calculation_rows = _electronic_calculation_rows(payload)
+    uses_rmb_contract = str(payload.get("quote_mode", "detail")) == "quick" or payload.get("pricing_currency") == "RMB" or any(
         field in payload
         for field in ("bonding_rmb", "smt_rmb", "labor_rmb", "testing_rmb", "packaging_rmb")
-    ) or _has_electronic_rmb_rows(payload.get("components", []))
+    ) or _has_electronic_rmb_rows(calculation_rows)
     if uses_rmb_contract:
         fx = positive_value(snapshot.get("fx", {}).get("rmb_hkd"), "RMB/HKD 汇率")
         component_rmb, deductible_input_tax_rmb = _component_cost_rmb(
-            payload.get("components", []),
-            "电子零件",
+            calculation_rows,
+            "电子快捷报价" if str(payload.get("quote_mode", "detail")) == "quick" else "电子零件",
             fx,
             result["line_breakdown"],
         )
@@ -734,7 +875,7 @@ def _electronic(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[
         }
         return
 
-    component = _component_cost(payload.get("components", []), "电子零件", result["line_breakdown"])
+    component = _component_cost(calculation_rows, "电子零件", result["line_breakdown"])
     extras = sum(
         (
             decimal_value(payload.get(field), label)
@@ -1039,6 +1180,52 @@ def _slush(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
     result["totals"] = {"total_hkd": decimal_text(total), "total_rmb": decimal_text(total_rmb)}
 
 
+def _hair(payload: dict[str, Any], result: dict[str, Any]) -> None:
+    total = ZERO
+    lines = payload.get("lines", []) or []
+    if not isinstance(lines, list):
+        raise CalculationInputError("车发明细格式无效")
+    if not lines:
+        result["warnings"].append(
+            _warning("hair_lines_empty", "车发部分至少需要一行完整明细")
+        )
+    for index, row in enumerate(lines):
+        if not isinstance(row, dict):
+            raise CalculationInputError(f"车发第 {index + 1} 行格式无效")
+        name = str(row.get("name") or row.get("item") or "").strip()
+        craft = str(row.get("craft") or row.get("process") or "").strip()
+        weight_g = decimal_value(row.get("weight_g"), "车发重量")
+        unit_price_hkd = decimal_value(row.get("unit_price_hkd"), "车发单价")
+        unit = str(row.get("unit") or "").strip()
+        if (
+            not name
+            or not craft
+            or weight_g <= ZERO
+            or unit_price_hkd <= ZERO
+            or not unit
+        ):
+            result["warnings"].append(
+                _warning(
+                    "hair_line_incomplete",
+                    f"车发第 {index + 1} 行须填写名称、工艺、正数重量、正数 HKD 单价和单位",
+                )
+            )
+        total += unit_price_hkd
+        result["line_breakdown"].append({
+            "kind": "hair",
+            "item": name,
+            "craft": craft,
+            "weight_g": decimal_text(weight_g),
+            "unit_price_hkd": decimal_text(unit_price_hkd),
+            "unit": unit,
+            "remark": str(row.get("remark") or row.get("note") or ""),
+            "formula": "unit_price_hkd",
+            "amount_hkd": decimal_text(unit_price_hkd),
+        })
+    result["currency_totals"]["HKD"] = decimal_text(total)
+    result["totals"] = {"total_hkd": decimal_text(total)}
+
+
 def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
     fx = positive_value(snapshot.get("fx", {}).get("rmb_hkd"), "RMB/HKD 汇率")
     if str(payload.get("quote_mode", "detail")) == "quick":
@@ -1266,8 +1453,8 @@ def _sales_packaging(
                 raise CalculationInputError(f"纸箱第 {index + 1} 行平卡 {flat_index + 1} 格式无效")
             flat_length = positive_value(flat.get("length_in"), f"平卡第 {flat_index + 1} 行长度")
             flat_width = positive_value(flat.get("width_in"), f"平卡第 {flat_index + 1} 行宽度")
-            flat_qty = decimal_value(flat.get("quantity"), f"平卡第 {flat_index + 1} 行数量", "1")
-            flat_total += (flat_length + 1) * (flat_width + 1) * 2 * flat_card_factor / 1000 * flat_qty
+            flat_qty = positive_value(flat.get("quantity"), f"平卡第 {flat_index + 1} 行用量", "1")
+            flat_total += flat_length * flat_width * flat_card_factor * flat_qty / 1000
         per_piece = (carton_price + flat_total) / qty_per_carton
         cuft = length * width * height / 1728
         carton_total_hkd += per_piece
@@ -1315,11 +1502,14 @@ def _sales_packaging_materials(
         if category not in allowed_categories:
             raise CalculationInputError(f"包装材料第 {index + 1} 行类别无效")
         quantity = decimal_value(row.get("quantity"), f"包装材料第 {index + 1} 行用量")
-        unit_price_rmb = decimal_value(row.get("unit_price_rmb"), f"包装材料第 {index + 1} 行人民币单价")
+        unit_price_rmb, unit_price_hkd, source_currency = dual_currency_unit_prices(
+            row,
+            fx,
+            f"包装材料第 {index + 1} 行",
+        )
         tax_rate = decimal_value(row.get("tax_rate_percent"), f"包装材料第 {index + 1} 行税点")
         if tax_rate > Decimal("100"):
             raise CalculationInputError(f"包装材料第 {index + 1} 行税点不能大于 100%")
-        unit_price_hkd = unit_price_rmb / fx
         amount_rmb = quantity * unit_price_rmb
         amount_hkd = quantity * unit_price_hkd
         total_rmb += amount_rmb
@@ -1333,10 +1523,16 @@ def _sales_packaging_materials(
             "quantity": decimal_text(quantity),
             "unit_price_rmb": decimal_text(unit_price_rmb),
             "unit_price_hkd": decimal_text(unit_price_hkd),
+            "unit_price_source_currency": source_currency,
             "tax_rate_percent": decimal_text(tax_rate),
             "amount_rmb": decimal_text(amount_rmb),
             "amount_hkd": decimal_text(amount_hkd),
             "remark": str(row.get("remark", "")),
+            "formula": (
+                "用量 × 单价 HKD；RMB = HKD × 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+                if source_currency == "HKD"
+                else "用量 × 单价 RMB ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+            ),
         })
     return total_hkd, total_rmb
 
@@ -1350,11 +1546,17 @@ def _sales_freight_options(
     if freight_source is None:
         return []
     if not isinstance(freight_source, dict):
-        raise CalculationInputError("运费计算格式无效")
-    freight_enabled = freight_source.get("enabled", True)
+        raise CalculationInputError("运费与吊柜费计算格式无效")
+    legacy_enabled = freight_source.get("enabled", True)
+    if not isinstance(legacy_enabled, bool):
+        raise CalculationInputError("是否启用运输费用计算必须为布尔值")
+    freight_enabled = freight_source.get("freight_enabled", legacy_enabled) if legacy_enabled else False
+    lifting_enabled = freight_source.get("lifting_enabled", legacy_enabled) if legacy_enabled else False
     if not isinstance(freight_enabled, bool):
         raise CalculationInputError("是否启用运费计算必须为布尔值")
-    if not freight_enabled:
+    if not isinstance(lifting_enabled, bool):
+        raise CalculationInputError("是否启用吊柜费计算必须为布尔值")
+    if not freight_enabled and not lifting_enabled:
         return []
     cartons = payload.get("cartons", []) or []
     if not cartons:
@@ -1378,16 +1580,39 @@ def _sales_freight_options(
     if not isinstance(cost_defaults, dict):
         cost_defaults = {}
 
+    route_rows = snapshot_freight.get("routes")
+    if not isinstance(route_rows, list) or not route_rows:
+        route_rows = [
+            {
+                "route_key": route_key,
+                "route_name": label,
+                "capacity_key": capacity_key,
+                "freight_hkd": cost_defaults.get(
+                    default_cost_key,
+                    DEFAULT_FREIGHT["cost_hkd"][default_cost_key],
+                ),
+            }
+            for route_key, label, capacity_key, _default_capacity_key, default_cost_key
+            in FREIGHT_ROUTE_DEFINITIONS
+        ]
+
     options: list[dict[str, Any]] = []
-    for route_key, label, capacity_key, default_capacity_key, default_cost_key in FREIGHT_ROUTE_DEFINITIONS:
+    for row in route_rows:
+        if not isinstance(row, dict):
+            continue
+        route_key = str(row.get("route_key", "")).strip()
+        label = str(row.get("route_name", "")).strip()
+        capacity_key = str(row.get("capacity_key", "")).strip()
+        default_capacity_key = FREIGHT_CAPACITY_DEFAULT_KEYS.get(capacity_key)
+        if not route_key or not label or default_capacity_key is None:
+            continue
         capacity_default = capacity_defaults.get(
             default_capacity_key,
             DEFAULT_FREIGHT["capacity_cuft"][default_capacity_key],
         )
-        cost_default = cost_defaults.get(
-            default_cost_key,
-            DEFAULT_FREIGHT["cost_hkd"][default_cost_key],
-        )
+        cost_default = row.get("freight_hkd", "0")
+        has_lifting_fee = "lifting_hkd" in row
+        lifting_default = row.get("lifting_hkd", "0")
         capacity_cuft = positive_value(
             freight_source.get(capacity_key),
             f"{label}容量",
@@ -1395,16 +1620,34 @@ def _sales_freight_options(
         )
         if capacity_cuft != capacity_cuft.to_integral_value():
             raise CalculationInputError(f"{label}容量必须为整数")
-        freight_cost_hkd = decimal_value(
-            freight_source.get(route_key),
-            f"{label}运费及吊柜费",
-            str(cost_default),
+        freight_cost_hkd = (
+            decimal_value(
+                freight_source.get(route_key),
+                f"{label}运费",
+                str(cost_default),
+            )
+            if freight_enabled
+            else ZERO
         )
+        lifting_cost_hkd = (
+            decimal_value(
+                lifting_default,
+                f"{label}吊柜费",
+            )
+            if lifting_enabled
+            else ZERO
+        )
+        if freight_cost_hkd < ZERO:
+            raise CalculationInputError(f"{label}运费不能小于 0")
+        if lifting_cost_hkd < ZERO:
+            raise CalculationInputError(f"{label}吊柜费不能小于 0")
         total_cartons = max(
             (capacity_cuft / carton_cuft).quantize(Decimal("1"), rounding=ROUND_HALF_UP),
             Decimal("1"),
         )
-        per_piece_hkd = freight_cost_hkd / total_cartons / qty_per_carton
+        freight_per_piece_hkd = freight_cost_hkd / total_cartons / qty_per_carton
+        lifting_per_piece_hkd = lifting_cost_hkd / total_cartons / qty_per_carton
+        per_piece_hkd = freight_per_piece_hkd + lifting_per_piece_hkd
         option = {
             "kind": "freight_reference",
             "reference_only": True,
@@ -1415,9 +1658,15 @@ def _sales_freight_options(
             "carton_cuft": decimal_text(carton_cuft),
             "qty_per_carton": decimal_text(qty_per_carton),
             "freight_cost_hkd": decimal_text(freight_cost_hkd),
+            "lifting_cost_hkd": decimal_text(lifting_cost_hkd),
+            "has_lifting_fee": has_lifting_fee,
+            "freight_enabled": freight_enabled,
+            "lifting_enabled": lifting_enabled,
             "total_cartons": decimal_text(total_cartons),
+            "freight_per_piece_hkd": decimal_text(freight_per_piece_hkd),
+            "lifting_per_piece_hkd": decimal_text(lifting_per_piece_hkd),
             "per_piece_hkd": decimal_text(per_piece_hkd),
-            "formula": "运费及吊柜费 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量",
+            "formula": "已启用的运费与吊柜费分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量；未启用项按 0 计算",
         }
         options.append(option)
         result["line_breakdown"].append(option)
@@ -1426,6 +1675,87 @@ def _sales_freight_options(
 
 def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any], context: dict[str, Any]) -> None:
     base_factory_price = decimal_value(context.get("factory_price_hkd"), "出厂价")
+    shipping_source = payload.get("shipping", {})
+    if shipping_source in (None, ""):
+        shipping_source = {}
+    elif not isinstance(shipping_source, dict):
+        raise CalculationInputError("业务报价系数格式无效")
+    if "markup_x" in shipping_source:
+        markup_x = decimal_value(shipping_source.get("markup_x"), "当前码数")
+        if markup_x < Decimal("0.01") or markup_x > Decimal("9.99"):
+            raise CalculationInputError("当前码数必须在 0.01 至 9.99 之间")
+    markup_tiers = shipping_source.get("markup_tiers")
+    tier_moqs: list[Decimal] = []
+    if markup_tiers is not None:
+        if not isinstance(markup_tiers, list) or not 1 <= len(markup_tiers) <= 10:
+            raise CalculationInputError("分段码数必须包含 1 至 10 个 MOQ 档位")
+        previous_moq = ZERO
+        for index, tier in enumerate(markup_tiers):
+            if not isinstance(tier, dict):
+                raise CalculationInputError(f"分段码数第 {index + 1} 档格式无效")
+            moq = decimal_value(tier.get("moq"), f"分段码数第 {index + 1} 档 MOQ")
+            markup_x = decimal_value(tier.get("markup_x"), f"分段码数第 {index + 1} 档码数")
+            if moq <= 0 or moq != moq.to_integral_value():
+                raise CalculationInputError(f"分段码数第 {index + 1} 档 MOQ 必须是正整数")
+            if moq <= previous_moq:
+                raise CalculationInputError("分段码数 MOQ 必须由小到大排列，且不能重复")
+            if markup_x < Decimal("0.01") or markup_x > Decimal("9.99"):
+                raise CalculationInputError(f"分段码数第 {index + 1} 档码数必须在 0.01 至 9.99 之间")
+            previous_moq = moq
+            tier_moqs.append(moq)
+    if "selected_markup_moq" in shipping_source:
+        selected_moq = decimal_value(shipping_source.get("selected_markup_moq"), "本单采用 MOQ")
+        if selected_moq not in tier_moqs:
+            raise CalculationInputError("本单采用的 MOQ 必须来自分段码数档位")
+    misc_ratio = decimal_value(shipping_source.get("misc_ratio"), "杂项系数", str(snapshot.get("misc_ratio", "0.02")))
+    if misc_ratio < 0 or misc_ratio > 1:
+        raise CalculationInputError("杂项系数必须在 0% 至 100% 之间")
+    testing_fee_total_usd = decimal_value(payload.get("testing_fee_total_usd"), "业务部测试费用 USD")
+    if testing_fee_total_usd < ZERO:
+        raise CalculationInputError("业务部测试费用 USD 不能小于 0")
+    testing_fee_moq_sources = payload.get("testing_fee_moqs")
+    if testing_fee_moq_sources is None:
+        legacy_testing_fee_moq = payload.get("testing_fee_moq")
+        testing_fee_moq_sources = [] if legacy_testing_fee_moq in (None, "") else [legacy_testing_fee_moq]
+    if not isinstance(testing_fee_moq_sources, list):
+        raise CalculationInputError("业务部测试费 MOQ 档位格式无效")
+    testing_fee_tiers: list[dict[str, str]] = []
+    seen_testing_fee_moqs: set[Decimal] = set()
+    for index, source in enumerate(testing_fee_moq_sources):
+        moq = decimal_value(source, f"业务部测试费第 {index + 1} 档 MOQ")
+        if moq < ZERO or moq != moq.to_integral_value():
+            raise CalculationInputError(f"业务部测试费第 {index + 1} 档 MOQ 必须是正整数")
+        if testing_fee_total_usd > ZERO and moq <= ZERO:
+            raise CalculationInputError(f"填写业务部测试费用 USD 后，第 {index + 1} 档 MOQ 必须大于 0")
+        if moq <= ZERO:
+            continue
+        if moq in seen_testing_fee_moqs:
+            raise CalculationInputError("业务部测试费 MOQ 不能重复")
+        seen_testing_fee_moqs.add(moq)
+        testing_fee_tiers.append({
+            "moq": decimal_text(moq),
+            "unit_price_usd": decimal_text(testing_fee_total_usd / moq),
+        })
+    if testing_fee_total_usd > ZERO and not testing_fee_tiers:
+        raise CalculationInputError("填写业务部测试费用 USD 后，至少需要一个大于 0 的 MOQ")
+    primary_testing_fee_tier = testing_fee_tiers[0] if testing_fee_tiers else {
+        "moq": decimal_text(ZERO),
+        "unit_price_usd": decimal_text(ZERO),
+    }
+    testing_fee_moq = Decimal(primary_testing_fee_tier["moq"])
+    testing_fee_unit_usd = Decimal(primary_testing_fee_tier["unit_price_usd"])
+    if testing_fee_total_usd > ZERO:
+        result["line_breakdown"].append({
+            "kind": "sales_testing_fee",
+            "owner": "sales",
+            "item": "测试费",
+            "total_usd": decimal_text(testing_fee_total_usd),
+            "moq": decimal_text(testing_fee_moq),
+            "unit_price_usd": decimal_text(testing_fee_unit_usd),
+            "tiers": testing_fee_tiers,
+            "formula": "测试费用 USD ÷ MOQ 数量",
+            "reference_only": True,
+        })
     packaging_material_total_hkd, packaging_material_total_rmb = _sales_packaging_materials(payload, snapshot, result)
     carton_total_hkd, carton_cuft = _sales_packaging(payload, snapshot, result)
     freight_options = _sales_freight_options(payload, snapshot, result)
@@ -1441,6 +1771,15 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
             raise CalculationInputError(f"减税第 {index + 1} 行格式无效")
         code = str(row.get("code", "")).strip()
         category_amount = decimal_value(row.get("amount_hkd"), "减税分类金额")
+        if code == "carton":
+            result["line_breakdown"].append({
+                "kind": "tax",
+                "code": code,
+                "amount_hkd": decimal_text(category_amount),
+                "rate": None,
+                "deduction_hkd": None,
+            })
+            continue
         rate_source = row.get("rate")
         if rate_source in (None, ""):
             if not isinstance(tax_rates, dict) or code not in tax_rates:
@@ -1485,6 +1824,7 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
     result["line_breakdown"].extend({"kind": "shipping_scenario", **row} for row in scenario_results)
     result["currency_totals"]["HKD"] = decimal_text(sales_total_hkd)
     result["currency_totals"]["RMB"] = decimal_text(packaging_material_total_rmb)
+    result["currency_totals"]["USD"] = decimal_text(testing_fee_unit_usd)
     result["totals"] = {
         "base_factory_price_hkd": decimal_text(base_factory_price),
         "factory_price_hkd": decimal_text(factory_price),
@@ -1492,9 +1832,15 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
         "packaging_material_rmb": decimal_text(packaging_material_total_rmb),
         "carton_hkd": decimal_text(carton_total_hkd),
         "carton_cuft": decimal_text(carton_cuft),
+        "testing_fee_total_usd": decimal_text(testing_fee_total_usd),
+        "testing_fee_moqs": [tier["moq"] for tier in testing_fee_tiers],
+        "testing_fee_tiers": testing_fee_tiers,
+        "testing_fee_moq": decimal_text(testing_fee_moq),
+        "testing_fee_unit_usd": decimal_text(testing_fee_unit_usd),
         "freight_options": freight_options,
         "indonesia_freight_hkd": decimal_text(indonesia_freight),
         "additional_tax_hkd": decimal_text(additional_tax),
+        "misc_ratio": decimal_text(misc_ratio),
         "shipping_floor_hkd": decimal_text(shipping_floor),
         "tax_deduction_hkd": decimal_text(tax_deduction),
         "after_tax_cost_hkd": decimal_text(max(factory_price - tax_deduction, ZERO)),
@@ -1536,6 +1882,7 @@ def calculate_section(
         "painting": ("rows", "quick_quote"),
         "slush": ("lines",),
         "sewing": ("groups", "quick_quotes"),
+        "hair": ("lines",),
         "assembly": ("groups",),
     }
     fields = meaningful_fields.get(section_code)
@@ -1564,6 +1911,8 @@ def calculate_section(
         _slush(payload, snapshot, result)
     elif section_code == "sewing":
         _sewing(payload, snapshot, result)
+    elif section_code == "hair":
+        _hair(payload, result)
     elif section_code == "assembly":
         _assembly(payload, snapshot, result)
     elif section_code == "sales":

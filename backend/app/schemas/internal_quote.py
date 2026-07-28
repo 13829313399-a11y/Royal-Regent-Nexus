@@ -15,10 +15,11 @@ InternalQuoteSectionCode = Literal[
     "painting",
     "slush",
     "sewing",
+    "hair",
     "assembly",
 ]
 MANDATORY_SECTION_CODES = ("sales", "engineering", "assembly")
-OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing")
+OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing", "hair")
 SECTION_CODE_ORDER = MANDATORY_SECTION_CODES[:2] + OPTIONAL_SECTION_CODES + MANDATORY_SECTION_CODES[2:]
 
 
@@ -44,6 +45,17 @@ def _positive_decimal_text(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name}必须是有效数字") from error
     if not parsed.is_finite() or parsed <= 0:
         raise ValueError(f"{field_name}必须大于 0")
+    return format(parsed, "f")
+
+
+def _nonnegative_decimal_text(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    try:
+        parsed = Decimal(normalized)
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError(f"{field_name}必须是有效数字") from error
+    if not parsed.is_finite() or parsed < 0:
+        raise ValueError(f"{field_name}不能小于 0")
     return format(parsed, "f")
 
 
@@ -217,11 +229,31 @@ class InternalQuoteMachineBaselineRow(BaseModel):
         return _positive_decimal_text(value, "机型价")
 
 
+class InternalQuoteFreightBaselineRow(BaseModel):
+    route_key: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    route_name: str = Field(min_length=1, max_length=128)
+    capacity_key: Literal["cap_10t", "cap_5t", "cap_40", "cap_20"]
+    freight_hkd: str
+    lifting_hkd: str = "0"
+
+    @field_validator("route_key", "route_name")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("freight_hkd", "lifting_hkd")
+    @classmethod
+    def validate_cost(cls, value: str, info) -> str:
+        label = "吊柜费" if info.field_name == "lifting_hkd" else "运费"
+        return _nonnegative_decimal_text(value, label)
+
+
 class InternalQuotePricingBaselineUpdateRequest(BaseModel):
     revision: int = Field(ge=0)
     workshop_name: str = Field(default="华兴", min_length=1, max_length=128)
     material_prices: list[InternalQuoteMaterialBaselineRow] = Field(min_length=1, max_length=200)
     machine_prices: list[InternalQuoteMachineBaselineRow] = Field(min_length=1, max_length=100)
+    freight_routes: list[InternalQuoteFreightBaselineRow] | None = Field(default=None, min_length=1, max_length=50)
 
     @field_validator("workshop_name")
     @classmethod
@@ -238,6 +270,16 @@ class InternalQuotePricingBaselineUpdateRequest(BaseModel):
         machine_ranges = [row.machine_range.casefold() for row in self.machine_prices]
         if len(machine_ranges) != len(set(machine_ranges)):
             raise ValueError("初始机型价存在重复的机型范围")
+        if self.freight_routes is not None:
+            reserved_keys = {"enabled", "cap_10t", "cap_5t", "cap_40", "cap_20"}
+            route_keys = [row.route_key.lower() for row in self.freight_routes]
+            route_names = [row.route_name.casefold() for row in self.freight_routes]
+            if any(key in reserved_keys for key in route_keys):
+                raise ValueError("运输方案标识不能使用系统保留字段")
+            if len(route_keys) != len(set(route_keys)):
+                raise ValueError("运输方案标识不能重复")
+            if len(route_names) != len(set(route_names)):
+                raise ValueError("运输方案名称不能重复")
         return self
 
 
@@ -249,6 +291,7 @@ class InternalQuotePricingBaselineOut(BaseModel):
     source_type: Literal["default", "custom"]
     material_prices: list[InternalQuoteMaterialBaselineRow]
     machine_prices: list[InternalQuoteMachineBaselineRow]
+    freight_routes: list[InternalQuoteFreightBaselineRow]
     updated_by: str
     updated_by_name: str
     updated_at: str

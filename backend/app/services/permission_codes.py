@@ -41,6 +41,11 @@ CUSTOMER_PRICE_PERMISSION_CODES = (
     "customer_price:compare",
 )
 
+CUSTOMER_ORDER_PERMISSION_CODES = (
+    "customer_order:read",
+    "customer_order:export",
+)
+
 INTERNAL_QUOTE_SECTION_CODES = (
     "sales",
     "engineering",
@@ -49,6 +54,7 @@ INTERNAL_QUOTE_SECTION_CODES = (
     "painting",
     "slush",
     "sewing",
+    "hair",
     "assembly",
 )
 
@@ -91,6 +97,7 @@ BUSINESS_PERMISSION_CODES = (
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
+    *CUSTOMER_ORDER_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
 

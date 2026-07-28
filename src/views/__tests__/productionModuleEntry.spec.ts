@@ -13,6 +13,26 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
+  it('wires the injection scheduling hub to the front-end preview route', () => {
+    const moduleBlock = enterpriseSource.match(
+      /id: 'injection-scheduling'[\s\S]*?\n      },/,
+    )?.[0]
+
+    expect(moduleBlock).toBeDefined()
+    expect(moduleBlock).toContain("title: '注塑排产中枢'")
+    expect(moduleBlock).toContain("status: '前端预览'")
+    expect(moduleBlock).toContain("stats: '华兴 Mock 快照 · 后端未接入'")
+    expect(moduleBlock).toContain(
+      "route: getDepartmentRoute('production', 'injection-scheduling')",
+    )
+    expect(moduleBlock).not.toContain('href:')
+    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).toContain("name: 'injection-scheduling-hub'")
+    expect(routerSource).toContain("InjectionSchedulingHubView.vue")
+    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,280}fullPage: true/)
+    expect(routerSource).not.toContain('injection_schedule:')
+  })
+
   it('keeps the molding sample production task wired to the real task page', () => {
     expect(enterpriseSource).toMatch(/id: 'molding-sample-production-task'/)
     expect(enterpriseSource).toMatch(/title: '啤办生产任务单'/)
@@ -153,8 +173,8 @@ describe('production module entry', () => {
     expect(enterpriseSource).not.toMatch(/id: 'customer-delivery'/)
     expect(enterpriseSource).not.toMatch(/title: '客户交付风险'/)
     expect(enterpriseSource).toMatch(/id: 'po-schedule-intake'/)
-    expect(enterpriseSource).toMatch(/title: 'PO入排期'/)
-    expect(enterpriseSource).toMatch(/接收客户 PO、校验数量与交期，并提交 PMC 和生产计划纳入排期/)
+    expect(enterpriseSource).toMatch(/title: '客户订单中心'/)
+    expect(enterpriseSource).toMatch(/导入客户PO与客户排期，沉淀统一订单数据，并按月份形成可供生产部门调用的厂区总排期/)
     expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/po-schedule-intake'/)
     expect(enterpriseSource).toMatch(/role: '车间业务主管'/)
     expect(enterpriseSource).toMatch(/role: '车间业务员'/)
@@ -168,6 +188,9 @@ describe('production module entry', () => {
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/quote-center\/customer-price-conversion'/)
     expect(routerSource).toMatch(/path: '\/modules\/sales-business\/order-approval'/)
+    expect(routerSource).toMatch(/path: '\/modules\/sales-business\/po-schedule-intake'/)
+    expect(routerSource).toMatch(/name: 'customer-order-center'/)
+    expect(routerSource).toMatch(/CustomerOrderCenterView\.vue/)
     expect(routerSource).toMatch(/CustomerPriceConversionView\.vue/)
 
     expect(customerPriceConversionViewSource).toMatch(/QuoteCenterPanel/)

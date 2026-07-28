@@ -82,6 +82,7 @@ SECTION_DEFINITIONS = (
     ("painting", "喷油部", ("production", "painting")),
     ("slush", "搪胶部", ("slush",)),
     ("sewing", "车缝部", ("sewing",)),
+    ("hair", "车发部", ("hair",)),
     ("assembly", "装配部", ("assembly",)),
 )
 SECTION_NAMES = {code: name for code, name, _ in SECTION_DEFINITIONS}
@@ -758,6 +759,7 @@ def _cost_context(
         "indonesia_freight_hkd": indonesia_freight,
         "slush_hkd": value("slush"),
         "sewing_hkd": value("sewing"),
+        "hair_hkd": value("hair"),
         "carton_hkd": value("sales", "carton_hkd") if sales_has_cartons else value("engineering", "carton_hkd"),
         "mold_amortization_usd": value("engineering", "mold_amortization_usd"),
     }
@@ -778,10 +780,58 @@ def _summary_decimal(value: object, default: str = "0") -> Decimal:
     return parsed if parsed.is_finite() else Decimal(default)
 
 
+def _summary_markup_tiers(
+    shipping_source: dict[str, object],
+    fallback_markup: Decimal,
+    quantity: object,
+) -> tuple[list[dict[str, object]], Decimal, Decimal]:
+    default_moqs = (Decimal("3000"), Decimal("5000"), Decimal("10000"))
+    raw_tiers = shipping_source.get("markup_tiers", [])
+    tiers: list[tuple[Decimal, Decimal]] = []
+    if isinstance(raw_tiers, list):
+        for item in raw_tiers:
+            if not isinstance(item, dict):
+                tiers = []
+                break
+            moq = _summary_decimal(item.get("moq"))
+            markup = _summary_decimal(item.get("markup_x"), decimal_text(fallback_markup))
+            if moq <= 0 or moq != moq.to_integral_value() or markup < Decimal("0.01") or markup > Decimal("9.99"):
+                tiers = []
+                break
+            tiers.append((moq, markup))
+    tiers.sort(key=lambda item: item[0])
+    if not tiers or any(tiers[index][0] <= tiers[index - 1][0] for index in range(1, len(tiers))):
+        tiers = [(moq, fallback_markup) for moq in default_moqs]
+
+    selected_moq = _summary_decimal(shipping_source.get("selected_markup_moq"))
+    selected_tier = next(((moq, markup) for moq, markup in tiers if moq == selected_moq), None)
+    if selected_tier is not None:
+        active_moq, active_markup = selected_tier
+    else:
+        quote_quantity = _summary_decimal(quantity, "10000")
+        active_moq, active_markup = tiers[0]
+        for moq, markup in tiers:
+            if moq <= quote_quantity:
+                active_moq, active_markup = moq, markup
+    return (
+        [
+            {
+                "moq": decimal_text(moq),
+                "markup": decimal_text(markup),
+                "is_active": moq == active_moq,
+            }
+            for moq, markup in tiers
+        ],
+        active_moq,
+        active_markup,
+    )
+
+
 def _rr2_cost_summary(
     sections: list[InternalQuoteSection],
     cost_context: dict[str, Decimal],
     snapshot: dict[str, object],
+    quote_quantity: object = 10000,
 ) -> dict[str, object]:
     """Build the four rr2 summary tables from saved authoritative calculations.
 
@@ -898,6 +948,12 @@ def _rr2_cost_summary(
         paint_material = painting_total * Decimal("0.30")
     slush_total = _summary_decimal(totals("slush").get("total_hkd"))
     sewing_totals = totals("sewing")
+    hair_section = by_code.get("hair")
+    hair_total = (
+        _summary_decimal(totals("hair").get("total_hkd"))
+        if hair_section is not None and hair_section.is_required
+        else _summary_decimal(sewing_totals.get("hair_hkd"))
+    )
     assembly_totals = totals("assembly")
     hardware_total = _summary_decimal(totals("engineering").get("hardware_hkd"))
     electronic_total = _summary_decimal(totals("electronic").get("total_hkd"))
@@ -911,10 +967,18 @@ def _rr2_cost_summary(
     legacy_scenarios = sales_payload.get("scenarios", [])
     legacy_scenarios = legacy_scenarios if isinstance(legacy_scenarios, list) else []
     first_scenario = legacy_scenarios[0] if legacy_scenarios and isinstance(legacy_scenarios[0], dict) else {}
-    markup = _summary_decimal(
+    fallback_markup = _summary_decimal(
         shipping_source.get("markup_x", first_scenario.get("markup", snapshot.get("markup", "1.2"))),
         "1.2",
     )
+    markup_tiers, active_markup_moq, markup = _summary_markup_tiers(
+        shipping_source,
+        fallback_markup,
+        quote_quantity,
+    )
+    misc_ratio = _summary_decimal(shipping_source.get("misc_ratio", snapshot.get("misc_ratio", "0.02")), "0.02")
+    if misc_ratio < 0 or misc_ratio > 1:
+        misc_ratio = Decimal("0.02")
     settlement = _summary_decimal(
         shipping_source.get("divisor", first_scenario.get("settlement", snapshot.get("settlement", "0.98"))),
         "0.98",
@@ -935,13 +999,30 @@ def _rr2_cost_summary(
 
     freight_source = sales_payload.get("freight_calc", {})
     freight_source = freight_source if isinstance(freight_source, dict) else {}
-    freight_enabled = freight_source.get("enabled", True) is not False
+    legacy_transport_enabled = freight_source.get("enabled", True) is not False
+    freight_charge_enabled = legacy_transport_enabled and freight_source.get("freight_enabled", True) is not False
+    lifting_charge_enabled = legacy_transport_enabled and freight_source.get("lifting_enabled", True) is not False
+    freight_enabled = freight_charge_enabled or lifting_charge_enabled
     freight_options = sales_totals.get("freight_options", [])
     freight_options = [row for row in freight_options if isinstance(row, dict)] if isinstance(freight_options, list) else []
-    yt40 = next((row for row in freight_options if str(row.get("key", "")) == "yt40"), None)
-    yt40_per_piece = _summary_decimal(yt40.get("per_piece_hkd")) if yt40 else Decimal("0")
-    freight = yt40_per_piece * freight_share if freight_enabled else Decimal("0")
-    cabinet = yt40_per_piece * lift_share if freight_enabled else Decimal("0")
+
+    def transport_parts(row: dict[str, object]) -> tuple[Decimal, Decimal]:
+        if row.get("has_lifting_fee") is True:
+            return (
+                _summary_decimal(row.get("freight_per_piece_hkd")) if freight_charge_enabled else Decimal("0"),
+                _summary_decimal(row.get("lifting_per_piece_hkd")) if lifting_charge_enabled else Decimal("0"),
+            )
+        legacy_total = _summary_decimal(row.get("per_piece_hkd"))
+        return (
+            legacy_total * freight_share if freight_charge_enabled else Decimal("0"),
+            legacy_total * lift_share if lifting_charge_enabled else Decimal("0"),
+        )
+
+    yt40 = next((
+        row for row in freight_options
+        if str(row.get("route_key") or row.get("key") or "") == "yt40"
+    ), None)
+    freight, cabinet = transport_parts(yt40) if freight_enabled and yt40 else (Decimal("0"), Decimal("0"))
 
     t1_values = {
         "base_price": factory_price * markup,
@@ -949,7 +1030,7 @@ def _rr2_cost_summary(
         "dom_mat": domestic_material,
         "blow": _summary_decimal(molding_totals.get("blow_hkd")),
         "slush": slush_total,
-        "sewing_hair": _summary_decimal(sewing_totals.get("hair_hkd")),
+        "sewing_hair": hair_total,
         "sewing_cloth": _summary_decimal(sewing_totals.get("clothes_hkd")),
         "hardware": max(hardware_total - hardware_motor, Decimal("0")),
         "electronic": max(electronic_total - electronic_motor, Decimal("0")),
@@ -998,7 +1079,9 @@ def _rr2_cost_summary(
     tax_specs = (
         ("tax13", "含税13%类成本", tax_13_cost, None),
         ("labor13", "人工类13%", injection_labor + t3_values["painting_labor"] + t3_values["assembly_labor"], None),
-        ("carton", "纸箱类", t2_values["carton"], _summary_decimal(tax_rates.get("carton"), "0.10") * 100),
+        # Carton is carried as a cost category only.  It is intentionally
+        # excluded from tax deduction in the authoritative summary.
+        ("carton", "纸箱类", t2_values["carton"], None),
         ("tax1", "含税1%", t2_values["plating"], _summary_decimal(tax_rates.get("tax_1_percent"), "0.0099") * 100),
         ("slush3", "搪胶类3%", t1_values["slush"], _summary_decimal(tax_rates.get("slush"), "0.03") * 100),
         ("sewhair13", "车发类13%", t1_values["sewing_hair"], _summary_decimal(tax_rates.get("sewing_hair"), "0.115") * 100),
@@ -1050,18 +1133,18 @@ def _rr2_cost_summary(
     shipping_floor = factory_price + additional_tax
     shipping_rows: list[dict[str, str]] = []
     if freight_enabled:
-        option_rows: list[tuple[str, Decimal, Decimal]] = [("出厂价", Decimal("0"), Decimal("0"))]
+        option_rows: list[tuple[str, Decimal, Decimal, Decimal]] = [
+            ("出厂价", Decimal("0"), Decimal("0"), Decimal("0"))
+        ]
         option_rows.extend(
             (
                 str(row.get("item") or row.get("label") or "出货场景"),
-                _summary_decimal(row.get("per_piece_hkd")),
+                *transport_parts(row),
                 _summary_decimal(row.get("total_cartons")),
             )
             for row in freight_options
         )
-        for name, per_piece, total_cartons in option_rows:
-            row_freight = per_piece * freight_share
-            row_lift = per_piece * lift_share
+        for name, row_freight, row_lift, total_cartons in option_rows:
             with_freight = shipping_floor + row_freight + row_lift
             after_markup = with_freight * markup
             after_settlement = after_markup / settlement
@@ -1101,9 +1184,14 @@ def _rr2_cost_summary(
         },
         "shipping_pricing": {
             "enabled": freight_enabled,
+            "freight_enabled": freight_charge_enabled,
+            "lifting_enabled": lifting_charge_enabled,
             "freight_share_percent": decimal_text(freight_share * 100),
             "lift_share_percent": decimal_text(lift_share * 100),
             "markup": decimal_text(markup),
+            "active_markup_moq": decimal_text(active_markup_moq),
+            "markup_tiers": markup_tiers,
+            "misc_ratio": decimal_text(misc_ratio),
             "settlement": decimal_text(settlement),
             "factory_price_hkd": decimal_text(factory_price),
             "additional_tax_hkd": decimal_text(additional_tax),
@@ -2870,6 +2958,7 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
         participating_sections,
         cost_context,
         _json_object(reference.snapshot_json),
+        quote.qty,
     )
     section_summaries: list[dict[str, object]] = []
     warnings: list[dict[str, object]] = []

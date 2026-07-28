@@ -11,6 +11,7 @@ export const P4_SECTION_CODES = [
   'painting',
   'slush',
   'sewing',
+  'hair',
   'assembly',
 ] as const
 
@@ -264,6 +265,21 @@ export function parseP4InternalQuoteArtifact(
     const sectionRows = chunkRows.filter((row) => row.code === code)
     const metadata = sectionRows[0]
     if (!metadata) {
+      if (code === 'hair') {
+        sections.hair = {
+          code: 'hair',
+          name: '车发部',
+          status: 'draft',
+          revision: 0,
+          calculationStatus: 'pending',
+          dependencyStatus: 'current',
+          calculationHash: '',
+          isRequired: false,
+          payload: {},
+          calculation: {},
+        }
+        return
+      }
       throw new P4ArtifactValidationError(`P4 结构化数据缺少 ${code} 分段`)
     }
     if (sectionRows.some((row) => (

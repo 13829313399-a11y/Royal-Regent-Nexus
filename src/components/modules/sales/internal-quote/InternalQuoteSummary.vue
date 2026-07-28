@@ -68,12 +68,12 @@ const versionCandidates = computed(() => quoteStore.versionCandidates[quote.valu
 const componentLabels: Record<string, string> = {
   molding_hkd: '啤机', painting_hkd: '喷油', electronic_hkd: '电子', hardware_hkd: '五金', auxiliary_hkd: '辅料',
   packaging_material_hkd: '包装材料', assembly_hkd: '组装人工', packing_labor_hkd: '包装人工', indonesia_freight_hkd: '印尼运费',
-  slush_hkd: '搪胶', sewing_hkd: '车缝', carton_hkd: '纸箱',
+  slush_hkd: '搪胶', sewing_hkd: '车缝', hair_hkd: '车发', carton_hkd: '纸箱',
 }
 const costColors = ['#0f766e', '#14b8a6', '#2563eb', '#7c3aed', '#d97706', '#dc2626', '#0891b2', '#65a30d', '#475569', '#c2410c', '#0d9488', '#64748b']
 const departmentColors: Record<string, string> = {
   sales: '#0f766e', engineering: '#2563eb', electronic: '#7c3aed', molding: '#d97706',
-  painting: '#dc2626', slush: '#0891b2', sewing: '#65a30d', assembly: '#475569',
+  painting: '#dc2626', slush: '#0891b2', sewing: '#65a30d', hair: '#c2410c', assembly: '#475569',
 }
 const componentEntries = computed(() => Object.entries(quote.value.summaryComponents)
   .map(([key, amount], index) => ({ key, label: componentLabels[key] ?? key, amount, color: costColors[index % costColors.length] }))
@@ -233,7 +233,7 @@ watch([quoteId, canFinalApprove], () => {
       <header><div><CircleDollarSign aria-hidden="true" /><span><strong>权威成本分布</strong><small>分部门金额与成本项目并列展示；正式数据均读取服务端计算快照</small></span></div><em>{{ quote.formulaVersion }}</em></header>
       <div class="quote-cost-overview-body">
         <article class="quote-distribution-card department-distribution-card">
-          <header><span><strong>部门金额分布</strong><small>八个责任分段固定展示，未参与或尚未形成有效计算时金额为 0</small></span><em>HKD / PCS</em></header>
+          <header><span><strong>部门金额分布</strong><small>九个责任分段固定展示，未参与或尚未形成有效计算时金额为 0</small></span><em>HKD / PCS</em></header>
           <div class="quote-donut-wrap"><div class="quote-donut" :style="departmentDonutStyle"><span><b>部门合计</b>{{ departmentTotalHkd.toFixed(2) }}</span></div></div>
           <dl class="compact-cost-list"><div v-for="item in departmentEntries" :key="item.key" :class="{ inactive: !item.isRequired || item.amount === 0 }"><dt><i :style="{ background: item.color }" />{{ item.label }}<small v-if="!item.isRequired">未参与</small></dt><dd>{{ item.amount.toFixed(4) }}</dd></div></dl>
         </article>
@@ -247,12 +247,12 @@ watch([quoteId, canFinalApprove], () => {
     </section>
 
     <section v-if="shippingPricing.enabled" class="quote-logistics-panel">
-      <header><div><Ship aria-hidden="true" /><span><strong>出货价算价</strong><small>业务启用运费时展示；客户自提时本板块完全隐藏</small></span></div><em>出货数量 {{ quote.quantity.toLocaleString('zh-CN') }} PCS</em></header>
+      <header><div><Ship aria-hidden="true" /><span><strong>出货价算价</strong><small>已启用：{{ [shippingPricing.freightEnabled ? '运费' : '', shippingPricing.liftingEnabled ? '吊柜费' : ''].filter(Boolean).join('、') }}</small></span></div><em>出货数量 {{ quote.quantity.toLocaleString('zh-CN') }} PCS</em></header>
       <p class="shipping-formula">出货底价 = 出厂价 {{ shippingPricing.factoryPriceHkd.toFixed(4) }} + 附加税 {{ shippingPricing.additionalTaxHkd.toFixed(4) }} = <b>{{ shippingPricing.shippingFloorHkd.toFixed(4) }} HKD</b>；各场景再 × 码点 ÷ 找数，模具分摊在 USD 层加入。</p>
       <div class="business-table-scroll shipping-price-scroll"><table class="business-summary-table shipping-price-table"><thead><tr><th>项</th><th v-for="row in shippingPricing.rows" :key="row.name">{{ row.name }}</th></tr></thead><tbody>
         <tr><th>出货底价 HKD</th><td v-for="row in shippingPricing.rows" :key="`floor-${row.name}`">{{ row.shippingFloorHkd.toFixed(4) }}</td></tr>
-        <tr><th>运费（{{ shippingPricing.freightSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`freight-${row.name}`">{{ row.freightHkd.toFixed(4) }}</td></tr>
-        <tr><th>吊柜费（{{ shippingPricing.liftSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`lift-${row.name}`">{{ row.liftHkd.toFixed(4) }}</td></tr>
+        <tr v-if="shippingPricing.freightEnabled"><th>运费（{{ shippingPricing.freightSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`freight-${row.name}`">{{ row.freightHkd.toFixed(4) }}</td></tr>
+        <tr v-if="shippingPricing.liftingEnabled"><th>吊柜费（{{ shippingPricing.liftSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`lift-${row.name}`">{{ row.liftHkd.toFixed(4) }}</td></tr>
         <tr class="calculated"><th>含运 HKD</th><td v-for="row in shippingPricing.rows" :key="`ship-${row.name}`">{{ row.withFreightHkd.toFixed(4) }}</td></tr>
         <tr><th>码点 ×（{{ shippingPricing.markup.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`markup-${row.name}`">{{ row.afterMarkupHkd.toFixed(4) }}</td></tr>
         <tr><th>找数 ÷（{{ shippingPricing.settlement.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`settlement-${row.name}`">{{ row.afterSettlementHkd.toFixed(4) }}</td></tr>

@@ -9,7 +9,7 @@ import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
-import { cloneInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { internalQuoteApi, type InternalQuoteHeaderUpdateRequest } from '@/api/internalQuote'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
@@ -44,7 +44,7 @@ const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
-const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing']
+const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing', 'hair']
 const availableOptionalSections = computed(() => quote.value.sections.filter((section) => !section.isRequired && optionalSectionCodes.includes(section.code)))
 const activeSectionCode = computed<InternalQuoteSectionCode>(() => {
   const requested = String(route.query.section ?? '') as InternalQuoteSectionCode
@@ -71,9 +71,9 @@ const salesSection = computed(() => quote.value.sections.find((section) => secti
 const canEditMarkup = computed(() => canEditFx.value)
 const markupBlockedReason = computed(() => {
   if (!canEditMarkup.value) return ''
-  if (!salesSection.value) return '业务部分段不存在，暂时无法保存码数。'
+  if (!salesSection.value) return '业务部分段不存在，暂时无法保存码数与杂项。'
   if (['draft', 'rejected'].includes(salesSection.value.status)) return ''
-  return '业务部已提交或审核完成；请先重开业务部分段，再保存新的码数。'
+  return '业务部已提交或审核完成；请先重开业务部分段，再保存新的码数与杂项。'
 })
 const canManageParticipation = computed(() => quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
 const canEditHeader = computed(() => (
@@ -131,7 +131,7 @@ async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
   }
 }
 
-async function updateQuoteMarkup(payload: { markup: string }) {
+async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; markup: string }>; selectedMoq: string; miscRatio: string }) {
   markupMessage.value = ''
   markupError.value = ''
   message.value = ''
@@ -140,31 +140,55 @@ async function updateQuoteMarkup(payload: { markup: string }) {
     markupError.value = markupBlockedReason.value || '当前账号没有该厂区的业务部编辑权限。'
     return
   }
-  const markup = Number(payload.markup)
-  if (!Number.isFinite(markup) || markup < .01 || markup > 9.99) {
-    markupError.value = '码数必须在 0.01 至 9.99 之间。'
+  const markupTiers: SalesMarkupTier[] = payload.markupTiers.map((tier) => ({
+    moq: Number(tier.moq),
+    markup_x: Number(tier.markup),
+  }))
+  const selectedMoq = Number(payload.selectedMoq)
+  const miscRatio = Number(payload.miscRatio)
+  if (markupTiers.length !== 3
+    || markupTiers.some((tier) => !Number.isInteger(tier.moq) || tier.moq < 1 || tier.moq > 100000000
+      || !Number.isFinite(tier.markup_x) || tier.markup_x < .01 || tier.markup_x > 9.99)
+    || markupTiers.some((tier, index) => index > 0 && tier.moq <= markupTiers[index - 1]!.moq)) {
+    markupError.value = '请完整填写三档递增的 MOQ 区间和 0.01 至 9.99 的码数。'
     return
   }
+  const selectedTier = markupTiers.find((tier) => tier.moq === selectedMoq)
+  if (!selectedTier) {
+    markupError.value = '请选择本单采用的 MOQ 档位。'
+    return
+  }
+  if (!Number.isFinite(miscRatio) || miscRatio < 0 || miscRatio > 1) {
+    markupError.value = '杂项系数必须在 0% 至 100% 之间。'
+    return
+  }
+  const activeMarkup = selectedTier.markup_x
   try {
     if (activeSectionCode.value === 'sales' && sectionEditor.value) {
-      await sectionEditor.value.saveSalesMarkup(markup)
-      markupMessage.value = '码数及当前业务部草稿已保存，并已重新计算报价。'
+      await sectionEditor.value.saveSalesMarkup(markupTiers, selectedMoq, activeMarkup, miscRatio)
+      markupMessage.value = `已选择 MOQ ${selectedMoq.toLocaleString('zh-CN')} 档；三档码数、杂项系数及当前业务部草稿已保存并重新计算。`
     } else {
       const section = salesSection.value
-      if (!section) throw new Error('业务部分段不存在，暂时无法保存码数。')
+      if (!section) throw new Error('业务部分段不存在，暂时无法保存码数与杂项。')
       const sourceShipping = section.payload.shipping && typeof section.payload.shipping === 'object' && !Array.isArray(section.payload.shipping)
         ? section.payload.shipping as Record<string, unknown>
         : {}
       const nextPayload = cloneInternalQuotePayload('sales', {
         ...section.payload,
-        shipping: { ...sourceShipping, markup_x: Number(markup.toFixed(2)) },
+        shipping: {
+          ...sourceShipping,
+          markup_x: Number(activeMarkup.toFixed(2)),
+          markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)) })),
+          selected_markup_moq: selectedMoq,
+          misc_ratio: Number(miscRatio.toFixed(4)),
+        },
       })
-      await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, '在协作侧栏保存报价码数')
-      markupMessage.value = '码数已保存为业务部新 revision，并已重新计算报价。'
+      await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, '在协作侧栏保存分段 MOQ 码数与杂项系数')
+      markupMessage.value = `MOQ ${selectedMoq.toLocaleString('zh-CN')} 档已设为本单采用；分段码数与杂项系数已保存为业务部新 revision。`
     }
     message.value = markupMessage.value
   } catch (error) {
-    markupError.value = error instanceof Error ? error.message : '保存码数失败。'
+    markupError.value = error instanceof Error ? error.message : '保存分段码数与杂项失败。'
   }
 }
 
@@ -323,9 +347,9 @@ watch(quoteId, () => {
 
 <style scoped>
 .quote-collaboration-page{display:grid;gap:13px;padding-bottom:28px}.quote-breadcrumb{display:flex;align-items:center;gap:7px;color:#94a3b8;font-size:11px}.quote-breadcrumb a{display:inline-flex;align-items:center;gap:5px;color:#475569;font-weight:800}.quote-breadcrumb a:hover{color:#0f766e}.quote-breadcrumb svg{width:13px;height:13px}.quote-breadcrumb strong{color:#0f766e}.quote-collaboration-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;border:1px solid #dbe5ea;border-radius:14px;background:#fff;padding:18px;box-shadow:0 12px 28px rgb(15 23 42/.05)}.quote-title-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.quote-title-row h1{margin:0;color:#0f172a;font-size:24px;font-weight:950;letter-spacing:-.035em}.quote-title-row>span{border-radius:999px;background:#fef3c7;padding:5px 8px;color:#b45309;font-size:11px;font-weight:900}.quote-head-main>p{margin:6px 0 0;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.quote-head-meta{display:flex;flex-wrap:wrap;gap:11px;margin-top:12px}.quote-head-meta span{display:flex;align-items:center;gap:5px;color:#475569;font-size:11px}.quote-head-meta svg{width:14px;color:#0d9488}.quote-head-progress{display:grid;width:min(330px,35%);gap:8px}.quote-head-progress>div:first-child{display:flex;align-items:end;justify-content:space-between}.quote-head-progress span{color:#64748b;font-size:11px}.quote-head-progress strong{color:#0f766e;font-size:18px}.quote-progress-bar{height:7px;overflow:hidden;border-radius:99px;background:#e2e8f0}.quote-progress-bar span{display:block;height:100%;border-radius:99px;background:#0d9488}.quote-head-progress a,.quote-head-progress button{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:8px;color:#0f766e;font-size:11px;font-weight:900}.quote-head-progress a:hover,.quote-head-progress button:hover{background:#ccfbf1}.quote-head-progress a svg,.quote-head-progress button svg{width:14px}.quote-head-progress button:disabled{opacity:.45}.quote-readonly-banner{display:flex;align-items:center;gap:7px;margin:0;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-readonly-banner svg{width:15px;flex:0 0 auto}
-.quote-snapshot-banner{display:flex;align-items:center;gap:8px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:9px 12px;color:#0369a1}.quote-snapshot-banner>svg{width:16px;flex:0 0 auto}.quote-snapshot-banner>span{display:flex;gap:7px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}.quote-snapshot-banner strong{font-family:'Microsoft YaHei','PingFang SC',sans-serif}.quote-snapshot-banner em{margin-left:auto;color:#0284c7;font-size:11px;font-style:normal}.quote-snapshot-banner button{border:1px solid #7dd3fc;border-radius:7px;background:#fff;padding:6px 9px;color:#0369a1;font-size:11px;font-weight:900}.quote-sync-panel{display:grid;grid-template-columns:minmax(200px,1fr) minmax(260px,2fr) auto auto;align-items:center;gap:9px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:10px 12px}.quote-sync-panel>div{display:grid}.quote-sync-panel strong{color:#075985;font-size:12px}.quote-sync-panel span{margin-top:2px;color:#0369a1;font-size:11px}.quote-sync-panel textarea{border:1px solid #7dd3fc;border-radius:7px;padding:7px 9px;font-size:13px;resize:none}.quote-sync-panel button{height:32px;border-radius:7px;padding:0 10px;font-size:11px;font-weight:900}.quote-sync-panel .secondary{border:1px solid #7dd3fc;background:#fff;color:#0369a1}.quote-sync-panel .primary{border:1px solid #0369a1;background:#0369a1;color:#fff}.quote-page-message{margin:0;border-radius:8px;padding:8px 11px;font-size:11px}.quote-page-message.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.quote-page-message.conflict{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #fdba74;background:#fff7ed;color:#9a3412}.quote-page-message.conflict button{border:1px solid #fb923c;border-radius:7px;background:#fff;padding:6px 9px;color:#9a3412;font-size:11px;font-weight:900}.quote-collaboration-grid{display:grid;grid-template-columns:185px minmax(0,1fr) 270px;align-items:start;gap:11px}.quote-collaboration-grid.focus-entry-mode{grid-template-columns:minmax(0,1fr)}.quote-collaboration-grid.focus-entry-mode>:first-child,.quote-collaboration-grid.focus-entry-mode>:last-child{display:none}.focus-entry-toggle{border-color:#0f766e!important;background:#0f766e!important;color:#fff!important}.focus-entry-toggle[aria-pressed="true"]{border-color:#99f6e4!important;background:#f0fdfa!important;color:#0f766e!important}
+.quote-snapshot-banner{display:flex;align-items:center;gap:8px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:9px 12px;color:#0369a1}.quote-snapshot-banner>svg{width:16px;flex:0 0 auto}.quote-snapshot-banner>span{display:flex;gap:7px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}.quote-snapshot-banner strong{font-family:'Microsoft YaHei','PingFang SC',sans-serif}.quote-snapshot-banner em{margin-left:auto;color:#0284c7;font-size:11px;font-style:normal}.quote-snapshot-banner button{border:1px solid #7dd3fc;border-radius:7px;background:#fff;padding:6px 9px;color:#0369a1;font-size:11px;font-weight:900}.quote-sync-panel{display:grid;grid-template-columns:minmax(200px,1fr) minmax(260px,2fr) auto auto;align-items:center;gap:9px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:10px 12px}.quote-sync-panel>div{display:grid}.quote-sync-panel strong{color:#075985;font-size:12px}.quote-sync-panel span{margin-top:2px;color:#0369a1;font-size:11px}.quote-sync-panel textarea{border:1px solid #7dd3fc;border-radius:7px;padding:7px 9px;font-size:13px;resize:none}.quote-sync-panel button{height:32px;border-radius:7px;padding:0 10px;font-size:11px;font-weight:900}.quote-sync-panel .secondary{border:1px solid #7dd3fc;background:#fff;color:#0369a1}.quote-sync-panel .primary{border:1px solid #0369a1;background:#0369a1;color:#fff}.quote-page-message{margin:0;border-radius:8px;padding:8px 11px;font-size:11px}.quote-page-message.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.quote-page-message.conflict{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #fdba74;background:#fff7ed;color:#9a3412}.quote-page-message.conflict button{border:1px solid #fb923c;border-radius:7px;background:#fff;padding:6px 9px;color:#9a3412;font-size:11px;font-weight:900}.quote-collaboration-grid{display:grid;grid-template-columns:190px minmax(0,1fr) clamp(290px,18vw,320px);align-items:start;gap:11px}.quote-collaboration-grid.focus-entry-mode{grid-template-columns:minmax(0,1fr)}.quote-collaboration-grid.focus-entry-mode>:first-child,.quote-collaboration-grid.focus-entry-mode>:last-child{display:none}.focus-entry-toggle{border-color:#0f766e!important;background:#0f766e!important;color:#fff!important}.focus-entry-toggle[aria-pressed="true"]{border-color:#99f6e4!important;background:#f0fdfa!important;color:#0f766e!important}
 .quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll),.quote-collaboration-grid.focus-entry-mode :deep(.snapshot-table-scroll){overflow:visible}.quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll table),.quote-collaboration-grid.focus-entry-mode :deep(.snapshot-table-scroll table),.quote-collaboration-grid.focus-entry-mode :deep(.calculation-snapshot table){width:100%;min-width:0!important;table-layout:fixed}.quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll th),.quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll td),.quote-collaboration-grid.focus-entry-mode :deep(.snapshot-table-scroll th),.quote-collaboration-grid.focus-entry-mode :deep(.snapshot-table-scroll td){width:auto!important;min-width:0!important;padding:5px 4px;white-space:normal;overflow-wrap:anywhere}.quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll input),.quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll select),.quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll textarea){min-width:0;padding-inline:5px;font-size:11px}.quote-collaboration-grid.focus-entry-mode :deep(.payload-table-scroll textarea){min-height:44px}.quote-collaboration-grid.focus-entry-mode :deep(.snapshot-cell){font-size:10px;white-space:normal}.quote-collaboration-grid.focus-entry-mode :deep(.row-number){width:28px!important}.quote-collaboration-grid.focus-entry-mode :deep(.icon){width:26px;min-height:28px;padding:0}
 .focus-entry-float{position:fixed;right:22px;bottom:24px;z-index:60;display:grid;width:40px;height:40px;place-items:center;border:1px solid #0f766e;border-radius:11px;background:rgb(15 118 110/.94);padding:0;color:#fff;box-shadow:0 10px 24px rgb(15 23 42/.2);backdrop-filter:blur(10px);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease,background-color .18s ease}.focus-entry-float svg{width:17px;height:17px}.focus-entry-float[aria-pressed="true"]{border-color:#5eead4;background:rgb(255 255 255/.9);color:#0f766e}.focus-entry-float:hover,.focus-entry-float:focus-visible{transform:translateY(-2px);box-shadow:0 13px 28px rgb(15 23 42/.24)}.focus-entry-float:focus-visible{outline:3px solid rgb(45 212 191/.3);outline-offset:2px}.focus-entry-float::after{position:absolute;right:48px;top:50%;border-radius:7px;background:rgb(15 23 42/.9);padding:6px 8px;color:#fff;content:attr(data-label);font-size:10px;font-weight:800;opacity:0;pointer-events:none;transform:translate(5px,-50%);transition:opacity .16s ease,transform .16s ease;white-space:nowrap}.focus-entry-float:hover::after,.focus-entry-float:focus-visible::after{opacity:1;transform:translate(0,-50%)}
 .quote-participation-panel{display:grid;grid-template-columns:minmax(240px,1.2fr) minmax(320px,2fr) auto;align-items:center;gap:14px;border:1px solid #99f6e4;border-radius:12px;background:#f0fdfa;padding:13px 14px;box-shadow:0 10px 22px rgb(15 118 110/.07)}.quote-participation-copy{display:flex;align-items:flex-start;gap:9px}.quote-participation-copy>svg{width:19px;flex:0 0 auto;color:#0f766e}.quote-participation-copy span{display:grid}.quote-participation-copy strong{color:#134e4a;font-size:13px}.quote-participation-copy small{margin-top:3px;color:#47716d;font-size:11px;line-height:1.45}.quote-participation-options{display:flex;flex-wrap:wrap;gap:7px}.quote-participation-options label{position:relative;display:inline-flex;align-items:center;gap:5px;border:1px solid #bae6df;border-radius:999px;background:#fff;padding:7px 10px;color:#475569;font-size:12px;font-weight:900;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,color .18s ease,transform .18s ease}.quote-participation-options label:hover{border-color:#2dd4bf;transform:translateY(-1px)}.quote-participation-options label.active{border-color:#0d9488;background:#ccfbf1;color:#0f766e}.quote-participation-options input{position:absolute;opacity:0}.quote-participation-options svg{width:14px;height:14px;color:#cbd5e1}.quote-participation-options label.active svg{color:#0f766e}.quote-participation-actions{display:flex;gap:7px}.quote-participation-actions button{height:34px;border-radius:8px;padding:0 11px;font-size:12px;font-weight:900}.quote-participation-actions .secondary{border:1px solid #99f6e4;background:#fff;color:#0f766e}.quote-participation-actions .primary{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-participation-actions .primary:disabled{opacity:.45}
-@media(max-width:1280px){.quote-collaboration-grid{grid-template-columns:185px minmax(0,1fr)}.quote-collaboration-grid>*:last-child{grid-column:1/-1}.quote-participation-panel{grid-template-columns:1fr 1.6fr}.quote-participation-actions{grid-column:1/-1;justify-content:flex-end}}@media(max-width:980px){.quote-collaboration-grid{grid-template-columns:1fr}.quote-collaboration-grid>*:last-child{grid-column:auto}.quote-collaboration-head{align-items:stretch;flex-direction:column}.quote-head-progress{width:100%}.quote-snapshot-banner{align-items:flex-start;flex-wrap:wrap}.quote-snapshot-banner em{width:100%;margin-left:24px}.quote-sync-panel,.quote-participation-panel{grid-template-columns:1fr}.quote-participation-actions{grid-column:auto}}@media(max-width:600px){.focus-entry-float{right:12px;bottom:14px;width:36px;height:36px;border-radius:10px}.focus-entry-float::after{right:44px}}
+@media(max-width:1280px){.quote-collaboration-grid{grid-template-columns:190px minmax(0,1fr)}.quote-collaboration-grid>*:last-child{grid-column:1/-1}.quote-participation-panel{grid-template-columns:1fr 1.6fr}.quote-participation-actions{grid-column:1/-1;justify-content:flex-end}}@media(max-width:980px){.quote-collaboration-grid{grid-template-columns:1fr}.quote-collaboration-grid>*:last-child{grid-column:auto}.quote-collaboration-head{align-items:stretch;flex-direction:column}.quote-head-progress{width:100%}.quote-snapshot-banner{align-items:flex-start;flex-wrap:wrap}.quote-snapshot-banner em{width:100%;margin-left:24px}.quote-sync-panel,.quote-participation-panel{grid-template-columns:1fr}.quote-participation-actions{grid-column:auto}}@media(max-width:600px){.focus-entry-float{right:12px;bottom:14px;width:36px;height:36px;border-radius:10px}.focus-entry-float::after{right:44px}}
 </style>

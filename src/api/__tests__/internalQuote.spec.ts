@@ -138,6 +138,9 @@ describe('internal quote API adapter', () => {
       workshop_name: '华兴',
       material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '8.50' }],
       machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '940' }],
+      freight_routes: [
+        { route_key: 'hk40', route_name: 'HK 40 柜', capacity_key: 'cap_40' as const, freight_hkd: '8000', lifting_hkd: '1200' },
+      ],
     }
 
     await api.getPricingBaseline('huaxing', 'huaxing-workshop')

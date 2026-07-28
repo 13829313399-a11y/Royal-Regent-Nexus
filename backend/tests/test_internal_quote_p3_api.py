@@ -1,9 +1,11 @@
 import hashlib
 import importlib
+import json
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as WorksheetImage
+from openpyxl.styles import Font
 from PIL import Image as PillowImage
 
 from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
@@ -39,6 +41,21 @@ def workbook_bytes_with_image(rows: list[list[object]], anchor: str, title: str 
     return output.getvalue()
 
 
+def workbook_bytes_with_linked_sheets() -> bytes:
+    workbook = Workbook()
+    detail = workbook.active
+    detail.title = "报价明细"
+    detail["A1"] = "上传源表"
+    detail["A1"].font = Font(bold=True, color="FF0000")
+    detail.merge_cells("A1:B1")
+    parameter = workbook.create_sheet("参数")
+    parameter["A1"] = "='报价明细'!A1"
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
 def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_p3_creator", "sales_customer_owner", "sales-business")
@@ -55,11 +72,12 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
             "U2",
         )
 
-        forbidden = client.post(
+        sales_preview = client.post(
             f"/api/internal-quotes/{quote_id}/imports/mold/preview",
             files={"file": ("模具报价.xlsx", source, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
-        assert forbidden.status_code == 403
+        assert sales_preview.status_code == 201, sales_preview.text
+        assert sales_preview.json()["target_department"] == "engineering"
 
         logout(client)
         login(client, "iq_p3_engineer", "engineer", "engineering")
@@ -109,7 +127,14 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
         attachments = client.get(
             f"/api/internal-quotes/{quote_id}/attachments?department=engineering"
         ).json()
-        assert [item["id"] for item in attachments] == attachment_ids
+        assert {item["id"] for item in attachments} == {
+            *attachment_ids,
+            next(item["id"] for item in attachments if item["file_name"] == "模具报价.xlsx"),
+        }
+        assert {item["file_name"] for item in attachments} == {
+            "模具报价.xlsx",
+            "模具图片-U2-1.png",
+        }
         image_preview = client.get(
             f"/api/internal-quotes/{quote_id}/attachments/{attachment_ids[0]}/preview"
         )
@@ -126,7 +151,11 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
 
         batches = client.get(f"/api/internal-quotes/{quote_id}/imports")
         assert batches.status_code == 200
-        assert batches.json()[0]["confirmed_revision"] == 2
+        listed_batch = next(
+            item for item in batches.json()
+            if item["batch_id"] == preview["batch_id"]
+        )
+        assert listed_batch["confirmed_revision"] == 2
 
 
 def test_hardware_template_preview_maps_only_shared_material_fields_and_replace_keeps_auxiliary(monkeypatch):
@@ -260,6 +289,69 @@ def test_molding_quote_preview_and_confirm_recalculate_from_frozen_reference(mon
         assert injection["unit_amount_hkd"] != "999.0000"
 
 
+def test_assembly_workshop_preview_and_confirm_maps_regions_and_recalculates(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p3_assembly_creator", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="P3-ASSEMBLY", participating_sections=ALL_SECTION_CODES),
+        ).json()
+        quote_id = created["id"]
+
+        logout(client)
+        login(client, "iq_p3_assembly_admin", "admin", "assembly")
+        source = workbook_bytes(
+            [
+                ["报客价/港币", "报价人", "货号或图片", "做工名称", "总目标数量", "人数"],
+                ["车间填写", "车间填写", "车间填写", "车间填写", "车间填写", "车间填写"],
+                [None, 8, "组装桶", "测试IC板", 3000, 1],
+                [None, None, None, "焊喇叭", 3000, 2],
+                [None, None, None, None, None, 3],
+                [None, 9, "包装公仔", "彩盒印日期码", 3000, 4],
+                [None, None, None, None, None, 4],
+            ],
+            title="组装",
+        )
+        preview_response = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/assembly/preview",
+            files={
+                "file": (
+                    "装工.xlsx",
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert preview_response.status_code == 201, preview_response.text
+        preview = preview_response.json()
+        assert preview["target_department"] == "assembly"
+        assert preview["header_row"] == 1
+        assert preview["row_count"] == 3
+        assert [
+            (group["name"], group["category"], group["production_qty"])
+            for group in preview["payload_fragment"]["groups"]
+        ] == [
+            ("组装桶", "assembly", "3000.0000"),
+            ("包装公仔", "packaging", "3000.0000"),
+        ]
+
+        confirmed = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/{preview['batch_id']}/confirm",
+            json={"revision": 1, "mode": "replace"},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        section = confirmed.json()["section"]
+        assert section["revision"] == 2
+        assert section["calculation_status"] == "valid"
+        assert section["calculation"]["totals"] == {
+            "assembly_hkd": "0.2600",
+            "packaging_hkd": "0.3467",
+            "total_hkd": "0.6067",
+        }
+        assert section["calculation"]["group_summaries"][0]["total_persons"] == "3.0000"
+        assert section["calculation"]["group_summaries"][1]["total_persons"] == "4.0000"
+
+
 def test_p3_attachment_validates_magic_deduplicates_and_downloads(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_p3_attachment_creator", "sales_customer_owner", "sales-business")
@@ -362,8 +454,22 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             "painting",
             "slush",
             "sewing",
+            "hair",
             "assembly",
         }
+        source_attachment = workbook_bytes_with_linked_sheets()
+        uploaded_source = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "engineering"},
+            files={
+                "file": (
+                    "工程核价依据.xlsx",
+                    source_attachment,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert uploaded_source.status_code == 201, uploaded_source.text
 
         db_module = importlib.import_module("app.db")
         quote_models = importlib.import_module("app.models.internal_quote")
@@ -373,7 +479,145 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
                 section.status = "not_applicable"
                 section.calculation_status = "not_applicable"
                 section.dependency_status = "current"
-            db.commit()
+                if section.department == "sales":
+                    section.payload_json = json.dumps({
+                        "paper_price_factor": 2.75,
+                        "shipping": {
+                            "markup_x": 1.99,
+                            "markup_tiers": [
+                                {"moq": 3000, "markup_x": 1.25},
+                                {"moq": 5000, "markup_x": 1.15},
+                                {"moq": 10000, "markup_x": 1.10},
+                            ],
+                            "selected_markup_moq": 10000,
+                            "misc_ratio": 0.035,
+                        },
+                        "testing_fee_total_usd": 1500,
+                        "testing_fee_moqs": [3000, 5000, 10000],
+                        "product_size_in": {"length": 12, "width": 8, "height": 4},
+                        "color_box_size_unit": "cm",
+                        "color_box_size_in": {"length": 10, "width": 5, "height": 4},
+                        "cartons": [{
+                            "item": "主纸箱",
+                            "size_unit": "cm",
+                            "length_in": 20,
+                            "width_in": 10,
+                            "height_in": 8,
+                            "qty_per_carton": 2,
+                            "flat_cards": [],
+                        }],
+                    }, ensure_ascii=False)
+                    section.calculation_json = json.dumps({
+                        "status": "valid",
+                        "line_breakdown": [],
+                            "totals": {
+                                "carton_hkd": "0.38",
+                                "testing_fee_total_usd": "1500",
+                            "testing_fee_tiers": [
+                                {"moq": "3000", "unit_price_usd": "0.5"},
+                                {"moq": "5000", "unit_price_usd": "0.3"},
+                                {"moq": "10000", "unit_price_usd": "0.15"},
+                            ],
+                            "freight_options": [
+                                {
+                                    "route_key": "hk40",
+                                    "item": "HK 40 柜",
+                                    "has_lifting_fee": True,
+                                    "freight_per_piece_hkd": "2.06",
+                                    "lifting_per_piece_hkd": "3.71",
+                                    "total_cartons": "1200",
+                                },
+                                {
+                                    "route_key": "yt20",
+                                    "item": "YT 20 柜",
+                                    "has_lifting_fee": True,
+                                    "freight_per_piece_hkd": "3.01",
+                                    "lifting_per_piece_hkd": "1.97",
+                                    "total_cartons": "600",
+                                },
+                            ],
+                        },
+                    }, ensure_ascii=False)
+                    section.calculation_status = "valid"
+                if section.department == "assembly":
+                    section.status = "approved"
+                    section.calculation_status = "valid"
+                    section.payload_json = json.dumps(
+                        {
+                            "groups": [
+                                {"name": "组装马桶", "category": "assembly"},
+                                {"name": "奶瓶", "category": "assembly"},
+                                {"name": "勺子", "category": "assembly"},
+                                {"name": "瓶子", "category": "assembly"},
+                                {"name": "组装公仔", "category": "assembly"},
+                                {"name": "包装公仔", "category": "packaging"},
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
+                    section.calculation_json = json.dumps(
+                        {
+                            "status": "valid",
+                            "line_breakdown": [],
+                            "group_summaries": [
+                                {
+                                    "category": "assembly",
+                                    "group": "组装马桶",
+                                    "standard_work_hours": "11.0000",
+                                    "production_qty": "3000.0000",
+                                    "total_persons": "17.0000",
+                                    "amount_hkd_pcs": "1.4733",
+                                },
+                                {
+                                    "category": "assembly",
+                                    "group": "奶瓶",
+                                    "standard_work_hours": "11.0000",
+                                    "production_qty": "3000.0000",
+                                    "total_persons": "7.0000",
+                                    "amount_hkd_pcs": "0.6067",
+                                },
+                                {
+                                    "category": "assembly",
+                                    "group": "勺子",
+                                    "standard_work_hours": "11.0000",
+                                    "production_qty": "6000.0000",
+                                    "total_persons": "5.0000",
+                                    "amount_hkd_pcs": "0.2167",
+                                },
+                                {
+                                    "category": "assembly",
+                                    "group": "瓶子",
+                                    "standard_work_hours": "11.0000",
+                                    "production_qty": "3000.0000",
+                                    "total_persons": "13.0000",
+                                    "amount_hkd_pcs": "1.1267",
+                                },
+                                {
+                                    "category": "assembly",
+                                    "group": "组装公仔",
+                                    "standard_work_hours": "11.0000",
+                                    "production_qty": "3000.0000",
+                                    "total_persons": "13.0000",
+                                    "amount_hkd_pcs": "1.1267",
+                                },
+                                {
+                                    "category": "packaging",
+                                    "group": "包装公仔",
+                                    "standard_work_hours": "11.0000",
+                                    "production_qty": "3000.0000",
+                                    "total_persons": "40.0000",
+                                    "amount_hkd_pcs": "3.4667",
+                                },
+                            ],
+                            "totals": {
+                                "assembly_hkd": "4.5501",
+                                "packaging_hkd": "3.4667",
+                                "total_hkd": "8.0168",
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                db.commit()
 
         first_response = client.post(f"/api/internal-quotes/{quote_id}/exports")
         assert first_response.status_code == 201, first_response.text
@@ -382,6 +626,8 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v7"
+        assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
             f"/api/internal-quotes/{quote_id}/exports/{first['id']}/download"
@@ -390,23 +636,113 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert download.content.startswith(b"PK")
         assert hashlib.sha256(download.content).hexdigest() == first["sha256"]
         workbook = load_workbook(BytesIO(download.content), data_only=False, read_only=True)
-        assert workbook.sheetnames == ["报价明细", "电子明细", "车缝明细", "装配明细", "审批与版本"]
+        assert workbook.sheetnames == [
+            "报价明细",
+            "电子明细",
+            "车缝明细",
+            "车发明细",
+            "装配明细",
+            "审批与版本",
+            "工程核价依据-报价明细",
+            "工程核价依据-参数",
+        ]
         quote_sheet = workbook["报价明细"]
         assert quote_sheet.sheet_state == "visible"
-        assert quote_sheet["A8"].value == "内部报价测试产品报价"
-        packaging_labels = [quote_sheet.cell(row, 10).value for row in range(1, quote_sheet.max_row + 1)]
-        assert "彩盒尺寸 (in)" in packaging_labels
+        assert quote_sheet["A7"].value == "内部报价测试产品报价"
+        packaging_labels = [quote_sheet.cell(row, 14).value for row in range(1, quote_sheet.max_row + 1)]
+        assert "彩盒尺寸 (cm)" in packaging_labels
         assert "产品尺寸 (in)" in packaging_labels
-        assert [quote_sheet.cell(9, column).value for column in range(3, 14)] == [
-            "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", None, "报客价",
+        carton_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 14).value == "外箱 (cm):")
+        assert quote_sheet.cell(carton_row, 15).value == 50.8
+        assert quote_sheet.cell(carton_row + 1, 15).value == 25.4
+        assert quote_sheet.cell(carton_row + 3, 15).value == f"=O{carton_row}/2.54*P{carton_row}/2.54*Q{carton_row}/2.54/1728"
+        assert [quote_sheet.cell(8, column).value for column in range(3, 13)] == [
+            "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", "报价啤工",
         ]
-        assert quote_sheet["C41"].value == "报客价："
-        assert quote_sheet["D41"].value == "=D38*D39/D40"
-        assert quote_sheet["D42"].value == 3.5
-        assert quote_sheet["D43"].value == '=IF(D42="","",D41-D42)'
-        assert quote_sheet["D44"].value == '=IF(OR(D42="",D42=0),"",D43/D42)'
-        assert quote_sheet["C46"].value == "旺季价"
-        assert all(workbook[name].sheet_state == "veryHidden" for name in workbook.sheetnames[1:])
+        misc_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 2).value == "杂项")
+        assert [quote_sheet.cell(misc_row, column).value for column in (5, 6)] == ["HK 40 柜", "YT 20 柜"]
+        assert [quote_sheet.cell(misc_row + 1, column).value for column in (5, 6)] == [2.06, 3.01]
+        assert [quote_sheet.cell(misc_row + 2, column).value for column in (5, 6)] == [3.71, 1.97]
+        subtotal_row = misc_row + 3
+        assert quote_sheet.cell(subtotal_row, 4).value == f"=SUM(D19:D{misc_row})"
+        quote_rows = {
+            quote_sheet.cell(row, 2).value: row
+            for row in range(1, quote_sheet.max_row + 1)
+            if str(quote_sheet.cell(row, 2).value or "").startswith("报价（MOQ")
+        }
+        assert set(quote_rows) == {"报价（MOQ3K）", "报价（MOQ5K）", "报价（MOQ10K）"}
+        assert quote_sheet.cell(quote_rows["报价（MOQ3K）"], 4).value == (
+            f"=D{subtotal_row}*D{quote_rows['报价（MOQ3K）'] - 2}/D{quote_rows['报价（MOQ3K）'] - 1}"
+        )
+        test_header_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 14).value == "测试费用")
+        assert quote_sheet.cell(test_header_row, 15).value == 1500
+        assert [quote_sheet.cell(test_header_row + offset, 14).value for offset in range(1, 4)] == [3000, 5000, 10000]
+        assert quote_sheet.cell(test_header_row + 1, 16).value == f"=O{test_header_row + 1}*D{quote_rows['报价（MOQ3K）'] - 2}"
+        function_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if str(quote_sheet.cell(row, 14).value or "").startswith("功能介绍：")
+        )
+        color_title_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 14).value == "彩盒价格"
+        )
+        assert color_title_row == function_row + 9
+        assert all(
+            quote_sheet.cell(function_row + 8, column).value is None
+            for column in range(14, 18)
+        )
+        carton_detail_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 2).value == "纸箱"
+        )
+        assert quote_sheet.cell(carton_detail_row, 1).value in (None, "")
+        assembly_detail_rows = [
+            row
+            for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 2).value == "装配工"
+        ]
+        assert [
+            quote_sheet.cell(row, 3).value
+            for row in assembly_detail_rows
+        ] == [
+            "组装马桶（17人/11h/3000）",
+            "组装奶瓶（7人/11h/3000）",
+            "组装勺子（5人/11h/6000）",
+            "组装瓶子（13人/11h/3000）",
+            "组装公仔（13人/11h/3000）",
+            "包装公仔（40人/11h/3000）",
+        ]
+        assert [
+            quote_sheet.cell(row, 4).value
+            for row in assembly_detail_rows
+        ] == [1.4733, 0.6067, 0.2167, 1.1267, 1.1267, 3.4667]
+        assert all(
+            quote_sheet.cell(row, 1).value in (None, "")
+            for row in assembly_detail_rows
+        )
+        tax_header_row = next(
+            row for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 3).value == "人民币外购件成本"
+        )
+        carton_tax_column = next(
+            column for column in range(6, 15)
+            if quote_sheet.cell(tax_header_row, column).value == "纸箱类"
+        )
+        assert quote_sheet.cell(tax_header_row + 1, carton_tax_column).value in (None, "")
+        assert quote_sheet.cell(tax_header_row + 3, carton_tax_column).value in (None, "")
+        summary_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 3).value == "旺季价")
+        assert quote_sheet.cell(summary_row + 1, 4).value == f"=D{quote_rows['报价（MOQ10K）']}"
+        assert quote_sheet["Q6"].value == 0.035
+        assert quote_sheet["Q6"].number_format == "0.00%"
+        assert quote_sheet["R6"].value == 10000
+        assert all(
+            workbook[name].sheet_state == "veryHidden"
+            for name in ("电子明细", "车缝明细", "车发明细", "装配明细", "审批与版本")
+        )
+        assert workbook["工程核价依据-报价明细"].sheet_state == "visible"
+        assert workbook["工程核价依据-报价明细"]["A1"].value == "上传源表"
+        assert workbook["工程核价依据-报价明细"]["A1"].font.bold is True
+        assert workbook["工程核价依据-参数"]["A1"].value == "='工程核价依据-报价明细'!A1"
         electronic_sheet = workbook["电子明细"]
         assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [
             "父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源",
@@ -415,6 +751,9 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 15)] == [
             "产品组", "类型", "#", "布料名称", "部位", "工艺", "裁片数", "用量/码",
             "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注", "来源行",
+        ]
+        assert [workbook["车发明细"].cell(3, column).value for column in range(1, 9)] == [
+            "#", "名称", "工艺", "重量(g)", "单价(HKD)", "单位", "备注", "金额(HKD)",
         ]
         assert workbook["审批与版本"]["B5"].value == "最终业务放行与客价交接在 P4 实施"
         workbook.close()

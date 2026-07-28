@@ -38,6 +38,7 @@ watch(() => route.fullPath, async () => {
     factory-context="all"
     :back-to="backNavigation.to"
     :back-label="backNavigation.label"
+    wide-layout
   >
     <template #icon><Calculator aria-hidden="true" /></template>
     <div class="internal-quote-desk">

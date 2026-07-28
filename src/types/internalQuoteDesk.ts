@@ -6,6 +6,7 @@ export type InternalQuoteSectionCode =
   | 'painting'
   | 'slush'
   | 'sewing'
+  | 'hair'
   | 'assembly'
 
 export type InternalQuoteSectionStatus =
@@ -153,6 +154,12 @@ export interface InternalQuoteShippingPriceRow {
   totalWithMoldUsd: number
 }
 
+export interface InternalQuoteMarkupTier {
+  moq: number
+  markup: number
+  isActive: boolean
+}
+
 export interface InternalQuoteRr2CostSummary {
   currency: string
   indonesiaFreightHkd: number
@@ -165,9 +172,14 @@ export interface InternalQuoteRr2CostSummary {
   afterDeductionCostHkd: number
   shippingPricing: {
     enabled: boolean
+    freightEnabled: boolean
+    liftingEnabled: boolean
     freightSharePercent: number
     liftSharePercent: number
     markup: number
+    activeMarkupMoq: number
+    markupTiers: InternalQuoteMarkupTier[]
+    miscRatio: number
     settlement: number
     factoryPriceHkd: number
     additionalTaxHkd: number

@@ -62,6 +62,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/injection-scheduling',
+    name: 'injection-scheduling-hub',
+    component: () => import('@/views/InjectionSchedulingHubView.vue'),
+    meta: {
+      title: '注塑排产中枢',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/production/molding-sample-tasks',
     name: 'molding-sample-production-tasks',
     component: () => import('@/views/MoldingSampleProductionTaskView.vue'),
@@ -145,6 +155,18 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/modules/sales-business/order-approval',
     redirect: '/modules/sales-business',
+  },
+  {
+    path: '/modules/sales-business/po-schedule-intake',
+    name: 'customer-order-center',
+    component: () => import('@/views/CustomerOrderCenterView.vue'),
+    meta: {
+      title: '客户订单中心',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['customer_order:read'],
+      enforcePermissions: true,
+    },
   },
   {
     path: '/modules/pmc-warehouse/carton-mark-check',
