@@ -170,6 +170,7 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).toContain("const isBuzzBee = computed(() => normalizedCustomer.value === 'buzzbee')")
     expect(sectionFormSource).toContain("const isDisney = computed(() => ['disney', '迪士尼'].includes(normalizedCustomer.value))")
     expect(sectionFormSource).toContain("const isCaixing = computed(() => ['caixing', '彩星'].includes(normalizedCustomer.value))")
+    expect(sectionFormSource).toContain("const isThreeSixty = computed(() => ['360', 'threesixty'].includes(normalizedCustomer.value))")
     for (const customerFlag of ['isDickie']) {
       expect(sectionFormSource).toContain(`const ${customerFlag} = computed(() => false)`)
     }

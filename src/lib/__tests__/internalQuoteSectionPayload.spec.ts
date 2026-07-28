@@ -10,6 +10,18 @@ describe('internal quote section payload normalization', () => {
     }
     expect(fresh).toHaveProperty('customer_quote_fields')
     expect(fresh).toMatchObject({
+      customer_quote_fields: {
+        three_sixty: {
+          ms_brand: '',
+          prepared_by: '郑大能',
+          quote_date: '',
+          revision: '0',
+          first_etd: '',
+          freight_route_key: '',
+        },
+      },
+    })
+    expect(fresh).toMatchObject({
       paper_price_factor: 2.75,
       testing_fee_total_usd: 0,
       testing_fee_moqs: [0],
@@ -590,6 +602,39 @@ describe('internal quote section payload normalization', () => {
     })).toMatchObject({ caixing_tool_plan_rows: [{ ref_no: '1', process_type: 'IN', cavities: 2, up: 2, cycle_time_seconds: 26, process_cost_hkd: .229 }] })
     expect(normalizeInternalQuotePayload('sales', {
       customer_quote_fields: { caixing: { product_type: 'plush', item_number: '40636', item_name: 'Bijou Big Beats', quote_date: '2026-06-02', carton_length_in: '10.5', carton_width_in: '8.375', carton_height_in: '9.25', carton_cuft: '.47', carton_cbm: '.013', pcs_per_carton: '4', carton_price_hkd: '2.426', cost_rows: [{ group: 'fabric', category: '车衣', description: '衣服/裙子', base_cost_hkd: '3.88', customer_cost_hkd: '3.9592' }] } },
-    })).toMatchObject({ customer_quote_fields: { caixing: { product_type: 'plush', item_number: '40636', carton_length_in: 10.5, cost_rows: [{ group: 'fabric', customer_cost_hkd: 3.9592 }] } } })
+    })).toMatchObject({ customer_quote_fields: { caixing: { product_type: 'plush', item_number: '40636', item_name: 'Bijou Big Beats', quote_date: '2026-06-02' } } })
+    expect((normalizeInternalQuotePayload('sales', {
+      customer_quote_fields: { caixing: { carton_length_in: '10.5', cost_rows: [{ group: 'fabric' }] } },
+    }) as Record<string, Record<string, Record<string, unknown>>>).customer_quote_fields.caixing).not.toHaveProperty('carton_length_in')
+  })
+
+  it('preserves only the non-duplicated 360 customer header and freight selection fields', () => {
+    expect(normalizeInternalQuotePayload('sales', {
+      customer_quote_fields: {
+        three_sixty: {
+          ms_brand: 'Cuddle Baby',
+          prepared_by: '郑大能',
+          quote_date: '2026-06-26',
+          revision: 1,
+          first_etd: '2026-08-01',
+          freight_route_key: 'yt40',
+          carton_length_in: 24.75,
+        },
+      },
+    })).toMatchObject({
+      customer_quote_fields: {
+        three_sixty: {
+          ms_brand: 'Cuddle Baby',
+          prepared_by: '郑大能',
+          quote_date: '2026-06-26',
+          revision: '1',
+          first_etd: '2026-08-01',
+          freight_route_key: 'yt40',
+        },
+      },
+    })
+    expect((normalizeInternalQuotePayload('sales', {
+      customer_quote_fields: { three_sixty: { carton_length_in: 24.75 } },
+    }) as SalesPayload).customer_quote_fields.three_sixty).not.toHaveProperty('carton_length_in')
   })
 })
