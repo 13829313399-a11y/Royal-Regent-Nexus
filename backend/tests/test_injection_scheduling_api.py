@@ -1,11 +1,13 @@
 from io import BytesIO
 import importlib
 import sys
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils.datetime import to_excel
 
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
@@ -93,21 +95,50 @@ def build_huakang_workbook() -> bytes:
     plan.cell(4, 2, 1)
     plan.cell(4, 7, "60A 机台")
     plan.cell(5, 2, 1)
-    plan.cell(5, 4, "▲")
-    plan.cell(5, 5, "ITEM-001")
+    plan.cell(5, 4, "▲ 特急订单")
+    plan.cell(5, 5, 12)
+    plan.cell(5, 5).number_format = "00000"
     plan.cell(5, 6, "60A")
     plan.cell(5, 7, "MOLD-001")
     plan.cell(5, 8, "测试产品")
-    plan.cell(5, 9, "ORDER-001")
+    plan.cell(5, 9, 34)
+    plan.cell(5, 9).number_format = "000000"
+    plan.cell(5, 10, 7)
+    plan.cell(5, 10).number_format = "000"
+    plan.cell(5, 11, 2)
     plan.cell(5, 12, 1000)
     plan.cell(5, 13, 100)
     plan.cell(5, 14, 900)
     plan.cell(5, 15, 450)
     plan.cell(5, 16, "ABS")
+    plan.cell(5, 17, "20%")
     plan.cell(5, 18, "黑色")
+    plan.cell(5, 19, "SP-001")
     plan.cell(5, 20, 95)
     plan.cell(5, 21, 105)
-    plan.cell(5, 26, "2026-08-01")
+    plan.cell(5, 22, 1.25)
+    plan.cell(5, 23, 12.3)
+    plan.cell(5, 24, to_excel(datetime(2026, 7, 20)))
+    plan.cell(5, 25, to_excel(datetime(2026, 7, 28)))
+    plan.cell(5, 26, to_excel(datetime(2026, 8, 1)))
+    plan.cell(5, 27, 0.0625)
+    plan.cell(5, 28, 0.0208333333)
+    plan.cell(5, 29, 0.0833333333)
+    plan.cell(5, 30, 0.0416666667)
+    plan.cell(5, 31, to_excel(datetime(2026, 7, 28, 8)))
+    plan.cell(5, 32, to_excel(datetime(2026, 7, 30, 8)))
+    plan.cell(5, 33, "2026-07")
+    plan.cell(5, 34, to_excel(datetime(2026, 7, 31)))
+    plan.cell(5, 35, -1.5)
+    plan.cell(5, 36, 2)
+    plan.cell(5, 37, "否")
+    plan.cell(5, 38, "20:00")
+    plan.cell(5, 39, "12:00")
+    plan.cell(5, 40, 225)
+    plan.cell(5, 41, 5)
+    plan.cell(5, 42, "=AO5+5")
+    plan.cell(5, 43, 220)
+    plan.cell(5, 44, 230)
 
     machine = workbook.create_sheet("厂区现有啤机")
     machine.cell(4, 1, 1)
@@ -120,6 +151,22 @@ def build_huakang_workbook() -> bytes:
     machine.cell(4, 9, "高速")
     machine.cell(4, 10, "五轴双臂")
 
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def build_huakang_workbook_with_repeated_order() -> bytes:
+    workbook = load_workbook(BytesIO(build_huakang_workbook()))
+    plan = workbook["排期表"]
+    for column in range(1, 45):
+        source = plan.cell(5, column)
+        target = plan.cell(6, column, source.value)
+        target.number_format = source.number_format
+    plan.cell(6, 4, "后续同单任务")
+    plan.cell(6, 10, 8)
+    plan.cell(6, 10).number_format = "000"
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -197,6 +244,43 @@ def test_parser_recognizes_both_supported_templates_without_cross_factory_infere
     assert huaxing.summary["taskCount"] == 1
     assert huaxing.summary["canConfirm"] is True
     assert huaxing.normalized["machines"][0]["completeness"] == "needs_review"
+    huakang_order = huakang.normalized["orders"][0]
+    worksheet = huakang_order["requirement"]["worksheet"]
+    restricted = huakang_order["requirement"]["restrictedWorksheet"]
+    assert huakang_order["itemNo"] == "00012"
+    assert huakang_order["orderNo"] == "000034"
+    assert worksheet["warehouse"] == "007"
+    assert worksheet["setQuantity"] == 2
+    assert worksheet["waterRatio"] == "20%"
+    assert worksheet["colorPowder"] == "SP-001"
+    assert worksheet["materialWeightKg"] == 1.25
+    assert worksheet["deliveryDueAt"].startswith("2026-08-01")
+    assert worksheet["moldChangeReferenceHours"] == 1.5
+    assert worksheet["deliverySlackDays"] == -1.5
+    assert worksheet["allocatedMaterialQuantity"] is None
+    assert worksheet["sourceSheet"] == "排期表"
+    assert worksheet["sourceRow"] == 5
+    assert restricted["unitPricePerShot"] == 12.3
+    assert any(
+        issue.code == "formula_cache_missing"
+        and issue.field == "allocated_material"
+        and issue.source_row == 5
+        for issue in huakang.issues
+    )
+    assert huakang.normalized["tasks"][0]["slackHours"] == -36
+
+    repeated = parser(
+        build_huakang_workbook_with_repeated_order(),
+        factory_id="huakang-b",
+        source_file_name="huakang-repeated.xlsx",
+        business_date="2026-07-28",
+    )
+    assert repeated.summary["orderCount"] == 1
+    assert repeated.summary["taskCount"] == 2
+    assert [
+        task["worksheet"]["warehouse"]
+        for task in repeated.normalized["tasks"]
+    ] == ["007", "008"]
 
     try:
         parser(
@@ -213,6 +297,7 @@ def test_parser_recognizes_both_supported_templates_without_cross_factory_infere
 
 def test_api_import_version_publish_and_rollback_enforce_factory_and_role(monkeypatch):
     with make_client(monkeypatch) as client:
+        huakang_api_workbook = build_huakang_workbook_with_repeated_order()
         anonymous = client.get(
             "/api/injection-scheduling/snapshots/current",
             params={"factory_id": "huakang-b"},
@@ -234,14 +319,14 @@ def test_api_import_version_publish_and_rollback_enforce_factory_and_role(monkey
             files={
                 "file": (
                     "huakang.xlsx",
-                    build_huakang_workbook(),
+                    huakang_api_workbook,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             },
         )
         assert preview.status_code == 200, preview.text
         preview_body = preview.json()
-        assert preview_body["summary"]["taskCount"] == 1
+        assert preview_body["summary"]["taskCount"] == 2
         assert preview_body["summary"]["canConfirm"] is True
         before_confirm = client.get(
             "/api/injection-scheduling/snapshots/current",
@@ -272,7 +357,17 @@ def test_api_import_version_publish_and_rollback_enforce_factory_and_role(monkey
         )
         assert confirm.status_code == 200, confirm.text
         assert confirm.json()["snapshot"]["factoryId"] == "huakang-b"
-        assert len(confirm.json()["snapshot"]["tasks"]) == 1
+        assert len(confirm.json()["snapshot"]["tasks"]) == 2
+        task_worksheets = [
+            task["worksheet"]
+            for task in confirm.json()["snapshot"]["tasks"]
+        ]
+        assert [item["warehouse"] for item in task_worksheets] == ["007", "008"]
+        task_worksheet = task_worksheets[0]
+        assert task_worksheet["deliverySlackDays"] == -1.5
+        assert task_worksheet["moldChangeReferenceHours"] == 1.5
+        assert "unitPricePerShot" not in task_worksheet
+        assert "restrictedWorksheet" not in confirm.text
         first_plan_id = confirm.json()["plan_id"]
 
         second_preview = client.post(
@@ -281,7 +376,7 @@ def test_api_import_version_publish_and_rollback_enforce_factory_and_role(monkey
             files={
                 "file": (
                     "huakang.xlsx",
-                    build_huakang_workbook(),
+                    huakang_api_workbook,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             },
@@ -355,6 +450,11 @@ def test_api_import_version_publish_and_rollback_enforce_factory_and_role(monkey
         assert published.status_code == 200
         assert published.json()["version"] == version
         assert published.json()["snapshot"]["factoryId"] == "huakang-b"
+        assert [
+            task["worksheet"]["warehouse"]
+            for task in published.json()["snapshot"]["tasks"]
+        ] == ["007", "008"]
+        assert "unitPricePerShot" not in published.json()["snapshot"]["tasks"][0]["worksheet"]
 
         current_after_publish = client.get(
             "/api/injection-scheduling/snapshots/current",
@@ -380,3 +480,7 @@ def test_api_import_version_publish_and_rollback_enforce_factory_and_role(monkey
         assert rollback.json()["revision"] == 2
         assert rollback.json()["snapshot"]["plan"]["status"] == "draft"
         assert "publishedAt" not in rollback.json()["snapshot"]["plan"]
+        assert [
+            task["worksheet"]["warehouse"]
+            for task in rollback.json()["snapshot"]["tasks"]
+        ] == ["007", "008"]

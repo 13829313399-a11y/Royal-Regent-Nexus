@@ -1,7 +1,8 @@
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
 
-export type SchedulingViewMode = 'board' | 'timeline'
+export type SchedulingViewMode = 'spreadsheet' | 'timeline'
 export type SchedulingDensity = 'compact' | 'comfortable'
+export type ScheduleFieldScheme = 'core' | 'full' | 'screen'
 export type MachineState = 'running' | 'risk' | 'urgent' | 'idle' | 'maintenance' | 'fault'
 export type TaskRisk = 'normal' | 'warning' | 'overdue' | 'urgent' | 'incomplete'
 export type MachineClass =
@@ -103,6 +104,45 @@ export interface ChangeoverCost {
   reason: string
 }
 
+export interface ScheduleWorksheetDetails {
+  automationMode?: string
+  remark?: string
+  warehouse?: string
+  machineClassRequirement?: string
+  setQuantity?: number
+  waterRatio?: string
+  colorPowder?: string
+  netWeightGrams?: number
+  grossWeightGrams?: number
+  materialWeightKg?: number
+  orderDate?: string
+  deliveryStartAt?: string
+  deliveryDueAt?: string
+  moldChangeReferenceHours?: number
+  colorChangeReferenceHours?: number
+  changeoverHours?: number
+  downtimeHours?: number
+  plannedProductionAt?: string
+  plannedCompletionAt?: string
+  plannedCompletionMonth?: string
+  inboundAt?: string
+  deliverySlackDays?: number
+  sprayPaint?: string
+  productionDays?: number
+  materialShortage?: number
+  allocatedMaterialQuantity?: number
+  shiftEndAt?: string
+  shiftTime?: string
+  shiftTarget?: number
+  dayShiftQuantity?: number
+  nightShiftQuantity?: number
+  unitPricePerShot?: number
+  outsourcingUnitPrice?: number
+  ratio?: number
+  sourceSheet?: string
+  sourceRow?: number
+}
+
 export interface ScheduleTask {
   id: string
   machineId: string
@@ -115,6 +155,7 @@ export interface ScheduleTask {
   locked: boolean
   risk: TaskRisk
   remark?: string
+  worksheet: ScheduleWorksheetDetails
 }
 
 export interface InjectionMachine {
@@ -173,6 +214,7 @@ export interface BacklogOrder {
   production: ProductionProgress
   requiredDate: string
   candidates: CandidateMachine[]
+  worksheet: ScheduleWorksheetDetails
   noMatchReason?: string
 }
 
@@ -250,4 +292,9 @@ export interface SchedulingFilters {
   machineClass: string
   state: string
   exceptionsOnly: boolean
+  incompleteOnly: boolean
+  idleOnly: boolean
+  taskScope: 'all' | 'current' | 'future'
+  deliveryFrom: string
+  deliveryTo: string
 }

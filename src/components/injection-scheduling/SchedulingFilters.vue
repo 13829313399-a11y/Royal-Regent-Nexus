@@ -33,7 +33,17 @@ function patchFilters(patch: Partial<SchedulingFilters>) {
 }
 
 function resetFilters() {
-  emit('update:filters', { search: '', machineClass: 'all', state: 'all', exceptionsOnly: false })
+  emit('update:filters', {
+    search: '',
+    machineClass: 'all',
+    state: 'all',
+    exceptionsOnly: false,
+    incompleteOnly: false,
+    idleOnly: false,
+    taskScope: 'all',
+    deliveryFrom: '',
+    deliveryTo: '',
+  })
 }
 </script>
 
@@ -42,7 +52,7 @@ function resetFilters() {
     <div class="flex shrink-0 rounded-lg bg-slate-100 p-0.5" role="tablist" aria-label="排程视图">
       <button
         v-for="tab in [
-          { id: 'board', label: '机台板' },
+          { id: 'spreadsheet', label: '排程表' },
           { id: 'timeline', label: '时间轴' },
         ] as const"
         :key="tab.id"
@@ -53,7 +63,7 @@ function resetFilters() {
         :class="viewMode === tab.id ? 'bg-white text-teal-800 shadow-sm' : 'text-slate-500'"
         @click="emit('update:viewMode', tab.id)"
       >
-        <Columns3 v-if="tab.id === 'board'" class="size-3" aria-hidden="true" />
+        <Columns3 v-if="tab.id === 'spreadsheet'" class="size-3" aria-hidden="true" />
         <StretchHorizontal v-else class="size-3" aria-hidden="true" />
         {{ tab.label }}
       </button>

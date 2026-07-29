@@ -16,12 +16,11 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
-import CompactMachineBoard from '@/components/injection-scheduling/CompactMachineBoard.vue'
 import ScheduleTimeline from '@/components/injection-scheduling/ScheduleTimeline.vue'
-import SchedulingFilters from '@/components/injection-scheduling/SchedulingFilters.vue'
 import SchedulingImportDialog from '@/components/injection-scheduling/SchedulingImportDialog.vue'
 import SchedulingKpiGrid from '@/components/injection-scheduling/SchedulingKpiGrid.vue'
 import SchedulingOverlays from '@/components/injection-scheduling/SchedulingOverlays.vue'
+import InjectionScheduleSpreadsheet from '@/components/injection-scheduling/spreadsheet/InjectionScheduleSpreadsheet.vue'
 import {
   factoryContexts,
   getFactoryScopedRoute,
@@ -31,6 +30,7 @@ import {
 import { useAppStore } from '@/stores/app'
 import { useInjectionSchedulingStore } from '@/stores/injectionScheduling'
 import type {
+  ScheduleFieldScheme,
   SchedulingDensity,
   SchedulingFilters as SchedulingFilterState,
   SchedulingKpi,
@@ -67,6 +67,10 @@ function updateDensity(value: SchedulingDensity) {
   store.density = value
 }
 
+function updateFieldScheme(value: ScheduleFieldScheme) {
+  store.fieldScheme = value
+}
+
 function updateFilters(value: SchedulingFilterState) {
   store.filters = value
 }
@@ -76,12 +80,13 @@ function activateKpi(action: NonNullable<SchedulingKpi['action']>) {
   if (action === 'alerts') store.alertsOpen = true
 }
 
-function requestTaskMove(taskId: string, targetMachineId: string) {
+function requestTaskMove(taskId: string, targetMachineId: string, targetIndex?: number) {
   const task = store.tasks.find((item) => item.id === taskId)
   store.requestMove({
     taskId,
     sourceMachineId: task?.machineId,
     targetMachineId,
+    targetIndex,
   })
 }
 
@@ -90,7 +95,8 @@ function requestBacklogAssignment(backlogId: string, targetMachineId: string) {
 }
 
 async function enterBigScreen() {
-  store.bigScreen = true
+  const entered = await store.enterPublishedBigScreen()
+  if (!entered) return
   try {
     await hubRoot.value?.requestFullscreen?.()
   } catch {
@@ -99,7 +105,7 @@ async function enterBigScreen() {
 }
 
 async function exitBigScreen() {
-  store.bigScreen = false
+  store.exitPublishedBigScreen()
   if (document.fullscreenElement) {
     try {
       await document.exitFullscreen()
@@ -119,12 +125,20 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 function handleFullscreenChange() {
-  if (!document.fullscreenElement) store.bigScreen = false
+  if (!document.fullscreenElement && store.bigScreen) store.exitPublishedBigScreen()
 }
 
 watch(selectedFactoryId, (factoryId) => {
+  const preference = window.localStorage.getItem(`rr:injection-scheduling:${factoryId}:field-scheme`)
+  store.fieldScheme = ['core', 'full', 'screen'].includes(preference ?? '')
+    ? preference as ScheduleFieldScheme
+    : 'full'
   void store.load(factoryId)
 }, { immediate: true })
+
+watch(() => store.fieldScheme, (fieldScheme) => {
+  window.localStorage.setItem(`rr:injection-scheduling:${selectedFactoryId.value}:field-scheme`, fieldScheme)
+})
 
 watch(() => store.toast?.id, () => {
   if (toastTimer) window.clearTimeout(toastTimer)
@@ -178,7 +192,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="workspace-grid grid min-h-0 grid-rows-[48px_58px_44px_minmax(0,1fr)_26px] gap-1.5 overflow-hidden p-2">
+    <main class="workspace-grid grid min-h-0 grid-rows-[48px_58px_minmax(0,1fr)_26px] gap-1.5 overflow-hidden p-2">
       <section class="flex min-w-0 items-center gap-3 overflow-hidden rounded-xl bg-gradient-to-r from-[#0d4944] via-[#0b5d55] to-[#0a776b] px-3 text-white shadow-sm">
         <RouterLink :to="productionCenterRoute" class="grid size-8 shrink-0 place-items-center rounded-lg border border-white/15 bg-white/5" aria-label="返回生产部模块中心"><ArrowLeft class="size-4" /></RouterLink>
         <div class="min-w-0">
@@ -211,37 +225,36 @@ onBeforeUnmount(() => {
       <template v-else-if="store.hasPreviewData">
         <SchedulingKpiGrid v-if="!store.bigScreen" :kpis="store.kpis" @activate="activateKpi" />
 
-        <SchedulingFilters
-          v-if="!store.bigScreen"
+        <InjectionScheduleSpreadsheet
+          :factory-id="selectedFactoryId"
+          :machines="store.visibleMachines"
+          :tasks-by-machine="store.visibleTasksByMachine"
+          :selected-task-id="store.selectedTaskId"
           :view-mode="store.viewMode"
           :density="store.density"
+          :field-scheme="store.fieldScheme"
           :filters="store.filters"
           :backlog-count="store.backlog.length"
+          :big-screen="store.bigScreen"
           @update:view-mode="updateViewMode"
           @update:density="updateDensity"
+          @update:field-scheme="updateFieldScheme"
           @update:filters="updateFilters"
-          @open-backlog="store.openBacklog"
-          @enter-big-screen="enterBigScreen"
-        />
-
-        <CompactMachineBoard
-          v-if="store.viewMode === 'board' || store.bigScreen"
-          :machines="store.visibleMachines"
-          :tasks-by-machine="store.tasksByMachine"
-          :density="store.density"
-          :big-screen="store.bigScreen"
           @select-task="store.selectTask"
           @select-machine="store.selectMachine"
           @request-move="requestTaskMove"
           @nudge-task="store.nudgeTask"
           @open-backlog="store.openBacklog"
-        />
-        <ScheduleTimeline
-          v-else
-          :machines="store.visibleMachines"
-          :tasks-by-machine="store.tasksByMachine"
-          @select-task="store.selectTask"
-        />
+          @enter-big-screen="enterBigScreen"
+        >
+          <template #timeline>
+            <ScheduleTimeline
+              :machines="store.visibleMachines"
+              :tasks-by-machine="store.visibleTasksByMachine"
+              @select-task="store.selectTask"
+            />
+          </template>
+        </InjectionScheduleSpreadsheet>
 
         <footer class="flex min-w-0 items-center gap-4 rounded-lg border border-slate-200 bg-white px-3 text-[8px] text-slate-500" :class="store.bigScreen ? '!border-slate-800 !bg-[#0b2321] !text-slate-400' : ''">
           <span class="inline-flex items-center gap-1.5">
@@ -359,7 +372,7 @@ onBeforeUnmount(() => {
 .injection-toast-enter-from,
 .injection-toast-leave-to { opacity: 0; transform: translateY(8px); }
 @media (max-width: 1080px) {
-  .workspace-grid { grid-template-rows: 48px 58px 44px minmax(0,1fr) 26px; }
+  .workspace-grid { grid-template-rows: 48px 58px minmax(0,1fr) 26px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .injection-toast-enter-active,

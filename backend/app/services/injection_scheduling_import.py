@@ -10,12 +10,14 @@ import re
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.utils.datetime import from_excel
 
 
-PARSER_VERSION = "injection-scheduling-xlsx-v1"
+PARSER_VERSION = "injection-scheduling-xlsx-v2"
 MAX_BUSINESS_COLUMNS = 44
 MAX_EMPTY_ROWS = 80
 MACHINE_CLASSES = ("120A", "104A", "80A", "60A", "50A", "32A", "24A", "18A", "14A", "12A", "10A", "7A", "5A", "4A")
+FORMULA_ERRORS = {"#REF!", "#N/A", "#VALUE!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,19 @@ def _text(value: Any) -> str:
     return str(value).strip()
 
 
+def _identifier(cell: Any) -> str:
+    value = getattr(cell, "value", cell)
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return _text(value)
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        number_format = str(getattr(cell, "number_format", "") or "").split(";", 1)[0]
+        if float(value).is_integer() and re.fullmatch(r"0+", number_format):
+            return str(int(value)).zfill(len(number_format))
+    return _text(value)
+
+
 def _number(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -90,6 +105,11 @@ def _integer(value: Any) -> int:
     return max(0, int(round(parsed))) if parsed is not None else 0
 
 
+def _optional_integer(value: Any) -> int | None:
+    parsed = _number(value)
+    return max(0, int(round(parsed))) if parsed is not None else None
+
+
 def _iso_datetime(value: Any) -> str:
     if isinstance(value, datetime):
         aware = value.replace(tzinfo=timezone(timedelta(hours=8)))
@@ -97,6 +117,17 @@ def _iso_datetime(value: Any) -> str:
     if isinstance(value, date):
         aware = datetime.combine(value, time.min).replace(tzinfo=timezone(timedelta(hours=8)))
         return aware.isoformat(timespec="seconds")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            parsed = from_excel(value)
+        except (TypeError, ValueError, OverflowError):
+            parsed = None
+        if isinstance(parsed, datetime):
+            aware = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
+            return aware.isoformat(timespec="seconds")
+        if isinstance(parsed, date):
+            aware = datetime.combine(parsed, time.min).replace(tzinfo=timezone(timedelta(hours=8)))
+            return aware.isoformat(timespec="seconds")
     text = _text(value)
     if not text:
         return ""
@@ -107,6 +138,20 @@ def _iso_datetime(value: Any) -> str:
         except ValueError:
             continue
     return ""
+
+
+def _duration_days(value: Any) -> float | None:
+    parsed = _number(value)
+    if parsed is None:
+        return None
+    return round(parsed, 4)
+
+
+def _excel_duration_hours(value: Any) -> float | None:
+    parsed = _number(value)
+    if parsed is None:
+        return None
+    return round(parsed * 24, 4)
 
 
 def _machine_class(*values: Any) -> str:
@@ -222,6 +267,81 @@ def _iter_business_rows(sheet, *, start_row: int = 1):
             empty_streak += 1
             if empty_streak >= MAX_EMPTY_ROWS:
                 break
+
+
+def _iter_business_cell_rows(cached_sheet, formula_sheet, *, start_row: int = 1):
+    empty_streak = 0
+    cached_rows = cached_sheet.iter_rows(
+        min_row=start_row,
+        max_col=MAX_BUSINESS_COLUMNS,
+        values_only=False,
+    )
+    formula_rows = formula_sheet.iter_rows(
+        min_row=start_row,
+        max_col=MAX_BUSINESS_COLUMNS,
+        values_only=False,
+    )
+    for row_number, (cached_cells, formula_cells) in enumerate(
+        zip(cached_rows, formula_rows, strict=False),
+        start=start_row,
+    ):
+        cached_values = tuple(cell.value for cell in cached_cells)
+        formula_values = tuple(cell.value for cell in formula_cells)
+        if any(value not in (None, "") for value in (*cached_values, *formula_values)):
+            empty_streak = 0
+            yield row_number, cached_cells, cached_values, formula_values
+        else:
+            empty_streak += 1
+            if empty_streak >= MAX_EMPTY_ROWS:
+                break
+
+
+def _is_formula(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("=") or value.__class__.__name__ == "ArrayFormula"
+
+
+def _append_formula_issues(
+    *,
+    row_number: int,
+    sheet_name: str,
+    cached_values: tuple[Any, ...],
+    formula_values: tuple[Any, ...],
+    columns: dict[str, int],
+    issues: list[ImportIssue],
+) -> None:
+    checked_columns: set[int] = set()
+    for field, column in columns.items():
+        if column in checked_columns:
+            continue
+        checked_columns.add(column)
+        formula_value = formula_values[column]
+        if not _is_formula(formula_value):
+            continue
+        cached_value = cached_values[column]
+        if isinstance(cached_value, str) and cached_value.strip().upper() in FORMULA_ERRORS:
+            issues.append(
+                ImportIssue(
+                    severity="warning",
+                    code="formula_error",
+                    message=f"{field} 的公式结果为 {cached_value}，未按 0 导入",
+                    sheet_name=sheet_name,
+                    source_row=row_number,
+                    field=field,
+                    source_value=_text(cached_value),
+                )
+            )
+        elif cached_value is None:
+            issues.append(
+                ImportIssue(
+                    severity="warning",
+                    code="formula_cache_missing",
+                    message=f"{field} 缺少已计算公式缓存，未按 0 导入",
+                    sheet_name=sheet_name,
+                    source_row=row_number,
+                    field=field,
+                    source_value=_text(formula_value),
+                )
+            )
 
 
 def _detect_template(sheet_names: set[str], factory_id: str) -> str:
@@ -398,28 +518,48 @@ def _task_columns(template: str) -> tuple[str, dict[str, int]]:
     if template == "huakang-b":
         return "排期表", {
             "machine": 1,
+            "automation": 3,
             "remark": 3,
             "item": 4,
             "machine_class": 5,
             "mold": 6,
             "product": 7,
             "order": 8,
+            "warehouse": 9,
+            "set_quantity": 10,
             "order_qty": 11,
             "completed": 12,
             "remaining": 13,
             "target": 14,
             "material": 15,
+            "water_ratio": 16,
             "color": 17,
+            "color_powder": 18,
             "net_weight": 19,
             "gross_weight": 20,
+            "material_weight": 21,
+            "unit_price": 22,
             "order_date": 23,
             "delivery_start": 24,
             "delivery_due": 25,
+            "mold_change_reference": 26,
+            "color_change_reference": 27,
+            "changeover": 28,
+            "downtime": 29,
             "planned_start": 30,
             "planned_end": 31,
+            "planned_month": 32,
             "inbound": 33,
             "slack": 34,
+            "production_days": 35,
             "paint": 36,
+            "shift_end": 37,
+            "shift_time": 38,
+            "shift_target": 39,
+            "material_shortage": 40,
+            "allocated_material": 41,
+            "day_shift": 42,
+            "night_shift": 43,
         }
     return "计划表", {
         "machine": 1,
@@ -430,27 +570,46 @@ def _task_columns(template: str) -> tuple[str, dict[str, int]]:
         "product": 7,
         "order": 8,
         "item": 9,
+        "set_quantity": 10,
         "order_qty": 11,
         "completed": 12,
         "remaining": 13,
         "target": 14,
+        "water_ratio": 15,
         "color": 16,
+        "color_powder": 17,
         "material": 18,
         "net_weight": 19,
         "gross_weight": 20,
+        "material_weight": 21,
+        "unit_price": 22,
+        "outsourcing_unit_price": 23,
+        "ratio": 24,
         "order_date": 25,
         "delivery_start": 26,
         "delivery_due": 27,
+        "mold_change_reference": 28,
+        "color_change_reference": 29,
+        "changeover": 30,
+        "downtime": 31,
         "planned_start": 32,
         "planned_end": 33,
+        "planned_month": 34,
         "inbound": 35,
         "slack": 36,
         "paint": 37,
+        "production_days": 38,
+        "shift_end": 39,
+        "shift_time": 40,
+        "shift_target": 41,
+        "secondary_machine_class": 42,
+        "warehouse": 43,
     }
 
 
 def _parse_plan_rows(
     workbook,
+    formula_workbook,
     factory_id: str,
     template: str,
     machines: list[dict[str, Any]],
@@ -458,16 +617,21 @@ def _parse_plan_rows(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     sheet_name, columns = _task_columns(template)
     sheet = workbook[sheet_name]
+    formula_sheet = formula_workbook[sheet_name]
     machine_by_code = {machine["machineCode"].casefold(): machine for machine in machines}
     mold_master = _parse_huaxing_mold_master(workbook, factory_id) if template == "huaxing" else {}
     molds: dict[str, dict[str, Any]] = dict(mold_master)
     orders: dict[str, dict[str, Any]] = {}
     tasks: list[dict[str, Any]] = []
     sequence_by_machine: defaultdict[str, int] = defaultdict(int)
-    for row_number, row in _iter_business_rows(sheet, start_row=4):
-        machine_cell = _text(row[columns["machine"]])
-        mold_no = _text(row[columns["mold"]])
-        order_no = _text(row[columns["order"]])
+    for row_number, cells, row, formula_row in _iter_business_cell_rows(
+        sheet,
+        formula_sheet,
+        start_row=4,
+    ):
+        machine_cell = _identifier(cells[columns["machine"]])
+        mold_no = _identifier(cells[columns["mold"]])
+        order_no = _identifier(cells[columns["order"]])
         remaining = _integer(row[columns["remaining"]])
         is_machine_header = (
             _text(row[0])
@@ -476,12 +640,22 @@ def _parse_plan_rows(
         )
         if is_machine_header:
             continue
+        if mold_no and order_no:
+            _append_formula_issues(
+                row_number=row_number,
+                sheet_name=sheet.title,
+                cached_values=row,
+                formula_values=formula_row,
+                columns=columns,
+                issues=issues,
+            )
         if remaining <= 0 or not mold_no or not order_no:
             continue
         machine = machine_by_code.get(machine_cell.casefold())
 
         product_name = _text(row[columns["product"]])
-        item_no = _text(row[columns["item"]])
+        item_no = _identifier(cells[columns["item"]])
+        warehouse = _identifier(cells[columns["warehouse"]])
         material = _text(row[columns["material"]])
         color = _text(row[columns["color"]])
         machine_class_requirement = _machine_class(row[columns["machine_class"]])
@@ -537,6 +711,81 @@ def _parse_plan_rows(
             row[columns["remark"]],
             row[columns["paint"]],
         )
+        slack_days = _duration_days(row[columns["slack"]])
+        worksheet = {
+            "automationMode": (
+                _text(row[columns["automation"]])
+                if template == "huaxing"
+                else ""
+            ),
+            "remark": _text(row[columns["remark"]]),
+            "warehouse": warehouse,
+            "machineClassRequirement": machine_class_requirement,
+            "setQuantity": _optional_integer(row[columns["set_quantity"]]),
+            "waterRatio": _text(row[columns["water_ratio"]]),
+            "colorPowder": _identifier(cells[columns["color_powder"]]),
+            "netWeightGrams": _number(row[columns["net_weight"]]),
+            "grossWeightGrams": _number(row[columns["gross_weight"]]),
+            "materialWeightKg": _number(row[columns["material_weight"]]),
+            "orderDate": _iso_datetime(row[columns["order_date"]]),
+            "deliveryStartAt": _iso_datetime(row[columns["delivery_start"]]),
+            "deliveryDueAt": _iso_datetime(row[columns["delivery_due"]]),
+            "moldChangeReferenceHours": _excel_duration_hours(
+                row[columns["mold_change_reference"]]
+            ),
+            "colorChangeReferenceHours": _excel_duration_hours(
+                row[columns["color_change_reference"]]
+            ),
+            "changeoverHours": _excel_duration_hours(row[columns["changeover"]]),
+            "downtimeHours": _excel_duration_hours(row[columns["downtime"]]),
+            "plannedProductionAt": _iso_datetime(row[columns["planned_start"]]),
+            "plannedCompletionAt": _iso_datetime(row[columns["planned_end"]]),
+            "plannedCompletionMonth": _text(row[columns["planned_month"]]),
+            "inboundAt": _iso_datetime(row[columns["inbound"]]),
+            "deliverySlackDays": slack_days,
+            "sprayPaint": _text(row[columns["paint"]]),
+            "productionDays": _duration_days(row[columns["production_days"]]),
+            "materialShortage": (
+                _number(row[columns["material_shortage"]])
+                if "material_shortage" in columns
+                else None
+            ),
+            "allocatedMaterialQuantity": (
+                _number(row[columns["allocated_material"]])
+                if "allocated_material" in columns
+                else None
+            ),
+            "shiftEndAt": _text(row[columns["shift_end"]]),
+            "shiftTime": _text(row[columns["shift_time"]]),
+            "shiftTarget": _optional_integer(row[columns["shift_target"]]),
+            "dayShiftQuantity": (
+                _optional_integer(row[columns["day_shift"]])
+                if "day_shift" in columns
+                else None
+            ),
+            "nightShiftQuantity": (
+                _optional_integer(row[columns["night_shift"]])
+                if "night_shift" in columns
+                else None
+            ),
+            "sourceSheet": sheet.title,
+            "sourceRow": row_number,
+        }
+        restricted_worksheet = {
+            "unitPricePerShot": _number(row[columns["unit_price"]]),
+            "outsourcingUnitPrice": (
+                _number(row[columns["outsourcing_unit_price"]])
+                if "outsourcing_unit_price" in columns
+                else None
+            ),
+            "ratio": (
+                _number(row[columns["ratio"]])
+                if "ratio" in columns
+                else None
+            ),
+            "sourceSheet": sheet.title,
+            "sourceRow": row_number,
+        }
         order = {
             "id": _stable_id("isorder", factory_id, natural_key),
             "naturalKey": natural_key,
@@ -555,11 +804,8 @@ def _parse_plan_rows(
             "priorityFlag": priority_flag,
             "requirement": {
                 "colorFamily": _color_family(color),
-                "orderDate": _iso_datetime(row[columns["order_date"]]),
-                "deliveryStartAt": _iso_datetime(row[columns["delivery_start"]]),
-                "netWeightG": _number(row[columns["net_weight"]]),
-                "grossWeightG": _number(row[columns["gross_weight"]]),
-                "paint": _text(row[columns["paint"]]),
+                "worksheet": worksheet,
+                "restrictedWorksheet": restricted_worksheet,
             },
             "completeness": (
                 "complete"
@@ -581,7 +827,7 @@ def _parse_plan_rows(
         duration = _duration_hours(order["remainingQty"], order["dailyTarget"])
         planned_start = _iso_datetime(row[columns["planned_start"]])
         planned_end = _iso_datetime(row[columns["planned_end"]])
-        slack_value = _number(row[columns["slack"]])
+        slack_value = slack_days * 24 if slack_days is not None else None
         risk = "urgent" if priority_code == "P0" else "normal"
         if slack_value is not None and slack_value < 0:
             risk = "overdue"
@@ -602,6 +848,7 @@ def _parse_plan_rows(
                 "inboundAt": _iso_datetime(row[columns["inbound"]]),
                 "slackHours": slack_value if slack_value is not None else 0,
                 "remark": _text(row[columns["remark"]]),
+                "worksheet": worksheet,
                 "sourceLineage": {"sheet": sheet.title, "row": row_number},
             }
         )
@@ -623,6 +870,8 @@ def parse_injection_schedule_workbook(
     except ValueError as exc:
         raise ValueError("business_date 必须为 YYYY-MM-DD") from exc
 
+    workbook = None
+    formula_workbook = None
     try:
         workbook = load_workbook(
             BytesIO(content),
@@ -630,7 +879,17 @@ def parse_injection_schedule_workbook(
             data_only=True,
             keep_links=False,
         )
+        formula_workbook = load_workbook(
+            BytesIO(content),
+            read_only=True,
+            data_only=False,
+            keep_links=False,
+        )
     except Exception as exc:
+        if workbook is not None:
+            workbook.close()
+        if formula_workbook is not None:
+            formula_workbook.close()
         raise ValueError("无法读取 Excel 工作簿，请确认文件未损坏且格式为 xlsx") from exc
 
     issues: list[ImportIssue] = []
@@ -643,13 +902,17 @@ def parse_injection_schedule_workbook(
         )
         molds, orders, tasks = _parse_plan_rows(
             workbook,
+            formula_workbook,
             factory_id,
             template,
             machines,
             issues,
         )
     finally:
-        workbook.close()
+        if workbook is not None:
+            workbook.close()
+        if formula_workbook is not None:
+            formula_workbook.close()
 
     if not machines:
         issues.append(

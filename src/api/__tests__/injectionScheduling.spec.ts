@@ -30,6 +30,23 @@ describe('injection scheduling HTTP repository', () => {
     await expect(repository.loadSnapshot('huakang-b')).resolves.toBeNull()
   })
 
+  it('loads only the published snapshot for production big-screen mode', async () => {
+    const snapshot = cloneSchedulingSnapshot('huaxing')!
+    snapshot.plan.status = 'published'
+    const get = vi.fn()
+      .mockResolvedValueOnce({ data: { snapshot } })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+    const repository = createHttpInjectionSchedulingRepository(clientWith({ get }))
+
+    await expect(repository.loadPublishedSnapshot('huaxing')).resolves.toEqual(snapshot)
+    expect(get).toHaveBeenNthCalledWith(
+      1,
+      injectionSchedulingEndpoints.publishedSnapshot,
+      { params: { factory_id: 'huaxing' } },
+    )
+    await expect(repository.loadPublishedSnapshot('huakang-b')).resolves.toBeNull()
+  })
+
   it('maps move, draft and publish payloads to the backend snake-case contract', async () => {
     const snapshot = cloneSchedulingSnapshot('huaxing')!
     const post = vi.fn()
