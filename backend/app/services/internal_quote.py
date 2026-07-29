@@ -152,6 +152,15 @@ def ensure_quote_read(db: Session, user: AuthContext, factory_id: str) -> None:
     )
 
 
+def ensure_quote_read_access(db: Session, user: AuthContext, quote_id: str) -> None:
+    factory_id = db.scalar(
+        select(InternalQuote.factory_id).where(InternalQuote.id == quote_id)
+    )
+    if factory_id is None:
+        raise HTTPException(status_code=404, detail="内部报价不存在或已被删除")
+    ensure_quote_read(db, user, factory_id)
+
+
 def ensure_quote_permission(
     db: Session,
     user: AuthContext,

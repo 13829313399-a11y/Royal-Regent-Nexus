@@ -30,6 +30,20 @@ function moldingModel(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function blowMoldingModel(overrides: Record<string, unknown> = {}) {
+  return {
+    injection_loss_rate_percent: 3,
+    injection_lines: [],
+    blow_lines: [{
+      item: '吹气瓶', daily_capacity: '12000', material: '', grade: '', estimated_weight_g: 45,
+      labor_hkd: 0.2, burr_hkd: 0.1, profit_multiplier: 1.05, quantity: 1,
+      output_count: '1出2', mold_price_rmb: 5000, remark: '',
+      ...overrides,
+    }],
+    caixing_tool_plan_rows: [],
+  }
+}
+
 describe('InternalQuoteSectionForm engineering mold prefill', () => {
   it('locks engineering identity fields but leaves material and machine selection editable', () => {
     const wrapper = mount(InternalQuoteSectionForm, {
@@ -157,6 +171,63 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(modelValue.injection_lines.map((row) => [row.item, row.mold_no])).toEqual([
       ['挂钩左件', 'M12-A'],
       ['挂钩右件', 'M12-B'],
+    ])
+  })
+})
+
+describe('InternalQuoteSectionForm blow material live preview', () => {
+  it('defaults the only matching grade and calculates the frozen material price immediately', async () => {
+    const modelValue = blowMoldingModel()
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'molding',
+        modelValue,
+        referenceSnapshot,
+        'onUpdate:modelValue': () => undefined,
+      },
+    })
+
+    await wrapper.get('input[aria-label="吹气用料"]').setValue('ABS')
+
+    expect(modelValue.blow_lines[0]).toMatchObject({ material: 'ABS', grade: '750SW' })
+    expect(wrapper.get('select[aria-label="吹气具体材料料型"]').text()).toContain('750SW · HKD 8.500/lb')
+    expect(wrapper.findAll('.moldingBlowTable .snapshot-cell').map((cell) => cell.text())).toEqual([
+      '8.500',
+      '0.843',
+      '1.143',
+      '1.200',
+    ])
+    expect(wrapper.text()).toContain('吹气实时合计 HKD 1.200')
+    expect(wrapper.text()).not.toContain('保存后计算')
+  })
+
+  it('offers all matching grades and recalculates as soon as one is selected', async () => {
+    const modelValue = blowMoldingModel()
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'molding',
+        modelValue,
+        referenceSnapshot,
+        'onUpdate:modelValue': () => undefined,
+      },
+    })
+
+    await wrapper.get('input[aria-label="吹气用料"]').setValue('PP')
+    const gradeSelect = wrapper.get('select[aria-label="吹气具体材料料型"]')
+    expect(modelValue.blow_lines[0].grade).toBe('')
+    expect(gradeSelect.text()).toContain('JM350/K8009')
+    expect(gradeSelect.text()).toContain('7032 E3')
+    expect(gradeSelect.text()).toContain('5090T')
+    expect(wrapper.findAll('.moldingBlowTable .snapshot-cell')[0].text()).toBe('请选择具体料型')
+
+    await gradeSelect.setValue(JSON.stringify(['1#PP', '7032 E3']))
+
+    expect(modelValue.blow_lines[0]).toMatchObject({ material: '1#PP', grade: '7032 E3' })
+    expect(wrapper.findAll('.moldingBlowTable .snapshot-cell').map((cell) => cell.text())).toEqual([
+      '6.800',
+      '0.674',
+      '0.974',
+      '1.023',
     ])
   })
 })

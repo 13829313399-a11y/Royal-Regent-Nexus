@@ -106,16 +106,8 @@ const engineeringSyncedInjectionCount = computed(() => molding.value.injection_l
 function injectionFieldLocked(row: MoldingPayload['injection_lines'][number], field: string) {
   return Boolean(!row.engineering_sync_disabled && row.engineering_source_key && row.engineering_synced_fields?.includes(field))
 }
-const moldingBreakdown = computed<Record<string, unknown>[]>(() => {
-  const rows = props.calculation?.line_breakdown
-  return Array.isArray(rows) ? rows.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object') : []
-})
-const moldingTotals = computed(() => {
-  const totals = props.calculation?.totals
-  return totals && typeof totals === 'object' ? totals as Record<string, unknown> : {}
-})
-
 type InjectionRow = MoldingPayload['injection_lines'][number]
+type MoldingMaterialSelection = Pick<InjectionRow, 'material' | 'grade'>
 type MoldingMaterialReference = { material: string; grade: string; priceHkdLb: number }
 type MoldingMachineReference = { range: string; machine: string; shiftPriceHkd: number }
 
@@ -151,7 +143,7 @@ const moldingMachineReferences = computed<MoldingMachineReference[]>(() => {
   })
 })
 
-function materialOptions(row: InjectionRow) {
+function materialOptions(row: MoldingMaterialSelection) {
   const material = normalizedReferenceToken(row.material)
   const hint = material || normalizedReferenceToken(row.grade)
   if (!hint) return moldingMaterialReferences.value
@@ -163,7 +155,7 @@ function materialOptions(row: InjectionRow) {
   })
   return fuzzy.length ? fuzzy : moldingMaterialReferences.value
 }
-function selectedMaterialReference(row: InjectionRow) {
+function selectedMaterialReference(row: MoldingMaterialSelection) {
   const material = normalizedReferenceToken(row.material)
   const grade = normalizedReferenceToken(row.grade)
   const exact = moldingMaterialReferences.value.find((item) => normalizedReferenceToken(item.material) === material && normalizedReferenceToken(item.grade) === grade)
@@ -180,14 +172,14 @@ function selectedMaterialReference(row: InjectionRow) {
   if (candidates.length === 1) return candidates[0]
   return undefined
 }
-function selectMaterial(row: InjectionRow) {
+function selectMaterial(row: MoldingMaterialSelection) {
   const candidates = moldingMaterialReferences.value.filter((item) => normalizedReferenceToken(item.material) === normalizedReferenceToken(row.material))
   if (!candidates.some((item) => normalizedReferenceToken(item.grade) === normalizedReferenceToken(row.grade))) row.grade = candidates.length === 1 ? candidates[0].grade : ''
 }
 function materialReferenceValue(item: MoldingMaterialReference) {
   return JSON.stringify([item.material, item.grade])
 }
-function selectMaterialGrade(row: InjectionRow, value: string) {
+function selectMaterialGrade(row: MoldingMaterialSelection, value: string) {
   const selected = moldingMaterialReferences.value.find((item) => materialReferenceValue(item) === value)
   if (!selected) return
   row.material = selected.material
@@ -232,6 +224,12 @@ watchEffect(() => {
       if (!row.machine_name) row.machine_name = machine.machine
     }
   }
+  for (const row of molding.value.blow_lines) {
+    const material = selectedMaterialReference(row)
+    if (!material) continue
+    if (row.material !== material.material) row.material = material.material
+    if (row.grade !== material.grade) row.grade = material.grade
+  }
 })
 function injectionPreview(row: InjectionRow) {
   const material = selectedMaterialReference(row)
@@ -262,21 +260,43 @@ function injectionPreviewText(row: InjectionRow, key: 'materialPriceHkdG' | 'mat
 }
 const liveInjectionTotal = computed(() => molding.value.injection_lines.reduce((total, row) => total + (injectionPreview(row).lineAmountHkd ?? 0), 0))
 
+function blowPreview(row: MoldingPayload['blow_lines'][number]) {
+  const material = selectedMaterialReference(row)
+  const estimatedWeightG = Math.max(0, finiteNumber(row.estimated_weight_g))
+  const laborHkd = Math.max(0, finiteNumber(row.labor_hkd))
+  const burrHkd = Math.max(0, finiteNumber(row.burr_hkd))
+  const profitMultiplier = Math.max(0, finiteNumber(row.profit_multiplier, 1.05))
+  const quantity = Math.max(0, finiteNumber(row.quantity, 1))
+  const materialCostHkd = material ? estimatedWeightG * material.priceHkdLb / 454 : undefined
+  const subtotalHkd = materialCostHkd === undefined ? undefined : materialCostHkd + laborHkd + burrHkd
+  const unitAmountHkd = subtotalHkd === undefined ? undefined : subtotalHkd * profitMultiplier
+  return {
+    materialPriceHkdLb: material?.priceHkdLb,
+    materialCostHkd,
+    subtotalHkd,
+    unitAmountHkd,
+    lineAmountHkd: unitAmountHkd === undefined ? undefined : unitAmountHkd * quantity,
+  }
+}
+
+function blowPreviewText(
+  row: MoldingPayload['blow_lines'][number],
+  key: 'materialPriceHkdLb' | 'materialCostHkd' | 'subtotalHkd' | 'unitAmountHkd',
+) {
+  const value = blowPreview(row)[key]
+  if (value !== undefined) return fixedDecimal(value, 3)
+  return row.material ? '请选择具体料型' : '请填写用料'
+}
+
+const liveBlowTotal = computed(() => molding.value.blow_lines.reduce((total, row) => total + (blowPreview(row).lineAmountHkd ?? 0), 0))
+const liveMoldingTotal = computed(() => liveInjectionTotal.value + liveBlowTotal.value)
+
 function fixedDecimal(value: number, precision: number) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return (0).toFixed(precision)
   const factor = 10 ** precision
   const rounded = Math.sign(numeric) * Math.round((Math.abs(numeric) + Number.EPSILON) * factor) / factor
   return rounded.toFixed(precision)
-}
-function moldingResult(kind: 'injection' | 'blow', index: number, key: string, precision = 3) {
-  const row = moldingBreakdown.value.filter((item) => item.kind === kind)[index]
-  const parsed = Number(row?.[key])
-  return Number.isFinite(parsed) ? fixedDecimal(parsed, precision) : '保存后计算'
-}
-function moldingTotal(key: 'injection_hkd' | 'blow_hkd' | 'total_hkd') {
-  const parsed = Number(moldingTotals.value[key])
-  return Number.isFinite(parsed) ? parsed : 0
 }
 function injectionLossWeight(netWeight: number, lossRate: number) {
   const weight = Number(netWeight)
@@ -757,19 +777,36 @@ function addDickieMaterialPrice() {
       </section>
       <section v-if="isCaixing" class="payload-block"><header><div><strong>彩星 Tool Plan 部分</strong><span>客户字段原样进入塑胶/毛绒模板；Cycle、Cav.、Up、材料/啤工成本不可从内部总价反推</span></div><button type="button" :disabled="disabled" @click="addCaixingToolPlanRow"><Plus />新增 Tool Plan</button></header><div class="payload-table-scroll"><table class="extraWide caixingToolPlan"><thead><tr><th>Ref</th><th>Type</th><th>Tool No.</th><th>Tooling HKD</th><th>Description</th><th>SKU</th><th>Cav.</th><th>Up</th><th>Net Wt. g</th><th>Material Code</th><th>Material</th><th>Color</th><th>Material Cost</th><th>M/C Size</th><th>Cycle s</th><th>Process Cost</th><th /></tr></thead><tbody><tr v-for="(row,index) in molding.caixing_tool_plan_rows" :key="index"><td><input v-model="row.ref_no" :disabled="disabled" aria-label="彩星 Tool Plan Ref"></td><td><select v-model="row.process_type" :disabled="disabled" aria-label="彩星 Tool Plan Type"><option value="IN">IN</option><option value="BL">BL</option><option value="CP">CP</option><option value="DC">DC</option><option value="RC">RC</option></select></td><td><input v-model="row.tool_no" :disabled="disabled" aria-label="彩星 Tool Number"></td><td><input v-model.number="row.tooling_cost_hkd" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩星 Tooling Cost"></td><td><input v-model="row.description" :disabled="disabled" aria-label="彩星 Tool Description"></td><td><input v-model="row.sku_no" :disabled="disabled" aria-label="彩星 Tool SKU"></td><td><input v-model.number="row.cavities" :disabled="disabled" type="number" min="0" aria-label="彩星 Cavities"></td><td><input v-model.number="row.up" :disabled="disabled" type="number" min="0" aria-label="彩星 Up"></td><td><input v-model.number="row.net_weight_g" :disabled="disabled" type="number" min="0" step="0.001" aria-label="彩星 Net Weight"></td><td><input v-model.number="row.material_code" :disabled="disabled" type="number" min="0" aria-label="彩星 Material Code"></td><td><input v-model="row.material" :disabled="disabled" aria-label="彩星 Material"></td><td><input v-model="row.color" :disabled="disabled" aria-label="彩星 Color"></td><td><input v-model.number="row.material_cost_hkd" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="彩星 Material Cost"></td><td><input v-model="row.machine_size" :disabled="disabled" aria-label="彩星 Machine Size"></td><td><input v-model.number="row.cycle_time_seconds" :disabled="disabled" type="number" min="0" step="0.01" aria-label="彩星 Cycle Time"></td><td><input v-model.number="row.process_cost_hkd" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="彩星 Process Cost"></td><td><button type="button" class="icon" :disabled="disabled" @click="remove(molding.caixing_tool_plan_rows,index)"><Trash2 /></button></td></tr><tr v-if="!molding.caixing_tool_plan_rows.length"><td colspan="17" class="empty">未填写 Tool Plan 将阻断彩星 P4 接收</td></tr></tbody></table></div></section>
       <section :id="blockDomId('blow')" class="payload-block molding-blow" data-form-block>
-        <header><div><strong>吹气部分</strong><span>单价为港币；材料与料型使用同一冻结参考快照，保存后由服务端统一重算</span></div><button type="button" :disabled="disabled" @click="addBlow"><Plus />新增吹气货号</button></header>
+        <header><div><strong>吹气部分</strong><span>填写用料后按厂区冻结快照生成可选料型；唯一料型自动选中并即时计算</span></div><button type="button" :disabled="disabled" @click="addBlow"><Plus />新增吹气货号</button></header>
         <div class="payload-table-scroll">
           <table class="moldingBlowTable">
             <thead><tr><th>#</th><th>货名</th><th>日产量 / 22H</th><th>用料</th><th>料型</th><th>预估料重 g</th><th>料价 HKD/lb（快照）</th><th>产品料价 HKD（自动）</th><th>吹工 HKD</th><th>披锋 HKD</th><th>小计 HKD（自动）</th><th>利润 ×</th><th>合计 HKD（自动）</th><th>成品用量</th><th>出数</th><th>模价 RMB</th><th>备注</th><th /></tr></thead>
             <tbody>
               <tr v-for="(row,index) in molding.blow_lines" :key="index">
-                <td class="row-number">{{ index + 1 }}</td><td><input v-model="row.item" :disabled="disabled"></td><td><input v-model="row.daily_capacity" :disabled="disabled"></td><td><input v-model="row.material" :disabled="disabled" placeholder="例如 ABS"></td><td><input v-model="row.grade" :disabled="disabled" placeholder="例如 750SW"></td><td><input v-model.number="row.estimated_weight_g" :disabled="disabled" type="number" min="0" step="0.001"></td><td class="snapshot-cell">{{ moldingResult('blow', index, 'material_price_hkd_lb') }}</td><td class="snapshot-cell">{{ moldingResult('blow', index, 'material_cost_hkd') }}</td><td><input v-model.number="row.labor_hkd" :disabled="disabled" type="number" min="0" step="0.0001"></td><td><input v-model.number="row.burr_hkd" :disabled="disabled" type="number" min="0" step="0.0001"></td><td class="snapshot-cell">{{ moldingResult('blow', index, 'subtotal_hkd') }}</td><td><input v-model.number="row.profit_multiplier" :disabled="disabled" type="number" min="0" step="0.01"></td><td class="snapshot-cell amount">{{ moldingResult('blow', index, 'unit_amount_hkd') }}</td><td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1"></td><td><input v-model="row.output_count" :disabled="disabled"></td><td><input v-model.number="row.mold_price_rmb" :disabled="disabled" type="number" min="0" step="0.01"></td><td><input v-model="row.remark" :disabled="disabled"></td><td><button type="button" class="icon" :disabled="disabled" @click="remove(molding.blow_lines,index)"><Trash2 /></button></td>
+                <td class="row-number">{{ index + 1 }}</td>
+                <td><input v-model="row.item" :disabled="disabled"></td>
+                <td><input v-model="row.daily_capacity" :disabled="disabled"></td>
+                <td><input v-model="row.material" :disabled="disabled" placeholder="例如 ABS" aria-label="吹气用料" @input="row.grade = ''"></td>
+                <td><select :value="selectedMaterialReference(row) ? materialReferenceValue(selectedMaterialReference(row)!) : ''" :disabled="disabled || !row.material" aria-label="吹气具体材料料型" @change="selectMaterialGrade(row, ($event.target as HTMLSelectElement).value)"><option value="">{{ row.material ? '请选择具体料型' : '先填写用料' }}</option><option v-for="item in materialOptions(row)" :key="`${item.material}-${item.grade}`" :value="materialReferenceValue(item)">{{ item.grade }} · HKD {{ fixedDecimal(item.priceHkdLb, 3) }}/lb</option></select></td>
+                <td><input v-model.number="row.estimated_weight_g" :disabled="disabled" type="number" min="0" step="0.001"></td>
+                <td class="snapshot-cell">{{ blowPreviewText(row, 'materialPriceHkdLb') }}</td>
+                <td class="snapshot-cell">{{ blowPreviewText(row, 'materialCostHkd') }}</td>
+                <td><input v-model.number="row.labor_hkd" :disabled="disabled" type="number" min="0" step="0.0001"></td>
+                <td><input v-model.number="row.burr_hkd" :disabled="disabled" type="number" min="0" step="0.0001"></td>
+                <td class="snapshot-cell">{{ blowPreviewText(row, 'subtotalHkd') }}</td>
+                <td><input v-model.number="row.profit_multiplier" :disabled="disabled" type="number" min="0" step="0.01"></td>
+                <td class="snapshot-cell amount">{{ blowPreviewText(row, 'unitAmountHkd') }}</td>
+                <td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1"></td>
+                <td><input v-model="row.output_count" :disabled="disabled"></td>
+                <td><input v-model.number="row.mold_price_rmb" :disabled="disabled" type="number" min="0" step="0.01"></td>
+                <td><input v-model="row.remark" :disabled="disabled"></td>
+                <td><button type="button" class="icon" :disabled="disabled" @click="remove(molding.blow_lines,index)"><Trash2 /></button></td>
               </tr>
               <tr v-if="!molding.blow_lines.length"><td colspan="18" class="empty">暂无吹气明细；没有吹气件时可保持为空</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="molding-summary-grid"><span>模价 RMB 仅记录，不重复计入吹气单位成本</span><b>吹气合计 HKD {{ calculated(moldingTotal('blow_hkd')) }}</b><b>啤机总计 HKD {{ calculated(moldingTotal('total_hkd')) }}</b></div>
+        <div class="molding-summary-grid"><span>材料和料型选定后即时按冻结快照预览；保存时服务端再作权威重算</span><b>吹气实时合计 HKD {{ calculated(liveBlowTotal) }}</b><b>啤机实时总计 HKD {{ calculated(liveMoldingTotal) }}</b></div>
         <div class="molding-formula-note"><strong>公式</strong><span>产品料价 = 预估料重 × 冻结材料价 ÷ 454；小计 = 产品料价 + 吹工 + 披锋；合计 = 小计 × 利润倍率，再按成品用量计入啤机小计。</span></div>
       </section>
     </template>
@@ -786,7 +823,7 @@ function addDickieMaterialPrice() {
         <div class="quick-quote-note"><strong>权威公式</strong><span>喷油快捷报价 = 喷油工 + 油漆 + 油漆 × 13%。保存后由服务端按相同公式重算，可直接提交审核并进入最终报价。</span></div>
       </section>
       <section v-else :id="blockDomId('painting')" class="payload-block painting-card" data-form-block>
-        <header><div><strong>二次加工部分</strong><span>按名称与位置录入八类工序数量和港币单价；图片请填写附件名称或引用，原报价单可作为分段附件留存。</span></div><button type="button" :disabled="disabled" @click="addPainting"><Plus />新增二次加工</button></header>
+        <header><div><strong>喷油/移印/UV部分</strong><span>按名称与位置录入八类工序数量和港币单价；图片请填写附件名称或引用，原报价单可作为分段附件留存。</span></div><button type="button" :disabled="disabled" @click="addPainting"><Plus />新增喷油/移印/UV</button></header>
         <div class="payload-table-scroll">
           <table class="painting">
             <thead>
@@ -804,12 +841,12 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.remark" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行备注`"></td>
                 <td><button type="button" class="icon" :disabled="disabled" @click="remove(painting.rows,index)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!painting.rows.length"><td colspan="23" class="empty">暂无二次加工明细，可新增或从喷油报价单预览导入</td></tr>
+              <tr v-if="!painting.rows.length"><td colspan="23" class="empty">暂无喷油/移印/UV明细，可新增或从喷油报价单预览导入</td></tr>
             </tbody>
             <tfoot v-if="painting.rows.length"><tr><td colspan="4">工序合计</td><template v-for="code in operationCodes" :key="`${code}-total`"><td colspan="2" class="painting-operation-total">HKD {{ calculated(paintingOperationTotals[code]) }}</td></template><td class="calculated-cell">HKD {{ calculated(paintingTotal) }}</td><td colspan="2" /></tr></tfoot>
           </table>
         </div>
-        <div class="painting-summary-card"><strong>二、二次加工成本汇总</strong><span>当前填入预览</span><b>HKD {{ calculated(paintingTotal) }}</b><span>正式金额</span><b>保存后由服务端权威重算</b></div>
+        <div class="painting-summary-card"><strong>二、喷油/移印/UV成本汇总</strong><span>当前填入预览</span><b>HKD {{ calculated(paintingTotal) }}</b><span>正式金额</span><b>保存后由服务端权威重算</b></div>
         <div class="painting-formula-note"><strong>公式</strong><span>行报价 HKD = Σ（工序数量 × 工序单价 HKD）；喷油合计 HKD = Σ 行报价。源表“总报价”和合计仅用于核对，不直接写入权威金额。</span></div>
       </section>
       <section v-if="isDisney" class="payload-block"><header><div><strong>迪士尼 Decoration 部分</strong><span>客户模板按 Application Type、Rate per Op 和 # of Ops 输出；不得从内部喷油小计反推</span></div><button type="button" :disabled="disabled" @click="addDisneyDecoration"><Plus />新增装饰工序</button></header><div class="payload-table-scroll"><table><thead><tr><th>Application Type</th><th>Rate per Op USD</th><th># of Ops</th><th /></tr></thead><tbody><tr v-for="(row,index) in painting.disney_decorations" :key="index"><td><input v-model="row.application_type" :disabled="disabled" aria-label="迪士尼装饰工序"></td><td><input v-model.number="row.rate_per_op_usd" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="迪士尼装饰单价 USD"></td><td><input v-model.number="row.operations" :disabled="disabled" type="number" min="0" aria-label="迪士尼装饰次数"></td><td><button type="button" class="icon" :disabled="disabled" @click="remove(painting.disney_decorations,index)"><Trash2 /></button></td></tr><tr v-if="!painting.disney_decorations.length"><td colspan="4" class="empty">存在喷油成本时，未填写客户 Decoration 工序将阻断 P4 接收</td></tr></tbody></table></div></section>
