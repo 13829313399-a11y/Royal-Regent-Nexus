@@ -139,7 +139,11 @@ Engineering auxiliary-material rows and sales packaging-material rows accept eit
 
 Sales flat-card rows carry an explicit positive quantity. Frontend preview and server-authoritative calculation both use `length_in × width_in × flat_card_price_factor × quantity ÷ 1000`; the configured flat-card factor defaults to the carton paper-price factor, and legacy rows without quantity default to `1`.
 
-Customer-price artifacts are derived from approved structured quote data through customer-specific converters. Factory-scoped customer masters and pricing baselines remain separate from the internal collaboration state. Customer-facing outputs must not expose internal commercial fields outside the converter whitelist.
+Customer-price artifacts are derived from approved structured quote data through customer-specific converters. Factory-scoped customer masters and pricing baselines remain separate from the internal collaboration state. BuzzBee, Disney, Dickie, and Caixing are Huaxing-only mappings; 360 is a Huakang A-only mapping. Huakang B/C/D and Huadeng expose independent unmapped states until an explicit factory-specific mapping chain is added. Customer-facing outputs must not expose internal commercial fields outside the converter whitelist.
+
+彩星业务专属字段只保存塑胶/毛绒类型、Item No.、Item Description 和报价日期；外箱长宽高、CUFT、CBM、Pcs/Shipper 与纸箱价统一读取业务第一条主纸箱及其服务端计算行，客户模板成本行统一读取各已审批分段的 calculation，不允许在彩星区维护重复副本。客价输出按客户模板口径自动重分配：Tool Plan 的 `BL` 吹气工序成本不计入 `Molding & Casting`，而计入 `Summary` 的 `Spraying`；油漆和喷油人工合计计入 `Tampo Printing`。电池计入 `Purchase`，`IC` 计入 `Special Material`，利宝/说明书、锡线、胶针和胶纸计入 `Packing`。两套彩星模板的 `Packing` B 列是固定类型目录，转换器必须保留原值，只在匹配类型行的 C 列及其后写入规格、数量和成本。
+
+360 业务专属字段只保存 MS Brand、製表人、发行日期、版本、首次货柜出货日期和最终运费路线；MOQ、彩盒/纸箱尺寸、CUFT、Pcs/Carton、纸箱价、测试费和全部成本均复用通用业务字段及服务端 calculation，不保存重复副本。华康 A / 360 导入自动识别 P4 v2 最终放行 `.xlsx` 与原内部多 Sheet `.xlsx`；原内部文件只要求“内部明细”页，日常导入不要求也不应依赖客户输出页 `Breakdown`，彩盒、车衣等页可随源文件保留但不会复制到客户文件。原内部文件缺少客户抬头元数据时，製表人回退郑大能、发行日期优先从文件名读取、MOQ 使用当前 360 报价基数 20,000；旧 `.xls` 继续阻断。输出只生成客户 `Breakdown` 页，不携带内部明细、供应商分解页、样例产品图、外部链接或共享字符串残留。塑胶材料按客户固定 USD/KG 表（ABS 2.03、C-ABS 3.53、PP 1.70、PVC 1.92、C-PVC 2.26、POM 3.10、Roto-PVC 2.18、C-PP 1.84）乘实际含损耗重量；港币成本按 7.8 换算美元，材料损耗固定 2%，Markup 固定 12%。车衣快捷总价因无法逐项输出用量和单价而必须阻断；未配置的塑胶材料名、缺纸箱或缺运费路线同样阻断。
 
 The pricing API persists factory- and customer-scoped pricing quotes. Totals are recalculated server-side and tampered client totals are rejected.
 

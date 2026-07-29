@@ -8,7 +8,7 @@ import {
   type XlsxOutputSheet,
 } from './xlsxLite'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
-import type { P4InternalQuoteArtifact } from './p4Artifact'
+import type { P4InternalQuoteArtifact, P4SectionCode } from './p4Artifact'
 
 export type CaixingProductType = 'plastic' | 'plush'
 
@@ -446,30 +446,60 @@ function parseCostRows(rows: XlsxCellValue[][], startRow: number) {
   return costRows
 }
 
-function includesAny(value: string, keywords: string[]) {
-  return keywords.some((keyword) => value.includes(keyword))
-}
+function effectiveCustomerGroup(row: CaixingCostRow): CaixingCustomerCostGroup | null {
+  const haystack = `${row.category} ${row.description}`
 
-function sumCostRows(costRows: CaixingCostRow[], keywords: string[], exclude: string[] = []) {
-  return sumBy(costRows, (row) => {
-    const haystack = `${row.category} ${row.description}`
-    if (!includesAny(haystack, keywords) || includesAny(haystack, exclude)) {
-      return 0
-    }
+  if (/\bIC\b/i.test(haystack)) {
+    return 'special'
+  }
+  if (/电池|battery/i.test(haystack)) {
+    return 'purchase'
+  }
+  if (/利宝|说明书|锡线|胶针|胶纸|instruction\s*sheet|label/i.test(haystack)) {
+    return 'packing'
+  }
+  if (/油漆|喷油/i.test(haystack)) {
+    return 'tampo'
+  }
+  if (row.customerGroup) {
+    return row.customerGroup
+  }
+  if (/外箱|纸箱|carton/i.test(haystack)) {
+    return 'carton'
+  }
+  if (/彩盒|内咭|内卡|吸塑|blister|polybag|胶袋/i.test(haystack)) {
+    return 'packing'
+  }
+  if (/电子|electronic/i.test(haystack)) {
+    return 'electronic'
+  }
+  if (/车衣|fabric/i.test(haystack)) {
+    return 'fabric'
+  }
+  if (/包装人工|packout/i.test(haystack)) {
+    return 'packout'
+  }
+  if (/装配工|assembly/i.test(haystack)) {
+    return 'assembly'
+  }
+  if (/车发|rooting/i.test(haystack)) {
+    return 'rooting'
+  }
+  if (/车缝|手缝|sewing|handfinish/i.test(haystack)) {
+    return 'sewing'
+  }
+  if (/special\s*material/i.test(haystack)) {
+    return 'special'
+  }
+  if (/五金|其它外购|其他外购|马达|purchase/i.test(haystack)) {
+    return 'purchase'
+  }
 
-    return row.customerCostHkd || row.baseCostHkd
-  })
-}
-
-function filterCostRows(costRows: CaixingCostRow[], keywords: string[], exclude: string[] = []) {
-  return costRows.filter((row) => {
-    const haystack = `${row.category} ${row.description}`
-    return includesAny(haystack, keywords) && !includesAny(haystack, exclude)
-  })
+  return null
 }
 
 function filterCustomerGroup(costRows: CaixingCostRow[], group: CaixingCustomerCostGroup) {
-  return costRows.filter((row) => row.customerGroup === group)
+  return costRows.filter((row) => effectiveCustomerGroup(row) === group)
 }
 
 function sumCustomerGroup(costRows: CaixingCostRow[], group: CaixingCustomerCostGroup) {
@@ -504,19 +534,6 @@ function getMoldingProcessRows(costRows: CaixingCostRow[]): CaixingMoldingProces
   return processRows
 }
 
-function getPlasticPackingTotal(costRows: CaixingCostRow[], carton: CaixingCartonProfile) {
-  const packingRows = filterCostRows(costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
-  const componentTotal = sumBy(
-    packingRows.filter((row) => !isCartonCostRow(row)),
-    (row) => costRowAmount(row) * (1 + CAIXING_PLASTIC_SCRAP_RATE),
-  )
-  const cartonPerToy = carton.cartonPrice && carton.pcsPerCarton
-    ? carton.cartonPrice / carton.pcsPerCarton
-    : 0
-
-  return roundMoney(componentTotal + cartonPerToy * (1 + CAIXING_PLASTIC_SCRAP_RATE))
-}
-
 function buildSummary(
   productType: CaixingProductType,
   injectionRows: CaixingInjectionRow[],
@@ -525,47 +542,51 @@ function buildSummary(
   carton: CaixingCartonProfile,
   sprayingDetailTotal?: number | null,
 ): CaixingSummary {
-  const hasExplicitGroups = costRows.some((row) => row.customerGroup)
   const injectionMaterial = injectionTotal?.materialCostHkd || sumBy(injectionRows, (row) => row.materialCostHkd)
-  const injectionMolding = injectionTotal?.moldingCostHkd || sumBy(injectionRows, (row) => row.moldingCostHkd)
-  const electronicMaterial = hasExplicitGroups
-    ? sumCustomerGroup(costRows, 'electronic')
-    : sumCostRows(costRows, ['电子', 'IC', '电池'])
-  const packagingMaterial = hasExplicitGroups
-    ? roundMoney(
-        sumCustomerGroup(costRows, 'packing') * (productType === 'plastic' ? 1 + CAIXING_PLASTIC_SCRAP_RATE : 1)
-        + (carton.cartonPrice && carton.pcsPerCarton
-          ? carton.cartonPrice / carton.pcsPerCarton * (productType === 'plastic' ? 1 + CAIXING_PLASTIC_SCRAP_RATE : 1)
-          : 0),
-      )
-    : productType === 'plastic'
-      ? getPlasticPackingTotal(costRows, carton)
-      : sumCostRows(costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
-  const fabric = hasExplicitGroups ? sumCustomerGroup(costRows, 'fabric') : sumCostRows(costRows, ['车衣'])
-  const purchasePartBase = sumCostRows(
-    costRows,
-    ['五金', '其它外购', '其他外购', '利宝', '说明书', '马达'],
-    ['彩盒', '内咭', '纸箱', '吸塑', '电子', 'IC', '电池'],
+  const hasExplicitToolProcesses = injectionRows.some((row) => row.processType)
+  const legacyMoldingProcessRows = hasExplicitToolProcesses ? [] : getMoldingProcessRows(costRows)
+  const injectionMolding = injectionTotal?.moldingCostHkd
+    || sumBy(injectionRows.filter((row) => row.processType !== 'BL'), (row) => row.moldingCostHkd)
+  const blowMolding = sumBy(
+    injectionRows.filter((row) => row.processType === 'BL'),
+    (row) => row.moldingCostHkd,
+  ) + sumBy(
+    legacyMoldingProcessRows.filter((row) => row.processCode === 'BL'),
+    (row) => row.costHkd,
   )
-  const explicitPurchasePart = sumCustomerGroup(costRows, 'purchase')
+  const legacyNonBlowMolding = sumBy(
+    legacyMoldingProcessRows.filter((row) => row.processCode !== 'BL'),
+    (row) => row.costHkd,
+  )
+  const electronicMaterial = sumCustomerGroup(costRows, 'electronic')
+  const packingMultiplier = productType === 'plastic' ? 1 + CAIXING_PLASTIC_SCRAP_RATE : 1
+  const packagingMaterial = roundMoney(
+    sumCustomerGroup(costRows, 'packing') * packingMultiplier
+    + (carton.cartonPrice && carton.pcsPerCarton
+      ? carton.cartonPrice / carton.pcsPerCarton * packingMultiplier
+      : 0),
+  )
+  const fabric = sumCustomerGroup(costRows, 'fabric')
+  const purchasePartBase = sumCustomerGroup(costRows, 'purchase')
   const purchasePart = productType === 'plastic'
-    ? roundMoney((hasExplicitGroups ? explicitPurchasePart : purchasePartBase) * (1 + CAIXING_PLASTIC_SCRAP_RATE))
-    : hasExplicitGroups ? explicitPurchasePart : purchasePartBase
-  const specialMaterial = hasExplicitGroups
-    ? sumCustomerGroup(costRows, 'special')
-    : productType === 'plush' ? sumCostRows(costRows, ['搪胶']) : 0
-  const moldingCasting = hasExplicitGroups
-    ? roundMoney(injectionMolding)
-    : roundMoney(injectionMolding + sumBy(getMoldingProcessRows(costRows), (row) => row.costHkd))
-  const spraying = sprayingDetailTotal === null || sprayingDetailTotal === undefined
-    ? hasExplicitGroups ? sumCustomerGroup(costRows, 'spraying') : sumCostRows(costRows, ['油漆', '喷油'])
+    ? roundMoney(purchasePartBase * (1 + CAIXING_PLASTIC_SCRAP_RATE))
+    : purchasePartBase
+  const specialMaterial = sumCustomerGroup(costRows, 'special') + (productType === 'plush'
+    ? sumBy(
+        costRows.filter((row) => !row.customerGroup && /搪胶/.test(`${row.category} ${row.description}`)),
+        costRowAmount,
+      )
+    : 0)
+  const moldingCasting = roundMoney(injectionMolding + legacyNonBlowMolding)
+  const spraying = roundMoney(blowMolding + sumCustomerGroup(costRows, 'spraying'))
+  const tampo = sprayingDetailTotal === null || sprayingDetailTotal === undefined
+    ? sumCustomerGroup(costRows, 'tampo')
     : roundMoney(sprayingDetailTotal)
-  const assemblyLabor = hasExplicitGroups ? sumCustomerGroup(costRows, 'assembly') : sumCostRows(costRows, ['装配工'], ['包装'])
-  const packoutLabor = hasExplicitGroups ? sumCustomerGroup(costRows, 'packout') : sumCostRows(costRows, ['包装人工'])
-  const rootingHair = hasExplicitGroups ? sumCustomerGroup(costRows, 'rooting') : productType === 'plush' ? sumCostRows(costRows, ['车发']) : 0
-  const sewingHandfinish = hasExplicitGroups ? sumCustomerGroup(costRows, 'sewing') : 0
-  const specialOffer = hasExplicitGroups ? sumCustomerGroup(costRows, 'special_offer') : 0
-  const tampo = hasExplicitGroups ? sumCustomerGroup(costRows, 'tampo') : 0
+  const assemblyLabor = sumCustomerGroup(costRows, 'assembly')
+  const packoutLabor = sumCustomerGroup(costRows, 'packout')
+  const rootingHair = sumCustomerGroup(costRows, 'rooting')
+  const sewingHandfinish = sumCustomerGroup(costRows, 'sewing')
+  const specialOffer = sumCustomerGroup(costRows, 'special_offer')
   const markupRate = productType === 'plush' ? 0.17 : 0.16
   const materialTotal = roundMoney(injectionMaterial + specialMaterial + electronicMaterial + purchasePart + packagingMaterial + fabric)
   const processTotal = roundMoney(moldingCasting + spraying + tampo + assemblyLabor + packoutLabor + rootingHair + sewingHandfinish + specialOffer)
@@ -827,6 +848,125 @@ interface CaixingGroupedCostRows {
   purchaseRows: CaixingCostRow[]
 }
 
+type CaixingPackingTemplateKey =
+  | 'blister_tray'
+  | 'blister_card'
+  | 'blister_insert'
+  | 'blister_outer'
+  | 'blister_inner'
+  | 'box_closed'
+  | 'box_open'
+  | 'box_window'
+  | 'box_insert'
+  | 'insert'
+  | 'cable_tie'
+  | 'certificate'
+  | 'collector'
+  | 'greeting_card'
+  | 'card_insert'
+  | 'carton_inner'
+  | 'carton_insert'
+  | 'chip_insert'
+  | 'clamshell'
+  | 'instruction_sheet'
+  | 'label_product'
+  | 'label_warning'
+  | 'plastic_nail'
+  | 'polybag'
+  | 'reinforce_plate'
+  | 'tissue_paper'
+  | 'pp_tape'
+  | 'j_hook'
+  | 'dennison'
+  | 'hot_melt_glue'
+  | 'packing_material'
+  | 'blank'
+
+interface CaixingPackingTemplateSlot {
+  rowNumber: number
+  key: CaixingPackingTemplateKey
+}
+
+const CAIXING_PLASTIC_PACKING_SLOTS: CaixingPackingTemplateSlot[] = [
+  { rowNumber: 7, key: 'blister_tray' },
+  { rowNumber: 8, key: 'blister_insert' },
+  { rowNumber: 9, key: 'blister_insert' },
+  { rowNumber: 10, key: 'blister_insert' },
+  { rowNumber: 11, key: 'blister_outer' },
+  { rowNumber: 12, key: 'blister_inner' },
+  { rowNumber: 13, key: 'box_open' },
+  { rowNumber: 14, key: 'box_window' },
+  { rowNumber: 15, key: 'insert' },
+  { rowNumber: 16, key: 'cable_tie' },
+  { rowNumber: 17, key: 'cable_tie' },
+  { rowNumber: 18, key: 'certificate' },
+  { rowNumber: 19, key: 'collector' },
+  { rowNumber: 20, key: 'card_insert' },
+  { rowNumber: 21, key: 'card_insert' },
+  { rowNumber: 22, key: 'card_insert' },
+  { rowNumber: 23, key: 'carton_inner' },
+  { rowNumber: 24, key: 'carton_insert' },
+  { rowNumber: 26, key: 'chip_insert' },
+  { rowNumber: 27, key: 'chip_insert' },
+  { rowNumber: 28, key: 'clamshell' },
+  { rowNumber: 29, key: 'clamshell' },
+  { rowNumber: 30, key: 'instruction_sheet' },
+  { rowNumber: 31, key: 'label_product' },
+  { rowNumber: 32, key: 'label_product' },
+  { rowNumber: 33, key: 'label_warning' },
+  { rowNumber: 34, key: 'plastic_nail' },
+  { rowNumber: 35, key: 'polybag' },
+  { rowNumber: 36, key: 'polybag' },
+  { rowNumber: 37, key: 'polybag' },
+  { rowNumber: 38, key: 'reinforce_plate' },
+  { rowNumber: 39, key: 'tissue_paper' },
+  { rowNumber: 40, key: 'pp_tape' },
+  { rowNumber: 41, key: 'j_hook' },
+  { rowNumber: 42, key: 'dennison' },
+  { rowNumber: 43, key: 'packing_material' },
+  ...Array.from({ length: 9 }, (_, index) => ({ rowNumber: 44 + index, key: 'blank' as const })),
+]
+
+const CAIXING_PLUSH_PACKING_SLOTS: CaixingPackingTemplateSlot[] = [
+  { rowNumber: 7, key: 'blister_card' },
+  { rowNumber: 8, key: 'blister_insert' },
+  { rowNumber: 9, key: 'blister_insert' },
+  { rowNumber: 10, key: 'blister_outer' },
+  { rowNumber: 11, key: 'blister_inner' },
+  { rowNumber: 12, key: 'box_closed' },
+  { rowNumber: 13, key: 'box_open' },
+  { rowNumber: 14, key: 'box_window' },
+  { rowNumber: 15, key: 'box_insert' },
+  { rowNumber: 16, key: 'cable_tie' },
+  { rowNumber: 17, key: 'certificate' },
+  { rowNumber: 18, key: 'greeting_card' },
+  { rowNumber: 19, key: 'card_insert' },
+  { rowNumber: 20, key: 'card_insert' },
+  { rowNumber: 21, key: 'card_insert' },
+  { rowNumber: 22, key: 'carton_inner' },
+  { rowNumber: 23, key: 'carton_insert' },
+  { rowNumber: 25, key: 'chip_insert' },
+  { rowNumber: 26, key: 'chip_insert' },
+  { rowNumber: 27, key: 'clamshell' },
+  { rowNumber: 28, key: 'clamshell' },
+  { rowNumber: 29, key: 'instruction_sheet' },
+  { rowNumber: 30, key: 'label_product' },
+  { rowNumber: 31, key: 'label_product' },
+  { rowNumber: 32, key: 'label_product' },
+  { rowNumber: 33, key: 'label_warning' },
+  { rowNumber: 34, key: 'plastic_nail' },
+  { rowNumber: 35, key: 'polybag' },
+  { rowNumber: 36, key: 'polybag' },
+  { rowNumber: 37, key: 'polybag' },
+  { rowNumber: 38, key: 'reinforce_plate' },
+  { rowNumber: 39, key: 'tissue_paper' },
+  { rowNumber: 40, key: 'pp_tape' },
+  { rowNumber: 41, key: 'dennison' },
+  { rowNumber: 42, key: 'hot_melt_glue' },
+  { rowNumber: 43, key: 'packing_material' },
+  ...Array.from({ length: 10 }, (_, index) => ({ rowNumber: 44 + index, key: 'blank' as const })),
+]
+
 interface CaixingTemplateCellPatch {
   ref: string
   value: XlsxCellValue
@@ -843,19 +983,16 @@ interface CaixingTemplateCellMatch {
 }
 
 function getCaixingGroupedCostRows(data: CaixingQuoteData): CaixingGroupedCostRows {
-  const hasExplicitGroups = data.costRows.some((row) => row.customerGroup)
-  const specialRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'special') : filterCostRows(data.costRows, ['搪胶'])
-  const electronicRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'electronic') : filterCostRows(data.costRows, ['电子', 'IC', '电池'])
-  const packingRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'packing') : filterCostRows(data.costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
-  const fabricRows = hasExplicitGroups
-    ? filterCustomerGroup(data.costRows, 'fabric')
-    : data.metadata.productType === 'plush'
-      ? filterCostRows(data.costRows, ['车衣', '车发'])
-      : filterCostRows(data.costRows, ['车衣'])
-  const purchaseRows = hasExplicitGroups ? filterCustomerGroup(data.costRows, 'purchase') : data.costRows.filter((row) => {
-    const haystack = `${row.category} ${row.description}`
-    return !includesAny(haystack, ['电子', 'IC', '电池', '彩盒', '内咭', '纸箱', '吸塑', '车衣', '车发', '装配工', '喷油', '油漆', '啤工', '料价', '吹气', '搪胶', '运费', '吊柜'])
-  })
+  const specialRows = [
+    ...filterCustomerGroup(data.costRows, 'special'),
+    ...(data.metadata.productType === 'plush'
+      ? data.costRows.filter((row) => !row.customerGroup && /搪胶/.test(`${row.category} ${row.description}`))
+      : []),
+  ]
+  const electronicRows = filterCustomerGroup(data.costRows, 'electronic')
+  const packingRows = filterCustomerGroup(data.costRows, 'packing')
+  const fabricRows = filterCustomerGroup(data.costRows, 'fabric')
+  const purchaseRows = filterCustomerGroup(data.costRows, 'purchase')
 
   return {
     specialRows,
@@ -864,6 +1001,68 @@ function getCaixingGroupedCostRows(data: CaixingQuoteData): CaixingGroupedCostRo
     fabricRows,
     purchaseRows,
   }
+}
+
+function getPackingTemplateCandidates(row: CaixingCostRow): CaixingPackingTemplateKey[] {
+  const category = row.category
+  const description = row.description
+  const haystack = `${category} ${description}`
+
+  if (/说明书|instruction\s*sheet/i.test(description)) return ['instruction_sheet', 'packing_material', 'blank']
+  if (/利宝|label/i.test(description)) return ['label_product', 'label_warning', 'packing_material', 'blank']
+  if (/开窗|window/i.test(description)) return ['box_window', 'box_open', 'packing_material', 'blank']
+  if (/闭口|closed/i.test(description)) return ['box_closed', 'box_open', 'packing_material', 'blank']
+  if (/彩盒|box/i.test(description)) return ['box_open', 'box_closed', 'box_window', 'packing_material', 'blank']
+  if (/胶针|plastic\s*nail/i.test(haystack)) return ['plastic_nail', 'dennison', 'packing_material', 'blank']
+  if (/胶纸|tape/i.test(haystack)) return ['pp_tape', 'packing_material', 'blank']
+  if (/锡线/i.test(haystack)) return ['packing_material', 'blank']
+  if (/热熔胶|hot\s*melt/i.test(haystack)) return ['hot_melt_glue', 'packing_material', 'blank']
+  if (/纸巾|tissue/i.test(haystack)) return ['tissue_paper', 'packing_material', 'blank']
+  if (/胶袋|polybag/i.test(haystack)) return ['polybag', 'packing_material', 'blank']
+  if (/扎带|cable\s*tie/i.test(haystack)) return ['cable_tie', 'packing_material', 'blank']
+  if (/警告|warning/i.test(haystack)) return ['label_warning', 'label_product', 'packing_material', 'blank']
+  if (/证书|certificate/i.test(haystack)) return ['certificate', 'card_insert', 'packing_material', 'blank']
+  if (/贺卡|greeting/i.test(haystack)) return ['greeting_card', 'card_insert', 'packing_material', 'blank']
+  if (/收藏卡|collector/i.test(haystack)) return ['collector', 'card_insert', 'packing_material', 'blank']
+  if (/内咭|内卡|插咭|插卡|card\s*insert/i.test(haystack)) return ['card_insert', 'insert', 'packing_material', 'blank']
+  if (/内箱/i.test(haystack)) return ['carton_inner', 'carton_insert', 'packing_material', 'blank']
+  if (/纸板|carton\s*insert/i.test(haystack)) return ['carton_insert', 'reinforce_plate', 'packing_material', 'blank']
+  if (/开窗|window/i.test(haystack)) return ['box_window', 'box_open', 'packing_material', 'blank']
+  if (/闭口|closed/i.test(haystack)) return ['box_closed', 'box_open', 'packing_material', 'blank']
+  if (/彩盒|box/i.test(haystack)) return ['box_open', 'box_closed', 'box_window', 'packing_material', 'blank']
+  if (/吸塑咭|吸塑卡|blister\s*card/i.test(haystack)) return ['blister_card', 'blister_tray', 'blister_insert', 'packing_material', 'blank']
+  if (/吸塑.*外|blister\s*outer/i.test(haystack)) return ['blister_outer', 'blister_tray', 'packing_material', 'blank']
+  if (/吸塑.*内|blister\s*inner/i.test(haystack)) return ['blister_inner', 'blister_tray', 'packing_material', 'blank']
+  if (/吸塑托|blister\s*tray/i.test(haystack)) return ['blister_tray', 'blister_inner', 'blister_outer', 'packing_material', 'blank']
+  if (/吸塑|blister/i.test(haystack)) return ['blister_tray', 'blister_card', 'blister_insert', 'packing_material', 'blank']
+  if (/利宝|label/i.test(category)) return ['label_product', 'label_warning', 'packing_material', 'blank']
+  if (/说明书/i.test(category)) return ['instruction_sheet', 'packing_material', 'blank']
+
+  return ['packing_material', 'blank']
+}
+
+function assignPackingTemplateRows(
+  rows: CaixingCostRow[],
+  slots: CaixingPackingTemplateSlot[],
+) {
+  const available = [...slots]
+
+  return rows.flatMap((item) => {
+    const candidates = getPackingTemplateCandidates(item)
+    let slotIndex = candidates
+      .map((candidate) => available.findIndex((slot) => slot.key === candidate))
+      .find((index) => index >= 0) ?? -1
+
+    if (slotIndex < 0) {
+      slotIndex = available.findIndex((slot) => slot.key === 'blank')
+    }
+    if (slotIndex < 0) {
+      return []
+    }
+
+    const [slot] = available.splice(slotIndex, 1)
+    return [{ item, rowNumber: slot.rowNumber }]
+  })
 }
 
 function templateColumnNameToIndex(columnName: string) {
@@ -1245,7 +1444,7 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
     columnIndexes.forEach((columnIndex) => patch(sheetName, ref(columnIndex, rowNumber), null))
   }
   const { metadata, summary } = data
-  const { electronicRows, packingRows, fabricRows, purchaseRows } = getCaixingGroupedCostRows(data)
+  const { specialRows, electronicRows, packingRows, fabricRows, purchaseRows } = getCaixingGroupedCostRows(data)
   const summarySheet = CAIXING_PLASTIC_TEMPLATE_SHEETS.summary
   const toolSheet = CAIXING_PLASTIC_TEMPLATE_SHEETS.toolPlan
   const electSheet = CAIXING_PLASTIC_TEMPLATE_SHEETS.elect
@@ -1291,7 +1490,12 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   formula(summarySheet, 'E17', summary.material.total, 'SUM(E11:E16)')
   formula(summarySheet, 'G17', finalCost(summary.material.total), 'SUM(G11:G16)')
   formula(summarySheet, 'H17', pct(finalCost(summary.material.total)), 'IF(G$29=0,"",G17/G$29)')
-  formula(summarySheet, 'E19', summary.process.moldingCasting, "'Tool Plan'!Q69")
+  formula(
+    summarySheet,
+    'E19',
+    summary.process.moldingCasting,
+    `SUMIF('Tool Plan'!B14:B57,"<>BL",'Tool Plan'!Q14:Q57)+SUMIF('Tool Plan'!B60:B66,"<>BL",'Tool Plan'!Q60:Q66)`,
+  )
   patch(summarySheet, 'C20', null)
   patch(summarySheet, 'D20', null)
   patch(summarySheet, 'E20', summary.process.spraying)
@@ -1361,7 +1565,7 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
     ...toolProcessRows.map((item) => item.costHkd),
   ]
   const materialCostTotal = sumBy(data.injectionRows, (item) => item.materialCostHkd)
-  const moldingCostTotal = summary.process.moldingCasting
+  const moldingCostTotal = sumBy(toolMoldingCosts, (item) => item)
 
   toolRows.forEach((rowNumber) => {
     clear(toolSheet, rowNumber, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 17])
@@ -1442,30 +1646,23 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
     formula(sheetName, totalCell, sumBy(rows, (item) => costRowAmount(item) * (1 + scrapRate)), totalFormula)
   }
 
-  patchPurchasedSection(electSheet, 8, 18, 'I19', 'SUM(I8:I18)', [])
+  patchPurchasedSection(electSheet, 8, 18, 'I19', 'SUM(I8:I18)', specialRows)
   patchPurchasedSection(electSheet, 21, 88, 'I89', 'SUM(I21:I88)', electronicRows)
   patchPurchasedSection(purchaseSheet, 8, 25, 'I26', 'SUM(I8:I25)', purchaseRows, CAIXING_PLASTIC_SCRAP_RATE)
   patchPurchasedSection(fabricSheet, 8, 30, 'I31', 'SUM(I8:I30)', fabricRows)
 
   const nonCartonPackingRows = packingRows.filter((row) => !isCartonCostRow(row))
-  const packingDataRows = [
-    ...Array.from({ length: 18 }, (_, index) => 7 + index),
-    ...Array.from({ length: 27 }, (_, index) => 26 + index),
-  ]
+  const packingDataRows = CAIXING_PLASTIC_PACKING_SLOTS.map((slot) => slot.rowNumber)
 
-  packingDataRows.forEach((rowNumber, index) => {
-    patch(packingSheet, `A${rowNumber}`, index + 1)
-    clear(packingSheet, rowNumber, [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12])
+  packingDataRows.forEach((rowNumber) => {
+    clear(packingSheet, rowNumber, [2, 3, 4, 5, 6, 7, 8, 9, 11, 12])
     patch(packingSheet, `K${rowNumber}`, 'Pc')
     patch(packingSheet, `M${rowNumber}`, CAIXING_PLASTIC_SCRAP_RATE)
     formula(packingSheet, `N${rowNumber}`, 0, `L${rowNumber}*J${rowNumber}*(1+M${rowNumber})`)
   })
 
-  nonCartonPackingRows.slice(0, packingDataRows.length).forEach((item, index) => {
-    const rowNumber = packingDataRows[index]
+  assignPackingTemplateRows(nonCartonPackingRows, CAIXING_PLASTIC_PACKING_SLOTS).forEach(({ item, rowNumber }) => {
     const cost = item.customerCostHkd || item.baseCostHkd
-    patch(packingSheet, `A${rowNumber}`, index + 1)
-    patch(packingSheet, `B${rowNumber}`, item.category)
     patch(packingSheet, `C${rowNumber}`, item.description)
     patch(packingSheet, `J${rowNumber}`, 1)
     patch(packingSheet, `K${rowNumber}`, 'Pc')
@@ -1474,8 +1671,6 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
     formula(packingSheet, `N${rowNumber}`, roundMoney(cost * (1 + CAIXING_PLASTIC_SCRAP_RATE)), `L${rowNumber}*J${rowNumber}*(1+M${rowNumber})`)
   })
 
-  patch(packingSheet, 'A25', 19)
-  patch(packingSheet, 'B25', 'Carton Shipper')
   patch(packingSheet, 'C25', null)
   patch(packingSheet, 'G25', metadata.carton.height || null)
   patch(packingSheet, 'H25', metadata.carton.length || null)
@@ -1562,7 +1757,12 @@ function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: nu
   formula(summarySheet, 'E17', summary.material.total, 'SUM(E11:E16)')
   formula(summarySheet, 'G17', finalCost(summary.material.total), 'SUM(G11:G16)')
   formula(summarySheet, 'H17', pct(finalCost(summary.material.total)), 'IF(G$33=0,"",G17/G$33)')
-  formula(summarySheet, 'E19', summary.process.moldingCasting, "'Tool Plan'!Q67")
+  formula(
+    summarySheet,
+    'E19',
+    summary.process.moldingCasting,
+    `SUMIF('Tool Plan'!B14:B58,"<>BL",'Tool Plan'!Q14:Q58)+SUMIF('Tool Plan'!B60:B65,"<>BL",'Tool Plan'!Q60:Q65)`,
+  )
   const processBaseByRow = new Map<number, number>([
     [19, summary.process.moldingCasting],
     [20, summary.process.spraying],
@@ -1610,8 +1810,17 @@ function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: nu
     ...Array.from({ length: 45 }, (_, index) => 14 + index),
     ...Array.from({ length: 6 }, (_, index) => 60 + index),
   ]
+  const moldingProcessRows = getMoldingProcessRows(data.costRows)
+  const toolInjectionRows = data.injectionRows.slice(0, toolRows.length)
+  const toolProcessRows = data.injectionRows.some((item) => item.processType)
+    ? []
+    : moldingProcessRows.slice(0, Math.max(toolRows.length - toolInjectionRows.length, 0))
+  const toolMoldingCosts = [
+    ...toolInjectionRows.map((item) => item.moldingCostHkd),
+    ...toolProcessRows.map((item) => item.costHkd),
+  ]
   const materialCostTotal = sumBy(data.injectionRows, (item) => item.materialCostHkd)
-  const moldingCostTotal = sumBy(data.injectionRows, (item) => item.moldingCostHkd)
+  const moldingCostTotal = sumBy(toolMoldingCosts, (item) => item)
 
   toolRows.forEach((rowNumber) => {
     clear(toolSheet, rowNumber, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 17])
@@ -1620,7 +1829,7 @@ function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: nu
     formula(toolSheet, `Q${rowNumber}`, 0, `IF(D${rowNumber}=0,IF(A${rowNumber}=0,"",IF(OR(B${rowNumber}="IN",B${rowNumber}="BL",B${rowNumber}="CP",B${rowNumber}="DC",B${rowNumber}="RC"),((P${rowNumber}/3600)*(IF(B${rowNumber}="IN",VLOOKUP(O${rowNumber},Summary!$G$44:$H$53,2)/I${rowNumber},VLOOKUP(B${rowNumber},Summary!$G$54:$H$57,2)/I${rowNumber}))),"Typ ??")),"Dup.Tool")`)
   })
 
-  data.injectionRows.slice(0, toolRows.length).forEach((item, index) => {
+  toolInjectionRows.forEach((item, index) => {
     const rowNumber = toolRows[index]
     const lineNo = /^\d+$/.test(item.lineNo) ? Number(item.lineNo) : item.lineNo || index + 1
     patch(toolSheet, `A${rowNumber}`, lineNo)
@@ -1641,12 +1850,23 @@ function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: nu
     patch(toolSheet, `Q${rowNumber}`, item.moldingCostHkd)
   })
 
-  formula(toolSheet, 'J59', sumBy(data.injectionRows.slice(0, 45), (item) => item.weightG), 'SUM(J14:J58)')
-  formula(toolSheet, 'N59', sumBy(data.injectionRows.slice(0, 45), (item) => item.materialCostHkd), 'SUM(N14:N58)')
-  formula(toolSheet, 'Q59', sumBy(data.injectionRows.slice(0, 45), (item) => item.moldingCostHkd), 'SUM(Q14:Q58)')
-  formula(toolSheet, 'J66', sumBy(data.injectionRows.slice(45, 51), (item) => item.weightG), 'SUM(J60:J65)')
-  formula(toolSheet, 'N66', sumBy(data.injectionRows.slice(45, 51), (item) => item.materialCostHkd), 'SUM(N60:N65)')
-  formula(toolSheet, 'Q66', sumBy(data.injectionRows.slice(45, 51), (item) => item.moldingCostHkd), 'SUM(Q60:Q65)')
+  toolProcessRows.forEach((item, index) => {
+    const rowNumber = toolRows[toolInjectionRows.length + index]
+    patch(toolSheet, `A${rowNumber}`, toolInjectionRows.length + index + 1)
+    patch(toolSheet, `B${rowNumber}`, item.processCode)
+    patch(toolSheet, `F${rowNumber}`, item.description)
+    patch(toolSheet, `G${rowNumber}`, metadata.itemNo)
+    patch(toolSheet, `H${rowNumber}`, 1)
+    patch(toolSheet, `I${rowNumber}`, 1)
+    patch(toolSheet, `Q${rowNumber}`, item.costHkd)
+  })
+
+  formula(toolSheet, 'J59', sumBy(toolInjectionRows.slice(0, 45), (item) => item.weightG), 'SUM(J14:J58)')
+  formula(toolSheet, 'N59', sumBy(toolInjectionRows.slice(0, 45), (item) => item.materialCostHkd), 'SUM(N14:N58)')
+  formula(toolSheet, 'Q59', sumBy(toolMoldingCosts.slice(0, 45), (item) => item), 'SUM(Q14:Q58)')
+  formula(toolSheet, 'J66', sumBy(toolInjectionRows.slice(45, 51), (item) => item.weightG), 'SUM(J60:J65)')
+  formula(toolSheet, 'N66', sumBy(toolInjectionRows.slice(45, 51), (item) => item.materialCostHkd), 'SUM(N60:N65)')
+  formula(toolSheet, 'Q66', sumBy(toolMoldingCosts.slice(45, 51), (item) => item), 'SUM(Q60:Q65)')
   formula(toolSheet, 'N67', materialCostTotal, 'N59+N66')
   formula(toolSheet, 'Q67', moldingCostTotal, 'Q59+Q66')
 
@@ -1687,24 +1907,17 @@ function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: nu
 
   const cartonDescription = (row: CaixingCostRow) => /外箱|纸箱|Carton/i.test(`${row.category} ${row.description}`)
   const nonCartonPackingRows = packingRows.filter((row) => !cartonDescription(row))
-  const packingDataRows = [
-    ...Array.from({ length: 17 }, (_, index) => 7 + index),
-    ...Array.from({ length: 29 }, (_, index) => 25 + index),
-  ]
-  const packingLineNo = (rowNumber: number, index: number) => rowNumber < 24 ? index + 1 : index + 2
+  const packingDataRows = CAIXING_PLUSH_PACKING_SLOTS.map((slot) => slot.rowNumber)
 
-  packingDataRows.forEach((rowNumber, index) => {
-    patch(packingSheet, `A${rowNumber}`, packingLineNo(rowNumber, index))
-    clear(packingSheet, rowNumber, [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12])
+  packingDataRows.forEach((rowNumber) => {
+    clear(packingSheet, rowNumber, [2, 3, 4, 5, 6, 7, 8, 9, 11, 12])
     patch(packingSheet, `K${rowNumber}`, 'Pc')
     formula(packingSheet, `N${rowNumber}`, 0, `L${rowNumber}*J${rowNumber}*(1+M${rowNumber})`)
   })
 
-  nonCartonPackingRows.slice(0, packingDataRows.length).forEach((item, index) => {
-    const rowNumber = packingDataRows[index]
+  assignPackingTemplateRows(nonCartonPackingRows, CAIXING_PLUSH_PACKING_SLOTS).forEach(({ item, rowNumber }) => {
     const cost = item.customerCostHkd || item.baseCostHkd
-    patch(packingSheet, `A${rowNumber}`, packingLineNo(rowNumber, index))
-    patch(packingSheet, `B${rowNumber}`, item.description)
+    patch(packingSheet, `C${rowNumber}`, item.description)
     patch(packingSheet, `J${rowNumber}`, 1)
     patch(packingSheet, `K${rowNumber}`, 'Pc')
     patch(packingSheet, `L${rowNumber}`, cost)
@@ -1712,8 +1925,6 @@ function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: nu
     formula(packingSheet, `N${rowNumber}`, cost, `L${rowNumber}*J${rowNumber}*(1+M${rowNumber})`)
   })
 
-  patch(packingSheet, 'A24', 18)
-  patch(packingSheet, 'B24', 'Carton Shipper')
   patch(packingSheet, 'C24', null)
   patch(packingSheet, 'G24', metadata.carton.height || null)
   patch(packingSheet, 'H24', metadata.carton.length || null)
@@ -2002,6 +2213,230 @@ function p4Date(value: unknown) {
   return result
 }
 
+function p4SectionCalculationRows(artifact: P4InternalQuoteArtifact, code: P4SectionCode) {
+  return p4Rows(artifact.sections[code]?.calculation?.line_breakdown)
+}
+
+function p4SectionTotals(artifact: P4InternalQuoteArtifact, code: P4SectionCode) {
+  return p4Object(artifact.sections[code]?.calculation?.totals)
+}
+
+function p4TaxTag(row: Record<string, unknown>) {
+  const rate = p4Number(row.tax_rate_percent)
+  if (rate <= 0) return ''
+  return `±${Number.isInteger(rate) ? rate : round(rate, 2)}%`
+}
+
+function p4CostDescription(row: Record<string, unknown>, fallback: string) {
+  const item = p4Text(row.item || row.name || row.process || row.group)
+  const specification = p4Text(row.specification || row.position || row.part || row.craft)
+  if (item && specification && !item.includes(specification)) return `${item} ${specification}`
+  return item || specification || fallback
+}
+
+function p4DerivedCostRow(
+  row: Record<string, unknown>,
+  customerGroup: CaixingCustomerCostGroup | undefined,
+  category: string,
+  fallbackDescription: string,
+  amountField: 'amount_hkd' | 'amount_hkd_pcs' = 'amount_hkd',
+) {
+  const amount = p4Number(row[amountField])
+  if (amount <= 0) return null
+  return {
+    taxTag: p4TaxTag(row),
+    category,
+    description: p4CostDescription(row, fallbackDescription),
+    baseCostHkd: roundMoney(amount),
+    customerCostHkd: roundMoney(amount),
+    ...(customerGroup ? { customerGroup } : {}),
+  } satisfies CaixingCostRow
+}
+
+function p4PrimaryCarton(artifact: P4InternalQuoteArtifact): CaixingCartonProfile {
+  const salesPayload = artifact.sections.sales.payload
+  const cartonRow = p4Rows(salesPayload.cartons)[0]
+  if (!cartonRow) {
+    throw new Error('彩星直转被阻断：业务部缺少基础纸箱')
+  }
+  const length = p4Positive(cartonRow.length_in, '基础纸箱长度必须大于 0')
+  const width = p4Positive(cartonRow.width_in, '基础纸箱宽度必须大于 0')
+  const height = p4Positive(cartonRow.height_in, '基础纸箱高度必须大于 0')
+  const pcsPerCarton = p4Positive(cartonRow.qty_per_carton, '基础纸箱每箱数量必须大于 0')
+  const calculatedCarton = p4SectionCalculationRows(artifact, 'sales')
+    .find((row) => p4Text(row.kind) === 'carton')
+  const cube = p4Number(calculatedCarton?.cuft) || length * width * height / 1728
+  const paperPriceFactor = p4Number(salesPayload.paper_price_factor)
+    || p4Number(artifact.referenceSnapshot.paper_price_factor)
+    || 2.75
+  const cartonPrice = p4Number(calculatedCarton?.carton_price_hkd)
+    || (length + width + 2) * (width + height + 1) * 2 * paperPriceFactor / 1000
+
+  return {
+    length,
+    width,
+    height,
+    cube: p4Positive(cube, '基础纸箱 CU.FT 必须大于 0'),
+    cbm: round(length * width * height * 0.000016387064, 4),
+    pcsPerCarton,
+    cartonPrice: p4Positive(cartonPrice, '基础纸箱价格必须大于 0'),
+  }
+}
+
+const P4_SALES_PACKAGING_LABELS: Record<string, string> = {
+  blister: '吸塑',
+  color_box_inner_card: '彩盒/内卡',
+  leaflet_manual: '利宝/说明书',
+  other_purchase: '其他外购',
+}
+
+function p4EngineeringCostRows(artifact: P4InternalQuoteArtifact) {
+  return p4SectionCalculationRows(artifact, 'engineering').flatMap((row) => {
+    if (p4Text(row.kind) !== 'material' || row.reference_only === true) return []
+    const category = p4Text(row.auxiliary_category)
+      || (p4Text(row.category) === 'hardware' ? '五金' : '其他外购')
+    const costRow = p4DerivedCostRow(
+      row,
+      p4Text(row.category) === 'packaging' ? 'packing' : undefined,
+      category,
+      '外购物料',
+    )
+    return costRow ? [costRow] : []
+  })
+}
+
+function p4SalesPackagingCostRows(artifact: P4InternalQuoteArtifact) {
+  return p4SectionCalculationRows(artifact, 'sales').flatMap((row) => {
+    if (p4Text(row.kind) !== 'packaging_material') return []
+    const category = P4_SALES_PACKAGING_LABELS[p4Text(row.category)] || p4Text(row.category) || '包装材料'
+    const costRow = p4DerivedCostRow(row, 'packing', category, '包装材料')
+    return costRow ? [costRow] : []
+  })
+}
+
+function p4ElectronicCostRows(artifact: P4InternalQuoteArtifact) {
+  const componentRows = p4SectionCalculationRows(artifact, 'electronic')
+    .filter((row) => p4Text(row.kind) === 'electronic_component' && p4Number(row.amount_hkd) > 0)
+  const rawTotal = sumBy(componentRows, (row) => p4Number(row.amount_hkd))
+  const authoritativeTotal = p4Number(p4SectionTotals(artifact, 'electronic').total_hkd) || rawTotal
+  if (authoritativeTotal <= 0) return []
+  if (rawTotal <= 0) {
+    return [{
+      taxTag: '',
+      category: '电子',
+      description: '电子报价合计',
+      baseCostHkd: roundMoney(authoritativeTotal),
+      customerCostHkd: roundMoney(authoritativeTotal),
+      customerGroup: 'electronic',
+    } satisfies CaixingCostRow]
+  }
+
+  let allocated = 0
+  return componentRows.map<CaixingCostRow>((row, index) => {
+    const baseCostHkd = roundMoney(p4Number(row.amount_hkd))
+    const customerCostHkd = index === componentRows.length - 1
+      ? roundMoney(authoritativeTotal - allocated)
+      : roundMoney(authoritativeTotal * baseCostHkd / rawTotal)
+    allocated = roundMoney(allocated + customerCostHkd)
+    const description = p4CostDescription(row, '电子零件')
+    const isIc = /\bIC\b/i.test(description)
+    return {
+      taxTag: p4TaxTag(row),
+      category: isIc ? 'IC' : '电子',
+      description,
+      baseCostHkd,
+      customerCostHkd,
+      customerGroup: isIc ? 'special' : 'electronic',
+    }
+  })
+}
+
+function p4PaintingCostRows(artifact: P4InternalQuoteArtifact) {
+  return p4SectionCalculationRows(artifact, 'painting').flatMap((row) => {
+    const kind = p4Text(row.kind)
+    if (!['painting', 'painting_quick_labor', 'painting_quick_paint', 'painting_quick_paint_tax'].includes(kind)) return []
+    const category = kind === 'painting_quick_labor'
+      ? '喷油工'
+      : kind.includes('paint') ? '油漆' : '喷油'
+    const costRow = p4DerivedCostRow(row, 'tampo', category, category)
+    return costRow ? [costRow] : []
+  })
+}
+
+function p4SlushCostRows(artifact: P4InternalQuoteArtifact, productType: CaixingProductType) {
+  return p4SectionCalculationRows(artifact, 'slush').flatMap((row) => {
+    if (p4Text(row.kind) !== 'slush') return []
+    const costRow = p4DerivedCostRow(
+      row,
+      productType === 'plush' ? 'special' : 'special_offer',
+      '搪胶',
+      '搪胶',
+    )
+    return costRow ? [costRow] : []
+  })
+}
+
+function p4SewingCostRows(artifact: P4InternalQuoteArtifact) {
+  const totals = p4SectionTotals(artifact, 'sewing')
+  const clothesHkd = p4Number(totals.clothes_hkd)
+  const legacyHairHkd = p4Number(totals.hair_hkd)
+  return [
+    ...(clothesHkd > 0 ? [{
+      taxTag: '',
+      category: '车衣',
+      description: '车衣/布料报价合计',
+      baseCostHkd: roundMoney(clothesHkd),
+      customerCostHkd: roundMoney(clothesHkd),
+      customerGroup: 'fabric' as const,
+    }] : []),
+    ...(legacyHairHkd > 0 ? [{
+      taxTag: '',
+      category: '车发',
+      description: '历史车发报价合计',
+      baseCostHkd: roundMoney(legacyHairHkd),
+      customerCostHkd: roundMoney(legacyHairHkd),
+      customerGroup: 'rooting' as const,
+    }] : []),
+  ]
+}
+
+function p4HairCostRows(artifact: P4InternalQuoteArtifact) {
+  return p4SectionCalculationRows(artifact, 'hair').flatMap((row) => {
+    if (p4Text(row.kind) !== 'hair') return []
+    const costRow = p4DerivedCostRow(row, 'rooting', '车发', '车发')
+    return costRow ? [costRow] : []
+  })
+}
+
+function p4AssemblyCostRows(artifact: P4InternalQuoteArtifact) {
+  return p4SectionCalculationRows(artifact, 'assembly').flatMap((row) => {
+    if (p4Text(row.kind) !== 'assembly_process') return []
+    const isPackout = p4Text(row.category) === 'packaging'
+    const category = isPackout ? '包装人工' : '装配工'
+    const costRow = p4DerivedCostRow(
+      row,
+      isPackout ? 'packout' : 'assembly',
+      category,
+      category,
+      'amount_hkd_pcs',
+    )
+    return costRow ? [costRow] : []
+  })
+}
+
+function p4DerivedCostRows(artifact: P4InternalQuoteArtifact, productType: CaixingProductType) {
+  return [
+    ...p4EngineeringCostRows(artifact),
+    ...p4ElectronicCostRows(artifact),
+    ...p4SalesPackagingCostRows(artifact),
+    ...p4PaintingCostRows(artifact),
+    ...p4SlushCostRows(artifact, productType),
+    ...p4SewingCostRows(artifact),
+    ...p4HairCostRows(artifact),
+    ...p4AssemblyCostRows(artifact),
+  ]
+}
+
 export function convertCaixingP4InternalQuote(
   artifact: P4InternalQuoteArtifact,
   sourceFileName: string,
@@ -2016,15 +2451,7 @@ export function convertCaixingP4InternalQuote(
   const itemNo = p4RequiredText(caixing.item_number, '缺少 Item No.')
   const itemName = p4RequiredText(caixing.item_name, '缺少 Item Description')
   const quoteDate = p4Date(caixing.quote_date)
-  const carton: CaixingCartonProfile = {
-    length: p4Positive(caixing.carton_length_in, '外箱长度必须大于 0'),
-    width: p4Positive(caixing.carton_width_in, '外箱宽度必须大于 0'),
-    height: p4Positive(caixing.carton_height_in, '外箱高度必须大于 0'),
-    cube: p4Positive(caixing.carton_cuft, '外箱 CU.FT 必须大于 0'),
-    cbm: p4Positive(caixing.carton_cbm, '外箱 CBM 必须大于 0'),
-    pcsPerCarton: p4Positive(caixing.pcs_per_carton, 'Pcs / Shipper 必须大于 0'),
-    cartonPrice: p4Positive(caixing.carton_price_hkd, 'Carton Shipper 单价必须大于 0'),
-  }
+  const carton = p4PrimaryCarton(artifact)
 
   const rawToolRows = p4Rows(artifact.sections.molding.payload.caixing_tool_plan_rows)
   if (rawToolRows.length === 0 || rawToolRows.length > 51) {
@@ -2091,24 +2518,7 @@ export function convertCaixingP4InternalQuote(
     if (!refs.has(ref)) throw new Error(`彩星直转被阻断：工程模具 ${ref} 未匹配 Tool Plan 行`)
   }
 
-  const allowedGroups = new Set<CaixingCustomerCostGroup>(['special', 'electronic', 'purchase', 'packing', 'carton', 'fabric', 'spraying', 'tampo', 'assembly', 'packout', 'rooting', 'sewing', 'special_offer'])
-  const rawCostRows = p4Rows(caixing.cost_rows)
-  if (rawCostRows.length === 0) throw new Error('彩星直转被阻断：缺少塑胶/毛绒客户模板分组明细')
-  const costRows = rawCostRows.map<CaixingCostRow>((row, index) => {
-    const customerGroup = p4RequiredText(row.group, `客户分组第 ${index + 1} 行缺少 Group`) as CaixingCustomerCostGroup
-    if (!allowedGroups.has(customerGroup)) throw new Error(`彩星直转被阻断：客户分组第 ${index + 1} 行 Group 无效`)
-    const baseCostHkd = p4NonNegative(row.base_cost_hkd, `客户分组第 ${index + 1} 行内部成本不得小于 0`)
-    const customerCostHkd = p4NonNegative(row.customer_cost_hkd, `客户分组第 ${index + 1} 行客户成本不得小于 0`)
-    if (baseCostHkd === 0 && customerCostHkd === 0) throw new Error(`彩星直转被阻断：客户分组第 ${index + 1} 行成本不能同时为 0`)
-    return {
-      taxTag: p4Text(row.tax_tag),
-      category: p4RequiredText(row.category, `客户分组第 ${index + 1} 行缺少 Category`),
-      description: p4RequiredText(row.description, `客户分组第 ${index + 1} 行缺少 Description`),
-      baseCostHkd,
-      customerCostHkd,
-      customerGroup,
-    }
-  })
+  const costRows = p4DerivedCostRows(artifact, productType)
 
   const metadata: CaixingQuoteMetadata = {
     itemNo,
@@ -2227,15 +2637,14 @@ export function createCaixingCustomerQuoteWorkbook(result: CaixingConversionResu
   }
 
   const data = firstSheet.quoteData
-  const electronicRows = filterCostRows(data.costRows, ['电子', 'IC', '电池'])
-  const packingRows = filterCostRows(data.costRows, ['彩盒', '内咭', '纸箱', '吸塑'])
-  const fabricRows = data.metadata.productType === 'plush'
-    ? filterCostRows(data.costRows, ['车衣', '车发'])
-    : filterCostRows(data.costRows, ['车衣'])
-  const purchaseRows = data.costRows.filter((row) => {
-    const haystack = `${row.category} ${row.description}`
-    return !includesAny(haystack, ['电子', 'IC', '电池', '彩盒', '内咭', '纸箱', '吸塑', '车衣', '车发', '装配工', '喷油', '油漆', '啤工', '料价', '吹气', '搪胶', '运费', '吊柜'])
-  })
+  const {
+    specialRows,
+    electronicRows,
+    packingRows,
+    fabricRows,
+    purchaseRows,
+  } = getCaixingGroupedCostRows(data)
+  const electRows = [...specialRows, ...electronicRows]
 
   const sheets: XlsxOutputSheet[] = [
     buildSummarySheet(data),
@@ -2244,7 +2653,7 @@ export function createCaixingCustomerQuoteWorkbook(result: CaixingConversionResu
 
   if (data.metadata.productType === 'plastic') {
     sheets.push(
-      buildCostSheet('Elect', 'ELECTRONIC MATERIAL COST', electronicRows, data.summary.markupRate),
+      buildCostSheet('Elect', 'SPECIAL / ELECTRONIC MATERIAL COST', electRows, data.summary.markupRate),
       buildCostSheet('Purchase', 'PURCHASED PARTS COST', purchaseRows, data.summary.markupRate),
       buildPackingSheet(data, packingRows),
       buildCostSheet('Fabric', 'FABRIC COST', fabricRows, data.summary.markupRate),
@@ -2254,7 +2663,7 @@ export function createCaixingCustomerQuoteWorkbook(result: CaixingConversionResu
       buildCostSheet('Purchase', 'PURCHASED PARTS COST', purchaseRows, data.summary.markupRate),
       buildCostSheet('Fabric', 'FABRIC / PLUSH COST', fabricRows, data.summary.markupRate),
       buildPackingSheet(data, packingRows),
-      buildCostSheet('Elect', 'ELECTRONIC MATERIAL COST', electronicRows, data.summary.markupRate),
+      buildCostSheet('Elect', 'SPECIAL / ELECTRONIC MATERIAL COST', electRows, data.summary.markupRate),
     )
   }
 

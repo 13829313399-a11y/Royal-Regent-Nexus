@@ -51,7 +51,13 @@ const isBuzzBee = computed(() => normalizedCustomer.value === 'buzzbee')
 const isDisney = computed(() => ['disney', '迪士尼'].includes(normalizedCustomer.value))
 const isDickie = computed(() => false)
 const isCaixing = computed(() => ['caixing', '彩星'].includes(normalizedCustomer.value))
-const formBlocks = computed(() => getInternalQuoteFormBlocks(props.code, model.value))
+const isThreeSixty = computed(() => ['360', 'threesixty'].includes(normalizedCustomer.value))
+const referenceFreightRoutes = computed(() => salesFreightReferenceRoutesFromSnapshot(props.referenceSnapshot?.freight))
+const formBlocks = computed(() => getInternalQuoteFormBlocks(
+  props.code,
+  model.value,
+  referenceFreightRoutes.value.map(({ capacityKey }) => capacityKey),
+))
 const completedBlockCount = computed(() => formBlocks.value.filter((item) => ['complete', 'automatic', 'optional'].includes(item.status)).length)
 const activeBlockId = ref('')
 function blockIsReady(status: string) { return ['complete', 'automatic', 'optional'].includes(status) }
@@ -328,7 +334,15 @@ function updateCartonSizeUnit(carton: SalesCartonRow, event: Event) {
 }
 const packagingMaterialTotal = computed(() => sales.value.packaging_materials.reduce((total, row) => total + calculatePackagingMaterialAmountHkd(row, props.rmbHkdRate), 0))
 const primaryCarton = computed(() => sales.value.cartons[0])
-const referenceFreightRoutes = computed(() => salesFreightReferenceRoutesFromSnapshot(props.referenceSnapshot?.freight))
+const freightCapacityDefinitions = computed(() => {
+  const seen = new Set<string>()
+  return referenceFreightRoutes.value.flatMap(({ capacityKey }) => {
+    if (seen.has(capacityKey)) return []
+    seen.add(capacityKey)
+    const known = salesFreightCapacityDefinitions.find(({ key }) => key === capacityKey)
+    return [{ key: capacityKey, label: known?.label ?? capacityKey }]
+  })
+})
 const freightCalculationEnabled = computed<boolean>({
   get: () => salesFreightCalculationModes(sales.value.freight_calc).freightEnabled,
   set: (value) => {
@@ -349,7 +363,7 @@ const freightSourceCuft = computed(() => primaryCarton.value ? calculateCartonCu
 function calculated(value: number) { return fixedDecimal(value, 3) }
 function measured(value: number) { return value.toFixed(4) }
 function whole(value: number) { return Math.round(value).toString() }
-function normalizeFreightCapacity(key: keyof Pick<SalesPayload['freight_calc'], 'cap_10t' | 'cap_5t' | 'cap_40' | 'cap_20'>) {
+function normalizeFreightCapacity(key: string) {
   const value = Number(sales.value.freight_calc[key])
   sales.value.freight_calc[key] = Number.isFinite(value) && value > 0 ? Math.max(Math.round(value), 1) : 0
 }
@@ -468,7 +482,6 @@ function addDickieMaterialPrice() {
   if (sales.value.customer_quote_fields.dickie.material_prices_hkd.length >= 4) return
   sales.value.customer_quote_fields.dickie.material_prices_hkd.push({ material: '', price_hkd_lb: 0 })
 }
-function addCaixingCostRow() { sales.value.customer_quote_fields.caixing.cost_rows.push({ group: 'purchase', tax_tag: '', category: '', description: '', base_cost_hkd: 0, customer_cost_hkd: 0 }) }
 </script>
 
 <template>
@@ -1110,7 +1123,7 @@ function addCaixingCostRow() { sales.value.customer_quote_fields.caixing.cost_ro
           </div>
           <div v-else class="freight-source-strip freight-source-missing">请先在“纸箱计算与包装尺寸”新增主纸箱，运费和吊柜费结果将自动联动。</div>
           <div class="inline-fields four freight-capacity-fields">
-            <label v-for="capacity in salesFreightCapacityDefinitions" :key="capacity.key">
+            <label v-for="capacity in freightCapacityDefinitions" :key="capacity.key">
               <span>{{ capacity.label }}（CUFT，整数）</span>
               <input v-model.number="sales.freight_calc[capacity.key]" :disabled="disabled" type="number" min="1" step="1" :aria-label="capacity.label" @blur="normalizeFreightCapacity(capacity.key)">
             </label>
@@ -1139,8 +1152,29 @@ function addCaixingCostRow() { sales.value.customer_quote_fields.caixing.cost_ro
           </div>
         </template>
       </section>
-      <section v-if="isCaixing" class="payload-block"><header><div><strong>彩星客户报价抬头与外箱部分</strong><span>塑胶/毛绒类型决定专用模板；Item、日期、CU.FT/CBM、Pcs/Shipper 与纸箱价必须显式填写</span></div></header><div class="inline-fields four"><label><span>产品类型</span><select v-model="sales.customer_quote_fields.caixing.product_type" :disabled="disabled" aria-label="彩星产品类型"><option value="plastic">塑胶</option><option value="plush">毛绒</option></select></label><label><span>Item No.</span><input v-model="sales.customer_quote_fields.caixing.item_number" :disabled="disabled" aria-label="彩星 Item Number"></label><label><span>Item Description</span><input v-model="sales.customer_quote_fields.caixing.item_name" :disabled="disabled" aria-label="彩星 Item Description"></label><label><span>Quote Date</span><input v-model="sales.customer_quote_fields.caixing.quote_date" :disabled="disabled" type="date" aria-label="彩星 Quote Date"></label><label><span>Carton L (in)</span><input v-model.number="sales.customer_quote_fields.caixing.carton_length_in" :disabled="disabled" type="number" min="0" step="0.001" aria-label="彩星 Carton Length"></label><label><span>Carton W (in)</span><input v-model.number="sales.customer_quote_fields.caixing.carton_width_in" :disabled="disabled" type="number" min="0" step="0.001" aria-label="彩星 Carton Width"></label><label><span>Carton H (in)</span><input v-model.number="sales.customer_quote_fields.caixing.carton_height_in" :disabled="disabled" type="number" min="0" step="0.001" aria-label="彩星 Carton Height"></label><label><span>CU.FT</span><input v-model.number="sales.customer_quote_fields.caixing.carton_cuft" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="彩星 Carton CUFT"></label><label><span>CBM</span><input v-model.number="sales.customer_quote_fields.caixing.carton_cbm" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="彩星 Carton CBM"></label><label><span>Pcs / Shipper</span><input v-model.number="sales.customer_quote_fields.caixing.pcs_per_carton" :disabled="disabled" type="number" min="0" aria-label="彩星 Pcs Per Shipper"></label><label><span>Carton Price HKD</span><input v-model.number="sales.customer_quote_fields.caixing.carton_price_hkd" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="彩星 Carton Price"></label></div></section>
-      <section v-if="isCaixing" class="payload-block"><header><div><strong>彩星塑胶/毛绒模板分组部分</strong><span>每行必须选择客户模板 Group；转换器只按该字段落表，不再用中文类别猜测 Purchase、Packing、Fabric 或工序</span></div><button type="button" :disabled="disabled" @click="addCaixingCostRow"><Plus />新增分组行</button></header><div class="payload-table-scroll"><table class="extraWide"><thead><tr><th>Group</th><th>税标记</th><th>内部类别</th><th>Description</th><th>内部成本 HKD</th><th>客户成本 HKD</th><th /></tr></thead><tbody><tr v-for="(row,index) in sales.customer_quote_fields.caixing.cost_rows" :key="index"><td><select v-model="row.group" :disabled="disabled" aria-label="彩星 Cost Group"><option value="special">Special Material</option><option value="electronic">Electronic</option><option value="purchase">Purchase</option><option value="packing">Packing</option><option value="carton">Carton（外箱资料另填）</option><option value="fabric">Fabric</option><option value="spraying">Spraying</option><option value="tampo">Tampo</option><option value="assembly">Assembly Labor</option><option value="packout">Packout Labor</option><option value="rooting">Hair Rooting</option><option value="sewing">Sewing / Handfinish</option><option value="special_offer">Special Offer</option></select></td><td><input v-model="row.tax_tag" :disabled="disabled" aria-label="彩星 Tax Tag"></td><td><input v-model="row.category" :disabled="disabled" aria-label="彩星 Cost Category"></td><td><input v-model="row.description" :disabled="disabled" aria-label="彩星 Cost Description"></td><td><input v-model.number="row.base_cost_hkd" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="彩星 Base Cost"></td><td><input v-model.number="row.customer_cost_hkd" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="彩星 Customer Cost"></td><td><button type="button" class="icon" :disabled="disabled" @click="remove(sales.customer_quote_fields.caixing.cost_rows,index)"><Trash2 /></button></td></tr><tr v-if="!sales.customer_quote_fields.caixing.cost_rows.length"><td colspan="7" class="empty">未填写客户模板分组将阻断彩星 P4 接收</td></tr></tbody></table></div></section>
+      <section v-if="isThreeSixty" class="payload-block">
+        <header>
+          <div>
+            <strong>360 客户报价专属资料</strong>
+            <span>纸箱、CU.FT、装箱数、测试费及各分段成本均自动读取上方资料和服务器计算；这里只填写客户抬头与最终采用的运费路线</span>
+          </div>
+        </header>
+        <div class="inline-fields four">
+          <label><span>MS Brand</span><input v-model="sales.customer_quote_fields.three_sixty.ms_brand" :disabled="disabled" aria-label="360 MS Brand"></label>
+          <label><span>製表人</span><input v-model="sales.customer_quote_fields.three_sixty.prepared_by" :disabled="disabled" aria-label="360 製表人"></label>
+          <label><span>发行日期</span><input v-model="sales.customer_quote_fields.three_sixty.quote_date" :disabled="disabled" type="date" aria-label="360 发行日期"></label>
+          <label><span>Version</span><input v-model="sales.customer_quote_fields.three_sixty.revision" :disabled="disabled" aria-label="360 Version"></label>
+          <label><span>首次货柜出货日期</span><input v-model="sales.customer_quote_fields.three_sixty.first_etd" :disabled="disabled" aria-label="360 首次货柜出货日期"></label>
+          <label>
+            <span>客户报价运费路线</span>
+            <select v-model="sales.customer_quote_fields.three_sixty.freight_route_key" :disabled="disabled" aria-label="360 运费路线">
+              <option value="">请选择服务器已计算路线</option>
+              <option v-for="option in freightOptions" :key="option.key" :value="option.key">{{ option.label }}</option>
+            </select>
+          </label>
+        </div>
+      </section>
+      <section v-if="isCaixing" class="payload-block"><header><div><strong>彩星客户报价专属资料</strong><span>外箱资料自动读取上方“基础纸箱”；包装、外购和工序成本按各已审批分段自动归入客户模板，不重复填写</span></div></header><div class="inline-fields four"><label><span>产品类型</span><select v-model="sales.customer_quote_fields.caixing.product_type" :disabled="disabled" aria-label="彩星产品类型"><option value="plastic">塑胶</option><option value="plush">毛绒</option></select></label><label><span>Item No.</span><input v-model="sales.customer_quote_fields.caixing.item_number" :disabled="disabled" aria-label="彩星 Item Number"></label><label><span>Item Description</span><input v-model="sales.customer_quote_fields.caixing.item_name" :disabled="disabled" aria-label="彩星 Item Description"></label><label><span>Quote Date</span><input v-model="sales.customer_quote_fields.caixing.quote_date" :disabled="disabled" type="date" aria-label="彩星 Quote Date"></label></div></section>
       <section v-if="isBuzzBee" class="payload-block"><header><div><strong>BuzzBee 彩盒客户分档部分</strong><span>真实 P4 直转必须完整填写两档整盒彩盒价、FSC 价和 MOQ；输出仍按客户规则折算并写入 FSC = 彩盒价 × 1.03</span></div><button v-if="sales.customer_quote_fields.buzzbee.color_box_tiers.length < 2" type="button" :disabled="disabled" @click="addBuzzBeeColorBoxTier"><Plus />新增分档</button></header><div class="payload-table-scroll"><table><thead><tr><th>分档</th><th>整箱报客彩盒价 HKD</th><th>整箱 FSC 价 HKD</th><th>MOQ</th><th /></tr></thead><tbody><tr v-for="(row,index) in sales.customer_quote_fields.buzzbee.color_box_tiers" :key="index"><td>第 {{ index + 1 }} 档</td><td><input v-model.number="row.quote_price_hkd" :disabled="disabled" type="number" min="0" step="0.0001" :aria-label="`BuzzBee 第 ${index + 1} 档彩盒价`"></td><td><input v-model.number="row.fsc_price_hkd" :disabled="disabled" type="number" min="0" step="0.0001" :aria-label="`BuzzBee 第 ${index + 1} 档 FSC 价`"></td><td><input v-model="row.moq" :disabled="disabled" :aria-label="`BuzzBee 第 ${index + 1} 档 MOQ`" placeholder="例如 MOQ3000"></td><td><button type="button" class="icon" :disabled="disabled" @click="remove(sales.customer_quote_fields.buzzbee.color_box_tiers,index)"><Trash2 /></button></td></tr><tr v-if="!sales.customer_quote_fields.buzzbee.color_box_tiers.length"><td colspan="5" class="empty">尚未填写；存在彩盒时，未完整填写两档将阻断 P4 接收</td></tr></tbody></table></div></section>
       <section v-if="isDisney" class="payload-block"><header><div><strong>迪士尼客户报价字段部分</strong><span>Item Number、报价日期/版本及 3K/5K/10K 三档必须完整；这些值只用于客户模板，不参与内部成本公式</span></div></header><div class="inline-fields four"><label><span>Item Number</span><input v-model="sales.customer_quote_fields.disney.item_number" :disabled="disabled" aria-label="迪士尼 Item Number"></label><label><span>报价日期</span><input v-model="sales.customer_quote_fields.disney.quote_date" :disabled="disabled" type="date" aria-label="迪士尼报价日期"></label><label><span>Revision</span><input v-model.number="sales.customer_quote_fields.disney.revision" :disabled="disabled" type="number" min="0" aria-label="迪士尼 Revision"></label><label><span>最低 MOQ</span><input v-model.number="sales.customer_quote_fields.disney.minimum_order_qty" :disabled="disabled" type="number" min="0" aria-label="迪士尼最低 MOQ"></label><label><span>3K 报价 USD</span><input v-model.number="sales.customer_quote_fields.disney.moq_prices_usd.qty_3000" :disabled="disabled" type="number" min="0" step="0.01" aria-label="迪士尼 3K 报价"></label><label><span>5K 报价 USD</span><input v-model.number="sales.customer_quote_fields.disney.moq_prices_usd.qty_5000" :disabled="disabled" type="number" min="0" step="0.01" aria-label="迪士尼 5K 报价"></label><label><span>10K 报价 USD</span><input v-model.number="sales.customer_quote_fields.disney.moq_prices_usd.qty_10000" :disabled="disabled" type="number" min="0" step="0.01" aria-label="迪士尼 10K 报价"></label><label><span>Transportation USD</span><input v-model.number="sales.customer_quote_fields.disney.transportation_usd" :disabled="disabled" type="number" min="0" step="0.001" aria-label="迪士尼运输费 USD"></label><label><span>Model USD</span><input v-model.number="sales.customer_quote_fields.disney.model_cost_usd" :disabled="disabled" type="number" min="0" step="0.01" aria-label="迪士尼手办费 USD"></label><label><span>Set Up Charge USD</span><input v-model.number="sales.customer_quote_fields.disney.setup_charge_usd" :disabled="disabled" type="number" min="0" step="0.01" aria-label="迪士尼设置费 USD"></label></div></section>
       <section v-if="isDickie" class="payload-block"><header><div><strong>Dickie 总表抬头与交模条款部分</strong><span>客户、日期、英文字款和时间条款将原样进入 Dickie 总表/Quotation，不参与内部成本公式</span></div></header><div class="inline-fields four"><label><span>Client</span><input v-model="sales.customer_quote_fields.dickie.client_name" :disabled="disabled" aria-label="Dickie Client"></label><label><span>Quote Date</span><input v-model="sales.customer_quote_fields.dickie.quote_date" :disabled="disabled" type="date" aria-label="Dickie Quote Date"></label><label><span>Attn</span><input v-model="sales.customer_quote_fields.dickie.attention" :disabled="disabled" aria-label="Dickie Attention"></label><label><span>Revision</span><input v-model="sales.customer_quote_fields.dickie.revision" :disabled="disabled" aria-label="Dickie Revision"></label><label><span>From</span><input v-model="sales.customer_quote_fields.dickie.from_name" :disabled="disabled" aria-label="Dickie From"></label><label><span>Project Name (EN)</span><input v-model="sales.customer_quote_fields.dickie.project_name_en" :disabled="disabled" aria-label="Dickie Project Name English"></label><label><span>First Shot Time</span><input v-model="sales.customer_quote_fields.dickie.first_shot_time" :disabled="disabled" aria-label="Dickie First Shot Time" placeholder="例如 45 Working Days"></label><label><span>Finish Time</span><input v-model="sales.customer_quote_fields.dickie.finish_time" :disabled="disabled" aria-label="Dickie Finish Time" placeholder="例如 75 Working Days"></label></div></section>

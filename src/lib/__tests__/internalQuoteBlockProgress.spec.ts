@@ -69,6 +69,22 @@ describe('internal quote form block progress', () => {
     })
   })
 
+  it('requires the capacity value for every custom freight capacity type', () => {
+    const payload = normalizeInternalQuotePayload('sales', {
+      color_box_size_in: { length: 13, width: 9, height: 5 },
+      cartons: [{ item: '主纸箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 }],
+    })
+    const withoutCustomCapacity = getInternalQuoteFormBlocks('sales', payload, ['8 吨车容量'])
+    expect(withoutCustomCapacity.find(({ id }) => id === 'freight')?.status).toBe('partial')
+
+    const withCustomCapacity = normalizeInternalQuotePayload('sales', {
+      ...payload,
+      freight_calc: { ...payload.freight_calc, '8 吨车容量': 1200 },
+    })
+    const completed = getInternalQuoteFormBlocks('sales', withCustomCapacity, ['8 吨车容量'])
+    expect(completed.find(({ id }) => id === 'freight')?.status).toBe('complete')
+  })
+
   it('accepts HKD as the entered packaging-material unit price', () => {
     expect(statuses('sales', {
       packaging_materials: [{

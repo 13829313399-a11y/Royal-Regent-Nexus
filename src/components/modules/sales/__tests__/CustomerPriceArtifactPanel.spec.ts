@@ -266,4 +266,22 @@ describe('CustomerPriceArtifactPanel', () => {
     expect(wrapper.text()).toContain('IQ-HKD-001')
     expect(wrapper.text()).not.toContain('IQ-HKC-001')
   })
+
+  it('does not query the handoff pool when the active factory has no customer mapping', async () => {
+    applyAuthorizedSession(['huadeng'])
+    useAppStore().setActiveFactory('huadeng')
+
+    const wrapper = mount(CustomerPriceArtifactPanel, {
+      props: {
+        customers: [],
+        selectedCustomerId: '',
+      },
+    })
+    await flushPromises()
+
+    expect(artifactApi.list).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('当前厂区尚未配置报客映射')
+    expect(wrapper.text()).toContain('请先为本厂区建立独立客户映射链路')
+    expect(wrapper.get('button').attributes('disabled')).toBeDefined()
+  })
 })

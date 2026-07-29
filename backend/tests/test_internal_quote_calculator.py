@@ -752,6 +752,36 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert baseline_sz40["per_piece_hkd"] == "3.4327"
     assert baseline_sz40["formula"] == "已启用的运费与吊柜费分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量；未启用项按 0 计算"
 
+    custom_capacity_freight = calculate_section(
+        "sales",
+        {
+            "freight_calc": {"8 吨车容量": "1200"},
+            "cartons": [{
+                "item": "主纸箱", "length_in": "12", "width_in": "12", "height_in": "12",
+                "qty_per_carton": "10", "flat_cards": [],
+            }],
+        },
+        {
+            **SNAPSHOT,
+            "freight": {
+                "routes": [{
+                    "route_key": "hk8t",
+                    "route_name": "HK 8 吨车",
+                    "capacity_key": "8 吨车容量",
+                    "freight_hkd": "6000",
+                    "lifting_hkd": "800",
+                }],
+            },
+        },
+        "IQREF-FREIGHT-CUSTOM-CAPACITY",
+        context={"factory_price_hkd": "0"},
+    )
+    custom_capacity_option = custom_capacity_freight["totals"]["freight_options"][0]
+    assert custom_capacity_option["route_key"] == "hk8t"
+    assert custom_capacity_option["capacity_cuft"] == "1200"
+    assert custom_capacity_option["total_cartons"] == "1200.0000"
+    assert custom_capacity_option["per_piece_hkd"] == "0.5667"
+
     freight_only = calculate_section(
         "sales",
         {

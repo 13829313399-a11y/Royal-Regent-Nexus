@@ -139,6 +139,35 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(payload.freight_calc).not.toHaveProperty('hk40')
   })
 
+  it('shows an editable CUFT field for a custom capacity type and uses it in freight calculation', async () => {
+    const payload = normalizeInternalQuotePayload('sales', {
+      freight_calc: { '8 吨车容量': 1200 },
+      cartons: [{ item: '主纸箱', length_in: 12, width_in: 12, height_in: 12, qty_per_carton: 10, flat_cards: [] }],
+    }) as unknown as SalesPayload
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'sales',
+        modelValue: payload as unknown as Record<string, unknown>,
+        disabled: false,
+        referenceSnapshot: {
+          freight: {
+            routes: [{ route_key: 'hk8t', route_name: 'HK 8 吨车', capacity_key: '8 吨车容量', freight_hkd: '6000', lifting_hkd: '800' }],
+          },
+        },
+      },
+    })
+
+    const capacityInput = wrapper.get('input[aria-label="8 吨车容量"]')
+    expect(capacityInput.element).toHaveProperty('value', '1200')
+    expect(wrapper.text()).toContain('HK 8 吨车')
+    expect(wrapper.get('.freightTable tbody tr').findAll('td')[4].text()).toBe('1200')
+
+    await capacityInput.setValue('1000')
+    await capacityInput.trigger('blur')
+    expect(payload.freight_calc['8 吨车容量']).toBe(1000)
+    expect(wrapper.get('.freightTable tbody tr').findAll('td')[4].text()).toBe('1000')
+  })
+
   it('switches independently between both fees, freight only, and neither fee', async () => {
     const payload = normalizeInternalQuotePayload('sales', {
       cartons: [{ item: '主纸箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [] }],

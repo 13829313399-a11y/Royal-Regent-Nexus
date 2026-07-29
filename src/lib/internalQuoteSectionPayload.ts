@@ -302,13 +302,14 @@ export type SalesFreightCalculation = {
   enabled: boolean
   freight_enabled?: boolean
   lifting_enabled?: boolean
-} & Record<SalesFreightCapacityKey, number> & Partial<Record<LegacySalesFreightRouteKey, number>>
+} & Record<SalesFreightCapacityKey, number>
+  & Record<string, number | boolean | undefined>
 export interface SalesFreightRouteDefinition {
   key: string
   label: string
   feeLabel: string
   liftingFeeLabel: string
-  capacityKey: SalesFreightCapacityKey
+  capacityKey: string
 }
 export interface SalesFreightReferenceRoute extends SalesFreightRouteDefinition {
   freightCostHkd: number
@@ -319,7 +320,7 @@ export interface SalesFreightOption {
   label: string
   feeLabel: string
   liftingFeeLabel: string
-  capacityKey: SalesFreightCapacityKey
+  capacityKey: string
   capacityCuft: number
   freightCostHkd: number
   liftingCostHkd: number
@@ -385,17 +386,16 @@ export function salesFreightReferenceRoutesFromSnapshot(value: unknown): SalesFr
     ? value as Record<string, unknown>
     : {}
   const routeRows = Array.isArray(freight.routes) ? freight.routes : []
-  const capacityKeys = new Set<SalesFreightCapacityKey>(salesFreightCapacityDefinitions.map(({ key }) => key))
   const seen = new Set<string>()
   const routes = routeRows.flatMap((value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return []
     const row = value as Record<string, unknown>
     const key = String(row.route_key ?? '').trim()
     const label = String(row.route_name ?? '').trim()
-    const capacityKey = String(row.capacity_key ?? '') as SalesFreightCapacityKey
+    const capacityKey = String(row.capacity_key ?? '').trim()
     const freightCostHkd = Number(row.freight_hkd)
     const liftingCostHkd = Number(row.lifting_hkd ?? 0)
-    if (!key || seen.has(key.toLocaleLowerCase()) || !label || !capacityKeys.has(capacityKey) || !Number.isFinite(freightCostHkd) || freightCostHkd < 0 || !Number.isFinite(liftingCostHkd) || liftingCostHkd < 0) return []
+    if (!key || seen.has(key.toLocaleLowerCase()) || !label || !capacityKey || !Number.isFinite(freightCostHkd) || freightCostHkd < 0 || !Number.isFinite(liftingCostHkd) || liftingCostHkd < 0) return []
     seen.add(key.toLocaleLowerCase())
     return [{ key, label, feeLabel: `${label}运费`, liftingFeeLabel: `${label}吊柜费`, capacityKey, freightCostHkd, liftingCostHkd }]
   })
@@ -416,23 +416,21 @@ export interface DickieProductQuoteRow { line_no: number; item_text_en: string; 
 export interface DickieRemarkLine { line_no: number; text_en: string }
 export interface DickieMaterialPrice { material: string; price_hkd_lb: number }
 export interface DickieCustomerQuoteFields { client_name: string; quote_date: string; attention: string; revision: string; from_name: string; project_name_en: string; first_shot_time: string; finish_time: string; product_rows: DickieProductQuoteRow[]; remark_lines: DickieRemarkLine[]; material_prices_hkd: DickieMaterialPrice[] }
-export type CaixingCustomerCostGroup = 'special' | 'electronic' | 'purchase' | 'packing' | 'carton' | 'fabric' | 'spraying' | 'tampo' | 'assembly' | 'packout' | 'rooting' | 'sewing' | 'special_offer'
-export interface CaixingCustomerCostRow { group: CaixingCustomerCostGroup; tax_tag: string; category: string; description: string; base_cost_hkd: number; customer_cost_hkd: number }
 export interface CaixingCustomerQuoteFields {
   product_type: 'plastic' | 'plush'
   item_number: string
   item_name: string
   quote_date: string
-  carton_length_in: number
-  carton_width_in: number
-  carton_height_in: number
-  carton_cuft: number
-  carton_cbm: number
-  pcs_per_carton: number
-  carton_price_hkd: number
-  cost_rows: CaixingCustomerCostRow[]
 }
-export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields }
+export interface ThreeSixtyCustomerQuoteFields {
+  ms_brand: string
+  prepared_by: string
+  quote_date: string
+  revision: string
+  first_etd: string
+  freight_route_key: string
+}
+export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
 export interface SalesMarkupTier {
   moq: number
   markup_x: number
@@ -1243,6 +1241,18 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   const legacyFreightEnabled = booleanValue(freightSource.enabled, true)
   const normalizedFreightEnabled = legacyFreightEnabled && booleanValue(freightSource.freight_enabled, true)
   const normalizedLiftingEnabled = legacyFreightEnabled && booleanValue(freightSource.lifting_enabled, true)
+  const standardFreightKeys = new Set<string>([
+    'enabled',
+    'freight_enabled',
+    'lifting_enabled',
+    ...salesFreightCapacityDefinitions.map(({ key }) => key),
+    ...salesFreightRouteDefinitions.map(({ key }) => key),
+  ])
+  const customFreightCapacityValues = Object.fromEntries(
+    Object.entries(freightSource)
+      .filter(([key, value]) => key.trim() && !standardFreightKeys.has(key) && typeof value !== 'boolean')
+      .map(([key, value]) => [key, positiveIntegerValue(value, 0)]),
+  )
   const shippingSource = objectValue(source.shipping)
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping')
   return {
@@ -1262,6 +1272,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       enabled: normalizedFreightEnabled || normalizedLiftingEnabled,
       freight_enabled: normalizedFreightEnabled,
       lifting_enabled: normalizedLiftingEnabled,
+      ...customFreightCapacityValues,
       ...Object.fromEntries(salesFreightCapacityDefinitions
         .map(({ key }) => [key, positiveIntegerValue(freightSource[key], defaultSalesFreightCalculation[key])])),
       ...Object.fromEntries(salesFreightRouteDefinitions
@@ -1334,17 +1345,14 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         item_number: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_number),
         item_name: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_name),
         quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).quote_date),
-        carton_length_in: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_length_in),
-        carton_width_in: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_width_in),
-        carton_height_in: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_height_in),
-        carton_cuft: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_cuft),
-        carton_cbm: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_cbm),
-        pcs_per_carton: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).pcs_per_carton),
-        carton_price_hkd: numberValue(objectValue(objectValue(source.customer_quote_fields).caixing).carton_price_hkd),
-        cost_rows: rows(objectValue(objectValue(source.customer_quote_fields).caixing).cost_rows).map((row) => ({
-          group: ['special', 'electronic', 'purchase', 'packing', 'carton', 'fabric', 'spraying', 'tampo', 'assembly', 'packout', 'rooting', 'sewing', 'special_offer'].includes(textValue(row.group)) ? textValue(row.group) : 'purchase',
-          tax_tag: textValue(row.tax_tag), category: textValue(row.category), description: textValue(row.description), base_cost_hkd: numberValue(row.base_cost_hkd), customer_cost_hkd: numberValue(row.customer_cost_hkd),
-        })),
+      },
+      three_sixty: {
+        ms_brand: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).ms_brand),
+        prepared_by: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).prepared_by) || '郑大能',
+        quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).quote_date),
+        revision: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).revision) || '0',
+        first_etd: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).first_etd),
+        freight_route_key: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).freight_route_key),
       },
     },
   }
