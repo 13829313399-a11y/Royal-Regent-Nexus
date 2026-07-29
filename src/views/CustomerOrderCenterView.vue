@@ -190,6 +190,7 @@ function navigate(section: CustomerOrderCenterSection) {
   border: 0;
   background: transparent;
   color: var(--order-muted);
+  transition: background-color 180ms ease, color 180ms ease, transform 180ms ease;
 }
 
 .order-back-link {
@@ -233,6 +234,7 @@ function navigate(section: CustomerOrderCenterSection) {
   background: #ededf8;
   padding: 0 13px;
   color: var(--order-outline);
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 220ms ease;
 }
 
 .order-global-search:focus-within {
@@ -323,7 +325,7 @@ function navigate(section: CustomerOrderCenterSection) {
 
 .order-sidebar h1 {
   color: var(--order-primary);
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 900;
   line-height: 1.3;
 }
@@ -331,7 +333,7 @@ function navigate(section: CustomerOrderCenterSection) {
 .order-sidebar__heading p {
   margin-top: 2px;
   color: var(--order-muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 800;
   letter-spacing: .12em;
 }
@@ -349,11 +351,17 @@ function navigate(section: CustomerOrderCenterSection) {
   font-size: 14px;
   font-weight: 900;
   box-shadow: 0 7px 16px rgb(0 61 155 / 18%);
+  transition: background-color 180ms ease, box-shadow 220ms ease, transform 180ms ease;
 }
 
 .order-new-button:hover {
   background: var(--order-primary);
   transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgb(0 61 155 / 24%);
+}
+
+.order-new-button:active {
+  transform: translateY(0) scale(.98);
 }
 
 .order-new-button svg {
@@ -378,14 +386,16 @@ function navigate(section: CustomerOrderCenterSection) {
   background: transparent;
   padding: 0 12px;
   color: var(--order-muted);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   text-align: left;
+  transition: background-color 180ms ease, color 180ms ease, transform 180ms ease;
 }
 
 .order-sidebar__nav button:hover {
   background: var(--order-surface-high);
   color: var(--order-primary);
+  transform: translateX(2px);
 }
 
 .order-sidebar__nav button.active {
@@ -413,7 +423,7 @@ function navigate(section: CustomerOrderCenterSection) {
   align-items: center;
   gap: 7px;
   color: var(--order-primary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 900;
   letter-spacing: .05em;
 }
@@ -436,19 +446,19 @@ function navigate(section: CustomerOrderCenterSection) {
   align-items: flex-start;
   gap: 7px;
   color: var(--order-text);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
 .order-sidebar__scope li b {
   color: var(--order-secondary);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .order-sidebar__scope > p {
   color: var(--order-outline);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -456,6 +466,7 @@ function navigate(section: CustomerOrderCenterSection) {
   min-height: 100vh;
   margin-left: 240px;
   padding: 82px 24px 48px;
+  animation: order-main-enter 300ms cubic-bezier(.2, .8, .2, 1) both;
 }
 
 .order-mobile-nav {
@@ -495,14 +506,19 @@ function navigate(section: CustomerOrderCenterSection) {
     background: #fff;
     padding: 0 11px;
     color: var(--order-muted);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 800;
+    transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease;
   }
 
   .order-mobile-nav button.active {
     border-color: #58d398;
     background: var(--order-secondary-container);
     color: #005235;
+  }
+
+  .order-mobile-nav button:active {
+    transform: scale(.98);
   }
 
   .order-mobile-nav svg {
@@ -525,6 +541,28 @@ function navigate(section: CustomerOrderCenterSection) {
 
   .order-main {
     padding-inline: 12px;
+  }
+}
+
+@keyframes order-main-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .customer-order-center *,
+  .customer-order-center *::before,
+  .customer-order-center *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
   }
 }
 </style>

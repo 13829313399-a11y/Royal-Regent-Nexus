@@ -24,7 +24,7 @@ The main implemented or partially implemented domains are:
 - Global raw-material master data
 - Internal quote collaboration and controlled customer-price conversion
 - Customer pricing records
-- BuzzBee customer-order workbook preview and export
+- Huaxing BuzzBee, Dickie and Caixing customer-order preview and schedule export
 - Carton-mark comparison
 - Indonesia invoice reconciliation
 - A frontend-only injection-scheduling preview
@@ -149,14 +149,16 @@ The pricing API persists factory- and customer-scoped pricing quotes. Totals are
 
 ### Customer Order Center
 
-The implemented backend capability currently focuses on BuzzBee workbook processing:
+The implemented backend capability supports factory-owned customer mappings in Huaxing. The import flow requires selecting a customer before files can be chosen, and the server rejects a customer mapping when the submitted factory does not own that customer. Huaxing currently exposes BuzzBee, Dickie and Caixing:
 
-- Preview one or more customer purchase-order workbooks against the supported production-schedule workbook.
+- Preview one or more customer purchase orders against that customer's supported production-schedule workbook.
 - Return normalized fields, validation results and source lineage.
 - Export a new customer schedule and item-detail workbook without mutating the source files.
 - Require authenticated sales scope and the relevant customer-order read/export permissions.
 
-The current parser supports the BuzzBee schedule contract and deliberately rejects the Indonesia schedule variant. WMC is handled as a supported template variant inside the current conversion path.
+BuzzBee accepts `.xls`/`.xlsx` PO workbooks, supports the ordinary and WMC variants, updates its order/review/ITEM sheets and deliberately rejects the Indonesia schedule variant. Dickie accepts scanned Simba Dickie Release Order PDFs, performs local OCR, splits a combined PDF at each `Release Order Page 1` into multiple order rows, handles ordinary, mixed-article and inferred dinosaur-product routing, writes the Dickie order/review/Iteam sheets, and deducts matching system-preparation quantities per child contract. Both mappings preserve the uploaded schedule filename and return a workbook protected with the configured 2026 password.
+
+Caixing accepts text-layer Playmates PDF POs with the observed OE/OL/OG/OH/OK prefixes. It reproduces the legacy plugin contract: extract PO date, S/C number, PO number, customer, product number/name, quantity, HKD unit price/amount and US/EU standard packaging; normalize digit-plus-letter product numbers with one separating space; then append records in the legacy fixed 24-column order to the uploaded workbook's current active worksheet after its last row. It preserves the uploaded schedule filename and its original encryption state. The legacy plugin deliberately leaves Chinese name, packing/carton data, dimensions/weights, line/customer Q, requested shipment container, country standard, remarks, production workshop and system-status columns blank. The supplied 16 PO samples produce 70 detail rows with no missing core extracted field.
 
 There is not yet a persistent normalized customer-order ledger, immutable order-version model, confirmed-demand publication contract or downstream PMC integration. Frontend ledger, scheduling, exception and feedback examples are not authoritative production data.
 
@@ -210,6 +212,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.
 - Customer-order warning thresholds shown by the frontend, including day-based exception thresholds, are not yet confirmed as authoritative business rules.
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
+- Caixing currently follows the legacy active-worksheet 24-column append contract; no separate customer-specific Caixing schedule or Item-sheet mapping has been supplied.
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
 
@@ -219,7 +222,7 @@ The smallest unresolved decisions that require product or operational confirmati
 
 - Decide whether authenticated users should permanently retain global read-only page entry, or whether page entry must return to permission-gated behavior.
 - Confirm ownership and rollout timing for authoritative machine capability/changeover masters, live production feedback and the advanced backend optimizer.
-- Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
+- Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, whether Caixing will remain a generic 24-column active-sheet append or adopt a dedicated schedule template, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.
 
