@@ -206,7 +206,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
 - Injection scheduling does not yet ingest live machine/production feedback, expose SSE refresh, or run an advanced backend optimization solver.
-- The new injection-scheduling migration and implementation are verified only against disposable local databases in this phase; they have not been deployed to production.
+- The new injection-scheduling backend is deployed in production with Alembic head `20260728_0039`; future production work must still re-verify the live revision, database head, backup state and effective access instead of inferring them from this repository note.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.
 - Customer-order warning thresholds shown by the frontend, including day-based exception thresholds, are not yet confirmed as authoritative business rules.
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
