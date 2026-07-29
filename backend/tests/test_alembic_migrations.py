@@ -51,7 +51,8 @@ MERGED_HEAD_MIGRATION_REVISION = "20260727_0036"
 INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION = "20260727_0037"
 INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION = "20260727_0038"
 INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION = "20260728_0039"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
+THREE_D_PRINTING_MIGRATION_REVISION = "20260729_0040"
+HEAD_MIGRATION_REVISION = THREE_D_PRINTING_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -104,6 +105,14 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    three_d_printing_revision = script.get_revision(
+        THREE_D_PRINTING_MIGRATION_REVISION
+    )
+    assert (
+        three_d_printing_revision.down_revision
+        == INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
+    )
 
     injection_scheduling_revision = script.get_revision(
         INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
