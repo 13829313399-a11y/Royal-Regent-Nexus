@@ -21,9 +21,11 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const currentDepartmentId = computed<ModuleDepartmentId>(() => {
   const department = String(route.params.department ?? '')
@@ -41,7 +43,17 @@ const visibleDepartmentTodos = computed(() => getFactoryScopedTodoItems(
 const visibleModules = computed(() => {
   const factory = appStore.activeProductionFactory
 
-  return departmentEntry.value.modules.map((module) => {
+  return departmentEntry.value.modules
+    .filter((module) => {
+      if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
+      if (
+        module.strictAccess
+        && module.permissions?.length
+        && !authStore.canAny(module.permissions, factory.id, 'three-d-printing')
+      ) return false
+      return true
+    })
+    .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
 
     if (currentDepartmentId.value === 'engineering' && module.id === 'molding-sample') {
@@ -75,7 +87,7 @@ const visibleModules = computed(() => {
     }
 
     return scopedModule
-  })
+    })
 })
 
 const featuredModule = computed(() => visibleModules.value[0])

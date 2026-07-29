@@ -18,7 +18,7 @@ describe('system user management routing', () => {
     expect(source).toMatch(/path:\s*'\/modules\/molding-sample'[\s\S]{0,360}enforcePermissions:\s*true/)
     expect(source).toMatch(/path:\s*'\/modules\/production\/molding-sample-tasks'[\s\S]{0,360}enforcePermissions:\s*true/)
     expect(source).toMatch(/name:\s*'forbidden'/)
-    expect(source).toMatch(/authStore\.canAny\(permissions\)/)
+    expect(source).toMatch(/authStore\.canAny\(\s*permissions,/)
     expect(source).toContain('shouldEnforcePagePermissions(to.meta)')
     expect(source).toContain('shouldEnforcePagePermissions(currentRoute.meta)')
     expect(source).toMatch(/path:\s*'\/forbidden'[\s\S]{0,320}shouldRedirectForbiddenPageToHome\(\)/)
