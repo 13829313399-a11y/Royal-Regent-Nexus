@@ -832,14 +832,14 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
       {
         id: 'three-d-printing',
         title: '3D打印机管理',
-        owner: '华康B · 3D部门',
+        owner: '华康A · 3D部门',
         summary: '打印机实时状态、生产记录、产品图片、物料库存、计划和维护统一管理',
         status: '正式上线',
         statusTone: 'green',
         stats: '11 台打印机 · 云端历史 · 边缘控制',
         icon: Printer,
         route: '/modules/production/three-d-printing',
-        factoryIds: ['huakang-b'],
+        factoryIds: ['huakang-a'],
         permissions: ['three_d_printing:read'],
         strictAccess: true,
         statusMetrics: [

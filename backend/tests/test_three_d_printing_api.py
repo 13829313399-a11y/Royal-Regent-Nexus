@@ -71,10 +71,10 @@ def ensure_three_d_operator(username: str) -> None:
         )
         db.add(
             auth_models.AuthUserRole(
-                id=f"{user_id}:position_3d_operator:huakang-b:three-d-printing",
+                id=f"{user_id}:position_3d_operator:huakang-a:three-d-printing",
                 user_id=user_id,
                 role_id="position_3d_operator",
-                factory_id="huakang-b",
+                factory_id="huakang-a",
                 department="three-d-printing",
             )
         )
@@ -97,7 +97,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
 
         initial_dashboard = client.get(
             "/api/three-d-printing/dashboard",
-            params={"factory_id": "huakang-b"},
+            params={"factory_id": "huakang-a"},
         )
         assert initial_dashboard.status_code == 200, initial_dashboard.text
         assert len(initial_dashboard.json()["printers"]) == 11
@@ -105,7 +105,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         settings_update = client.put(
             "/api/three-d-printing/settings",
             json={
-                "factory_id": "huakang-b",
+                "factory_id": "huakang-a",
                 "revision": current_settings["revision"],
                 "machine_count": 11,
                 "electricity_per_machine_day": 1.5,
@@ -120,7 +120,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         material = client.post(
             "/api/three-d-printing/materials",
             json={
-                "factory_id": "huakang-b",
+                "factory_id": "huakang-a",
                 "name": "PLA",
                 "material_type": "filament",
                 "price_per_kg": 88,
@@ -131,7 +131,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         stock = client.post(
             "/api/three-d-printing/inventory/adjust",
             json={
-                "factory_id": "huakang-b",
+                "factory_id": "huakang-a",
                 "material_name": "PLA",
                 "target_stock_g": 10000,
                 "min_stock_g": 3000,
@@ -143,7 +143,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         product = client.post(
             "/api/three-d-printing/products",
             json={
-                "factory_id": "huakang-b",
+                "factory_id": "huakang-a",
                 "name": "测试产品",
                 "customer": "测试客户",
                 "material_name": "PLA",
@@ -158,12 +158,12 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
 
         image = client.post(
             f"/api/three-d-printing/products/{product_id}/image",
-            params={"factory_id": "huakang-b"},
+            params={"factory_id": "huakang-a"},
             files={"file": ("product.jpg", jpeg_bytes(), "image/jpeg")},
         )
         assert image.status_code == 200, image.text
         assert image.json()["image_size_bytes"] > 0
-        assert "factory_id=huakang-b" in image.json()["image_url"]
+        assert "factory_id=huakang-a" in image.json()["image_url"]
         image_read = client.get(image.json()["image_url"])
         assert image_read.status_code == 200
         assert image_read.headers["content-type"].startswith("image/jpeg")
@@ -171,7 +171,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         record = client.post(
             "/api/three-d-printing/records",
             json={
-                "factory_id": "huakang-b",
+                "factory_id": "huakang-a",
                 "business_date": "2026-07-29",
                 "machine_no": 1,
                 "status": "running",
@@ -191,7 +191,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
 
         dashboard = client.get(
             "/api/three-d-printing/dashboard",
-            params={"factory_id": "huakang-b"},
+            params={"factory_id": "huakang-a"},
         )
         assert dashboard.status_code == 200, dashboard.text
         body = dashboard.json()
@@ -214,8 +214,8 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
             "/api/three-d-printing/edge/heartbeat",
             headers=edge_headers,
             json={
-                "factory_id": "huakang-b",
-                "agent_key": "huakang-b-main",
+                "factory_id": "huakang-a",
+                "agent_key": "huakang-a-main",
                 "name": "测试边缘代理",
                 "version": "test",
                 "host_fingerprint": "test-host",
@@ -228,8 +228,8 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
             "/api/three-d-printing/edge/status",
             headers=edge_headers,
             json={
-                "factory_id": "huakang-b",
-                "agent_key": "huakang-b-main",
+                "factory_id": "huakang-a",
+                "agent_key": "huakang-a-main",
                 "statuses": [
                     {
                         "machine_no": 1,
@@ -252,7 +252,7 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
         login(client, "three-d-user")
         dashboard = client.get(
             "/api/three-d-printing/dashboard",
-            params={"factory_id": "huakang-b"},
+            params={"factory_id": "huakang-a"},
         )
         assert dashboard.status_code == 200, dashboard.text
         printer = dashboard.json()["printers"][0]
@@ -262,7 +262,7 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
         denied = client.post(
             f"/api/three-d-printing/printers/{printer['id']}/commands",
             json={
-                "factory_id": "huakang-b",
+                "factory_id": "huakang-a",
                 "action": "pause",
                 "reason": "权限测试",
                 "idempotency_key": "operator-control-denied",
@@ -274,7 +274,7 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
         command = client.post(
             f"/api/three-d-printing/printers/{printer['id']}/commands",
             json={
-                "factory_id": "huakang-b",
+                "factory_id": "huakang-a",
                 "action": "pause",
                 "reason": "测试远程暂停",
                 "idempotency_key": "admin-control-command",
@@ -287,8 +287,8 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
             "/api/three-d-printing/edge/commands/claim",
             headers=edge_headers,
             json={
-                "factory_id": "huakang-b",
-                "agent_key": "huakang-b-main",
+                "factory_id": "huakang-a",
+                "agent_key": "huakang-a-main",
                 "limit": 10,
             },
         )
@@ -300,8 +300,8 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
             f"/api/three-d-printing/edge/commands/{command_id}/ack",
             headers=edge_headers,
             json={
-                "factory_id": "huakang-b",
-                "agent_key": "huakang-b-main",
+                "factory_id": "huakang-a",
+                "agent_key": "huakang-a-main",
                 "status": "succeeded",
                 "message": "printer accepted pause",
             },
@@ -313,8 +313,8 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
             "/api/three-d-printing/edge/status",
             headers=edge_headers,
             json={
-                "factory_id": "huakang-b",
-                "agent_key": "huakang-b-main",
+                "factory_id": "huakang-a",
+                "agent_key": "huakang-a-main",
                 "statuses": [
                     {
                         "machine_no": 1,
@@ -333,6 +333,6 @@ def test_edge_status_auto_record_and_admin_only_remote_control(monkeypatch):
         assert idle.status_code == 200, idle.text
         completed_dashboard = client.get(
             "/api/three-d-printing/dashboard",
-            params={"factory_id": "huakang-b"},
+            params={"factory_id": "huakang-a"},
         ).json()
         assert completed_dashboard["records"][0]["print_end_at"]

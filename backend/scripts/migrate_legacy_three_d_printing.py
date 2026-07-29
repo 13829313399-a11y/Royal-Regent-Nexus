@@ -55,7 +55,7 @@ from app.models.three_d_printing import (  # noqa: E402
 )
 
 
-FACTORY_ID = "huakang-b"
+FACTORY_ID = "huakang-a"
 DATA_URI_RE = re.compile(
     r"^data:(image/(?:jpeg|jpg|png|webp));base64,(.+)$",
     re.IGNORECASE | re.DOTALL,

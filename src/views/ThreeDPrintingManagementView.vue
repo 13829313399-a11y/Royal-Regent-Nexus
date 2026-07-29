@@ -37,7 +37,7 @@ import type {
 
 type TabId = 'overview' | 'records' | 'products' | 'materials' | 'schedules' | 'maintenance' | 'audit'
 
-const FACTORY_ID = 'huakang-b' as const
+const FACTORY_ID = 'huakang-a' as const
 const tabs: { id: TabId; label: string; icon: typeof Printer }[] = [
   { id: 'overview', label: '打印机看板', icon: Printer },
   { id: 'records', label: '生产记录', icon: Activity },
@@ -559,7 +559,7 @@ onBeforeUnmount(() => {
         <div>
           <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">
             <Printer class="size-4" />
-            华康B · 生产部
+            华康A · 生产部
           </div>
           <h1 class="mt-2 text-2xl font-bold text-slate-950">3D打印机管理</h1>
           <p class="mt-1 text-sm text-slate-500">打印状态、生产记录、产品图片、物料库存与计划维护统一管理</p>
@@ -609,7 +609,7 @@ onBeforeUnmount(() => {
       <template v-else-if="dashboard">
         <section v-if="activeTab === 'overview'" class="space-y-6">
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <div class="metric-card"><span>打印机总数</span><strong>{{ printerMetrics.total }}</strong><small>华康B 已配置机台</small></div>
+            <div class="metric-card"><span>打印机总数</span><strong>{{ printerMetrics.total }}</strong><small>华康A 已配置机台</small></div>
             <div class="metric-card"><span>在线</span><strong class="text-emerald-700">{{ printerMetrics.connected }}</strong><small>30 秒内收到状态</small></div>
             <div class="metric-card"><span>打印中</span><strong class="text-sky-700">{{ printerMetrics.running }}</strong><small>由边缘代理实时回传</small></div>
             <div class="metric-card"><span>低库存</span><strong class="text-amber-700">{{ dashboard.summary.lowInventoryCount ?? 0 }}</strong><small>低于物料预警线</small></div>

@@ -1,5 +1,5 @@
 export interface ThreeDSettings {
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   machine_count: number
   electricity_per_machine_day: number
   labor_per_day: number
@@ -11,7 +11,7 @@ export interface ThreeDSettings {
 
 export interface ThreeDMaterial {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   legacy_id: string
   name: string
   material_type: string
@@ -24,7 +24,7 @@ export interface ThreeDMaterial {
 
 export interface ThreeDProduct {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   legacy_id: string
   name: string
   customer: string
@@ -44,7 +44,7 @@ export interface ThreeDProduct {
 
 export interface ThreeDPrinter {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   machine_no: number
   name: string
   printer_type: string
@@ -64,7 +64,7 @@ export interface ThreeDPrinter {
 
 export interface ThreeDProductionRecord {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   legacy_id: string
   business_date: string
   machine_no: number
@@ -90,7 +90,7 @@ export interface ThreeDProductionRecord {
 
 export interface ThreeDInventory {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   material_name: string
   stock_g: number
   min_stock_g: number
@@ -101,7 +101,7 @@ export interface ThreeDInventory {
 
 export interface ThreeDInventoryMovement {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   material_name: string
   movement_type: string
   delta_g: number
@@ -116,7 +116,7 @@ export interface ThreeDInventoryMovement {
 
 export interface ThreeDSchedule {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   legacy_id: string
   business_date: string
   product_id: string
@@ -136,7 +136,7 @@ export interface ThreeDSchedule {
 
 export interface ThreeDMaintenance {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   legacy_id: string
   business_date: string
   machine_no: number
@@ -152,7 +152,7 @@ export interface ThreeDMaintenance {
 
 export interface ThreeDAuditEvent {
   id: string
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   entity_type: string
   entity_id: string
   action: string
@@ -164,7 +164,7 @@ export interface ThreeDAuditEvent {
 }
 
 export interface ThreeDDashboard {
-  factory_id: 'huakang-b'
+  factory_id: 'huakang-a'
   generated_at: string
   settings: ThreeDSettings
   printers: ThreeDPrinter[]

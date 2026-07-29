@@ -2,7 +2,7 @@
   "name": "royal-regent-three-d-printing-edge-agent",
   "version": "1.0.0",
   "private": true,
-  "description": "Huakang B outbound-only Bambu LAN bridge for Royal Regent Nexus",
+  "description": "Huakang A outbound-only Bambu LAN bridge for Royal Regent Nexus",
   "engines": {
     "node": ">=18"
   },
