@@ -161,6 +161,8 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_REVISION = "20260723_0030"
 INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION = "20260721_0029"
 INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
 INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
+INJECTION_SCHEDULING_BACKEND_REVISION = "20260728_0039"
+INJECTION_SCHEDULING_BACKEND_PREVIOUS_REVISION = "20260727_0038"
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -282,6 +284,24 @@ def ensure_internal_quote_baseline_freight_schema_ready() -> None:
     )
 
 
+def ensure_injection_scheduling_schema_ready() -> None:
+    """Do not let create_all silently bypass the audited 0039 migration."""
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if "alembic_version" not in set(inspector.get_table_names()):
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+    if current_revision != INJECTION_SCHEDULING_BACKEND_PREVIOUS_REVISION:
+        return
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产中枢后端迁移 "
+        f"{INJECTION_SCHEDULING_BACKEND_REVISION}；当前版本：{current_revision}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -330,6 +350,7 @@ def ensure_sqlite_legacy_columns() -> None:
 
 def init_db() -> None:
     from app.models import auth  # noqa: F401
+    from app.models import injection_scheduling  # noqa: F401
     from app.models import internal_quote  # noqa: F401
     from app.models import molding_sample  # noqa: F401
     from app.models import pricing  # noqa: F401
@@ -344,6 +365,7 @@ def init_db() -> None:
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
+    ensure_injection_scheduling_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

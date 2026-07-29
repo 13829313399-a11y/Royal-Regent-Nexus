@@ -25,7 +25,7 @@ function mountPanel(
   deniedPermissions: string[] = [],
   factoryId = 'huaxing',
 ) {
-  useAppStore().setActiveFactory(factoryId as 'huaxing' | 'huakang-c' | 'huakang-d')
+  useAppStore().setActiveFactory(factoryId as 'huaxing' | 'huakang-a' | 'huakang-b' | 'huakang-c' | 'huakang-d' | 'huadeng')
   const effectiveAccess = customerPricePermissions.map((permissionCode) => ({
     permission_code: permissionCode,
     factory_id: factoryId,
@@ -150,37 +150,55 @@ describe('QuoteCenterPanel customer visibility', () => {
     expect(wrapper.text()).toContain('当前账号没有输出权限')
   })
 
-  it('uses the selected factory when a position has cross-factory operation access', () => {
+  it('does not expose Huaxing customer mappings to a cross-factory operator', () => {
     const wrapper = mountCrossFactoryPosition('cross_factory_operate')
 
-    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.text()).toContain('可导入/输出')
+    expect(wrapper.findAll('button[aria-pressed]')).toHaveLength(0)
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('当前厂区尚未配置报客映射')
   })
 
-  it('keeps cross-factory read positions from importing in the selected factory', () => {
+  it('keeps the selected non-Huaxing factory unmapped for cross-factory read positions', () => {
     const wrapper = mountCrossFactoryPosition('cross_factory_read')
 
+    expect(wrapper.findAll('button[aria-pressed]')).toHaveLength(0)
     expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('仅查看')
+    expect(wrapper.text()).toContain('当前厂区尚未配置报客映射')
   })
 
-  it.each(['huakang-c', 'huakang-d'] as const)(
-    'starts %s with an independent empty conversion state and no legacy factory mock',
+  it('shows only the independently configured 360 mapping in Huakang A', () => {
+    const wrapper = mountPanel('ordinary-sales-huakang-a', [], 'huakang-a')
+    const customerButtons = wrapper.findAll('button[aria-pressed]')
+
+    expect(customerButtons.map((button) => button.text())).toEqual(['360 1 单'])
+    expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）')
+    expect(wrapper.text()).not.toMatch(/BuzzBee|迪士尼|Dickie|彩星/)
+  })
+
+  it('shows a complete visible error when a 360 import file is unsupported', async () => {
+    const wrapper = mountPanel('ordinary-sales-huakang-a', [], 'huakang-a')
+    const input = wrapper.get('[data-testid="quote-import-input"]')
+    const file = new File(['legacy'], '360旧内部报价.xls', { type: 'application/vnd.ms-excel' })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+
+    await input.trigger('change')
+
+    expect(wrapper.get('[data-testid="quote-import-error"]').text()).toBe(
+      '导入失败：360 当前支持 .xlsx P4 最终放行文件或原专用多 Sheet 工作簿，旧 .xls 请先另存为 .xlsx',
+    )
+  })
+
+  it.each(['huakang-b', 'huakang-c', 'huakang-d', 'huadeng'] as const)(
+    'starts %s with an independent unmapped conversion state and no Huaxing customer tabs',
     async (factoryId) => {
       const wrapper = mountPanel(`ordinary-sales-${factoryId}`, [], factoryId)
       const customerButtons = wrapper.findAll('button[aria-pressed]')
 
-      expect(customerButtons.map((button) => button.text())).toEqual([
-        'BuzzBee 0 单',
-        '迪士尼 0 单',
-        'Dickie 0 单',
-        '彩星 0 单',
-      ])
-
-      for (const customerButton of customerButtons) {
-        await customerButton.trigger('click')
-        expect(wrapper.text()).not.toMatch(/QTC-(?:HKA|HKB|HD)-|CQ-HD-/)
-      }
+      expect(customerButtons).toHaveLength(0)
+      expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeDefined()
+      expect(wrapper.text()).toContain('当前厂区尚未配置报客映射')
+      expect(wrapper.text()).not.toMatch(/QTC-(?:HKA|HKB|HD)-|CQ-HD-/)
     },
   )
 })

@@ -54,6 +54,7 @@ from app.services.internal_quote import (
     create_quote,
     delete_quote,
     ensure_quote_read,
+    ensure_quote_read_access,
     get_quote_detail,
     get_quote_dashboard,
     get_quote_reference_set,
@@ -584,7 +585,7 @@ def get_internal_quote_import_template(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    get_quote_detail(db, quote_id, current_user)
+    ensure_quote_read_access(db, current_user, quote_id)
     try:
         content, file_name = build_internal_quote_import_template(import_type)
     except ValueError as error:

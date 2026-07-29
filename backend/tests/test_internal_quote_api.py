@@ -642,7 +642,7 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
                 "freight_routes": [
                     {**DEFAULT_FREIGHT_ROUTES[0], "route_name": "香港 40 柜", "freight_hkd": "8200", "lifting_hkd": "1300"},
                     *DEFAULT_FREIGHT_ROUTES[2:],
-                    {"route_key": "sz40", "route_name": "深圳 40 柜", "capacity_key": "cap_40", "freight_hkd": "6500", "lifting_hkd": "1100"},
+                    {"route_key": "hk8t", "route_name": "HK 8 吨车", "capacity_key": "8 吨车容量", "freight_hkd": "6500", "lifting_hkd": "1100"},
                 ],
             },
         )
@@ -660,7 +660,13 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
             "lifting_hkd": "1300",
         }
         assert all(row["route_key"] != "hk20" for row in saved_routes)
-        assert saved_routes[-1]["route_key"] == "sz40"
+        assert saved_routes[-1] == {
+            "route_key": "hk8t",
+            "route_name": "HK 8 吨车",
+            "capacity_key": "8 吨车容量",
+            "freight_hkd": "6500",
+            "lifting_hkd": "1100",
+        }
 
         db_module = importlib.import_module("app.db")
         baseline_service = importlib.import_module("app.services.internal_quote_baseline")

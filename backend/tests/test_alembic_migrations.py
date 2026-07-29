@@ -50,7 +50,8 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION = "20260723_0030"
 MERGED_HEAD_MIGRATION_REVISION = "20260727_0036"
 INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION = "20260727_0037"
 INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION = "20260727_0038"
-HEAD_MIGRATION_REVISION = INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION
+INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION = "20260728_0039"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -103,6 +104,14 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    injection_scheduling_revision = script.get_revision(
+        INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
+    )
+    assert (
+        injection_scheduling_revision.down_revision
+        == INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION
+    )
 
     hair_revision = script.get_revision(
         INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION
@@ -2334,6 +2343,160 @@ def test_injection_schedule_rebuild_removal_drops_schema_permissions_and_marker(
         assert connection.execute(
             "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
         ).fetchone() == (0,)
+
+
+def test_new_injection_scheduling_backend_upgrade_creates_isolated_contract(
+    tmp_path,
+):
+    database_path = tmp_path / "injection_scheduling_backend_0039.db"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            "head",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert {
+            "injection_scheduling_import_batches",
+            "injection_scheduling_import_issues",
+            "injection_scheduling_machines",
+            "injection_scheduling_molds",
+            "injection_scheduling_orders",
+            "injection_scheduling_rule_sets",
+            "injection_scheduling_plans",
+            "injection_scheduling_plan_revisions",
+            "injection_scheduling_tasks",
+            "injection_scheduling_published_snapshots",
+            "injection_scheduling_audit_events",
+        } <= table_names
+        assert not any(
+            name.startswith("injection_schedule_") for name in table_names
+        )
+
+        permission_codes = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT code
+                FROM auth_permissions
+                WHERE code LIKE 'injection_scheduling:%'
+                """
+            ).fetchall()
+        }
+        assert permission_codes == {
+            "injection_scheduling:read",
+            "injection_scheduling:import",
+            "injection_scheduling:edit",
+            "injection_scheduling:publish",
+            "injection_scheduling:rollback",
+        }
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
+        ).fetchone() == (0,)
+
+        trigger_names = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND tbl_name = 'injection_scheduling_audit_events'
+                """
+            ).fetchall()
+        }
+        assert trigger_names == {
+            "trg_injection_scheduling_audit_no_update",
+            "trg_injection_scheduling_audit_no_delete",
+        }
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+
+def test_new_injection_scheduling_postgresql_offline_sql_contains_contract():
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "postgresql+psycopg://unused:unused@localhost/unused"
+    env["ALEMBIC_OFFLINE_METADATA_ONLY"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            f"{INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION}:{HEAD_MIGRATION_REVISION}",
+            "--sql",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout.lower()
+    for table_name in (
+        "injection_scheduling_import_batches",
+        "injection_scheduling_machines",
+        "injection_scheduling_orders",
+        "injection_scheduling_plans",
+        "injection_scheduling_plan_revisions",
+        "injection_scheduling_tasks",
+        "injection_scheduling_published_snapshots",
+        "injection_scheduling_audit_events",
+    ):
+        assert f"create table {table_name}" in sql
+    assert "reject_injection_scheduling_audit_mutation" in sql
+    assert "before update on injection_scheduling_audit_events" in sql
+    assert "before delete on injection_scheduling_audit_events" in sql
+    assert sql.count("cast(null as varchar(96))") == 5
+    assert sql.count("cast(null as varchar(128))") == 15
+    assert sql.count("cast(null as text)") == 5
+
+
+def test_application_startup_requires_injection_scheduling_backend_migration(
+    tmp_path,
+):
+    database_path = tmp_path / "injection_scheduling_startup_guard.db"
+    previous = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION,
+    )
+    assert previous.returncode == 0, previous.stderr
+
+    rejected = _run_dispatch_init_db(database_path)
+    assert rejected.returncode != 0
+    assert INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION in rejected.stderr
+    assert "Alembic upgrade head" in rejected.stderr
+
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    allowed = _run_dispatch_init_db(database_path)
+    assert allowed.returncode == 0, allowed.stderr
 
 
 def _insert_dispatch_test_order(

@@ -139,7 +139,11 @@ Engineering auxiliary-material rows and sales packaging-material rows accept eit
 
 Sales flat-card rows carry an explicit positive quantity. Frontend preview and server-authoritative calculation both use `length_in × width_in × flat_card_price_factor × quantity ÷ 1000`; the configured flat-card factor defaults to the carton paper-price factor, and legacy rows without quantity default to `1`.
 
-Customer-price artifacts are derived from approved structured quote data through customer-specific converters. Factory-scoped customer masters and pricing baselines remain separate from the internal collaboration state. Customer-facing outputs must not expose internal commercial fields outside the converter whitelist.
+Customer-price artifacts are derived from approved structured quote data through customer-specific converters. Factory-scoped customer masters and pricing baselines remain separate from the internal collaboration state. BuzzBee, Disney, Dickie, and Caixing are Huaxing-only mappings; 360 is a Huakang A-only mapping. Huakang B/C/D and Huadeng expose independent unmapped states until an explicit factory-specific mapping chain is added. Customer-facing outputs must not expose internal commercial fields outside the converter whitelist.
+
+彩星业务专属字段只保存塑胶/毛绒类型、Item No.、Item Description 和报价日期；外箱长宽高、CUFT、CBM、Pcs/Shipper 与纸箱价统一读取业务第一条主纸箱及其服务端计算行，客户模板成本行统一读取各已审批分段的 calculation，不允许在彩星区维护重复副本。客价输出按客户模板口径自动重分配：Tool Plan 的 `BL` 吹气工序成本不计入 `Molding & Casting`，而计入 `Summary` 的 `Spraying`；油漆和喷油人工合计计入 `Tampo Printing`。电池计入 `Purchase`，`IC` 计入 `Special Material`，利宝/说明书、锡线、胶针和胶纸计入 `Packing`。两套彩星模板的 `Packing` B 列是固定类型目录，转换器必须保留原值，只在匹配类型行的 C 列及其后写入规格、数量和成本。
+
+360 业务专属字段只保存 MS Brand、製表人、发行日期、版本、首次货柜出货日期和最终运费路线；MOQ、彩盒/纸箱尺寸、CUFT、Pcs/Carton、纸箱价、测试费和全部成本均复用通用业务字段及服务端 calculation，不保存重复副本。华康 A / 360 导入自动识别 P4 v2 最终放行 `.xlsx` 与原内部多 Sheet `.xlsx`；原内部文件只要求“内部明细”页，日常导入不要求也不应依赖客户输出页 `Breakdown`，彩盒、车衣等页可随源文件保留但不会复制到客户文件。原内部文件缺少客户抬头元数据时，製表人回退郑大能、发行日期优先从文件名读取、MOQ 使用当前 360 报价基数 20,000；旧 `.xls` 继续阻断。输出只生成客户 `Breakdown` 页，不携带内部明细、供应商分解页、样例产品图、外部链接或共享字符串残留。塑胶材料按客户固定 USD/KG 表（ABS 2.03、C-ABS 3.53、PP 1.70、PVC 1.92、C-PVC 2.26、POM 3.10、Roto-PVC 2.18、C-PP 1.84）乘实际含损耗重量；港币成本按 7.8 换算美元，材料损耗固定 2%，Markup 固定 12%。车衣快捷总价因无法逐项输出用量和单价而必须阻断；未配置的塑胶材料名、缺纸箱或缺运费路线同样阻断。
 
 The pricing API persists factory- and customer-scoped pricing quotes. Totals are recalculated server-side and tampered client totals are rejected.
 
@@ -164,16 +168,19 @@ Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF in
 
 ### Injection-Scheduling Center
 
-The visible injection-scheduling module is currently a frontend preview, not a connected production system:
+Injection scheduling now has a connected frontend/backend implementation in this worktree:
 
-- The dedicated route, view, components, types, store and API integration seam exist in the frontend.
-- Huaxing has a browser-local demonstration snapshot; other factories remain empty and isolated.
-- Locked tasks, backlog assignment and schedule moves require UI confirmation.
-- Draft changes remain in browser state and publish is not connected.
-- The API seam does not currently send backend requests.
-- No injection-scheduling router, service, persistence model, table or permission is registered in the current backend.
+- The production-module card routes to `/modules/production/injection-scheduling?factory={factoryId}`.
+- Migration `20260728_0039` introduces the new `injection_scheduling_*` namespace for import batches and issues, master data, plans, immutable revisions, materialized tasks, published snapshots and append-only audit events. It does not revive the removed `injection_schedule_*` implementation.
+- The backend supports read-only `.xlsx` preview, explicit confirm, current snapshots, move validation, optimistic draft save, immutable publish and rollback-to-new-draft. Server-side permission and factory checks are authoritative.
+- The new permission family is `injection_scheduling:read|import|edit|publish|rollback`; molding clerks can read/import/edit, while supervisor-or-higher positions are required for publish and rollback.
+- Huaxing and Huakang B workbook templates are parsed without modifying the source files. Missing machine capability or changeover data is surfaced as review warnings rather than invented as safe values.
+- The frontend uses the HTTP repository when a current backend plan exists. Huaxing and Huakang B retain explicit, isolated Mock snapshots only as a no-plan fallback; other factories remain empty and never inherit another factory's data.
+- Locked tasks, backlog assignment and schedule moves require confirmation. Backend drafts use revision conflict detection, and published snapshots are immutable.
+- The TypeScript rule core still provides the local heuristic optimization preview; a production-grade backend optimizer and live production-feedback loop are not part of this phase.
+- The workbench uses fixed-height compact lanes and a dark big-screen mode while keeping page-level scrolling disabled.
 
-Historical injection-scheduling migrations remain immutable migration history, but the current head removes the rebuilt injection-scheduling schema and authorization state. A future rebuild must use a new forward migration and must not revive or edit the removed historical implementation.
+Historical injection-scheduling migrations remain immutable history. Migration `20260727_0037` removed the previous rebuild; `20260728_0039` is the new forward-only contract and requires an Alembic upgrade before the service may start from head `0038`.
 
 ### Module Catalog and Placeholders
 
@@ -192,12 +199,14 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260723_0028` introduced production-factory dispatch and factory-scoped inventory behavior. Its preflight rejects ambiguous Huakang C/D production history and unscoped inventory; rollback requires a backup.
 - Migration `20260727_0037` removes the rebuilt injection-scheduling tables, permissions, IAM markers and PostgreSQL audit trigger. Its downgrade is intentionally blocked; recovery requires a backup from before removal.
 - Migration `20260727_0038` adds an empty optional standalone hair section and immutable initial revision to every historical internal quote; downgrade is allowed only while those migrated hair sections remain untouched.
+- Migration `20260728_0039` creates the new injection-scheduling backend, permission family and immutable audit contract. Its downgrade refuses to run after an import batch exists; production deployment requires the normal backup and migration preflight.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 
 ## 8. Active Known Issues
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
-- Injection scheduling has no active backend schema, authorization contract, persistence service or publish workflow.
+- Injection scheduling does not yet ingest live machine/production feedback, expose SSE refresh, or run an advanced backend optimization solver.
+- The new injection-scheduling migration and implementation are verified only against disposable local databases in this phase; they have not been deployed to production.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.
 - Customer-order warning thresholds shown by the frontend, including day-based exception thresholds, are not yet confirmed as authoritative business rules.
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
@@ -209,7 +218,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 The smallest unresolved decisions that require product or operational confirmation are:
 
 - Decide whether authenticated users should permanently retain global read-only page entry, or whether page entry must return to permission-gated behavior.
-- Define the first production factories, data model, scheduling constraints, conflict rules, approval/publish workflow and permissions for the injection-scheduling rebuild.
+- Confirm ownership and rollout timing for authoritative machine capability/changeover masters, live production feedback and the advanced backend optimizer.
 - Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.

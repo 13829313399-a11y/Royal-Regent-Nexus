@@ -25,21 +25,25 @@ def _group_cost_rows(rows: list[dict]) -> list[dict]:
         haystack = f"{category} {description}"
         if "纸箱" in haystack or "Carton" in haystack:
             group = "carton"
-        elif any(key in haystack for key in ("彩盒", "内咭", "吸塑")):
+        elif any(key in haystack for key in ("彩盒", "内咭", "吸塑", "利宝", "说明书", "锡线", "胶针", "胶纸")):
             group = "packing"
-        elif any(key in haystack for key in ("电子", "电池", "IC")):
+        elif "IC" in haystack:
+            group = "special"
+        elif "电池" in haystack:
+            group = "purchase"
+        elif "电子" in haystack:
             group = "electronic"
         elif "车衣" in haystack:
             group = "fabric"
         elif any(key in haystack for key in ("油漆", "喷油")):
-            group = "spraying"
+            group = "tampo"
         elif "包装人工" in haystack:
             group = "packout"
         elif "装配工" in haystack:
             group = "assembly"
         elif "车发" in haystack:
             group = "rooting"
-        elif any(key in haystack for key in ("五金", "其它外购", "其他外购", "利宝", "说明书", "马达")):
+        elif any(key in haystack for key in ("五金", "其它外购", "其他外购", "马达")):
             group = "purchase"
         else:
             continue
@@ -54,6 +58,54 @@ def _group_cost_rows(rows: list[dict]) -> list[dict]:
             }
         )
     return grouped
+
+
+def _canonical_cost_inputs(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    packaging_materials = []
+    engineering_materials = []
+    for row in _group_cost_rows(rows):
+        amount_hkd = row["customer_cost_hkd"] or row["base_cost_hkd"]
+        description = row["description"]
+        category = row["category"]
+        if row["group"] == "packing":
+            if any(key in f"{category} {description}" for key in ("利宝", "说明书")):
+                packaging_category = "leaflet_manual"
+            elif any(key in f"{category} {description}" for key in ("彩盒", "内咭", "内卡")):
+                packaging_category = "color_box_inner_card"
+            elif "吸塑" in f"{category} {description}":
+                packaging_category = "blister"
+            else:
+                packaging_category = "other_purchase"
+            packaging_materials.append(
+                {
+                    "item": description or category,
+                    "specification": "",
+                    "category": packaging_category,
+                    "quantity": 1,
+                    "unit_price_hkd": amount_hkd,
+                    "unit_price_source_currency": "HKD",
+                    "tax_rate_percent": 13 if "13" in str(row["tax_tag"]) else 0,
+                    "remark": "",
+                }
+            )
+            continue
+
+        is_hardware = row["group"] == "purchase" and "五金" in f"{category} {description}"
+        engineering_materials.append(
+            {
+                "item": description or category,
+                "category": "hardware" if is_hardware else "auxiliary",
+                "specification": "",
+                "quantity": 1,
+                "unit_price_hkd": amount_hkd,
+                "unit_price_source_currency": "HKD",
+                "unit_price_rmb": amount_hkd * 0.85 if is_hardware else 0,
+                "auxiliary_category": "五金" if is_hardware else ("电池" if "电池" in f"{category} {description}" else "其他外购"),
+                "tax_rate_percent": 13 if is_hardware or "13" in str(row["tax_tag"]) else 0,
+                "remark": "",
+            }
+        )
+    return packaging_materials, engineering_materials
 
 
 def _tool_plan_rows(product_type: str, quote_data: dict) -> list[dict]:
@@ -119,9 +171,10 @@ def _payloads(product_type: str, baseline: dict) -> dict[str, dict]:
         )
     metadata = quote_data["metadata"]
     carton = metadata["carton"]
+    packaging_materials, engineering_materials = _canonical_cost_inputs(quote_data["costRows"])
     return {
         "engineering": {
-            "materials": [],
+            "materials": engineering_materials,
             "molds": molds,
             "amortization_qty": 3000,
             "customer_mold_subsidy_usd": 0,
@@ -133,6 +186,18 @@ def _payloads(product_type: str, baseline: dict) -> dict[str, dict]:
             "caixing_tool_plan_rows": tool_rows,
         },
         "sales": {
+            "paper_price_factor": 2.75,
+            "packaging_materials": packaging_materials,
+            "cartons": [
+                {
+                    "item": "主纸箱",
+                    "length_in": carton["length"],
+                    "width_in": carton["width"],
+                    "height_in": carton["height"],
+                    "qty_per_carton": carton["pcsPerCarton"],
+                    "flat_cards": [],
+                }
+            ],
             "additional_tax_hkd": 0,
             "indonesia_freight_hkd": 0,
             "tax_categories": [],
@@ -143,14 +208,6 @@ def _payloads(product_type: str, baseline: dict) -> dict[str, dict]:
                     "item_number": metadata["itemNo"],
                     "item_name": metadata["itemName"],
                     "quote_date": "2026-06-27" if product_type == "plastic" else "2026-06-02",
-                    "carton_length_in": carton["length"],
-                    "carton_width_in": carton["width"],
-                    "carton_height_in": carton["height"],
-                    "carton_cuft": carton["cube"],
-                    "carton_cbm": carton["cbm"],
-                    "pcs_per_carton": carton["pcsPerCarton"],
-                    "carton_price_hkd": carton["cartonPrice"],
-                    "cost_rows": _group_cost_rows(quote_data["costRows"]),
                 }
             },
         },

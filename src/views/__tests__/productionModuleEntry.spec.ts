@@ -11,17 +11,19 @@ const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/CustomerPriceArtifactPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
+const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingHubView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('wires the injection scheduling hub to the front-end preview route', () => {
+  it('wires the injection scheduling hub to the connected production route', () => {
     const moduleBlock = enterpriseSource.match(
       /id: 'injection-scheduling'[\s\S]*?\n      },/,
     )?.[0]
 
     expect(moduleBlock).toBeDefined()
     expect(moduleBlock).toContain("title: '注塑排产中枢'")
-    expect(moduleBlock).toContain("status: '前端预览'")
-    expect(moduleBlock).toContain("stats: '华兴 Mock 快照 · 后端未接入'")
+    expect(moduleBlock).toContain("status: '正式接入'")
+    expect(moduleBlock).toContain("stats: '两厂 Excel 导入 · 草案 / 发布 / 回滚'")
+    expect(moduleBlock).toContain("{ label: '数据', value: '正式', tone: 'blue' }")
     expect(moduleBlock).toContain(
       "route: getDepartmentRoute('production', 'injection-scheduling')",
     )
@@ -31,6 +33,11 @@ describe('production module entry', () => {
     expect(routerSource).toContain("InjectionSchedulingHubView.vue")
     expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,280}fullPage: true/)
     expect(routerSource).not.toContain('injection_schedule:')
+    expect(injectionSchedulingViewSource).toContain('华兴与华康 B 使用各自独立 Mock')
+    expect(injectionSchedulingViewSource).toContain('不会回退显示其他厂区数据')
+    expect(injectionSchedulingViewSource).toContain("store.plan.status === 'published' ? '正式后端 · 已发布'")
+    expect(injectionSchedulingViewSource).toContain('h-dvh')
+    expect(injectionSchedulingViewSource).toContain('minmax(0,1fr)')
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {
@@ -196,7 +203,9 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toMatch(/QuoteCenterPanel/)
     expect(customerPriceConversionViewSource).toMatch(/SalesModuleWorkbench/)
     expect(customerPriceConversionViewSource).toMatch(/title="客价转换台"/)
-    expect(customerPriceConversionViewSource).toMatch(/\['huakang-c', 'huakang-d'\]\.includes\(appStore\.activeProductionFactory\.id\)/)
+    expect(customerPriceConversionViewSource).toContain("['huaxing', 'huakang-a'].includes(appStore.activeProductionFactory.id)")
+    expect(customerPriceConversionViewSource).toContain('data-testid="customer-price-mapping-empty"')
+    expect(customerPriceConversionViewSource).toContain('BuzzBee、迪士尼、Dickie 和彩星仅适用于华兴，360 仅适用于华康 A')
     expect(customerPriceConversionViewSource).toContain("{ label: '待转换', value: '0'")
     expect(customerPriceConversionViewSource).toContain("{ label: '客户范围', value: '待配置'")
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
@@ -227,7 +236,7 @@ describe('production module entry', () => {
       expect(quoteCenterPanelSource).toContain(requiredCopy)
     }
     expect(quoteCenterPanelSource).toContain('v-for="customer in visibleCustomers"')
-    expect(quoteCenterPanelSource).toContain(':disabled="!canImportSelectedCustomer"')
+    expect(quoteCenterPanelSource).toContain(':disabled="!canImportSelectedCustomer || isImportingInternalQuote"')
     expect(quoteCenterPanelSource).toMatch(/authStore\.can\(\s*'customer_price:import_internal_quote'/)
     expect(quoteCenterPanelSource).toMatch(/authStore\.can\(\s*'customer_price:export_customer_quote'/)
     expect(quoteCenterPanelSource).not.toContain('v-for="customer in ownCustomers"')

@@ -51,11 +51,12 @@ let artifactRequestSequence = 0
 let factoryGeneration = 0
 
 const activeFactoryId = computed(() => appStore.activeProductionFactory?.id ?? 'huaxing')
+const hasConfiguredCustomers = computed(() => props.customers.length > 0)
 const canImportArtifact = computed(() => authStore.can(
   'customer_price:import_internal_quote',
   activeFactoryId.value,
   'sales-business',
-))
+) && hasConfiguredCustomers.value)
 
 function isCurrentFactory(factoryId: string, generation: number) {
   return factoryId === activeFactoryId.value && generation === factoryGeneration
@@ -325,7 +326,12 @@ onBeforeUnmount(() => {
       </button>
     </template>
 
-    <div v-if="!canImportArtifact" class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+    <div v-if="!hasConfiguredCustomers" class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+      <CircleAlert class="mt-0.5 size-5 shrink-0" aria-hidden="true" />
+      <div><strong class="block">当前厂区尚未配置报客映射</strong><span class="mt-1 block">请先为本厂区建立独立客户映射链路，再接收 P4 交接文件。</span></div>
+    </div>
+
+    <div v-else-if="!canImportArtifact" class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
       <CircleAlert class="mt-0.5 size-5 shrink-0" aria-hidden="true" />
       <div><strong class="block">当前账号不可接收内部报价</strong><span class="mt-1 block">需要当前厂区的 `customer_price:import_internal_quote` 权限。</span></div>
     </div>
@@ -380,8 +386,8 @@ onBeforeUnmount(() => {
 
       <div v-else-if="artifacts.length === 0" class="mt-4 flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-center">
         <Inbox class="size-7 text-slate-400" aria-hidden="true" />
-        <strong class="mt-3 text-sm text-slate-800">当前筛选下没有交接文件</strong>
-        <span class="mt-1 text-xs text-slate-500">只有已由本单负责跟客最终放行且未被后续 revision 撤销的文件会进入待接收列表。</span>
+        <strong class="mt-3 text-sm text-slate-800">{{ hasConfiguredCustomers ? '当前筛选下没有交接文件' : '当前厂区尚未配置报客映射' }}</strong>
+        <span class="mt-1 text-xs text-slate-500">{{ hasConfiguredCustomers ? '只有已由本单负责跟客最终放行且未被后续 revision 撤销的文件会进入待接收列表。' : '请先为本厂区建立独立客户映射链路，再接收 P4 交接文件。' }}</span>
       </div>
 
       <div v-else class="mt-4 grid gap-3 xl:grid-cols-2">

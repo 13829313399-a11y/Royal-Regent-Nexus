@@ -7,13 +7,22 @@ import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
+const hasConfiguredCustomerMappings = computed(() => ['huaxing', 'huakang-a'].includes(appStore.activeProductionFactory.id))
 
 const metrics = computed(() => {
-  if (['huakang-c', 'huakang-d'].includes(appStore.activeProductionFactory.id)) {
+  if (!hasConfiguredCustomerMappings.value) {
     return [
       { label: '待转换', value: '0', detail: `${appStore.activeProductionFactory.shortName} 暂无待转换报价` },
       { label: '待复核', value: '0', detail: `${appStore.activeProductionFactory.shortName} 暂无待复核版本` },
       { label: '客户范围', value: '待配置', detail: '等待本厂客户与报价资料接入' },
+    ]
+  }
+
+  if (appStore.activeProductionFactory.id === 'huakang-a') {
+    return [
+      { label: '待转换', value: '1', detail: '360 客户报价' },
+      { label: '待复核', value: '0', detail: '等待首次 P4 转换' },
+      { label: '客户范围', value: '360', detail: '当前仅华康 A 已建立映射' },
     ]
   }
 
@@ -34,6 +43,16 @@ const metrics = computed(() => {
     :metrics="metrics"
   >
     <template #icon><FileSpreadsheet aria-hidden="true" /></template>
-    <QuoteCenterPanel />
+    <QuoteCenterPanel v-if="hasConfiguredCustomerMappings" />
+    <section
+      v-else
+      data-testid="customer-price-mapping-empty"
+      class="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center shadow-sm"
+    >
+      <strong class="text-base text-slate-900">当前厂区尚未配置报客映射</strong>
+      <p class="mt-2 text-sm text-slate-500">
+        BuzzBee、迪士尼、Dickie 和彩星仅适用于华兴，360 仅适用于华康 A；请先为本厂区新增独立客户映射链路。
+      </p>
+    </section>
   </SalesModuleWorkbench>
 </template>

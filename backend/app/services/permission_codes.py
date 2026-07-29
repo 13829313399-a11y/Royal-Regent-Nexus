@@ -46,6 +46,14 @@ CUSTOMER_ORDER_PERMISSION_CODES = (
     "customer_order:export",
 )
 
+INJECTION_SCHEDULING_PERMISSION_CODES = (
+    "injection_scheduling:read",
+    "injection_scheduling:import",
+    "injection_scheduling:edit",
+    "injection_scheduling:publish",
+    "injection_scheduling:rollback",
+)
+
 INTERNAL_QUOTE_SECTION_CODES = (
     "sales",
     "engineering",
@@ -98,6 +106,7 @@ BUSINESS_PERMISSION_CODES = (
     *CARTON_MARK_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
+    *INJECTION_SCHEDULING_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
 

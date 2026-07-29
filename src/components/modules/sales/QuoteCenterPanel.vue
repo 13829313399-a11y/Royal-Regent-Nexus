@@ -33,6 +33,13 @@ import {
   type CaixingConversionResult,
   type CaixingProductType,
 } from '@/lib/customerPriceConverters/caixing'
+import {
+  THREE_SIXTY_CUSTOMER_QUOTE_TEMPLATE_URL,
+  buildThreeSixtyCustomerQuoteFileName,
+  convertThreeSixtyInternalQuote,
+  createThreeSixtyCustomerQuoteWorkbook,
+  type ThreeSixtyConversionResult,
+} from '@/lib/customerPriceConverters/threeSixty'
 import { useAppStore } from '@/stores/app'
 import {
   prepareP4CustomerConversion,
@@ -108,8 +115,6 @@ interface ExportedQuoteVersion {
 const authStore = useAuthStore()
 const appStore = useAppStore()
 const activeFactoryId = computed(() => appStore.activeProductionFactory.id)
-const independentEmptyFactoryIds = new Set(['huakang-c', 'huakang-d'])
-const usesIndependentFactoryEmptyState = computed(() => independentEmptyFactoryIds.has(activeFactoryId.value))
 
 const customerOptions: CustomerOption[] = [
   {
@@ -148,11 +153,20 @@ const customerOptions: CustomerOption[] = [
     owner: '陈善杰',
     activeQuoteCount: 2,
   },
+  {
+    id: 'three-sixty',
+    name: '360',
+    factoryId: 'huakang-a',
+    department: 'sales-business',
+    workshop: '华康 A',
+    owner: '郑大能',
+    activeQuoteCount: 1,
+  },
 ]
 
-const artifactCustomerOptions = customerOptions.map(({ id, name }) => ({ id, name }))
-
-const selectedCustomerId = ref(customerOptions[0]?.id ?? '')
+const selectedCustomerId = ref(
+  customerOptions.find((customer) => customer.factoryId === activeFactoryId.value)?.id ?? '',
+)
 const caixingProductTypeOptions = [
   { id: 'plastic', label: '塑胶', detail: '塑胶 / 注塑类报客价' },
   { id: 'plush', label: '毛绒', detail: '毛绒 / 车衣车发类报客价' },
@@ -166,6 +180,7 @@ const importedFileSize = ref('')
 const importedAt = ref('')
 const importErrorMessage = ref('')
 const exportErrorMessage = ref('')
+const isImportingInternalQuote = ref(false)
 const isExportingCustomerQuote = ref(false)
 const selectedSheetId = ref('all')
 const selectedExportVersionId = ref('')
@@ -175,6 +190,7 @@ const buzzBeeConversionResult = ref<BuzzBeeConversionResult | null>(null)
 const disneyConversionResult = ref<DisneyConversionResult | null>(null)
 const dickyConversionResult = ref<DickyConversionResult | null>(null)
 const caixingConversionResult = ref<CaixingConversionResult | null>(null)
+const threeSixtyConversionResult = ref<ThreeSixtyConversionResult | null>(null)
 const isImportDragActive = ref(false)
 let importDragDepth = 0
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -243,6 +259,19 @@ const conversionRows = ref<CustomerPriceConversionRow[]>([
     updatedAt: '今天 11:20',
   },
   {
+    id: 'QTC-HKA-360-260728-001',
+    customerId: 'three-sixty',
+    customer: '360',
+    workshop: '华康 A',
+    internalPriceHkd: 0,
+    customerPriceHkd: 0,
+    marginBand: '-',
+    status: '待转换',
+    quoteNo: '待生成',
+    sourceFileName: '待导入',
+    updatedAt: '今天',
+  },
+  {
     id: 'QTC-HKB-260707-011',
     customerId: 'zuru',
     customer: 'Zuru',
@@ -275,7 +304,7 @@ function isCurrentFactoryTask(factoryId: string, generation: number) {
 }
 
 function resetFactoryTransientState() {
-  selectedCustomerId.value = customerOptions[0]?.id ?? ''
+  selectedCustomerId.value = customerOptions.find((customer) => customer.factoryId === activeFactoryId.value)?.id ?? ''
   selectedCaixingProductType.value = 'plastic'
   importedCaixingProductType.value = ''
   detailSearchQuery.value = ''
@@ -285,6 +314,7 @@ function resetFactoryTransientState() {
   importedAt.value = ''
   importErrorMessage.value = ''
   exportErrorMessage.value = ''
+  isImportingInternalQuote.value = false
   isExportingCustomerQuote.value = false
   selectedSheetId.value = 'all'
   selectedExportVersionId.value = ''
@@ -294,6 +324,7 @@ function resetFactoryTransientState() {
   disneyConversionResult.value = null
   dickyConversionResult.value = null
   caixingConversionResult.value = null
+  threeSixtyConversionResult.value = null
   isImportDragActive.value = false
   importDragDepth = 0
   preparedP4Conversions.clear()
@@ -306,18 +337,28 @@ watch(activeFactoryId, () => {
   resetFactoryTransientState()
 })
 
-const visibleCustomers = computed(() => customerOptions.map((customer) => ({
-  ...customer,
-  factoryId: activeFactoryId.value,
-  activeQuoteCount: usesIndependentFactoryEmptyState.value ? 0 : customer.activeQuoteCount,
-})))
+const visibleCustomers = computed(() => customerOptions.filter(
+  (customer) => customer.factoryId === activeFactoryId.value,
+))
+const artifactCustomerOptions = computed(() => visibleCustomers.value.map(({ id, name }) => ({ id, name })))
+const hasConfiguredCustomerMappings = computed(() => visibleCustomers.value.length > 0)
 
 const selectedCustomer = computed<CustomerOption>(() => {
   return visibleCustomers.value.find((customer) => customer.id === selectedCustomerId.value)
-    ?? (visibleCustomers.value[0] as CustomerOption)
+    ?? visibleCustomers.value[0]
+    ?? {
+      id: '',
+      name: '未配置客户',
+      factoryId: activeFactoryId.value,
+      department: 'sales-business',
+      workshop: '',
+      owner: '',
+      activeQuoteCount: 0,
+    }
 })
 
 const canImportSelectedCustomer = computed(() => {
+  if (!selectedCustomer.value.id) return false
   return authStore.can(
     'customer_price:import_internal_quote',
     selectedCustomer.value.factoryId,
@@ -326,6 +367,7 @@ const canImportSelectedCustomer = computed(() => {
 })
 
 const canExportSelectedCustomer = computed(() => {
+  if (!selectedCustomer.value.id) return false
   return authStore.can(
     'customer_price:export_customer_quote',
     selectedCustomer.value.factoryId,
@@ -334,6 +376,9 @@ const canExportSelectedCustomer = computed(() => {
 })
 
 const selectedCustomerOperationSummary = computed(() => {
+  if (!selectedCustomer.value.id) {
+    return { value: '待配置', detail: '当前厂区尚未建立客户报客映射' }
+  }
   if (canImportSelectedCustomer.value && canExportSelectedCustomer.value) {
     return { value: '可导入/输出', detail: '全部客户按相同权限操作' }
   }
@@ -367,15 +412,12 @@ const selectedImportMatchesCurrentChoice = computed(() => {
 })
 
 const visibleConversionRows = computed(() => {
-  if (usesIndependentFactoryEmptyState.value) {
-    return []
-  }
-
+  if (!hasConfiguredCustomerMappings.value) return []
   return conversionRows.value.filter((row) => row.customerId === selectedCustomer.value.id)
 })
 
 const existingSelectedSourceFileName = computed(() => {
-  if (selectedCustomer.value.id === 'buzzbee' || selectedCustomer.value.id === 'disney' || selectedCustomer.value.id === 'dicky' || selectedCustomer.value.id === 'caixing') {
+  if (selectedCustomer.value.id === 'buzzbee' || selectedCustomer.value.id === 'disney' || selectedCustomer.value.id === 'dicky' || selectedCustomer.value.id === 'caixing' || selectedCustomer.value.id === 'three-sixty') {
     return ''
   }
 
@@ -469,6 +511,12 @@ const hasActiveCaixingConversion = computed(() => {
     && caixingConversionResult.value?.productType === selectedCaixingProductType.value
 })
 
+const hasActiveThreeSixtyConversion = computed(() => {
+  return selectedCustomer.value.id === 'three-sixty'
+    && selectedImportMatchesCurrentChoice.value
+    && Boolean(threeSixtyConversionResult.value)
+})
+
 const comparisonMetrics = computed(() => {
   const totalInternal = activeWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0)
   const totalCustomer = activeWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0)
@@ -501,6 +549,10 @@ const canExportCustomerQuote = computed(() => {
 
   if (selectedCustomer.value.id === 'caixing') {
     return hasActiveCaixingConversion.value
+  }
+
+  if (selectedCustomer.value.id === 'three-sixty') {
+    return hasActiveThreeSixtyConversion.value
   }
 
   return visibleConversionRows.value.length > 0 && Boolean(selectedImportFileName.value)
@@ -637,8 +689,8 @@ function readFileAsArrayBuffer(file: File) {
 
 function configuredCustomerId(customerName: string): P4ConfiguredCustomerId | null {
   const normalized = customerName.trim().toLowerCase().replace(/[\s_-]+/g, '')
-  const matched = customerOptions.find((customer) => customer.name.trim().toLowerCase().replace(/[\s_-]+/g, '') === normalized)
-  return matched && ['buzzbee', 'disney', 'dicky', 'caixing'].includes(matched.id)
+  const matched = visibleCustomers.value.find((customer) => customer.name.trim().toLowerCase().replace(/[\s_-]+/g, '') === normalized)
+  return matched && ['buzzbee', 'disney', 'dicky', 'caixing', 'three-sixty'].includes(matched.id)
     ? matched.id as P4ConfiguredCustomerId
     : null
 }
@@ -656,6 +708,9 @@ function handoffManifestNumber(handoff: CustomerPriceInternalQuoteArtifact, key:
 async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, blob: Blob) {
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryGeneration = factoryGeneration
+  if (!hasConfiguredCustomerMappings.value) {
+    throw new Error('当前厂区尚未配置客户报客映射')
+  }
   if (handoff.factory_id !== requestedFactoryId) {
     throw new Error('交接文件所属厂区与当前厂区不一致')
   }
@@ -704,6 +759,7 @@ function commitP4Artifact(handoffId: string) {
     disneyConversionResult.value = null
     dickyConversionResult.value = null
     caixingConversionResult.value = null
+    threeSixtyConversionResult.value = null
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   } else if (conversion.customerId === 'disney') {
@@ -713,6 +769,7 @@ function commitP4Artifact(handoffId: string) {
     disneyConversionResult.value = result
     dickyConversionResult.value = null
     caixingConversionResult.value = null
+    threeSixtyConversionResult.value = null
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   } else if (conversion.customerId === 'dicky') {
@@ -722,6 +779,7 @@ function commitP4Artifact(handoffId: string) {
     disneyConversionResult.value = null
     dickyConversionResult.value = result
     caixingConversionResult.value = null
+    threeSixtyConversionResult.value = null
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   } else if (conversion.customerId === 'caixing') {
@@ -731,7 +789,18 @@ function commitP4Artifact(handoffId: string) {
     disneyConversionResult.value = null
     dickyConversionResult.value = null
     caixingConversionResult.value = result
+    threeSixtyConversionResult.value = null
     selectedCaixingProductType.value = result.productType
+    importedWorkbookSheets.value = result.sheets
+    importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
+  } else if (conversion.customerId === 'three-sixty') {
+    const result = conversion.result
+    const detailCount = result.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+    buzzBeeConversionResult.value = null
+    disneyConversionResult.value = null
+    dickyConversionResult.value = null
+    caixingConversionResult.value = null
+    threeSixtyConversionResult.value = result
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   }
@@ -745,7 +814,7 @@ function commitP4Artifact(handoffId: string) {
   selectedExportVersionId.value = ''
   const totalInternalHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0).toFixed(3))
   const totalCustomerHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0).toFixed(3))
-  if (!usesIndependentFactoryEmptyState.value) {
+  if (hasConfiguredCustomerMappings.value) {
     conversionRows.value = conversionRows.value.map((row) => row.customerId !== conversion.customerId
       ? row
       : {
@@ -852,6 +921,7 @@ async function importInternalQuoteFile(file: File | undefined) {
   )
 
   importErrorMessage.value = ''
+  isImportingInternalQuote.value = true
 
   try {
     if (customer.id === 'buzzbee') {
@@ -868,6 +938,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       disneyConversionResult.value = null
       dickyConversionResult.value = null
       caixingConversionResult.value = null
+      threeSixtyConversionResult.value = null
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'disney') {
@@ -884,6 +955,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       disneyConversionResult.value = conversionResult
       dickyConversionResult.value = null
       caixingConversionResult.value = null
+      threeSixtyConversionResult.value = null
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'dicky') {
@@ -900,6 +972,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       disneyConversionResult.value = null
       dickyConversionResult.value = conversionResult
       caixingConversionResult.value = null
+      threeSixtyConversionResult.value = null
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'caixing') {
@@ -916,13 +989,31 @@ async function importInternalQuoteFile(file: File | undefined) {
       disneyConversionResult.value = null
       dickyConversionResult.value = null
       caixingConversionResult.value = conversionResult
+      threeSixtyConversionResult.value = null
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
+    } else if (customer.id === 'three-sixty') {
+      if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        throw new Error('360 当前支持 .xlsx P4 最终放行文件或原专用多 Sheet 工作簿，旧 .xls 请先另存为 .xlsx')
+      }
+      const buffer = await readFileAsArrayBuffer(file)
+      if (!isCurrentImportRequest()) return
+      const conversionResult = convertThreeSixtyInternalQuote(buffer, file.name)
+      const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
+
+      buzzBeeConversionResult.value = null
+      disneyConversionResult.value = null
+      dickyConversionResult.value = null
+      caixingConversionResult.value = null
+      threeSixtyConversionResult.value = conversionResult
+      importedWorkbookSheets.value = conversionResult.sheets
+      importedFileSize.value = `${formatFileSize(file.size)} · P4 上传直转 · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else {
       buzzBeeConversionResult.value = null
       disneyConversionResult.value = null
       dickyConversionResult.value = null
       caixingConversionResult.value = null
+      threeSixtyConversionResult.value = null
       importedWorkbookSheets.value = createMockWorkbookSheets(customer, file.name)
       importedFileSize.value = formatFileSize(file.size)
     }
@@ -939,7 +1030,7 @@ async function importInternalQuoteFile(file: File | undefined) {
     const totalInternalHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0).toFixed(3))
     const totalCustomerHkd = Number(importedWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0).toFixed(3))
 
-    if (!usesIndependentFactoryEmptyState.value) {
+    if (hasConfiguredCustomerMappings.value) {
       conversionRows.value = conversionRows.value.map((row) => {
         if (row.customerId !== customer.id) {
           return row
@@ -969,7 +1060,12 @@ async function importInternalQuoteFile(file: File | undefined) {
     disneyConversionResult.value = null
     dickyConversionResult.value = null
     caixingConversionResult.value = null
+    threeSixtyConversionResult.value = null
     importErrorMessage.value = error instanceof Error ? `导入失败：${error.message}` : '导入失败：内部报价解析失败'
+  } finally {
+    if (isCurrentImportRequest()) {
+      isImportingInternalQuote.value = false
+    }
   }
 }
 
@@ -1075,6 +1171,12 @@ async function exportCustomerQuoteExcel() {
       if (!isCurrentExportRequest()) return
       const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
       fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
+      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+    } else if (selectedCustomer.value.id === 'three-sixty' && threeSixtyConversionResult.value) {
+      const templateBuffer = await fetchTemplateBuffer(THREE_SIXTY_CUSTOMER_QUOTE_TEMPLATE_URL, '360 报客')
+      if (!isCurrentExportRequest()) return
+      const workbook = createThreeSixtyCustomerQuoteWorkbook(threeSixtyConversionResult.value, templateBuffer)
+      fileName = buildThreeSixtyCustomerQuoteFileName(threeSixtyConversionResult.value)
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
     } else {
       const tableRows = detailRows.length > 0
@@ -1256,7 +1358,7 @@ async function exportCustomerQuoteExcel() {
               : isImportDragActive
                 ? 'cursor-pointer border-dashed border-teal-500 bg-teal-50 shadow-[0_16px_34px_rgba(13,148,136,0.16)]'
                 : 'cursor-pointer border-dashed border-teal-300 bg-[linear-gradient(135deg,#ffffff,#f0fdfa)] shadow-[0_12px_26px_rgba(13,148,136,0.07)] hover:border-teal-500'"
-          :aria-disabled="!canImportSelectedCustomer"
+          :aria-disabled="!canImportSelectedCustomer || isImportingInternalQuote"
           @dragenter.prevent="handleInternalQuoteDragEnter"
           @dragover.prevent="handleInternalQuoteDragOver"
           @dragleave.prevent="handleInternalQuoteDragLeave"
@@ -1280,7 +1382,7 @@ async function exportCustomerQuoteExcel() {
             class="mt-3 text-base font-semibold"
             :class="canImportSelectedCustomer && hasSelectedCustomerImport ? 'text-white' : 'text-slate-950'"
           >
-            {{ !canImportSelectedCustomer ? '当前账号不可导入' : hasSelectedCustomerImport ? '已导入内部报价' : isImportDragActive ? '松开导入内部报价' : '导入内部报价 Excel' }}
+            {{ !canImportSelectedCustomer ? '当前账号不可导入' : isImportingInternalQuote ? '正在读取并转换…' : hasSelectedCustomerImport ? '已导入内部报价' : isImportDragActive ? '松开导入内部报价' : '导入内部报价 Excel' }}
           </span>
           <span
             class="mt-1 text-sm leading-6"
@@ -1305,14 +1407,14 @@ async function exportCustomerQuoteExcel() {
                   ? 'bg-white text-teal-700 ring-teal-200'
                   : 'bg-white text-slate-500 ring-slate-200'"
           >
-            {{ !canImportSelectedCustomer ? '权限限制：不可导入或替换' : hasSelectedCustomerImport ? '已就绪，可输出报客价' : isImportDragActive ? '松开鼠标导入 Excel' : '支持 .xls / .xlsx' }}
+            {{ !canImportSelectedCustomer ? '权限限制：不可导入或替换' : isImportingInternalQuote ? '请稍候，正在识别并转换数据' : hasSelectedCustomerImport ? '已就绪，可输出报客价' : isImportDragActive ? '松开鼠标导入 Excel' : selectedCustomer?.id === 'three-sixty' ? '支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）' : '支持 .xls / .xlsx' }}
           </span>
             <input
               data-testid="quote-import-input"
               class="sr-only"
               type="file"
               accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              :disabled="!canImportSelectedCustomer"
+              :disabled="!canImportSelectedCustomer || isImportingInternalQuote"
               @change="handleInternalQuoteImport"
             >
         </label>
@@ -1323,7 +1425,7 @@ async function exportCustomerQuoteExcel() {
             <p class="mt-2 truncate text-sm font-semibold text-slate-950">
               {{ selectedImportFileName || '尚未导入内部报价表' }}
             </p>
-            <p class="mt-1 truncate text-xs text-slate-500">{{ selectedImportFileDetail }}</p>
+            <p class="mt-1 break-words text-xs leading-5 text-slate-500">{{ selectedImportFileDetail }}</p>
           </article>
 
           <article
@@ -1336,6 +1438,14 @@ async function exportCustomerQuoteExcel() {
             <p class="mt-1 truncate text-xs text-slate-500">{{ metric.detail }}</p>
           </article>
         </aside>
+
+        <p
+          v-if="importErrorMessage"
+          data-testid="quote-import-error"
+          class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 xl:col-span-2"
+        >
+          {{ importErrorMessage }}
+        </p>
 
         <p
           v-if="exportErrorMessage"

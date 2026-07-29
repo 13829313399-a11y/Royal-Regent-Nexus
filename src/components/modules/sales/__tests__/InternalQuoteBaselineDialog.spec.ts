@@ -117,12 +117,14 @@ describe('InternalQuoteBaselineDialog', () => {
       global: { stubs: { Teleport: true } },
     })
 
+    expect(wrapper.get('[data-testid="freight-capacity-0"]').element.tagName).toBe('INPUT')
+    expect(wrapper.get('[data-testid="freight-capacity-0"]').element).toHaveProperty('value', '40 尺柜容量')
     await wrapper.get('[data-testid="add-freight-route"]').trigger('click')
-    await wrapper.get('[data-testid="freight-name-2"]').setValue('深圳 40 柜')
-    await wrapper.get('[data-testid="freight-capacity-2"]').setValue('cap_40')
-    const newCost = wrapper.findAll('input[type="number"]').find((input) => input.attributes('aria-label') === '深圳 40 柜运费 HKD')!
+    await wrapper.get('[data-testid="freight-name-2"]').setValue('HK 8 吨车')
+    await wrapper.get('[data-testid="freight-capacity-2"]').setValue('8 吨车容量')
+    const newCost = wrapper.findAll('input[type="number"]').find((input) => input.attributes('aria-label') === 'HK 8 吨车运费 HKD')!
     await newCost.setValue('6500')
-    const newLiftingCost = wrapper.findAll('input[type="number"]').find((input) => input.attributes('aria-label') === '深圳 40 柜吊柜费 HKD')!
+    const newLiftingCost = wrapper.findAll('input[type="number"]').find((input) => input.attributes('aria-label') === 'HK 8 吨车吊柜费 HKD')!
     await newLiftingCost.setValue('1100')
     await wrapper.get('[data-testid="delete-freight-hk20"]').trigger('click')
     await wrapper.get('[data-testid="save-pricing-baseline"]').trigger('click')
@@ -131,8 +133,8 @@ describe('InternalQuoteBaselineDialog', () => {
     expect(payload.freight_routes).toHaveLength(2)
     expect(payload.freight_routes[0]).toEqual(freightRoutes[0])
     expect(payload.freight_routes[1]).toMatchObject({
-      route_name: '深圳 40 柜',
-      capacity_key: 'cap_40',
+      route_name: 'HK 8 吨车',
+      capacity_key: '8 吨车容量',
       freight_hkd: '6500',
       lifting_hkd: '1100',
     })
