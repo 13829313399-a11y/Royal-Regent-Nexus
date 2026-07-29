@@ -753,7 +753,7 @@ def test_permission_catalog_supports_active_inactive_and_all(monkeypatch):
         assert inactive_code not in {item["code"] for item in default_active.json()}
         assert inactive_code not in {item["code"] for item in explicit_active.json()}
         assert {item["code"] for item in inactive.json()} == {inactive_code}
-        assert len(all_permissions.json()) == 67
+        assert len(all_permissions.json()) == 74
         inactive_item = next(
             item for item in all_permissions.json() if item["code"] == inactive_code
         )
@@ -780,14 +780,14 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert all(item["is_editable"] is False for item in positions)
         assert all(item["source"] == "code" for item in positions)
         assert all(item["scope_mode_locked"] is True for item in positions)
-        assert all(item["definition_version"] == "fixed-v5" for item in positions)
+        assert all(item["definition_version"] == "fixed-v6" for item in positions)
         assert all(len(item["definition_hash"]) == 64 for item in positions)
 
         general_manager = next(
             item for item in positions if item["id"] == "position_general_manager"
         )
         assert general_manager["scope_mode"] == "cross_factory_operate"
-        assert general_manager["permission_count"] == 60
+        assert general_manager["permission_count"] == 67
 
         detail = client.get(
             "/api/iam/roles/position_general_manager/access"
@@ -797,7 +797,7 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert detail.json()["source"] == "code"
         assert detail.json()["scope_mode_locked"] is True
         assert detail.json()["definition_hash"] == general_manager["definition_hash"]
-        assert len(detail.json()["permission_codes"]) == 60
+        assert len(detail.json()["permission_codes"]) == 67
         assert not any(
             code.startswith("system:") for code in detail.json()["permission_codes"]
         )

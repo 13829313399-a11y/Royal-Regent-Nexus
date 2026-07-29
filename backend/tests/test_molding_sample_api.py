@@ -2442,6 +2442,9 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         ).status_code == 403
 
     task_permissions = {
+        "injection_scheduling:edit",
+        "injection_scheduling:import",
+        "injection_scheduling:read",
         "molding_sample:read",
         "molding_sample:production_read",
         "molding_sample:production_start",
@@ -2574,7 +2577,10 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         profile = login_fixed_position_test_user(client, username)
         grant = next(item for item in profile["grants"] if item["role_id"] == role_id)
         assert grant["scope_mode"] == "cross_factory_operate"
-        assert set(grant["permissions"]) == task_permissions
+        assert set(grant["permissions"]) == task_permissions | {
+            "injection_scheduling:publish",
+            "injection_scheduling:rollback",
+        }
         assert client.get(
             "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
         ).status_code == 200
