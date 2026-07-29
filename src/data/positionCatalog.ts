@@ -1,6 +1,6 @@
 import type { ModuleDepartmentId } from './enterpriseMock.js'
 
-export const positionSuggestionsByDepartment: Record<ModuleDepartmentId, readonly string[]> = {
+export const positionSuggestionsByDepartment: Partial<Record<ModuleDepartmentId | 'three-d-printing', readonly string[]>> = {
   engineering: [
     '工程部技术员',
     '助理工程师',
@@ -31,6 +31,16 @@ export const positionSuggestionsByDepartment: Record<ModuleDepartmentId, readonl
     '生产主管',
     '设备技术员',
     '生产经理',
+  ],
+  'three-d-printing': [
+    '3D打印操作员',
+    '3D打印技术员',
+    '3D打印产品专员',
+    '3D打印物料员',
+    '3D打印计划员',
+    '3D打印组长',
+    '3D打印主管',
+    '3D打印经理',
   ],
   qa: [
     'QA 检验员',

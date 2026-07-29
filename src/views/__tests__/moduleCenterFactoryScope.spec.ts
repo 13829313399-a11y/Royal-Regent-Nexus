@@ -149,9 +149,11 @@ describe('module center factory scope', () => {
       )
 
       const huakangCModules = moduleSnapshots(wrapper)
-      expect(huakangCModules).toHaveLength(departmentModuleRegistry[departmentId].modules.length)
+      const expectedHuakangCModules = departmentModuleRegistry[departmentId].modules
+        .filter((module) => !module.factoryIds?.length || module.factoryIds.includes('huakang-c'))
+      expect(huakangCModules).toHaveLength(expectedHuakangCModules.length)
       expect(huakangCModules.map(({ id, title, childLabels }) => ({ id, title, childLabels }))).toEqual(
-        departmentModuleRegistry[departmentId].modules.map((module) => ({
+        expectedHuakangCModules.map((module) => ({
           id: module.id,
           title: module.title,
           childLabels: module.children.map((child) => child.label),

@@ -14,10 +14,11 @@ from app.services.permission_codes import (
     BUSINESS_PERMISSION_CODES,
     INJECTION_SCHEDULING_PERMISSION_CODES,
     SYSTEM_MANAGEMENT_PERMISSION_CODES,
+    THREE_D_PRINTING_PERMISSION_CODES,
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v6"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v8"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -51,6 +52,17 @@ INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
     *INJECTION_SCHEDULING_EDITOR_PERMISSION_CODES,
     "injection_scheduling:publish",
     "injection_scheduling:rollback",
+)
+THREE_D_PRINTING_OPERATOR_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
+    "three_d_printing:read",
+    "three_d_printing:operate",
+    "three_d_printing:image_upload",
+    "three_d_printing:export",
+)
+THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES = (
+    *THREE_D_PRINTING_OPERATOR_PERMISSION_CODES,
+    "three_d_printing:audit_read",
 )
 
 
@@ -132,7 +144,9 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     *INJECTION_SCHEDULING_PERMISSION_CODES,
 )
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
-GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset()
+GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
+    THREE_D_PRINTING_PERMISSION_CODES
+)
 
 ENGINEER_PERMISSION_CODES = (
     "molding_sample:read",
@@ -217,6 +231,13 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "internal_quote:molding_edit",
     "internal_quote:molding_review",
     *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
+    *THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES[1:],
+)
+
+PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
+    permission
+    for permission in PRODUCTION_SUPERVISOR_PERMISSION_CODES
+    if not permission.startswith("three_d_printing:")
 )
 
 PRODUCTION_CLERK_PERMISSION_CODES = (
@@ -373,7 +394,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department_name="生产部（啤喷装）",
         sort_order=400,
         description="全厂只读查看啤办生产任务；参与本厂报价协同",
-        permission_codes=PRODUCTION_SUPERVISOR_PERMISSION_CODES,
+        permission_codes=PRODUCTION_MANAGER_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_production_supervisor",
@@ -392,6 +413,33 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         sort_order=420,
         description="全厂只读查看啤办生产任务；参与本厂报价协同",
         permission_codes=PRODUCTION_CLERK_PERMISSION_CODES,
+    ),
+    SystemPositionDefinition(
+        role_id="position_3d_manager",
+        name="3D打印经理",
+        department="three-d-printing",
+        department_name="3D打印部",
+        sort_order=490,
+        description="维护华康B 3D打印业务资料、库存、排期、报表与审计，不含远程控制",
+        permission_codes=THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES,
+    ),
+    SystemPositionDefinition(
+        role_id="position_3d_supervisor",
+        name="3D打印主管",
+        department="three-d-printing",
+        department_name="3D打印部",
+        sort_order=491,
+        description="维护华康B 3D打印业务资料、库存、排期、报表与审计，不含远程控制",
+        permission_codes=THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES,
+    ),
+    SystemPositionDefinition(
+        role_id="position_3d_operator",
+        name="3D打印操作员",
+        department="three-d-printing",
+        department_name="3D打印部",
+        sort_order=492,
+        description="维护华康B 3D打印业务资料、库存、排期和报表，不含远程控制",
+        permission_codes=THREE_D_PRINTING_OPERATOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_painting_manager",
@@ -796,6 +844,14 @@ def recommend_system_position_role_id(position: str, department: str) -> str:
         )
         suffix = "manager" if is_manager else "supervisor" if is_supervisor else "clerk"
         return f"position_{prefix}_{suffix}"
+    if department == "three-d-printing":
+        return (
+            "position_3d_manager"
+            if is_manager
+            else "position_3d_supervisor"
+            if is_supervisor
+            else "position_3d_operator"
+        )
     if department == "pmc-warehouse":
         return (
             "position_warehouse_manager"
