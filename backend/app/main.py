@@ -14,6 +14,7 @@ from app.api.internal_quote import (
     router as internal_quote_router,
 )
 from app.api.indonesia_invoice import router as indonesia_invoice_router
+from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.iam import router as iam_router
 from app.api.molding_sample import router as molding_sample_router
 from app.api.pricing import router as pricing_router
@@ -80,6 +81,7 @@ app.include_router(customer_order_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
+app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
