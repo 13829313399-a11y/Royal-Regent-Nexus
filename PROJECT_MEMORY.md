@@ -164,16 +164,19 @@ Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF in
 
 ### Injection-Scheduling Center
 
-The visible injection-scheduling module is currently a frontend preview, not a connected production system:
+Injection scheduling now has a connected frontend/backend implementation in this worktree:
 
-- The dedicated route, view, components, types, store and API integration seam exist in the frontend.
-- Huaxing has a browser-local demonstration snapshot; other factories remain empty and isolated.
-- Locked tasks, backlog assignment and schedule moves require UI confirmation.
-- Draft changes remain in browser state and publish is not connected.
-- The API seam does not currently send backend requests.
-- No injection-scheduling router, service, persistence model, table or permission is registered in the current backend.
+- The production-module card routes to `/modules/production/injection-scheduling?factory={factoryId}`.
+- Migration `20260728_0039` introduces the new `injection_scheduling_*` namespace for import batches and issues, master data, plans, immutable revisions, materialized tasks, published snapshots and append-only audit events. It does not revive the removed `injection_schedule_*` implementation.
+- The backend supports read-only `.xlsx` preview, explicit confirm, current snapshots, move validation, optimistic draft save, immutable publish and rollback-to-new-draft. Server-side permission and factory checks are authoritative.
+- The new permission family is `injection_scheduling:read|import|edit|publish|rollback`; molding clerks can read/import/edit, while supervisor-or-higher positions are required for publish and rollback.
+- Huaxing and Huakang B workbook templates are parsed without modifying the source files. Missing machine capability or changeover data is surfaced as review warnings rather than invented as safe values.
+- The frontend uses the HTTP repository when a current backend plan exists. Huaxing and Huakang B retain explicit, isolated Mock snapshots only as a no-plan fallback; other factories remain empty and never inherit another factory's data.
+- Locked tasks, backlog assignment and schedule moves require confirmation. Backend drafts use revision conflict detection, and published snapshots are immutable.
+- The TypeScript rule core still provides the local heuristic optimization preview; a production-grade backend optimizer and live production-feedback loop are not part of this phase.
+- The workbench uses fixed-height compact lanes and a dark big-screen mode while keeping page-level scrolling disabled.
 
-Historical injection-scheduling migrations remain immutable migration history, but the current head removes the rebuilt injection-scheduling schema and authorization state. A future rebuild must use a new forward migration and must not revive or edit the removed historical implementation.
+Historical injection-scheduling migrations remain immutable history. Migration `20260727_0037` removed the previous rebuild; `20260728_0039` is the new forward-only contract and requires an Alembic upgrade before the service may start from head `0038`.
 
 ### Module Catalog and Placeholders
 
@@ -192,12 +195,14 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260723_0028` introduced production-factory dispatch and factory-scoped inventory behavior. Its preflight rejects ambiguous Huakang C/D production history and unscoped inventory; rollback requires a backup.
 - Migration `20260727_0037` removes the rebuilt injection-scheduling tables, permissions, IAM markers and PostgreSQL audit trigger. Its downgrade is intentionally blocked; recovery requires a backup from before removal.
 - Migration `20260727_0038` adds an empty optional standalone hair section and immutable initial revision to every historical internal quote; downgrade is allowed only while those migrated hair sections remain untouched.
+- Migration `20260728_0039` creates the new injection-scheduling backend, permission family and immutable audit contract. Its downgrade refuses to run after an import batch exists; production deployment requires the normal backup and migration preflight.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 
 ## 8. Active Known Issues
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
-- Injection scheduling has no active backend schema, authorization contract, persistence service or publish workflow.
+- Injection scheduling does not yet ingest live machine/production feedback, expose SSE refresh, or run an advanced backend optimization solver.
+- The new injection-scheduling migration and implementation are verified only against disposable local databases in this phase; they have not been deployed to production.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.
 - Customer-order warning thresholds shown by the frontend, including day-based exception thresholds, are not yet confirmed as authoritative business rules.
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
@@ -209,7 +214,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 The smallest unresolved decisions that require product or operational confirmation are:
 
 - Decide whether authenticated users should permanently retain global read-only page entry, or whether page entry must return to permission-gated behavior.
-- Define the first production factories, data model, scheduling constraints, conflict rules, approval/publish workflow and permissions for the injection-scheduling rebuild.
+- Confirm ownership and rollout timing for authoritative machine capability/changeover masters, live production feedback and the advanced backend optimizer.
 - Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.

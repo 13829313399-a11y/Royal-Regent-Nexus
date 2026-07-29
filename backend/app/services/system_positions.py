@@ -12,11 +12,12 @@ from app.services.iam_scope import (
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
+    INJECTION_SCHEDULING_PERMISSION_CODES,
     SYSTEM_MANAGEMENT_PERMISSION_CODES,
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v5"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v6"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -40,6 +41,16 @@ PRODUCTION_TASK_OPERATING_POSITION_ROLE_IDS = frozenset(
         "position_molding_supervisor",
         "position_molding_clerk",
     }
+)
+INJECTION_SCHEDULING_EDITOR_PERMISSION_CODES = (
+    "injection_scheduling:read",
+    "injection_scheduling:import",
+    "injection_scheduling:edit",
+)
+INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
+    *INJECTION_SCHEDULING_EDITOR_PERMISSION_CODES,
+    "injection_scheduling:publish",
+    "injection_scheduling:rollback",
 )
 
 
@@ -118,6 +129,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "internal_quote:hair_review",
     "internal_quote:assembly_edit",
     "internal_quote:assembly_review",
+    *INJECTION_SCHEDULING_PERMISSION_CODES,
 )
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset()
@@ -204,6 +216,7 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "internal_quote:timeline_read",
     "internal_quote:molding_edit",
     "internal_quote:molding_review",
+    *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
 )
 
 PRODUCTION_CLERK_PERMISSION_CODES = (
@@ -215,6 +228,7 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
     "internal_quote:summary_read",
     "internal_quote:timeline_read",
     "internal_quote:molding_edit",
+    *INJECTION_SCHEDULING_EDITOR_PERMISSION_CODES,
 )
 
 PAINTING_CLERK_PERMISSION_CODES = (
@@ -240,9 +254,14 @@ MOLDING_CLERK_PERMISSION_CODES = (
     "molding_sample:production_fillback",
     "molding_sample:production_complete",
     "molding_sample:notification_read",
+    *INJECTION_SCHEDULING_EDITOR_PERMISSION_CODES,
 )
 
-MOLDING_SUPERVISOR_PERMISSION_CODES = MOLDING_CLERK_PERMISSION_CODES
+MOLDING_SUPERVISOR_PERMISSION_CODES = (
+    *MOLDING_CLERK_PERMISSION_CODES,
+    "injection_scheduling:publish",
+    "injection_scheduling:rollback",
+)
 
 WAREHOUSE_PERMISSION_CODES = (
     "molding_sample:read",
@@ -716,8 +735,8 @@ def validate_system_position_definitions() -> None:
         and molding_clerk.permission_codes == MOLDING_CLERK_PERMISSION_CODES
         and molding_supervisor.scope_mode == CROSS_FACTORY_OPERATE_SCOPE
         and molding_manager.scope_mode == CROSS_FACTORY_OPERATE_SCOPE
-        and molding_supervisor.permission_codes == MOLDING_CLERK_PERMISSION_CODES
-        and molding_manager.permission_codes == MOLDING_CLERK_PERMISSION_CODES
+        and molding_supervisor.permission_codes == MOLDING_SUPERVISOR_PERMISSION_CODES
+        and molding_manager.permission_codes == MOLDING_SUPERVISOR_PERMISSION_CODES
     ):
         raise RuntimeError("啤机文员、主管、经理的生产任务权限关系无效")
 
