@@ -302,7 +302,7 @@ class ThreeDPrinterCommandOut(BaseModel):
 class ThreeDEdgeHeartbeat(BaseModel):
     factory_id: str
     agent_key: str = Field(min_length=1, max_length=96)
-    name: str = Field(default="华康B 3D边缘代理", max_length=128)
+    name: str = Field(default="华康A 3D边缘代理", max_length=128)
     version: str = Field(default="", max_length=64)
     host_fingerprint: str = Field(default="", max_length=128)
     capabilities: list[str] = Field(default_factory=list)

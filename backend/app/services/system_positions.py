@@ -18,7 +18,7 @@ from app.services.permission_codes import (
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v8"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v9"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -420,7 +420,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="three-d-printing",
         department_name="3D打印部",
         sort_order=490,
-        description="维护华康B 3D打印业务资料、库存、排期、报表与审计，不含远程控制",
+        description="维护华康A 3D打印业务资料、库存、排期、报表与审计，不含远程控制",
         permission_codes=THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -429,7 +429,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="three-d-printing",
         department_name="3D打印部",
         sort_order=491,
-        description="维护华康B 3D打印业务资料、库存、排期、报表与审计，不含远程控制",
+        description="维护华康A 3D打印业务资料、库存、排期、报表与审计，不含远程控制",
         permission_codes=THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -438,7 +438,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="three-d-printing",
         department_name="3D打印部",
         sort_order=492,
-        description="维护华康B 3D打印业务资料、库存、排期和报表，不含远程控制",
+        description="维护华康A 3D打印业务资料、库存、排期和报表，不含远程控制",
         permission_codes=THREE_D_PRINTING_OPERATOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(

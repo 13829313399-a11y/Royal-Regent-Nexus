@@ -18,7 +18,7 @@ import type {
   ThreeDSettings,
 } from '@/types/threeDPrinting'
 
-const factoryId = 'huakang-b' as const
+const factoryId = 'huakang-a' as const
 const base = '/three-d-printing'
 
 export const threeDPrintingApi = {

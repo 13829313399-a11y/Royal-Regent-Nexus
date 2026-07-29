@@ -25,8 +25,8 @@ function loadConfig() {
       throw new Error(`config.json 缺少 ${key}`);
     }
   }
-  if (config.factoryId !== "huakang-b") {
-    throw new Error("3D打印边缘代理当前只允许 factoryId=huakang-b");
+  if (config.factoryId !== "huakang-a") {
+    throw new Error("3D打印边缘代理当前只允许 factoryId=huakang-a");
   }
   const printers = Array.isArray(config.bambuPrinters)
     ? config.bambuPrinters
@@ -53,7 +53,7 @@ function loadConfig() {
   return {
     ...config,
     cloudBaseUrl: String(config.cloudBaseUrl).replace(/\/+$/, ""),
-    agentName: String(config.agentName || "华康B 3D边缘代理"),
+    agentName: String(config.agentName || "华康A 3D边缘代理"),
     statusIntervalMs: Math.max(2000, Number(config.statusIntervalMs) || 5000),
     heartbeatIntervalMs: Math.max(
       10000,

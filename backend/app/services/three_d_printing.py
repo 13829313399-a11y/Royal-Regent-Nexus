@@ -56,7 +56,7 @@ from app.schemas.three_d_printing import (
 from app.services.auth import AuthContext
 
 
-THREE_D_FACTORY_ID = "huakang-b"
+THREE_D_FACTORY_ID = "huakang-a"
 THREE_D_DEPARTMENTS = ("three-d-printing", "production", "management")
 FINISHED_PRINTER_STATES = {"FINISH", "FAILED", "IDLE", "ERROR"}
 IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -86,7 +86,7 @@ def _actor_name(user: AuthContext) -> str:
 def require_three_d_factory(factory_id: str) -> str:
     normalized = factory_id.strip()
     if normalized != THREE_D_FACTORY_ID:
-        raise HTTPException(status_code=400, detail="3D打印机管理当前仅归属华康B")
+        raise HTTPException(status_code=400, detail="3D打印机管理当前仅归属华康A")
     return normalized
 
 
@@ -143,7 +143,7 @@ def ensure_settings(db: Session, factory_id: str) -> ThreeDPrintingSetting:
 
 
 def seed_three_d_printing_defaults(db: Session) -> None:
-    """Seed the Huakang B shell for fresh local databases and first startup."""
+    """Seed the Huakang A shell for fresh local databases and first startup."""
     record = db.get(ThreeDPrintingSetting, THREE_D_FACTORY_ID)
     now = _now()
     if record is None:

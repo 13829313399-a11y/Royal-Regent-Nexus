@@ -23,9 +23,9 @@ describe('threeDPrintingApi', () => {
     vi.clearAllMocks()
   })
 
-  it('locks dashboard and export reads to Huakang B', async () => {
+  it('locks dashboard and export reads to Huakang A', async () => {
     get
-      .mockResolvedValueOnce({ data: { factory_id: 'huakang-b' } })
+      .mockResolvedValueOnce({ data: { factory_id: 'huakang-a' } })
       .mockResolvedValueOnce({ data: new Blob(['xlsx']) })
 
     await threeDPrintingApi.dashboard('2026-07-01', '2026-07-29')
@@ -36,7 +36,7 @@ describe('threeDPrintingApi', () => {
       '/three-d-printing/dashboard',
       {
         params: {
-          factory_id: 'huakang-b',
+          factory_id: 'huakang-a',
           date_from: '2026-07-01',
           date_to: '2026-07-29',
         },
@@ -46,7 +46,7 @@ describe('threeDPrintingApi', () => {
       2,
       '/three-d-printing/export.xlsx',
       expect.objectContaining({
-        params: { factory_id: 'huakang-b' },
+        params: { factory_id: 'huakang-a' },
         responseType: 'blob',
       }),
     )
@@ -63,7 +63,7 @@ describe('threeDPrintingApi', () => {
       '/three-d-printing/products/product-1/image',
       expect.any(FormData),
       expect.objectContaining({
-        params: { factory_id: 'huakang-b' },
+        params: { factory_id: 'huakang-a' },
         headers: { 'Content-Type': 'multipart/form-data' },
       }),
     )
@@ -71,7 +71,7 @@ describe('threeDPrintingApi', () => {
     expect(form.get('file')).toBe(file)
   })
 
-  it('creates only pause or resume commands with Huakang B scope and idempotency', async () => {
+  it('creates only pause or resume commands with Huakang A scope and idempotency', async () => {
     post.mockResolvedValueOnce({ data: { id: 'command-1' } })
     const printer = { id: 'printer-1' } as Parameters<typeof threeDPrintingApi.command>[0]
 
@@ -80,7 +80,7 @@ describe('threeDPrintingApi', () => {
     expect(post).toHaveBeenCalledWith(
       '/three-d-printing/printers/printer-1/commands',
       expect.objectContaining({
-        factory_id: 'huakang-b',
+        factory_id: 'huakang-a',
         action: 'pause',
         reason: '现场异常',
         idempotency_key: expect.stringMatching(/^pause-printer-1-\d+$/),

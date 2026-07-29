@@ -1,9 +1,9 @@
 {
   "cloudBaseUrl": "https://nexus.example.com",
   "edgeToken": "replace-with-the-same-long-token-as-the-cloud",
-  "factoryId": "huakang-b",
-  "agentKey": "huakang-b-main",
-  "agentName": "华康B 3D边缘代理",
+  "factoryId": "huakang-a",
+  "agentKey": "huakang-a-main",
+  "agentName": "华康A 3D边缘代理",
   "statusIntervalMs": 5000,
   "heartbeatIntervalMs": 30000,
   "commandPollIntervalMs": 3000,

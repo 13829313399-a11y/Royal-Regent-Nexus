@@ -184,14 +184,14 @@ Injection scheduling now has a connected frontend/backend implementation in this
 
 Historical injection-scheduling migrations remain immutable history. Migration `20260727_0037` removed the previous rebuild; `20260728_0039` is the new forward-only contract and requires an Alembic upgrade before the service may start from head `0038`.
 
-### Huakang B 3D Printing Management
+### Huakang A 3D Printing Management
 
-3D printing management is a connected Huakang B-only production capability:
+3D printing management is a connected Huakang A-only production capability:
 
-- The production card routes to `/modules/production/three-d-printing?factory=huakang-b` and uses strict page-entry permissions even while the legacy global authenticated-read policy remains enabled elsewhere.
-- Migration `20260729_0040` adds settings, materials, products and independent image assets, printers, day state, production records, inventory movements, schedules, maintenance, edge agents, remote commands, migration runs and append-only audit events.
+- The production card routes to `/modules/production/three-d-printing?factory=huakang-a` and uses strict page-entry permissions even while the legacy global authenticated-read policy remains enabled elsewhere.
+- Migration `20260729_0040` adds settings, materials, products and independent image assets, printers, day state, production records, inventory movements, schedules, maintenance, edge agents, remote commands, migration runs and append-only audit events. Forward migration `20260729_0041` reassigns the complete domain and 3D-specific IAM scope from Huakang B to Huakang A without rewriting the historical migration.
 - The permission family is `three_d_printing:read|operate|image_upload|export|printer_control|audit_read`. 3D positions and the production-supervisor position receive scoped business permissions; only the administrator role receives `printer_control`. Production managers and general managers receive no 3D permissions by default.
-- Printer LAN addresses, serial numbers and access codes remain on the Huakang B Windows edge agent. The agent sends status outbound to the cloud and polls for short-lived administrator pause/resume commands; the cloud never connects directly to the printer private network.
+- Printer LAN addresses, serial numbers and access codes remain on the Huakang A Windows edge agent. The agent sends status outbound to the cloud and polls for short-lived administrator pause/resume commands; the cloud never connects directly to the printer private network.
 - Product images are stored separately in the configured `THREE_D_ASSET_DIR` and the production Compose stack persists them in `three-d-assets`. Product save and image upload are separate awaited operations, so adding an image no longer rewrites the entire historical JSON payload.
 - `backend/scripts/migrate_legacy_three_d_printing.py` dry-runs and idempotently imports the legacy `data.json`, preserving source IDs, soft deletions, unmatched historical names, inventory snapshots and original images. Final cutover requires a 10–30 minute old-UI write freeze while printer jobs may continue.
 - The operational cutover, rollback and edge acceptance procedure is recorded in `docs/three-d-printing-deployment.md`.
@@ -236,7 +236,7 @@ The smallest unresolved decisions that require product or operational confirmati
 
 - Decide whether authenticated users should permanently retain global read-only page entry, or whether page entry must return to permission-gated behavior.
 - Confirm ownership and rollout timing for authoritative machine capability/changeover masters, live production feedback and the advanced backend optimizer.
-- Schedule the Huakang B 3D printing cutover, provide production deployment access, and field-accept one idle printer before enabling remote control across all printers.
+- Schedule the Huakang A 3D printing cutover, provide production deployment access, and field-accept one idle printer before enabling remote control across all printers.
 - Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, whether Caixing will remain a generic 24-column active-sheet append or adopt a dedicated schedule template, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.

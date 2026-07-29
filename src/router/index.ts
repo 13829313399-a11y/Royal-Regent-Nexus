@@ -94,7 +94,7 @@ const routes: RouteRecordRaw[] = [
       permissions: ['three_d_printing:read'],
       enforcePermissions: true,
       strictPermissions: true,
-      permissionFactoryId: 'huakang-b',
+      permissionFactoryId: 'huakang-a',
       permissionDepartment: 'three-d-printing',
     },
   },
