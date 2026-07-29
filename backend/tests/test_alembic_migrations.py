@@ -2472,6 +2472,9 @@ def test_new_injection_scheduling_postgresql_offline_sql_contains_contract():
     assert "reject_injection_scheduling_audit_mutation" in sql
     assert "before update on injection_scheduling_audit_events" in sql
     assert "before delete on injection_scheduling_audit_events" in sql
+    assert sql.count("cast(null as varchar(96))") == 5
+    assert sql.count("cast(null as varchar(128))") == 15
+    assert sql.count("cast(null as text)") == 5
 
 
 def test_application_startup_requires_injection_scheduling_backend_migration(
