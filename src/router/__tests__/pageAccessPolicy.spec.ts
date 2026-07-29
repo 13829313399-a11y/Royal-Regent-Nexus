@@ -41,4 +41,12 @@ describe('global authenticated page access policy', () => {
     )).toBe(false)
     expect(shouldRedirectForbiddenPageToHome(restrictedPolicy)).toBe(false)
   })
+
+  it('always enforces explicitly strict safety-sensitive module routes', () => {
+    expect(shouldEnforcePagePermissions({
+      ...protectedRouteMeta,
+      strictPermissions: true,
+      permissions: ['three_d_printing:read'],
+    })).toBe(true)
+  })
 })

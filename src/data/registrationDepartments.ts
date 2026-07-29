@@ -3,6 +3,7 @@ export type RegistrationDepartmentId =
   | 'engineering'
   | 'sales-business'
   | 'production'
+  | 'three-d-printing'
   | 'pmc-warehouse'
   | 'qa'
   | 'qc'
@@ -19,6 +20,7 @@ export const registrationDepartments: readonly RegistrationDepartment[] = [
   { id: 'engineering', name: '工程部', shortName: '工程' },
   { id: 'sales-business', name: '业务部', shortName: '业务' },
   { id: 'production', name: '生产部（啤喷装）', shortName: '啤喷装' },
+  { id: 'three-d-printing', name: '3D打印部', shortName: '3D打印' },
   { id: 'pmc-warehouse', name: '仓库', shortName: '仓库' },
   { id: 'qa', name: 'QA部', shortName: 'QA' },
   { id: 'qc', name: 'QC部', shortName: 'QC' },

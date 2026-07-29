@@ -6,6 +6,7 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+import pytest
 from sqlalchemy import create_engine
 
 
@@ -51,7 +52,9 @@ MERGED_HEAD_MIGRATION_REVISION = "20260727_0036"
 INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION = "20260727_0037"
 INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION = "20260727_0038"
 INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION = "20260728_0039"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
+THREE_D_PRINTING_MIGRATION_REVISION = "20260729_0040"
+THREE_D_PRINTING_FACTORY_MIGRATION_REVISION = "20260729_0041"
+HEAD_MIGRATION_REVISION = THREE_D_PRINTING_FACTORY_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -104,6 +107,22 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    three_d_printing_factory_revision = script.get_revision(
+        THREE_D_PRINTING_FACTORY_MIGRATION_REVISION
+    )
+    assert (
+        three_d_printing_factory_revision.down_revision
+        == THREE_D_PRINTING_MIGRATION_REVISION
+    )
+
+    three_d_printing_revision = script.get_revision(
+        THREE_D_PRINTING_MIGRATION_REVISION
+    )
+    assert (
+        three_d_printing_revision.down_revision
+        == INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
+    )
 
     injection_scheduling_revision = script.get_revision(
         INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
@@ -2195,6 +2214,161 @@ def _sqlite_schema_signature(database_path: Path) -> list[tuple[str, str, str]]:
         ).fetchall()
 
 
+def test_three_d_printing_factory_reassignment_moves_linked_data_to_huakang_a(
+    tmp_path,
+):
+    database_path = tmp_path / "three_d_printing_factory_0041.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        THREE_D_PRINTING_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """
+            INSERT INTO three_d_printing_products (
+                id, factory_id, name, created_at, updated_at
+            ) VALUES (
+                '3dprod-factory-move', 'huakang-b', '迁移产品',
+                '2026-07-29 16:30:00', '2026-07-29 16:30:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO three_d_printing_product_images (
+                id, product_id, factory_id, storage_key, sha256,
+                mime_type, size_bytes, created_at
+            ) VALUES (
+                '3dimg-factory-move', '3dprod-factory-move', 'huakang-b',
+                'huakang-b/3dprod-factory-move/image.jpg',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'image/jpeg', 10, '2026-07-29 16:30:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO three_d_printing_inventory (
+                id, factory_id, material_name, created_at, updated_at
+            ) VALUES (
+                '3dinv-factory-move', 'huakang-b', 'PLA',
+                '2026-07-29 16:30:00', '2026-07-29 16:30:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO three_d_printing_inventory_movements (
+                id, factory_id, inventory_id, material_name, movement_type,
+                delta_g, balance_after_g, business_date, created_at
+            ) VALUES (
+                '3dmov-factory-move', 'huakang-b', '3dinv-factory-move',
+                'PLA', 'opening', 1000, 1000, '2026-07-29',
+                '2026-07-29 16:30:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO three_d_printing_edge_agents (
+                id, factory_id, agent_key, name, created_at, updated_at
+            ) VALUES (
+                '3dagent-factory-move', 'huakang-b', 'huakang-b-main',
+                '华康B 3D边缘代理', '2026-07-29 16:30:00',
+                '2026-07-29 16:30:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO three_d_printing_printer_commands (
+                id, factory_id, printer_id, action, idempotency_key,
+                requested_by, requested_by_name, requested_at, expires_at
+            ) VALUES (
+                '3dcmd-factory-move', 'huakang-b',
+                '3dprinter-huakang-b-1', 'pause', 'factory-move',
+                'user-admin', '系统管理员', '2026-07-29 16:30:00',
+                '2026-07-29 16:32:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO three_d_printing_audit_events (
+                id, factory_id, entity_type, entity_id, action, created_at
+            ) VALUES (
+                '3daudit-factory-move-test', 'huakang-b', 'product',
+                '3dprod-factory-move', 'created', '2026-07-29 16:30:00'
+            )
+            """
+        )
+        connection.commit()
+
+    reassigned = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert reassigned.returncode == 0, reassigned.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (THREE_D_PRINTING_FACTORY_MIGRATION_REVISION,)
+        for table_name in (
+            "three_d_printing_settings",
+            "three_d_printing_products",
+            "three_d_printing_product_images",
+            "three_d_printing_inventory",
+            "three_d_printing_inventory_movements",
+            "three_d_printing_printers",
+            "three_d_printing_edge_agents",
+            "three_d_printing_printer_commands",
+            "three_d_printing_audit_events",
+        ):
+            assert connection.execute(
+                f"SELECT COUNT(*) FROM {table_name} WHERE factory_id = 'huakang-b'"
+            ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM three_d_printing_printers "
+            "WHERE factory_id = 'huakang-a'"
+        ).fetchone() == (11,)
+        assert connection.execute(
+            "SELECT factory_id, storage_key "
+            "FROM three_d_printing_product_images "
+            "WHERE id = '3dimg-factory-move'"
+        ).fetchone() == (
+            "huakang-a",
+            "huakang-b/3dprod-factory-move/image.jpg",
+        )
+        assert connection.execute(
+            "SELECT factory_id, agent_key, name "
+            "FROM three_d_printing_edge_agents "
+            "WHERE id = '3dagent-factory-move'"
+        ).fetchone() == (
+            "huakang-a",
+            "huakang-a-main",
+            "华康A 3D边缘代理",
+        )
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        permission_descriptions = [
+            row[0]
+            for row in connection.execute(
+                "SELECT description FROM auth_permissions "
+                "WHERE code LIKE 'three_d_printing:%'"
+            ).fetchall()
+        ]
+        assert permission_descriptions
+        assert all("华康B" not in value for value in permission_descriptions)
+        assert all("华康A" in value for value in permission_descriptions)
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "UPDATE three_d_printing_audit_events "
+                "SET action = 'tampered' "
+                "WHERE id = '3daudit-factory-move-test'"
+            )
+
+
 def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(tmp_path):
     database_path = tmp_path / "molding_sample_dispatch_schema_gate.db"
     initial_upgrade = _run_dispatch_alembic(
@@ -2475,6 +2649,12 @@ def test_new_injection_scheduling_postgresql_offline_sql_contains_contract():
     assert sql.count("cast(null as varchar(96))") == 5
     assert sql.count("cast(null as varchar(128))") == 15
     assert sql.count("cast(null as text)") == 5
+    assert "lock table three_d_printing_settings" in sql
+    assert "both source" in sql
+    assert "and target contain domain rows" in sql
+    assert "set factory_id = 'huakang-a'" in sql
+    assert "3daudit-factory-reassignment-0041" in sql
+    assert "fk_three_d_printing_image_product_factory" in sql
 
 
 def test_application_startup_requires_injection_scheduling_backend_migration(

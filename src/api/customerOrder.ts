@@ -48,6 +48,10 @@ function responseFileName(headers: Record<string, unknown> | undefined, fallback
   }
 }
 
+function responsePasswordRequired(headers: Record<string, unknown> | undefined) {
+  return String(headers?.['x-workbook-password-required'] ?? '').toLowerCase() === 'true'
+}
+
 export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
   return {
     async previewBuzzbee(
@@ -86,6 +90,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       return {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
+        passwordRequired: responsePasswordRequired(response.headers),
       }
     },
     async previewBuzzbeeBatch(
@@ -124,6 +129,85 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       return {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
+        passwordRequired: responsePasswordRequired(response.headers),
+      }
+    },
+    async previewDickieBatch(
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      factoryId = 'huaxing',
+    ) {
+      const response = await client.post<CustomerOrderImportPreview>(
+        '/customer-orders/dickie/preview-batch',
+        buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId),
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180_000 },
+      )
+      return response.data
+    },
+    async exportDickieBatch(
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      fallbackFileName: string,
+      factoryId = 'huaxing',
+      skippedIssueKeys: string[] = [],
+    ) {
+      const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
+      payload.append('confirmed', 'true')
+      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
+      const response = await client.post<Blob>(
+        '/customer-orders/dickie/export-batch',
+        payload,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: 240_000,
+        },
+      )
+      return {
+        blob: response.data,
+        fileName: responseFileName(response.headers, fallbackFileName),
+        passwordRequired: responsePasswordRequired(response.headers),
+      }
+    },
+    async previewCaixingBatch(
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      factoryId = 'huaxing',
+    ) {
+      const response = await client.post<CustomerOrderImportPreview>(
+        '/customer-orders/caixing/preview-batch',
+        buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId),
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180_000 },
+      )
+      return response.data
+    },
+    async exportCaixingBatch(
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      fallbackFileName: string,
+      factoryId = 'huaxing',
+      skippedIssueKeys: string[] = [],
+    ) {
+      const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
+      payload.append('confirmed', 'true')
+      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
+      const response = await client.post<Blob>(
+        '/customer-orders/caixing/export-batch',
+        payload,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: 240_000,
+        },
+      )
+      return {
+        blob: response.data,
+        fileName: responseFileName(response.headers, fallbackFileName),
+        passwordRequired: responsePasswordRequired(response.headers),
       }
     },
   }

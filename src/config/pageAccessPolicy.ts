@@ -19,6 +19,9 @@ export function shouldEnforcePagePermissions(
   meta: RoutePermissionMeta,
   policy: Readonly<PageAccessPolicy> = pageAccessPolicy,
 ) {
+  if (meta.strictPermissions === true && meta.enforcePermissions === true) {
+    return true
+  }
   return !policy.allowAuthenticatedReadOnlyAccess
     && meta.enforcePermissions === true
     && meta.allowAuthenticatedReadOnly !== true

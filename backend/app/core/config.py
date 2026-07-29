@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     seed_admin_password: str = ""
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
     authz_writes_enabled: bool = False
+    three_d_asset_dir: str = str(
+        BACKEND_DIR / "data" / "three-d-printing-assets"
+    )
+    three_d_edge_agent_token: str = ""
+    three_d_command_ttl_seconds: int = 120
+    three_d_command_poll_interval_seconds: int = 3
 
     @property
     def effective_session_cookie_secure(self) -> bool:

@@ -84,6 +84,21 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/three-d-printing',
+    name: 'three-d-printing-management',
+    component: () => import('@/views/ThreeDPrintingManagementView.vue'),
+    meta: {
+      title: '3D打印机管理',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['three_d_printing:read'],
+      enforcePermissions: true,
+      strictPermissions: true,
+      permissionFactoryId: 'huakang-a',
+      permissionDepartment: 'three-d-printing',
+    },
+  },
+  {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',
     component: () => import('@/views/RawMaterialManagementView.vue'),
@@ -325,7 +340,7 @@ type AuthorizationRefreshResult = 'refreshed' | 'forbidden' | 'login' | 'unchang
 interface AuthorizationRefreshStore {
   isAuthenticated: boolean
   refreshSession: () => Promise<boolean>
-  canAny: (permissions: string[]) => boolean
+  canAny: (permissions: string[], factoryId?: string, department?: string) => boolean
 }
 
 interface AuthorizationRefreshRouter {
@@ -367,7 +382,15 @@ export async function refreshAndRevalidateAuthorization(
     currentRoute.name !== 'forbidden'
     && shouldEnforcePagePermissions(currentRoute.meta)
     && permissions.length
-    && !authStore.canAny(permissions)
+    && !authStore.canAny(
+      permissions,
+      typeof currentRoute.meta.permissionFactoryId === 'string'
+        ? currentRoute.meta.permissionFactoryId
+        : undefined,
+      typeof currentRoute.meta.permissionDepartment === 'string'
+        ? currentRoute.meta.permissionDepartment
+        : undefined,
+    )
   ) {
     await activeRouter.replace({ name: 'forbidden' })
     return 'forbidden'
@@ -439,7 +462,15 @@ router.beforeEach(async (to) => {
   if (
     shouldEnforcePagePermissions(to.meta)
     && permissions.length
-    && !authStore.canAny(permissions)
+    && !authStore.canAny(
+      permissions,
+      typeof to.meta.permissionFactoryId === 'string'
+        ? to.meta.permissionFactoryId
+        : undefined,
+      typeof to.meta.permissionDepartment === 'string'
+        ? to.meta.permissionDepartment
+        : undefined,
+    )
   ) {
     return {
       name: 'forbidden',

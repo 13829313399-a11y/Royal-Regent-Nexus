@@ -28,6 +28,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - three-d-assets:/app/backend/data/three-d-printing-assets
     restart: unless-stopped
     logging: *default-logging
 
@@ -47,3 +49,4 @@ services:
 
 volumes:
   postgres-data:
+  three-d-assets:

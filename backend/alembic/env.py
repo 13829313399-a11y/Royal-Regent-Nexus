@@ -23,6 +23,7 @@ from app.models import internal_quote  # noqa: F401,E402
 from app.models import molding_sample  # noqa: F401,E402
 from app.models import pricing  # noqa: F401,E402
 from app.models import raw_material  # noqa: F401,E402
+from app.models import three_d_printing  # noqa: F401,E402
 
 config = context.config
 
