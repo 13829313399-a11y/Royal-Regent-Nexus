@@ -128,7 +128,7 @@ function paintingBlocks(payload: PaintingPayload): InternalQuoteFormBlock[] {
     const pricedOperation = Object.values(row.operations).some((operation) => positive(operation.quantity) && positive(operation.unit_price_hkd))
     return Boolean(text(row.name) && text(row.position) && pricedOperation)
   })
-  return [block('painting', '二次加工部分', 'required', payload.rows.length > 0, complete, '必须；名称、位置及至少一种工序的数量和单价必填')]
+  return [block('painting', '喷油/移印/UV部分', 'required', payload.rows.length > 0, complete, '必须；名称、位置及至少一种工序的数量和单价必填')]
 }
 
 function slushBlocks(payload: SlushPayload): InternalQuoteFormBlock[] {

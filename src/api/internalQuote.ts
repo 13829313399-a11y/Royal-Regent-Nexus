@@ -653,7 +653,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async downloadImportTemplate(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type']) {
       const response = await client.get<Blob>(
         `/internal-quotes/${quoteId}/imports/${importType}/template`,
-        { responseType: 'blob' },
+        { responseType: 'blob', timeout: 60_000 },
       )
       return response.data
     },

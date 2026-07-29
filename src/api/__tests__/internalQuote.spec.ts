@@ -121,7 +121,10 @@ describe('internal quote API adapter', () => {
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation', { revision: 3, add_sections: ['painting', 'sewing'] })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation/remove', { revision: 4, remove_sections: ['painting'] })
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/reference-snapshot/fx', { revision: 3, rmb_hkd: '0.9', hkd_usd: '7.9' })
-    expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/mold/template', { responseType: 'blob' })
+    expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/mold/template', {
+      responseType: 'blob',
+      timeout: 60_000,
+    })
     const formCalls = http.post.mock.calls.filter(([, data]) => data instanceof FormData)
     expect(formCalls).toHaveLength(2)
     expect((formCalls[0][1] as FormData).get('file')).toBe(file)
