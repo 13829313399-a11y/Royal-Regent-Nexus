@@ -50,6 +50,8 @@ interface CustomerOrderCustomerProfile {
   version: string
   poAccept: string
   poExtensions: string[]
+  scheduleAccept: string
+  scheduleExtensions: string[]
   poDescription: string
   templateDescription: string
   targetTemplate: string
@@ -63,6 +65,8 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       version: 'V1',
       poAccept: '.xlsx,.xls',
       poExtensions: ['.xls', '.xlsx'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
       poDescription: '普通合同与 WMC 首页内嵌 Excel PO',
       templateDescription: '2026年 BUZZ BEE 生产排期表',
       targetTemplate: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
@@ -73,6 +77,8 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       version: 'V1',
       poAccept: '.pdf',
       poExtensions: ['.pdf'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
       poDescription: 'Simba Dickie Release Order 扫描版 PDF',
       templateDescription: '2026年 Dickie 生产情况排期',
       targetTemplate: 'DICKIE_PRODUCTION_SCHEDULE_V1',
@@ -80,12 +86,14 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
     {
       code: 'caixing',
       name: '彩星',
-      version: 'V1',
+      version: 'V2',
       poAccept: '.pdf',
       poExtensions: ['.pdf'],
+      scheduleAccept: '.xls,.xlsx',
+      scheduleExtensions: ['.xls', '.xlsx'],
       poDescription: 'Playmates OE/OL/OG/OH/OK 系列文本型 PDF PO',
-      templateDescription: '彩星现有排期（当前活动表固定24列追加）',
-      targetTemplate: 'CAIXING_PURCHASE_ORDER_SCHEDULE_24COL_V1',
+      templateDescription: '彩星生产排期（正单评审表 / 接单表 / ITEM表）',
+      targetTemplate: 'CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2',
     },
   ],
 }
@@ -106,6 +114,8 @@ interface OrderRow {
   id: string
   status: OrderStatus
   statusLabel: string
+  rowRole?: 'parent' | 'detail'
+  parentProductNo?: string
   issue: string
   receivedDate: string
   poNo: string
@@ -192,6 +202,11 @@ const selectedCustomer = computed(
 )
 const selectedCustomerName = computed(
   () => selectedCustomer.value?.name ?? '尚未选择客户',
+)
+const preflightConfirmationText = computed(
+  () => selectedCustomer.value?.code === 'caixing'
+    ? '测试阶段：彩星重复订单仅警告，可确认后继续导出'
+    : '重复订单、日期差异、行Q与客Q',
 )
 
 const orderRows = ref<OrderRow[]>([
@@ -518,6 +533,39 @@ const outputScheduleFile = computed(() => {
   return scheduleFile.value?.name || `${selectedCustomerName.value}生产排期表.xlsx`
 })
 
+const previewCustomerName = computed(() => {
+  const customerCode = previewBatch.value?.customer_code
+  if (!customerCode) return selectedCustomerName.value
+  return availableCustomers.value.find((customer) => customer.code === customerCode)?.name
+    ?? customerCode
+})
+
+const previewCustomerMarkets = computed(() => Array.from(new Set(
+  orderRows.value
+    .map((row) => row.customerCountry.trim())
+    .filter(Boolean),
+)))
+
+const previewRuleNotice = computed(() => {
+  const customerCode = previewBatch.value?.customer_code ?? selectedCustomer.value?.code
+  if (customerCode === 'caixing') {
+    return {
+      title: '当前彩星输入规则已启用',
+      description: '读取 Playmates 文本型 PDF PO，先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号，并同步写入正单评审表、接单表及 ITEM表。',
+    }
+  }
+  if (customerCode === 'dickie') {
+    return {
+      title: '当前 Dickie 输入规则已启用',
+      description: '读取 Simba Dickie Release Order 扫描版 PDF，并按 Dickie 生产排期与 Item 表规则映射。',
+    }
+  }
+  return {
+    title: '当前 BuzzBee 两套输入规则已区分',
+    description: 'WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。',
+  }
+})
+
 const canParseFiles = computed(() => Boolean(
   selectedCustomer.value
   && poFiles.value.length > 0
@@ -530,12 +578,21 @@ const traceFields = computed(() => {
   const row = traceRow.value
   if (!row) return []
   const isDickie = row.inputTemplate.includes('DICKIE')
-  const sheetName = isDickie ? 'Dickie PDF' : row.inputTemplate.includes('WMC') ? 'Sheet1' : 'SHEET'
+  const isCaixing = row.inputTemplate.includes('CAIXING')
+  const sheetName = isDickie
+    ? 'Dickie PDF'
+    : isCaixing
+      ? 'Playmates PDF'
+      : row.inputTemplate.includes('WMC')
+        ? 'Sheet1'
+        : 'SHEET'
   const inputKind = isDickie
     ? 'Simba Dickie Release Order PDF规则'
-    : row.inputTemplate.includes('WMC')
-      ? 'WMC首页内嵌规则'
-      : '普通合同标签规则'
+    : isCaixing
+      ? '彩星 Playmates PDF规则'
+      : row.inputTemplate.includes('WMC')
+        ? 'WMC首页内嵌规则'
+        : '普通合同标签规则'
   const lineage = row.lineage ?? {}
 
   return [
@@ -608,7 +665,7 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
 
   const acceptedExtensions = kind === 'po'
     ? selectedCustomer.value.poExtensions
-    : ['.xlsx']
+    : selectedCustomer.value.scheduleExtensions
   const invalidFiles = files.filter(
     (file) => !acceptedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)),
   )
@@ -616,7 +673,7 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
     notify(
       kind === 'po'
         ? `${selectedCustomer.value.name} PO仅支持 ${acceptedExtensions.join(' / ')}：${invalidFiles[0]!.name}`
-        : `客户排期仅支持 .xlsx：${invalidFiles[0]!.name}`,
+        : `${selectedCustomer.value.name} 排期仅支持 ${acceptedExtensions.join(' / ')}：${invalidFiles[0]!.name}`,
     )
     return
   }
@@ -678,6 +735,8 @@ function mapPreviewRow(row: CustomerOrderPreviewRow): OrderRow {
     id: row.id,
     status: row.status,
     statusLabel: row.status_label,
+    rowRole: row.row_role ?? 'detail',
+    parentProductNo: row.parent_product_no ?? '',
     issue: row.issues.map((issue) => issue.message).join('；') || '17个统一字段已通过当前模板校验。',
     receivedDate: row.received_date,
     poNo: row.po_no,
@@ -1088,7 +1147,7 @@ onBeforeUnmount(() => {
                 <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；用于定位接单、评审及 Item 表结构。` : '请先选择客户，防止把其他客户排期套入错误模板。' }}</p>
                 <strong>{{ selectedScheduleFile }}</strong>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
-                <input ref="scheduleInput" class="visually-hidden" type="file" accept=".xlsx" @change="handleSelectedFile('schedule', $event)">
+                <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
               </article>
             </div>
 
@@ -1132,7 +1191,7 @@ onBeforeUnmount(() => {
                 <li><component :is="selectedCustomer ? CheckCircle2 : CircleAlert" :class="{ warning: !selectedCustomer }" aria-hidden="true" /><div><b>客户{{ selectedCustomer ? '已选择' : '待选择' }}</b><span>{{ selectedCustomerName }} · {{ factoryName }}</span></div></li>
                 <li><component :is="poFiles.length && scheduleFile ? CheckCircle2 : CircleAlert" :class="{ warning: !poFiles.length || !scheduleFile }" aria-hidden="true" /><div><b>批量PO与排期{{ poFiles.length && scheduleFile ? '齐全' : '待选择' }}</b><span>{{ poFiles.length }} 份PO + 1份客户排期</span></div></li>
                 <li><component :is="previewBatch ? CheckCircle2 : CircleAlert" :class="{ warning: !previewBatch }" aria-hidden="true" /><div><b>模板{{ previewBatch ? '已识别' : '待解析' }}</b><span>{{ previewBatch?.input_template || selectedCustomer?.poDescription || '先选择客户' }}</span></div></li>
-                <li><CircleAlert aria-hidden="true" class="warning" /><div><b>生成前人工确认</b><span>重复订单、日期差异、行Q与客Q</span></div></li>
+                <li><CircleAlert aria-hidden="true" class="warning" /><div><b>生成前检查</b><span>{{ preflightConfirmationText }}</span></div></li>
               </ul>
             </article>
 
@@ -1157,7 +1216,7 @@ onBeforeUnmount(() => {
         <header class="view-heading view-heading--compact">
           <div>
             <span class="eyebrow"><ClipboardCheck aria-hidden="true" /> 预览与校验</span>
-            <h2>{{ previewBatch ? `${previewBatch.customer_code === 'dickie' ? 'Dickie' : 'BuzzBee'} PO 映射预览` : '尚未建立真实预览批次' }}</h2>
+            <h2>{{ previewBatch ? `${previewCustomerName} PO 映射预览` : '尚未建立真实预览批次' }}</h2>
             <p>来源：<b>{{ previewBatch?.input_template || '请先导入 PO 与排期' }}</b> · 输出目标：<b>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</b></p>
           </div>
           <div class="view-heading__actions">
@@ -1209,11 +1268,11 @@ onBeforeUnmount(() => {
             <label><input v-model="includeWarning" type="checkbox"> 数据警告</label>
             <label><input v-model="includeValid" type="checkbox"> 已校验通过</label>
             <div class="filter-divider" />
-            <label class="filter-field">客户 / 市场<select><option>全部 {{ previewBatch?.customer_code === 'dickie' ? 'Dickie' : 'BuzzBee' }}</option><option v-if="previewBatch?.customer_code !== 'dickie'">WMC</option><option v-if="previewBatch?.customer_code !== 'dickie'">AAFES</option></select></label>
+            <label class="filter-field">客户 / 市场<select><option>全部 {{ previewCustomerName }}</option><option v-for="market in previewCustomerMarkets" :key="market">{{ market }}</option></select></label>
             <label class="filter-field">模板版本<select><option>V1.0 当前版本</option></select></label>
             <div class="logic-note">
               <Sparkles aria-hidden="true" />
-              <div><b>当前两套输入规则已区分</b><p>WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。</p></div>
+              <div><b>{{ previewRuleNotice.title }}</b><p>{{ previewRuleNotice.description }}</p></div>
             </div>
           </aside>
 
@@ -1237,7 +1296,11 @@ onBeforeUnmount(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in filteredRows" :key="row.id" :class="`row-${row.status}`">
+                  <tr
+                    v-for="row in filteredRows"
+                    :key="row.id"
+                    :class="[`row-${row.status}`, { 'row-parent-product': row.rowRole === 'parent' }]"
+                  >
                     <td class="sticky-left"><span :class="['status-chip', `status-chip--${row.status}`]">{{ row.statusLabel }}</span></td>
                     <td class="resolution-column">
                       <div v-if="row.issues?.some((issue) => issue.severity === 'blocked')" class="issue-resolution-list">
@@ -1255,7 +1318,12 @@ onBeforeUnmount(() => {
                       </div>
                       <span v-else class="no-resolution-needed">—</span>
                     </td>
-                    <td>{{ row.receivedDate }}</td><td class="mono">{{ row.poNo }}</td><td class="mono">{{ row.contractNo }}</td><td>{{ row.customerCountry }}</td><td class="mono">{{ row.productNo }}</td>
+                    <td>{{ row.receivedDate }}</td><td class="mono">{{ row.poNo }}</td><td class="mono">{{ row.contractNo }}</td><td>{{ row.customerCountry }}</td>
+                    <td :class="['mono', 'product-hierarchy-cell', { 'product-hierarchy-cell--child': row.rowRole === 'detail' && row.parentProductNo }]">
+                      <span v-if="row.rowRole === 'parent'" class="product-role-badge product-role-badge--parent">大货号</span>
+                      <span v-else-if="row.parentProductNo" class="product-role-badge product-role-badge--child">小货号</span>
+                      <b>{{ row.productNo }}</b>
+                    </td>
                     <td :class="{ 'cell-issue': row.productNameZh === '待映射' }">{{ row.productNameZh }}</td><td>{{ row.productNameEn }}</td><td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td>
                     <td>{{ row.standard }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.packaging }}</td><td>{{ row.lineQ }}</td><td>{{ row.customerQ }}</td><td>{{ row.requestedShipDate || '待补充' }}</td>
                     <td><button type="button" class="trace-button" @click="traceRow = row">查看来源</button></td>
@@ -3203,6 +3271,51 @@ tbody tr:hover td {
 
 .unified-table .row-blocked td.sticky-left {
   background: #fff8f7;
+}
+
+.unified-table .row-parent-product td {
+  border-top: 2px solid #8dcbb7;
+  background: #edf9f4;
+  font-weight: 800;
+}
+
+.unified-table .row-parent-product td.sticky-left {
+  background: #edf9f4;
+}
+
+.product-hierarchy-cell {
+  min-width: 150px;
+  white-space: nowrap;
+}
+
+.product-hierarchy-cell--child {
+  padding-left: 25px !important;
+}
+
+.product-role-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 7px;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.product-role-badge--parent {
+  border-color: #70c7aa;
+  background: #d8f5e9;
+  color: #005238;
+}
+
+.product-role-badge--child {
+  border-color: #bdc8de;
+  background: #f2f5fb;
+  color: #44536f;
 }
 
 .number {

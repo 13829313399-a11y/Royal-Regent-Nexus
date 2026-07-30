@@ -499,6 +499,23 @@ def _country_standard(customer_name: str, country: str) -> str:
 
 
 class DickieSchedule(OoxmlSchedule):
+    def insert_row_at(
+        self,
+        sheet_name: str,
+        *,
+        insert_row: int,
+        values: dict[str, dict[str, Any]],
+        reference_row_number: int | None = None,
+    ) -> int:
+        inserted_row = super().insert_row_at(
+            sheet_name,
+            insert_row=insert_row,
+            values=values,
+            reference_row_number=reference_row_number,
+        )
+        self.highlight_row(sheet_name, inserted_row)
+        return inserted_row
+
     def _validate_template(self) -> None:
         required = {"接单表", "正单评审表", ITEM_SHEET, DINO_ITEM_SHEET, MO_SHEET}
         missing = required - self.sheet_paths.keys()

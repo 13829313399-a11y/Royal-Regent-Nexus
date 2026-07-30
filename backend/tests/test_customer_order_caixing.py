@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from io import BytesIO
 
 import openpyxl
 import pytest
 from fastapi import HTTPException
 
-from app.api.customer_order import _ensure_customer_factory
+from app.api.customer_order import _ensure_customer_factory, _validate_upload
 from app.services import customer_order_caixing as service
 from app.services.customer_order_buzzbee import _decrypt_schedule
+from app.services.legacy_excel_bridge import LEGACY_XLS_MAGIC
+from starlette.datastructures import UploadFile
 
 
 PLAYMATES_PO_TEXT = """
@@ -29,6 +32,7 @@ ASSORTMENT : 58121E8             2
 8 PCS/CTN
 TOTAL : 13,962.00
 USE US STANDARD PACKAGING AND US STANDARD INSTRUCTION SHEET WHENEVER APPLICABLE.
+GOODS MUST COMPLY WITH ASTM AND EN TOYS SAFETY STANDARD.
 """
 
 SINGLE_PRODUCT_TEXT = """
@@ -36,7 +40,7 @@ Page: 1 of 8
 OE-1931878 DATE: 2026/02/12
 CUSTOMER: PLAYMATES-USA                                        OUR CONF NO: SE -1926304
 PRODUCT NO DESCRIPTION REF C.O. U/M ORDER QTY. UNIT PRICE AMOUNT
-68695 ULTIMATE THUNDER MEGAZORD / PRODUCT LINE: POWER RANGERS
+68695E3 ULTIMATE THUNDER MEGAZORD / PRODUCT LINE: POWER RANGERS
 DELIVERY DATE: 2026/05/13 CHN PC 3,000 0.0000 0.00
 TOTAL : 0.00
 """
@@ -44,38 +48,140 @@ TOTAL : 0.00
 
 def build_caixing_schedule() -> bytes:
     workbook = openpyxl.Workbook()
-    sheet = workbook.active
-    sheet.title = "采购订单"
-    for column, header in enumerate(service.EXPORT_COLUMNS, start=1):
-        sheet.cell(1, column).value = header
-    sheet["A2"] = "旧数据"
-    sheet["B2"] = "SC-OLD"
-    sheet["C2"] = "OG-OLD"
-    workbook.create_sheet("说明")
-    workbook.active = 0
+    review = workbook.active
+    review.title = service.REVIEW_SHEET
+    review_headers = {
+        "A": "证书",
+        "B": "客出单日期",
+        "C": "预备单号（OQF NO）",
+        "D": "S/C NO",
+        "E": "PO.NO",
+        "F": "客名/国家",
+        "G": "产品编号",
+        "H": "产品名称",
+        "I": "数量",
+        "J": "装箱",
+        "K": "箱数",
+        "L": "走货数量",
+        "M": "剩余未走数量",
+        "T": "日期码",
+        "U": "客要求走货期",
+        "V": "包装要求",
+        "W": "国家标准",
+        "AA": "单价",
+        "AB": "金额HKD",
+    }
+    for column, value in review_headers.items():
+        review[f"{column}2"] = value
+    review["G3"] = "58120 E8"
+    review["I3"] = "=SUM(I4)"
+    review["B4"] = "2026/01/01"
+    review["D4"] = "SC-OLD"
+    review["E4"] = "PO-OLD"
+    review["F4"] = "OLD-CUSTOMER"
+    review["G4"] = "58121 E8"
+    review["H4"] = "OLD ITEM"
+    review["I4"] = 100
+    review["J4"] = 2
+    review["H5"] = "合计："
+    review["I5"] = "=SUM(I4:I4)"
+    review["AA5"] = "合计HK$"
+    review["AB5"] = "=SUM(AB4:AB4)"
+    review["A6"] = service.CURRENT_ORDER_MARKER
+
+    order = workbook.create_sheet(service.ORDER_SHEET)
+    order_headers = {
+        "A": "FA",
+        "B": "客出单日期",
+        "C": "预备单号（OQF NO）",
+        "D": "S/C NO",
+        "E": "PO.NO",
+        "F": "客名/国家",
+        "G": "产品编号",
+        "H": "产品名称",
+        "I": "数量",
+        "J": "装箱",
+        "K": "单价",
+        "L": "金额",
+        "M": "客要求走货期",
+        "AD": 58121,
+        "AE": 58122,
+    }
+    for column, value in order_headers.items():
+        order[f"{column}2"] = value
+    order["G3"] = "58120 E8"
+    order["I3"] = 100
+    order["B4"] = "2026/01/01"
+    order["D4"] = "SC-OLD"
+    order["E4"] = "PO-OLD"
+    order["G4"] = "58121 E8"
+    order["I4"] = 100
+    order["A5"] = service.CURRENT_ORDER_MARKER
+    order["M5"] = "合计："
+    order["AD5"] = "=SUM(AD3:AD4)"
+    order["AE5"] = "=SUM(AE3:AE4)"
+
+    item = workbook.create_sheet(service.ITEM_SHEET)
+    item["AG1"] = 58121
+    item["AH1"] = 58122
+    item_headers = {
+        "A": "证书",
+        "B": "客出单日期",
+        "C": "预备单号（OQF NO）",
+        "D": "S/C NO",
+        "E": "PO.NO",
+        "F": "客名/国家",
+        "G": "产品编号",
+        "H": "产品名称",
+        "I": "数量",
+        "J": "包装",
+        "K": "备注",
+        "O": "客要求走货期",
+    }
+    for column, value in item_headers.items():
+        item[f"{column}3"] = value
+    item["G4"] = "58120 E8"
+    item["I4"] = 100
+    item["B5"] = "2026/01/01"
+    item["D5"] = "SC-OLD"
+    item["E5"] = "PO-OLD"
+    item["G5"] = "58121 E8"
+    item["I5"] = 100
+    item["A6"] = service.CURRENT_ORDER_MARKER
+    item["P6"] = "合计："
+    item["AG6"] = "=SUM(AG4:AG5)"
+    item["AH6"] = "=SUM(AH4:AH5)"
+
     output = BytesIO()
     workbook.save(output)
     workbook.close()
     return output.getvalue()
 
 
-def test_caixing_parser_reproduces_playmates_header_and_product_mapping(monkeypatch):
+def test_caixing_parser_extracts_groups_delivery_pack_and_adjusted_price(monkeypatch):
     monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
 
     rows = service.parse_caixing_pdf("1931815.pdf", b"%PDF synthetic")
 
     assert len(rows) == 2
-    assert rows[0].source_date == "2026/01/23"
+    assert rows[0].source_po_date == "2026/01/23"
+    assert rows[0].requested_ship_date == "2026/04/08"
     assert rows[0].po_no == "OG-1931815"
     assert rows[0].contract_no == "SG-1926247"
     assert rows[0].customer_name == "IMPORTS DRAGON-CAN"
+    assert rows[0].parent_product_no == "58120 E8"
+    assert rows[0].parent_quantity == 600
+    assert rows[0].parent_units_per_carton == 8
     assert rows[0].product_no == "58121 E8"
-    assert rows[0].product_name_en == "WINX CLUB BLOOM FAIRY WINGS ROLE PLAY"
     assert rows[0].quantity == 300
-    assert str(rows[0].unit_price_hkd) == "23.2700"
-    assert str(rows[0].amount_hkd) == "6981.00"
-    assert rows[0].packaging == "美国包装"
+    assert rows[0].units_per_carton == 2
+    assert rows[0].raw_unit_price_hkd == Decimal("23.2700")
+    assert rows[0].unit_price_hkd == Decimal("22.2228500")
+    assert rows[0].amount_hkd == Decimal("6666.8550000")
+    assert rows[0].packaging == "美版彩盒"
+    assert rows[0].standard == "美国标准"
     assert rows[1].product_no == "58122 E8"
+    assert rows[1].units_per_carton == 2
 
 
 def test_caixing_parser_handles_quantity_on_delivery_date_line(monkeypatch):
@@ -84,13 +190,17 @@ def test_caixing_parser_handles_quantity_on_delivery_date_line(monkeypatch):
     rows = service.parse_caixing_pdf("1931878.pdf", b"%PDF synthetic")
 
     assert len(rows) == 1
-    assert rows[0].product_no == "68695"
+    assert rows[0].product_no == "68695 E3"
+    assert rows[0].parent_product_no == "68695 E3"
     assert rows[0].quantity == 3000
-    assert rows[0].unit_price_hkd == 0
+    assert rows[0].units_per_carton == 3
+    assert rows[0].parent_units_per_carton == 3
+    assert rows[0].requested_ship_date == "2026/05/13"
+    assert rows[0].raw_unit_price_hkd == 0
     assert rows[0].amount_hkd == 0
 
 
-def test_caixing_preview_and_export_append_fixed_24_columns_to_active_sheet(monkeypatch):
+def test_caixing_preview_and_export_write_review_order_and_item(monkeypatch):
     monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
     schedule_content = build_caixing_schedule()
     po_files = [("1931815.pdf", b"%PDF synthetic")]
@@ -105,15 +215,26 @@ def test_caixing_preview_and_export_append_fixed_24_columns_to_active_sheet(monk
 
     assert preview["customer_code"] == "caixing"
     assert preview["summary"] == {
-        "total": 2,
-        "valid": 2,
+        "total": 3,
+        "valid": 3,
         "warning": 0,
         "blocked": 0,
     }
+    assert preview["preview_schema_version"] == "customer-order-caixing-preview-v2"
+    assert preview["target_template"] == service.TARGET_TEMPLATE
     assert preview["output_file_name"] == "2026年彩星排期.xlsx"
-    assert preview["rows"][0]["item_sheet_name"] == "采购订单"
-    assert preview["rows"][0]["requested_ship_date"] == ""
-    assert preview["_schedule_encrypted"] is False
+    assert preview["rows"][0]["row_role"] == "parent"
+    assert preview["rows"][0]["product_no"] == "58120 E8"
+    assert preview["rows"][0]["quantity"] == "600"
+    assert preview["rows"][0]["units_per_carton"] == "8"
+    assert preview["rows"][0]["carton_count"] == "75"
+    assert preview["rows"][1]["row_role"] == "detail"
+    assert preview["rows"][1]["parent_product_no"] == "58120 E8"
+    assert preview["rows"][1]["received_date"] == "2026-07-29"
+    assert preview["rows"][1]["requested_ship_date"] == "2026-04-08"
+    assert preview["rows"][1]["units_per_carton"] == "2"
+    assert preview["rows"][1]["carton_count"] == "150"
+    assert preview["rows"][1]["item_sheet_name"] == "正单评审表 / 接单表 / ITEM表"
 
     output, file_name, _ = service.export_caixing_batch_schedule(
         factory_id="huaxing",
@@ -126,20 +247,161 @@ def test_caixing_preview_and_export_append_fixed_24_columns_to_active_sheet(monk
     assert file_name == "2026年彩星排期.xlsx"
     plain, encrypted = _decrypt_schedule(output)
     assert encrypted is False
+    rendered = openpyxl.load_workbook(BytesIO(plain), data_only=False)
+    assert rendered[service.REVIEW_SHEET]["G5"].fill.fgColor.rgb == "FFFFFF00"
+    assert rendered[service.ORDER_SHEET]["G5"].fill.fgColor.rgb == "FFFFFF00"
+    assert rendered[service.ITEM_SHEET]["G6"].fill.fgColor.rgb == "FFFFFF00"
+    assert rendered[service.REVIEW_SHEET]["G4"].fill.fgColor.rgb != "FFFFFF00"
+    rendered.close()
     workbook = service.CaixingSchedule(plain)
-    rows = workbook.read_rows("采购订单")
-    assert rows[2]["A"] == "旧数据"
-    assert rows[3]["A"] == "2026/01/23"
-    assert rows[3]["B"] == "SG-1926247"
-    assert rows[3]["C"] == "OG-1931815"
-    assert rows[3]["D"] == "IMPORTS DRAGON-CAN"
-    assert rows[3]["E"] == "58121 E8"
-    assert rows[3]["F"] == "WINX CLUB BLOOM FAIRY WINGS ROLE PLAY"
-    assert rows[3]["G"] == "300"
-    assert rows[3]["R"] == "美国包装"
-    assert rows[3]["W"] == "23.27"
-    assert rows[3]["X"] == "6981"
-    assert rows[4]["E"] == "58122 E8"
+
+    review_rows = workbook.read_rows(service.REVIEW_SHEET)
+    assert review_rows[5]["G"] == "58120 E8"
+    assert review_rows[5]["H"] == "WINX CLUB FAIRY WINGS ASST. / PRODUCT LINE: WINX CLUB"
+    assert review_rows[5]["I"] == "600"
+    assert review_rows[5]["J"] == "8"
+    assert workbook.read_cell_formula(service.REVIEW_SHEET, 5, "I") == "SUM(I6:I7)"
+    assert review_rows[6]["B"] == "2026/07/29"
+    assert review_rows[6]["E"] == "OG-1931815"
+    assert review_rows[6]["J"] == "2"
+    assert review_rows[6]["K"] == "150"
+    assert review_rows[6]["M"] == "300"
+    assert review_rows[6]["U"] == "2026/04/08"
+    assert review_rows[6]["V"] == "美版彩盒"
+    assert review_rows[6]["W"] == "美国标准"
+    assert review_rows[6].get("T", "") == ""
+    assert review_rows[6]["AA"] == "22.22285"
+    assert review_rows[6]["AB"] == "6666.855"
+
+    order_rows = workbook.read_rows(service.ORDER_SHEET)
+    assert order_rows[5]["G"] == "58120 E8"
+    assert order_rows[5]["H"] == "WINX CLUB FAIRY WINGS ASST. / PRODUCT LINE: WINX CLUB"
+    assert order_rows[5]["I"] == "600"
+    assert order_rows[5]["J"] == "8"
+    assert order_rows[6]["E"] == "OG-1931815"
+    assert order_rows[6]["AD"] == "300"
+    assert order_rows[7]["AE"] == "300"
+    assert order_rows[6]["M"] == "2026/04/08"
+
+    item_rows = workbook.read_rows(service.ITEM_SHEET)
+    assert item_rows[6]["G"] == "58120 E8"
+    assert item_rows[6]["H"] == "WINX CLUB FAIRY WINGS ASST. / PRODUCT LINE: WINX CLUB"
+    assert item_rows[6]["I"] == "600"
+    assert item_rows[7]["E"] == "OG-1931815"
+    assert item_rows[7]["J"] == "美版彩盒"
+    assert item_rows[7]["AG"] == "300"
+    assert item_rows[8]["AH"] == "300"
+    assert item_rows[7]["O"] == "2026/04/08"
+
+
+def test_caixing_existing_order_line_warns_but_allows_test_export(monkeypatch):
+    monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
+    source = openpyxl.load_workbook(BytesIO(build_caixing_schedule()))
+    order = source[service.ORDER_SHEET]
+    order["D4"] = "SG-1926247"
+    order["E4"] = "OG-1931815"
+    order["G4"] = "58121 E8"
+    output = BytesIO()
+    source.save(output)
+    source.close()
+    schedule_content = output.getvalue()
+    po_files = [("1931815.pdf", b"%PDF synthetic")]
+
+    preview = service.create_caixing_batch_preview(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星排期.xlsx",
+        schedule_content=schedule_content,
+    )
+
+    duplicate_row = next(
+        row for row in preview["rows"] if row["product_no"] == "58121 E8"
+    )
+    duplicate_issue = next(
+        issue
+        for issue in duplicate_row["issues"]
+        if issue["code"] == "existing_order_line"
+    )
+    assert duplicate_row["status"] == "warning"
+    assert duplicate_issue["severity"] == "warning"
+    assert duplicate_issue["can_skip"] is False
+    assert preview["summary"] == {
+        "total": 3,
+        "valid": 2,
+        "warning": 1,
+        "blocked": 0,
+    }
+
+    exported, file_name, exported_preview = service.export_caixing_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星排期.xlsx",
+        schedule_content=schedule_content,
+    )
+    assert exported.startswith(b"PK")
+    assert file_name == "2026年彩星排期.xlsx"
+    assert exported_preview["summary"]["blocked"] == 0
+
+
+def test_caixing_legacy_xls_uses_converter_and_preserves_format(monkeypatch):
+    monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
+    legacy_schedule = LEGACY_XLS_MAGIC + b"encrypted-schedule"
+    converted_schedule = build_caixing_schedule()
+    converted_outputs: list[tuple[bytes, str | None]] = []
+
+    monkeypatch.setattr(service, "_decrypt_schedule", lambda content: (legacy_schedule, True))
+    monkeypatch.setattr(
+        service,
+        "convert_legacy_xls_to_xlsx",
+        lambda content: converted_schedule,
+    )
+
+    def fake_convert_to_xls(content: bytes, *, output_password: str | None) -> bytes:
+        converted_outputs.append((content, output_password))
+        return LEGACY_XLS_MAGIC + b"converted-output"
+
+    monkeypatch.setattr(service, "convert_xlsx_to_legacy_xls", fake_convert_to_xls)
+    po_files = [("1931815.pdf", b"%PDF synthetic")]
+
+    preview = service.create_caixing_batch_preview(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星生产排期表.xls",
+        schedule_content=b"encrypted-upload",
+    )
+
+    assert preview["output_file_name"] == "2026年彩星生产排期表.xls"
+    assert preview["_schedule_encrypted"] is True
+    assert preview["_schedule_format"] == "xls"
+    assert any("Excel 97-2003 .xls" in warning for warning in preview["warnings"])
+
+    output, file_name, _ = service.export_caixing_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星生产排期表.xls",
+        schedule_content=b"encrypted-upload",
+    )
+
+    assert output == LEGACY_XLS_MAGIC + b"converted-output"
+    assert file_name == "2026年彩星生产排期表.xls"
+    assert len(converted_outputs) == 1
+    assert converted_outputs[0][0].startswith(b"PK")
+    assert converted_outputs[0][1] == "2026"
+
+
+def test_caixing_api_accepts_xls_schedule_extension():
+    _validate_upload(
+        UploadFile(
+            filename="2026年彩星生产排期表.xls",
+            file=BytesIO(b"schedule"),
+        ),
+        kind="客户排期",
+        supported=(".xls", ".xlsx"),
+    )
 
 
 def test_caixing_customer_is_owned_by_huaxing():
