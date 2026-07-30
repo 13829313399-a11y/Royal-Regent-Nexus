@@ -367,6 +367,13 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
     )
     assert item_row_number < system_row_number
 
+    rendered = openpyxl.load_workbook(BytesIO(plain), data_only=False)
+    assert rendered["Iteam表"][f"F{item_row_number}"].fill.fgColor.rgb == "FFFFFF00"
+    assert rendered["接单表"][f"D{order_row_number}"].fill.fgColor.rgb == "FFFFFF00"
+    assert rendered["正单评审表"][f"D{review_row_number}"].fill.fgColor.rgb == "FFFFFF00"
+    assert rendered["Iteam表"][f"F{system_row_number}"].fill.fgColor.rgb != "FFFFFF00"
+    rendered.close()
+
 
 def _format_serial(value: str) -> str:
     return service._format_iso_date(Decimal(value))

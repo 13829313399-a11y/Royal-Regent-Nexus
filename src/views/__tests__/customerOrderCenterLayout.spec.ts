@@ -170,6 +170,30 @@ describe('customer order center static frontend', () => {
     expect(scheduleView.text()).not.toContain('生成更新后的总排期')
   })
 
+  it('accepts the original xls schedule only for Caixing', async () => {
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    const scheduleInputBeforeSelection = wrapper.findAll('input[type="file"]')[1]!
+    expect(scheduleInputBeforeSelection.attributes('accept')).toBe('.xlsx')
+
+    await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
+    const scheduleInput = wrapper.findAll('input[type="file"]')[1]!
+    expect(scheduleInput.attributes('accept')).toBe('.xls,.xlsx')
+    Object.defineProperty(scheduleInput.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年彩星生产排期表.xls')],
+    })
+    await scheduleInput.trigger('change')
+
+    expect(wrapper.text()).toContain('2026年彩星生产排期表.xls')
+  })
+
   it('allows a missing price blocker to be explicitly skipped while keeping it visible', async () => {
     customerOrderApiMock.previewBuzzbeeBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-buzzbee-preview-v1',
@@ -395,9 +419,33 @@ describe('customer order center static frontend', () => {
     )
   })
 
-  it('selects Huaxing Caixing and routes Playmates PDFs to the fixed 24-column append flow', async () => {
+  it('selects Huaxing Caixing and routes Playmates PDFs to the three-sheet schedule flow', async () => {
+    const caixingRowBase = {
+      status: 'valid' as const,
+      status_label: '有效',
+      received_date: '2026-05-27',
+      po_no: 'OL-1932232',
+      contract_no: 'SL-1926604',
+      customer_country: 'EUROPLAY-PHI',
+      customer_name: 'EUROPLAY-PHI',
+      country: '',
+      product_name_zh: '',
+      standard: '美国标准',
+      unit_price_hkd: '',
+      amount_hkd: '',
+      packaging: '美版彩盒',
+      line_q: '',
+      customer_q: '',
+      requested_ship_date: '2026-07-15',
+      input_template: 'CAIXING_PLAYMATES_PO_PDF_V2',
+      target_template: 'CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2',
+      item_sheet_name: '正单评审表 / 接单表 / ITEM表',
+      source_po_file_name: '1931815.pdf',
+      lineage: {},
+      issues: [],
+    }
     customerOrderApiMock.previewCaixingBatch.mockResolvedValueOnce({
-      preview_schema_version: 'customer-order-caixing-preview-v1',
+      preview_schema_version: 'customer-order-caixing-preview-v2',
       customer_code: 'caixing',
       factory_id: 'huaxing',
       po_file_name: '1931815.pdf',
@@ -407,12 +455,37 @@ describe('customer order center static frontend', () => {
       source_po_sha256: 'po',
       source_po_sha256s: ['po'],
       source_schedule_sha256: 'schedule',
-      input_template: 'CAIXING_PLAYMATES_PO_PDF_V1',
-      target_template: 'CAIXING_PURCHASE_ORDER_SCHEDULE_24COL_V1',
+      input_template: 'CAIXING_PLAYMATES_PO_PDF_V2',
+      target_template: 'CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2',
       output_file_name: '2026年彩星排期.xlsx',
-      summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
+      summary: { total: 2, valid: 2, warning: 0, blocked: 0 },
       warnings: [],
-      rows: [],
+      rows: [
+        {
+          ...caixingRowBase,
+          id: 'caixing-parent-57810',
+          row_role: 'parent',
+          parent_product_no: '',
+          product_no: '57810 E8',
+          product_name_en: 'WINX CLUB FAIRIES ASST',
+          quantity: '1800',
+          units_per_carton: '8',
+          carton_count: '225',
+        },
+        {
+          ...caixingRowBase,
+          id: 'caixing-detail-57811',
+          row_role: 'detail',
+          parent_product_no: '57810 E8',
+          product_no: '57811 E8',
+          product_name_en: 'WINX CLUB BLOOM FAIRY DOLL',
+          quantity: '675',
+          units_per_carton: '3',
+          carton_count: '225',
+          unit_price_hkd: '31.01',
+          amount_hkd: '20931.75',
+        },
+      ],
     })
     customerOrderApiMock.exportCaixingBatch.mockResolvedValueOnce({
       blob: new Blob(['caixing-schedule']),
@@ -429,7 +502,9 @@ describe('customer order center static frontend', () => {
 
     await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
-    expect(wrapper.text()).toContain('当前活动表固定24列追加')
+    expect(wrapper.text()).toContain('彩星 V2')
+    expect(wrapper.text()).toContain('测试阶段：彩星重复订单仅警告')
+    expect(wrapper.text()).toContain('正单评审表 / 接单表 / ITEM表')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')
 
@@ -449,6 +524,22 @@ describe('customer order center static frontend', () => {
 
     expect(customerOrderApiMock.previewCaixingBatch).toHaveBeenCalledOnce()
     await wrapper.setProps({ activeSection: 'preview' })
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('彩星 PO 映射预览')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('全部 彩星')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('当前彩星输入规则已启用')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain(
+      '先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号',
+    )
+    const hierarchyRows = wrapper.findAll('.unified-table tbody tr')
+    expect(hierarchyRows[0]!.text()).toContain('大货号')
+    expect(hierarchyRows[0]!.text()).toContain('57810 E8')
+    expect(hierarchyRows[0]!.text()).toContain('1800')
+    expect(hierarchyRows[0]!.text()).toContain('8')
+    expect(hierarchyRows[1]!.text()).toContain('小货号')
+    expect(hierarchyRows[1]!.text()).toContain('57811 E8')
+    expect(hierarchyRows[1]!.text()).toContain('675')
+    expect(hierarchyRows[1]!.text()).toContain('3')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).not.toContain('BuzzBee PO 映射预览')
     await wrapper.get('[data-testid="preview-next-step"] .button').trigger('click')
     await flushPromises()
 

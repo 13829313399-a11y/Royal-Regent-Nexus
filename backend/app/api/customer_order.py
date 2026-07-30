@@ -32,6 +32,7 @@ from app.services.customer_order_caixing import (
 
 router = APIRouter(prefix="/api/customer-orders", tags=["customer-orders"])
 SALES_DEPARTMENTS = ("sales-business",)
+XLS_CONTENT_TYPE = "application/vnd.ms-excel"
 CUSTOMER_FACTORY_IDS = {
     "buzzbee": "huaxing",
     "dickie": "huaxing",
@@ -416,7 +417,11 @@ async def preview_caixing_customer_order_batch(
         "customer_order:read",
         normalized_factory_id,
     )
-    _validate_upload(schedule_file, kind="客户排期")
+    _validate_upload(
+        schedule_file,
+        kind="客户排期",
+        supported=(".xls", ".xlsx"),
+    )
     uploaded_po_files = await _read_po_uploads(po_files, supported=(".pdf",))
     schedule_content = await schedule_file.read()
     if not schedule_content:
@@ -455,7 +460,11 @@ async def export_caixing_customer_schedule_batch(
     if not confirmed:
         raise HTTPException(status_code=400, detail="请先完成预览并确认当前批次")
     normalized_skipped_issue_keys = _parse_skipped_issue_keys(skipped_issue_keys)
-    _validate_upload(schedule_file, kind="客户排期")
+    _validate_upload(
+        schedule_file,
+        kind="客户排期",
+        supported=(".xls", ".xlsx"),
+    )
     uploaded_po_files = await _read_po_uploads(po_files, supported=(".pdf",))
     schedule_content = await schedule_file.read()
     if not schedule_content:
@@ -473,7 +482,11 @@ async def export_caixing_customer_schedule_batch(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
         content=output,
-        media_type=XLSX_CONTENT_TYPE,
+        media_type=(
+            XLS_CONTENT_TYPE
+            if file_name.lower().endswith(".xls")
+            else XLSX_CONTENT_TYPE
+        ),
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
             "X-Output-Template": preview["target_template"],

@@ -26,6 +26,15 @@ export interface EngineeringMaterialRow {
   disney_unit_price_usd: number
   disney_included: number
 }
+export interface EngineeringMoldPartRow {
+  name: string
+  color: string
+  process: string
+  process_unit_price_hkd: number
+  unit_net_weight_g: number
+  output_count: number
+  quantity: number
+}
 export interface EngineeringMoldRow {
   item: string
   mold_no: string
@@ -49,6 +58,7 @@ export interface EngineeringMoldRow {
   remark: string
   machine_code: string
   target_output: number
+  parts: EngineeringMoldPartRow[]
   source_row: number
   disney_mold_no: string
   disney_parts: string
@@ -896,6 +906,34 @@ function textValue(value: unknown) {
   return value == null ? '' : String(value)
 }
 
+export function splitEngineeringMoldPartNames(value: unknown): string[] {
+  const source = textValue(value).replaceAll('／', '/').trim()
+  if (!source) return []
+  return source
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .flatMap((part) => part.includes('左右')
+      ? [part.replaceAll('左右', '左'), part.replaceAll('左右', '右')]
+      : [part])
+}
+
+function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPartRow[] {
+  const savedParts = rows(row.parts)
+  const sourceParts: Record<string, unknown>[] = savedParts.length
+    ? savedParts
+    : splitEngineeringMoldPartNames(row.item ?? row.name ?? row.chinese_name).map((name) => ({ name }))
+  return sourceParts.map((part) => ({
+    name: textValue(part.name ?? part.item),
+    color: textValue(part.color),
+    process: textValue(part.process),
+    process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
+    unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
+    output_count: numberValue(part.output_count, 1),
+    quantity: numberValue(part.quantity, 1),
+  }))
+}
+
 function electronicRows(value: unknown): ElectronicComponentRow[] {
   return rows(value).map((row) => ({
     item: textValue(row.item),
@@ -1032,7 +1070,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       quantity: numberValue(row.quantity ?? row.sets, 1), net_weight_g: numberValue(row.net_weight_g ?? row.weight_g),
       cycle_time_seconds: numberValue(row.cycle_time_seconds ?? row.cycle_sec), mold_size: textValue(row.mold_size), mold_specification: textValue(row.mold_specification),
       image_reference: textValue(row.image_reference), image_attachment_ids: Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(textValue).filter(Boolean) : [], cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb), remark: textValue(row.remark ?? row.note),
-      machine_code: textValue(row.machine_code), target_output: numberValue(row.target_output), source_row: numberValue(row.source_row),
+      machine_code: textValue(row.machine_code), target_output: numberValue(row.target_output), parts: engineeringMoldParts(row), source_row: numberValue(row.source_row),
       disney_mold_no: textValue(row.disney_mold_no), disney_parts: textValue(row.disney_parts), disney_material: textValue(row.disney_material), disney_cavities: numberValue(row.disney_cavities), disney_parts_per_shot: numberValue(row.disney_parts_per_shot), disney_tool_cost_usd: numberValue(row.disney_tool_cost_usd),
       dickie_project_name_en: textValue(row.dickie_project_name_en), dickie_mold_no: textValue(row.dickie_mold_no), dickie_parts_en: textValue(row.dickie_parts_en), dickie_resin: textValue(row.dickie_resin), dickie_mold_size: textValue(row.dickie_mold_size), dickie_mold_material: textValue(row.dickie_mold_material), dickie_cavities: numberValue(row.dickie_cavities), dickie_parts_per_shot: numberValue(row.dickie_parts_per_shot), dickie_mold_cost_hkd: numberValue(row.dickie_mold_cost_hkd), dickie_remark_en: textValue(row.dickie_remark_en),
       caixing_tool_plan_ref: textValue(row.caixing_tool_plan_ref), caixing_mold_cost_hkd: numberValue(row.caixing_mold_cost_hkd), caixing_customer_mold_cost_hkd: numberValue(row.caixing_customer_mold_cost_hkd),
