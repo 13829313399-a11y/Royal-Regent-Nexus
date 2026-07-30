@@ -22,7 +22,14 @@ from app.models.internal_quote import (
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v7"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v9"
+ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
+ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "internal_quote_export_templates"
+    / "工程资料模板.xlsx"
+)
 TEMPLATE_VERSION = P3_TEMPLATE_VERSION
 STRUCTURED_DATA_SCHEMA_VERSION = "internal-quote-structured-data-v1"
 STRUCTURED_DATA_CHUNK_SIZE = 30000
@@ -476,6 +483,930 @@ def _inch_value_for_unit(value: object, unit: str) -> float | str:
 
 def _dimensions_for_unit(value: object, unit: str) -> tuple[float | str, float | str, float | str]:
     return tuple(_inch_value_for_unit(item, unit) for item in _dimensions(value))
+
+
+def _plain_text(value: object) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _positive_number(value: object, fallback: float = 0.0) -> float:
+    parsed = _float_value(value, fallback)
+    return parsed if parsed > 0 else fallback
+
+
+def _split_engineering_mold_part_names(value: object) -> list[str]:
+    source = _plain_text(value).replace("／", "/")
+    if not source:
+        return []
+    result: list[str] = []
+    for raw_part in source.split("/"):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if "左右" in part:
+            result.extend((part.replace("左右", "左"), part.replace("左右", "右")))
+        else:
+            result.append(part)
+    return result
+
+
+def _engineering_mold_parts(mold: dict[str, Any]) -> list[dict[str, Any]]:
+    saved_parts = _list_of_dicts(mold.get("parts", []))
+    if saved_parts:
+        return [
+            {
+                "name": _plain_text(part.get("name") or part.get("item")),
+                "color": _plain_text(part.get("color")),
+                "process": _plain_text(part.get("process")),
+                "process_unit_price_hkd": _positive_number(
+                    part.get("process_unit_price_hkd")
+                ),
+                "unit_net_weight_g": _positive_number(
+                    part.get("unit_net_weight_g", part.get("net_weight_g"))
+                ),
+                "output_count": _positive_number(part.get("output_count"), 1.0),
+                "quantity": _positive_number(part.get("quantity"), 1.0),
+            }
+            for part in saved_parts
+        ]
+    source_name = mold.get("item") or mold.get("name") or mold.get("chinese_name")
+    return [
+        {
+            "name": name,
+            "color": "",
+            "process": "",
+            "process_unit_price_hkd": 0.0,
+            "unit_net_weight_g": 0.0,
+            "output_count": 1.0,
+            "quantity": 1.0,
+        }
+        for name in _split_engineering_mold_part_names(source_name)
+    ]
+
+
+def _match_key(value: object) -> str:
+    return re.sub(r"\s+", "", _plain_text(value)).casefold()
+
+
+def _mold_material_label(
+    mold: dict[str, Any],
+    injection: dict[str, Any] | None,
+) -> str:
+    source = injection or {}
+    material = _plain_text(source.get("material") or mold.get("material"))
+    grade = _plain_text(source.get("grade") or mold.get("material_type"))
+    if material and grade and _match_key(material) not in _match_key(grade):
+        return f"{material}-{grade}"
+    return grade or material
+
+
+def _engineering_company_name(quote: InternalQuote) -> str:
+    if _match_key(getattr(quote, "factory_id", "")) == "huaxing":
+        return "华兴玩具制品(河源)有限公司"
+    return (
+        _plain_text(getattr(quote, "workshop_name", ""))
+        or _plain_text(getattr(quote, "factory_id", ""))
+        or "工程资料"
+    )
+
+
+def _merge_and_style(
+    sheet,
+    cell_range: str,
+    value: object = None,
+    *,
+    bold: bool = False,
+    color: str = TEMPLATE_BLACK,
+    fill: str | None = None,
+    horizontal: str = "center",
+    size: int = 10,
+) -> None:
+    cells = sheet[cell_range]
+    for row in cells:
+        for cell in row:
+            _template_cell(
+                sheet,
+                cell.row,
+                cell.column,
+                None,
+                bold=bold,
+                color=color,
+                fill=fill,
+                horizontal=horizontal,
+                size=size,
+            )
+    sheet.merge_cells(cell_range)
+    top_left = cells[0][0]
+    top_left.value = value
+
+
+def _engineering_mold_groups(
+    engineering_payload: dict[str, Any],
+    molding_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    molds = _list_of_dicts(engineering_payload.get("molds", []))
+    injections = _list_of_dicts(molding_payload.get("injection_lines", []))
+    used_injections: set[int] = set()
+    groups: list[dict[str, Any]] = []
+
+    for mold_index, mold in enumerate(molds):
+        mold_no_key = _match_key(mold.get("mold_no"))
+        item_key = _match_key(
+            mold.get("item") or mold.get("name") or mold.get("chinese_name")
+        )
+        matched: list[tuple[int, dict[str, Any]]] = []
+        for injection_index, injection in enumerate(injections):
+            if injection_index in used_injections:
+                continue
+            injection_mold_no = _match_key(injection.get("mold_no"))
+            injection_item = _match_key(injection.get("item") or injection.get("name"))
+            if (
+                (mold_no_key and injection_mold_no == mold_no_key)
+                or (
+                    not mold_no_key
+                    and item_key
+                    and injection_item == item_key
+                )
+            ):
+                matched.append((injection_index, injection))
+                used_injections.add(injection_index)
+
+        parts = _engineering_mold_parts(mold)
+        if not parts:
+            parts = [
+                {
+                    "name": _plain_text(
+                        mold.get("item")
+                        or mold.get("name")
+                        or mold.get("chinese_name")
+                    ),
+                    "color": "",
+                    "process": "",
+                    "process_unit_price_hkd": 0.0,
+                    "unit_net_weight_g": 0.0,
+                    "output_count": 1.0,
+                    "quantity": 1.0,
+                }
+            ]
+        groups.append(
+            {
+                "mold": mold,
+                "injections": [row for _, row in matched],
+                "parts": parts,
+                "fallback_mold_no": f"M{mold_index + 1:02d}",
+            }
+        )
+
+    unmatched_groups: dict[str, list[dict[str, Any]]] = {}
+    unmatched_order: list[str] = []
+    for injection_index, injection in enumerate(injections):
+        if injection_index in used_injections:
+            continue
+        group_key = _match_key(injection.get("mold_no")) or f"row-{injection_index}"
+        if group_key not in unmatched_groups:
+            unmatched_groups[group_key] = []
+            unmatched_order.append(group_key)
+        unmatched_groups[group_key].append(injection)
+
+    for group_key in unmatched_order:
+        group_injections = unmatched_groups[group_key]
+        first = group_injections[0]
+        parts: list[dict[str, Any]] = []
+        for injection in group_injections:
+            names = _split_engineering_mold_part_names(
+                injection.get("item") or injection.get("name")
+            ) or [""]
+            for name in names:
+                parts.append(
+                    {
+                        "name": name,
+                        "color": _plain_text(injection.get("color")),
+                        "process": "",
+                        "process_unit_price_hkd": 0.0,
+                        "unit_net_weight_g": 0.0,
+                        "output_count": _positive_number(
+                            injection.get("output_count"), 1.0
+                        ),
+                        "quantity": _positive_number(
+                            injection.get("quantity"), 1.0
+                        ),
+                    }
+                )
+        groups.append(
+            {
+                "mold": {
+                    "item": first.get("item", ""),
+                    "mold_no": first.get("mold_no", ""),
+                    "color": first.get("color", ""),
+                    "material": first.get("material", ""),
+                    "material_type": first.get("grade", ""),
+                    "cavity": first.get("cavity", ""),
+                    "quantity": first.get("sets", 1),
+                    "net_weight_g": first.get("net_weight_g", 0),
+                    "machine_code": first.get("machine_code", ""),
+                    "target_output": first.get("target_output", 0),
+                    "remark": first.get("remark", ""),
+                },
+                "injections": group_injections,
+                "parts": parts,
+                "fallback_mold_no": f"M{len(groups) + 1:02d}",
+            }
+        )
+    return groups
+
+
+def _matching_injection_for_part(
+    part: dict[str, Any],
+    injections: list[dict[str, Any]],
+    part_index: int,
+) -> dict[str, Any]:
+    part_key = _match_key(part.get("name"))
+    if part_key:
+        for injection in injections:
+            if _match_key(injection.get("item") or injection.get("name")) == part_key:
+                return injection
+    if not injections:
+        return {}
+    if len(injections) == 1:
+        return injections[0]
+    return injections[min(part_index, len(injections) - 1)]
+
+
+def _build_mold_schedule_sheet(
+    workbook: Workbook,
+    quote: InternalQuote,
+    engineering_section: InternalQuoteSection | None,
+    molding_section: InternalQuoteSection | None,
+) -> None:
+    sheet = workbook.create_sheet("排摸表")
+    engineering_payload = _section_payload(engineering_section)
+    molding_payload = _section_payload(molding_section)
+    groups = _engineering_mold_groups(engineering_payload, molding_payload)
+
+    _merge_and_style(
+        sheet,
+        "A1:T1",
+        _engineering_company_name(quote),
+        bold=True,
+        color=TEMPLATE_BLUE,
+        size=14,
+    )
+    _merge_and_style(sheet, "A2:T2", "排  模  表", bold=True, size=16)
+    _merge_and_style(
+        sheet, "A3:B3", f"客户：{_plain_text(getattr(quote, 'customer', ''))}"
+    )
+    _merge_and_style(
+        sheet, "C3:H3", f"产品编号：{_plain_text(getattr(quote, 'quote_no', ''))}"
+    )
+    _merge_and_style(
+        sheet,
+        "I3:L3",
+        f"产品名称：{_plain_text(getattr(quote, 'product_name', ''))}",
+    )
+    _merge_and_style(sheet, "M3:N3", "文件编号：", bold=True)
+    _merge_and_style(sheet, "O3:Q3", "")
+    _merge_and_style(
+        sheet, "R3:S3", f"版本：{_plain_text(getattr(quote, 'version_label', ''))}"
+    )
+    _template_cell(
+        sheet,
+        3,
+        20,
+        f"修订：{getattr(quote, 'header_revision', '')}",
+        bold=True,
+    )
+    _merge_and_style(
+        sheet,
+        "A4:T4",
+        "TO：PMC部；啤塑部；物料部；工程部；装配部；品质部",
+        horizontal="left",
+    )
+
+    headers = (
+        "工模编号",
+        "配件名称",
+        "颜色",
+        "色粉编号",
+        "PMS",
+        "加工内容",
+        "加工总单价",
+        "整啤净重(g)",
+        "原胶件单净重(g)",
+        "出模数",
+        "用量",
+        "用料名称",
+        "整啤套数",
+        "整啤模腔数",
+        "啤机机型",
+        "模具日产量",
+        "水口比例",
+        "配件图片",
+        "模具是否放啤",
+        "备注",
+    )
+    for column, header in enumerate(headers, start=1):
+        _template_cell(
+            sheet,
+            5,
+            column,
+            header,
+            bold=True,
+            fill=TEMPLATE_SKY,
+            size=9,
+        )
+    sheet.row_dimensions[5].height = 32
+
+    row_index = 6
+    for group in groups:
+        mold = _dict_value(group.get("mold"))
+        injections = _list_of_dicts(group.get("injections"))
+        parts = _list_of_dicts(group.get("parts")) or [{}]
+        group_start = row_index
+        for part_index, part in enumerate(parts):
+            injection = _matching_injection_for_part(part, injections, part_index)
+            process_price = _positive_number(part.get("process_unit_price_hkd"))
+            part_weight = _positive_number(part.get("unit_net_weight_g"))
+            shot_weight = _positive_number(
+                injection.get("net_weight_g")
+                if injection
+                else mold.get("net_weight_g")
+            )
+            output_count = _positive_number(
+                part.get("output_count"),
+                _positive_number(injection.get("output_count"), 1.0),
+            )
+            quantity = _positive_number(
+                part.get("quantity"),
+                _positive_number(injection.get("quantity"), 1.0),
+            )
+            values = (
+                _plain_text(mold.get("mold_no") or group.get("fallback_mold_no")),
+                _plain_text(part.get("name")),
+                _plain_text(
+                    part.get("color")
+                    or injection.get("color")
+                    or mold.get("color")
+                ),
+                "",
+                "",
+                _plain_text(part.get("process") or mold.get("process")),
+                process_price or "",
+                shot_weight or "",
+                part_weight or "",
+                output_count,
+                quantity,
+                _mold_material_label(mold, injection),
+                _positive_number(
+                    injection.get("sets"),
+                    _positive_number(mold.get("quantity"), 1.0),
+                ),
+                _plain_text(injection.get("cavity") or mold.get("cavity")),
+                _plain_text(
+                    injection.get("machine_name")
+                    or injection.get("machine_code")
+                    or mold.get("machine_code")
+                ),
+                _positive_number(
+                    injection.get("target_output"),
+                    _positive_number(mold.get("target_output")),
+                )
+                or "",
+                "",
+                "",
+                "",
+                _plain_text(mold.get("remark") or injection.get("remark")),
+            )
+            for column, value in enumerate(values, start=1):
+                _template_cell(
+                    sheet,
+                    row_index,
+                    column,
+                    _safe_text(value) if isinstance(value, str) else value,
+                    horizontal="left" if column in {2, 6, 12, 20} else "center",
+                    size=9,
+                    number_format=(
+                        "0.0000"
+                        if column in {7, 8, 9, 11}
+                        and isinstance(value, (int, float))
+                        else None
+                    ),
+                )
+            sheet.row_dimensions[row_index].height = 25
+            row_index += 1
+        group_end = row_index - 1
+        if group_end > group_start:
+            for column in (1, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20):
+                sheet.merge_cells(
+                    start_row=group_start,
+                    start_column=column,
+                    end_row=group_end,
+                    end_column=column,
+                )
+
+    if row_index == 6:
+        for column in range(1, 21):
+            _template_cell(sheet, row_index, column, "", size=9)
+        sheet.row_dimensions[row_index].height = 25
+        row_index += 1
+
+    widths = (10, 30, 13, 13, 11, 18, 13, 13, 15, 10, 10, 18, 11, 13, 13, 13, 12, 12, 13, 24)
+    for column, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    sheet.row_dimensions[1].height = 25
+    sheet.row_dimensions[2].height = 30
+    sheet.row_dimensions[3].height = 24
+    sheet.row_dimensions[4].height = 23
+    sheet.freeze_panes = "A6"
+    sheet.sheet_view.showGridLines = False
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.page_margins.left = 0.2
+    sheet.page_margins.right = 0.2
+    sheet.print_title_rows = "1:5"
+    sheet.print_area = f"A1:T{row_index - 1}"
+    _apply_outline_border(sheet, 1, row_index - 1, 1, 20, TEMPLATE_MEDIUM)
+
+
+def _format_dimension(value: object) -> str:
+    parsed = _number(value)
+    if not isinstance(parsed, float):
+        return ""
+    return f"{parsed:g}"
+
+
+def _purchase_list_rows(
+    engineering_payload: dict[str, Any],
+    sales_payload: dict[str, Any],
+    electronic_payload: dict[str, Any],
+) -> list[tuple[object, ...]]:
+    result: list[tuple[object, ...]] = []
+    for material in _list_of_dicts(engineering_payload.get("materials", [])):
+        category = _plain_text(material.get("category"))
+        if category == "packaging":
+            continue
+        purpose = "工程五金" if category == "hardware" else "工程辅料"
+        result.append(
+            (
+                material.get("item", ""),
+                material.get("specification", material.get("spec", "")),
+                material.get("material", ""),
+                material.get("color", ""),
+                _number(material.get("quantity", material.get("qty", ""))),
+                material.get("supplier", ""),
+                material.get("surface_treatment", ""),
+                material.get("purpose") or purpose,
+                "",
+            )
+        )
+
+    for packaging in _list_of_dicts(sales_payload.get("packaging_materials", [])):
+        result.append(
+            (
+                packaging.get("item", ""),
+                packaging.get("specification", ""),
+                packaging.get("material", ""),
+                packaging.get("color", ""),
+                _number(packaging.get("quantity", "")),
+                packaging.get("supplier", ""),
+                packaging.get("surface_treatment", ""),
+                "业务包装材料",
+                "",
+            )
+        )
+
+    for carton in _list_of_dicts(sales_payload.get("cartons", [])):
+        unit = _dimension_unit(carton.get("size_unit"))
+        dimensions = tuple(
+            _inch_value_for_unit(carton.get(key), unit)
+            for key in ("length_in", "width_in", "height_in")
+        )
+        size = " × ".join(_format_dimension(value) for value in dimensions)
+        qty_per_carton = _positive_number(carton.get("qty_per_carton"), 1.0)
+        specification = f"{size} {unit}".strip()
+        if qty_per_carton:
+            specification = f"{specification}；装量 {qty_per_carton:g}".strip("；")
+        result.append(
+            (
+                carton.get("item") or "纸箱",
+                specification,
+                carton.get("material", ""),
+                carton.get("color", ""),
+                round(1 / qty_per_carton, 6) if qty_per_carton else "",
+                carton.get("supplier", ""),
+                carton.get("surface_treatment", ""),
+                "纸箱",
+                "",
+            )
+        )
+
+    quote_mode = _plain_text(electronic_payload.get("quote_mode"))
+    if quote_mode == "quick":
+        electronic_rows = [
+            ("", row)
+            for row in _list_of_dicts(electronic_payload.get("quick_quotes", []))
+        ]
+    else:
+        electronic_rows = list(
+            _walk_components(
+                _list_of_dicts(electronic_payload.get("components", []))
+            )
+        )
+    for parent, component in electronic_rows:
+        result.append(
+            (
+                component.get("item") or component.get("name") or parent,
+                component.get("specification", component.get("spec", "")),
+                component.get("material", ""),
+                component.get("color", ""),
+                _number(component.get("quantity", 1)),
+                component.get("supplier", ""),
+                component.get("surface_treatment", ""),
+                "电子零件",
+                "",
+            )
+        )
+    return result
+
+
+def _build_purchase_list_sheet(
+    workbook: Workbook,
+    quote: InternalQuote,
+    engineering_section: InternalQuoteSection | None,
+    sales_section: InternalQuoteSection | None,
+    electronic_section: InternalQuoteSection | None,
+) -> None:
+    sheet = workbook.create_sheet("外购清单")
+    rows = _purchase_list_rows(
+        _section_payload(engineering_section),
+        _section_payload(sales_section),
+        _section_payload(electronic_section),
+    )
+
+    _merge_and_style(
+        sheet,
+        "A1:J1",
+        _engineering_company_name(quote),
+        bold=True,
+        color=TEMPLATE_BLUE,
+        size=14,
+    )
+    _merge_and_style(sheet, "A2:J2", "外 购 件 清 单", bold=True, size=16)
+    _merge_and_style(
+        sheet, "A3:B3", f"客户：{_plain_text(getattr(quote, 'customer', ''))}"
+    )
+    _merge_and_style(
+        sheet, "C3:E3", f"产品编号：{_plain_text(getattr(quote, 'quote_no', ''))}"
+    )
+    _merge_and_style(
+        sheet,
+        "F3:J3",
+        f"产品名称：{_plain_text(getattr(quote, 'product_name', ''))}",
+    )
+    _merge_and_style(
+        sheet,
+        "A4:D4",
+        "TO：PMC部；物料部；工程部；装配部；品质部",
+        horizontal="left",
+    )
+    _merge_and_style(sheet, "E4:F4", "文件编号：", bold=True)
+    _template_cell(sheet, 4, 7, "")
+    _template_cell(
+        sheet,
+        4,
+        8,
+        f"版本：{_plain_text(getattr(quote, 'version_label', ''))}",
+    )
+    _template_cell(
+        sheet,
+        4,
+        9,
+        f"修订：{getattr(quote, 'header_revision', '')}",
+    )
+    _template_cell(sheet, 4, 10, "")
+
+    headers = (
+        "序号",
+        "物料名称",
+        "物料规格",
+        "材料",
+        "颜色",
+        "用量",
+        "供应商",
+        "表面处理",
+        "用途",
+        "单个重量",
+    )
+    for column, header in enumerate(headers, start=1):
+        _template_cell(
+            sheet,
+            5,
+            column,
+            header,
+            bold=True,
+            fill=TEMPLATE_SKY,
+            size=10,
+        )
+    sheet.row_dimensions[5].height = 28
+
+    row_index = 6
+    source_rows = rows or [("", "", "", "", "", "", "", "", "")]
+    for sequence, source in enumerate(source_rows, start=1):
+        values = (sequence if rows else "", *source)
+        for column, value in enumerate(values, start=1):
+            _template_cell(
+                sheet,
+                row_index,
+                column,
+                _safe_text(value) if isinstance(value, str) else value,
+                horizontal="left" if column in {2, 3, 4, 7, 8, 9} else "center",
+                size=9,
+                number_format=(
+                    "0.0000"
+                    if column == 6 and isinstance(value, (int, float))
+                    else None
+                ),
+            )
+        sheet.row_dimensions[row_index].height = 25
+        row_index += 1
+
+    widths = (7, 25, 28, 15, 13, 11, 18, 16, 17, 13)
+    for column, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    sheet.row_dimensions[1].height = 25
+    sheet.row_dimensions[2].height = 30
+    sheet.row_dimensions[3].height = 24
+    sheet.row_dimensions[4].height = 23
+    sheet.freeze_panes = "A6"
+    sheet.sheet_view.showGridLines = False
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.page_margins.left = 0.25
+    sheet.page_margins.right = 0.25
+    sheet.print_title_rows = "1:5"
+    sheet.print_area = f"A1:J{row_index - 1}"
+    _apply_outline_border(sheet, 1, row_index - 1, 1, 10, TEMPLATE_MEDIUM)
+
+
+def _capture_template_row(sheet, row: int, end_column: int) -> tuple[list[Any], float | None]:
+    return (
+        [copy(sheet.cell(row, column)._style) for column in range(1, end_column + 1)],
+        sheet.row_dimensions[row].height,
+    )
+
+
+def _apply_template_row(
+    sheet,
+    row: int,
+    template: tuple[list[Any], float | None],
+) -> None:
+    styles, height = template
+    for column, style in enumerate(styles, start=1):
+        sheet.cell(row, column)._style = copy(style)
+    sheet.row_dimensions[row].height = height
+
+
+def _populate_engineering_mold_template(
+    sheet,
+    quote: InternalQuote,
+    engineering_section: InternalQuoteSection | None,
+    molding_section: InternalQuoteSection | None,
+) -> None:
+    engineering_payload = _section_payload(engineering_section)
+    molding_payload = _section_payload(molding_section)
+    groups = _engineering_mold_groups(engineering_payload, molding_payload)
+
+    single_row_template = _capture_template_row(sheet, 17, 20)
+    first_row_template = _capture_template_row(sheet, 12, 20)
+    middle_row_template = _capture_template_row(sheet, 13, 20)
+    last_row_template = _capture_template_row(sheet, 16, 20)
+    two_first_template = _capture_template_row(sheet, 6, 20)
+    two_last_template = _capture_template_row(sheet, 7, 20)
+
+    for merged_range in list(sheet.merged_cells.ranges):
+        if merged_range.min_row >= 6 and merged_range.max_row <= 28:
+            sheet.unmerge_cells(str(merged_range))
+
+    required_rows = max(
+        1,
+        sum(max(1, len(_list_of_dicts(group.get("parts")))) for group in groups),
+    )
+    capacity = 23
+    if required_rows > capacity:
+        sheet.insert_rows(29, required_rows - capacity)
+        capacity = required_rows
+
+    for row in range(6, 6 + capacity):
+        for column in range(1, 21):
+            sheet.cell(row, column).value = None
+
+    sheet["A1"] = _engineering_company_name(quote)
+    sheet["A3"] = f"客户名称：{_plain_text(getattr(quote, 'customer', ''))}"
+    sheet["C3"] = f"产品编号：{_plain_text(getattr(quote, 'quote_no', ''))}"
+    sheet["I3"] = f"产品名称：{_plain_text(getattr(quote, 'product_name', ''))}"
+    sheet["M3"] = "文件编号："
+    sheet["O3"] = ""
+    sheet["R3"] = f"版本：{_plain_text(getattr(quote, 'version_label', ''))}"
+    sheet["S3"] = f"修订：{getattr(quote, 'header_revision', '')}"
+
+    row_index = 6
+    applied_templates: dict[int, tuple[list[Any], float | None]] = {}
+    for group in groups:
+        mold = _dict_value(group.get("mold"))
+        injections = _list_of_dicts(group.get("injections"))
+        parts = _list_of_dicts(group.get("parts")) or [{}]
+        group_start = row_index
+        group_length = len(parts)
+        for part_index, part in enumerate(parts):
+            if group_length == 1:
+                template = single_row_template
+            elif group_length == 2:
+                template = two_first_template if part_index == 0 else two_last_template
+            elif part_index == 0:
+                template = first_row_template
+            elif part_index == group_length - 1:
+                template = last_row_template
+            else:
+                template = middle_row_template
+            _apply_template_row(sheet, row_index, template)
+            applied_templates[row_index] = template
+
+            injection = _matching_injection_for_part(part, injections, part_index)
+            process_price = _positive_number(part.get("process_unit_price_hkd"))
+            part_weight = _positive_number(part.get("unit_net_weight_g"))
+            shot_weight = _positive_number(
+                injection.get("net_weight_g")
+                if injection
+                else mold.get("net_weight_g")
+            )
+            output_count = _positive_number(
+                part.get("output_count"),
+                _positive_number(injection.get("output_count"), 1.0),
+            )
+            quantity = _positive_number(
+                part.get("quantity"),
+                _positive_number(injection.get("quantity"), 1.0),
+            )
+            values = (
+                _plain_text(mold.get("mold_no") or group.get("fallback_mold_no")),
+                _plain_text(part.get("name")),
+                _plain_text(
+                    part.get("color")
+                    or injection.get("color")
+                    or mold.get("color")
+                ),
+                "",
+                "",
+                _plain_text(part.get("process") or mold.get("process")),
+                process_price or "",
+                shot_weight or "",
+                part_weight or "",
+                output_count,
+                quantity,
+                _mold_material_label(mold, injection),
+                _positive_number(
+                    injection.get("sets"),
+                    _positive_number(mold.get("quantity"), 1.0),
+                ),
+                _plain_text(injection.get("cavity") or mold.get("cavity")),
+                _plain_text(
+                    injection.get("machine_name")
+                    or injection.get("machine_code")
+                    or mold.get("machine_code")
+                ),
+                _positive_number(
+                    injection.get("target_output"),
+                    _positive_number(mold.get("target_output")),
+                )
+                or "",
+                "",
+                "",
+                "",
+                _plain_text(mold.get("remark") or injection.get("remark")),
+            )
+            for column, value in enumerate(values, start=1):
+                sheet.cell(row_index, column).value = (
+                    _safe_text(value) if isinstance(value, str) else value
+                )
+            row_index += 1
+
+        group_end = row_index - 1
+        if group_end > group_start:
+            for column in (1, 3, 4, 5, 8, 12, 13, 14, 15, 16, 17):
+                sheet.merge_cells(
+                    start_row=group_start,
+                    start_column=column,
+                    end_row=group_end,
+                    end_column=column,
+                )
+
+    if not groups:
+        _apply_template_row(sheet, 6, single_row_template)
+    else:
+        # openpyxl reconstructs merged-cell borders and can replace the
+        # template font/alignment on continuation cells. Reapply the captured
+        # template rows after merging so every visible cell keeps the original
+        # workbook's exact formatting.
+        for row, template in applied_templates.items():
+            _apply_template_row(sheet, row, template)
+
+
+def _populate_engineering_purchase_template(
+    sheet,
+    quote: InternalQuote,
+    engineering_section: InternalQuoteSection | None,
+    sales_section: InternalQuoteSection | None,
+    electronic_section: InternalQuoteSection | None,
+) -> None:
+    rows = _purchase_list_rows(
+        _section_payload(engineering_section),
+        _section_payload(sales_section),
+        _section_payload(electronic_section),
+    )
+    overflow_template = _capture_template_row(sheet, 27, 10)
+    capacity = 22
+    required_rows = max(1, len(rows))
+    if required_rows > capacity:
+        sheet.insert_rows(28, required_rows - capacity)
+        for row in range(28, 6 + required_rows):
+            _apply_template_row(sheet, row, overflow_template)
+        capacity = required_rows
+
+    for row in range(6, 6 + capacity):
+        for column in range(1, 11):
+            sheet.cell(row, column).value = None
+
+    sheet["A1"] = _engineering_company_name(quote)
+    sheet["A3"] = f"客户:    {_plain_text(getattr(quote, 'customer', ''))}"
+    sheet["C3"] = f"产品货号：{_plain_text(getattr(quote, 'quote_no', ''))}"
+    sheet["E3"] = f"产品名称： {_plain_text(getattr(quote, 'product_name', ''))}"
+    sheet["G4"] = (
+        "文件编号：             "
+        f"版本:{_plain_text(getattr(quote, 'version_label', ''))}   "
+        f"修订:{getattr(quote, 'header_revision', '')}"
+    )
+
+    for sequence, source in enumerate(rows, start=1):
+        values = (sequence, *source)
+        for column, value in enumerate(values, start=1):
+            sheet.cell(sequence + 5, column).value = (
+                _safe_text(value) if isinstance(value, str) else value
+            )
+
+
+def build_internal_quote_engineering_workbook(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+) -> bytes:
+    if not ENGINEERING_WORKBOOK_TEMPLATE_PATH.is_file():
+        raise FileNotFoundError(
+            f"工程资料模板不存在：{ENGINEERING_WORKBOOK_TEMPLATE_PATH}"
+        )
+    workbook = load_workbook(
+        ENGINEERING_WORKBOOK_TEMPLATE_PATH,
+        data_only=False,
+        read_only=False,
+        keep_links=True,
+    )
+    try:
+        by_code = {section.department: section for section in sections}
+        mold_sheet = workbook["排摸表"]
+        purchase_sheet = workbook["外购清单"]
+        # Template photos belong to the reference product. Engineering part
+        # images are explicitly optional, so never leak those stale images
+        # into a newly generated quote workbook.
+        for sheet in workbook.worksheets:
+            sheet._images = []
+            sheet._charts = []
+        _populate_engineering_mold_template(
+            mold_sheet,
+            quote,
+            by_code.get("engineering"),
+            by_code.get("molding"),
+        )
+        _populate_engineering_purchase_template(
+            purchase_sheet,
+            quote,
+            by_code.get("engineering"),
+            by_code.get("sales"),
+            by_code.get("electronic"),
+        )
+        workbook.properties.creator = "Royal Regent Nexus"
+        workbook.properties.title = f"{quote.quote_no} 工程资料"
+        workbook.active = workbook.sheetnames.index("排摸表")
+        workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
+        workbook.calculation.calcMode = "auto"
+        buffer = BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
+    finally:
+        workbook.close()
 
 
 def _style_title(sheet, title: str, end_column: int) -> None:

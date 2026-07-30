@@ -113,6 +113,7 @@ describe('internal quote API adapter', () => {
     await api.submitFinal('quote-1', 3)
     await api.reviewFinal('quote-1', 4, 'approve')
     await api.createExport('quote-1')
+    await api.downloadEngineeringWorkbook('quote-1')
 
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering', { revision: 4, payload: { molds: [] }, reason: '修正' })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/sections/engineering/preview', { revision: 4, payload: { molds: [{ item: '主模' }] } })
@@ -131,6 +132,11 @@ describe('internal quote API adapter', () => {
     expect((formCalls[1][1] as FormData).get('department')).toBe('engineering')
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/final-submit', { revision: 3 })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/final-review', { revision: 4, decision: 'approve', reason: '' })
+    expect(http.post).toHaveBeenCalledWith(
+      '/internal-quotes/quote-1/engineering-data/export',
+      undefined,
+      { responseType: 'blob' },
+    )
   })
 
   it('uses the factory-scoped pricing-baseline read and revision-safe update endpoints', async () => {

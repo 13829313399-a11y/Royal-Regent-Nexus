@@ -38,6 +38,7 @@ const apiMock = vi.hoisted(() => ({
   downloadAttachment: vi.fn(),
   createExport: vi.fn(),
   downloadExport: vi.fn(),
+  downloadEngineeringWorkbook: vi.fn(),
   submitFinal: vi.fn(),
   reviewFinal: vi.fn(),
   listVersionCandidates: vi.fn(),
