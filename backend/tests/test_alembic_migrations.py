@@ -12,6 +12,12 @@ from sqlalchemy import create_engine
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
+THREE_D_PRINTING_MIGRATION_PATH = (
+    BACKEND_DIR
+    / "alembic"
+    / "versions"
+    / "20260729_0040_create_three_d_printing_management.py"
+)
 BASE_MIGRATION_REVISION = "20260701_0001"
 NOTIFICATION_MIGRATION_REVISION = "20260703_0002"
 AUTH_MIGRATION_REVISION = "20260703_0003"
@@ -98,6 +104,20 @@ REMOVED_PIN_TABLES = [
     "molding_sample_auth_pins",
     "molding_sample_pin_attempts",
 ]
+
+
+def test_three_d_printing_permission_seed_types_reused_postgresql_parameters():
+    migration_source = THREE_D_PRINTING_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    for expected_cast in (
+        "CAST(:id AS VARCHAR(96))",
+        "CAST(:code AS VARCHAR(128))",
+        "CAST(:name AS VARCHAR(128))",
+        "CAST(:description AS TEXT)",
+        "WHERE code = CAST(:code AS VARCHAR(128))",
+    ):
+        assert expected_cast in migration_source
+    assert "SELECT :id, :code, :name, :description" not in migration_source
 
 
 def test_alembic_has_single_molding_sample_head():
