@@ -88,6 +88,7 @@ from app.services.internal_quote_templates import XLSX_CONTENT_TYPE, build_inter
 from app.services.internal_quote_artifacts import (
     confirm_import_batch,
     create_controlled_export,
+    create_engineering_workbook_export,
     create_import_preview,
     get_attachment_download,
     get_attachment_preview,
@@ -715,6 +716,32 @@ def post_internal_quote_export(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return create_controlled_export(db, quote_id, current_user, request)
+
+
+@router.post("/{quote_id}/engineering-data/export")
+def post_internal_quote_engineering_data_export(
+    quote_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    download = create_engineering_workbook_export(
+        db,
+        quote_id,
+        current_user,
+        request,
+    )
+    return Response(
+        content=download.content,
+        media_type=download.content_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{url_quote(download.file_name)}"
+            ),
+            "X-Content-SHA256": download.sha256,
+            "X-Engineering-Template-Version": download.template_version,
+        },
+    )
 
 
 @router.get("/{quote_id}/exports", response_model=list[InternalQuoteExportFileOut])

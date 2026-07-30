@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import json
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -53,9 +54,11 @@ from app.services.internal_quote import (
 )
 from app.services.internal_quote_calculator import CalculationInputError, canonical_json, content_hash
 from app.services.internal_quote_excel import (
+    ENGINEERING_WORKBOOK_TEMPLATE_VERSION,
     P3_TEMPLATE_VERSION,
     P4_TEMPLATE_VERSION,
     WORKBOOK_LAYOUT_VERSION,
+    build_internal_quote_engineering_workbook,
     build_internal_quote_workbook,
 )
 from app.services.internal_quote_import import IMPORT_TYPE_DEPARTMENTS, parse_internal_quote_workbook
@@ -80,6 +83,15 @@ OOXML_EXTENSIONS = {".xlsx", ".xlsm", ".docx"}
 OLE_EXTENSIONS = {".xls", ".doc"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 EXPORT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@dataclass(frozen=True)
+class EngineeringWorkbookDownload:
+    file_name: str
+    content_type: str
+    content: bytes
+    sha256: str
+    template_version: str
 
 
 def digest(content: bytes) -> str:
@@ -924,6 +936,35 @@ def _export_sections(db: Session, quote: InternalQuote) -> list[InternalQuoteSec
     ).all()
 
 
+def _ensure_export_sections_ready(
+    sections: list[InternalQuoteSection],
+) -> None:
+    required = [section for section in sections if section.is_required]
+    incomplete = [
+        section.department
+        for section in required
+        if section.status not in {"approved", "not_applicable"}
+    ]
+    invalid = [
+        section.department
+        for section in required
+        if section.status == "approved"
+        and (
+            section.calculation_status != "valid"
+            or section.dependency_status != "current"
+        )
+    ]
+    if incomplete or invalid:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "所有必需分段通过且计算有效后才能生成 XLSX",
+                "incomplete_sections": incomplete,
+                "invalid_calculations": invalid,
+            },
+        )
+
+
 def _handoff_manifest(
     quote: InternalQuote,
     record: InternalQuoteExportFile,
@@ -1000,6 +1041,7 @@ def create_controlled_export(
     _ensure_active(quote)
     _ensure_export_permission(db, quote, user)
     sections = _export_sections(db, quote)
+    _ensure_export_sections_ready(sections)
     attachments = db.scalars(
         select(InternalQuoteAttachment)
         .where(InternalQuoteAttachment.quote_id == quote.id)
@@ -1008,28 +1050,6 @@ def create_controlled_export(
             InternalQuoteAttachment.id,
         )
     ).all()
-    required = [section for section in sections if section.is_required]
-    incomplete = [
-        section.department
-        for section in required
-        if section.status not in {"approved", "not_applicable"}
-    ]
-    invalid = [
-        section.department
-        for section in required
-        if section.status == "approved"
-        and (section.calculation_status != "valid" or section.dependency_status != "current")
-    ]
-    if incomplete or invalid:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "所有必需分段通过且计算有效后才能生成受控 XLSX",
-                "incomplete_sections": incomplete,
-                "invalid_calculations": invalid,
-            },
-        )
-
     is_final_release = (
         quote.status in {"fully_approved", "exported"}
         and quote.final_release_status == "approved"
@@ -1227,6 +1247,50 @@ def create_controlled_export(
     db.commit()
     db.refresh(record)
     return _export_out(record)
+
+
+def create_engineering_workbook_export(
+    db: Session,
+    quote_id: str,
+    user: AuthContext,
+    request: Request | None = None,
+) -> EngineeringWorkbookDownload:
+    quote = _get_quote(db, quote_id)
+    _ensure_active(quote)
+    _ensure_export_permission(db, quote, user)
+    sections = _export_sections(db, quote)
+    _ensure_export_sections_ready(sections)
+    content = build_internal_quote_engineering_workbook(quote, sections)
+    download = EngineeringWorkbookDownload(
+        file_name=safe_file_name(
+            f"{quote.quote_no}_{quote.version_label}_工程资料.xlsx"
+        ),
+        content_type=EXPORT_CONTENT_TYPE,
+        content=content,
+        sha256=digest(content),
+        template_version=ENGINEERING_WORKBOOK_TEMPLATE_VERSION,
+    )
+    _add_audit(
+        db,
+        quote,
+        user,
+        "engineering_data_export",
+        detail=json.dumps(
+            {
+                "file_name": download.file_name,
+                "sha256": download.sha256,
+                "template_version": download.template_version,
+                "section_revisions": {
+                    section.department: section.revision for section in sections
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        request=request,
+    )
+    db.commit()
+    return download
 
 
 def list_export_files(

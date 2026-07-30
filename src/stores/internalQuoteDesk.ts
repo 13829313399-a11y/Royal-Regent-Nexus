@@ -1149,6 +1149,17 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         this.fileBusy = false
       }
     },
+    async downloadEngineeringWorkbook(quoteId: string, fileName: string) {
+      this.fileBusy = true
+      try {
+        triggerDownload(
+          await internalQuoteApi.downloadEngineeringWorkbook(quoteId),
+          fileName,
+        )
+      } finally {
+        this.fileBusy = false
+      }
+    },
     submitFinal(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitFinal(quoteId, revision))
     },

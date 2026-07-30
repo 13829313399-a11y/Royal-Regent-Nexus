@@ -684,6 +684,14 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.get<Blob>(`/internal-quotes/${quoteId}/exports/${exportId}/download`, { responseType: 'blob' })
       return response.data
     },
+    async downloadEngineeringWorkbook(quoteId: string) {
+      const response = await client.post<Blob>(
+        `/internal-quotes/${quoteId}/engineering-data/export`,
+        undefined,
+        { responseType: 'blob' },
+      )
+      return response.data
+    },
     async submitFinal(quoteId: string, revision: number) {
       const response = await client.post<ApiInternalQuoteFinalRelease>(`/internal-quotes/${quoteId}/final-submit`, { revision })
       return response.data
