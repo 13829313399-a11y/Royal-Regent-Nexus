@@ -663,9 +663,14 @@ def _seed_permissions() -> None:
             sa.text(
                 """
                 INSERT INTO auth_permissions (id, code, name, description)
-                SELECT :id, :code, :name, :description
+                SELECT
+                    CAST(:id AS VARCHAR(96)),
+                    CAST(:code AS VARCHAR(128)),
+                    CAST(:name AS VARCHAR(128)),
+                    CAST(:description AS TEXT)
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM auth_permissions WHERE code = :code
+                    SELECT 1 FROM auth_permissions
+                    WHERE code = CAST(:code AS VARCHAR(128))
                 )
                 """
             ),
