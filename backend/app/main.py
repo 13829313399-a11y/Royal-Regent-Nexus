@@ -1,6 +1,6 @@
-from contextlib import asynccontextmanager
 import logging
 import re
+from contextlib import asynccontextmanager
 from time import perf_counter
 from uuid import uuid4
 
@@ -9,12 +9,21 @@ from fastapi import FastAPI, Request
 from app.api.auth import router as auth_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.customer_order import router as customer_order_router
+from app.api.iam import router as iam_router
+from app.api.indonesia_invoice import router as indonesia_invoice_router
+from app.api.injection_scheduling import router as injection_scheduling_router
+from app.api.injection_scheduling_execution import (
+    router as injection_scheduling_execution_router,
+)
+from app.api.injection_scheduling_import import (
+    router as injection_scheduling_import_router,
+)
 from app.api.internal_quote import (
     customer_price_artifact_router,
+)
+from app.api.internal_quote import (
     router as internal_quote_router,
 )
-from app.api.indonesia_invoice import router as indonesia_invoice_router
-from app.api.iam import router as iam_router
 from app.api.molding_sample import router as molding_sample_router
 from app.api.pricing import router as pricing_router
 from app.api.raw_material import router as raw_material_router
@@ -22,7 +31,6 @@ from app.api.system import router as system_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.core.config import settings
 from app.db import init_db
-
 
 request_timing_logger = logging.getLogger("uvicorn.error")
 
@@ -81,6 +89,9 @@ app.include_router(customer_order_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
+app.include_router(injection_scheduling_router)
+app.include_router(injection_scheduling_execution_router)
+app.include_router(injection_scheduling_import_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
