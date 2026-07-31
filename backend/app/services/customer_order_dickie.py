@@ -562,6 +562,80 @@ class DickieSchedule(OoxmlSchedule):
                 )
         return index
 
+    @staticmethod
+    def _is_schedule_record(values: dict[str, str]) -> bool:
+        return bool(
+            _clean_text(values.get("B"))
+            and _clean_text(values.get("C"))
+            and _clean_text(values.get("D")).upper().startswith("SC")
+        )
+
+    @classmethod
+    def _is_reserved_row(cls, values: dict[str, str]) -> bool:
+        return (
+            not _clean_text(values.get("B"))
+            and not _clean_text(values.get("C"))
+            and not cls._is_schedule_record(values)
+        )
+
+    def _find_append_position(
+        self,
+        sheet_name: str,
+        *,
+        boundary_row: int,
+    ) -> tuple[int, int]:
+        rows = self.read_rows(sheet_name)
+        record_rows = [
+            row_number
+            for row_number, values in rows.items()
+            if row_number < boundary_row and self._is_schedule_record(values)
+        ]
+        if not record_rows:
+            raise CustomerOrderWorkbookError(f"{sheet_name} 未找到可复用样式的数据行")
+
+        # Current Dickie schedules keep formula-backed blank rows before the
+        # subtotal/footer. Insert into the first such reserved row instead of
+        # immediately before the marker. This also bypasses records written to
+        # the footer by older versions of the importer.
+        transition_rows = [
+            row_number
+            for row_number in record_rows
+            if row_number + 1 < boundary_row
+            and self._is_reserved_row(rows.get(row_number + 1, {}))
+        ]
+        reference_row = max(transition_rows or record_rows)
+        insert_row = reference_row + 1
+        if insert_row > boundary_row:
+            raise CustomerOrderWorkbookError(f"{sheet_name} 没有可用的接单写入位置")
+        return insert_row, reference_row
+
+    def find_order_append_position(self) -> tuple[int, int]:
+        boundary_rows = [
+            row_number
+            for row_number, values in self.read_rows("接单表").items()
+            if "年接单" in _clean_text(values.get("H"))
+            and "合计" in _clean_text(values.get("K"))
+        ]
+        if not boundary_rows:
+            raise CustomerOrderWorkbookError("接单表未找到年度接单合计边界")
+        return self._find_append_position(
+            "接单表",
+            boundary_row=max(boundary_rows),
+        )
+
+    def find_review_append_position(self) -> tuple[int, int]:
+        boundary_rows = [
+            row_number
+            for row_number, values in self.read_rows("正单评审表").items()
+            if "负责人：罗成灿" in _clean_text(values.get("F"))
+        ]
+        if not boundary_rows:
+            raise CustomerOrderWorkbookError("正单评审表未找到负责人边界")
+        return self._find_append_position(
+            "正单评审表",
+            boundary_row=max(boundary_rows),
+        )
+
 
 def _make_issue(
     severity: str,
@@ -1087,17 +1161,19 @@ def export_dickie_batch_schedule(
         _write_item_row(workbook, row)
 
     for row in preview["rows"]:
-        order_insert_row = workbook._find_marker_row("接单表", "H", "2026年接单")
+        order_insert_row, order_reference_row = workbook.find_order_append_position()
         workbook.insert_row_at(
             "接单表",
             insert_row=order_insert_row,
             values=_order_values(row, order_insert_row),
+            reference_row_number=order_reference_row,
         )
-        review_insert_row = workbook._find_marker_row("正单评审表", "F", "负责人：罗成灿")
+        review_insert_row, review_reference_row = workbook.find_review_append_position()
         workbook.insert_row_at(
             "正单评审表",
             insert_row=review_insert_row,
             values=_review_values(row, review_insert_row),
+            reference_row_number=review_reference_row,
         )
 
     workbook.set_recalculation()
