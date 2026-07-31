@@ -44,6 +44,80 @@ wait_for_healthy() {
   fail "$service_label did not become healthy within ${HEALTH_TIMEOUT_SECONDS}s"
 }
 
+import_rootfs_rollback_image() {
+  service_label="$1"
+  rootfs_path="$2"
+  rollback_tag="$3"
+
+  case "$service_label" in
+    api)
+      docker import \
+        --change 'ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1' \
+        --change 'WORKDIR /app/backend' \
+        --change 'EXPOSE 8000' \
+        --change 'CMD ["sh", "-c", "alembic -c alembic.ini upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]' \
+        "$rootfs_path" "$rollback_tag" >/dev/null
+      ;;
+    web)
+      docker import \
+        --change 'ENTRYPOINT ["/docker-entrypoint.sh"]' \
+        --change 'CMD ["nginx", "-g", "daemon off;"]' \
+        --change 'EXPOSE 80' \
+        --change 'STOPSIGNAL SIGQUIT' \
+        "$rootfs_path" "$rollback_tag" >/dev/null
+      ;;
+    *)
+      fail "Unsupported rollback service: $service_label"
+      ;;
+  esac
+}
+
+create_rollback_artifact() {
+  container_id="$1"
+  service_label="$2"
+  rollback_tag="$3"
+  artifact_dir="$4"
+  image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
+  record_path="$artifact_dir/${service_label}-rollback-artifact.txt"
+
+  if docker image inspect "$image_id" >/dev/null 2>&1; then
+    docker tag "$image_id" "$rollback_tag"
+    {
+      echo "service=$service_label"
+      echo "kind=tagged-existing-image"
+      echo "rollback_image=$rollback_tag"
+      echo "source_image=$image_id"
+    } > "$record_path"
+    return
+  fi
+
+  rootfs_name="${service_label}-container-rootfs.tar"
+  rootfs_path="$artifact_dir/$rootfs_name"
+  inspect_path="$artifact_dir/${service_label}-container-inspect.json"
+
+  echo "$service_label image object $image_id is unavailable; exporting the running container rootfs"
+  docker inspect "$container_id" > "$inspect_path"
+  docker export "$container_id" > "$rootfs_path"
+  [ -s "$rootfs_path" ] || fail "$service_label container rootfs export is empty"
+  (
+    cd "$artifact_dir"
+    sha256sum "$rootfs_name" > "$rootfs_name.sha256"
+    sha256sum -c "$rootfs_name.sha256"
+  )
+  import_rootfs_rollback_image "$service_label" "$rootfs_path" "$rollback_tag"
+  docker image inspect "$rollback_tag" >/dev/null
+
+  {
+    echo "service=$service_label"
+    echo "kind=imported-rootfs-image"
+    echo "rollback_image=$rollback_tag"
+    echo "missing_source_image=$image_id"
+    echo "rootfs=$rootfs_path"
+    echo "rootfs_sha256=$rootfs_path.sha256"
+    echo "container_inspect=$inspect_path"
+  } > "$record_path"
+}
+
 capture_database_state() {
   compose exec -T db sh -lc 'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --field-separator="|" --set ON_ERROR_STOP=1 --command "
     SELECT '\''alembic_version'\'', version_num FROM alembic_version
@@ -130,10 +204,8 @@ compose exec -T db sh -lc 'pg_dump --format=custom --username="$POSTGRES_USER" "
 (cd "$backup_dir" && sha256sum database.dump > database.dump.sha256 && sha256sum -c database.dump.sha256)
 compose exec -T db pg_restore -l < "$backup_dir/database.dump" > "$backup_dir/database.restore-list.txt"
 
-old_api_image="$(docker inspect --format '{{.Image}}' "$api_id")"
-old_web_image="$(docker inspect --format '{{.Image}}' "$web_id")"
-docker tag "$old_api_image" "rrnexus-api:rollback-$timestamp"
-docker tag "$old_web_image" "rrnexus-web:rollback-$timestamp"
+create_rollback_artifact "$api_id" api "rrnexus-api:rollback-$timestamp" "$backup_dir"
+create_rollback_artifact "$web_id" web "rrnexus-web:rollback-$timestamp" "$backup_dir"
 
 migration_changes="$(git diff --name-only "$old_commit" "$target_commit" -- backend/alembic/versions || true)"
 git merge --ff-only "$target_commit"
@@ -197,3 +269,4 @@ echo "Deployment completed at $target_commit"
 echo "Database container preserved: $db_id"
 echo "Verified backup: $backup_dir/database.dump"
 echo "Rollback images: rrnexus-api:rollback-$timestamp and rrnexus-web:rollback-$timestamp"
+echo "Rollback evidence: $backup_dir/api-rollback-artifact.txt and $backup_dir/web-rollback-artifact.txt"

@@ -7,6 +7,7 @@ from io import BytesIO
 import openpyxl
 import pytest
 from fastapi import HTTPException
+from openpyxl.styles import Alignment, Border, Font, Side
 
 from app.api.customer_order import _ensure_customer_factory
 from app.services import customer_order_dickie as service
@@ -109,15 +110,44 @@ def build_dickie_schedule() -> bytes:
     }
     for coordinate, value in order_headers.items():
         order[coordinate] = value
-    order["B4"] = date(2026, 1, 1)
-    order["C4"] = "500000001/10"
-    order["D4"] = "SC700000001-100"
-    order["H5"] = "2026年接单"
+    order["B875"] = date(2026, 1, 1)
+    order["C875"] = "500000001/10"
+    order["D875"] = "SC700000001-100"
+    for row_number in range(876, 881):
+        order[f"D{row_number}"] = "=NA()"
+    order["H881"] = "2026年接单"
+    order["K881"] = "合计:HK$"
+    # Simulate a record misplaced below the subtotal by the previous importer.
+    order["B883"] = date(2026, 7, 21)
+    order["C883"] = "500055628/10"
+    order["D883"] = "SC700149043-500"
 
-    review["B4"] = date(2026, 1, 1)
-    review["C4"] = "500000001/10"
-    review["D4"] = "SC700000001-100"
-    review["F5"] = "负责人：罗成灿"
+    review["B306"] = date(2026, 1, 1)
+    review["C306"] = "500000001/10"
+    review["D306"] = "SC700000001-100"
+    for row_number in range(307, 319):
+        review[f"D{row_number}"] = "=NA()"
+    # Simulate the old importer writing immediately before the footer.
+    review["B319"] = date(2026, 7, 21)
+    review["C319"] = "500055628/10"
+    review["D319"] = "SC700149043-500"
+    review["F320"] = "负责人：罗成灿"
+
+    thin = Side(style="thin", color="FF000000")
+    for worksheet, row_number, end_column, font_size in (
+        (order, 875, 15, 10),
+        (review, 306, 20, 9),
+    ):
+        worksheet.row_dimensions[row_number].height = 12
+        for column_number in range(2, end_column + 1):
+            cell = worksheet.cell(row_number, column_number)
+            cell.font = Font(
+                name="宋体",
+                size=font_size,
+                color="FF0000FF" if column_number <= 4 else "FF000000",
+            )
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
     normal_headers = [
         "客出单日期",
@@ -349,6 +379,7 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
         for row_number, values in workbook.read_rows("接单表").items()
         if values.get("D") == "SC700142026-1200"
     )
+    assert order_row_number == 876
     assert workbook.read_cell_formula("接单表", order_row_number, "E") == (
         f"VLOOKUP(D{order_row_number},'Iteam表'!C:D,2,0)"
     )
@@ -361,6 +392,7 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
         for row_number, values in workbook.read_rows("正单评审表").items()
         if values.get("D") == "SC700142026-1200"
     )
+    assert review_row_number == 307
     assert workbook.read_rows("正单评审表")[review_row_number]["S"] == "14.6"
     assert workbook.read_cell_formula("正单评审表", review_row_number, "T") == (
         f"I{review_row_number}*S{review_row_number}"
@@ -368,6 +400,20 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
     assert item_row_number < system_row_number
 
     rendered = openpyxl.load_workbook(BytesIO(plain), data_only=False)
+    for column_number in range(2, 16):
+        inserted = rendered["接单表"].cell(order_row_number, column_number)
+        reference = rendered["接单表"].cell(order_row_number - 1, column_number)
+        assert inserted._style.fontId == reference._style.fontId
+        assert inserted._style.borderId == reference._style.borderId
+        assert inserted._style.alignmentId == reference._style.alignmentId
+        assert inserted._style.numFmtId == reference._style.numFmtId
+    for column_number in range(2, 21):
+        inserted = rendered["正单评审表"].cell(review_row_number, column_number)
+        reference = rendered["正单评审表"].cell(review_row_number - 1, column_number)
+        assert inserted._style.fontId == reference._style.fontId
+        assert inserted._style.borderId == reference._style.borderId
+        assert inserted._style.alignmentId == reference._style.alignmentId
+        assert inserted._style.numFmtId == reference._style.numFmtId
     assert rendered["Iteam表"][f"F{item_row_number}"].fill.fgColor.rgb == "FFFFFF00"
     assert rendered["接单表"][f"D{order_row_number}"].fill.fgColor.rgb == "FFFFFF00"
     assert rendered["正单评审表"][f"D{review_row_number}"].fill.fgColor.rgb == "FFFFFF00"
