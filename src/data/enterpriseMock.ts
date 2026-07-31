@@ -119,6 +119,7 @@ export interface EnterpriseModule {
   icon: Component
   href?: string
   route?: string
+  detailPage?: boolean
   statusMetrics: ModuleStatusMetric[]
   todos: string[]
   children: ModuleChildLink[]
@@ -790,17 +791,17 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         title: '注塑排产中枢',
         owner: '生产部 / PMC / 计划',
         summary: '机台日排程、后续模具队列、交期风险与待排订单统一工作台',
-        status: '正式接入',
-        statusTone: 'teal',
-        stats: '两厂 Excel 导入 · 草案 / 发布 / 回滚',
+        status: '重新设计中',
+        statusTone: 'blue',
+        stats: '保留模块卡片 · 等待新方案',
         icon: Boxes,
-        route: getDepartmentRoute('production', 'injection-scheduling'),
+        detailPage: false,
         statusMetrics: [
-          { label: '机台', value: '排程板', tone: 'teal' },
-          { label: '订单', value: '待排池', tone: 'amber' },
-          { label: '数据', value: '正式', tone: 'blue' },
+          { label: '机台', value: '待重构', tone: 'slate' },
+          { label: '订单', value: '待重构', tone: 'slate' },
+          { label: '数据', value: '已移除', tone: 'slate' },
         ],
-        todos: ['补齐机台能力主数据与换模规则', '阶段 4 接入报工、停机反馈与大屏推送'],
+        todos: ['重新确认业务流程、字段与权限边界', '完成新设计后再重建前后端'],
         children: [
           { label: '机台排程板', summary: '查看当前任务与后续模具队列' },
           { label: '时间轴总览', summary: '横向浏览机台负荷与任务区间' },

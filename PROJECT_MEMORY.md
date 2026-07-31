@@ -27,7 +27,7 @@ The main implemented or partially implemented domains are:
 - Huaxing BuzzBee, Dickie and Caixing customer-order preview and schedule export
 - Carton-mark comparison
 - Indonesia invoice reconciliation
-- A frontend-only injection-scheduling preview
+- A retained, non-interactive injection-scheduling module card awaiting redesign
 
 The intended Customer Order Center boundary is to own original purchase orders, normalized order facts, validation, confirmation, immutable versions and source lineage, then publish confirmed demand to PMC. Detailed material planning, workshop scheduling, inventory execution and shipping execution belong to downstream modules and should appear in the order center only as summaries or links.
 
@@ -39,7 +39,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- Alembic has one current head: `20260729_0041`.
+- Alembic has one current head: `20260731_0042`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -170,19 +170,9 @@ Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF in
 
 ### Injection-Scheduling Center
 
-Injection scheduling now has a connected frontend/backend implementation in this worktree:
+The production-module card remains visible as a non-interactive `重新设计中` placeholder. There is no registered injection-scheduling page, frontend implementation, API router, service, persistence model or active permission family.
 
-- The production-module card routes to `/modules/production/injection-scheduling?factory={factoryId}`.
-- Migration `20260728_0039` introduces the new `injection_scheduling_*` namespace for import batches and issues, master data, plans, immutable revisions, materialized tasks, published snapshots and append-only audit events. It does not revive the removed `injection_schedule_*` implementation.
-- The backend supports read-only `.xlsx` preview, explicit confirm, current snapshots, move validation, optimistic draft save, immutable publish and rollback-to-new-draft. Server-side permission and factory checks are authoritative.
-- The new permission family is `injection_scheduling:read|import|edit|publish|rollback`; molding clerks can read/import/edit, while supervisor-or-higher positions are required for publish and rollback.
-- Huaxing and Huakang B workbook templates are parsed without modifying the source files. Missing machine capability or changeover data is surfaced as review warnings rather than invented as safe values.
-- The frontend uses the HTTP repository when a current backend plan exists. Huaxing and Huakang B retain explicit, isolated Mock snapshots only as a no-plan fallback; other factories remain empty and never inherit another factory's data.
-- Locked tasks, backlog assignment and schedule moves require confirmation. Backend drafts use revision conflict detection, and published snapshots are immutable.
-- The TypeScript rule core still provides the local heuristic optimization preview; a production-grade backend optimizer and live production-feedback loop are not part of this phase.
-- The workbench uses fixed-height compact lanes and a dark big-screen mode while keeping page-level scrolling disabled.
-
-Historical injection-scheduling migrations remain immutable history. Migration `20260727_0037` removed the previous rebuild; `20260728_0039` is the new forward-only contract and requires an Alembic upgrade before the service may start from head `0038`.
+Historical injection-scheduling migrations remain immutable history. Migration `20260731_0042` is the current irreversible forward removal: it drops the `injection_scheduling_*` tables, permission rows, IAM markers and audit immutability objects. Applying it requires a verified pre-removal database backup. `/api/injection` remains the separate molding-sample production domain and is not part of this removal.
 
 ### Huakang A 3D Printing Management
 
@@ -216,13 +206,13 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260727_0037` removes the rebuilt injection-scheduling tables, permissions, IAM markers and PostgreSQL audit trigger. Its downgrade is intentionally blocked; recovery requires a backup from before removal.
 - Migration `20260727_0038` adds an empty optional standalone hair section and immutable initial revision to every historical internal quote; downgrade is allowed only while those migrated hair sections remain untouched.
 - Migration `20260728_0039` creates the new injection-scheduling backend, permission family and immutable audit contract. Its downgrade refuses to run after an import batch exists; production deployment requires the normal backup and migration preflight.
+- Migration `20260731_0042` irreversibly removes the `injection_scheduling_*` backend, its data and permissions before redesign. Downgrade is blocked; recovery requires a verified pre-removal database backup.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 
 ## 8. Active Known Issues
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
-- Injection scheduling does not yet ingest live machine/production feedback, expose SSE refresh, or run an advanced backend optimization solver.
-- The new injection-scheduling backend is deployed in production with Alembic head `20260729_0041`; future production work must still re-verify the live revision, database head, backup state and effective access instead of inferring them from this repository note.
+- The source worktree removes injection scheduling at head `20260731_0042`, but the last verified production deployment was still `20260729_0041`; production remains unchanged until a separately authorized, backed-up deployment is completed and verified.
 - The 3D printing schema, API and UI are deployed in production. Final legacy snapshot import and real-printer pause/resume acceptance have not yet occurred.
 - Bambu LAN control behavior can vary by installed firmware, so remote pause/resume must remain an administrator-only, field-accepted capability.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.
