@@ -46,14 +46,6 @@ CUSTOMER_ORDER_PERMISSION_CODES = (
     "customer_order:export",
 )
 
-INJECTION_SCHEDULING_PERMISSION_CODES = (
-    "injection_scheduling:read",
-    "injection_scheduling:import",
-    "injection_scheduling:edit",
-    "injection_scheduling:publish",
-    "injection_scheduling:rollback",
-)
-
 THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:read",
     "three_d_printing:operate",
@@ -115,7 +107,6 @@ BUSINESS_PERMISSION_CODES = (
     *CARTON_MARK_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
-    *INJECTION_SCHEDULING_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )

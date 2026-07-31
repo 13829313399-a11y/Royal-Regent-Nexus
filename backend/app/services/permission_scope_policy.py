@@ -159,30 +159,6 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     },
 }
 
-INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
-    "injection_scheduling:read": ScopePolicy(
-        (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-        guidance="仅在生产/啤机或总务范围查看注塑排程",
-    ),
-    "injection_scheduling:import": ScopePolicy(
-        (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-        guidance="仅在生产/啤机或总务范围预览并确认计划表导入",
-    ),
-    "injection_scheduling:edit": ScopePolicy(
-        (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-        guidance="仅在生产/啤机或总务范围调整排程草案",
-    ),
-    "injection_scheduling:publish": ScopePolicy(
-        (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-        guidance="仅主管、经理或明确授权角色可发布排程",
-    ),
-    "injection_scheduling:rollback": ScopePolicy(
-        (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
-        guidance="仅主管、经理或明确授权角色可回滚排程",
-    ),
-}
-
-
 ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "admin": ScopePolicy(
         ("*",),
@@ -227,10 +203,7 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
         permission_code,
         INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
             permission_code,
-            INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES.get(
-                permission_code,
-                ScopePolicy(),
-            ),
+            ScopePolicy(),
         ),
     )
 

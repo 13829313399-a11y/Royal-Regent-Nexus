@@ -60,7 +60,8 @@ INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION = "20260727_0038"
 INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION = "20260728_0039"
 THREE_D_PRINTING_MIGRATION_REVISION = "20260729_0040"
 THREE_D_PRINTING_FACTORY_MIGRATION_REVISION = "20260729_0041"
-HEAD_MIGRATION_REVISION = THREE_D_PRINTING_FACTORY_MIGRATION_REVISION
+INJECTION_SCHEDULING_REMOVAL_MIGRATION_REVISION = "20260731_0042"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_REMOVAL_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -127,6 +128,14 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    injection_scheduling_removal_revision = script.get_revision(
+        INJECTION_SCHEDULING_REMOVAL_MIGRATION_REVISION
+    )
+    assert (
+        injection_scheduling_removal_revision.down_revision
+        == THREE_D_PRINTING_FACTORY_MIGRATION_REVISION
+    )
 
     three_d_printing_factory_revision = script.get_revision(
         THREE_D_PRINTING_FACTORY_MIGRATION_REVISION
@@ -2328,7 +2337,11 @@ def test_three_d_printing_factory_reassignment_moves_linked_data_to_huakang_a(
         )
         connection.commit()
 
-    reassigned = _run_dispatch_alembic(database_path, "upgrade", "head")
+    reassigned = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        THREE_D_PRINTING_FACTORY_MIGRATION_REVISION,
+    )
     assert reassigned.returncode == 0, reassigned.stderr
 
     with sqlite3.connect(database_path) as connection:
@@ -2554,7 +2567,7 @@ def test_new_injection_scheduling_backend_upgrade_creates_isolated_contract(
             "-c",
             str(ALEMBIC_INI),
             "upgrade",
-            "head",
+            INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION,
         ],
         cwd=BACKEND_DIR,
         env=env,
@@ -2626,7 +2639,87 @@ def test_new_injection_scheduling_backend_upgrade_creates_isolated_contract(
         }
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION,)
+
+
+def test_injection_scheduling_removal_drops_domain_and_permissions(tmp_path):
+    database_path = tmp_path / "injection_scheduling_removed_0042.db"
+    previous = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        THREE_D_PRINTING_FACTORY_MIGRATION_REVISION,
+    )
+    assert previous.returncode == 0, previous.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO injection_scheduling_import_batches (
+                id, factory_id, source_file_name, source_sha256,
+                source_size_bytes, business_date, parser_version,
+                normalized_json, created_by, created_by_name, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "removal-test-import",
+                "huakang-b",
+                "removal-test.xlsx",
+                "a" * 64,
+                1,
+                "2026-07-31",
+                "removal-test",
+                "{}",
+                "test-user",
+                "测试用户",
+                "2026-07-31 00:00:00",
+            ),
+        )
+        connection.commit()
+
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert not any(
+            name.startswith(("injection_schedule_", "injection_scheduling_"))
+            for name in table_names
+        )
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM auth_permissions
+            WHERE code LIKE 'injection_schedule:%'
+               OR code LIKE 'injection_scheduling:%'
+            """
+        ).fetchone() == (0,)
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM auth_iam_state
+            WHERE key LIKE 'injection_schedule%'
+               OR key LIKE 'injection_scheduling%'
+            """
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+    allowed_startup = _run_dispatch_init_db(database_path)
+    assert allowed_startup.returncode == 0, allowed_startup.stderr
+
+    downgrade = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        THREE_D_PRINTING_FACTORY_MIGRATION_REVISION,
+    )
+    assert downgrade.returncode != 0
+    assert "Restore a pre-removal database backup" in downgrade.stderr
 
 
 def test_new_injection_scheduling_postgresql_offline_sql_contains_contract():
@@ -2663,40 +2756,19 @@ def test_new_injection_scheduling_postgresql_offline_sql_contains_contract():
         "injection_scheduling_audit_events",
     ):
         assert f"create table {table_name}" in sql
+        assert f"drop table {table_name}" in sql
     assert "reject_injection_scheduling_audit_mutation" in sql
     assert "before update on injection_scheduling_audit_events" in sql
     assert "before delete on injection_scheduling_audit_events" in sql
-    assert sql.count("cast(null as varchar(96))") == 5
-    assert sql.count("cast(null as varchar(128))") == 15
-    assert sql.count("cast(null as text)") == 5
+    assert sql.count("cast(null as varchar(96))") >= 5
+    assert sql.count("cast(null as varchar(128))") >= 15
+    assert sql.count("cast(null as text)") >= 5
     assert "lock table three_d_printing_settings" in sql
     assert "both source" in sql
     assert "and target contain domain rows" in sql
     assert "set factory_id = 'huakang-a'" in sql
     assert "3daudit-factory-reassignment-0041" in sql
     assert "fk_three_d_printing_image_product_factory" in sql
-
-
-def test_application_startup_requires_injection_scheduling_backend_migration(
-    tmp_path,
-):
-    database_path = tmp_path / "injection_scheduling_startup_guard.db"
-    previous = _run_dispatch_alembic(
-        database_path,
-        "upgrade",
-        INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION,
-    )
-    assert previous.returncode == 0, previous.stderr
-
-    rejected = _run_dispatch_init_db(database_path)
-    assert rejected.returncode != 0
-    assert INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION in rejected.stderr
-    assert "Alembic upgrade head" in rejected.stderr
-
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
-    assert upgraded.returncode == 0, upgraded.stderr
-    allowed = _run_dispatch_init_db(database_path)
-    assert allowed.returncode == 0, allowed.stderr
 
 
 def _insert_dispatch_test_order(

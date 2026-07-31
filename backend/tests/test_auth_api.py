@@ -86,7 +86,6 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_price:compare",
                             "customer_price:read",
                             "customer_order:read",
-                            "injection_scheduling:read",
                             "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",
@@ -1079,10 +1078,14 @@ def test_general_manager_business_matrix_and_system_denials_across_authz_modes(
                 department,
             )
 
-        # Every currently registered business permission is available both at
-        # the employee's real home factory and a foreign factory. This remains
-        # permission-driven; the role is not treated as a wildcard admin.
-        for permission in permission_codes.BUSINESS_PERMISSION_CODES:
+        # Every business permission assigned to the general-manager position is
+        # available at the home and foreign factory. Deliberately excluded
+        # domain permissions (currently 3D printing) remain denied.
+        expected_business_permissions = (
+            set(permission_codes.BUSINESS_PERMISSION_CODES)
+            - positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
+        )
+        for permission in expected_business_permissions:
             assert auth_service.can(context, permission, "huaxing", "management")
             assert auth_service.can(context, permission, "huadeng", "engineering")
             assert auth_service.has_permission_in_scope(
@@ -1091,6 +1094,8 @@ def test_general_manager_business_matrix_and_system_denials_across_authz_modes(
                 "huadeng",
                 "engineering",
             )
+        for permission in positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES:
+            assert not auth_service.can(context, permission, "huaxing", "management")
 
         assert not business_authz.is_wildcard_super_admin(context)
         assert grant.factory_id == "huaxing"
