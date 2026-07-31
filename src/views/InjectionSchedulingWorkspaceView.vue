@@ -572,15 +572,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-:global(html), :global(body), :global(#app) { min-width: 1180px; min-height: 100%; }
-:global(body) { margin: 0; overflow: hidden; background: #edf3f3; }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline:2px solid #1aa58f; outline-offset:2px; }
 .skip-link { position:fixed; top:10px; left:10px; z-index:120; transform:translateY(-160%); padding:8px 12px; border-radius:8px; color:#fff; background:#062f2c; font-weight:800; transition:transform .15s; }.skip-link:focus { transform:translateY(0); }
 .sr-only { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
-.schedule-shell { --brand-950:#052f2c; --brand-900:#073d38; --brand-800:#07554c; --brand-700:#0b6b5f; --brand-600:#0f8878; --mint:#2bc6a7; --line:#d7e2e5; --ink:#17303c; --muted:#6c808a; display:flex; width:100vw; height:100vh; overflow:hidden; color:var(--ink); background:#edf3f3; font:12px/1.45 Inter,"Microsoft YaHei",system-ui,sans-serif; }
+.schedule-shell { --brand-950:#052f2c; --brand-900:#073d38; --brand-800:#07554c; --brand-700:#0b6b5f; --brand-600:#0f8878; --mint:#2bc6a7; --line:#d7e2e5; --ink:#17303c; --muted:#6c808a; display:flex; width:100vw; min-width:1180px; height:100vh; overflow:hidden; color:var(--ink); background:#edf3f3; font:12px/1.45 Inter,"Microsoft YaHei",system-ui,sans-serif; }
 .schedule-sidebar { display:flex; flex:0 0 224px; flex-direction:column; min-height:0; color:#d7efeb; background:linear-gradient(180deg,#073a36 0%,#062d2b 100%); border-right:1px solid rgba(255,255,255,.07); }
 .brand-block { display:flex; align-items:center; gap:12px; height:72px; padding:0 18px; border-bottom:1px solid rgba(255,255,255,.09); }
 .brand-mark { display:grid; width:37px; height:37px; place-items:center; border:1px solid rgba(255,255,255,.2); border-radius:11px; color:white; background:linear-gradient(145deg,#25ab97,#087064); box-shadow:0 8px 20px rgba(0,0,0,.2); }

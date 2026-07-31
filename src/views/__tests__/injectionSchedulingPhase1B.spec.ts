@@ -24,6 +24,13 @@ describe('injection scheduling phase 1B workspace', () => {
     expect(viewSource).toContain('role="dialog" aria-modal="true"')
   })
 
+  it('keeps full-screen scroll locking scoped to the scheduling workspace', () => {
+    expect(viewSource).not.toContain(':global(html)')
+    expect(viewSource).not.toContain(':global(body)')
+    expect(viewSource).not.toContain(':global(#app)')
+    expect(viewSource).toMatch(/\.schedule-shell\s*\{[^}]*min-width:1180px[^}]*overflow:hidden/)
+  })
+
   it('makes density, field groups, empty state and completeness filters interactive', () => {
     expect(viewSource).toContain('toggleDensity')
     expect(viewSource).toContain('columnVisibility.colorMaterial')
