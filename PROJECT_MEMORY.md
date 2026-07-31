@@ -27,7 +27,7 @@ The main implemented or partially implemented domains are:
 - Huaxing BuzzBee, Dickie and Caixing customer-order preview and schedule export
 - Carton-mark comparison
 - Indonesia invoice reconciliation
-- A retained, non-interactive injection-scheduling module card awaiting redesign
+- A retained injection-scheduling module card linked to a Huaxing frontend-only Mock workbench
 
 The intended Customer Order Center boundary is to own original purchase orders, normalized order facts, validation, confirmation, immutable versions and source lineage, then publish confirmed demand to PMC. Detailed material planning, workshop scheduling, inventory execution and shipping execution belong to downstream modules and should appear in the order center only as summaries or links.
 
@@ -170,7 +170,9 @@ Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF in
 
 ### Injection-Scheduling Center
 
-The production-module card remains visible as a non-interactive `重新设计中` placeholder. There is no registered injection-scheduling page, frontend implementation, API router, service, persistence model or active permission family.
+The production-module card routes to `/modules/production/injection-scheduling?factory=<factoryId>`. The registered full-page Vue workspace currently has a Huaxing-only, frontend Mock repository and explicit `factoryId` contract. It models 69 machines, 257 scheduled tasks and 23 backlog orders, including incrementally rendered table/timeline views, sticky identifying columns, keyboard search, density and field controls, data-completeness filtering, inline shift-report drafts, offline draft protection, optimistic revision conflicts, four-tab task details and explainable candidate-machine constraints. Other factory IDs return an explicit no-dataset state and never fall back to Huaxing. The UI labels the source as Mock and the supplied Excel workbook was used only as read-only design evidence.
+
+There is still no injection-scheduling API router, service, persistence model or active permission family. The frontend Mock repository must not be represented as live production data, and it must be replaced rather than silently reused when a production backend is designed.
 
 Historical injection-scheduling migrations remain immutable history. Migration `20260731_0042` is the current irreversible forward removal: it drops the `injection_scheduling_*` tables, permission rows, IAM markers and audit immutability objects. Applying it requires a verified pre-removal database backup. `/api/injection` remains the separate molding-sample production domain and is not part of this removal.
 
