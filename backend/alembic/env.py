@@ -17,12 +17,17 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
-from app.models import auth  # noqa: F401,E402
-from app.models import internal_quote  # noqa: F401,E402
-from app.models import molding_sample  # noqa: F401,E402
-from app.models import pricing  # noqa: F401,E402
-from app.models import raw_material  # noqa: F401,E402
-from app.models import three_d_printing  # noqa: F401,E402
+from app.models import (
+    auth,  # noqa: F401,E402
+    injection_scheduling,  # noqa: F401,E402
+    injection_scheduling_execution,  # noqa: F401,E402
+    injection_scheduling_import,  # noqa: F401,E402
+    internal_quote,  # noqa: F401,E402
+    molding_sample,  # noqa: F401,E402
+    pricing,  # noqa: F401,E402
+    raw_material,  # noqa: F401,E402
+    three_d_printing,  # noqa: F401,E402
+)
 
 config = context.config
 
