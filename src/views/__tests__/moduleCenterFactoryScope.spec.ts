@@ -126,6 +126,15 @@ describe('module center factory scope', () => {
     routerPushMock.mockReset()
   })
 
+  it('registers the 3D printing card only for Huakang A', () => {
+    const module = departmentModuleRegistry.production.modules.find(
+      (item) => item.id === 'three-d-printing',
+    )
+
+    expect(module?.factoryIds).toEqual(['huakang-a'])
+    expect(module?.owner).toBe('华康A · 3D部门')
+  })
+
   it.each(moduleDepartmentIds)(
     'shares the %s module structure while keeping Huakang C and D routes isolated',
     async (departmentId: ModuleDepartmentId) => {
@@ -149,9 +158,11 @@ describe('module center factory scope', () => {
       )
 
       const huakangCModules = moduleSnapshots(wrapper)
-      expect(huakangCModules).toHaveLength(departmentModuleRegistry[departmentId].modules.length)
+      const expectedHuakangCModules = departmentModuleRegistry[departmentId].modules
+        .filter((module) => !module.factoryIds?.length || module.factoryIds.includes('huakang-c'))
+      expect(huakangCModules).toHaveLength(expectedHuakangCModules.length)
       expect(huakangCModules.map(({ id, title, childLabels }) => ({ id, title, childLabels }))).toEqual(
-        departmentModuleRegistry[departmentId].modules.map((module) => ({
+        expectedHuakangCModules.map((module) => ({
           id: module.id,
           title: module.title,
           childLabels: module.children.map((child) => child.label),

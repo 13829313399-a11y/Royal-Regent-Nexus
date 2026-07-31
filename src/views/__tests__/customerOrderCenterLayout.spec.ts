@@ -7,6 +7,10 @@ import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-or
 const customerOrderApiMock = vi.hoisted(() => ({
   previewBuzzbeeBatch: vi.fn(),
   exportBuzzbeeBatch: vi.fn(),
+  previewDickieBatch: vi.fn(),
+  exportDickieBatch: vi.fn(),
+  previewCaixingBatch: vi.fn(),
+  exportCaixingBatch: vi.fn(),
 }))
 
 vi.mock('@/api/customerOrder', () => ({
@@ -55,6 +59,17 @@ describe('customer order center static frontend', () => {
     expect(viewSource).not.toContain('<span class="order-nexus">Nexus</span>')
   })
 
+  it('uses the Internal Quote Desk readability scale and responsive motion feedback', () => {
+    expect(workspaceSource).toContain('--order-motion-normal: 220ms')
+    expect(workspaceSource).toContain('font-size: 12px !important')
+    expect(workspaceSource).toContain('@keyframes order-rise-in')
+    expect(workspaceSource).toContain('@keyframes order-drop-pulse')
+    expect(workspaceSource).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(viewSource).toContain('font-size: 18px')
+    expect(viewSource).toContain('font-size: 14px')
+    expect(viewSource).toContain('@keyframes order-main-enter')
+  })
+
   it('renders the reference-inspired dashboard and navigates to the import flow', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: {
@@ -86,8 +101,10 @@ describe('customer order center static frontend', () => {
 
     expect(wrapper.get('[data-testid="order-import"]').text()).toContain('导入客户原始 PO')
     expect(wrapper.text()).toContain('导入客户现有排期')
-    expect(wrapper.text()).toContain('普通合同 / WMC首页内嵌')
-    expect(wrapper.text()).toContain('印尼排期不参与当前映射')
+    expect(wrapper.text()).toContain('先选择 华兴厂 的客户')
+    expect(wrapper.text()).toContain('BuzzBee')
+    expect(wrapper.text()).toContain('Dickie')
+    expect(wrapper.text()).toContain('彩星')
     expect(workspaceSource).toContain('WMC读取首页双语PO区且P/O#必填')
     expect(workspaceSource).toContain('普通合同扫描标签和唛头区，P/O#允许为空')
     expect(workspaceSource).toContain('ITEM新增订单行，存在同货号备料单时按本合同数量扣减H列')
@@ -97,6 +114,10 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('解析并进入预览')
     expect(workspaceSource).toContain('customerOrderApi.previewBuzzbeeBatch')
     expect(workspaceSource).toContain('customerOrderApi.exportBuzzbeeBatch')
+    expect(workspaceSource).toContain('customerOrderApi.previewDickieBatch')
+    expect(workspaceSource).toContain('customerOrderApi.exportDickieBatch')
+    expect(workspaceSource).toContain('customerOrderApi.previewCaixingBatch')
+    expect(workspaceSource).toContain('customerOrderApi.exportCaixingBatch')
     expect(workspaceSource).toContain('downloadGeneratedSchedule')
     expect(wrapper.text()).toContain('批量选择PO')
     expect(wrapper.get('input[type="file"][multiple]').exists()).toBe(true)
@@ -147,6 +168,30 @@ describe('customer order center static frontend', () => {
     expect(scheduleView.text()).toContain('0009382481')
     expect(scheduleView.text()).toContain('包装物料未齐（静态反馈示例）')
     expect(scheduleView.text()).not.toContain('生成更新后的总排期')
+  })
+
+  it('accepts the original xls schedule only for Caixing', async () => {
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    const scheduleInputBeforeSelection = wrapper.findAll('input[type="file"]')[1]!
+    expect(scheduleInputBeforeSelection.attributes('accept')).toBe('.xlsx')
+
+    await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
+    const scheduleInput = wrapper.findAll('input[type="file"]')[1]!
+    expect(scheduleInput.attributes('accept')).toBe('.xls,.xlsx')
+    Object.defineProperty(scheduleInput.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年彩星生产排期表.xls')],
+    })
+    await scheduleInput.trigger('change')
+
+    expect(wrapper.text()).toContain('2026年彩星生产排期表.xls')
   })
 
   it('allows a missing price blocker to be explicitly skipped while keeping it visible', async () => {
@@ -212,6 +257,7 @@ describe('customer order center static frontend', () => {
         factoryName: '华兴厂',
       },
     })
+    await wrapper.get('[data-testid="customer-choice-buzzbee"]').trigger('click')
     const inputs = wrapper.findAll('input[type="file"]')
     Object.defineProperty(inputs[0]!.element, 'files', {
       configurable: true,
@@ -264,6 +310,243 @@ describe('customer order center static frontend', () => {
     expect(scheduleRows[0]!.text()).toContain('0009382481')
     expect(scheduleRows[0]!.text()).toContain('V1')
     expect(wrapper.findAll('.customer-summary-grid > article')).toHaveLength(1)
+  })
+
+  it('accepts multiple PO files and one schedule through the upload drop zones', async () => {
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+    await wrapper.get('[data-testid="customer-choice-buzzbee"]').trigger('click')
+    const poDropZone = wrapper.get('[data-testid="po-drop-zone"]')
+    const scheduleDropZone = wrapper.get('[data-testid="schedule-drop-zone"]')
+    const poFiles = [
+      new File(['po-1'], 'PO-1.xls'),
+      new File(['po-2'], 'PO-2.xlsx'),
+    ]
+    const scheduleFiles = [new File(['schedule'], '2026年 BUZZ BEE 生产排期表.xls.xlsx')]
+
+    await poDropZone.trigger('dragover', {
+      dataTransfer: { files: [], dropEffect: 'none' },
+    })
+    expect(poDropZone.classes()).toContain('upload-card--dragging')
+
+    await poDropZone.trigger('drop', {
+      dataTransfer: { files: poFiles },
+    })
+    await scheduleDropZone.trigger('drop', {
+      dataTransfer: { files: scheduleFiles },
+    })
+
+    expect(poDropZone.classes()).not.toContain('upload-card--dragging')
+    expect(poDropZone.get('strong').text()).toBe('已选择 2 份 PO')
+    expect(poDropZone.get('strong').attributes('title')).toBe('PO-1.xls\nPO-2.xlsx')
+    expect(scheduleDropZone.get('strong').text()).toBe('2026年 BUZZ BEE 生产排期表.xls.xlsx')
+    expect(wrapper.text()).toContain('也可直接拖入此区域')
+  })
+
+  it('requires a factory-owned customer and switches PO file types and APIs for Dickie', async () => {
+    customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
+      preview_schema_version: 'customer-order-dickie-preview-v1',
+      customer_code: 'dickie',
+      factory_id: 'huaxing',
+      po_file_name: 'SC700142026-1200.pdf',
+      po_file_names: ['SC700142026-1200.pdf'],
+      po_file_count: 1,
+      schedule_file_name: '2026年.Dickie 生产情况.xlsx',
+      source_po_sha256: 'po',
+      source_po_sha256s: ['po'],
+      source_schedule_sha256: 'schedule',
+      input_template: 'DICKIE_SIMBA_RELEASE_ORDER_PDF_V1',
+      target_template: 'DICKIE_PRODUCTION_SCHEDULE_V1',
+      output_file_name: '2026年.Dickie 生产情况.xlsx',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
+      warnings: [],
+      rows: [],
+    })
+    customerOrderApiMock.exportDickieBatch.mockResolvedValueOnce({
+      blob: new Blob(['dickie-schedule']),
+      fileName: '2026年.Dickie 生产情况.xlsx',
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    const uploadButtons = wrapper.findAll('.upload-card .button')
+    expect(uploadButtons.every((button) => (button.element as HTMLButtonElement).disabled)).toBe(true)
+    expect(wrapper.get('[data-testid="factory-customer-selector"]').text()).toContain('每个客户使用独立 PO 识别和排期写入规则')
+
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    expect(wrapper.get('[data-testid="customer-choice-dickie"]').attributes('aria-pressed')).toBe('true')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf')
+    expect(uploadButtons.every((button) => !(button.element as HTMLButtonElement).disabled)).toBe(true)
+
+    Object.defineProperty(inputs[0]!.element, 'files', {
+      configurable: true,
+      value: [new File(['%PDF'], 'SC700142026-1200.pdf', { type: 'application/pdf' })],
+    })
+    Object.defineProperty(inputs[1]!.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年.Dickie 生产情况.xlsx')],
+    })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    expect(customerOrderApiMock.previewDickieBatch).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('navigate')).toContainEqual(['preview'])
+
+    await wrapper.setProps({ activeSection: 'preview' })
+    expect(wrapper.get('[data-testid="preview-next-step"]').text()).toContain('当前尚未输出排期')
+    const generateButton = wrapper.get('[data-testid="preview-next-step"] .button')
+    expect(generateButton.text()).toContain('生成并下载客户排期')
+    await generateButton.trigger('click')
+    await flushPromises()
+
+    expect(customerOrderApiMock.exportDickieBatch).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="generated-schedule-output"]').text()).toContain(
+      '2026年.Dickie 生产情况.xlsx',
+    )
+  })
+
+  it('selects Huaxing Caixing and routes Playmates PDFs to the three-sheet schedule flow', async () => {
+    const caixingRowBase = {
+      status: 'valid' as const,
+      status_label: '有效',
+      received_date: '2026-05-27',
+      po_no: 'OL-1932232',
+      contract_no: 'SL-1926604',
+      customer_country: 'EUROPLAY-PHI',
+      customer_name: 'EUROPLAY-PHI',
+      country: '',
+      product_name_zh: '',
+      standard: '美国标准',
+      unit_price_hkd: '',
+      amount_hkd: '',
+      packaging: '美版彩盒',
+      line_q: '',
+      customer_q: '',
+      requested_ship_date: '2026-07-15',
+      input_template: 'CAIXING_PLAYMATES_PO_PDF_V2',
+      target_template: 'CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2',
+      item_sheet_name: '正单评审表 / 接单表 / ITEM表',
+      source_po_file_name: '1931815.pdf',
+      lineage: {},
+      issues: [],
+    }
+    customerOrderApiMock.previewCaixingBatch.mockResolvedValueOnce({
+      preview_schema_version: 'customer-order-caixing-preview-v2',
+      customer_code: 'caixing',
+      factory_id: 'huaxing',
+      po_file_name: '1931815.pdf',
+      po_file_names: ['1931815.pdf'],
+      po_file_count: 1,
+      schedule_file_name: '2026年彩星排期.xlsx',
+      source_po_sha256: 'po',
+      source_po_sha256s: ['po'],
+      source_schedule_sha256: 'schedule',
+      input_template: 'CAIXING_PLAYMATES_PO_PDF_V2',
+      target_template: 'CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2',
+      output_file_name: '2026年彩星排期.xlsx',
+      summary: { total: 2, valid: 2, warning: 0, blocked: 0 },
+      warnings: [],
+      rows: [
+        {
+          ...caixingRowBase,
+          id: 'caixing-parent-57810',
+          row_role: 'parent',
+          parent_product_no: '',
+          product_no: '57810 E8',
+          product_name_en: 'WINX CLUB FAIRIES ASST',
+          quantity: '1800',
+          units_per_carton: '8',
+          carton_count: '225',
+        },
+        {
+          ...caixingRowBase,
+          id: 'caixing-detail-57811',
+          row_role: 'detail',
+          parent_product_no: '57810 E8',
+          product_no: '57811 E8',
+          product_name_en: 'WINX CLUB BLOOM FAIRY DOLL',
+          quantity: '675',
+          units_per_carton: '3',
+          carton_count: '225',
+          unit_price_hkd: '31.01',
+          amount_hkd: '20931.75',
+        },
+      ],
+    })
+    customerOrderApiMock.exportCaixingBatch.mockResolvedValueOnce({
+      blob: new Blob(['caixing-schedule']),
+      fileName: '2026年彩星排期.xlsx',
+      passwordRequired: false,
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
+    expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.text()).toContain('彩星 V2')
+    expect(wrapper.text()).toContain('测试阶段：彩星重复订单仅警告')
+    expect(wrapper.text()).toContain('正单评审表 / 接单表 / ITEM表')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf')
+
+    Object.defineProperty(inputs[0]!.element, 'files', {
+      configurable: true,
+      value: [new File(['%PDF'], '1931815.pdf', { type: 'application/pdf' })],
+    })
+    Object.defineProperty(inputs[1]!.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年彩星排期.xlsx')],
+    })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    expect(customerOrderApiMock.previewCaixingBatch).toHaveBeenCalledOnce()
+    await wrapper.setProps({ activeSection: 'preview' })
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('彩星 PO 映射预览')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('全部 彩星')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('当前彩星输入规则已启用')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).toContain(
+      '先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号',
+    )
+    const hierarchyRows = wrapper.findAll('.unified-table tbody tr')
+    expect(hierarchyRows[0]!.text()).toContain('大货号')
+    expect(hierarchyRows[0]!.text()).toContain('57810 E8')
+    expect(hierarchyRows[0]!.text()).toContain('1800')
+    expect(hierarchyRows[0]!.text()).toContain('8')
+    expect(hierarchyRows[1]!.text()).toContain('小货号')
+    expect(hierarchyRows[1]!.text()).toContain('57811 E8')
+    expect(hierarchyRows[1]!.text()).toContain('675')
+    expect(hierarchyRows[1]!.text()).toContain('3')
+    expect(wrapper.get('[data-testid="order-preview"]').text()).not.toContain('BuzzBee PO 映射预览')
+    await wrapper.get('[data-testid="preview-next-step"] .button').trigger('click')
+    await flushPromises()
+
+    expect(customerOrderApiMock.exportCaixingBatch).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="generated-schedule-output"]').text()).toContain(
+      '2026年彩星排期.xlsx',
+    )
   })
 
   it('centralizes primary delivery and production exceptions without mutating authority data', async () => {

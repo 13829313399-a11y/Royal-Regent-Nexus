@@ -372,6 +372,75 @@ def _parse_dt(value: str) -> datetime | None:
     return parsed.astimezone(BUSINESS_TIME_ZONE)
 
 
+PUBLIC_WORKSHEET_FIELDS = {
+    "automationMode",
+    "remark",
+    "warehouse",
+    "machineClassRequirement",
+    "setQuantity",
+    "waterRatio",
+    "colorPowder",
+    "netWeightGrams",
+    "grossWeightGrams",
+    "materialWeightKg",
+    "orderDate",
+    "deliveryStartAt",
+    "deliveryDueAt",
+    "moldChangeReferenceHours",
+    "colorChangeReferenceHours",
+    "changeoverHours",
+    "downtimeHours",
+    "plannedProductionAt",
+    "plannedCompletionAt",
+    "plannedCompletionMonth",
+    "inboundAt",
+    "deliverySlackDays",
+    "sprayPaint",
+    "productionDays",
+    "materialShortage",
+    "allocatedMaterialQuantity",
+    "shiftEndAt",
+    "shiftTime",
+    "shiftTarget",
+    "dayShiftQuantity",
+    "nightShiftQuantity",
+    "sourceSheet",
+    "sourceRow",
+}
+
+
+def _sanitize_public_worksheet(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: deepcopy(value)
+        for key, value in raw.items()
+        if key in PUBLIC_WORKSHEET_FIELDS
+    }
+
+
+def _public_worksheet(order: dict[str, Any]) -> dict[str, Any]:
+    return _sanitize_public_worksheet(
+        order.get("requirement", {}).get("worksheet", {})
+    )
+
+
+def _public_task_worksheet(
+    task: dict[str, Any],
+    order: dict[str, Any],
+    previous_task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    for raw in (
+        task.get("worksheet"),
+        (previous_task or {}).get("worksheet"),
+        order.get("requirement", {}).get("worksheet", {}),
+    ):
+        sanitized = _sanitize_public_worksheet(raw)
+        if sanitized:
+            return sanitized
+    return {}
+
+
 def _snapshot_from_import(
     *,
     batch: InjectionSchedulingImportBatch,
@@ -455,6 +524,7 @@ def _snapshot_from_import(
                 "locked": bool(task.get("locked")),
                 "risk": task.get("risk", "normal"),
                 "remark": task.get("remark", ""),
+                "worksheet": _public_task_worksheet(task, order),
             }
         )
 
@@ -549,6 +619,7 @@ def _snapshot_from_import(
                 },
                 "requiredDate": order.get("deliveryDueAt", ""),
                 "candidates": [],
+                "worksheet": _public_worksheet(order),
                 "noMatchReason": "能力参数或候选排序尚待复核",
             }
         )
@@ -690,6 +761,17 @@ def _persist_tasks_from_snapshot(
             order = order_by_key.get(key)
         if order is None or order.factory_id != factory_id:
             raise HTTPException(status_code=422, detail="排程任务引用了无效订单")
+        order_payload = {"requirement": _load_json(order.requirement_json, {})}
+        previous_task_payload = (
+            _load_json(old_task.task_json, {})
+            if old_task is not None
+            else None
+        )
+        task["worksheet"] = _public_task_worksheet(
+            task,
+            order_payload,
+            previous_task_payload,
+        )
         normalized_tasks.append(
             {
                 "task": task,

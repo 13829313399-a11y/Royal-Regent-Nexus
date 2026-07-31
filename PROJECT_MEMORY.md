@@ -24,7 +24,7 @@ The main implemented or partially implemented domains are:
 - Global raw-material master data
 - Internal quote collaboration and controlled customer-price conversion
 - Customer pricing records
-- BuzzBee customer-order workbook preview and export
+- Huaxing BuzzBee, Dickie and Caixing customer-order preview and schedule export
 - Carton-mark comparison
 - Indonesia invoice reconciliation
 - A frontend-only injection-scheduling preview
@@ -39,7 +39,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- Alembic has one current head: `20260727_0038`.
+- Alembic has one current head: `20260729_0041`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -149,14 +149,16 @@ The pricing API persists factory- and customer-scoped pricing quotes. Totals are
 
 ### Customer Order Center
 
-The implemented backend capability currently focuses on BuzzBee workbook processing:
+The implemented backend capability supports factory-owned customer mappings in Huaxing. The import flow requires selecting a customer before files can be chosen, and the server rejects a customer mapping when the submitted factory does not own that customer. Huaxing currently exposes BuzzBee, Dickie and Caixing:
 
-- Preview one or more customer purchase-order workbooks against the supported production-schedule workbook.
+- Preview one or more customer purchase orders against that customer's supported production-schedule workbook.
 - Return normalized fields, validation results and source lineage.
 - Export a new customer schedule and item-detail workbook without mutating the source files.
 - Require authenticated sales scope and the relevant customer-order read/export permissions.
 
-The current parser supports the BuzzBee schedule contract and deliberately rejects the Indonesia schedule variant. WMC is handled as a supported template variant inside the current conversion path.
+BuzzBee accepts `.xls`/`.xlsx` PO workbooks, supports the ordinary and WMC variants, updates its order/review/ITEM sheets and deliberately rejects the Indonesia schedule variant. Dickie accepts scanned Simba Dickie Release Order PDFs, performs local OCR, splits a combined PDF at each `Release Order Page 1` into multiple order rows, handles ordinary, mixed-article and inferred dinosaur-product routing, writes the Dickie order/review/Iteam sheets, and deducts matching system-preparation quantities per child contract. Both mappings preserve the uploaded schedule filename and return a workbook protected with the configured 2026 password.
+
+Caixing accepts text-layer Playmates PDF POs with the observed OE/OL/OG/OH/OK prefixes. It reproduces the legacy plugin contract: extract PO date, S/C number, PO number, customer, product number/name, quantity, HKD unit price/amount and US/EU standard packaging; normalize digit-plus-letter product numbers with one separating space; then append records in the legacy fixed 24-column order to the uploaded workbook's current active worksheet after its last row. It preserves the uploaded schedule filename and its original encryption state. The legacy plugin deliberately leaves Chinese name, packing/carton data, dimensions/weights, line/customer Q, requested shipment container, country standard, remarks, production workshop and system-status columns blank. The supplied 16 PO samples produce 70 detail rows with no missing core extracted field.
 
 There is not yet a persistent normalized customer-order ledger, immutable order-version model, confirmed-demand publication contract or downstream PMC integration. Frontend ledger, scheduling, exception and feedback examples are not authoritative production data.
 
@@ -182,6 +184,18 @@ Injection scheduling now has a connected frontend/backend implementation in this
 
 Historical injection-scheduling migrations remain immutable history. Migration `20260727_0037` removed the previous rebuild; `20260728_0039` is the new forward-only contract and requires an Alembic upgrade before the service may start from head `0038`.
 
+### Huakang A 3D Printing Management
+
+3D printing management is a connected Huakang A-only production capability:
+
+- The production card routes to `/modules/production/three-d-printing?factory=huakang-a` and uses strict page-entry permissions even while the legacy global authenticated-read policy remains enabled elsewhere.
+- Migration `20260729_0040` adds settings, materials, products and independent image assets, printers, day state, production records, inventory movements, schedules, maintenance, edge agents, remote commands, migration runs and append-only audit events. Its permission seed must retain explicit SQL casts for reused bind parameters because PostgreSQL otherwise infers conflicting `text` and `varchar` types. Forward migration `20260729_0041` reassigns the complete domain and 3D-specific IAM scope from Huakang B to Huakang A without changing the schema introduced by `0040`.
+- The permission family is `three_d_printing:read|operate|image_upload|export|printer_control|audit_read`. 3D positions and the production-supervisor position receive scoped business permissions; only the administrator role receives `printer_control`. Production managers and general managers receive no 3D permissions by default.
+- Printer LAN addresses, serial numbers and access codes remain on the Huakang A Windows edge agent. The agent sends status outbound to the cloud and polls for short-lived administrator pause/resume commands; the cloud never connects directly to the printer private network.
+- Product images are stored separately in the configured `THREE_D_ASSET_DIR` and the production Compose stack persists them in `three-d-assets`. Product save and image upload are separate awaited operations, so adding an image no longer rewrites the entire historical JSON payload.
+- `backend/scripts/migrate_legacy_three_d_printing.py` dry-runs and idempotently imports the legacy `data.json`, preserving source IDs, soft deletions, unmatched historical names, inventory snapshots and original images. Final cutover requires a 10–30 minute old-UI write freeze while printer jobs may continue.
+- The operational cutover, rollback and edge acceptance procedure is recorded in `docs/three-d-printing-deployment.md`.
+
 ### Module Catalog and Placeholders
 
 Several cards and dashboards in the module catalog remain planning, design or demonstration surfaces. Their labels, counts and sample rows are not proof of backend implementation. Each module must be classified from its registered route, API client, backend router, model and tests before changes are planned.
@@ -206,10 +220,13 @@ Several cards and dashboards in the module catalog remain planning, design or de
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
 - Injection scheduling does not yet ingest live machine/production feedback, expose SSE refresh, or run an advanced backend optimization solver.
-- The new injection-scheduling migration and implementation are verified only against disposable local databases in this phase; they have not been deployed to production.
+- The new injection-scheduling backend is deployed in production with Alembic head `20260729_0041`; future production work must still re-verify the live revision, database head, backup state and effective access instead of inferring them from this repository note.
+- The 3D printing schema, API and UI are deployed in production. Final legacy snapshot import and real-printer pause/resume acceptance have not yet occurred.
+- Bambu LAN control behavior can vary by installed firmware, so remote pause/resume must remain an administrator-only, field-accepted capability.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.
 - Customer-order warning thresholds shown by the frontend, including day-based exception thresholds, are not yet confirmed as authoritative business rules.
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
+- Caixing currently follows the legacy active-worksheet 24-column append contract; no separate customer-specific Caixing schedule or Item-sheet mapping has been supplied.
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
 
@@ -219,7 +236,8 @@ The smallest unresolved decisions that require product or operational confirmati
 
 - Decide whether authenticated users should permanently retain global read-only page entry, or whether page entry must return to permission-gated behavior.
 - Confirm ownership and rollout timing for authoritative machine capability/changeover masters, live production feedback and the advanced backend optimizer.
-- Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
+- Schedule the Huakang A 3D printing cutover, provide production deployment access, and field-accept one idle printer before enabling remote control across all printers.
+- Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, whether Caixing will remain a generic 24-column active-sheet append or adopt a dedicated schedule template, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.
 

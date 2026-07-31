@@ -163,6 +163,10 @@ INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
 INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
 INJECTION_SCHEDULING_BACKEND_REVISION = "20260728_0039"
 INJECTION_SCHEDULING_BACKEND_PREVIOUS_REVISION = "20260727_0038"
+THREE_D_PRINTING_REVISION = "20260729_0041"
+THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset(
+    {"20260728_0039", "20260729_0040"}
+)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -302,6 +306,24 @@ def ensure_injection_scheduling_schema_ready() -> None:
     )
 
 
+def ensure_three_d_printing_schema_ready() -> None:
+    """Do not let create_all bypass the 3D schema or factory reassignment."""
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if "alembic_version" not in set(inspector.get_table_names()):
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+    if current_revision not in THREE_D_PRINTING_PREVIOUS_REVISIONS:
+        return
+    raise RuntimeError(
+        "检测到数据库尚未完成 3D 打印机管理迁移 "
+        f"{THREE_D_PRINTING_REVISION}；当前版本：{current_revision}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -355,17 +377,20 @@ def init_db() -> None:
     from app.models import molding_sample  # noqa: F401
     from app.models import pricing  # noqa: F401
     from app.models import raw_material  # noqa: F401
+    from app.models import three_d_printing  # noqa: F401
     from app.services.auth import seed_auth_defaults
     from app.services.internal_quote_baseline import (
         seed_internal_quote_pricing_baseline_defaults,
     )
     from app.services.molding_sample import seed_molding_sample_defaults
     from app.services.raw_material import seed_raw_material_defaults
+    from app.services.three_d_printing import seed_three_d_printing_defaults
 
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
     ensure_injection_scheduling_schema_ready()
+    ensure_three_d_printing_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 
@@ -374,3 +399,4 @@ def init_db() -> None:
         seed_internal_quote_pricing_baseline_defaults(db)
         seed_molding_sample_defaults(db)
         seed_raw_material_defaults(db)
+        seed_three_d_printing_defaults(db)

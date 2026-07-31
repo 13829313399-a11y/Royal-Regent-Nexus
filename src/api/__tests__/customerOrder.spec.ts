@@ -111,4 +111,109 @@ describe('customer order api', () => {
       timeout: 180_000,
     }))
   })
+
+  it('routes Dickie PDF batches through the customer-specific preview and export endpoints', async () => {
+    const blob = new Blob(['dickie-xlsx'])
+    const post = vi.fn()
+      .mockResolvedValueOnce({
+        data: {
+          preview_schema_version: 'customer-order-dickie-preview-v1',
+          customer_code: 'dickie',
+          po_file_count: 2,
+          rows: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: blob,
+        headers: {
+          'content-disposition': "attachment; filename*=UTF-8''2026%E5%B9%B4.Dickie%20%E7%94%9F%E4%BA%A7%E6%83%85%E5%86%B5.xlsx",
+        },
+      })
+    const api = createCustomerOrderApi({ post })
+    const poFiles = [
+      new File(['%PDF-1'], 'SC700142026-1200.pdf', { type: 'application/pdf' }),
+      new File(['%PDF-2'], 'SC700143686-2000.pdf', { type: 'application/pdf' }),
+    ]
+    const schedule = new File(['schedule'], '2026年.Dickie 生产情况.xlsx')
+
+    const preview = await api.previewDickieBatch(
+      poFiles,
+      schedule,
+      '2026-07-29',
+      'huaxing',
+    )
+    expect(preview.customer_code).toBe('dickie')
+    expect(post.mock.calls[0]![0]).toBe('/customer-orders/dickie/preview-batch')
+    expect((post.mock.calls[0]![1] as FormData).getAll('po_files')).toEqual(poFiles)
+    expect(post.mock.calls[0]![2]).toEqual(expect.objectContaining({ timeout: 180_000 }))
+
+    const exported = await api.exportDickieBatch(
+      poFiles,
+      schedule,
+      '2026-07-29',
+      schedule.name,
+      'huaxing',
+      [],
+    )
+    expect(exported.blob).toBe(blob)
+    expect(exported.fileName).toBe(schedule.name)
+    expect(post.mock.calls[1]![0]).toBe('/customer-orders/dickie/export-batch')
+    expect(post.mock.calls[1]![2]).toEqual(expect.objectContaining({
+      responseType: 'blob',
+      timeout: 240_000,
+    }))
+  })
+
+  it('routes Caixing Playmates PDF batches and preserves the schedule filename and encryption state', async () => {
+    const blob = new Blob(['caixing-xlsx'])
+    const post = vi.fn()
+      .mockResolvedValueOnce({
+        data: {
+          preview_schema_version: 'customer-order-caixing-preview-v1',
+          customer_code: 'caixing',
+          po_file_count: 2,
+          rows: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: blob,
+        headers: {
+          'content-disposition': "attachment; filename*=UTF-8''2026%E5%B9%B4%E5%BD%A9%E6%98%9F%E6%8E%92%E6%9C%9F.xlsx",
+          'x-workbook-password-required': 'false',
+        },
+      })
+    const api = createCustomerOrderApi({ post })
+    const poFiles = [
+      new File(['%PDF-1'], '1931815.pdf', { type: 'application/pdf' }),
+      new File(['%PDF-2'], '1931878.pdf', { type: 'application/pdf' }),
+    ]
+    const schedule = new File(['schedule'], '2026年彩星排期.xlsx')
+
+    const preview = await api.previewCaixingBatch(
+      poFiles,
+      schedule,
+      '2026-07-29',
+      'huaxing',
+    )
+    expect(preview.customer_code).toBe('caixing')
+    expect(post.mock.calls[0]![0]).toBe('/customer-orders/caixing/preview-batch')
+    expect((post.mock.calls[0]![1] as FormData).getAll('po_files')).toEqual(poFiles)
+
+    const exported = await api.exportCaixingBatch(
+      poFiles,
+      schedule,
+      '2026-07-29',
+      schedule.name,
+      'huaxing',
+      [],
+    )
+    expect(exported.blob).toBe(blob)
+    expect(exported.fileName).toBe(schedule.name)
+    expect(exported.passwordRequired).toBe(false)
+    expect(post.mock.calls[1]![0]).toBe('/customer-orders/caixing/export-batch')
+    expect(post.mock.calls[1]![2]).toEqual(expect.objectContaining({
+      responseType: 'blob',
+      timeout: 240_000,
+    }))
+  })
 })

@@ -16,6 +16,7 @@ import type {
   OrderRequirement,
   PriorityCode,
   ProductionCalendar,
+  ScheduleWorksheetDetails,
   ScheduleTask,
   SchedulingSnapshot,
 } from '@/types/injectionScheduling'
@@ -186,6 +187,53 @@ function riskFrom(requirement: OrderRequirement, slackHours: number, changeoverS
   return 'normal'
 }
 
+function createWorksheetDetails(input: {
+  factoryId: 'huaxing' | 'huakang-b'
+  machine: InjectionMachine
+  requirement: OrderRequirement
+  orderQuantity: number
+  timing: { plannedStart: string; plannedEnd: string; inboundAt: string; deliveryDueAt: string; slackHours: number }
+  productionDurationHours: number
+  index: number
+  remark?: string
+}): ScheduleWorksheetDetails {
+  const netWeight = input.requirement.mold.shotWeightGrams
+  return {
+    automationMode: input.machine.capability.armType === 'multi-arm' ? '全自动' : '半自动',
+    remark: input.remark,
+    warehouse: input.factoryId === 'huaxing' ? '李诗收' : 'B李',
+    machineClassRequirement: input.requirement.mold.moldNo ? input.machine.capability.machineClass : undefined,
+    setQuantity: input.orderQuantity,
+    waterRatio: input.index % 3 === 0 ? '10%' : undefined,
+    colorPowder: input.requirement.color === '黑色' ? '黑种' : undefined,
+    netWeightGrams: netWeight,
+    grossWeightGrams: netWeight == null ? undefined : Math.round(netWeight * 1.06),
+    materialWeightKg: netWeight == null ? undefined : Number((netWeight * input.orderQuantity / 1000).toFixed(2)),
+    orderDate: '2026-07-21T00:00:00+08:00',
+    deliveryStartAt: input.timing.deliveryDueAt,
+    deliveryDueAt: input.timing.deliveryDueAt,
+    moldChangeReferenceHours: 1.5,
+    colorChangeReferenceHours: 0.5,
+    changeoverHours: 2,
+    downtimeHours: 0,
+    plannedProductionAt: input.timing.plannedStart,
+    plannedCompletionAt: input.timing.plannedEnd,
+    plannedCompletionMonth: input.timing.plannedEnd.slice(0, 7),
+    inboundAt: input.timing.inboundAt,
+    deliverySlackDays: Number((input.timing.slackHours / 24).toFixed(2)),
+    sprayPaint: input.index % 4 === 0 ? '是' : '否',
+    productionDays: Number((input.productionDurationHours / 24).toFixed(2)),
+    materialShortage: input.factoryId === 'huakang-b' ? 0 : undefined,
+    allocatedMaterialQuantity: input.factoryId === 'huakang-b' ? 0 : undefined,
+    shiftEndAt: input.factoryId === 'huakang-b' ? '20:00' : undefined,
+    shiftTarget: input.factoryId === 'huakang-b' ? Math.round(input.orderQuantity / 2) : undefined,
+    dayShiftQuantity: input.factoryId === 'huakang-b' ? 0 : undefined,
+    nightShiftQuantity: input.factoryId === 'huakang-b' ? 0 : undefined,
+    sourceSheet: input.factoryId === 'huaxing' ? '计划表' : '排期表',
+    sourceRow: input.index + 5,
+  }
+}
+
 function createTasks(
   factoryId: 'huaxing' | 'huakang-b',
   machines: InjectionMachine[],
@@ -239,6 +287,16 @@ function createTasks(
         locked: taskIndex === 0,
         risk: riskFrom(requirement, timing.slackHours, changeover.status),
         remark: taskIndex === 0 ? '当前生产任务已锁定。' : undefined,
+        worksheet: createWorksheetDetails({
+          factoryId,
+          machine,
+          requirement,
+          orderQuantity,
+          timing,
+          productionDurationHours: progress.productionDurationHours,
+          index: machineIndex * 10 + taskIndex,
+          remark: taskIndex === 0 ? '当前生产任务已锁定。' : undefined,
+        }),
       }
       tasks.push(task)
       machine.taskIds.push(task.id)
@@ -305,6 +363,22 @@ function createBacklog(
       production,
       requiredDate,
       candidates,
+      worksheet: createWorksheetDetails({
+        factoryId,
+        machine: referenceMachine,
+        requirement,
+        orderQuantity: production.orderQuantity,
+        timing: {
+          plannedStart: anchorAt,
+          plannedEnd: requiredDate,
+          inboundAt: requiredDate,
+          deliveryDueAt: requiredDate,
+          slackHours: 0,
+        },
+        productionDurationHours: production.productionDurationHours,
+        index: 500 + index,
+        remark: '待排订单',
+      }),
       noMatchReason: candidates.length
         ? undefined
         : incomplete

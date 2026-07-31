@@ -2,6 +2,7 @@
 import {
   AlertTriangle,
   ArrowRight,
+  Building2,
   CalendarClock,
   CheckCircle2,
   ChevronLeft,
@@ -25,9 +26,10 @@ import {
   ShieldCheck,
   Sparkles,
   UploadCloud,
+  UserRoundCheck,
   X,
 } from '@lucide/vue'
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { customerOrderApi } from '@/api/customerOrder'
 import { getApiErrorMessage } from '@/lib/http'
 import type {
@@ -40,6 +42,61 @@ import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView
 type OrderStatus = 'valid' | 'warning' | 'blocked'
 type DeliveryStatus = 'overdue' | 'due-soon' | 'upcoming' | 'planned'
 type ExceptionSeverity = 'critical' | 'warning' | 'attention'
+type CustomerOrderCustomerCode = 'buzzbee' | 'dickie' | 'caixing'
+
+interface CustomerOrderCustomerProfile {
+  code: CustomerOrderCustomerCode
+  name: string
+  version: string
+  poAccept: string
+  poExtensions: string[]
+  scheduleAccept: string
+  scheduleExtensions: string[]
+  poDescription: string
+  templateDescription: string
+  targetTemplate: string
+}
+
+const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[]> = {
+  huaxing: [
+    {
+      code: 'buzzbee',
+      name: 'BuzzBee',
+      version: 'V1',
+      poAccept: '.xlsx,.xls',
+      poExtensions: ['.xls', '.xlsx'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: '普通合同与 WMC 首页内嵌 Excel PO',
+      templateDescription: '2026年 BUZZ BEE 生产排期表',
+      targetTemplate: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
+    },
+    {
+      code: 'dickie',
+      name: 'Dickie',
+      version: 'V1',
+      poAccept: '.pdf',
+      poExtensions: ['.pdf'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: 'Simba Dickie Release Order 扫描版 PDF',
+      templateDescription: '2026年 Dickie 生产情况排期',
+      targetTemplate: 'DICKIE_PRODUCTION_SCHEDULE_V1',
+    },
+    {
+      code: 'caixing',
+      name: '彩星',
+      version: 'V2',
+      poAccept: '.pdf',
+      poExtensions: ['.pdf'],
+      scheduleAccept: '.xls,.xlsx',
+      scheduleExtensions: ['.xls', '.xlsx'],
+      poDescription: 'Playmates OE/OL/OG/OH/OK 系列文本型 PDF PO',
+      templateDescription: '彩星生产排期（正单评审表 / 接单表 / ITEM表）',
+      targetTemplate: 'CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2',
+    },
+  ],
+}
 
 interface ScheduleException {
   id: string
@@ -57,6 +114,8 @@ interface OrderRow {
   id: string
   status: OrderStatus
   statusLabel: string
+  rowRole?: 'parent' | 'detail'
+  parentProductNo?: string
   issue: string
   receivedDate: string
   poNo: string
@@ -105,8 +164,10 @@ const emit = defineEmits<{
 
 const poInput = ref<HTMLInputElement | null>(null)
 const scheduleInput = ref<HTMLInputElement | null>(null)
+const selectedCustomerCode = ref<CustomerOrderCustomerCode | ''>('')
 const poFiles = ref<File[]>([])
 const scheduleFile = ref<File | null>(null)
+const draggingUpload = ref<'po' | 'schedule' | null>(null)
 const selectedScheduleFile = ref('尚未选择客户排期')
 const receivedDate = ref(new Date().toISOString().slice(0, 10))
 const previewBatch = ref<CustomerOrderImportPreview | null>(null)
@@ -130,6 +191,23 @@ const exceptionSearch = ref('')
 const acknowledgedExceptionIds = ref<string[]>([])
 const notice = ref('')
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
+
+const availableCustomers = computed(
+  () => CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? [],
+)
+const selectedCustomer = computed(
+  () => availableCustomers.value.find(
+    (customer) => customer.code === selectedCustomerCode.value,
+  ) ?? null,
+)
+const selectedCustomerName = computed(
+  () => selectedCustomer.value?.name ?? '尚未选择客户',
+)
+const preflightConfirmationText = computed(
+  () => selectedCustomer.value?.code === 'caixing'
+    ? '测试阶段：彩星重复订单仅警告，可确认后继续导出'
+    : '重复订单、日期差异、行Q与客Q',
+)
 
 const orderRows = ref<OrderRow[]>([
   {
@@ -285,6 +363,13 @@ function getDeliveryMeta(requestedShipDate: string): {
   deliveryStatusLabel: string
 } {
   const targetDate = Date.parse(`${requestedShipDate}T00:00:00Z`)
+  if (!Number.isFinite(targetDate)) {
+    return {
+      daysUntil: Number.MAX_SAFE_INTEGER,
+      deliveryStatus: 'planned',
+      deliveryStatusLabel: '走货期待补',
+    }
+  }
   const daysUntil = Math.ceil((targetDate - scheduleReferenceDate) / 86_400_000)
   if (daysUntil < 0) return { daysUntil, deliveryStatus: 'overdue', deliveryStatusLabel: `已逾期 ${Math.abs(daysUntil)} 天` }
   if (daysUntil <= 7) return { daysUntil, deliveryStatus: 'due-soon', deliveryStatusLabel: `${daysUntil} 天内到期` }
@@ -294,7 +379,7 @@ function getDeliveryMeta(requestedShipDate: string): {
 
 const factoryScheduleRows = computed(() => orderRows.value.map((row) => ({
   ...row,
-  deliveryMonth: row.requestedShipDate.slice(0, 7),
+  deliveryMonth: row.requestedShipDate.slice(0, 7) || '待补日期',
   demandVersion: 'V1',
   publishableToDownstream: row.status === 'valid',
   ...getDeliveryMeta(row.requestedShipDate),
@@ -344,7 +429,11 @@ const customerMonthlySummary = computed(() => scheduleCustomers.value
       customer,
       poCount: new Set(rows.map((row) => row.poNo)).size,
       quantity: rows.reduce((sum, row) => sum + Number(row.quantity.replaceAll(',', '')), 0),
-      nearestShipDate: [...rows].sort((a, b) => a.requestedShipDate.localeCompare(b.requestedShipDate))[0]!.requestedShipDate,
+      nearestShipDate: [...rows].sort(
+        (a, b) => (a.requestedShipDate || '9999-12-31').localeCompare(
+          b.requestedShipDate || '9999-12-31',
+        ),
+      )[0]!.requestedShipDate || '待补充',
       riskCount: rows.filter((row) => row.deliveryStatus === 'overdue' || row.deliveryStatus === 'due-soon').length,
       productionIncomplete: rows.filter((row) => row.productionProgress < 100).length,
       publishableCount: rows.filter((row) => row.publishableToDownstream).length,
@@ -441,11 +530,45 @@ const exceptionSummary = computed(() => ({
 const outputScheduleFile = computed(() => {
   if (generatedScheduleFileName.value) return generatedScheduleFileName.value
   if (previewBatch.value?.output_file_name) return previewBatch.value.output_file_name
-  return scheduleFile.value?.name || 'BuzzBee生产排期表.xlsx'
+  return scheduleFile.value?.name || `${selectedCustomerName.value}生产排期表.xlsx`
+})
+
+const previewCustomerName = computed(() => {
+  const customerCode = previewBatch.value?.customer_code
+  if (!customerCode) return selectedCustomerName.value
+  return availableCustomers.value.find((customer) => customer.code === customerCode)?.name
+    ?? customerCode
+})
+
+const previewCustomerMarkets = computed(() => Array.from(new Set(
+  orderRows.value
+    .map((row) => row.customerCountry.trim())
+    .filter(Boolean),
+)))
+
+const previewRuleNotice = computed(() => {
+  const customerCode = previewBatch.value?.customer_code ?? selectedCustomer.value?.code
+  if (customerCode === 'caixing') {
+    return {
+      title: '当前彩星输入规则已启用',
+      description: '读取 Playmates 文本型 PDF PO，先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号，并同步写入正单评审表、接单表及 ITEM表。',
+    }
+  }
+  if (customerCode === 'dickie') {
+    return {
+      title: '当前 Dickie 输入规则已启用',
+      description: '读取 Simba Dickie Release Order 扫描版 PDF，并按 Dickie 生产排期与 Item 表规则映射。',
+    }
+  }
+  return {
+    title: '当前 BuzzBee 两套输入规则已区分',
+    description: 'WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。',
+  }
 })
 
 const canParseFiles = computed(() => Boolean(
-  poFiles.value.length > 0
+  selectedCustomer.value
+  && poFiles.value.length > 0
   && scheduleFile.value
   && receivedDate.value
   && !parsingFiles.value,
@@ -454,8 +577,22 @@ const canParseFiles = computed(() => Boolean(
 const traceFields = computed(() => {
   const row = traceRow.value
   if (!row) return []
-  const sheetName = row.inputTemplate.includes('WMC') ? 'Sheet1' : 'SHEET'
-  const inputKind = row.inputTemplate.includes('WMC') ? 'WMC首页内嵌规则' : '普通合同标签规则'
+  const isDickie = row.inputTemplate.includes('DICKIE')
+  const isCaixing = row.inputTemplate.includes('CAIXING')
+  const sheetName = isDickie
+    ? 'Dickie PDF'
+    : isCaixing
+      ? 'Playmates PDF'
+      : row.inputTemplate.includes('WMC')
+        ? 'Sheet1'
+        : 'SHEET'
+  const inputKind = isDickie
+    ? 'Simba Dickie Release Order PDF规则'
+    : isCaixing
+      ? '彩星 Playmates PDF规则'
+      : row.inputTemplate.includes('WMC')
+        ? 'WMC首页内嵌规则'
+        : '普通合同标签规则'
   const lineage = row.lineage ?? {}
 
   return [
@@ -491,15 +628,64 @@ function navigate(section: CustomerOrderCenterSection) {
   emit('navigate', section)
 }
 
+function resetImportBatch() {
+  poFiles.value = []
+  scheduleFile.value = null
+  selectedScheduleFile.value = '尚未选择客户排期'
+  previewBatch.value = null
+  scheduleGenerated.value = false
+  generatedScheduleBlob.value = null
+  generatedScheduleFileName.value = ''
+  skippedIssueKeys.value = []
+}
+
+function selectCustomer(customerCode: CustomerOrderCustomerCode) {
+  if (selectedCustomerCode.value === customerCode) return
+  selectedCustomerCode.value = customerCode
+  resetImportBatch()
+  const customer = availableCustomers.value.find((item) => item.code === customerCode)
+  notify(`已选择 ${customer?.name ?? customerCode}；请导入该客户的 PO 与排期文件。`)
+}
+
 function selectUpload(kind: 'po' | 'schedule') {
+  if (!selectedCustomer.value) {
+    notify('请先选择当前厂区的客户。')
+    return
+  }
   if (kind === 'po') poInput.value?.click()
   else scheduleInput.value?.click()
 }
 
-function handleSelectedFile(kind: 'po' | 'schedule', event: Event) {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
+function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
   if (files.length === 0) return
+  if (!selectedCustomer.value) {
+    notify('请先选择当前厂区的客户，再导入文件。')
+    return
+  }
+
+  const acceptedExtensions = kind === 'po'
+    ? selectedCustomer.value.poExtensions
+    : selectedCustomer.value.scheduleExtensions
+  const invalidFiles = files.filter(
+    (file) => !acceptedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)),
+  )
+  if (invalidFiles.length > 0) {
+    notify(
+      kind === 'po'
+        ? `${selectedCustomer.value.name} PO仅支持 ${acceptedExtensions.join(' / ')}：${invalidFiles[0]!.name}`
+        : `${selectedCustomer.value.name} 排期仅支持 ${acceptedExtensions.join(' / ')}：${invalidFiles[0]!.name}`,
+    )
+    return
+  }
+  if (kind === 'po' && files.length > 30) {
+    notify(`单批最多导入30份PO，当前拖入 ${files.length} 份。`)
+    return
+  }
+  if (kind === 'schedule' && files.length > 1) {
+    notify('客户排期每次只能导入1份，请重新拖入。')
+    return
+  }
+
   if (kind === 'po') {
     poFiles.value = files
   } else {
@@ -519,11 +705,38 @@ function handleSelectedFile(kind: 'po' | 'schedule', event: Event) {
   )
 }
 
+function handleSelectedFile(kind: 'po' | 'schedule', event: Event) {
+  const input = event.target as HTMLInputElement
+  applySelectedFiles(kind, Array.from(input.files ?? []))
+  input.value = ''
+}
+
+function handleUploadDragOver(kind: 'po' | 'schedule', event: DragEvent) {
+  if (!selectedCustomer.value) return
+  draggingUpload.value = kind
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function handleUploadDragLeave(kind: 'po' | 'schedule', event: DragEvent) {
+  const card = event.currentTarget as HTMLElement
+  const nextTarget = event.relatedTarget
+  if (!(nextTarget instanceof Node) || !card.contains(nextTarget)) {
+    if (draggingUpload.value === kind) draggingUpload.value = null
+  }
+}
+
+function handleDroppedFiles(kind: 'po' | 'schedule', event: DragEvent) {
+  draggingUpload.value = null
+  applySelectedFiles(kind, Array.from(event.dataTransfer?.files ?? []))
+}
+
 function mapPreviewRow(row: CustomerOrderPreviewRow): OrderRow {
   return {
     id: row.id,
     status: row.status,
     statusLabel: row.status_label,
+    rowRole: row.row_role ?? 'detail',
+    parentProductNo: row.parent_product_no ?? '',
     issue: row.issues.map((issue) => issue.message).join('；') || '17个统一字段已通过当前模板校验。',
     receivedDate: row.received_date,
     poNo: row.po_no,
@@ -562,20 +775,38 @@ function mapPreviewRow(row: CustomerOrderPreviewRow): OrderRow {
 }
 
 async function parseSelectedFiles() {
+  if (!selectedCustomer.value) {
+    notify('请先选择当前厂区的客户。')
+    return
+  }
   if (poFiles.value.length === 0 || !scheduleFile.value) {
-    notify('请先选择一份或多份 BuzzBee PO 和当前客户排期。')
+    notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和当前客户排期。`)
     return
   }
   parsingFiles.value = true
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   try {
-    const preview = await customerOrderApi.previewBuzzbeeBatch(
-      poFiles.value,
-      scheduleFile.value,
-      receivedDate.value,
-      props.factoryId,
-    )
+    const preview = selectedCustomer.value.code === 'dickie'
+      ? await customerOrderApi.previewDickieBatch(
+          poFiles.value,
+          scheduleFile.value,
+          receivedDate.value,
+          props.factoryId,
+        )
+      : selectedCustomer.value.code === 'caixing'
+        ? await customerOrderApi.previewCaixingBatch(
+            poFiles.value,
+            scheduleFile.value,
+            receivedDate.value,
+            props.factoryId,
+          )
+      : await customerOrderApi.previewBuzzbeeBatch(
+          poFiles.value,
+          scheduleFile.value,
+          receivedDate.value,
+          props.factoryId,
+        )
     previewBatch.value = preview
     orderRows.value = preview.rows.map(mapPreviewRow)
     skippedIssueKeys.value = []
@@ -621,14 +852,32 @@ async function confirmAndGenerateSchedule() {
   }
   exportingSchedule.value = true
   try {
-    const result = await customerOrderApi.exportBuzzbeeBatch(
-      poFiles.value,
-      scheduleFile.value,
-      receivedDate.value,
-      previewBatch.value.output_file_name,
-      props.factoryId,
-      skippedIssueKeys.value,
-    )
+    const result = previewBatch.value.customer_code === 'dickie'
+      ? await customerOrderApi.exportDickieBatch(
+          poFiles.value,
+          scheduleFile.value,
+          receivedDate.value,
+          previewBatch.value.output_file_name,
+          props.factoryId,
+          skippedIssueKeys.value,
+        )
+      : previewBatch.value.customer_code === 'caixing'
+        ? await customerOrderApi.exportCaixingBatch(
+            poFiles.value,
+            scheduleFile.value,
+            receivedDate.value,
+            previewBatch.value.output_file_name,
+            props.factoryId,
+            skippedIssueKeys.value,
+          )
+      : await customerOrderApi.exportBuzzbeeBatch(
+          poFiles.value,
+          scheduleFile.value,
+          receivedDate.value,
+          previewBatch.value.output_file_name,
+          props.factoryId,
+          skippedIssueKeys.value,
+        )
     generatedScheduleBlob.value = result.blob
     generatedScheduleFileName.value = result.fileName
     scheduleGenerated.value = true
@@ -637,7 +886,11 @@ async function confirmAndGenerateSchedule() {
       row.statusLabel = '已确认'
     })
     downloadGeneratedSchedule()
-    notify(`已生成并下载 ${result.fileName}；工作簿打开密码为 2026。`)
+    notify(
+      result.passwordRequired
+        ? `已生成并下载 ${result.fileName}；工作簿打开密码为 2026。`
+        : `已生成并下载 ${result.fileName}；已保持原排期文件名和加密状态。`,
+    )
   } catch (error) {
     notify(`生成失败：${getApiErrorMessage(error)}`)
   } finally {
@@ -670,6 +923,14 @@ function handleExceptionAction(exception: ScheduleException) {
   navigate(exception.actionSection)
   notify(`静态演示：已前往“${exception.actionSection === 'preview' ? '预览与确认' : '厂区总排期'}”处理相关业务。`)
 }
+
+watch(
+  () => props.factoryId,
+  () => {
+    selectedCustomerCode.value = ''
+    resetImportBatch()
+  },
+)
 
 onBeforeUnmount(() => {
   if (noticeTimer) window.clearTimeout(noticeTimer)
@@ -812,45 +1073,89 @@ onBeforeUnmount(() => {
             <h2>PO 与客户排期导入</h2>
             <p>同时选择客户原始PO和该客户当前排期模板，系统将按客户模板映射统一字段。</p>
           </div>
-          <span class="prototype-badge">真实文件试用 · BuzzBee V1</span>
+          <span class="prototype-badge">真实文件试用 · {{ selectedCustomer ? `${selectedCustomer.name} ${selectedCustomer.version}` : '先选择客户' }}</span>
         </header>
 
+        <section class="customer-selector" data-testid="factory-customer-selector">
+          <header>
+            <span><Building2 aria-hidden="true" /></span>
+            <div>
+              <h3>先选择 {{ factoryName }} 的客户</h3>
+              <p>每个客户使用独立 PO 识别和排期写入规则；切换客户会清空当前未确认批次。</p>
+            </div>
+          </header>
+          <div v-if="availableCustomers.length" class="customer-selector__options">
+            <button
+              v-for="customer in availableCustomers"
+              :key="customer.code"
+              type="button"
+              :class="['customer-choice', { active: selectedCustomerCode === customer.code }]"
+              :aria-pressed="selectedCustomerCode === customer.code"
+              :data-testid="`customer-choice-${customer.code}`"
+              @click="selectCustomer(customer.code)"
+            >
+              <span><UserRoundCheck aria-hidden="true" /></span>
+              <div>
+                <b>{{ customer.name }}</b>
+                <small>{{ customer.poDescription }}</small>
+              </div>
+              <em>{{ selectedCustomerCode === customer.code ? '已选择' : '选择客户' }}</em>
+            </button>
+          </div>
+          <p v-else class="customer-selector__empty">当前厂区尚未配置客户映射，暂不能导入。</p>
+        </section>
+
         <ol class="wizard-steps">
-          <li class="active"><b>1</b><span>选择文件</span></li>
-          <li><b>2</b><span>解析与映射</span></li>
-          <li><b>3</b><span>预览与确认</span></li>
-          <li><b>4</b><span>输出客户排期</span></li>
+          <li :class="{ active: !selectedCustomer }"><b>1</b><span>选择客户</span></li>
+          <li :class="{ active: selectedCustomer && !poFiles.length }"><b>2</b><span>选择文件</span></li>
+          <li><b>3</b><span>解析与映射</span></li>
+          <li><b>4</b><span>预览与确认</span></li>
+          <li><b>5</b><span>输出客户排期</span></li>
         </ol>
 
         <div class="import-layout">
           <div class="import-main">
             <div class="upload-grid">
-              <article class="upload-card">
+              <article
+                :class="['upload-card', { 'upload-card--dragging': draggingUpload === 'po', 'upload-card--disabled': !selectedCustomer }]"
+                data-testid="po-drop-zone"
+                aria-label="客户原始PO拖放区"
+                @dragover.prevent="handleUploadDragOver('po', $event)"
+                @dragleave="handleUploadDragLeave('po', $event)"
+                @drop.prevent="handleDroppedFiles('po', $event)"
+              >
                 <span class="upload-card__type">文件 01 · 客户订单来源</span>
                 <div class="upload-card__icon"><FileSpreadsheet aria-hidden="true" /></div>
                 <h3>批量导入客户原始 PO</h3>
-                <p>支持一次多选普通合同与WMC首页内嵌PO，单批最多30份。</p>
+                <p>{{ selectedCustomer ? `${selectedCustomer.poDescription}；单批最多30份，也可直接拖入此区域。` : '请先选择客户，系统才会开放对应的 PO 文件类型。' }}</p>
                 <strong :title="selectedPoFileTitle">{{ selectedPoFile }}</strong>
-                <button type="button" class="button button--primary" @click="selectUpload('po')"><UploadCloud aria-hidden="true" /> 批量选择PO</button>
-                <input ref="poInput" class="visually-hidden" type="file" accept=".xlsx,.xls" multiple @change="handleSelectedFile('po', $event)">
+                <button type="button" class="button button--primary" :disabled="!selectedCustomer" @click="selectUpload('po')"><UploadCloud aria-hidden="true" /> 批量选择PO</button>
+                <input ref="poInput" class="visually-hidden" type="file" :accept="selectedCustomer?.poAccept || ''" multiple @change="handleSelectedFile('po', $event)">
               </article>
 
-              <article class="upload-card">
+              <article
+                :class="['upload-card', 'upload-card--schedule', { 'upload-card--dragging': draggingUpload === 'schedule', 'upload-card--disabled': !selectedCustomer }]"
+                data-testid="schedule-drop-zone"
+                aria-label="客户排期拖放区"
+                @dragover.prevent="handleUploadDragOver('schedule', $event)"
+                @dragleave="handleUploadDragLeave('schedule', $event)"
+                @drop.prevent="handleDroppedFiles('schedule', $event)"
+              >
                 <span class="upload-card__type">文件 02 · 客户输出模板</span>
                 <div class="upload-card__icon upload-card__icon--green"><Layers3 aria-hidden="true" /></div>
                 <h3>导入客户现有排期</h3>
-                <p>用于定位接单表、评审表及客户年度排期结构。</p>
+                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；用于定位接单、评审及 Item 表结构。` : '请先选择客户，防止把其他客户排期套入错误模板。' }}</p>
                 <strong>{{ selectedScheduleFile }}</strong>
-                <button type="button" class="button button--secondary" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
-                <input ref="scheduleInput" class="visually-hidden" type="file" accept=".xlsx" @change="handleSelectedFile('schedule', $event)">
+                <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
+                <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
               </article>
             </div>
 
             <div class="parse-banner">
               <span><Sparkles aria-hidden="true" /></span>
               <div>
-                <h3>已锁定当前 BuzzBee 映射范围</h3>
-                <p>输入：普通合同 / WMC首页内嵌 · 输出：2026年 BUZZ BEE 生产排期表；印尼排期不参与当前映射。</p>
+                <h3>{{ selectedCustomer ? `已锁定当前 ${selectedCustomer.name} 映射范围` : '等待选择客户映射' }}</h3>
+                <p>{{ selectedCustomer ? `输入：${selectedCustomer.poDescription} · 输出：${selectedCustomer.templateDescription}` : `当前厂区：${factoryName}；请选择已配置映射的客户。` }}</p>
                 <label class="received-date-field">
                   <b>来单日期</b>
                   <input v-model="receivedDate" type="date" aria-label="来单日期">
@@ -870,9 +1175,9 @@ onBeforeUnmount(() => {
                 <table class="import-queue-table">
                   <thead><tr><th>文件名</th><th>文件角色</th><th>客户</th><th>识别模板</th><th>状态</th><th>时间</th></tr></thead>
                   <tbody>
-                    <tr v-for="item in poImportQueue" :key="item.key"><td><FileSpreadsheet aria-hidden="true" /> {{ item.fileName }}</td><td>客户PO</td><td>BuzzBee</td><td>{{ item.inputTemplate }}</td><td><span class="status-chip status-chip--active">已选择</span></td><td>本批</td></tr>
-                    <tr v-if="poImportQueue.length === 0"><td><FileSpreadsheet aria-hidden="true" /> 尚未选择 PO 文件</td><td>客户PO</td><td>BuzzBee</td><td>解析后识别</td><td><span class="status-chip status-chip--warning">待选择</span></td><td>本批</td></tr>
-                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ selectedScheduleFile }}</td><td>客户排期</td><td>BuzzBee / 当前厂区</td><td>{{ previewBatch?.target_template || 'PRODUCTION_SCHEDULE_V1' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
+                    <tr v-for="item in poImportQueue" :key="item.key"><td><FileSpreadsheet aria-hidden="true" /> {{ item.fileName }}</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>{{ item.inputTemplate }}</td><td><span class="status-chip status-chip--active">已选择</span></td><td>本批</td></tr>
+                    <tr v-if="poImportQueue.length === 0"><td><FileSpreadsheet aria-hidden="true" /> 尚未选择 PO 文件</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>解析后识别</td><td><span class="status-chip status-chip--warning">待选择</span></td><td>本批</td></tr>
+                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ selectedScheduleFile }}</td><td>客户排期</td><td>{{ selectedCustomerName }} / {{ factoryName }}</td><td>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -883,10 +1188,10 @@ onBeforeUnmount(() => {
             <article class="panel-card guide-card">
               <header class="panel-card__head"><div><h3>本次导入检查</h3><p>进入预览前</p></div></header>
               <ul>
-                <li><CheckCircle2 aria-hidden="true" /><div><b>客户已选择</b><span>BuzzBee · {{ factoryName }}</span></div></li>
+                <li><component :is="selectedCustomer ? CheckCircle2 : CircleAlert" :class="{ warning: !selectedCustomer }" aria-hidden="true" /><div><b>客户{{ selectedCustomer ? '已选择' : '待选择' }}</b><span>{{ selectedCustomerName }} · {{ factoryName }}</span></div></li>
                 <li><component :is="poFiles.length && scheduleFile ? CheckCircle2 : CircleAlert" :class="{ warning: !poFiles.length || !scheduleFile }" aria-hidden="true" /><div><b>批量PO与排期{{ poFiles.length && scheduleFile ? '齐全' : '待选择' }}</b><span>{{ poFiles.length }} 份PO + 1份客户排期</span></div></li>
-                <li><component :is="previewBatch ? CheckCircle2 : CircleAlert" :class="{ warning: !previewBatch }" aria-hidden="true" /><div><b>模板{{ previewBatch ? '已识别' : '待解析' }}</b><span>{{ previewBatch?.input_template || '普通合同 / WMC首页内嵌' }}</span></div></li>
-                <li><CircleAlert aria-hidden="true" class="warning" /><div><b>生成前人工确认</b><span>重复订单、日期差异、行Q与客Q</span></div></li>
+                <li><component :is="previewBatch ? CheckCircle2 : CircleAlert" :class="{ warning: !previewBatch }" aria-hidden="true" /><div><b>模板{{ previewBatch ? '已识别' : '待解析' }}</b><span>{{ previewBatch?.input_template || selectedCustomer?.poDescription || '先选择客户' }}</span></div></li>
+                <li><CircleAlert aria-hidden="true" class="warning" /><div><b>生成前检查</b><span>{{ preflightConfirmationText }}</span></div></li>
               </ul>
             </article>
 
@@ -911,8 +1216,8 @@ onBeforeUnmount(() => {
         <header class="view-heading view-heading--compact">
           <div>
             <span class="eyebrow"><ClipboardCheck aria-hidden="true" /> 预览与校验</span>
-            <h2>{{ previewBatch ? 'BuzzBee PO 映射预览' : '尚未建立真实预览批次' }}</h2>
-            <p>来源：<b>{{ previewBatch?.input_template || '请先导入 PO 与排期' }}</b> · 输出目标：<b>{{ previewBatch?.target_template || 'BUZZBEE_PRODUCTION_SCHEDULE_V1' }}</b></p>
+            <h2>{{ previewBatch ? `${previewCustomerName} PO 映射预览` : '尚未建立真实预览批次' }}</h2>
+            <p>来源：<b>{{ previewBatch?.input_template || '请先导入 PO 与排期' }}</b> · 输出目标：<b>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</b></p>
           </div>
           <div class="view-heading__actions">
             <button v-if="orderSummary.blocked > 0" type="button" class="button button--ghost" @click="resolveBlockedRow">查看阻断处理方式</button>
@@ -921,11 +1226,33 @@ onBeforeUnmount(() => {
         </header>
 
         <ol class="wizard-steps wizard-steps--preview">
+          <li class="done"><b>✓</b><span>选择客户</span></li>
           <li class="done"><b>✓</b><span>选择文件</span></li>
           <li class="done"><b>✓</b><span>解析与映射</span></li>
-          <li :class="{ active: !scheduleGenerated, done: scheduleGenerated }"><b>{{ scheduleGenerated ? '✓' : '3' }}</b><span>预览与确认</span></li>
-          <li :class="{ active: scheduleGenerated }"><b>4</b><span>输出客户排期</span></li>
+          <li :class="{ active: !scheduleGenerated, done: scheduleGenerated }"><b>{{ scheduleGenerated ? '✓' : '4' }}</b><span>预览与确认</span></li>
+          <li :class="{ active: scheduleGenerated }"><b>5</b><span>输出客户排期</span></li>
         </ol>
+
+        <article
+          v-if="previewBatch && !scheduleGenerated"
+          class="preview-next-step"
+          data-testid="preview-next-step"
+        >
+          <span><FileCheck2 aria-hidden="true" /></span>
+          <div>
+            <strong>解析已完成，当前尚未输出排期</strong>
+            <p>请核对下方明细；无阻断项后点击“生成并下载客户排期”，系统才会写入并下载新的排期文件。</p>
+          </div>
+          <button
+            type="button"
+            class="button button--primary"
+            :disabled="orderSummary.blocked > 0 || exportingSchedule"
+            @click="confirmAndGenerateSchedule"
+          >
+            <Download aria-hidden="true" />
+            {{ exportingSchedule ? '正在生成…' : orderSummary.blocked > 0 ? '处理阻断后生成' : '生成并下载客户排期' }}
+          </button>
+        </article>
 
         <div class="summary-strip">
           <article><span>总行数</span><strong>{{ orderSummary.total }}</strong><small>订单明细</small></article>
@@ -941,11 +1268,11 @@ onBeforeUnmount(() => {
             <label><input v-model="includeWarning" type="checkbox"> 数据警告</label>
             <label><input v-model="includeValid" type="checkbox"> 已校验通过</label>
             <div class="filter-divider" />
-            <label class="filter-field">客户 / 市场<select><option>全部 BuzzBee</option><option>WMC</option><option>AAFES</option></select></label>
+            <label class="filter-field">客户 / 市场<select><option>全部 {{ previewCustomerName }}</option><option v-for="market in previewCustomerMarkets" :key="market">{{ market }}</option></select></label>
             <label class="filter-field">模板版本<select><option>V1.0 当前版本</option></select></label>
             <div class="logic-note">
               <Sparkles aria-hidden="true" />
-              <div><b>当前两套输入规则已区分</b><p>WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。</p></div>
+              <div><b>{{ previewRuleNotice.title }}</b><p>{{ previewRuleNotice.description }}</p></div>
             </div>
           </aside>
 
@@ -969,7 +1296,11 @@ onBeforeUnmount(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in filteredRows" :key="row.id" :class="`row-${row.status}`">
+                  <tr
+                    v-for="row in filteredRows"
+                    :key="row.id"
+                    :class="[`row-${row.status}`, { 'row-parent-product': row.rowRole === 'parent' }]"
+                  >
                     <td class="sticky-left"><span :class="['status-chip', `status-chip--${row.status}`]">{{ row.statusLabel }}</span></td>
                     <td class="resolution-column">
                       <div v-if="row.issues?.some((issue) => issue.severity === 'blocked')" class="issue-resolution-list">
@@ -987,9 +1318,14 @@ onBeforeUnmount(() => {
                       </div>
                       <span v-else class="no-resolution-needed">—</span>
                     </td>
-                    <td>{{ row.receivedDate }}</td><td class="mono">{{ row.poNo }}</td><td class="mono">{{ row.contractNo }}</td><td>{{ row.customerCountry }}</td><td class="mono">{{ row.productNo }}</td>
+                    <td>{{ row.receivedDate }}</td><td class="mono">{{ row.poNo }}</td><td class="mono">{{ row.contractNo }}</td><td>{{ row.customerCountry }}</td>
+                    <td :class="['mono', 'product-hierarchy-cell', { 'product-hierarchy-cell--child': row.rowRole === 'detail' && row.parentProductNo }]">
+                      <span v-if="row.rowRole === 'parent'" class="product-role-badge product-role-badge--parent">大货号</span>
+                      <span v-else-if="row.parentProductNo" class="product-role-badge product-role-badge--child">小货号</span>
+                      <b>{{ row.productNo }}</b>
+                    </td>
                     <td :class="{ 'cell-issue': row.productNameZh === '待映射' }">{{ row.productNameZh }}</td><td>{{ row.productNameEn }}</td><td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td>
-                    <td>{{ row.standard }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.packaging }}</td><td>{{ row.lineQ }}</td><td>{{ row.customerQ }}</td><td>{{ row.requestedShipDate }}</td>
+                    <td>{{ row.standard }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.packaging }}</td><td>{{ row.lineQ }}</td><td>{{ row.customerQ }}</td><td>{{ row.requestedShipDate || '待补充' }}</td>
                     <td><button type="button" class="trace-button" @click="traceRow = row">查看来源</button></td>
                   </tr>
                 </tbody>
@@ -1052,7 +1388,7 @@ onBeforeUnmount(() => {
               <tbody>
                 <tr v-for="row in filteredRows" :key="`ledger-${row.id}`">
                   <td class="mono strong">{{ row.poNo }}</td><td class="mono">{{ row.contractNo }}</td><td>{{ row.customerCountry }}</td><td class="mono">{{ row.productNo }}</td><td>{{ row.productNameZh }}</td>
-                  <td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.requestedShipDate }}</td>
+                  <td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.requestedShipDate || '待补充' }}</td>
                   <td><span :class="['status-chip', `status-chip--${row.status}`]">{{ row.status === 'valid' ? '已确认' : row.statusLabel }}</span></td>
                   <td>{{ row.status === 'valid' ? 'BuzzBee排期_V1.xlsx' : '尚未生成' }}</td><td><button type="button" class="version-button"><History aria-hidden="true" /> V1</button></td>
                   <td><button type="button" class="trace-button" @click="traceRow = row">查看</button></td>
@@ -1115,7 +1451,7 @@ onBeforeUnmount(() => {
                     <div><dt>P/O#</dt><dd>{{ exception.row.poNo }}</dd></div>
                     <div><dt>Contract No.</dt><dd>{{ exception.row.contractNo }}</dd></div>
                     <div><dt>产品</dt><dd>{{ exception.row.productNo }} · {{ exception.row.productNameZh }}</dd></div>
-                    <div><dt>走货期</dt><dd>{{ exception.row.requestedShipDate }}</dd></div>
+                    <div><dt>走货期</dt><dd>{{ exception.row.requestedShipDate || '待补充' }}</dd></div>
                     <div><dt>生产</dt><dd>{{ exception.row.productionStatus }} · {{ exception.row.productionProgress }}%</dd></div>
                     <div><dt>需求版本</dt><dd>V1</dd></div>
                   </dl>
@@ -1279,7 +1615,7 @@ onBeforeUnmount(() => {
                 <tbody>
                   <tr v-for="row in filteredFactoryScheduleRows" :key="`schedule-${row.id}`">
                     <td><span :class="['delivery-chip', `delivery-chip--${row.deliveryStatus}`]">{{ row.deliveryStatusLabel }}</span></td>
-                    <td class="mono strong">{{ row.requestedShipDate }}</td>
+                    <td class="mono strong">{{ row.requestedShipDate || '待补充' }}</td>
                     <td>{{ row.customerCountry }}</td>
                     <td class="mono">{{ row.poNo }}</td>
                     <td class="mono">{{ row.contractNo }}</td>
@@ -1932,13 +2268,158 @@ tbody tr:hover td {
 
 .wizard-steps {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   margin: 0 0 20px;
   border: 1px solid #cfd2df;
   border-radius: 8px;
   background: #fff;
   padding: 14px 20px;
   list-style: none;
+}
+
+.customer-selector {
+  display: grid;
+  grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr);
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 14px;
+  border: 1px solid #b8c7e5;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f8faff, #f2fff9);
+  padding: 15px 17px;
+}
+
+.customer-selector > header {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.customer-selector > header > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  background: #e1e9ff;
+  color: #003d9b;
+}
+
+.customer-selector > header svg {
+  width: 20px;
+  height: 20px;
+}
+
+.customer-selector h3,
+.customer-selector p {
+  margin: 0;
+}
+
+.customer-selector h3 {
+  font-size: 15px;
+}
+
+.customer-selector p {
+  margin-top: 3px;
+  color: #596070;
+  line-height: 1.5;
+}
+
+.customer-selector__options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.customer-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid #cfd5e4;
+  border-radius: 9px;
+  background: #fff;
+  padding: 11px 12px;
+  color: #343742;
+  text-align: left;
+  transition:
+    transform var(--order-motion-fast) var(--order-motion-ease),
+    border-color var(--order-motion-fast) ease,
+    background-color var(--order-motion-fast) ease,
+    box-shadow var(--order-motion-normal) var(--order-motion-ease);
+}
+
+.customer-choice:hover {
+  border-color: #7e9bd2;
+  box-shadow: 0 9px 22px rgb(31 55 102 / 10%);
+  transform: translateY(-1px);
+}
+
+.customer-choice.active {
+  border-color: #007a58;
+  background: #edfff7;
+  box-shadow: inset 0 0 0 1px rgb(0 122 88 / 18%);
+}
+
+.customer-choice > span {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  background: #edf0ff;
+  color: #003d9b;
+}
+
+.customer-choice.active > span {
+  background: #d5f9e6;
+  color: #006c47;
+}
+
+.customer-choice svg {
+  width: 17px;
+  height: 17px;
+}
+
+.customer-choice b,
+.customer-choice small {
+  display: block;
+}
+
+.customer-choice b {
+  font-size: 14px;
+}
+
+.customer-choice small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #737685;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer-choice em {
+  border-radius: 999px;
+  background: #edf0ff;
+  padding: 4px 7px;
+  color: #0040a2;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.customer-choice.active em {
+  background: #d5f9e6;
+  color: #005235;
+}
+
+.customer-selector__empty {
+  border-radius: 7px;
+  background: #fff0c7;
+  padding: 11px;
+  color: #674c00 !important;
 }
 
 .wizard-steps li {
@@ -2030,6 +2511,32 @@ tbody tr:hover td {
   background: #f8f9ff;
 }
 
+.upload-card--dragging {
+  border-color: #003d9b;
+  background: #eef3ff;
+  box-shadow: inset 0 0 0 2px rgb(0 61 155 / 9%);
+}
+
+.upload-card--schedule.upload-card--dragging {
+  border-color: #007a50;
+  background: #effcf6;
+  box-shadow: inset 0 0 0 2px rgb(0 122 80 / 9%);
+}
+
+.upload-card--disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
+.upload-card--disabled:hover {
+  box-shadow: none;
+  transform: none;
+}
+
+.upload-card--dragging .upload-card__icon {
+  transform: scale(1.06);
+}
+
 .upload-card__type {
   align-self: flex-start;
   color: #737685;
@@ -2048,6 +2555,7 @@ tbody tr:hover td {
   border-radius: 50%;
   background: #dae2ff;
   color: #003d9b;
+  transition: transform 160ms ease;
 }
 
 .upload-card__icon--green {
@@ -2364,6 +2872,50 @@ tbody tr:hover td {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
   gap: 12px;
+}
+
+.preview-next-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 13px 15px;
+  border: 1px solid #8fc8ff;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #eef7ff 0%, #f8fbff 100%);
+  box-shadow: 0 8px 18px rgb(0 76 165 / 8%);
+}
+
+.preview-next-step > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 10px;
+  background: #dcecff;
+  color: #004ca5;
+}
+
+.preview-next-step > span svg {
+  width: 20px;
+  height: 20px;
+}
+
+.preview-next-step strong,
+.preview-next-step p {
+  margin: 0;
+}
+
+.preview-next-step strong {
+  color: #12345b;
+  font-size: 14px;
+}
+
+.preview-next-step p {
+  margin-top: 3px;
+  color: #52667e;
+  font-size: 11px;
 }
 
 .generated-output-card {
@@ -2719,6 +3271,51 @@ tbody tr:hover td {
 
 .unified-table .row-blocked td.sticky-left {
   background: #fff8f7;
+}
+
+.unified-table .row-parent-product td {
+  border-top: 2px solid #8dcbb7;
+  background: #edf9f4;
+  font-weight: 800;
+}
+
+.unified-table .row-parent-product td.sticky-left {
+  background: #edf9f4;
+}
+
+.product-hierarchy-cell {
+  min-width: 150px;
+  white-space: nowrap;
+}
+
+.product-hierarchy-cell--child {
+  padding-left: 25px !important;
+}
+
+.product-role-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 7px;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.product-role-badge--parent {
+  border-color: #70c7aa;
+  background: #d8f5e9;
+  color: #005238;
+}
+
+.product-role-badge--child {
+  border-color: #bdc8de;
+  background: #f2f5fb;
+  color: #44536f;
 }
 
 .number {
@@ -4309,6 +4906,7 @@ tbody tr:hover td {
 
   .dashboard-grid,
   .import-layout,
+  .customer-selector,
   .schedule-layout,
   .factory-schedule-layout,
   .exception-layout {
@@ -4377,6 +4975,14 @@ tbody tr:hover td {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
+  .preview-next-step {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .preview-next-step .button {
+    grid-column: 1 / -1;
+  }
+
   .generated-output-card__actions {
     grid-column: 1 / -1;
     grid-template-columns: 1fr 1fr;
@@ -4439,6 +5045,10 @@ tbody tr:hover td {
   .customer-summary-grid,
   .exception-kpis,
   .exception-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-selector__options {
     grid-template-columns: 1fr;
   }
 
@@ -4513,6 +5123,18 @@ tbody tr:hover td {
     grid-template-columns: 1fr;
   }
 
+  .preview-next-step {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-next-step > span {
+    display: none;
+  }
+
+  .preview-next-step .button {
+    grid-column: auto;
+  }
+
   .generated-output-card__icon {
     display: none;
   }
@@ -4524,6 +5146,219 @@ tbody tr:hover td {
 
   .inline-search {
     width: 100%;
+  }
+}
+
+/* Readability and interaction layer aligned with the Internal Quote Desk. */
+.order-workspace {
+  --order-motion-fast: 160ms;
+  --order-motion-normal: 220ms;
+  --order-motion-ease: cubic-bezier(.2, .8, .2, 1);
+
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.order-workspace :is(p, li, label, dt, dd, th, td, input, select, textarea, span, b, em) {
+  font-size: 12px !important;
+}
+
+.order-workspace small {
+  font-size: 11px !important;
+}
+
+.order-workspace :is(button, .button) {
+  font-size: 13px !important;
+}
+
+.order-workspace h3 {
+  font-size: 15px !important;
+  line-height: 1.4;
+}
+
+.order-workspace h4 {
+  font-size: 13px !important;
+}
+
+.view-heading h2 {
+  font-size: clamp(28px, 2.7vw, 38px);
+}
+
+.view-heading p {
+  font-size: 14px !important;
+}
+
+.upload-card h3 {
+  font-size: 18px !important;
+}
+
+.upload-card p,
+.upload-card strong,
+.upload-card__type {
+  font-size: 12px !important;
+}
+
+.order-workspace :is(
+  .metric-card,
+  .flow-card,
+  .panel-card,
+  .upload-card,
+  .summary-strip article,
+  .ledger-kpis article,
+  .merge-summary-grid article,
+  .exception-kpis article,
+  .factory-schedule-kpis article,
+  .schedule-files article,
+  .customer-summary-grid > article,
+  .month-schedule-section,
+  .customer-month-section,
+  .generated-output-card,
+  .logic-note,
+  .mapping-card,
+  .output-card,
+  .scope-card,
+  .schedule-definition-card,
+  .downstream-note
+) {
+  transition:
+    transform var(--order-motion-normal) var(--order-motion-ease),
+    border-color var(--order-motion-fast) ease,
+    background-color var(--order-motion-fast) ease,
+    box-shadow var(--order-motion-normal) var(--order-motion-ease);
+}
+
+.order-workspace :is(
+  .metric-card,
+  .flow-card,
+  .panel-card,
+  .summary-strip article,
+  .ledger-kpis article,
+  .merge-summary-grid article,
+  .exception-kpis article,
+  .factory-schedule-kpis article,
+  .schedule-files article,
+  .customer-summary-grid > article
+):hover {
+  border-color: #aeb4c8;
+  box-shadow: 0 12px 28px rgb(31 38 57 / 10%);
+  transform: translateY(-2px);
+}
+
+.order-workspace :is(
+  .button,
+  .flow-enter,
+  .text-button,
+  .version-button,
+  .icon-square,
+  .exception-item__actions button,
+  .customer-summary-grid__head button,
+  .table-footer button,
+  .month-card-grid button
+) {
+  transition:
+    transform var(--order-motion-fast) var(--order-motion-ease),
+    border-color var(--order-motion-fast) ease,
+    background-color var(--order-motion-fast) ease,
+    color var(--order-motion-fast) ease,
+    box-shadow var(--order-motion-normal) var(--order-motion-ease);
+}
+
+.order-workspace :is(
+  .button,
+  .flow-enter,
+  .text-button,
+  .version-button,
+  .icon-square,
+  .exception-item__actions button,
+  .customer-summary-grid__head button,
+  .table-footer button,
+  .month-card-grid button
+):not(:disabled):active {
+  transform: translateY(0) scale(.975);
+}
+
+.order-workspace button svg {
+  transition: transform var(--order-motion-fast) var(--order-motion-ease);
+}
+
+.order-workspace button:hover svg {
+  transform: translateX(2px);
+}
+
+.order-workspace tbody tr td {
+  transition: background-color var(--order-motion-fast) ease, color var(--order-motion-fast) ease;
+}
+
+.upload-card {
+  transition:
+    transform var(--order-motion-normal) var(--order-motion-ease),
+    border-color var(--order-motion-fast) ease,
+    background-color var(--order-motion-fast) ease,
+    box-shadow var(--order-motion-normal) var(--order-motion-ease);
+}
+
+.upload-card:hover {
+  box-shadow: 0 12px 28px rgb(31 38 57 / 9%);
+  transform: translateY(-2px);
+}
+
+.upload-card--dragging {
+  animation: order-drop-pulse 720ms ease-in-out infinite alternate;
+  transform: translateY(-2px) scale(1.005);
+}
+
+.wizard-steps li.active b {
+  animation: order-step-pop 220ms var(--order-motion-ease);
+}
+
+.order-panel-enter-active .view-heading {
+  animation: order-rise-in 260ms var(--order-motion-ease) both;
+}
+
+.order-panel-enter-active :is(.wizard-steps, .metric-grid, .summary-strip, .ledger-kpis, .exception-kpis, .factory-schedule-kpis) {
+  animation: order-rise-in 300ms 45ms var(--order-motion-ease) both;
+}
+
+.order-panel-enter-active :is(.dashboard-grid, .import-layout, .preview-layout, .schedule-layout, .factory-schedule-layout, .exception-layout, .ledger-card) {
+  animation: order-rise-in 340ms 90ms var(--order-motion-ease) both;
+}
+
+@keyframes order-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes order-step-pop {
+  50% {
+    transform: scale(1.12);
+  }
+}
+
+@keyframes order-drop-pulse {
+  from {
+    box-shadow: inset 0 0 0 2px rgb(0 61 155 / 9%), 0 8px 20px rgb(0 61 155 / 8%);
+  }
+
+  to {
+    box-shadow: inset 0 0 0 3px rgb(0 61 155 / 15%), 0 14px 30px rgb(0 61 155 / 14%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .order-workspace *,
+  .order-workspace *::before,
+  .order-workspace *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
   }
 }
 </style>

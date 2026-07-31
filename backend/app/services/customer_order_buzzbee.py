@@ -670,6 +670,123 @@ class OoxmlSchedule:
             standalone=True,
         )
 
+    def _highlight_style_index(
+        self,
+        base_style_index: int,
+        *,
+        fill_rgb: str,
+    ) -> int:
+        normalized_rgb = fill_rgb.upper()
+        cache = getattr(self, "_highlight_style_cache", None)
+        if cache is None:
+            cache = {}
+            self._highlight_style_cache = cache
+        cache_key = (base_style_index, normalized_rgb)
+        if cache_key in cache:
+            return cache[cache_key]
+
+        styles_path = "xl/styles.xml"
+        root = etree.fromstring(self.parts[styles_path])
+        fills = root.find("m:fills", NS)
+        cell_xfs = root.find("m:cellXfs", NS)
+        if fills is None or cell_xfs is None:
+            raise CustomerOrderWorkbookError("工作簿样式表缺少 fills 或 cellXfs")
+
+        fill_id: int | None = None
+        for index, fill in enumerate(fills.findall("m:fill", NS)):
+            pattern = fill.find("m:patternFill", NS)
+            foreground = pattern.find("m:fgColor", NS) if pattern is not None else None
+            if (
+                pattern is not None
+                and pattern.get("patternType") == "solid"
+                and foreground is not None
+                and foreground.get("rgb", "").upper() == normalized_rgb
+            ):
+                fill_id = index
+                break
+        if fill_id is None:
+            fill_id = len(fills.findall("m:fill", NS))
+            fill = etree.SubElement(fills, f"{{{MAIN_NS}}}fill")
+            pattern = etree.SubElement(
+                fill,
+                f"{{{MAIN_NS}}}patternFill",
+                patternType="solid",
+            )
+            etree.SubElement(
+                pattern,
+                f"{{{MAIN_NS}}}fgColor",
+                rgb=normalized_rgb,
+            )
+            etree.SubElement(
+                pattern,
+                f"{{{MAIN_NS}}}bgColor",
+                indexed="64",
+            )
+            fills.set("count", str(fill_id + 1))
+
+        xfs = cell_xfs.findall("m:xf", NS)
+        if not xfs:
+            raise CustomerOrderWorkbookError("工作簿样式表没有可复用的单元格格式")
+        if base_style_index < 0 or base_style_index >= len(xfs):
+            base_style_index = 0
+        source = xfs[base_style_index]
+        if int(source.get("fillId", "0")) == fill_id:
+            cache[cache_key] = base_style_index
+            return base_style_index
+
+        highlighted = deepcopy(source)
+        highlighted.set("fillId", str(fill_id))
+        highlighted.set("applyFill", "1")
+        cell_xfs.append(highlighted)
+        highlighted_index = len(xfs)
+        cell_xfs.set("count", str(highlighted_index + 1))
+        self.parts[styles_path] = etree.tostring(
+            root,
+            xml_declaration=True,
+            encoding="UTF-8",
+            standalone=True,
+        )
+        cache[cache_key] = highlighted_index
+        return highlighted_index
+
+    def highlight_row(
+        self,
+        sheet_name: str,
+        row_number: int,
+        *,
+        fill_rgb: str = "FFFFFF00",
+    ) -> None:
+        """Apply a visible fill to every materialized cell in one inserted row."""
+        path = self.sheet_paths[sheet_name]
+        root = etree.fromstring(self.parts[path])
+        row = next(
+            (
+                item
+                for item in root.findall("m:sheetData/m:row", NS)
+                if int(item.get("r", "0")) == row_number
+            ),
+            None,
+        )
+        if row is None:
+            raise CustomerOrderWorkbookError(f"{sheet_name} 第 {row_number} 行不存在")
+        for cell in row.findall("m:c", NS):
+            base_style_index = int(cell.get("s", "0"))
+            cell.set(
+                "s",
+                str(
+                    self._highlight_style_index(
+                        base_style_index,
+                        fill_rgb=fill_rgb,
+                    )
+                ),
+            )
+        self.parts[path] = etree.tostring(
+            root,
+            xml_declaration=True,
+            encoding="UTF-8",
+            standalone=True,
+        )
+
     def insert_row_at(
         self,
         sheet_name: str,
@@ -750,6 +867,40 @@ class OoxmlSchedule:
         )
 
     def set_recalculation(self) -> None:
+        # Row insertion invalidates the workbook's cached calculation chain.
+        # Excel may refuse to open an otherwise valid OOXML package when the
+        # chain still points at cells that moved or were replaced, so remove
+        # the optional part and let Excel rebuild it on first open.
+        self.parts.pop("xl/calcChain.xml", None)
+        self.part_info.pop("xl/calcChain.xml", None)
+
+        relationships_path = "xl/_rels/workbook.xml.rels"
+        relationships = etree.fromstring(self.parts[relationships_path])
+        for relationship in list(relationships):
+            if (
+                relationship.get("Type", "").endswith("/calcChain")
+                or relationship.get("Target", "").replace("\\", "/").endswith("calcChain.xml")
+            ):
+                relationships.remove(relationship)
+        self.parts[relationships_path] = etree.tostring(
+            relationships,
+            xml_declaration=True,
+            encoding="UTF-8",
+            standalone=True,
+        )
+
+        content_types_path = "[Content_Types].xml"
+        content_types = etree.fromstring(self.parts[content_types_path])
+        for override in list(content_types):
+            if override.get("PartName", "").endswith("/xl/calcChain.xml"):
+                content_types.remove(override)
+        self.parts[content_types_path] = etree.tostring(
+            content_types,
+            xml_declaration=True,
+            encoding="UTF-8",
+            standalone=True,
+        )
+
         root = etree.fromstring(self.parts["xl/workbook.xml"])
         calc_pr = root.find("m:calcPr", NS)
         if calc_pr is None:

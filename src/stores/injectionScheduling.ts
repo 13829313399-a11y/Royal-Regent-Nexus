@@ -21,7 +21,9 @@ import type {
   ProductionCalendar,
   ScheduleMoveRequest,
   SchedulePlanVersion,
+  ScheduleFieldScheme,
   ScheduleTask,
+  ScheduleWorksheetDetails,
   SchedulingDensity,
   SchedulingFilters,
   SchedulingKpi,
@@ -42,6 +44,11 @@ const defaultFilters = (): SchedulingFilters => ({
   machineClass: 'all',
   state: 'all',
   exceptionsOnly: false,
+  incompleteOnly: false,
+  idleOnly: false,
+  taskScope: 'all',
+  deliveryFrom: '',
+  deliveryTo: '',
 })
 
 function emptyPlan(factoryId: ProductionFactoryContextId): SchedulePlanVersion {
@@ -63,6 +70,46 @@ function cloneSnapshot(snapshot: SchedulingSnapshot): SchedulingSnapshot {
   return JSON.parse(JSON.stringify(snapshot)) as SchedulingSnapshot
 }
 
+function normalizeWorksheet(value: ScheduleWorksheetDetails | null | undefined): ScheduleWorksheetDetails {
+  return value && typeof value === 'object' ? value : {}
+}
+
+function isRevisionConflict(error: unknown) {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'response' in error
+    && (error as { response?: { status?: number } }).response?.status === 409,
+  )
+}
+
+function taskMatchesFilters(
+  task: ScheduleTask,
+  filters: SchedulingFilters,
+  search: string,
+  machineMatchesSearch: boolean,
+) {
+  if (filters.taskScope === 'current' && !task.current) return false
+  if (filters.taskScope === 'future' && task.current) return false
+  if (filters.incompleteOnly && task.risk !== 'incomplete') return false
+  if (filters.exceptionsOnly && !['overdue', 'urgent', 'incomplete', 'warning'].includes(task.risk)) return false
+  const deliveryDate = (task.worksheet.deliveryDueAt || task.timing.deliveryDueAt || '').slice(0, 10)
+  if (filters.deliveryFrom && (!deliveryDate || deliveryDate < filters.deliveryFrom)) return false
+  if (filters.deliveryTo && (!deliveryDate || deliveryDate > filters.deliveryTo)) return false
+  if (!search || machineMatchesSearch) return true
+  return [
+    task.requirement.mold.moldNo,
+    task.requirement.productName,
+    task.requirement.orderNo,
+    task.requirement.itemNo ?? '',
+    task.requirement.color,
+    task.requirement.material,
+    task.worksheet.warehouse ?? '',
+    task.worksheet.machineClassRequirement ?? '',
+    task.worksheet.remark ?? '',
+  ].some((value) => value.toLocaleLowerCase().includes(search))
+}
+
 export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
   state: () => ({
     repository: markRaw(injectionSchedulingRepository) as InjectionSchedulingRepository,
@@ -79,9 +126,12 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
     tasks: [] as ScheduleTask[],
     backlog: [] as BacklogOrder[],
     draftSnapshots: {} as Partial<Record<ProductionFactoryContextId, SchedulingSnapshot>>,
-    viewMode: 'board' as SchedulingViewMode,
+    viewMode: 'spreadsheet' as SchedulingViewMode,
     density: 'compact' as SchedulingDensity,
+    fieldScheme: 'full' as ScheduleFieldScheme,
+    columnChooserOpen: false,
     bigScreen: false,
+    workspaceBeforeBigScreen: null as SchedulingSnapshot | null,
     filters: defaultFilters(),
     loading: true,
     selectedTaskId: '',
@@ -125,28 +175,57 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
       for (const bucket of result.values()) bucket.sort((left, right) => left.sequence - right.sequence)
       return result
     },
+    visibleTasksByMachine(state) {
+      const search = this.filters.search.trim().toLocaleLowerCase()
+      const result = new Map<string, ScheduleTask[]>()
+      for (const machine of state.machines) {
+        const machineMatchesSearch = Boolean(search) && [
+          machine.name,
+          machine.code,
+          machine.capability.machineClass,
+          machine.kind,
+          machine.restriction,
+        ].some((value) => value.toLocaleLowerCase().includes(search))
+        const machineTasks = this.tasksByMachine.get(machine.id) ?? []
+        result.set(
+          machine.id,
+          machineTasks.filter((task) => taskMatchesFilters(
+            task,
+            state.filters,
+            search,
+            machineMatchesSearch,
+          )),
+        )
+      }
+      return result
+    },
     visibleMachines(): InjectionMachine[] {
       const search = this.filters.search.trim().toLocaleLowerCase()
       return this.machines.filter((machine) => {
         const machineTasks = this.tasksByMachine.get(machine.id) ?? []
-        const matchesSearch = !search || [
+        const visibleTasks = this.visibleTasksByMachine.get(machine.id) ?? []
+        const machineMatchesSearch = !search || [
           machine.name,
           machine.code,
           machine.capability.machineClass,
+          machine.kind,
           machine.restriction,
-          ...machineTasks.flatMap((task) => [
-            task.requirement.mold.moldNo,
-            task.requirement.productName,
-            task.requirement.orderNo,
-          ]),
         ].some((value) => value.toLocaleLowerCase().includes(search))
         const matchesType = this.filters.machineClass === 'all'
           || machine.capability.machineClass === this.filters.machineClass
         const matchesState = this.filters.state === 'all' || machine.state === this.filters.state
+        const matchesIdle = !this.filters.idleOnly || machineTasks.length === 0
         const matchesException = !this.filters.exceptionsOnly
           || ['risk', 'urgent', 'fault', 'maintenance'].includes(machine.state)
-          || machineTasks.some((task) => ['overdue', 'urgent', 'incomplete'].includes(task.risk))
-        return matchesSearch && matchesType && matchesState && matchesException
+          || visibleTasks.some((task) => ['overdue', 'urgent', 'incomplete', 'warning'].includes(task.risk))
+        const hasTaskMatch = visibleTasks.length > 0
+        const taskFiltersActive = this.filters.taskScope !== 'all'
+          || this.filters.incompleteOnly
+          || Boolean(this.filters.deliveryFrom)
+          || Boolean(this.filters.deliveryTo)
+        const matchesSearch = machineMatchesSearch || hasTaskMatch
+        const matchesTaskFilters = !taskFiltersActive || machineTasks.length === 0 || hasTaskMatch
+        return matchesSearch && matchesType && matchesState && matchesIdle && matchesException && matchesTaskFilters
       })
     },
     visibleBacklog(state): BacklogOrder[] {
@@ -159,6 +238,8 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
           order.requirement.orderNo,
           order.requirement.color,
           order.requirement.material,
+          order.requirement.itemNo ?? '',
+          order.worksheet.warehouse ?? '',
         ].some((value) => value.toLocaleLowerCase().includes(search))
       ))
     },
@@ -188,8 +269,14 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
       this.calendar = snapshot?.calendar ?? emptyCalendar()
       this.kpis = snapshot?.kpis ?? []
       this.machines = snapshot?.machines ?? []
-      this.tasks = snapshot?.tasks ?? []
-      this.backlog = snapshot?.backlog ?? []
+      this.tasks = (snapshot?.tasks ?? []).map((task) => ({
+        ...task,
+        worksheet: normalizeWorksheet(task.worksheet),
+      }))
+      this.backlog = (snapshot?.backlog ?? []).map((order) => ({
+        ...order,
+        worksheet: normalizeWorksheet(order.worksheet),
+      }))
     },
     currentSnapshot(): SchedulingSnapshot {
       return {
@@ -215,6 +302,8 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
       this.backlogOpen = false
       this.optimizerOpen = false
       this.importOpen = false
+      this.bigScreen = false
+      this.workspaceBeforeBigScreen = null
       this.filters = defaultFilters()
       await new Promise((resolve) => window.setTimeout(resolve, 60))
 
@@ -390,7 +479,11 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
         this.pendingMoveValidation = {
           allowed: false,
           eligibility,
-          reasons: [getApiErrorMessage(error)],
+          reasons: [
+            isRevisionConflict(error)
+              ? '草案版本冲突，请刷新当前厂区快照后重试'
+              : getApiErrorMessage(error),
+          ],
           affectedTaskCount: 0,
         }
       }
@@ -499,6 +592,7 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
           current: false,
           locked: false,
           remark: '由前端候选机台流程加入草案；正式排程须由后端按相同 factoryId 与 revision 复核。',
+          worksheet: normalizeWorksheet(order.worksheet),
         })
         this.backlog = this.backlog.filter((item) => item.id !== order.id)
         this.selectedBacklogId = ''
@@ -527,7 +621,11 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
         this.showToast('排程草案已保存', `后端已保存 r${saved.revision}，尚未发布。`, 'teal')
       } catch (error) {
         this.applySnapshot(before, this.factoryId)
-        this.showToast('草案保存失败', getApiErrorMessage(error), 'amber')
+        this.showToast(
+          isRevisionConflict(error) ? '草案版本冲突' : '草案保存失败',
+          isRevisionConflict(error) ? '已有其他人员更新排程，请刷新当前厂区快照后再调整。' : getApiErrorMessage(error),
+          'amber',
+        )
       }
     },
     generateSuggestion() {
@@ -566,8 +664,38 @@ export const useInjectionSchedulingStore = defineStore('injection-scheduling', {
         this.showToast('排程建议已保存', `后端已保存 r${saved.revision}，尚未发布。`, 'teal')
       } catch (error) {
         this.applySnapshot(before, this.factoryId)
-        this.showToast('建议保存失败', getApiErrorMessage(error), 'amber')
+        this.showToast(
+          isRevisionConflict(error) ? '草案版本冲突' : '建议保存失败',
+          isRevisionConflict(error) ? '已有其他人员更新排程，请刷新当前厂区快照后再应用建议。' : getApiErrorMessage(error),
+          'amber',
+        )
       }
+    },
+    async enterPublishedBigScreen() {
+      if (this.sourceMode !== 'backend') {
+        this.showToast('大屏仅显示正式发布版本', '请先导入正式计划并完成发布。', 'amber')
+        return false
+      }
+      try {
+        const published = await this.repository.loadPublishedSnapshot(this.factoryId)
+        if (!published) {
+          this.showToast('尚无已发布版本', '大屏不会展示未发布草案，请先发布当前排程。', 'amber')
+          return false
+        }
+        this.workspaceBeforeBigScreen = cloneSnapshot(this.currentSnapshot())
+        this.applySnapshot(published, this.factoryId)
+        this.bigScreen = true
+        return true
+      } catch (error) {
+        this.showToast('无法进入大屏', getApiErrorMessage(error), 'amber')
+        return false
+      }
+    },
+    exitPublishedBigScreen() {
+      const workspace = this.workspaceBeforeBigScreen
+      this.bigScreen = false
+      this.workspaceBeforeBigScreen = null
+      if (workspace) this.applySnapshot(workspace, workspace.factoryId)
     },
     async publishPreview() {
       this.publishOpen = false

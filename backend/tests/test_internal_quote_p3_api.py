@@ -8,6 +8,7 @@ from openpyxl.drawing.image import Image as WorksheetImage
 from openpyxl.styles import Font
 from PIL import Image as PillowImage
 
+from app.services.internal_quote_excel import ENGINEERING_WORKBOOK_TEMPLATE_PATH
 from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
 
 
@@ -494,6 +495,11 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
                         },
                         "testing_fee_total_usd": 1500,
                         "testing_fee_moqs": [3000, 5000, 10000],
+                        "packaging_materials": [{
+                            "item": "彩盒",
+                            "specification": "四彩印刷",
+                            "quantity": 1,
+                        }],
                         "product_size_in": {"length": 12, "width": 8, "height": 4},
                         "color_box_size_unit": "cm",
                         "color_box_size_in": {"length": 10, "width": 5, "height": 4},
@@ -539,6 +545,85 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
                         },
                     }, ensure_ascii=False)
                     section.calculation_status = "valid"
+                if section.department == "engineering":
+                    section.payload_json = json.dumps({
+                        "materials": [
+                            {
+                                "item": "螺丝",
+                                "category": "hardware",
+                                "specification": "2.6×8PB",
+                                "material": "铁",
+                                "quantity": 2,
+                                "supplier": "港正",
+                                "surface_treatment": "镀镍",
+                            },
+                            {
+                                "item": "润滑油",
+                                "category": "auxiliary",
+                                "specification": "工程用",
+                                "quantity": 0.02,
+                            },
+                        ],
+                        "molds": [
+                            {
+                                "item": "左右前枪身（橙色）",
+                                "mold_no": "M01",
+                                "color": "橙色",
+                                "cavity": "2",
+                                "quantity": 1,
+                            },
+                            {
+                                "item": "泵杆/击锤/扣机/配件(7件)",
+                                "mold_no": "M05",
+                                "color": "黑色",
+                                "cavity": "4",
+                                "quantity": 1,
+                            },
+                        ],
+                    }, ensure_ascii=False)
+                if section.department == "electronic":
+                    section.payload_json = json.dumps({
+                        "quote_mode": "detail",
+                        "components": [{
+                            "item": "主控板",
+                            "specification": "PCB-A1",
+                            "quantity": 1,
+                            "children": [{
+                                "item": "喇叭",
+                                "specification": "8Ω",
+                                "quantity": 1,
+                            }],
+                        }],
+                    }, ensure_ascii=False)
+                if section.department == "molding":
+                    section.payload_json = json.dumps({
+                        "injection_lines": [
+                            {
+                                "item": "左右前枪身（橙色）",
+                                "mold_no": "M01",
+                                "material": "ABS",
+                                "grade": "KF740",
+                                "color": "橙色",
+                                "net_weight_g": 52.3,
+                                "cavity": "2",
+                                "sets": 1,
+                                "machine_code": "20A",
+                                "target_output": 5000,
+                            },
+                            {
+                                "item": "泵杆/击锤/扣机/配件(7件)",
+                                "mold_no": "M05",
+                                "material": "ABS",
+                                "grade": "KF740",
+                                "color": "黑色",
+                                "net_weight_g": 44.8,
+                                "cavity": "4",
+                                "sets": 1,
+                                "machine_code": "18A",
+                                "target_output": 4200,
+                            },
+                        ],
+                    }, ensure_ascii=False)
                 if section.department == "assembly":
                     section.status = "approved"
                     section.calculation_status = "valid"
@@ -626,7 +711,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
-        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v7"
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v9"
         assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
@@ -739,6 +824,8 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             workbook[name].sheet_state == "veryHidden"
             for name in ("电子明细", "车缝明细", "车发明细", "装配明细", "审批与版本")
         )
+        assert "排摸表" not in workbook.sheetnames
+        assert "外购清单" not in workbook.sheetnames
         assert workbook["工程核价依据-报价明细"].sheet_state == "visible"
         assert workbook["工程核价依据-报价明细"]["A1"].value == "上传源表"
         assert workbook["工程核价依据-报价明细"]["A1"].font.bold is True
@@ -757,6 +844,76 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         ]
         assert workbook["审批与版本"]["B5"].value == "最终业务放行与客价交接在 P4 实施"
         workbook.close()
+
+        engineering_download = client.post(
+            f"/api/internal-quotes/{quote_id}/engineering-data/export"
+        )
+        assert engineering_download.status_code == 200, engineering_download.text
+        assert engineering_download.content.startswith(b"PK")
+        assert (
+            engineering_download.headers["x-engineering-template-version"]
+            == "internal-quote-engineering-template-v1"
+        )
+        engineering_workbook = load_workbook(
+            BytesIO(engineering_download.content),
+            data_only=False,
+            read_only=False,
+        )
+        template_workbook = load_workbook(
+            ENGINEERING_WORKBOOK_TEMPLATE_PATH,
+            data_only=False,
+            read_only=False,
+        )
+        assert engineering_workbook.sheetnames == ["排摸表", "外购清单"]
+        mold_schedule = engineering_workbook["排摸表"]
+        mold_template = template_workbook["排摸表"]
+        assert mold_schedule["O3"].value in (None, "")
+        assert mold_schedule["A1"]._style == mold_template["A1"]._style
+        assert mold_schedule["A2"]._style == mold_template["A2"]._style
+        assert mold_schedule["A5"]._style == mold_template["A5"]._style
+        assert mold_schedule["D5"]._style == mold_template["D5"]._style
+        assert mold_schedule.row_dimensions[1].height == mold_template.row_dimensions[1].height
+        assert mold_schedule.row_dimensions[5].height == mold_template.row_dimensions[5].height
+        assert mold_schedule.column_dimensions["B"].width == mold_template.column_dimensions["B"].width
+        assert not mold_schedule._images
+        assert mold_schedule["O3"].value in (None, "")
+        assert [mold_schedule.cell(row, 2).value for row in range(6, 12)] == [
+            "左前枪身（橙色）",
+            "右前枪身（橙色）",
+            "泵杆",
+            "击锤",
+            "扣机",
+            "配件(7件)",
+        ]
+        assert all(
+            mold_schedule.cell(row, column).value in (None, "")
+            for row in range(6, 12)
+            for column in (4, 5, 9, 17, 18, 19)
+        )
+        assert {"A6:A7", "C6:C7", "A8:A11", "C8:C11"} <= {
+            str(cell_range) for cell_range in mold_schedule.merged_cells.ranges
+        }
+        purchase_list = engineering_workbook["外购清单"]
+        purchase_template = template_workbook["外购清单"]
+        assert purchase_list["A1"]._style == purchase_template["A1"]._style
+        assert purchase_list["A5"]._style == purchase_template["A5"]._style
+        assert purchase_list["J5"]._style == purchase_template["J5"]._style
+        assert purchase_list.row_dimensions[6].height == purchase_template.row_dimensions[6].height
+        assert purchase_list.column_dimensions["B"].width == purchase_template.column_dimensions["B"].width
+        assert not purchase_list._images
+        assert str(purchase_list["G4"].value).startswith("文件编号：             版本:")
+        purchase_names = {
+            purchase_list.cell(row, 2).value
+            for row in range(6, purchase_list.max_row + 1)
+        }
+        assert {"螺丝", "润滑油", "彩盒", "主纸箱", "主控板", "喇叭"} <= purchase_names
+        assert all(
+            purchase_list.cell(row, 10).value in (None, "")
+            for row in range(6, purchase_list.max_row + 1)
+        )
+        engineering_workbook.close()
+        template_workbook.close()
+        assert len(client.get(f"/api/internal-quotes/{quote_id}/exports").json()) == 1
 
         second_response = client.post(f"/api/internal-quotes/{quote_id}/exports")
         assert second_response.status_code == 201

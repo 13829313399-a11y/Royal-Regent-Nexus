@@ -12,6 +12,8 @@ export interface CustomerOrderPreviewRow {
   id: string
   status: 'valid' | 'warning' | 'blocked'
   status_label: string
+  row_role?: 'parent' | 'detail'
+  parent_product_no?: string
   received_date: string
   po_no: string
   contract_no: string

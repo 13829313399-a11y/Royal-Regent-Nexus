@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, sewingGroupHasLaborLine, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
@@ -514,7 +514,7 @@ describe('internal quote section payload normalization', () => {
       item: '主体模', mold_no: 'M-01', mold_base_type: 'CI 3040', structure: '两板模', material: 'S50C', color: '红', cavity: '2',
       chinese_name: '', mold_base_material: '', process: '', material_type: '', mold_specification: '',
       quantity: 2, net_weight_g: 120, cycle_time_seconds: 35, mold_size: '300×400', image_reference: 'M-01.png', cost_rmb: 5000,
-      remark: '客户确认', machine_code: '20A', target_output: 5000, source_row: 8,
+      remark: '客户确认', machine_code: '20A', target_output: 5000, parts: [{ name: '主体模', output_count: 1, quantity: 1 }], source_row: 8,
     })
     expect(engineering.production_mold_costs).toEqual([{ item: '模具费用', cost_rmb: 1550 }])
     expect(calculateEngineeringMoldPriceHkd(engineering.molds[0], .85)).toBeCloseTo(5882.3529)
@@ -552,6 +552,41 @@ describe('internal quote section payload normalization', () => {
       { item: '喷油模具', cost_rmb: 0 },
     ])
     expect(legacy).toMatchObject({ mold_allocation_enabled: true, mold_fx_rmb_usd: 7.75, amortization_qty: 20000, prototype_amortization_qty: 50000, testing_amortization_qty: 2000 })
+  })
+
+  it('splits engineering mold child parts from left-right and slash names while preserving saved child data', () => {
+    expect(splitEngineeringMoldPartNames('左右前枪身（橙色）')).toEqual([
+      '左前枪身（橙色）',
+      '右前枪身（橙色）',
+    ])
+    expect(splitEngineeringMoldPartNames('泵杆/击锤/扣机/配件(7件)')).toEqual([
+      '泵杆',
+      '击锤',
+      '扣机',
+      '配件(7件)',
+    ])
+    expect(splitEngineeringMoldPartNames('电池箱／底座／压盖／配件')).toEqual([
+      '电池箱',
+      '底座',
+      '压盖',
+      '配件',
+    ])
+
+    const engineering = normalizeInternalQuotePayload('engineering', {
+      molds: [{
+        item: '左右前枪身（橙色）',
+        parts: [{ name: '手工命名', color: '橙色', unit_net_weight_g: '12.5', output_count: '2', quantity: '1' }],
+      }],
+    }) as unknown as EngineeringPayload
+    expect(engineering.molds[0].parts).toEqual([{
+      name: '手工命名',
+      color: '橙色',
+      process: '',
+      process_unit_price_hkd: 0,
+      unit_net_weight_g: 12.5,
+      output_count: 2,
+      quantity: 1,
+    }])
   })
 
   it('preserves the Disney P4-only field contract in its owning sections', () => {

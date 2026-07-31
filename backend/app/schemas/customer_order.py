@@ -15,6 +15,8 @@ class CustomerOrderLineOut(BaseModel):
     id: str
     status: str
     status_label: str
+    row_role: str = "detail"
+    parent_product_no: str = ""
     received_date: str
     po_no: str
     contract_no: str

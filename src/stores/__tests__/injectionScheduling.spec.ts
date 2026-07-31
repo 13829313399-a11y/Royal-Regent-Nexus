@@ -148,4 +148,79 @@ describe('injection scheduling front-end draft store', () => {
     })
     expect(store.plan.status).toBe('published')
   })
+
+  it('enters big-screen with the immutable published snapshot and restores the workbench draft on exit', async () => {
+    const draft = cloneSchedulingSnapshot('huaxing')!
+    draft.plan.label = '工作台草案'
+    draft.plan.status = 'draft'
+    const published = cloneSchedulingSnapshot('huaxing')!
+    published.plan.label = '已发布版本'
+    published.plan.status = 'published'
+    published.plan.revision = draft.plan.revision - 1
+    const repository = {
+      loadSnapshot: vi.fn().mockResolvedValue(draft),
+      loadPublishedSnapshot: vi.fn().mockResolvedValue(published),
+      validateMove: vi.fn(),
+      saveDraft: vi.fn(),
+      publishVersion: vi.fn(),
+      previewImport: vi.fn(),
+      confirmImport: vi.fn(),
+      rollbackVersion: vi.fn(),
+    } as InjectionSchedulingRepository
+    const store = useInjectionSchedulingStore()
+    store.setRepository(repository)
+    await load(store, 'huaxing')
+
+    await expect(store.enterPublishedBigScreen()).resolves.toBe(true)
+    expect(repository.loadPublishedSnapshot).toHaveBeenCalledWith('huaxing')
+    expect(store.bigScreen).toBe(true)
+    expect(store.plan.label).toBe('已发布版本')
+
+    store.exitPublishedBigScreen()
+    expect(store.bigScreen).toBe(false)
+    expect(store.plan.label).toBe('工作台草案')
+  })
+
+  it('blocks mock data from big-screen and explains revision conflicts during move validation', async () => {
+    const store = useInjectionSchedulingStore()
+    await load(store, 'huaxing')
+    const mockPublishedLoader = vi.fn()
+    store.setRepository({
+      loadSnapshot: vi.fn(),
+      loadPublishedSnapshot: mockPublishedLoader,
+      validateMove: vi.fn(),
+      saveDraft: vi.fn(),
+      publishVersion: vi.fn(),
+      previewImport: vi.fn(),
+      confirmImport: vi.fn(),
+      rollbackVersion: vi.fn(),
+    } as InjectionSchedulingRepository)
+
+    await expect(store.enterPublishedBigScreen()).resolves.toBe(false)
+    expect(mockPublishedLoader).not.toHaveBeenCalled()
+    expect(store.toast?.title).toBe('大屏仅显示正式发布版本')
+
+    const remote = cloneSchedulingSnapshot('huaxing')!
+    const conflictRepository = {
+      loadSnapshot: vi.fn().mockResolvedValue(remote),
+      loadPublishedSnapshot: vi.fn(),
+      validateMove: vi.fn().mockRejectedValue({ response: { status: 409 } }),
+      saveDraft: vi.fn(),
+      publishVersion: vi.fn(),
+      previewImport: vi.fn(),
+      confirmImport: vi.fn(),
+      rollbackVersion: vi.fn(),
+    } as InjectionSchedulingRepository
+    store.setRepository(conflictRepository)
+    await load(store, 'huaxing')
+    const machine = store.machines.find((item) => item.taskIds.length >= 3)!
+    await store.requestMove({
+      taskId: machine.taskIds[1],
+      sourceMachineId: machine.id,
+      targetMachineId: machine.id,
+      targetIndex: 2,
+    })
+    expect(store.pendingMoveValidation?.allowed).toBe(false)
+    expect(store.pendingMoveValidation?.reasons.join('')).toContain('请刷新')
+  })
 })

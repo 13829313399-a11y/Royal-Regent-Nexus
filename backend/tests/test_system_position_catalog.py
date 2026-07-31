@@ -42,15 +42,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v6"
-    assert len(definitions) == 29
-    assert len({item.role_id for item in definitions}) == 29
-    assert len({(item.department, item.name) for item in definitions}) == 29
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v9"
+    assert len(definitions) == 32
+    assert len({item.role_id for item in definitions}) == 32
+    assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 74
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 67
+    assert len(registered_codes) == 80
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 73
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -88,12 +88,45 @@ def test_fixed_system_position_definition_contract():
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
     assert len(general_manager.permission_codes) == 67
-    assert set(general_manager.permission_codes) == set(
-        permission_codes.BUSINESS_PERMISSION_CODES
-    )
+    assert (
+        set(general_manager.permission_codes)
+        | positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
+    ) == set(permission_codes.BUSINESS_PERMISSION_CODES)
     assert set(general_manager.permission_codes) == positions.GENERAL_MANAGER_PERMISSION_CODES
-    assert positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES == frozenset()
+    assert positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES == frozenset(
+        permission_codes.THREE_D_PRINTING_PERMISSION_CODES
+    )
+    assert not any(
+        code.startswith("three_d_printing:")
+        for code in general_manager.permission_codes
+    )
     assert not any(code.startswith("system:") for code in general_manager.permission_codes)
+
+    three_d_operator = positions.get_system_position("position_3d_operator")
+    three_d_supervisor = positions.get_system_position("position_3d_supervisor")
+    three_d_manager = positions.get_system_position("position_3d_manager")
+    assert all(
+        definition is not None and definition.department == "three-d-printing"
+        for definition in (three_d_operator, three_d_supervisor, three_d_manager)
+    )
+    assert "three_d_printing:operate" in three_d_operator.permission_codes
+    assert "three_d_printing:audit_read" not in three_d_operator.permission_codes
+    assert "three_d_printing:audit_read" in three_d_supervisor.permission_codes
+    assert "three_d_printing:printer_control" not in three_d_manager.permission_codes
+    three_d_access_role_ids = {
+        definition.role_id
+        for definition in definitions
+        if any(
+            code.startswith("three_d_printing:")
+            for code in definition.permission_codes
+        )
+    }
+    assert three_d_access_role_ids == {
+        "position_3d_operator",
+        "position_3d_supervisor",
+        "position_3d_manager",
+        "position_production_supervisor",
+    }
 
     engineer = positions.get_system_position("position_engineering_engineer")
     engineering_supervisor = positions.get_system_position(
@@ -173,7 +206,15 @@ def test_fixed_system_position_definition_contract():
     production_supervisor = positions.get_system_position(
         "position_production_supervisor"
     )
+    production_manager = positions.get_system_position(
+        "position_production_manager"
+    )
     assert "internal_quote:molding_review" in production_supervisor.permission_codes
+    assert "three_d_printing:read" in production_supervisor.permission_codes
+    assert not any(
+        permission.startswith("three_d_printing:")
+        for permission in production_manager.permission_codes
+    )
     assert not (
         positions.PRODUCTION_TASK_OPERATE_PERMISSION_CODES
         & set(production_supervisor.permission_codes)
@@ -204,7 +245,7 @@ def test_fixed_system_position_definition_contract():
         positions.system_position_definition_hash(definition)
         for definition in definitions
     ]
-    assert len(set(hashes)) == 29
+    assert len(set(hashes)) == 32
     assert all(re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes)
     assert re.fullmatch(r"[0-9a-f]{64}", positions.system_position_catalog_hash())
 

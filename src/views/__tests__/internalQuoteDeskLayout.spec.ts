@@ -190,7 +190,7 @@ describe('internal quote desk frontend layout', () => {
     expect(summarySource).not.toContain('<th>项目</th>')
     for (const text of ['rr2T1Fields', 'rr2T2Fields', 'rr2T3Fields', 'rr2T4Fields', "['glue_bag', '胶袋']", "['misc', '杂项']", "['total_cost', '总成本'", "['tax13b', '含税13%类'"]) expect(storeSource).toContain(text)
     expect(summarySource).not.toContain('责任分段成本汇总')
-    for (const text of ['内部报价导出汇总', '审批 revision 矩阵', '均由后端控制']) expect(exportSource).toContain(text)
+    for (const text of ['报价与工程资料导出汇总', '审批 revision 矩阵', '内部报价继续受 SHA-256']) expect(exportSource).toContain(text)
     expect(exportSource).toContain('统一内部格式：Huaxing Demo')
     for (const text of ['调整报价基数', '初始材料价', '初始机型价', '运费与吊柜费 HKD 默认值', '吊柜费 HKD', '业务主管可修改', '跟客只读查看']) {
       expect(`${homeSource}\n${baselineDialogSource}\n${storeSource}`).toContain(text)
@@ -262,5 +262,16 @@ describe('internal quote desk frontend layout', () => {
     expect(storeSource).toContain('internalQuoteApi.list')
     expect(storeSource).toContain('internalQuoteApi.getDashboard')
     expect(storeSource).not.toContain('createInitialInternalQuotes')
+  })
+
+  it('exports internal quote and engineering data as two independent workbooks', () => {
+    expect(exportSource).toContain('生成内部报价 XLSX')
+    expect(exportSource).toContain('生成工程资料 XLSX')
+    expect(exportSource).toContain('confirmEngineeringExport')
+    expect(exportSource).toContain('quoteStore.downloadEngineeringWorkbook')
+    expect(exportSource).toContain("const engineeringWorkbookSheets = ['排摸表', '外购清单']")
+    expect(exportSource).toContain('工程资料单独按原模板即时生成，不进入客价转换和内部报价历史')
+    expect(apiSource).toContain('/engineering-data/export')
+    expect(storeSource).toContain('internalQuoteApi.downloadEngineeringWorkbook')
   })
 })

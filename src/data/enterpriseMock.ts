@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Network,
   PackageCheck,
+  Printer,
   Settings2,
   Ship,
   ShieldCheck,
@@ -121,6 +122,9 @@ export interface EnterpriseModule {
   statusMetrics: ModuleStatusMetric[]
   todos: string[]
   children: ModuleChildLink[]
+  factoryIds?: FactoryContextId[]
+  permissions?: string[]
+  strictAccess?: boolean
 }
 
 export interface MoldingSampleSummary {
@@ -823,6 +827,33 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
           { label: '月计划', summary: '承接月度排产与产能拆分' },
           { label: '日计划', summary: '细化到日的执行计划和插单处理' },
           { label: '计划对比', summary: '比较计划、实际与跨厂调度差异' },
+        ],
+      },
+      {
+        id: 'three-d-printing',
+        title: '3D打印机管理',
+        owner: '华康A · 3D部门',
+        summary: '打印机实时状态、生产记录、产品图片、物料库存、计划和维护统一管理',
+        status: '正式上线',
+        statusTone: 'green',
+        stats: '11 台打印机 · 云端历史 · 边缘控制',
+        icon: Printer,
+        route: '/modules/production/three-d-printing',
+        factoryIds: ['huakang-a'],
+        permissions: ['three_d_printing:read'],
+        strictAccess: true,
+        statusMetrics: [
+          { label: '机台', value: '11', tone: 'teal' },
+          { label: '数据', value: '云端', tone: 'blue' },
+          { label: '控制', value: '管理员', tone: 'amber' },
+        ],
+        todos: ['完成边缘代理现场验收', '正式切换前执行旧系统只读窗口与最终迁移'],
+        children: [
+          { label: '打印机看板', summary: '查看局域网设备实时状态、进度和温度' },
+          { label: '生产记录', summary: '保留旧历史并支持设备自动建单' },
+          { label: '产品与图片', summary: '图片独立持久化，避免整库保存失败' },
+          { label: '物料与仓库', summary: '库存快照、入库和消耗流水可追溯' },
+          { label: '计划与维护', summary: '生产计划和机台维护成本统一管理' },
         ],
       },
       {
