@@ -51,8 +51,6 @@ from app.services.permission_codes import (
     INTERNAL_QUOTE_SECTION_CODES,
 )
 from app.services.system_positions import (
-    INJECTION_SCHEDULING_EDITOR_PERMISSION_CODES,
-    INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
     SYSTEM_POSITION_DEFINITIONS,
     get_system_position,
 )
@@ -223,7 +221,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:price_update",
         "molding_sample:audit_read",
         "molding_sample:notification_read",
-        *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
     },
     "warehouse_keeper": {
         "molding_sample:read",
@@ -257,7 +254,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_fillback",
         "molding_sample:production_complete",
         "molding_sample:notification_read",
-        *INJECTION_SCHEDULING_EDITOR_PERMISSION_CODES,
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_clerk"],
     },
     "molding_production_observer": {
@@ -311,7 +307,6 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_complete",
         "molding_sample:audit_read",
         "molding_sample:notification_read",
-        *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
     },
     "admin": set(APPLICATION_PERMISSIONS),
