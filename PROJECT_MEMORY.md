@@ -39,7 +39,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- Alembic has one current head: `20260727_0038`.
+- Alembic has one current head: `20260729_0041`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -189,7 +189,7 @@ Historical injection-scheduling migrations remain immutable history. Migration `
 3D printing management is a connected Huakang A-only production capability:
 
 - The production card routes to `/modules/production/three-d-printing?factory=huakang-a` and uses strict page-entry permissions even while the legacy global authenticated-read policy remains enabled elsewhere.
-- Migration `20260729_0040` adds settings, materials, products and independent image assets, printers, day state, production records, inventory movements, schedules, maintenance, edge agents, remote commands, migration runs and append-only audit events. Forward migration `20260729_0041` reassigns the complete domain and 3D-specific IAM scope from Huakang B to Huakang A without rewriting the historical migration.
+- Migration `20260729_0040` adds settings, materials, products and independent image assets, printers, day state, production records, inventory movements, schedules, maintenance, edge agents, remote commands, migration runs and append-only audit events. Its permission seed must retain explicit SQL casts for reused bind parameters because PostgreSQL otherwise infers conflicting `text` and `varchar` types. Forward migration `20260729_0041` reassigns the complete domain and 3D-specific IAM scope from Huakang B to Huakang A without changing the schema introduced by `0040`.
 - The permission family is `three_d_printing:read|operate|image_upload|export|printer_control|audit_read`. 3D positions and the production-supervisor position receive scoped business permissions; only the administrator role receives `printer_control`. Production managers and general managers receive no 3D permissions by default.
 - Printer LAN addresses, serial numbers and access codes remain on the Huakang A Windows edge agent. The agent sends status outbound to the cloud and polls for short-lived administrator pause/resume commands; the cloud never connects directly to the printer private network.
 - Product images are stored separately in the configured `THREE_D_ASSET_DIR` and the production Compose stack persists them in `three-d-assets`. Product save and image upload are separate awaited operations, so adding an image no longer rewrites the entire historical JSON payload.
@@ -220,8 +220,8 @@ Several cards and dashboards in the module catalog remain planning, design or de
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
 - Injection scheduling does not yet ingest live machine/production feedback, expose SSE refresh, or run an advanced backend optimization solver.
-- The new injection-scheduling backend is deployed in production with Alembic head `20260728_0039`; future production work must still re-verify the live revision, database head, backup state and effective access instead of inferring them from this repository note.
-- The 3D printing schema, API, UI, importer and edge agent are verified locally, but production deployment, final legacy snapshot import and real-printer pause/resume acceptance have not yet occurred.
+- The new injection-scheduling backend is deployed in production with Alembic head `20260729_0041`; future production work must still re-verify the live revision, database head, backup state and effective access instead of inferring them from this repository note.
+- The 3D printing schema, API and UI are deployed in production. Final legacy snapshot import and real-printer pause/resume acceptance have not yet occurred.
 - Bambu LAN control behavior can vary by installed firmware, so remote pause/resume must remain an administrator-only, field-accepted capability.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.
 - Customer-order warning thresholds shown by the frontend, including day-based exception thresholds, are not yet confirmed as authoritative business rules.
