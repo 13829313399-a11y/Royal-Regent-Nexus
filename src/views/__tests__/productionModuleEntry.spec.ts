@@ -13,21 +13,23 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('keeps the injection scheduling card while the module is being redesigned', () => {
+  it('wires the retained injection scheduling card to the frontend mock workspace', () => {
     const moduleBlock = enterpriseSource.match(
       /id: 'injection-scheduling'[\s\S]*?\n      },/,
     )?.[0]
 
     expect(moduleBlock).toBeDefined()
     expect(moduleBlock).toContain("title: '注塑排产中枢'")
-    expect(moduleBlock).toContain("status: '重新设计中'")
-    expect(moduleBlock).toContain("stats: '保留模块卡片 · 等待新方案'")
-    expect(moduleBlock).toContain("{ label: '数据', value: '已移除', tone: 'slate' }")
-    expect(moduleBlock).toContain('detailPage: false')
-    expect(moduleBlock).not.toContain('route:')
+    expect(moduleBlock).toContain("status: '前端预览'")
+    expect(moduleBlock).toContain("stats: '华兴 Excel 抽样 · Mock 交互草案'")
+    expect(moduleBlock).toContain("{ label: '数据', value: 'Mock', tone: 'amber' }")
+    expect(moduleBlock).toContain("route: getDepartmentRoute('production', 'injection-scheduling')")
     expect(moduleBlock).not.toContain('href:')
-    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling'")
-    expect(routerSource).not.toContain("InjectionSchedulingHubView.vue")
+    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).toContain("name: 'injection-scheduling-workspace'")
+    expect(routerSource).toContain("InjectionSchedulingWorkspaceView.vue")
+    expect(routerSource).toContain("title: '注塑排产中枢'")
+    expect(routerSource).toContain('fullPage: true')
     expect(routerSource).toContain('module.detailPage === false')
   })
 
