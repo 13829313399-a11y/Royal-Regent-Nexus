@@ -1,141 +1,212 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+MachineStatus = Literal["available", "running", "maintenance", "offline"]
+MoldStatus = Literal[
+    "available",
+    "maintenance",
+    "not_arrived",
+    "occupied",
+    "retired",
+]
+DataQualityStatus = Literal["complete", "needs_review"]
 
 
-class InjectionSchedulingImportIssueOut(BaseModel):
+class InjectionSchedulingMachineData(BaseModel):
+    machine_code: str = Field(min_length=1, max_length=64)
+    area: str = Field(default="", max_length=128)
+    position: str = Field(default="", max_length=128)
+    machine_class: str = Field(default="", max_length=64)
+    clamping_force_tons: float | None = Field(default=None, gt=0)
+    injection_capacity_g: float | None = Field(default=None, gt=0)
+    tie_bar_x_mm: float | None = Field(default=None, gt=0)
+    tie_bar_y_mm: float | None = Field(default=None, gt=0)
+    platen_x_mm: float | None = Field(default=None, gt=0)
+    platen_y_mm: float | None = Field(default=None, gt=0)
+    min_mold_thickness_mm: float | None = Field(default=None, gt=0)
+    max_mold_thickness_mm: float | None = Field(default=None, gt=0)
+    opening_stroke_mm: float | None = Field(default=None, gt=0)
+    machine_type: str = Field(default="standard", max_length=64)
+    robot_capabilities: list[str] = Field(default_factory=list, max_length=32)
+    fixture_capabilities: list[str] = Field(default_factory=list, max_length=64)
+    process_restrictions: list[str] = Field(default_factory=list, max_length=64)
+    status: MachineStatus = "available"
+
+    @field_validator(
+        "machine_code",
+        "area",
+        "position",
+        "machine_class",
+        "machine_type",
+    )
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator(
+        "robot_capabilities",
+        "fixture_capabilities",
+        "process_restrictions",
+    )
+    @classmethod
+    def normalize_capabilities(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values if value.strip()]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("能力或限制代码不能重复")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_mold_thickness_range(self):
+        if (
+            self.min_mold_thickness_mm is not None
+            and self.max_mold_thickness_mm is not None
+            and self.min_mold_thickness_mm > self.max_mold_thickness_mm
+        ):
+            raise ValueError("最小模厚不能大于最大模厚")
+        return self
+
+
+class InjectionSchedulingMachineCreate(InjectionSchedulingMachineData):
+    factory_id: str
+    expected_revision: Literal[0] = 0
+
+
+class InjectionSchedulingMachineUpdate(InjectionSchedulingMachineData):
+    factory_id: str
+    expected_revision: int = Field(ge=1)
+
+
+class InjectionSchedulingMachineOut(InjectionSchedulingMachineData):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
-    severity: Literal["blocker", "warning"]
-    code: str
-    message: str
-    sheet_name: str = ""
-    source_row: int = 0
-    field: str = ""
-    source_value: str = ""
-
-
-class InjectionSchedulingImportPreviewOut(BaseModel):
-    batch_id: str
     factory_id: str
-    source_file_name: str
-    source_sha256: str
-    business_date: str
-    parser_version: str
-    preview_revision: int
-    status: str
-    summary: dict[str, Any]
-    issues: list[InjectionSchedulingImportIssueOut]
+    revision: int
+    created_by: str
+    created_by_name: str
+    updated_by: str
+    updated_by_name: str
     created_at: str
+    updated_at: str
 
 
-class InjectionSchedulingImportConfirmRequest(BaseModel):
+class InjectionSchedulingMachineListOut(BaseModel):
     factory_id: str
-    preview_revision: int = Field(ge=1)
-    reason: str = Field(min_length=2, max_length=1000)
+    items: list[InjectionSchedulingMachineOut]
 
-    @field_validator("factory_id", "reason")
+
+class InjectionSchedulingMoldData(BaseModel):
+    mold_no: str = Field(min_length=1, max_length=128)
+    name: str = Field(default="", max_length=255)
+    length_mm: float | None = Field(default=None, gt=0)
+    width_mm: float | None = Field(default=None, gt=0)
+    height_mm: float | None = Field(default=None, gt=0)
+    weight_kg: float | None = Field(default=None, gt=0)
+    recommended_machine_class: str = Field(default="", max_length=64)
+    whole_shot_net_weight_g: float | None = Field(default=None, gt=0)
+    whole_shot_gross_weight_g: float | None = Field(default=None, gt=0)
+    required_arm_type: str = Field(default="none", max_length=64)
+    required_fixture_type: str = Field(default="", max_length=128)
+    material_code: str = Field(default="", max_length=128)
+    material_name: str = Field(default="", max_length=255)
+    color_profile: str = Field(default="", max_length=128)
+    process_requirements: list[str] = Field(default_factory=list, max_length=64)
+    copy_count: int = Field(default=1, ge=1, le=100)
+    data_quality_status: DataQualityStatus = "needs_review"
+    status: MoldStatus = "available"
+
+    @field_validator(
+        "mold_no",
+        "name",
+        "recommended_machine_class",
+        "required_arm_type",
+        "required_fixture_type",
+        "material_code",
+        "material_name",
+        "color_profile",
+    )
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
 
-
-class InjectionSchedulingImportConfirmOut(BaseModel):
-    batch_id: str
-    factory_id: str
-    plan_id: str
-    revision: int
-    confirmed_at: str
-    summary: dict[str, Any]
-    snapshot: dict[str, Any]
-
-
-class InjectionSchedulingMoveValidationRequest(BaseModel):
-    factory_id: str
-    revision: int = Field(ge=1)
-    task_id: str | None = None
-    backlog_id: str | None = None
-    source_machine_id: str | None = None
-    target_machine_id: str
-    target_index: int | None = Field(default=None, ge=0)
-
-
-class InjectionSchedulingMoveValidationOut(BaseModel):
-    allowed: bool
-    eligibility: dict[str, Any] | None = None
-    reasons: list[str]
-    affected_task_count: int
-
-
-class InjectionSchedulingDraftSaveRequest(BaseModel):
-    factory_id: str
-    revision: int = Field(ge=1)
-    snapshot: dict[str, Any]
-    reason: str = Field(min_length=2, max_length=1000)
-
-    @field_validator("reason")
+    @field_validator("process_requirements")
     @classmethod
-    def strip_reason(cls, value: str) -> str:
-        return value.strip()
+    def normalize_requirements(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values if value.strip()]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("工艺要求代码不能重复")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_weight_and_quality(self):
+        if (
+            self.whole_shot_net_weight_g is not None
+            and self.whole_shot_gross_weight_g is not None
+            and self.whole_shot_net_weight_g > self.whole_shot_gross_weight_g
+        ):
+            raise ValueError("整啤净重不能大于整啤毛重")
+        if self.data_quality_status == "complete" and any(
+            value is None for value in (self.length_mm, self.width_mm, self.height_mm)
+        ):
+            raise ValueError("模具尺寸不完整时只能标记为需复核")
+        return self
 
 
-class InjectionSchedulingDraftSaveOut(BaseModel):
-    plan_id: str
-    revision: int
-    saved_at: str
-    snapshot_sha256: str
-
-
-class InjectionSchedulingPublishRequest(BaseModel):
+class InjectionSchedulingMoldCreate(InjectionSchedulingMoldData):
     factory_id: str
-    revision: int = Field(ge=1)
-    reason: str = Field(min_length=2, max_length=1000)
-
-    @field_validator("reason")
-    @classmethod
-    def strip_reason(cls, value: str) -> str:
-        return value.strip()
+    expected_revision: Literal[0] = 0
 
 
-class InjectionSchedulingPublishOut(BaseModel):
-    plan_id: str
-    version: str
-    plan_revision: int
-    published_at: str
-    snapshot_sha256: str
-
-
-class InjectionSchedulingRollbackRequest(BaseModel):
+class InjectionSchedulingMoldUpdate(InjectionSchedulingMoldData):
     factory_id: str
-    version: str
-    revision: int = Field(ge=1)
-    reason: str = Field(min_length=2, max_length=1000)
-
-    @field_validator("version", "reason")
-    @classmethod
-    def strip_text(cls, value: str) -> str:
-        return value.strip()
+    expected_revision: int = Field(ge=1)
 
 
-class InjectionSchedulingRollbackOut(BaseModel):
-    plan_id: str
-    revision: int
-    rolled_back_from_version: str
-    saved_at: str
-    snapshot: dict[str, Any]
-
-
-class InjectionSchedulingPlanEnvelope(BaseModel):
-    plan_id: str
+class InjectionSchedulingMoldOut(InjectionSchedulingMoldData):
+    id: str
     factory_id: str
     revision: int
-    snapshot: dict[str, Any]
+    created_by: str
+    created_by_name: str
+    updated_by: str
+    updated_by_name: str
+    created_at: str
+    updated_at: str
 
 
-class InjectionSchedulingPublishedEnvelope(BaseModel):
-    snapshot_id: str
-    plan_id: str
+class InjectionSchedulingMoldListOut(BaseModel):
     factory_id: str
-    version: str
-    plan_revision: int
-    published_at: str
-    snapshot: dict[str, Any]
+    items: list[InjectionSchedulingMoldOut]
+
+
+class InjectionSchedulingRuleConfig(BaseModel):
+    schema_version: str = Field(default="phase2-v1", min_length=1, max_length=64)
+    arm_coverage: dict[str, list[str]] = Field(default_factory=dict)
+    required_dimension_fields: list[str] = Field(default_factory=list)
+    process_rule_codes: list[str] = Field(default_factory=list)
+    scoring_weights: dict[str, float] = Field(default_factory=dict)
+    color_scale: list[str] = Field(default_factory=list)
+    notes: str = Field(default="", max_length=2000)
+
+
+class InjectionSchedulingRuleSetUpdate(BaseModel):
+    factory_id: str
+    expected_revision: int = Field(ge=1)
+    configured_max_utilization: float = Field(gt=0, le=1)
+    allow_mold_rotation_90: bool = False
+    config: InjectionSchedulingRuleConfig
+
+
+class InjectionSchedulingRuleSetOut(BaseModel):
+    id: str
+    factory_id: str
+    revision: int
+    status: Literal["active", "superseded"]
+    configured_max_utilization: float
+    allow_mold_rotation_90: bool
+    config: dict[str, Any]
+    created_by: str
+    created_by_name: str
+    created_at: str
+    superseded_at: str

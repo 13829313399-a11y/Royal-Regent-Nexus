@@ -1,300 +1,168 @@
-import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
+export type InjectionFactoryId =
+  | 'huaxing'
+  | 'huakang-a'
+  | 'huakang-b'
+  | 'huakang-c'
+  | 'huakang-d'
+  | 'huadeng'
 
-export type SchedulingViewMode = 'spreadsheet' | 'timeline'
-export type SchedulingDensity = 'compact' | 'comfortable'
-export type ScheduleFieldScheme = 'core' | 'full' | 'screen'
-export type MachineState = 'running' | 'risk' | 'urgent' | 'idle' | 'maintenance' | 'fault'
-export type TaskRisk = 'normal' | 'warning' | 'overdue' | 'urgent' | 'incomplete'
-export type MachineClass =
-  | '4A'
-  | '5A'
-  | '7A'
-  | '10A'
-  | '12A'
-  | '14A'
-  | '18A'
-  | '24A'
-  | '32A'
-  | '50A'
-  | '60A'
-  | '80A'
-  | '104A'
-  | '120A'
-export type RobotArmType = 'none' | 'single-arm' | 'multi-arm'
-export type ResourceState = 'available' | 'warning' | 'blocked'
-export type PriorityCode = 'P0' | 'P1' | 'P2' | 'P3'
-export type ColorFamily = 'natural' | 'light' | 'medium' | 'dark' | 'black' | 'special'
+export type SchedulingSourceMode = 'mock'
+export type SchedulingTaskStatus = 'RUNNING' | 'QUEUED' | 'BLOCKED' | 'DONE'
+export type SchedulingPriority = 'NORMAL' | 'URGENT' | 'CRITICAL'
+export type FitDecision = 'PASS' | 'REVIEW_REQUIRED' | 'FAIL'
+export type MachineArmCapability = '单臂' | '双臂'
+export type WorkspaceView = 'board' | 'timeline'
+export type WorkspaceStatusFilter = 'all' | 'running' | 'overdue' | 'dueSoon' | 'review'
+export type WorkspaceDataQualityFilter = 'all' | 'complete' | 'missing'
 
-export interface SchedulingKpi {
-  label: string
-  value: string
-  detail: string
-  tone: 'default' | 'teal' | 'amber' | 'red' | 'violet'
-  action?: 'backlog' | 'alerts'
+export interface MachineDimensions {
+  width: number
+  height: number
 }
 
-export interface MachineCapability {
-  machineClass: MachineClass
-  tonnage: number
-  shotCapacityGrams: number
-  safetyUtilization: number
-  tieBarWidthMm: number
-  tieBarHeightMm: number
-  minMoldThicknessMm: number
-  maxMoldThicknessMm: number
-  openingStrokeMm: number
-  ejectionStrokeMm: number
-  armType: RobotArmType
-  supportsCorePull: boolean
-  supportsUnscrewing: boolean
-  compatibleMaterials: string[]
-  screwType: 'standard' | 'PVC' | 'PC' | 'transparent'
-  transparentOnly?: boolean
-}
-
-export interface MoldSpecification {
-  moldNo: string
-  widthMm?: number
-  heightMm?: number
-  thicknessMm?: number
-  openingStrokeMm?: number
-  ejectionStrokeMm?: number
-  shotWeightGrams?: number
-  material?: string
-  armRequirement?: RobotArmType
-  requiresCorePull?: boolean
-  requiresUnscrewing?: boolean
-  state: ResourceState
-}
-
-export interface OrderRequirement {
-  productName: string
-  orderNo: string
-  itemNo?: string
-  color: string
-  colorFamily: ColorFamily
-  material: string
-  mold: MoldSpecification
-  priorityCode: PriorityCode
-  priorityFlag?: string
-}
-
-export interface ProductionProgress {
-  orderQuantity: number
-  completedQuantity: number
-  remainingQuantity: number
-  effectiveDailyTarget: number
-  productionDurationHours: number
-}
-
-export interface ScheduleTiming {
-  plannedStart: string
-  plannedEnd: string
-  inboundAt: string
-  deliveryDueAt: string
-  slackHours: number
-}
-
-export interface ChangeoverCost {
-  status: 'ok' | 'missing-rule'
-  moldChangeHours: number
-  colorChangeHours: number
-  totalHours: number
-  pathLabel: string
-  reason: string
-}
-
-export interface ScheduleWorksheetDetails {
-  automationMode?: string
-  remark?: string
-  warehouse?: string
-  machineClassRequirement?: string
-  setQuantity?: number
-  waterRatio?: string
-  colorPowder?: string
-  netWeightGrams?: number
-  grossWeightGrams?: number
-  materialWeightKg?: number
-  orderDate?: string
-  deliveryStartAt?: string
-  deliveryDueAt?: string
-  moldChangeReferenceHours?: number
-  colorChangeReferenceHours?: number
-  changeoverHours?: number
-  downtimeHours?: number
-  plannedProductionAt?: string
-  plannedCompletionAt?: string
-  plannedCompletionMonth?: string
-  inboundAt?: string
-  deliverySlackDays?: number
-  sprayPaint?: string
-  productionDays?: number
-  materialShortage?: number
-  allocatedMaterialQuantity?: number
-  shiftEndAt?: string
-  shiftTime?: string
-  shiftTarget?: number
-  dayShiftQuantity?: number
-  nightShiftQuantity?: number
-  unitPricePerShot?: number
-  outsourcingUnitPrice?: number
-  ratio?: number
-  sourceSheet?: string
-  sourceRow?: number
-}
-
-export interface ScheduleTask {
-  id: string
-  machineId: string
-  requirement: OrderRequirement
-  production: ProductionProgress
-  timing: ScheduleTiming
-  changeover: ChangeoverCost
-  sequence: number
-  current: boolean
-  locked: boolean
-  risk: TaskRisk
-  remark?: string
-  worksheet: ScheduleWorksheetDetails
+export interface MoldDimensions {
+  length: number
+  width: number
+  height: number
 }
 
 export interface InjectionMachine {
   id: string
-  name: string
+  factoryId: InjectionFactoryId
   code: string
-  workshop: string
-  kind: '普通机' | '高速机' | '全电动'
-  capability: MachineCapability
-  restriction: string
-  load: number
-  state: MachineState
-  resourceState: ResourceState
-  taskIds: string[]
+  zone: string
+  machineClass: string
+  tonnage: number
+  shotCapacityGrams: number
+  platen: MachineDimensions
+  armCapability: MachineArmCapability
+  machineType: string
+  processNote: string
+  loadPercent: number
 }
 
-export interface EligibilityCheck {
-  code: string
-  label: string
-  passed: boolean
-  severity: 'hard' | 'warning'
-  expected?: string
-  actual?: string
-  reason: string
-}
-
-export interface EligibilityResult {
-  eligible: boolean
-  complete: boolean
-  status: 'eligible' | 'ineligible' | 'incomplete'
-  checks: EligibilityCheck[]
-}
-
-export interface CandidateScoreBreakdown {
-  key: string
-  label: string
-  score: number
-  reason: string
-}
-
-export interface CandidateMachine {
+export interface SchedulingTask {
+  id: string
+  factoryId: InjectionFactoryId
   machineId: string
+  sequence: number
+  status: SchedulingTaskStatus
+  priority: SchedulingPriority
+  originalMarker: string
+  moldCode: string
+  productName: string
+  orderNo: string
+  itemNo: string
+  orderQuantity: number
+  completedQuantity: number
+  shiftTarget: number
+  shiftCompleted: number
+  downtimeHours: number
+  exceptionType: string
+  color: string
+  colorHex: string
+  material: string
+  shotNetWeightGrams: number
+  deliveryDate: string
+  plannedStart: string
+  plannedEnd: string
+  slackDays: number
+  armRequirement: MachineArmCapability
+  fixtureRequirement: string
+  moldDimensions: MoldDimensions | null
+  warehouseOwner: string
+  note: string
+  fitDecision: FitDecision
+  fitScore: number
+  sourceRow: number | null
+  revision: number
+  updatedAt: string
+}
+
+export interface ConstraintCheck {
+  key: 'mold-size' | 'shot-capacity' | 'robot-arm' | 'fixture' | 'process'
+  label: string
+  decision: FitDecision
+  detail: string
+}
+
+export interface MachineCandidate {
+  machineId: string
+  machineCode: string
+  rank: number
   score: number
-  title: string
-  eligibility: EligibilityResult
-  breakdown: CandidateScoreBreakdown[]
-  insertionLabel: string
-  projectedEndAt: string
-  affectedTaskCount: number
-  warning?: string
+  decision: FitDecision
+  resultLabel: string
+  explanation: string
+  warning: string
+  constraints: ConstraintCheck[]
 }
 
 export interface BacklogOrder {
   id: string
-  requirement: OrderRequirement
-  production: ProductionProgress
-  requiredDate: string
-  candidates: CandidateMachine[]
-  worksheet: ScheduleWorksheetDetails
-  noMatchReason?: string
-}
-
-export interface ProductionWindow {
-  startAt: string
-  endAt: string
-  label: string
-}
-
-export interface ProductionCalendar {
-  timezone: string
-  availabilityWindows: ProductionWindow[]
-  downtimeWindows: ProductionWindow[]
-}
-
-export interface SchedulePlanVersion {
-  id: string
-  label: string
+  factoryId: InjectionFactoryId
+  orderNo: string
+  itemNo: string
+  moldCode: string
+  productName: string
+  quantity: number
+  deliveryDate: string
+  color: string
+  material: string
+  shotNetWeightGrams: number
+  armRequirement: MachineArmCapability
+  fixtureRequirement: string
+  moldDimensions: MoldDimensions | null
+  note: string
+  candidates: MachineCandidate[]
   revision: number
-  rulesVersion: string
-  status: 'draft' | 'published'
-  anchorAt: string
-  publishedAt?: string
 }
 
-export interface SchedulingMetrics {
-  overdueTaskCount: number
-  totalOverdueHours: number
-  moldChangeCount: number
-  colorChangeCount: number
-  utilizationPercent: number
-  movedTaskCount: number
-  manualReviewCount: number
+export interface SchedulingSummary {
+  availableMachines: number
+  totalMachines: number
+  scheduledTasks: number
+  overdueTasks: number
+  dueSoonTasks: number
+  remainingQuantity: number
+  moldDimensionCompleteness: number
+  backlogOrders: number
 }
 
-export interface SchedulingSimulationResult {
-  before: SchedulingMetrics
-  after: SchedulingMetrics
-  steps: Array<{ code: string; label: string; detail: string }>
-  proposedTaskOrderByMachine: Record<string, string[]>
-}
-
-export interface SchedulingSnapshot {
-  factoryId: ProductionFactoryContextId
+export interface InjectionSchedulingSnapshot {
+  factoryId: InjectionFactoryId
+  factoryName: string
+  sourceMode: SchedulingSourceMode
   sourceLabel: string
-  snapshotAt: string
-  notice: string
-  plan: SchedulePlanVersion
-  calendar: ProductionCalendar
-  kpis: SchedulingKpi[]
+  planVersion: string
+  generatedAt: string
   machines: InjectionMachine[]
-  tasks: ScheduleTask[]
-  backlog: BacklogOrder[]
+  tasks: SchedulingTask[]
+  backlogOrders: BacklogOrder[]
+  summary: SchedulingSummary
 }
 
-export interface ScheduleMoveRequest {
-  factoryId: ProductionFactoryContextId
-  revision: number
-  taskId?: string
-  backlogId?: string
-  sourceMachineId?: string
-  targetMachineId: string
-  targetIndex?: number
+export interface ShiftReportInput {
+  shiftCompleted: number
+  cumulativeCompleted: number
+  shiftTarget: number
+  downtimeHours: number
+  exceptionType: string
+  status: SchedulingTaskStatus
+  remark: string
 }
 
-export interface MoveValidation {
-  allowed: boolean
-  eligibility?: EligibilityResult
-  reasons: string[]
-  affectedTaskCount: number
+export interface TaskReportDraft extends ShiftReportInput {
+  taskId: string
+  expectedRevision: number
 }
 
-export interface SchedulingFilters {
-  search: string
-  machineClass: string
-  state: string
-  exceptionsOnly: boolean
-  incompleteOnly: boolean
-  idleOnly: boolean
-  taskScope: 'all' | 'current' | 'future'
-  deliveryFrom: string
-  deliveryTo: string
+export interface SaveShiftReportResult {
+  task: SchedulingTask
+  auditMessage: string
+}
+
+export interface AssignBacklogResult {
+  backlogOrder: BacklogOrder
+  auditMessage: string
 }

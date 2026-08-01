@@ -1,226 +1,114 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { InjectionSchedulingRepository } from '@/api/injectionScheduling'
-import { cloneSchedulingSnapshot } from '@/data/injectionSchedulingMock'
+import { beforeEach, describe, expect, it } from 'vitest'
+import {
+  FactoryDatasetNotFoundError,
+  MockInjectionSchedulingRepository,
+  OptimisticConflictError,
+} from '@/repositories/injectionSchedulingRepository'
 import { useInjectionSchedulingStore } from '@/stores/injectionScheduling'
 
-describe('injection scheduling front-end draft store', () => {
+describe('injection scheduling frontend mock contract', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    vi.useFakeTimers()
   })
 
-  afterEach(() => {
-    vi.useRealTimers()
+  it('keeps Huaxing data isolated and large enough for the 257-row acceptance case', async () => {
+    const repository = new MockInjectionSchedulingRepository()
+    const snapshot = await repository.getSnapshot('huaxing')
+
+    expect(snapshot.factoryId).toBe('huaxing')
+    expect(snapshot.sourceMode).toBe('mock')
+    expect(snapshot.machines).toHaveLength(69)
+    expect(snapshot.tasks).toHaveLength(257)
+    expect(snapshot.backlogOrders).toHaveLength(23)
+    expect(snapshot.summary.overdueTasks).toBe(158)
+    expect(snapshot.summary.dueSoonTasks).toBe(19)
+    expect(snapshot.summary.moldDimensionCompleteness).toBe(41.7)
+
+    await expect(repository.getSnapshot('huakang-b')).rejects.toBeInstanceOf(FactoryDatasetNotFoundError)
   })
 
-  async function load(store: ReturnType<typeof useInjectionSchedulingStore>, factoryId: 'huaxing' | 'huakang-b' | 'huakang-a') {
-    const promise = store.load(factoryId)
-    await vi.runAllTimersAsync()
-    await promise
-  }
-
-  it('loads independent Huaxing and Huakang B mocks and leaves other factories empty', async () => {
+  it('isolates GT1214 search results and enforces one running task per machine', async () => {
     const store = useInjectionSchedulingStore()
-    await load(store, 'huaxing')
-    expect(store.hasPreviewData).toBe(true)
-    expect(store.machines).toHaveLength(71)
-    expect(store.machines.every((machine) => machine.id.startsWith('hx-'))).toBe(true)
+    await store.load('huaxing')
+    store.search = 'GT1214'
 
-    await load(store, 'huakang-b')
-    expect(store.machines).toHaveLength(96)
-    expect(store.machines.every((machine) => machine.id.startsWith('hkb-'))).toBe(true)
+    expect(store.filteredTaskCount).toBe(3)
+    expect(store.filteredGroups.flatMap((group) => group.tasks).every((task) => task.moldCode === 'GT1214')).toBe(true)
 
-    await load(store, 'huakang-a')
-    expect(store.hasPreviewData).toBe(false)
-    expect(store.machines).toEqual([])
-    expect(store.tasks).toEqual([])
-    expect(store.backlog).toEqual([])
+    store.search = ''
+    store.statusFilter = 'running'
+    expect(store.filteredGroups.every((group) => group.tasks.length <= 1)).toBe(true)
+    expect(store.filteredGroups.flatMap((group) => group.tasks).every((task) => task.status === 'RUNNING')).toBe(true)
   })
 
-  it('keeps the current task locked and requires confirmation for a future task reorder', async () => {
+  it('defines overdue strictly as slackDays below zero', async () => {
     const store = useInjectionSchedulingStore()
-    await load(store, 'huaxing')
-    const machine = store.machines.find((item) => item.taskIds.length >= 3)!
-    const [currentId, futureId] = machine.taskIds
+    await store.load('huaxing')
+    store.statusFilter = 'overdue'
 
-    store.requestMove({ taskId: currentId, sourceMachineId: machine.id, targetMachineId: machine.id, targetIndex: 2 })
-    expect(store.pendingMove).toBeNull()
-    expect(store.toast?.title).toBe('当前任务已锁定')
-
-    store.requestMove({ taskId: futureId, sourceMachineId: machine.id, targetMachineId: machine.id, targetIndex: 2 })
-    expect(store.pendingMoveValidation?.allowed).toBe(true)
-    const revision = store.plan.revision
-    store.confirmMove()
-    expect(store.plan.revision).toBe(revision + 1)
-    expect(machine.taskIds[2]).toBe(futureId)
+    const tasks = store.filteredGroups.flatMap((group) => group.tasks)
+    expect(tasks.length).toBeGreaterThan(0)
+    expect(tasks.every((task) => task.slackDays < 0)).toBe(true)
   })
 
-  it('turns a backlog order into a draft task only after eligible candidate confirmation', async () => {
+  it('filters mold-dimension completeness without treating missing data as a pass', async () => {
     const store = useInjectionSchedulingStore()
-    await load(store, 'huaxing')
-    const order = store.backlog.find((item) => item.candidates.length)!
-    const candidate = order.candidates[0]!
-    const backlogCount = store.backlog.length
+    await store.load('huaxing')
+    store.dataQuality = 'missing'
 
-    store.requestMove({ backlogId: order.id, targetMachineId: candidate.machineId })
-    expect(store.backlog).toHaveLength(backlogCount)
-    expect(store.pendingMoveValidation?.allowed).toBe(true)
-
-    store.confirmMove()
-    expect(store.backlog).toHaveLength(backlogCount - 1)
-    expect(store.tasks).toContainEqual(expect.objectContaining({
-      machineId: candidate.machineId,
-      requirement: expect.objectContaining({ orderNo: order.requirement.orderNo }),
-    }))
+    const missingTasks = store.filteredGroups.flatMap((group) => group.tasks)
+    expect(missingTasks.length).toBeGreaterThan(0)
+    expect(missingTasks.every((task) => task.moldDimensions === null)).toBe(true)
+    expect(missingTasks.every((task) => task.fitDecision === 'REVIEW_REQUIRED')).toBe(true)
   })
 
-  it('preserves per-factory drafts without reusing them across factories', async () => {
-    const store = useInjectionSchedulingStore()
-    await load(store, 'huaxing')
-    const huaxingPlanId = store.plan.id
-    store.plan.label = '华兴本地草案'
+  it('keeps missing dimensions under review and blocks injection-capacity failures', async () => {
+    const repository = new MockInjectionSchedulingRepository()
+    const snapshot = await repository.getSnapshot('huaxing')
+    const missingDimensions = snapshot.tasks.find((task) => task.id === 't-inner-278')
+    const gtBacklog = snapshot.backlogOrders.find((order) => order.id === 'backlog-gt')
+    const capacityFailure = gtBacklog?.candidates.find((candidate) => candidate.decision === 'FAIL')
 
-    await load(store, 'huakang-b')
-    expect(store.plan.id).not.toBe(huaxingPlanId)
-    expect(store.plan.label).not.toBe('华兴本地草案')
+    expect(missingDimensions?.moldDimensions).toBeNull()
+    expect(missingDimensions?.fitDecision).toBe('REVIEW_REQUIRED')
+    expect(capacityFailure?.constraints.some((check) => check.key === 'shot-capacity' && check.decision === 'FAIL')).toBe(true)
 
-    await load(store, 'huaxing')
-    expect(store.plan.label).toBe('华兴本地草案')
+    await expect(repository.assignBacklogOrder(
+      'huaxing',
+      gtBacklog!.id,
+      capacityFailure!.machineId,
+      gtBacklog!.revision,
+    )).rejects.toThrow('硬约束失败')
   })
 
-  it('uses the backend snapshot, validates a move, saves a new revision and publishes', async () => {
-    const remoteSnapshot = cloneSchedulingSnapshot('huaxing')!
-    const repository = {
-      loadSnapshot: vi.fn().mockResolvedValue(remoteSnapshot),
-      validateMove: vi.fn().mockResolvedValue({
-        allowed: true,
-        reasons: ['后端校验通过'],
-        affectedTaskCount: 2,
-      }),
-      saveDraft: vi.fn().mockResolvedValue({
-        revision: remoteSnapshot.plan.revision + 1,
-        savedAt: '2026-07-28T11:00:00+08:00',
-      }),
-      publishVersion: vi.fn().mockResolvedValue({
-        version: '20260728.1',
-        publishedAt: '2026-07-28T11:05:00+08:00',
-      }),
-      loadPublishedSnapshot: vi.fn(),
-      previewImport: vi.fn(),
-      confirmImport: vi.fn(),
-      rollbackVersion: vi.fn(),
-    } as InjectionSchedulingRepository
-    const store = useInjectionSchedulingStore()
-    store.setRepository(repository)
-    await load(store, 'huaxing')
+  it('previews and saves shift production while detecting stale revisions', async () => {
+    const repository = new MockInjectionSchedulingRepository()
+    const snapshot = await repository.getSnapshot('huaxing')
+    const task = snapshot.tasks.find((entry) => entry.id === 't-gt-145')!
 
-    expect(store.sourceMode).toBe('backend')
-    const machine = store.machines.find((item) => item.taskIds.length >= 3)!
-    const taskId = machine.taskIds[1]!
-    const baseRevision = store.plan.revision
-    await store.requestMove({
-      taskId,
-      sourceMachineId: machine.id,
-      targetMachineId: machine.id,
-      targetIndex: 2,
+    const saved = await repository.saveShiftReport('huaxing', task.id, task.revision, {
+      shiftCompleted: 40,
+      cumulativeCompleted: 3450,
+      shiftTarget: 1400,
+      downtimeHours: 0.5,
+      exceptionType: '换模',
+      status: 'RUNNING',
+      remark: '本班回报测试',
     })
-    expect(repository.validateMove).toHaveBeenCalledWith(expect.objectContaining({
-      factoryId: 'huaxing',
-      revision: baseRevision,
-      taskId,
-    }))
+    expect(saved.task.completedQuantity).toBe(3450)
+    expect(saved.task.orderQuantity - saved.task.completedQuantity).toBe(78)
+    expect(saved.task.downtimeHours).toBe(0.5)
+    expect(saved.task.exceptionType).toBe('换模')
 
-    await store.confirmMove()
-    expect(repository.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
-      factoryId: 'huaxing',
-      revision: baseRevision,
-      reason: '人工调整后续任务队列',
-    }))
-    expect(store.plan.revision).toBe(baseRevision + 1)
-    expect(store.snapshotAt).toBe('2026-07-28T11:00:00+08:00')
-
-    await store.publishPreview()
-    expect(repository.publishVersion).toHaveBeenCalledWith({
-      factoryId: 'huaxing',
-      revision: baseRevision + 1,
-      reason: '发布当前注塑排程到生产大屏',
-    })
-    expect(store.plan.status).toBe('published')
-  })
-
-  it('enters big-screen with the immutable published snapshot and restores the workbench draft on exit', async () => {
-    const draft = cloneSchedulingSnapshot('huaxing')!
-    draft.plan.label = '工作台草案'
-    draft.plan.status = 'draft'
-    const published = cloneSchedulingSnapshot('huaxing')!
-    published.plan.label = '已发布版本'
-    published.plan.status = 'published'
-    published.plan.revision = draft.plan.revision - 1
-    const repository = {
-      loadSnapshot: vi.fn().mockResolvedValue(draft),
-      loadPublishedSnapshot: vi.fn().mockResolvedValue(published),
-      validateMove: vi.fn(),
-      saveDraft: vi.fn(),
-      publishVersion: vi.fn(),
-      previewImport: vi.fn(),
-      confirmImport: vi.fn(),
-      rollbackVersion: vi.fn(),
-    } as InjectionSchedulingRepository
-    const store = useInjectionSchedulingStore()
-    store.setRepository(repository)
-    await load(store, 'huaxing')
-
-    await expect(store.enterPublishedBigScreen()).resolves.toBe(true)
-    expect(repository.loadPublishedSnapshot).toHaveBeenCalledWith('huaxing')
-    expect(store.bigScreen).toBe(true)
-    expect(store.plan.label).toBe('已发布版本')
-
-    store.exitPublishedBigScreen()
-    expect(store.bigScreen).toBe(false)
-    expect(store.plan.label).toBe('工作台草案')
-  })
-
-  it('blocks mock data from big-screen and explains revision conflicts during move validation', async () => {
-    const store = useInjectionSchedulingStore()
-    await load(store, 'huaxing')
-    const mockPublishedLoader = vi.fn()
-    store.setRepository({
-      loadSnapshot: vi.fn(),
-      loadPublishedSnapshot: mockPublishedLoader,
-      validateMove: vi.fn(),
-      saveDraft: vi.fn(),
-      publishVersion: vi.fn(),
-      previewImport: vi.fn(),
-      confirmImport: vi.fn(),
-      rollbackVersion: vi.fn(),
-    } as InjectionSchedulingRepository)
-
-    await expect(store.enterPublishedBigScreen()).resolves.toBe(false)
-    expect(mockPublishedLoader).not.toHaveBeenCalled()
-    expect(store.toast?.title).toBe('大屏仅显示正式发布版本')
-
-    const remote = cloneSchedulingSnapshot('huaxing')!
-    const conflictRepository = {
-      loadSnapshot: vi.fn().mockResolvedValue(remote),
-      loadPublishedSnapshot: vi.fn(),
-      validateMove: vi.fn().mockRejectedValue({ response: { status: 409 } }),
-      saveDraft: vi.fn(),
-      publishVersion: vi.fn(),
-      previewImport: vi.fn(),
-      confirmImport: vi.fn(),
-      rollbackVersion: vi.fn(),
-    } as InjectionSchedulingRepository
-    store.setRepository(conflictRepository)
-    await load(store, 'huaxing')
-    const machine = store.machines.find((item) => item.taskIds.length >= 3)!
-    await store.requestMove({
-      taskId: machine.taskIds[1],
-      sourceMachineId: machine.id,
-      targetMachineId: machine.id,
-      targetIndex: 2,
-    })
-    expect(store.pendingMoveValidation?.allowed).toBe(false)
-    expect(store.pendingMoveValidation?.reasons.join('')).toContain('请刷新')
+    await expect(repository.saveShiftReport('huaxing', task.id, task.revision, {
+      shiftCompleted: 50,
+      cumulativeCompleted: 3460,
+      shiftTarget: 1400,
+      downtimeHours: 0,
+      exceptionType: '',
+      status: 'RUNNING',
+      remark: '旧版本',
+    })).rejects.toBeInstanceOf(OptimisticConflictError)
   })
 })

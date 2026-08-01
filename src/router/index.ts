@@ -62,16 +62,6 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/production/injection-scheduling',
-    name: 'injection-scheduling-hub',
-    component: () => import('@/views/InjectionSchedulingHubView.vue'),
-    meta: {
-      title: '注塑排产中枢',
-      fullPage: true,
-      requiresAuth: true,
-    },
-  },
-  {
     path: '/modules/production/molding-sample-tasks',
     name: 'molding-sample-production-tasks',
     component: () => import('@/views/MoldingSampleProductionTaskView.vue'),
@@ -81,6 +71,16 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: true,
       permissions: ['molding_sample:production_read'],
       enforcePermissions: true,
+    },
+  },
+  {
+    path: '/modules/production/injection-scheduling',
+    name: 'injection-scheduling-workspace',
+    component: () => import('@/views/InjectionSchedulingWorkspaceView.vue'),
+    meta: {
+      title: '注塑排产中枢',
+      fullPage: true,
+      requiresAuth: true,
     },
   },
   {
@@ -229,7 +229,8 @@ const routes: RouteRecordRaw[] = [
         return { path: '/modules/engineering', replace: true }
       }
 
-      if (!getDepartmentModule(department, moduleId)) {
+      const module = getDepartmentModule(department, moduleId)
+      if (!module || module.detailPage === false) {
         return { path: `/modules/${department}`, replace: true }
       }
 

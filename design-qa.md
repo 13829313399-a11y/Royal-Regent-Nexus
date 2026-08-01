@@ -1,51 +1,38 @@
-# 注塑排产中枢前端视觉验收
+# Injection scheduling redesign QA
 
-## 对照证据
+Status: **BLOCKED — implementation screenshot capture is unavailable in the current Codex Desktop tool session.**
 
-- Source visual truth: `C:\Users\匡树杰\Desktop\啤机部项目资料\注塑排产中枢_高保真原型.html`
-- Rendered implementation: `http://127.0.0.1:5173/modules/production/injection-scheduling?factory=huaxing`
-- Latest connected regression: built frontend at `http://127.0.0.1:5175` with disposable backend/database at `127.0.0.1:8003`; no production database was used.
-- Browser-comment viewport: `1538 × 674`.
-- Additional responsive evidence: `1366 × 768`, `1440 × 900`, and `1920 × 1080`.
-- State: authenticated local administrator; Huaxing, Huakang B and Huakang A factory contexts; default schedule board plus big-screen mode.
+Final result: `blocked`
 
-## Findings
+## Visual target
 
-No actionable P0, P1, or P2 differences remain.
+- `C:\Users\匡树杰\Desktop\啤机部项目资料\注塑排产重构设计包\注塑排产前端原型预览.png`
+- `C:\Users\匡树杰\Desktop\啤机部项目资料\注塑排产重构设计包\注塑排产候选机台预览.png`
+- Desktop table-first workspace with a dark teal navigation rail, compact fixed header, six summary cards, dense machine-grouped table and right-side drawers.
 
-- Fonts and typography: both source and implementation use the project Chinese system-font stack. Heading weight, KPI hierarchy, compact labels, truncation, and small-data density remain aligned with the source.
-- Spacing and layout rhythm: the enterprise top bar, compact module header, KPI row, filter row, fixed machine column, current-task column, horizontal queue and completion column preserve the source hierarchy. The implementation intentionally retains project factory switching, back navigation and account menu.
-- Colors and visual tokens: the implementation keeps the source dark teal, enterprise teal, pale green lane header, slate surfaces, amber risk, and red overdue semantics while using the existing project tokens.
-- Image quality and asset fidelity: the source contains no product imagery. All visible controls and status marks use the installed Lucide icon set; no emoji, handcrafted SVG, CSS drawing, or placeholder asset is used.
-- Copy and content: the source business labels, machine capability fields, task progress, queue order, source workbook notice and hard-constraint explanations are represented. The page explicitly distinguishes a formal backend plan from a Mock fallback.
+## Rendered implementation
 
-## Focused region comparison
+- `http://127.0.0.1:5173/modules/production/injection-scheduling?factory=huaxing`
+- The route was opened in the Codex Desktop in-app browser after a successful production build.
+- The current tool session can open the browser tab but does not expose implementation screenshot capture, so the required same-input reference-versus-render comparison cannot be completed honestly.
 
-The compact board keeps 96px rows in normal mode and 84px rows in dark big-screen mode. At all three responsive viewports the document width equals the client width, the page height equals the client height, and the machine list scrolls inside the board rather than the document.
+## Static and interaction checks completed
 
-## Comparison history
+- Full-page route and retained production-module card are wired.
+- Source mode is visibly labeled `Mock`; unsupported factories show an isolated no-dataset state.
+- 69 machines, 257 scheduled tasks and 23 backlog orders are generated in the Huaxing fixture.
+- Board/timeline switch, Ctrl/Cmd+F search, status/machine/arm/data-completeness filters, density control and configurable field groups are wired.
+- Large datasets render in 12-machine increments through scroll proximity or an explicit load-more control.
+- The table header, machine group rows and first three identifying columns are sticky; core secondary table text is at least 12px.
+- Inline shift reporting updates remaining quantity, progress and remaining-shift preview and records downtime/fault hours, exception type and remarks.
+- Offline mode retains local input while blocking refresh, save and candidate confirmation; success, failure and optimistic-conflict states are explicit.
+- Task drawer has order, matching, production-report and history tabs.
+- Backlog drawer explains hard constraints and disables confirmation when injection capacity fails.
+- Missing mold dimensions remain `REVIEW_REQUIRED`.
+- Optimistic revision conflicts retain the local draft and expose an explicit retry action.
+- Production build and focused Phase 1B Vitest checks pass; full regression status is recorded in the delivery response.
+- Reduced-motion and focus-visible behavior are included for keyboard and motion accessibility.
 
-1. The current implementation was compared against the supplied prototype at the browser-comment viewport and the three desktop regression viewports.
-2. Browser QA found a big-screen grid defect: hidden KPI/filter rows caused the machine board to collapse to approximately 2px.
-3. `InjectionSchedulingHubView.vue` now uses a three-row big-screen grid; post-fix browser measurement shows a 630px board with 84px machine rows at `1366 × 768`.
+## Visual follow-up required
 
-## Interaction and runtime checks
-
-- Task card opens the task-detail drawer.
-- Backlog order selection renders candidate-machine explanations.
-- Candidate assignment exposes hard checks and score breakdown, then opens confirmation before any browser-only draft changes.
-- Optimization opens a staged simulation with metrics before the user can apply a suggestion.
-- The production-module card shows `正式接入`, formal data status and the implemented import/version workflow, then routes to the workbench while preserving `factory=huaxing`.
-- A real Huaxing workbook import displays `正式后端`, 76 machines, 240 scheduled tasks and 37 backlog orders; isolated publish completes successfully and remains visibly `已发布` after reload.
-- A real Huakang B workbook import displays its independent formal-backend snapshot with 96 machines and 493 scheduled tasks, including the persisted published state.
-- Huakang A route renders an isolated empty state and does not expose Huaxing Mock records.
-- Big-screen mode displays the compact dark 84px-row board and exits back to the standard view.
-
-## Residual limits
-
-- Drag-and-drop is covered by store/component tests and the confirmation flow; the automated browser pass used the candidate-assignment path rather than a pointer drag gesture.
-- Both source workbooks were parsed read-only by the production import service. Missing capabilities and changeover inputs remain visible review warnings and are not silently invented.
-- Chrome automation could not attach a local file through the OS file chooser, so browser acceptance populated the same disposable backend through its authenticated multipart import API, then verified the resulting page and publish flow.
-- Browser views below tablet width are a supported compact fallback, but this production workbench is designed and signed off primarily for desktop widths.
-
-final result: passed
+Capture the implementation at the same viewport as the 1920×1080 source, compare both images together, then inspect table header stickiness, horizontal scrolling, drawer width, row density and 12px minimum text before marking visual QA as passed.
