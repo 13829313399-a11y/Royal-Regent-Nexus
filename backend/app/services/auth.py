@@ -48,6 +48,7 @@ from app.services.iam_scope import (
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
     INTERNAL_QUOTE_PERMISSION_CODES,
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     INTERNAL_QUOTE_SECTION_CODES,
 )
 from app.services.system_positions import (
@@ -77,6 +78,8 @@ INTERNAL_QUOTE_BASELINE_GRANT_MARKER = "internal_quote_baseline_grant_v1_complet
 INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER = "internal_quote_customer_grant_v1_completed"
 INTERNAL_QUOTE_CUSTOMER_PERMISSION = "internal_quote:customer_manage"
 INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
+INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER = "internal_quote_self_review_grant_v1_completed"
+INTERNAL_QUOTE_SELF_REVIEW_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
 INTERNAL_QUOTE_BASELINE_ROLE_PERMISSIONS = {
     "sales_customer_owner": ("internal_quote:baseline_read",),
     "sales_customer_supervisor": (
@@ -144,6 +147,7 @@ INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS = {
         "internal_quote:export",
         "internal_quote:final_submit",
         "internal_quote:final_approve",
+        INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     },
     "engineer": {
         *INTERNAL_QUOTE_COMMON_PERMISSIONS,
@@ -933,6 +937,79 @@ def seed_internal_quote_default_grants_once(db: Session, now: str) -> int:
     return created_count
 
 
+def seed_internal_quote_self_review_grants_once(db: Session, now: str) -> int:
+    """Grant self-review to existing legacy business-supervisor role templates once."""
+    if db.get(AuthIamState, INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER) is not None:
+        return 0
+
+    permission = db.scalar(
+        select(AuthPermission).where(
+            AuthPermission.code == INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE
+        )
+    )
+    created_count = 0
+    updated_role_ids: set[str] = set()
+    if permission is not None:
+        for role_id in INTERNAL_QUOTE_SELF_REVIEW_DEFAULT_ROLE_IDS:
+            if db.get(AuthRole, role_id) is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+    if updated_role_ids:
+        for role_id in updated_role_ids:
+            metadata = db.get(AuthRoleMetadata, role_id)
+            if metadata is not None:
+                metadata.version += 1
+                metadata.updated_at = now
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(
+                    AuthUserAuthorizationRevision(
+                        user_id=user_id,
+                        revision=1,
+                        updated_at=now,
+                    )
+                )
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key=INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER,
+            value_json=json.dumps(
+                {
+                    "completed_at": now,
+                    "created_role_permission_count": created_count,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
 def seed_internal_quote_reference_grants_once(db: Session, now: str) -> int:
     """Grant P2 reference-snapshot sync to existing approved supervisor templates once."""
     if db.get(AuthIamState, INTERNAL_QUOTE_P2_REFERENCE_GRANT_MARKER) is not None:
@@ -1477,6 +1554,7 @@ def seed_auth_defaults(db: Session) -> None:
     seed_iam_sidecars(db, now)
     seed_raw_material_write_default_grant_once(db, now)
     seed_internal_quote_default_grants_once(db, now)
+    seed_internal_quote_self_review_grants_once(db, now)
     seed_internal_quote_reference_grants_once(db, now)
     seed_internal_quote_export_grants_once(db, now)
     seed_internal_quote_release_grants_once(db, now)

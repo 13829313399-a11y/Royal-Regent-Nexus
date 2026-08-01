@@ -166,7 +166,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "testing_fee_total_usd": "decimal>=0; optional business testing-fee total",
         "testing_fee_moqs": "list of positive integer MOQ tiers when testing_fee_total_usd>0",
         "testing_fee_moq": "legacy single MOQ; read when testing_fee_moqs is absent",
-        "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; RMB source or derived", "unit_price_hkd": "decimal>=0; HKD source or derived", "unit_price_source_currency": "RMB|HKD; omitted legacy rows prefer RMB unless only HKD exists", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
+        "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; original RMB source or derived", "unit_price_hkd": "decimal>=0; original HKD source or derived", "unit_price_source_currency": "RMB|HKD; omitted legacy rows prefer RMB unless only HKD exists", "loss_rate": "decimal>0; multiplier, default 1", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
         "product_size_in": {"length": "optional decimal>0 inch", "width": "optional decimal>0 inch", "height": "optional decimal>0 inch"},
         "color_box_size_unit": "cm|inch; display/input preference, default inch",
         "color_box_size_in": {"length": "decimal>0 canonical inch", "width": "decimal>0 canonical inch", "height": "decimal>0 canonical inch"},
@@ -244,7 +244,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         },
     },
     "engineering": {
-        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging; hardware is fixed", "specification": "text", "auxiliary_category": "五金(fixed for hardware)|吸塑|胶袋|彩盒/内卡|电池|利宝|电镀|其他外购", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; hardware source, auxiliary RMB source or derived", "unit_price_hkd": "decimal>=0; auxiliary HKD source or derived", "unit_price_source_currency": "RMB|HKD for auxiliary; omitted legacy rows prefer RMB unless only HKD exists", "tax_rate_percent": "hardware fixed 13; others decimal>=0; record only", "remark": "text", "legacy_fields": "purpose/unit/material/surface_treatment/supplier/contact remain readable but are not editable or imported", "disney_description": "text", "disney_section": "product|package", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>=0"}],
+        "materials": [{"item": "text", "category": "hardware|auxiliary|packaging; hardware is fixed", "specification": "text", "auxiliary_category": "五金(fixed for hardware)|吸塑|胶袋|彩盒/内卡|电池|利宝|电镀|其他外购", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; original hardware source, original auxiliary RMB source or derived", "unit_price_hkd": "decimal>=0; original auxiliary HKD source or derived", "unit_price_source_currency": "RMB|HKD for auxiliary; omitted legacy rows prefer RMB unless only HKD exists", "loss_rate": "decimal>0; multiplier, default 1", "tax_rate_percent": "hardware fixed 13; others decimal>=0; record only", "remark": "text", "legacy_fields": "purpose/unit/material/surface_treatment/supplier/contact remain readable but are not editable or imported", "disney_description": "text", "disney_section": "product|package", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>=0"}],
         "molds": [{"item": "text", "mold_no": "text", "chinese_name": "text", "mold_base_type": "text", "mold_base_material": "text", "structure": "text", "process": "text", "material": "text", "material_type": "text", "color": "text", "cavity": "text", "quantity": "sets; record only", "net_weight_g": "decimal>=0", "cycle_time_seconds": "decimal>=0", "mold_size": "text", "mold_specification": "text", "image_reference": "section attachment name/reference", "cost_rmb": "whole-mold quote RMB", "remark": "text", "disney_mold_no": "text", "disney_parts": "text", "disney_material": "text", "disney_cavities": "decimal>0", "disney_parts_per_shot": "decimal>0", "disney_tool_cost_usd": "decimal>=0", "dickie_project_name_en": "English text", "dickie_mold_no": "text", "dickie_parts_en": "English text", "dickie_resin": "text", "dickie_mold_size": "text", "dickie_mold_material": "text", "dickie_cavities": "decimal>0", "dickie_parts_per_shot": "decimal>0", "dickie_mold_cost_hkd": "decimal>0", "dickie_remark_en": "English text", "caixing_tool_plan_ref": "text", "caixing_mold_cost_hkd": "decimal>=0", "caixing_customer_mold_cost_hkd": "decimal>0"}],
         "mold_allocation_enabled": "boolean; default true; false preserves inputs but excludes all production mold/prototype/testing allocation",
         "production_mold_costs": [{"item": "text", "cost_rmb": "decimal>=0"}],
@@ -339,6 +339,10 @@ def dual_currency_unit_prices(
         return unit_price_hkd * fx, unit_price_hkd, "HKD"
     unit_price_rmb = decimal_value(row.get("unit_price_rmb"), f"{field}人民币单价")
     return unit_price_rmb, unit_price_rmb / fx, "RMB"
+
+
+def material_loss_rate(row: dict[str, Any], field: str) -> Decimal:
+    return positive_value(row.get("loss_rate"), f"{field}损耗率", "1")
 
 
 def canonical_json(value: Any) -> str:
@@ -518,18 +522,21 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
         if category not in category_hkd:
             raise CalculationInputError(f"工程材料第 {index + 1} 行分类无效")
         if category == "hardware":
-            unit_price_rmb = decimal_value(
+            base_unit_price_rmb = decimal_value(
                 row.get("unit_price_rmb"),
                 f"工程材料第 {index + 1} 行人民币单价",
             )
-            unit_price_hkd = unit_price_rmb / fx
+            base_unit_price_hkd = base_unit_price_rmb / fx
             source_currency = "RMB"
         else:
-            unit_price_rmb, unit_price_hkd, source_currency = dual_currency_unit_prices(
+            base_unit_price_rmb, base_unit_price_hkd, source_currency = dual_currency_unit_prices(
                 row,
                 fx,
                 f"工程材料第 {index + 1} 行",
             )
+        loss_rate = material_loss_rate(row, f"工程材料第 {index + 1} 行")
+        unit_price_rmb = base_unit_price_rmb * loss_rate
+        unit_price_hkd = base_unit_price_hkd * loss_rate
         line_rmb = quantity * unit_price_rmb
         line_hkd = quantity * unit_price_hkd
         tax_rate = (
@@ -548,6 +555,9 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
             "specification": str(row.get("specification", row.get("spec", ""))),
             "quantity": decimal_text(quantity),
             "unit": str(row.get("unit", "")),
+            "base_unit_price_rmb": decimal_text(base_unit_price_rmb),
+            "base_unit_price_hkd": decimal_text(base_unit_price_hkd),
+            "loss_rate": decimal_text(loss_rate),
             "unit_price_rmb": decimal_text(unit_price_rmb),
             "unit_price_hkd": decimal_text(unit_price_hkd),
             "unit_price_source_currency": source_currency,
@@ -555,9 +565,9 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
             "amount_rmb": decimal_text(line_rmb),
             "amount_hkd": decimal_text(line_hkd),
             "formula": (
-                "用量 × 单价 HKD；RMB = HKD × 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+                "用量 × 原单价 HKD × 损耗率；RMB = HKD × 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
                 if source_currency == "HKD"
-                else "用量 × 单价 RMB ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+                else "用量 × 原单价 RMB × 损耗率 ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
             ),
         })
 
@@ -1502,11 +1512,14 @@ def _sales_packaging_materials(
         if category not in allowed_categories:
             raise CalculationInputError(f"包装材料第 {index + 1} 行类别无效")
         quantity = decimal_value(row.get("quantity"), f"包装材料第 {index + 1} 行用量")
-        unit_price_rmb, unit_price_hkd, source_currency = dual_currency_unit_prices(
+        base_unit_price_rmb, base_unit_price_hkd, source_currency = dual_currency_unit_prices(
             row,
             fx,
             f"包装材料第 {index + 1} 行",
         )
+        loss_rate = material_loss_rate(row, f"包装材料第 {index + 1} 行")
+        unit_price_rmb = base_unit_price_rmb * loss_rate
+        unit_price_hkd = base_unit_price_hkd * loss_rate
         tax_rate = decimal_value(row.get("tax_rate_percent"), f"包装材料第 {index + 1} 行税点")
         if tax_rate > Decimal("100"):
             raise CalculationInputError(f"包装材料第 {index + 1} 行税点不能大于 100%")
@@ -1521,6 +1534,9 @@ def _sales_packaging_materials(
             "specification": str(row.get("specification", "")),
             "category": category,
             "quantity": decimal_text(quantity),
+            "base_unit_price_rmb": decimal_text(base_unit_price_rmb),
+            "base_unit_price_hkd": decimal_text(base_unit_price_hkd),
+            "loss_rate": decimal_text(loss_rate),
             "unit_price_rmb": decimal_text(unit_price_rmb),
             "unit_price_hkd": decimal_text(unit_price_hkd),
             "unit_price_source_currency": source_currency,
@@ -1529,9 +1545,9 @@ def _sales_packaging_materials(
             "amount_hkd": decimal_text(amount_hkd),
             "remark": str(row.get("remark", "")),
             "formula": (
-                "用量 × 单价 HKD；RMB = HKD × 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+                "用量 × 原单价 HKD × 损耗率；RMB = HKD × 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
                 if source_currency == "HKD"
-                else "用量 × 单价 RMB ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
+                else "用量 × 原单价 RMB × 损耗率 ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）"
             ),
         })
     return total_hkd, total_rmb

@@ -66,7 +66,7 @@ def test_engineering_electronic_and_molding_decimal_vectors():
     assert engineering["line_breakdown"][0]["unit_price_hkd"] == "10.0000"
     assert engineering["line_breakdown"][0]["auxiliary_category"] == "五金"
     assert engineering["line_breakdown"][0]["tax_rate_percent"] == "13.0000"
-    assert engineering["line_breakdown"][0]["formula"].startswith("用量 × 单价 RMB")
+    assert engineering["line_breakdown"][0]["formula"].startswith("用量 × 原单价 RMB × 损耗率")
     assert engineering["totals"] == {
         "hardware_hkd": "20.0000",
         "auxiliary_hkd": "0.0000",
@@ -612,6 +612,9 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         "specification": "四彩印刷",
         "category": "color_box_inner_card",
         "quantity": "2.0000",
+        "base_unit_price_rmb": "3.4000",
+        "base_unit_price_hkd": "4.0000",
+        "loss_rate": "1.0000",
         "unit_price_rmb": "3.4000",
         "unit_price_hkd": "4.0000",
         "unit_price_source_currency": "RMB",
@@ -619,7 +622,7 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         "amount_rmb": "6.8000",
         "amount_hkd": "8.0000",
         "remark": "FSC",
-        "formula": "用量 × 单价 RMB ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）",
+        "formula": "用量 × 原单价 RMB × 损耗率 ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）",
     }
     assert sales["line_breakdown"][1] == {
         "kind": "carton",
@@ -879,6 +882,7 @@ def test_auxiliary_and_packaging_materials_accept_hkd_source_prices():
                 "unit_price_rmb": "999",
                 "unit_price_hkd": "2",
                 "unit_price_source_currency": "HKD",
+                "loss_rate": "1.02",
                 "tax_rate_percent": "13",
             }],
             "molds": [],
@@ -886,12 +890,34 @@ def test_auxiliary_and_packaging_materials_accept_hkd_source_prices():
     )
     material = engineering["line_breakdown"][0]
     assert material["unit_price_source_currency"] == "HKD"
-    assert material["unit_price_hkd"] == "2.0000"
-    assert material["unit_price_rmb"] == "1.7000"
-    assert material["amount_hkd"] == "6.0000"
-    assert material["amount_rmb"] == "5.1000"
-    assert engineering["totals"]["auxiliary_hkd"] == "6.0000"
-    assert material["formula"].startswith("用量 × 单价 HKD")
+    assert material["base_unit_price_hkd"] == "2.0000"
+    assert material["base_unit_price_rmb"] == "1.7000"
+    assert material["loss_rate"] == "1.0200"
+    assert material["unit_price_hkd"] == "2.0400"
+    assert material["unit_price_rmb"] == "1.7340"
+    assert material["amount_hkd"] == "6.1200"
+    assert material["amount_rmb"] == "5.2020"
+    assert engineering["totals"]["auxiliary_hkd"] == "6.1200"
+    assert material["formula"].startswith("用量 × 原单价 HKD × 损耗率")
+
+    hardware = calculate(
+        "engineering",
+        {
+            "materials": [{
+                "item": "螺丝",
+                "category": "hardware",
+                "quantity": "2",
+                "unit_price_rmb": "8.5",
+                "loss_rate": "1.02",
+            }],
+            "molds": [],
+        },
+    )["line_breakdown"][0]
+    assert hardware["base_unit_price_rmb"] == "8.5000"
+    assert hardware["loss_rate"] == "1.0200"
+    assert hardware["unit_price_rmb"] == "8.6700"
+    assert hardware["unit_price_hkd"] == "10.2000"
+    assert hardware["amount_hkd"] == "20.4000"
 
     sales = calculate(
         "sales",
@@ -901,6 +927,7 @@ def test_auxiliary_and_packaging_materials_accept_hkd_source_prices():
                 "category": "blister",
                 "quantity": "2",
                 "unit_price_hkd": "4",
+                "loss_rate": "1.05",
                 "tax_rate_percent": "6",
             }],
         },
@@ -909,11 +936,14 @@ def test_auxiliary_and_packaging_materials_accept_hkd_source_prices():
     )
     packaging = sales["line_breakdown"][0]
     assert packaging["unit_price_source_currency"] == "HKD"
-    assert packaging["unit_price_hkd"] == "4.0000"
-    assert packaging["unit_price_rmb"] == "3.4000"
-    assert packaging["amount_hkd"] == "8.0000"
-    assert sales["totals"]["packaging_material_hkd"] == "8.0000"
-    assert sales["totals"]["packaging_material_rmb"] == "6.8000"
+    assert packaging["base_unit_price_hkd"] == "4.0000"
+    assert packaging["base_unit_price_rmb"] == "3.4000"
+    assert packaging["loss_rate"] == "1.0500"
+    assert packaging["unit_price_hkd"] == "4.2000"
+    assert packaging["unit_price_rmb"] == "3.5700"
+    assert packaging["amount_hkd"] == "8.4000"
+    assert sales["totals"]["packaging_material_hkd"] == "8.4000"
+    assert sales["totals"]["packaging_material_rmb"] == "7.1400"
 
     with pytest.raises(CalculationInputError, match="输入币种必须是 RMB 或 HKD"):
         calculate(
@@ -929,6 +959,21 @@ def test_auxiliary_and_packaging_materials_accept_hkd_source_prices():
             },
             factory_price_hkd="20",
             mold_amortization_usd="0",
+        )
+
+    with pytest.raises(CalculationInputError, match="损耗率 必须大于 0"):
+        calculate(
+            "engineering",
+            {
+                "materials": [{
+                    "item": "螺丝",
+                    "category": "hardware",
+                    "quantity": "1",
+                    "unit_price_rmb": "1",
+                    "loss_rate": "0",
+                }],
+                "molds": [],
+            },
         )
 
 

@@ -13,12 +13,13 @@ from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
     INJECTION_SCHEDULING_PERMISSION_CODES,
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     SYSTEM_MANAGEMENT_PERMISSION_CODES,
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v9"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v10"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -123,6 +124,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "internal_quote:export",
     "internal_quote:final_submit",
     "internal_quote:final_approve",
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     "internal_quote:sales_edit",
     "internal_quote:sales_review",
     "internal_quote:engineering_edit",
@@ -195,6 +197,7 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
     "internal_quote:export",
     "internal_quote:final_submit",
     "internal_quote:final_approve",
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     "internal_quote:sales_edit",
     "internal_quote:sales_review",
 )

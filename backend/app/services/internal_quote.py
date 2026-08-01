@@ -72,6 +72,7 @@ from app.services.internal_quote_calculator import (
     total_from_calculation,
 )
 from app.services.internal_quote_prefill import prefill_molding_from_engineering
+from app.services.permission_codes import INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE
 
 
 SECTION_DEFINITIONS = (
@@ -1843,6 +1844,28 @@ def _has_business_owner_binding(
     )
 
 
+def _has_self_review_permission(
+    db: Session,
+    user: AuthUser,
+    factory_id: str,
+) -> bool:
+    return can(
+        build_auth_context(db, user),
+        INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
+        factory_id,
+        "sales-business",
+    )
+
+
+def _can_self_review_own_quote(user: AuthContext, quote: InternalQuote) -> bool:
+    return quote.created_by == user.id and has_permission_in_scope(
+        user,
+        INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
+        quote.factory_id,
+        "sales-business",
+    )
+
+
 def ensure_quote_business_reviewer(
     db: Session,
     user: AuthContext,
@@ -1856,12 +1879,18 @@ def ensure_quote_business_reviewer(
             status_code=403,
             detail=f"仅建单时指定的业务审核负责人（{reviewer_name}）可审核全部部门分段",
         )
-    ensure_quote_permission(
-        db,
+    if has_permission_in_scope(
         user,
         "internal_quote:sales_review",
         quote.factory_id,
-        ("sales-business",),
+        "sales-business",
+    ):
+        return
+    if _can_self_review_own_quote(user, quote):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="当前账号没有分段审核权限；个人自审权限仅适用于本人创建且由本人负责的报价单",
     )
 
 
@@ -1890,6 +1919,10 @@ def list_business_owners(
         )
         for item in users
         if _has_business_owner_binding(db, item, factory_id)
+        or (
+            item.id == user.id
+            and _has_self_review_permission(db, item, factory_id)
+        )
     ]
 
 
@@ -2712,7 +2745,10 @@ def review_section(
     _check_revision(section.revision, payload.revision)
     if section.status not in REVIEWABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="当前状态不在审核中")
-    if section.submitted_by_id == user.id:
+    if (
+        section.submitted_by_id == user.id
+        and not _can_self_review_own_quote(user, quote)
+    ):
         raise HTTPException(status_code=403, detail="提交人不能审核自己的分段")
 
     if section.status == "pending_review" and payload.decision == "approve":

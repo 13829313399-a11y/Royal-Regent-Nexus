@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
@@ -235,6 +235,7 @@ describe('internal quote section payload normalization', () => {
         quantity: 2,
         unit_price_hkd: 4,
         unit_price_source_currency: 'HKD',
+        loss_rate: 1.02,
       }],
     }) as unknown as SalesPayload
     const packagingHkd = packagingPayload.packaging_materials[0]
@@ -242,10 +243,12 @@ describe('internal quote section payload normalization', () => {
       unit_price_rmb: 0,
       unit_price_hkd: 4,
       unit_price_source_currency: 'HKD',
+      loss_rate: 1.02,
     })
     expect(calculatePackagingMaterialUnitRmb(packagingHkd, .85)).toBeCloseTo(3.4)
     expect(calculatePackagingMaterialUnitHkd(packagingHkd, .85)).toBe(4)
-    expect(calculatePackagingMaterialAmountHkd(packagingHkd, .85)).toBe(8)
+    expect(calculatePackagingMaterialEffectiveUnitHkd(packagingHkd, .85)).toBeCloseTo(4.08)
+    expect(calculatePackagingMaterialAmountHkd(packagingHkd, .85)).toBeCloseTo(8.16)
 
     const engineeringPayload = normalizeInternalQuotePayload('engineering', {
       materials: [{
@@ -253,22 +256,27 @@ describe('internal quote section payload normalization', () => {
         category: 'auxiliary',
         quantity: 3,
         unit_price_hkd: 1.5,
+        loss_rate: 1.1,
       }],
     }) as unknown as EngineeringPayload
     const auxiliaryHkd = engineeringPayload.materials[0]
     expect(auxiliaryHkd).toMatchObject({
       unit_price_source_currency: 'HKD',
       unit_price_hkd: 1.5,
+      loss_rate: 1.1,
     })
     expect(calculateEngineeringMaterialUnitRmb(auxiliaryHkd, .85)).toBeCloseTo(1.275)
-    expect(calculateEngineeringMaterialAmountHkd(auxiliaryHkd, .85)).toBeCloseTo(4.5)
+    expect(calculateEngineeringMaterialEffectiveUnitHkd(auxiliaryHkd, .85)).toBeCloseTo(1.65)
+    expect(calculateEngineeringMaterialAmountHkd(auxiliaryHkd, .85)).toBeCloseTo(4.95)
 
     const historicalPayload = normalizeInternalQuotePayload('sales', {
       packaging_materials: [{ item: '彩盒', category: 'color_box_inner_card', quantity: 2, unit_price_rmb: 3.4 }],
     }) as unknown as SalesPayload
     const historicalRmb = historicalPayload.packaging_materials[0]
     expect(historicalRmb.unit_price_source_currency).toBe('RMB')
+    expect(historicalRmb.loss_rate).toBe(1)
     expect(calculatePackagingMaterialUnitHkd(historicalRmb, .85)).toBeCloseTo(4)
+    expect(calculatePackagingMaterialEffectiveUnitHkd(historicalRmb, .85)).toBeCloseTo(4)
   })
 
   it('clones deeply reactive Vue sales forms into plain save payloads', () => {
