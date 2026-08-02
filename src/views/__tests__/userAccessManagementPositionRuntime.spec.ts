@@ -8,6 +8,8 @@ const listPermissionsMock = vi.hoisted(() => vi.fn())
 const getRoleAccessMock = vi.hoisted(() => vi.fn())
 const previewUserSystemPositionMock = vi.hoisted(() => vi.fn())
 const commitUserSystemPositionMock = vi.hoisted(() => vi.fn())
+const previewUserAccessMock = vi.hoisted(() => vi.fn())
+const commitUserAccessMock = vi.hoisted(() => vi.fn())
 const refreshSessionMock = vi.hoisted(() => vi.fn())
 const canMock = vi.hoisted(() => vi.fn())
 
@@ -27,6 +29,8 @@ vi.mock('@/api/iam', () => ({
     getRoleAccess: getRoleAccessMock,
     previewUserSystemPosition: previewUserSystemPositionMock,
     commitUserSystemPosition: commitUserSystemPositionMock,
+    previewUserAccess: previewUserAccessMock,
+    commitUserAccess: commitUserAccessMock,
   },
 }))
 
@@ -98,6 +102,14 @@ const formerlyHiddenInactivePermission = {
   module_code: 'system', module_name: '系统管理', action: 'access_request', status: 'inactive', sort_order: 2,
 }
 
+const selfReviewPermission = {
+  ...permission,
+  code: 'internal_quote:self_review', name: 'internal_quote:self_review',
+  description: '允许审核本人创建且由本人负责的内部报价。',
+  module_code: 'internal_quote', module_name: '内部报价', action: 'self_review',
+  applicable_departments: ['sales-business'], scope_guidance: '仅业务部', sort_order: 3,
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
@@ -139,6 +151,17 @@ describe('UserAccessManagementView system position change', () => {
       expires_at: '2026-07-16T12:00:00Z',
     })
     commitUserSystemPositionMock.mockReset().mockResolvedValue({
+      status: 'committed', authorization_version: 3,
+    })
+    previewUserAccessMock.mockReset().mockResolvedValue({
+      preview_token: 'self-review-preview', base_revision: 2,
+      requires_approval: false, high_risk: true,
+      diffs: [{
+        permission_code: 'internal_quote:self_review', factory_id: 'huaxing',
+        department: 'sales-business', before: 'none', after: 'allow', risk_level: 'high',
+      }],
+    })
+    commitUserAccessMock.mockReset().mockResolvedValue({
       status: 'committed', authorization_version: 3,
     })
     refreshSessionMock.mockReset().mockResolvedValue(undefined)
@@ -395,5 +418,55 @@ describe('UserAccessManagementView system position change', () => {
     expect((select.element as HTMLSelectElement).value).toBe('position-production-clerk')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(commitUserSystemPositionMock).not.toHaveBeenCalled()
+  })
+
+  it('lets an administrator grant the scoped self-review permission to an individual sales user', async () => {
+    getUserAccessMock.mockResolvedValue({
+      ...access,
+      profile: {
+        ...access.profile,
+        primary_department: 'sales-business',
+      },
+      system_position_role_id: '',
+      system_position_role_name: '',
+      recommended_system_position_role_id: '',
+      legacy_role_count: 0,
+      active_override_count: 0,
+      cleanup_role_count: 0,
+      cleanup_override_count: 0,
+      effective_access: [],
+    })
+    listPermissionsMock.mockResolvedValue([permission, selfReviewPermission])
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.get('[data-testid="self-review-permission-card"]')
+    expect(card.text()).toContain('个人特殊权限 · 本人报价自审')
+    expect(card.text()).toContain('当前未授权')
+    const previewButton = card.findAll('button').find((button) => button.text().includes('预览授予权限'))
+    expect(previewButton).toBeDefined()
+    await previewButton!.trigger('click')
+    await flushPromises()
+
+    expect(previewUserAccessMock).toHaveBeenCalledWith('user-1', {
+      base_revision: 2,
+      reason: '管理员授予内部报价本人自审权限',
+      overrides: [{
+        permission_code: 'internal_quote:self_review',
+        effect: 'allow',
+        factory_id: 'huaxing',
+        department: 'sales-business',
+      }],
+    })
+    const dialog = wrapper.get('[aria-labelledby="self-review-preview-title"]')
+    const confirmButton = dialog.findAll('button').find((button) => button.text().includes('确认并立即生效'))
+    expect(confirmButton?.attributes('disabled')).toBeDefined()
+    await dialog.get('input[type="checkbox"]').setValue(true)
+    await confirmButton!.trigger('click')
+    await flushPromises()
+
+    expect(commitUserAccessMock).toHaveBeenCalledWith('user-1', 'self-review-preview', true)
+    expect(wrapper.text()).toContain('已授予本人报价自审权限，立即生效')
   })
 })

@@ -78,6 +78,8 @@ INTERNAL_QUOTE_SECTION_CODES = (
     "assembly",
 )
 
+INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE = "internal_quote:self_review"
+
 INTERNAL_QUOTE_PERMISSION_CODES = (
     "internal_quote:read",
     "internal_quote:create",
@@ -93,6 +95,7 @@ INTERNAL_QUOTE_PERMISSION_CODES = (
     "internal_quote:export",
     "internal_quote:final_submit",
     "internal_quote:final_approve",
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     *(
         permission_code
         for section_code in INTERNAL_QUOTE_SECTION_CODES

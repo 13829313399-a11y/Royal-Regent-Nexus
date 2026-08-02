@@ -34,6 +34,10 @@ describe('internal quote form block progress', () => {
     }).hardware).toBe('complete')
 
     expect(statuses('engineering', {
+      materials: [{ category: 'hardware', item: '螺丝', quantity: 2, unit_price_rmb: 0.35, loss_rate: 0 }],
+    }).hardware).toBe('partial')
+
+    expect(statuses('engineering', {
       materials: [{ category: 'auxiliary', item: '胶袋', quantity: 2, unit_price_hkd: 1.5 }],
     }).auxiliary).toBe('complete')
 
@@ -95,6 +99,13 @@ describe('internal quote form block progress', () => {
         unit_price_hkd: 4,
       }],
     })['packaging-materials']).toBe('complete')
+
+    expect(statuses('sales', {
+      packaging_materials: [{
+        item: '彩盒', specification: '四彩', category: 'color_box_inner_card',
+        quantity: 2, unit_price_hkd: 4, loss_rate: 0,
+      }],
+    })['packaging-materials']).toBe('partial')
   })
 
   it('tracks the optional business testing fee once either USD total or MOQ is entered', () => {

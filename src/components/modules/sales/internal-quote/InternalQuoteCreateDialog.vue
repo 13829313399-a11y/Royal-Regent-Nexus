@@ -122,7 +122,7 @@ function submit() {
     return
   }
   if (!props.businessOwners.some((item) => item.id === form.businessOwnerId)) {
-    errorMessage.value = '请选择当前厂区具备业务主管审核权限的业务负责人。'
+    errorMessage.value = '请选择当前厂区具备分段审核权限的业务负责人。'
     return
   }
   if (!form.targetCustomerPrice.trim()) {
@@ -213,10 +213,10 @@ function selectBusinessOwner() {
               <label>
                 <span>业务负责人 / 全部分段审核人 <b>*</b></span>
                 <select v-model="form.businessOwnerId" :disabled="!businessOwners.length" @change="selectBusinessOwner">
-                  <option value="" disabled>{{ businessOwners.length ? '选择业务审核负责人' : '当前厂区暂无具备业务主管审核权限的人员' }}</option>
+                  <option value="" disabled>{{ businessOwners.length ? '选择业务审核负责人' : '当前厂区暂无具备分段审核权限的人员' }}</option>
                   <option v-for="owner in businessOwners" :key="owner.id" :value="owner.id">{{ owner.displayName }}（{{ owner.username }}）</option>
                 </select>
-                <small class="quote-owner-hint">仅显示业务部主管或具备业务主管审核权限的角色；所选人员负责审核全部参与部门报价。</small>
+                <small class="quote-owner-hint">显示业务部主管，以及已获“本人报价自审”权限的当前建单人；个人自审仅适用于本人创建且由本人负责的报价。</small>
               </label>
               <label>
                 <span>出货数量 <b>*</b></span>

@@ -64,6 +64,7 @@ const canReviewActive = computed(() => canReviewInternalQuoteSections(
   authStore,
   quote.value.factoryId,
   quote.value.businessOwnerId,
+  quote.value.createdById,
 ))
 const canSyncReference = computed(() => ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const canEditFx = computed(() => quote.value.status !== 'archived' && authStore.can('internal_quote:sales_edit', quote.value.factoryId, 'sales-business'))

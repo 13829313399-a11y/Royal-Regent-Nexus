@@ -77,7 +77,16 @@ const isOwnPendingSubmission = computed(() => (
   && Boolean(props.section.submittedById)
   && props.section.submittedById === authStore.currentUser?.id
 ))
-const reviewable = computed(() => props.canReview && ['pending_review', 'na_pending'].includes(props.section.status) && !isOwnPendingSubmission.value && !quoteStore.submitting)
+const canSelfReviewOwnSubmission = computed(() => (
+  props.quote.createdById === authStore.currentUser?.id
+  && authStore.can('internal_quote:self_review', props.quote.factoryId, 'sales-business')
+))
+const reviewable = computed(() => (
+  props.canReview
+  && ['pending_review', 'na_pending'].includes(props.section.status)
+  && (!isOwnPendingSubmission.value || canSelfReviewOwnSubmission.value)
+  && !quoteStore.submitting
+))
 const canWithdraw = computed(() => props.canEdit && isOwnPendingSubmission.value && !quoteStore.submitting)
 const canReopen = computed(() => props.canEdit && ['approved', 'not_applicable'].includes(props.section.status) && !quoteStore.submitting)
 const isDirty = computed(() => JSON.stringify(draftPayload.value) !== baselinePayload.value)

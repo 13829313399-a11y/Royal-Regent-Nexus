@@ -8,6 +8,7 @@ import {
   type RoleAccessResponse,
   type RoleSummary,
   type UserAccessResponse,
+  type UserAccessPreviewResponse,
   type UserSystemPositionPreviewResponse,
 } from '@/api/iam'
 import IamIdentitySummary from '@/components/iam/IamIdentitySummary.vue'
@@ -29,6 +30,9 @@ const route = useRoute()
 const authStore = useAuthStore()
 
 type DisplayPermission = PermissionCatalogItem & { catalog_missing?: boolean }
+type SelfReviewOverrideEffect = 'allow' | 'inherit'
+
+const SELF_REVIEW_PERMISSION_CODE = 'internal_quote:self_review'
 
 const access = ref<UserAccessResponse | null>(null)
 const systemPositions = ref<RoleSummary[]>([])
@@ -36,11 +40,16 @@ const permissions = ref<PermissionCatalogItem[]>([])
 const selectedSystemPositionRoleId = ref('')
 const selectedPositionAccess = ref<RoleAccessResponse | null>(null)
 const preview = ref<UserSystemPositionPreviewResponse | null>(null)
+const selfReviewPreview = ref<UserAccessPreviewResponse | null>(null)
+const selfReviewDesiredEffect = ref<SelfReviewOverrideEffect>('allow')
 const confirmedHighRisk = ref(false)
+const selfReviewConfirmedHighRisk = ref(false)
 const isLoading = ref(false)
 const isLoadingPosition = ref(false)
 const isPreviewing = ref(false)
 const isCommitting = ref(false)
+const isPreviewingSelfReview = ref(false)
+const isCommittingSelfReview = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
 let selectedPositionAccessRequestSequence = 0
@@ -51,6 +60,27 @@ const userId = computed(() => String(route.params.userId ?? ''))
 const userFactory = computed(() => access.value?.profile?.primary_factory_id ?? '')
 const userDepartment = computed(() => access.value?.profile?.primary_department ?? '')
 const hasPrimaryOrganization = computed(() => Boolean(userFactory.value && userDepartment.value))
+const isSalesBusinessUser = computed(() => userDepartment.value === 'sales-business')
+const selfReviewCatalogItem = computed(() => permissions.value.find(
+  (permission) => permission.code === SELF_REVIEW_PERMISSION_CODE,
+) ?? null)
+const selfReviewEffectiveAccess = computed(() => access.value?.effective_access.find((entry) => (
+  entry.permission_code === SELF_REVIEW_PERMISSION_CODE
+  && entry.factory_id === userFactory.value
+  && entry.department === 'sales-business'
+)) ?? null)
+const selfReviewAllowed = computed(() => Boolean(selfReviewEffectiveAccess.value?.allowed))
+const selfReviewDirectlyAllowed = computed(() => (
+  selfReviewAllowed.value && selfReviewEffectiveAccess.value?.source_type === 'user_override'
+))
+const selfReviewInherited = computed(() => (
+  selfReviewAllowed.value && selfReviewEffectiveAccess.value?.source_type !== 'user_override'
+))
+const selfReviewStatusText = computed(() => {
+  if (selfReviewInherited.value) return '权限职位默认具备'
+  if (selfReviewDirectlyAllowed.value) return '管理员已单独授予'
+  return '当前未授权'
+})
 const assignableSystemPositions = computed(() => hasPrimaryOrganization.value
   ? systemPositions.value
   : [],
@@ -178,6 +208,7 @@ function ensureAccessManagementPermission() {
   errorMessage.value = '当前账号没有权限职位调整权限，无法执行该操作。'
   successMessage.value = ''
   preview.value = null
+  selfReviewPreview.value = null
   return false
 }
 
@@ -221,10 +252,13 @@ async function loadData() {
     selectedSystemPositionRoleId.value = ''
     selectedPositionAccess.value = null
     preview.value = null
+    selfReviewPreview.value = null
     isLoading.value = false
     isLoadingPosition.value = false
     isPreviewing.value = false
     isCommitting.value = false
+    isPreviewingSelfReview.value = false
+    isCommittingSelfReview.value = false
     errorMessage.value = ''
     successMessage.value = ''
     return
@@ -242,6 +276,7 @@ async function loadData() {
     permissions.value = catalog
     selectedSystemPositionRoleId.value = initialSystemPosition(userAccess, systemPositions.value)
     preview.value = null
+    selfReviewPreview.value = null
     await loadSelectedPositionAccess()
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
@@ -329,6 +364,82 @@ async function commitChange() {
     if (status === 403) await authStore.refreshSession()
   } finally {
     isCommitting.value = false
+  }
+}
+
+async function previewSelfReviewChange() {
+  if (!ensureAccessManagementPermission() || !access.value) return
+  if (!isSalesBusinessUser.value || !userFactory.value) {
+    errorMessage.value = '本人报价自审权限仅适用于已确认厂区的业务部人员。'
+    return
+  }
+  if (!selfReviewCatalogItem.value || selfReviewCatalogItem.value.status !== 'active') {
+    errorMessage.value = '本人报价自审权限目录尚未启用，请重启后端完成权限同步。'
+    return
+  }
+  if (selfReviewInherited.value) {
+    errorMessage.value = '当前权限职位已默认包含本人报价自审，无需重复授予。'
+    return
+  }
+  const effect: SelfReviewOverrideEffect = selfReviewDirectlyAllowed.value ? 'inherit' : 'allow'
+  isPreviewingSelfReview.value = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  selfReviewPreview.value = null
+  try {
+    selfReviewPreview.value = await iamApi.previewUserAccess(userId.value, {
+      base_revision: access.value.authorization_version,
+      reason: effect === 'allow'
+        ? '管理员授予内部报价本人自审权限'
+        : '管理员收回内部报价本人自审权限',
+      overrides: [{
+        permission_code: SELF_REVIEW_PERMISSION_CODE,
+        effect,
+        factory_id: userFactory.value,
+        department: 'sales-business',
+      }],
+    })
+    selfReviewDesiredEffect.value = effect
+    selfReviewConfirmedHighRisk.value = false
+  } catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status
+    errorMessage.value = status === 409
+      ? '用户授权版本已变化，页面已刷新，请重新操作。'
+      : getApiErrorMessage(error)
+    if (status === 409) await loadData()
+    if (status === 403) await authStore.refreshSession()
+  } finally {
+    isPreviewingSelfReview.value = false
+  }
+}
+
+async function commitSelfReviewChange() {
+  if (!ensureAccessManagementPermission() || !selfReviewPreview.value) return
+  isCommittingSelfReview.value = true
+  errorMessage.value = ''
+  try {
+    await iamApi.commitUserAccess(
+      userId.value,
+      selfReviewPreview.value.preview_token,
+      selfReviewConfirmedHighRisk.value,
+    )
+    const granted = selfReviewDesiredEffect.value === 'allow'
+    selfReviewPreview.value = null
+    await loadData()
+    await authStore.refreshSession()
+    successMessage.value = granted
+      ? '已授予本人报价自审权限，立即生效。'
+      : '已收回本人报价自审权限，立即生效。'
+  } catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status
+    errorMessage.value = status === 409
+      ? '权限预览已失效或授权版本已变化，请重新操作。'
+      : getApiErrorMessage(error)
+    selfReviewPreview.value = null
+    if (status === 409) await loadData()
+    if (status === 403) await authStore.refreshSession()
+  } finally {
+    isCommittingSelfReview.value = false
   }
 }
 
@@ -477,6 +588,35 @@ onMounted(() => void loadData())
           </article>
         </section>
 
+        <article v-if="isSalesBusinessUser" data-testid="self-review-permission-card" class="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="flex items-center gap-2 font-bold text-slate-950"><ShieldCheck class="size-4 text-emerald-700" />个人特殊权限 · 本人报价自审</h2>
+                <span class="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700">高风险权限</span>
+              </div>
+              <p class="mt-2 max-w-4xl text-sm leading-6 text-slate-500">允许该人员审核本人创建、且建单时由本人担任业务审核负责人的内部报价。不会授权其审核别人创建的报价，也不会改变最终放行流程。</p>
+              <p class="mt-2 text-xs leading-5 text-slate-400">业务主管和业务经理的内置权限职位默认包含此权限；普通跟客由管理员按个人授予。更换内置权限职位会按现有规则清理个人特殊权限。</p>
+            </div>
+            <div class="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
+              <span class="rounded-full px-3 py-1.5 text-center text-xs font-bold" :class="selfReviewAllowed ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'">{{ selfReviewStatusText }}</span>
+              <button
+                v-if="!selfReviewInherited"
+                type="button"
+                class="inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50"
+                :class="selfReviewDirectlyAllowed ? 'border border-rose-200 bg-white text-rose-700 hover:bg-rose-50' : 'bg-emerald-700 text-white hover:bg-emerald-800'"
+                :disabled="!canManageAccess || isPreviewingSelfReview || isCommittingSelfReview || selfReviewCatalogItem?.status !== 'active'"
+                @click="previewSelfReviewChange"
+              >
+                <LoaderCircle v-if="isPreviewingSelfReview" class="size-4 animate-spin" />
+                <ShieldCheck v-else class="size-4" />
+                {{ selfReviewDirectlyAllowed ? '预览收回权限' : '预览授予权限' }}
+              </button>
+              <span v-else class="text-xs font-semibold text-emerald-700">随当前业务主管/经理职位自动生效</span>
+            </div>
+          </div>
+        </article>
+
       </template>
     </div>
 
@@ -505,6 +645,35 @@ onMounted(() => void loadData())
           <label v-if="preview.high_risk" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><input v-model="confirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600" :disabled="!canManageAccess"><span>我已核对高风险权限和历史授权清理范围。</span></label>
         </div>
         <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4"><button type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" :disabled="!canManageAccess || isCommitting" @click="preview = null">返回修改</button><button type="button" class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="!canManageAccess || isCommitting || (preview.high_risk && !confirmedHighRisk)" @click="commitChange"><LoaderCircle v-if="isCommitting" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" />确认并立即生效</button></footer>
+      </section>
+    </div>
+
+    <div v-if="canManageAccess && selfReviewPreview" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4" @click.self="selfReviewPreview = null">
+      <section class="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="self-review-preview-title">
+        <header class="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+          <div>
+            <h2 id="self-review-preview-title" class="text-lg font-bold">确认{{ selfReviewDesiredEffect === 'allow' ? '授予' : '收回' }}本人报价自审权限</h2>
+            <p class="mt-1 text-sm text-slate-500">本次只调整当前用户在 {{ userFactory }} / 业务部范围的个人权限。</p>
+          </div>
+          <button type="button" aria-label="关闭本人报价自审权限预览" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" :disabled="isCommittingSelfReview" @click="selfReviewPreview = null"><X class="size-5" /></button>
+        </header>
+        <div class="p-5">
+          <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm">
+            <b class="block text-slate-950">本人创建报价可自审</b>
+            <code class="mt-1 block text-xs text-slate-400">{{ SELF_REVIEW_PERMISSION_CODE }}</code>
+            <p class="mt-3 leading-6 text-slate-600">{{ selfReviewDesiredEffect === 'allow' ? '授予后，该人员可审核本人创建且由本人负责的报价。' : '收回后，该人员重新执行提交人与审核人分离规则。' }}</p>
+          </div>
+          <label v-if="selfReviewPreview.high_risk" class="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <input v-model="selfReviewConfirmedHighRisk" type="checkbox" class="mt-0.5 size-4 accent-amber-600" :disabled="isCommittingSelfReview">
+            <span>我已核对：该权限仅限本人创建且由本人负责的报价，但会允许同一账号提交并审核分段。</span>
+          </label>
+        </div>
+        <footer class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
+          <button type="button" class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold" :disabled="isCommittingSelfReview" @click="selfReviewPreview = null">取消</button>
+          <button type="button" class="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="isCommittingSelfReview || (selfReviewPreview.high_risk && !selfReviewConfirmedHighRisk)" @click="commitSelfReviewChange">
+            <LoaderCircle v-if="isCommittingSelfReview" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" />确认并立即生效
+          </button>
+        </footer>
       </section>
     </div>
   </main>
