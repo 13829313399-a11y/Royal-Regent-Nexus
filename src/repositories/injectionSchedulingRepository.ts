@@ -1,3 +1,14 @@
+import axios from 'axios'
+import {
+  injectionSchedulingApi,
+  type InjectionSchedulingApi,
+  type InjectionSchedulingImportBatchDto,
+  type InjectionSchedulingMachineDto,
+  type InjectionSchedulingMoldDto,
+  type InjectionSchedulingOrderDto,
+  type InjectionSchedulingTaskDto,
+} from '@/api/injectionScheduling'
+import { getApiErrorMessage } from '@/lib/http'
 import type {
   AssignBacklogResult,
   BacklogOrder,
@@ -44,8 +55,27 @@ export interface InjectionSchedulingRepository {
     backlogOrderId: string,
     machineId: string,
     expectedRevision: number,
+    overrideReason?: string,
   ): Promise<AssignBacklogResult>
+  evaluateBacklogOrder(
+    factoryId: InjectionFactoryId,
+    backlogOrderId: string,
+  ): Promise<BacklogOrder>
   simulateExternalTaskUpdate(factoryId: InjectionFactoryId, taskId: string): Promise<void>
+  previewImport(
+    factoryId: InjectionFactoryId,
+    file: File,
+  ): Promise<InjectionSchedulingImportBatchDto>
+  confirmImport(
+    factoryId: InjectionFactoryId,
+    batch: InjectionSchedulingImportBatchDto,
+    input: {
+      businessDate: string
+      planStatus: InjectionSchedulingSnapshot['planStatus']
+      planRevision: number
+      acknowledgedBlockingIssueIds: string[]
+    },
+  ): Promise<InjectionSchedulingImportBatchDto>
 }
 
 const HUAXING: InjectionFactoryId = 'huaxing'
@@ -232,7 +262,7 @@ function candidate(
 ): MachineCandidate {
   const machineEntry = huaxingMachines.find((entry) => entry.id === machineId)
   if (!machineEntry) throw new Error(`Mock 候选机台不存在：${machineId}`)
-  return { machineId, machineCode: machineEntry.code, rank, score, decision, resultLabel, explanation, warning, constraints }
+  return { machineId, machineCode: machineEntry.code, rank, score, decision, resultLabel, explanation, warning, constraints, ruleSetRevision: 1 }
 }
 
 const passCommon = [
@@ -295,6 +325,11 @@ function createHuaxingSnapshot(): InjectionSchedulingSnapshot {
     sourceMode: 'mock',
     sourceLabel: '华兴啤机日排版表1.xlsx · 只读抽样建模',
     planVersion: '草案 r18',
+    planId: 'mock-plan-huaxing',
+    planStatus: 'DRAFT',
+    planRevision: 18,
+    businessDate: PLAN_DATE,
+    pollingRevision: 18,
     generatedAt: '2026-07-31 16:18',
     machines: huaxingMachines,
     tasks,
@@ -373,12 +408,27 @@ export class MockInjectionSchedulingRepository implements InjectionSchedulingRep
     return { backlogOrder: clone(backlog), auditMessage: `${backlog.orderNo} 已加入 ${selected.machineCode} 排程草案` }
   }
 
+  async evaluateBacklogOrder(factoryId: InjectionFactoryId, backlogOrderId: string) {
+    const snapshot = this.requireSnapshot(factoryId)
+    const backlog = snapshot.backlogOrders.find((entry) => entry.id === backlogOrderId)
+    if (!backlog) throw new Error(`待排订单不存在：${backlogOrderId}`)
+    return clone(backlog)
+  }
+
   async simulateExternalTaskUpdate(factoryId: InjectionFactoryId, taskId: string): Promise<void> {
     const snapshot = this.requireSnapshot(factoryId)
     const taskEntry = snapshot.tasks.find((entry) => entry.id === taskId && entry.factoryId === factoryId)
     if (!taskEntry) throw new Error(`任务不存在或不属于当前厂区：${taskId}`)
     taskEntry.revision += 1
     taskEntry.updatedAt = '2026-07-31 16:29'
+  }
+
+  async previewImport(): Promise<InjectionSchedulingImportBatchDto> {
+    throw new Error('Mock 仓储不执行真实 Excel 导入')
+  }
+
+  async confirmImport(): Promise<InjectionSchedulingImportBatchDto> {
+    throw new Error('Mock 仓储不执行真实 Excel 导入确认')
   }
 
   private requireSnapshot(factoryId: InjectionFactoryId) {
@@ -396,4 +446,394 @@ export class MockInjectionSchedulingRepository implements InjectionSchedulingRep
   }
 }
 
-export const injectionSchedulingRepository = new MockInjectionSchedulingRepository()
+const factoryNames: Record<InjectionFactoryId, string> = {
+  huaxing: '华兴',
+  'huakang-a': '华康 A',
+  'huakang-b': '华康 B',
+  'huakang-c': '华康 C',
+  'huakang-d': '华康 D',
+  huadeng: '华登',
+}
+
+function requestId(prefix: string) {
+  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)
+  return `${prefix}-${Date.now()}-${random}`
+}
+
+function machineArmCapability(machine: InjectionSchedulingMachineDto): '单臂' | '双臂' {
+  const capabilities = machine.robot_capabilities.join(' ').toLocaleLowerCase()
+  return capabilities.includes('双') || capabilities.includes('dual') ? '双臂' : '单臂'
+}
+
+function moldArmRequirement(mold: InjectionSchedulingMoldDto | undefined): '单臂' | '双臂' {
+  const requirement = mold?.required_arm_type.toLocaleLowerCase() ?? ''
+  return requirement.includes('双') || requirement.includes('dual') ? '双臂' : '单臂'
+}
+
+function colorHex(value: string) {
+  const palette = ['#111827', '#2563eb', '#059669', '#dc2626', '#7c3aed', '#d97706', '#64748b']
+  const hash = Array.from(value).reduce((total, character) => total + character.charCodeAt(0), 0)
+  return palette[hash % palette.length]
+}
+
+function taskStatus(status: InjectionSchedulingTaskDto['execution_status']): SchedulingTask['status'] {
+  if (status === 'COMPLETED') return 'DONE'
+  if (status === 'CANCELLED') return 'BLOCKED'
+  return status
+}
+
+function reportStatus(status: SchedulingTask['status']): 'QUEUED' | 'RUNNING' | 'BLOCKED' | 'COMPLETED' {
+  return status === 'DONE' ? 'COMPLETED' : status
+}
+
+function machineLoadPercent(tasks: InjectionSchedulingTaskDto[]) {
+  const scheduledHours = tasks.reduce((total, task) => {
+    const start = Date.parse(task.planned_start)
+    const finish = Date.parse(task.planned_finish)
+    return total + (Number.isFinite(start) && Number.isFinite(finish) ? Math.max(0, finish - start) / 3_600_000 : 0)
+  }, 0)
+  return Math.min(100, Math.round(scheduledHours / 24 * 100))
+}
+
+function moldDimensions(mold: InjectionSchedulingMoldDto | undefined): MoldDimensions | null {
+  if (!mold?.length_mm || !mold.width_mm || !mold.height_mm) return null
+  return { length: mold.length_mm, width: mold.width_mm, height: mold.height_mm }
+}
+
+function mapTask(
+  task: InjectionSchedulingTaskDto,
+  order: InjectionSchedulingOrderDto | undefined,
+  mold: InjectionSchedulingMoldDto | undefined,
+): SchedulingTask {
+  const color = mold?.color_profile || '未填写'
+  return {
+    id: task.id,
+    factoryId: task.factory_id as InjectionFactoryId,
+    machineId: task.machine_id,
+    sequence: task.sequence_no,
+    status: taskStatus(task.execution_status),
+    priority: order?.priority_code ?? 'NORMAL',
+    originalMarker: '',
+    moldCode: mold?.mold_no || order?.mold_id || '未关联模具',
+    productName: order?.product_name || mold?.name || '未填写产品名称',
+    orderNo: order?.order_no || task.order_id,
+    itemNo: order?.item_no || '',
+    orderQuantity: order?.order_quantity ?? 0,
+    completedQuantity: order?.completed_quantity ?? task.reported_quantity,
+    shiftTarget: task.shift_target_quantity,
+    shiftCompleted: 0,
+    downtimeHours: 0,
+    exceptionType: '',
+    color,
+    colorHex: colorHex(color),
+    material: mold?.material_name || mold?.material_code || '未填写',
+    shotNetWeightGrams: mold?.whole_shot_net_weight_g ?? 0,
+    deliveryDate: order?.delivery_due_date || '—',
+    plannedStart: task.planned_start,
+    plannedEnd: task.planned_finish,
+    slackDays: task.delivery_slack_days ?? 999,
+    armRequirement: moldArmRequirement(mold),
+    fixtureRequirement: mold?.required_fixture_type || '未填写',
+    moldDimensions: moldDimensions(mold),
+    warehouseOwner: order?.warehouse_text || '',
+    note: order?.remark || task.manual_override_reason,
+    fitDecision: 'REVIEW_REQUIRED',
+    fitScore: 0,
+    sourceRow: task.source_row,
+    revision: task.revision,
+    updatedAt: task.updated_at,
+  }
+}
+
+function mapBacklogOrder(
+  factoryId: InjectionFactoryId,
+  order: InjectionSchedulingOrderDto,
+  mold: InjectionSchedulingMoldDto | undefined,
+): BacklogOrder {
+  return {
+    id: order.id,
+    factoryId,
+    orderNo: order.order_no,
+    itemNo: order.item_no,
+    moldCode: mold?.mold_no || order.mold_id || '未关联模具',
+    productName: order.product_name || mold?.name || '未填写产品名称',
+    quantity: order.outstanding_quantity,
+    deliveryDate: order.delivery_due_date || '—',
+    color: mold?.color_profile || '未填写',
+    material: mold?.material_name || mold?.material_code || '未填写',
+    shotNetWeightGrams: mold?.whole_shot_net_weight_g ?? 0,
+    armRequirement: moldArmRequirement(mold),
+    fixtureRequirement: mold?.required_fixture_type || '未填写',
+    moldDimensions: moldDimensions(mold),
+    note: order.remark || '等待阶段 5 候选机台匹配',
+    candidates: [],
+    revision: order.revision,
+  }
+}
+
+function constraintKey(ruleCode: string): ConstraintCheck['key'] {
+  if (ruleCode.includes('DIMENSION') || ruleCode.includes('THICKNESS')) return 'mold-size'
+  if (ruleCode.includes('SHOT')) return 'shot-capacity'
+  if (ruleCode.includes('ARM')) return 'robot-arm'
+  if (ruleCode.includes('FIXTURE')) return 'fixture'
+  return 'process'
+}
+
+function mapCandidates(results: Awaited<ReturnType<InjectionSchedulingApi['evaluateMatches']>>['results']): MachineCandidate[] {
+  return results.map((result, index) => {
+    const constraints: ConstraintCheck[] = [
+      ...result.hard_failures.map((reason) => ({
+        key: constraintKey(reason.rule_code),
+        label: reason.label,
+        decision: 'FAIL' as const,
+        detail: reason.detail,
+      })),
+      ...result.warnings.map((reason) => ({
+        key: constraintKey(reason.rule_code),
+        label: reason.label,
+        decision: 'REVIEW_REQUIRED' as const,
+        detail: reason.detail,
+      })),
+    ]
+    if (!constraints.length) {
+      constraints.push({ key: 'process', label: '全部硬约束', decision: 'PASS', detail: '后端规则引擎未发现硬失败或待复核项。' })
+    }
+    const scoreExplanation = result.score_breakdown
+      .filter((entry) => entry.delta !== 0)
+      .map((entry) => `${entry.label} ${entry.delta >= 0 ? '+' : ''}${entry.delta}`)
+      .join('；')
+    return {
+      machineId: result.machine_id,
+      machineCode: result.machine_code,
+      rank: index + 1,
+      score: result.score ?? 0,
+      decision: result.decision,
+      resultLabel: result.decision === 'PASS' ? '可排' : result.decision === 'REVIEW_REQUIRED' ? '需主管复核' : '硬约束失败',
+      explanation: [result.explanation, scoreExplanation].filter(Boolean).join(' '),
+      warning: result.warnings.map((entry) => entry.detail).join('；') || result.hard_failures.map((entry) => entry.detail).join('；'),
+      constraints,
+      ruleSetRevision: result.rule_set_revision,
+    }
+  })
+}
+
+export class HttpInjectionSchedulingRepository implements InjectionSchedulingRepository {
+  private readonly snapshots = new Map<InjectionFactoryId, InjectionSchedulingSnapshot>()
+
+  constructor(private readonly api: InjectionSchedulingApi = injectionSchedulingApi) {}
+
+  async getSnapshot(factoryId: InjectionFactoryId): Promise<InjectionSchedulingSnapshot> {
+    const [machineResponse, moldResponse, backlogResponse, planResponse] = await Promise.all([
+      this.api.listMachines(factoryId),
+      this.api.listMolds(factoryId),
+      this.api.getBacklog(factoryId),
+      this.api.getCurrentPlan(factoryId),
+    ])
+    const plan = planResponse.plan
+    const planTasks = plan?.tasks ?? []
+    const orderMap = new Map((plan?.orders ?? []).map((order) => [order.id, order]))
+    const moldMap = new Map(moldResponse.items.map((mold) => [mold.id, mold]))
+    const tasks = planTasks.map((task) => mapTask(
+      task,
+      orderMap.get(task.order_id),
+      moldMap.get(task.mold_id ?? orderMap.get(task.order_id)?.mold_id ?? ''),
+    ))
+    const tasksByMachine = new Map<string, InjectionSchedulingTaskDto[]>()
+    for (const task of planTasks) {
+      const entries = tasksByMachine.get(task.machine_id) ?? []
+      entries.push(task)
+      tasksByMachine.set(task.machine_id, entries)
+    }
+    const machines = machineResponse.items.map<InjectionMachine>((machine) => ({
+      id: machine.id,
+      factoryId,
+      code: machine.machine_code,
+      zone: [machine.area, machine.position].filter(Boolean).join(' · '),
+      machineClass: machine.machine_class || '未分类',
+      tonnage: machine.clamping_force_tons ?? 0,
+      shotCapacityGrams: machine.injection_capacity_g ?? 0,
+      platen: { width: machine.platen_x_mm ?? 0, height: machine.platen_y_mm ?? 0 },
+      armCapability: machineArmCapability(machine),
+      machineType: machine.machine_type || 'standard',
+      processNote: machine.process_restrictions.join('、'),
+      loadPercent: machineLoadPercent(tasksByMachine.get(machine.id) ?? []),
+    }))
+    const backlogOrders = backlogResponse.items.map((order) => mapBacklogOrder(
+      factoryId,
+      order,
+      moldMap.get(order.mold_id ?? ''),
+    ))
+    const completeMolds = moldResponse.items.filter((mold) => mold.data_quality_status === 'complete').length
+    const planStatus = plan?.status ?? 'NONE'
+    const snapshot: InjectionSchedulingSnapshot = {
+      factoryId,
+      factoryName: factoryNames[factoryId],
+      sourceMode: 'live',
+      sourceLabel: '正式数据库 · Excel 导入批次可追溯',
+      planVersion: plan ? `${plan.status === 'DRAFT' ? '草案' : plan.status === 'PUBLISHED' ? '正式' : '归档'} r${plan.revision}` : '尚未建立计划',
+      planId: plan?.id ?? '',
+      planStatus,
+      planRevision: plan?.revision ?? 0,
+      businessDate: plan?.business_date ?? new Date().toISOString().slice(0, 10),
+      pollingRevision: planResponse.polling_revision,
+      generatedAt: plan?.updated_at ?? new Date().toISOString(),
+      machines,
+      tasks,
+      backlogOrders,
+      summary: {
+        availableMachines: new Set(tasks.map((task) => task.machineId)).size,
+        totalMachines: machines.length,
+        scheduledTasks: tasks.length,
+        overdueTasks: tasks.filter((task) => task.status !== 'DONE' && task.slackDays < 0).length,
+        dueSoonTasks: tasks.filter((task) => task.status !== 'DONE' && task.slackDays >= 0 && task.slackDays <= 3).length,
+        remainingQuantity: tasks.reduce((total, task) => total + Math.max(0, task.orderQuantity - task.completedQuantity), 0),
+        moldDimensionCompleteness: moldResponse.items.length ? completeMolds / moldResponse.items.length * 100 : 0,
+        backlogOrders: backlogOrders.length,
+      },
+    }
+    this.snapshots.set(factoryId, snapshot)
+    return snapshot
+  }
+
+  async saveShiftReport(
+    factoryId: InjectionFactoryId,
+    taskId: string,
+    expectedRevision: number,
+    input: ShiftReportInput,
+  ): Promise<SaveShiftReportResult> {
+    const snapshot = this.snapshots.get(factoryId)
+    if (!snapshot || snapshot.planStatus !== 'PUBLISHED') {
+      throw new Error('只有已发布计划的执行中任务可以提交生产回报')
+    }
+    try {
+      await this.api.saveShiftReport(taskId, {
+        factory_id: factoryId,
+        expected_revision: expectedRevision,
+        request_id: requestId('shift-report'),
+        business_date: snapshot.businessDate,
+        shift_code: new Date().getHours() >= 20 || new Date().getHours() < 8 ? 'NIGHT' : 'DAY',
+        quantity_mode: 'CUMULATIVE',
+        reported_quantity: input.cumulativeCompleted,
+        shift_target_quantity: input.shiftTarget,
+        downtime_minutes: Math.round(input.downtimeHours * 60),
+        exception_code: input.exceptionType,
+        exception_detail: input.remark,
+        reported_status: reportStatus(input.status),
+      })
+      const refreshed = await this.getSnapshot(factoryId)
+      const task = refreshed.tasks.find((entry) => entry.id === taskId)
+      if (!task) throw new Error('生产回报已保存，但刷新后未找到对应任务')
+      return { task, auditMessage: `本班回报已保存 · revision ${task.revision}` }
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        const detail = error.response.data?.detail
+        const currentRevision = typeof detail === 'object' && detail && 'current_revision' in detail
+          ? Number(detail.current_revision)
+          : expectedRevision
+        throw new OptimisticConflictError(taskId, currentRevision)
+      }
+      throw new Error(getApiErrorMessage(error))
+    }
+  }
+
+  async evaluateBacklogOrder(factoryId: InjectionFactoryId, backlogOrderId: string) {
+    const snapshot = this.snapshots.get(factoryId)
+    const backlog = snapshot?.backlogOrders.find((entry) => entry.id === backlogOrderId)
+    if (!snapshot || !backlog) throw new Error('待排订单不存在或正式快照尚未加载')
+    try {
+      const evaluation = await this.api.evaluateMatches(factoryId, backlogOrderId)
+      backlog.candidates = mapCandidates(evaluation.results)
+      return structuredClone(backlog)
+    } catch (error) {
+      throw new Error(getApiErrorMessage(error))
+    }
+  }
+
+  async assignBacklogOrder(
+    factoryId: InjectionFactoryId,
+    backlogOrderId: string,
+    machineId: string,
+    expectedRevision: number,
+    overrideReason = '',
+  ): Promise<AssignBacklogResult> {
+    const snapshot = this.snapshots.get(factoryId)
+    const backlog = snapshot?.backlogOrders.find((entry) => entry.id === backlogOrderId)
+    if (!snapshot || !backlog) throw new Error('待排订单不存在或正式快照尚未加载')
+    if (snapshot.planStatus !== 'DRAFT' || !snapshot.planId) throw new Error('请先创建或导入计划草案，再确认候选机台')
+    if (backlog.revision !== expectedRevision) throw new OptimisticConflictError(backlog.id, backlog.revision)
+    const candidate = backlog.candidates.find((entry) => entry.machineId === machineId)
+    if (!candidate) throw new Error('候选结果已失效，请重新计算')
+    if (candidate.decision === 'FAIL') throw new Error('硬约束失败的机台禁止排入草案')
+    if (candidate.decision === 'REVIEW_REQUIRED' && !overrideReason.trim()) {
+      throw new Error('资料待复核的候选必须填写人工覆盖原因')
+    }
+    try {
+      await this.api.confirmSuggestion(snapshot.planId, {
+        factory_id: factoryId,
+        order_id: backlog.id,
+        machine_id: machineId,
+        expected_plan_revision: snapshot.planRevision,
+        expected_rule_revision: candidate.ruleSetRevision,
+        request_id: requestId('match-confirm'),
+        override_reason: overrideReason.trim(),
+      })
+      return {
+        backlogOrder: { ...structuredClone(backlog), note: `${backlog.note} · 已确认 ${candidate.machineCode}` },
+        auditMessage: `${backlog.orderNo} 已加入 ${candidate.machineCode} 排程草案`,
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        const detail = error.response.data?.detail
+        const currentRevision = typeof detail === 'object' && detail && 'current_revision' in detail
+          ? Number(detail.current_revision)
+          : snapshot.planRevision
+        if (typeof detail === 'object' && detail && 'current_revision' in detail) {
+          throw new OptimisticConflictError(snapshot.planId, currentRevision)
+        }
+      }
+      throw new Error(getApiErrorMessage(error))
+    }
+  }
+
+  async simulateExternalTaskUpdate(): Promise<void> {
+    throw new Error('正式数据模式不提供模拟并发更新')
+  }
+
+  async previewImport(factoryId: InjectionFactoryId, file: File) {
+    try {
+      return await this.api.previewImport(factoryId, file, 0, requestId('import-preview'))
+    } catch (error) {
+      throw new Error(getApiErrorMessage(error))
+    }
+  }
+
+  async confirmImport(
+    factoryId: InjectionFactoryId,
+    batch: InjectionSchedulingImportBatchDto,
+    input: {
+      businessDate: string
+      planStatus: InjectionSchedulingSnapshot['planStatus']
+      planRevision: number
+      acknowledgedBlockingIssueIds: string[]
+    },
+  ) {
+    try {
+      const mergeDraft = input.planStatus === 'DRAFT'
+      return await this.api.confirmImport(batch.id, {
+        factory_id: factoryId,
+        expected_revision: batch.revision,
+        expected_plan_revision: mergeDraft ? input.planRevision : 0,
+        request_id: requestId('import-confirm'),
+        confirm_mode: mergeDraft ? 'merge_draft' : 'create_draft',
+        business_date: input.businessDate,
+        acknowledged_blocking_issue_ids: input.acknowledgedBlockingIssueIds,
+      })
+    } catch (error) {
+      throw new Error(getApiErrorMessage(error))
+    }
+  }
+}
+
+export const injectionSchedulingRepository: InjectionSchedulingRepository = import.meta.env.MODE === 'test'
+  ? new MockInjectionSchedulingRepository()
+  : new HttpInjectionSchedulingRepository()

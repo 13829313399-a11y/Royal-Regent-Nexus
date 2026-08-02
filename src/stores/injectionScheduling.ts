@@ -4,6 +4,7 @@ import {
   injectionSchedulingRepository,
   OptimisticConflictError,
 } from '@/repositories/injectionSchedulingRepository'
+import type { InjectionSchedulingImportBatchDto } from '@/api/injectionScheduling'
 import type {
   BacklogOrder,
   InjectionFactoryId,
@@ -48,6 +49,16 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
   const saving = ref(false)
   const toast = ref('')
   const conflict = ref<ConflictState | null>(null)
+  const importDrawerOpen = ref(false)
+  const importBatch = ref<InjectionSchedulingImportBatchDto | null>(null)
+  const importFileName = ref('')
+  const importBusinessDate = ref('')
+  const importLoading = ref(false)
+  const importError = ref('')
+  const acknowledgedBlockingIssueIds = reactive(new Set<string>())
+  const candidateLoading = ref(false)
+  const candidateError = ref('')
+  const candidateReasons = reactive<Record<string, string>>({})
 
   const machinesById = computed(() => new Map(
     (snapshot.value?.machines ?? []).map((entry) => [entry.id, entry]),
@@ -57,6 +68,11 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
   const selectedMachine = computed(() => selectedTask.value ? machinesById.value.get(selectedTask.value.machineId) ?? null : null)
   const selectedBacklog = computed(() => snapshot.value?.backlogOrders.find((entry) => entry.id === selectedBacklogId.value) ?? null)
   const isDirty = computed(() => Object.keys(reportDrafts).length > 0)
+  const canSubmitReports = computed(() => snapshot.value?.planStatus === 'PUBLISHED')
+  const blockingImportIssues = computed(() => importBatch.value?.issues.filter((issue) => issue.blocking) ?? [])
+  const allBlockingIssuesAcknowledged = computed(() => blockingImportIssues.value.every(
+    (issue) => acknowledgedBlockingIssueIds.has(issue.id),
+  ))
 
   const filteredGroups = computed<TaskGroup[]>(() => {
     const currentSnapshot = snapshot.value
@@ -100,12 +116,19 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
   const machineClasses = computed(() => Array.from(new Set((snapshot.value?.machines ?? []).map((entry) => entry.machineClass))))
 
   async function load(nextFactoryId: InjectionFactoryId) {
+    const factoryChanged = nextFactoryId !== factoryId.value
     factoryId.value = nextFactoryId
     loading.value = true
     error.value = ''
     conflict.value = null
     try {
       snapshot.value = await injectionSchedulingRepository.getSnapshot(nextFactoryId)
+      if (factoryChanged) resetImport()
+      candidateError.value = ''
+      for (const machineId of Object.keys(candidateReasons)) delete candidateReasons[machineId]
+      if (!snapshot.value.backlogOrders.some((entry) => entry.id === selectedBacklogId.value)) {
+        selectedBacklogId.value = snapshot.value.backlogOrders[0]?.id ?? ''
+      }
       clearDrafts()
     } catch (loadError) {
       snapshot.value = null
@@ -126,9 +149,27 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
     detailDrawerOpen.value = true
   }
 
-  function openBacklog(backlogId?: string) {
+  async function openBacklog(backlogId?: string) {
     if (backlogId) selectedBacklogId.value = backlogId
     backlogDrawerOpen.value = true
+    if (selectedBacklogId.value) await loadCandidates(selectedBacklogId.value)
+  }
+
+  async function loadCandidates(backlogId: string) {
+    const currentSnapshot = snapshot.value
+    if (!currentSnapshot) return
+    candidateLoading.value = true
+    candidateError.value = ''
+    try {
+      const refreshed = await injectionSchedulingRepository.evaluateBacklogOrder(factoryId.value, backlogId)
+      const index = currentSnapshot.backlogOrders.findIndex((entry) => entry.id === backlogId)
+      if (index >= 0) currentSnapshot.backlogOrders[index] = refreshed
+      for (const machineId of Object.keys(candidateReasons)) delete candidateReasons[machineId]
+    } catch (loadError) {
+      candidateError.value = loadError instanceof Error ? loadError.message : '候选机台加载失败'
+    } finally {
+      candidateLoading.value = false
+    }
   }
 
   function ensureDraft(taskEntry: SchedulingTask): TaskReportDraft {
@@ -181,6 +222,10 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
     const taskEntry = snapshot.value?.tasks.find((entry) => entry.id === taskId)
     const draft = reportDrafts[taskId]
     if (!snapshot.value || !taskEntry || !draft) return
+    if (!canSubmitReports.value) {
+      error.value = '只有已发布计划可以提交生产回报；当前计划仍是草案或尚未建立。'
+      return
+    }
 
     saving.value = true
     error.value = ''
@@ -235,24 +280,104 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
     window.setTimeout(() => { toast.value = '' }, 3200)
   }
 
-  async function assignBacklog(backlog: BacklogOrder, machineId: string) {
+  function resetImport() {
+    importBatch.value = null
+    importFileName.value = ''
+    importBusinessDate.value = snapshot.value?.businessDate ?? new Date().toISOString().slice(0, 10)
+    importError.value = ''
+    acknowledgedBlockingIssueIds.clear()
+  }
+
+  function openImport() {
+    resetImport()
+    importDrawerOpen.value = true
+  }
+
+  async function previewImport(file: File) {
+    if (!file.name.toLocaleLowerCase().endsWith('.xlsx')) {
+      importError.value = '请选择 .xlsx 格式的注塑排产工作簿。'
+      return
+    }
+    importLoading.value = true
+    importError.value = ''
+    importBatch.value = null
+    importFileName.value = file.name
+    acknowledgedBlockingIssueIds.clear()
+    try {
+      importBatch.value = await injectionSchedulingRepository.previewImport(factoryId.value, file)
+      importBusinessDate.value = snapshot.value?.businessDate ?? new Date().toISOString().slice(0, 10)
+    } catch (previewError) {
+      importError.value = previewError instanceof Error ? previewError.message : 'Excel 导入预览失败'
+    } finally {
+      importLoading.value = false
+    }
+  }
+
+  function toggleBlockingIssue(issueId: string, acknowledged: boolean) {
+    if (acknowledged) acknowledgedBlockingIssueIds.add(issueId)
+    else acknowledgedBlockingIssueIds.delete(issueId)
+  }
+
+  function toggleAllBlockingIssues(acknowledged: boolean) {
+    acknowledgedBlockingIssueIds.clear()
+    if (acknowledged) {
+      for (const issue of blockingImportIssues.value) acknowledgedBlockingIssueIds.add(issue.id)
+    }
+  }
+
+  async function confirmImport() {
+    const batch = importBatch.value
+    const currentSnapshot = snapshot.value
+    if (!batch || !currentSnapshot || batch.status !== 'PREVIEW') return
+    if (!allBlockingIssuesAcknowledged.value) {
+      importError.value = '必须逐条确认全部阻断问题后才能正式导入。'
+      return
+    }
+    importLoading.value = true
+    importError.value = ''
+    try {
+      importBatch.value = await injectionSchedulingRepository.confirmImport(
+        factoryId.value,
+        batch,
+        {
+          businessDate: importBusinessDate.value,
+          planStatus: currentSnapshot.planStatus,
+          planRevision: currentSnapshot.planRevision,
+          acknowledgedBlockingIssueIds: Array.from(acknowledgedBlockingIssueIds),
+        },
+      )
+      toast.value = 'Excel 导入已确认，正式数据库计划已刷新'
+      window.setTimeout(() => { toast.value = '' }, 3200)
+      await load(factoryId.value)
+    } catch (confirmError) {
+      importError.value = confirmError instanceof Error ? confirmError.message : 'Excel 导入确认失败'
+    } finally {
+      importLoading.value = false
+    }
+  }
+
+  async function assignBacklog(backlog: BacklogOrder, machineId: string, overrideReason = '') {
     saving.value = true
     error.value = ''
+    candidateError.value = ''
     try {
       const result = await injectionSchedulingRepository.assignBacklogOrder(
         factoryId.value,
         backlog.id,
         machineId,
         backlog.revision,
+        overrideReason,
       )
-      if (snapshot.value) {
-        const index = snapshot.value.backlogOrders.findIndex((entry) => entry.id === backlog.id)
-        snapshot.value.backlogOrders[index] = result.backlogOrder
-      }
       toast.value = result.auditMessage
       window.setTimeout(() => { toast.value = '' }, 3000)
+      backlogDrawerOpen.value = false
+      await load(factoryId.value)
     } catch (assignError) {
-      error.value = assignError instanceof Error ? assignError.message : '确认候选机台失败'
+      const message = assignError instanceof Error ? assignError.message : '确认候选机台失败'
+      candidateError.value = message
+      if (assignError instanceof OptimisticConflictError) {
+        error.value = '计划或规则已被其他人员更新，请重新加载候选机台后再确认。'
+      }
     } finally {
       saving.value = false
     }
@@ -287,6 +412,16 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
     saving,
     toast,
     conflict,
+    importDrawerOpen,
+    importBatch,
+    importFileName,
+    importBusinessDate,
+    importLoading,
+    importError,
+    acknowledgedBlockingIssueIds,
+    candidateLoading,
+    candidateError,
+    candidateReasons,
     filteredGroups,
     filteredTaskCount,
     machineClasses,
@@ -294,10 +429,14 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
     selectedMachine,
     selectedBacklog,
     isDirty,
+    canSubmitReports,
+    blockingImportIssues,
+    allBlockingIssuesAcknowledged,
     load,
     toggleMachine,
     openTask,
     openBacklog,
+    loadCandidates,
     updateShiftCompleted,
     updateDraft,
     displayValues,
@@ -306,6 +445,12 @@ export const useInjectionSchedulingStore = defineStore('injectionScheduling', ()
     retryConflict,
     simulateConflict,
     assignBacklog,
+    openImport,
+    previewImport,
+    toggleBlockingIssue,
+    toggleAllBlockingIssues,
+    confirmImport,
+    resetImport,
     clearDrafts,
     clearError,
   }

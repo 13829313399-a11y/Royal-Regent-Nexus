@@ -6,7 +6,8 @@ export type InjectionFactoryId =
   | 'huakang-d'
   | 'huadeng'
 
-export type SchedulingSourceMode = 'mock'
+export type SchedulingSourceMode = 'mock' | 'live'
+export type SchedulingPlanStatus = 'NONE' | 'DRAFT' | 'PUBLISHED' | 'ARCHIVED'
 export type SchedulingTaskStatus = 'RUNNING' | 'QUEUED' | 'BLOCKED' | 'DONE'
 export type SchedulingPriority = 'NORMAL' | 'URGENT' | 'CRITICAL'
 export type FitDecision = 'PASS' | 'REVIEW_REQUIRED' | 'FAIL'
@@ -96,6 +97,7 @@ export interface MachineCandidate {
   explanation: string
   warning: string
   constraints: ConstraintCheck[]
+  ruleSetRevision: number
 }
 
 export interface BacklogOrder {
@@ -135,6 +137,11 @@ export interface InjectionSchedulingSnapshot {
   sourceMode: SchedulingSourceMode
   sourceLabel: string
   planVersion: string
+  planId: string
+  planStatus: SchedulingPlanStatus
+  planRevision: number
+  businessDate: string
+  pollingRevision: number
   generatedAt: string
   machines: InjectionMachine[]
   tasks: SchedulingTask[]

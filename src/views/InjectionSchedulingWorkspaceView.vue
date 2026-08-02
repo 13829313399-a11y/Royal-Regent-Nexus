@@ -61,15 +61,29 @@ const {
   saving,
   toast,
   conflict,
+  importDrawerOpen,
+  importBatch,
+  importFileName,
+  importBusinessDate,
+  importLoading,
+  importError,
+  acknowledgedBlockingIssueIds,
+  candidateLoading,
+  candidateError,
+  candidateReasons,
   filteredGroups,
   filteredTaskCount,
   machineClasses,
   isDirty,
+  canSubmitReports,
+  blockingImportIssues,
+  allBlockingIssuesAcknowledged,
 } = storeToRefs(store)
 
 const backlogTab = ref<'candidates' | 'rules' | 'unmatched'>('candidates')
 const localNotice = ref('')
 const searchInput = ref<HTMLInputElement | null>(null)
+const importFileInput = ref<HTMLInputElement | null>(null)
 const visibleGroupLimit = ref(12)
 const density = ref<'standard' | 'compact'>('standard')
 const columnChooserOpen = ref(false)
@@ -93,6 +107,8 @@ const visibleColumnCount = computed(() => (
   + (columnVisibility.dates ? 3 : 0)
   + (columnVisibility.fit ? 1 : 0)
 ))
+const isLive = computed(() => snapshot.value?.sourceMode === 'live')
+const visibleImportIssues = computed(() => importBatch.value?.issues.slice(0, 100) ?? [])
 
 const factoryOptions: Array<{ id: InjectionFactoryId; label: string }> = [
   { id: 'huaxing', label: '华兴' },
@@ -119,6 +135,7 @@ const summaryCards = computed(() => {
 const selectedValues = computed(() => selectedTask.value ? store.displayValues(selectedTask.value) : null)
 
 const detailChecks = computed<ConstraintCheck[]>(() => {
+  if (isLive.value) return []
   const task = selectedTask.value
   const machine = selectedMachine.value
   if (!task || !machine) return []
@@ -175,7 +192,31 @@ function textFromEvent(event: Event) {
 }
 
 function formatDateTime(value: string) {
-  return value.replace('2026-', '').replace(' ', ' · ')
+  return value.replace('T', ' · ').replace(/^\d{4}-/, '')
+}
+
+function importSummaryValue(key: string) {
+  const value = importBatch.value?.summary[key]
+  return typeof value === 'number' ? value.toLocaleString() : '0'
+}
+
+function chooseImportFile() {
+  importFileInput.value?.click()
+}
+
+async function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) await store.previewImport(file)
+}
+
+function toggleIssue(event: Event, issueId: string) {
+  store.toggleBlockingIssue(issueId, (event.target as HTMLInputElement).checked)
+}
+
+function toggleAllIssues(event: Event) {
+  store.toggleAllBlockingIssues((event.target as HTMLInputElement).checked)
 }
 
 function statusLabel(status: SchedulingTask['status']) {
@@ -254,13 +295,22 @@ function handleGlobalShortcut(event: KeyboardEvent) {
   }
 }
 
+async function selectBacklogOrder(orderId: string) {
+  store.selectedBacklogId = orderId
+  await store.loadCandidates(orderId)
+}
+
 function openCandidate(candidate: MachineCandidate) {
   if (!selectedBacklog.value || candidate.decision === 'FAIL') return
   if (!isOnline.value) {
     showNotice('当前处于离线状态，候选机台仍可查看，但不能写入草案')
     return
   }
-  void store.assignBacklog(selectedBacklog.value, candidate.machineId)
+  void store.assignBacklog(
+    selectedBacklog.value,
+    candidate.machineId,
+    candidateReasons.value[candidate.machineId] ?? '',
+  )
 }
 
 function loadMoreGroups() {
@@ -341,17 +391,17 @@ onBeforeUnmount(() => {
         <button class="nav-item" type="button" @click="view = 'timeline'"><Clock3 :size="17" />负荷时间轴</button>
 
         <p class="nav-label">基础资料</p>
-        <button class="nav-item" type="button" @click="showNotice('阶段 1B 暂不建设模具资料维护页')"><Wrench :size="17" />模具资料<span>1,956</span></button>
-        <button class="nav-item" type="button" @click="showNotice('阶段 1B 暂不建设机台能力维护页')"><LayoutGrid :size="17" />机台能力</button>
-        <button class="nav-item" type="button" @click="showNotice('规则仅在候选机台抽屉中做可解释预览')"><SlidersHorizontal :size="17" />排产规则</button>
+        <button class="nav-item" type="button" @click="showNotice('模具资料已从正式数据库读取；维护入口后续独立建设')"><Wrench :size="17" />模具资料</button>
+        <button class="nav-item" type="button" @click="showNotice('机台能力已从正式数据库读取；维护入口后续独立建设')"><LayoutGrid :size="17" />机台能力</button>
+        <button class="nav-item" type="button" @click="showNotice('当前使用后端正式规则执行硬约束、软评分与人工确认校验')"><SlidersHorizontal :size="17" />排产规则</button>
 
         <p class="nav-label">追溯</p>
-        <button class="nav-item" type="button" @click="showNotice('Excel 导入预览与确认属于阶段 4，本轮保持只读证据边界')"><Upload :size="17" />导入批次</button>
+        <button class="nav-item" type="button" @click="store.openImport"><Upload :size="17" />导入批次</button>
         <button class="nav-item" type="button" @click="selectedTask && store.openTask(selectedTask.id, 'history')"><History :size="17" />变更记录</button>
       </nav>
 
       <div class="source-panel">
-        <div><span><i :class="{ offline: !isOnline }" />连接状态</span><strong>{{ isOnline ? '前端 Mock' : '离线草稿' }}</strong></div>
+        <div><span><i :class="{ offline: !isOnline }" />连接状态</span><strong>{{ isOnline ? (isLive ? '正式 API' : '前端 Mock') : '离线草稿' }}</strong></div>
         <div><span>厂区隔离</span><strong>{{ snapshot?.factoryName ?? '—' }}</strong></div>
         <div><span>计划版本</span><strong>{{ snapshot?.planVersion ?? '—' }}</strong></div>
       </div>
@@ -362,14 +412,14 @@ onBeforeUnmount(() => {
         <div class="title-cluster">
           <button class="icon-button" type="button" aria-label="返回生产模块" @click="router.push({ path: '/modules/production', query: { factory: parseFactory() } })"><ArrowLeft :size="18" /></button>
           <div><p>生产部 <ChevronRight :size="12" /> 注塑排产 <ChevronRight :size="12" /> 日计划</p><h1>{{ snapshot?.factoryName ?? '厂区' }}注塑排产中枢</h1></div>
-          <span class="mode-badge"><AlertTriangle :size="13" />交互原型 · Mock 数据</span>
+          <span class="mode-badge" :class="{ live: isLive }"><Database :size="13" />{{ isLive ? '正式数据库' : '测试 Mock 数据' }}</span>
         </div>
         <div class="header-actions">
           <select :value="parseFactory()" aria-label="选择厂区" @change="selectFactory"><option v-for="factory in factoryOptions" :key="factory.id" :value="factory.id">{{ factory.label }}区</option></select>
-          <span class="date-chip"><Clock3 :size="15" />2026-07-31</span>
+          <span class="date-chip"><Clock3 :size="15" />{{ snapshot?.businessDate ?? '—' }}</span>
           <button class="button" :class="isOnline ? 'success' : 'offline'" type="button" :disabled="!isOnline || loading" @click="refresh"><RefreshCw :size="15" :class="{ spin: loading }" />{{ isOnline ? '刚刚同步' : '当前离线' }}</button>
-          <button class="button" type="button" @click="showNotice('当前为前端 Mock 模式，未上传或改写 Excel')"><Upload :size="15" />导入计划表</button>
-          <button class="button primary" type="button" :disabled="!isDirty || saving || !isOnline" @click="saveAllDrafts"><LoaderCircle v-if="saving" class="spin" :size="15" /><Save v-else :size="15" />保存草案<span v-if="isDirty" class="dirty-dot" /></button>
+          <button class="button" type="button" :disabled="!isOnline || !isLive" @click="store.openImport"><Upload :size="15" />导入计划表</button>
+          <button class="button primary" type="button" :disabled="!isDirty || saving || !isOnline || !canSubmitReports" @click="saveAllDrafts"><LoaderCircle v-if="saving" class="spin" :size="15" /><Save v-else :size="15" />保存回报<span v-if="isDirty" class="dirty-dot" /></button>
           <button class="avatar" type="button" title="啤机文员">啤机</button>
         </div>
       </header>
@@ -379,10 +429,10 @@ onBeforeUnmount(() => {
 
       <section v-if="error && !snapshot" class="empty-state">
         <Database :size="32" />
-        <h2>当前厂区没有注塑排产 Mock 数据</h2>
+        <h2>当前厂区排产数据加载失败</h2>
         <p>{{ error }}</p>
         <p>系统没有回退到其他厂区数据，避免跨厂混用。</p>
-        <button class="button primary" type="button" @click="router.replace({ query: { factory: 'huaxing' } })">返回华兴演示数据</button>
+        <button class="button primary" type="button" @click="refresh">重新加载</button>
       </section>
 
       <template v-else>
@@ -466,7 +516,7 @@ onBeforeUnmount(() => {
                     <td><strong>{{ task.orderNo }}</strong><small>{{ task.itemNo }}</small></td>
                     <td v-if="columnVisibility.colorMaterial"><span class="color-line"><i :style="{ background: task.colorHex }" />{{ task.color }}</span><small>{{ task.material }} · {{ task.shotNetWeightGrams }}g</small></td>
                     <template v-if="columnVisibility.quantities"><td class="numeric">{{ task.orderQuantity.toLocaleString() }}</td><td class="numeric">{{ store.displayValues(task).cumulativeCompleted.toLocaleString() }}</td><td class="numeric danger-text">{{ store.displayValues(task).remaining.toLocaleString() }}</td></template>
-                    <template v-if="columnVisibility.shift"><td class="numeric">{{ store.displayValues(task).shiftTarget.toLocaleString() }}</td><td><div class="inline-stepper"><button type="button" :aria-label="`${task.orderNo} 本班完成减一`" @click="store.updateShiftCompleted(task, store.displayValues(task).shiftCompleted - 1)">−</button><input :value="store.displayValues(task).shiftCompleted" type="number" min="0" :aria-label="`${task.orderNo} 本班完成`" @input="store.updateShiftCompleted(task, numberFromEvent($event))" /><button type="button" :aria-label="`${task.orderNo} 本班完成加一`" @click="store.updateShiftCompleted(task, store.displayValues(task).shiftCompleted + 1)">＋</button></div></td><td><div class="progress-cell"><div><i :style="{ width: progressWidth(task) }" /></div><strong>{{ store.displayValues(task).progress.toFixed(1) }}%</strong><small>约余 {{ store.displayValues(task).remainingShifts.toFixed(1) }} 班</small></div></td></template>
+                    <template v-if="columnVisibility.shift"><td class="numeric">{{ store.displayValues(task).shiftTarget.toLocaleString() }}</td><td><div class="inline-stepper"><button type="button" :disabled="!canSubmitReports" :aria-label="`${task.orderNo} 本班完成减一`" @click="store.updateShiftCompleted(task, store.displayValues(task).shiftCompleted - 1)">−</button><input :value="store.displayValues(task).shiftCompleted" type="number" min="0" :disabled="!canSubmitReports" :aria-label="`${task.orderNo} 本班完成`" @input="store.updateShiftCompleted(task, numberFromEvent($event))" /><button type="button" :disabled="!canSubmitReports" :aria-label="`${task.orderNo} 本班完成加一`" @click="store.updateShiftCompleted(task, store.displayValues(task).shiftCompleted + 1)">＋</button></div></td><td><div class="progress-cell"><div><i :style="{ width: progressWidth(task) }" /></div><strong>{{ store.displayValues(task).progress.toFixed(1) }}%</strong><small>约余 {{ store.displayValues(task).remainingShifts.toFixed(1) }} 班</small></div></td></template>
                     <template v-if="columnVisibility.dates"><td><strong>{{ task.deliveryDate }}</strong><small>来源：计划表</small></td><td><strong>{{ formatDateTime(task.plannedEnd) }}</strong><small>自动推演预览</small></td><td><span class="risk-chip" :class="task.slackDays < 0 ? 'overdue' : task.slackDays <= 3 ? 'soon' : 'safe'">{{ task.slackDays < 0 ? `逾期 ${Math.abs(task.slackDays).toFixed(1)} 天` : `余 ${task.slackDays.toFixed(1)} 天` }}</span><small v-if="task.priority === 'CRITICAL'">特急 / 高优先级</small></td></template>
                     <td v-if="columnVisibility.fit"><button class="fit-chip" :class="task.fitDecision.toLowerCase()" type="button" @click="store.openTask(task.id, 'fit')">{{ decisionLabel(task.fitDecision) }} · {{ task.fitScore }}</button><small v-if="!task.moldDimensions">缺模具尺寸</small></td>
                     <td><button class="row-action" type="button" @click="store.openTask(task.id)">详情</button></td>
@@ -489,7 +539,7 @@ onBeforeUnmount(() => {
             <div v-if="hasMoreGroups" class="load-more-row"><span>已增量渲染 {{ renderedGroups.length }} / {{ filteredGroups.length }} 台机。</span><button class="button" type="button" @click="loadMoreGroups">加载更多机台</button></div>
           </div>
 
-          <footer class="workbench-footer"><span><strong>数据样例：</strong>{{ snapshot?.sourceLabel }}；当前为静态前端交互，未执行真实 Excel 导入。</span><span>双击任务或点击匹配状态可打开详情 · 所有修改保存前均为草稿</span></footer>
+          <footer class="workbench-footer"><span><strong>数据来源：</strong>{{ snapshot?.sourceLabel }}。</span><span>{{ canSubmitReports ? '已发布计划可提交生产回报' : '草案只读；发布后可提交生产回报' }} · 待排订单由后端规则实时匹配并人工确认</span></footer>
         </section>
       </template>
     </main>
@@ -499,7 +549,7 @@ onBeforeUnmount(() => {
         <header class="drawer-header">
           <div><span>任务详情 · revision {{ selectedTask?.revision }}</span><h2>{{ selectedTask?.moldCode }} · {{ selectedTask?.orderNo }}</h2><p>{{ selectedMachine?.code }} / {{ selectedTask?.productName }}</p></div>
           <button class="drawer-close" type="button" aria-label="关闭任务详情" @click="detailDrawerOpen = false"><X :size="18" /></button>
-          <div class="drawer-actions"><button type="button" :disabled="!isOnline" @click="selectedTask && store.simulateConflict(selectedTask.id)"><FileClock :size="14" />模拟并发更新</button><button class="primary" type="button" :disabled="!selectedTask || !store.reportDrafts[selectedTask.id] || saving || !isOnline" @click="saveSelectedTask"><Save :size="14" />保存本任务</button></div>
+          <div class="drawer-actions"><button v-if="!isLive" type="button" :disabled="!isOnline" @click="selectedTask && store.simulateConflict(selectedTask.id)"><FileClock :size="14" />模拟并发更新</button><button class="primary" type="button" :disabled="!selectedTask || !store.reportDrafts[selectedTask.id] || saving || !isOnline || !canSubmitReports" @click="saveSelectedTask"><Save :size="14" />保存本任务</button></div>
         </header>
         <div class="drawer-tabs">
           <button type="button" :class="{ active: detailTab === 'order' }" @click="detailTab = 'order'">订单资料</button>
@@ -509,36 +559,40 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="selectedTask" class="drawer-body">
           <template v-if="detailTab === 'order'">
-            <section class="detail-card"><div class="section-title"><h3>订单与模具</h3><span>源行 {{ selectedTask.sourceRow ?? 'Mock' }}</span></div><div class="detail-grid"><div><label>模具编号</label><strong>{{ selectedTask.moldCode }}</strong></div><div><label>产品名称</label><strong>{{ selectedTask.productName }}</strong></div><div><label>单号 / 货号</label><strong>{{ selectedTask.orderNo }} / {{ selectedTask.itemNo }}</strong></div><div><label>颜色 / 材料</label><strong>{{ selectedTask.color }} / {{ selectedTask.material }}</strong></div><div><label>订单数</label><strong>{{ selectedTask.orderQuantity.toLocaleString() }}</strong></div><div><label>累计已啤</label><strong>{{ selectedValues?.cumulativeCompleted.toLocaleString() }}</strong></div></div></section>
+            <section class="detail-card"><div class="section-title"><h3>订单与模具</h3><span>源行 {{ selectedTask.sourceRow ?? '人工建立' }}</span></div><div class="detail-grid"><div><label>模具编号</label><strong>{{ selectedTask.moldCode }}</strong></div><div><label>产品名称</label><strong>{{ selectedTask.productName }}</strong></div><div><label>单号 / 货号</label><strong>{{ selectedTask.orderNo }} / {{ selectedTask.itemNo }}</strong></div><div><label>颜色 / 材料</label><strong>{{ selectedTask.color }} / {{ selectedTask.material }}</strong></div><div><label>订单数</label><strong>{{ selectedTask.orderQuantity.toLocaleString() }}</strong></div><div><label>累计已啤</label><strong>{{ selectedValues?.cumulativeCompleted.toLocaleString() }}</strong></div></div></section>
             <section class="detail-card"><div class="section-title"><h3>计划区间</h3><span>{{ statusLabel(selectedTask.status) }}</span></div><div class="detail-grid"><div><label>计划开始</label><strong>{{ selectedTask.plannedStart }}</strong></div><div><label>计划完成</label><strong>{{ selectedTask.plannedEnd }}</strong></div><div><label>交货完成期</label><strong>{{ selectedTask.deliveryDate }}</strong></div><div><label>交期差</label><strong :class="{ 'danger-text': selectedTask.slackDays < 0 }">{{ selectedTask.slackDays.toFixed(1) }} 天</strong></div></div></section>
             <section class="detail-card"><div class="section-title"><h3>业务备注</h3><span>只读来源</span></div><p class="detail-copy">{{ selectedTask.note || '暂无备注' }}</p></section>
           </template>
 
           <template v-else-if="detailTab === 'fit'">
-            <section class="detail-card"><div class="match-summary"><span :class="selectedTask.fitDecision.toLowerCase()">{{ selectedTask.fitScore }}</span><div><h3>{{ decisionLabel(selectedTask.fitDecision) }}</h3><p>先执行硬约束，再计算软评分。任何 FAIL 均禁止确认；资料缺失必须 REVIEW_REQUIRED。</p></div></div></section>
-            <section class="detail-card"><div class="section-title"><h3>硬约束核对矩阵</h3><span>{{ selectedMachine?.code }} 对 {{ selectedTask.moldCode }}</span></div><div class="constraint-list"><div v-for="row in detailChecks" :key="row.key" class="constraint-row"><div><strong>{{ row.label }}</strong><p>{{ row.detail }}</p></div><span :class="row.decision.toLowerCase()">{{ decisionLabel(row.decision) }}</span></div></div></section>
-            <section class="detail-card amber-card"><div class="section-title"><h3>尚未确认的规则</h3><span>生产版前必需</span></div><ul><li>射胶量是否取整啤净重、是否含水口，以及安全系数。</li><li>模具 L/W/H 的字段方向、模厚与开模行程语义。</li><li>双臂是否在所有边界下覆盖单臂要求。</li></ul></section>
+            <template v-if="isLive">
+              <section class="detail-card"><div class="section-title"><h3>阶段 5 匹配校验已启用</h3><span>后端权威判定</span></div><p class="detail-copy">待排订单在放入草案前，会由后端按当前规则 revision 重新执行硬约束与软评分。确认时会把匹配结论、分数、原因和规则 revision 写入追加式审计记录；当前任务表展示计划结果，历史评分明细由审计接口保留。</p></section>
+            </template>
+            <template v-else>
+              <section class="detail-card"><div class="match-summary"><span :class="selectedTask.fitDecision.toLowerCase()">{{ selectedTask.fitScore }}</span><div><h3>{{ decisionLabel(selectedTask.fitDecision) }}</h3><p>先执行硬约束，再计算软评分。任何 FAIL 均禁止确认；资料缺失必须 REVIEW_REQUIRED。</p></div></div></section>
+              <section class="detail-card"><div class="section-title"><h3>硬约束核对矩阵</h3><span>{{ selectedMachine?.code }} 对 {{ selectedTask.moldCode }}</span></div><div class="constraint-list"><div v-for="row in detailChecks" :key="row.key" class="constraint-row"><div><strong>{{ row.label }}</strong><p>{{ row.detail }}</p></div><span :class="row.decision.toLowerCase()">{{ decisionLabel(row.decision) }}</span></div></div></section>
+            </template>
           </template>
 
           <template v-else-if="detailTab === 'report'">
             <section class="detail-card">
-              <div class="section-title"><h3>本班生产回报</h3><span>输入即预览，保存后写入 Mock 仓储</span></div>
+              <div class="section-title"><h3>本班生产回报</h3><span>{{ canSubmitReports ? '保存后写入正式数据库' : '计划发布后开放填写' }}</span></div>
               <div class="form-grid">
-                <label>本班完成数<input :value="selectedValues?.shiftCompleted" type="number" min="0" @input="store.updateShiftCompleted(selectedTask, numberFromEvent($event))" /><small>本班累计完成，不是增量。</small></label>
-                <label>累计已啤数<input :value="selectedValues?.cumulativeCompleted" type="number" min="0" :max="selectedTask.orderQuantity" @input="store.updateDraft(selectedTask, { cumulativeCompleted: numberFromEvent($event) })" /></label>
-                <label>本班计划目标<input :value="selectedValues?.shiftTarget" type="number" min="1" @input="store.updateDraft(selectedTask, { shiftTarget: numberFromEvent($event) })" /></label>
-                <label>停机 / 故障时间（小时）<input :value="store.reportDrafts[selectedTask.id]?.downtimeHours ?? selectedTask.downtimeHours" type="number" min="0" step="0.1" @input="store.updateDraft(selectedTask, { downtimeHours: numberFromEvent($event) })" /></label>
-                <label>异常类型<select :value="store.reportDrafts[selectedTask.id]?.exceptionType ?? selectedTask.exceptionType" @change="store.updateDraft(selectedTask, { exceptionType: textFromEvent($event) })"><option value="">无异常</option><option value="换模">换模</option><option value="转色">转色</option><option value="设备故障">设备故障</option><option value="模具故障">模具故障</option><option value="缺料">缺料</option><option value="品质异常">品质异常</option></select></label>
-                <label>任务状态<select :value="store.reportDrafts[selectedTask.id]?.status ?? selectedTask.status" @change="store.updateDraft(selectedTask, { status: textFromEvent($event) as SchedulingTask['status'] })"><option value="RUNNING">正在生产</option><option value="QUEUED">后续队列</option><option value="BLOCKED">已阻塞</option><option value="DONE">已完成</option></select></label>
-                <label class="wide">回报备注<textarea :value="store.reportDrafts[selectedTask.id]?.remark ?? selectedTask.note" placeholder="填写本班异常、换模、转色或交接说明……" @input="store.updateDraft(selectedTask, { remark: textFromEvent($event) })" /></label>
+                <label>本班完成数<input :value="selectedValues?.shiftCompleted" type="number" min="0" :disabled="!canSubmitReports" @input="store.updateShiftCompleted(selectedTask, numberFromEvent($event))" /><small>用于本班界面预览；正式回报按累计已啤数提交。</small></label>
+                <label>累计已啤数<input :value="selectedValues?.cumulativeCompleted" type="number" min="0" :max="selectedTask.orderQuantity" :disabled="!canSubmitReports" @input="store.updateDraft(selectedTask, { cumulativeCompleted: numberFromEvent($event) })" /></label>
+                <label>本班计划目标<input :value="selectedValues?.shiftTarget" type="number" min="1" :disabled="!canSubmitReports" @input="store.updateDraft(selectedTask, { shiftTarget: numberFromEvent($event) })" /></label>
+                <label>停机 / 故障时间（小时）<input :value="store.reportDrafts[selectedTask.id]?.downtimeHours ?? selectedTask.downtimeHours" type="number" min="0" step="0.1" :disabled="!canSubmitReports" @input="store.updateDraft(selectedTask, { downtimeHours: numberFromEvent($event) })" /></label>
+                <label>异常类型<select :value="store.reportDrafts[selectedTask.id]?.exceptionType ?? selectedTask.exceptionType" :disabled="!canSubmitReports" @change="store.updateDraft(selectedTask, { exceptionType: textFromEvent($event) })"><option value="">无异常</option><option value="换模">换模</option><option value="转色">转色</option><option value="设备故障">设备故障</option><option value="模具故障">模具故障</option><option value="缺料">缺料</option><option value="品质异常">品质异常</option></select></label>
+                <label>任务状态<select :value="store.reportDrafts[selectedTask.id]?.status ?? selectedTask.status" :disabled="!canSubmitReports" @change="store.updateDraft(selectedTask, { status: textFromEvent($event) as SchedulingTask['status'] })"><option value="RUNNING">正在生产</option><option value="QUEUED">后续队列</option><option value="BLOCKED">已阻塞</option><option value="DONE">已完成</option></select></label>
+                <label class="wide">回报备注<textarea :value="store.reportDrafts[selectedTask.id]?.remark ?? selectedTask.note" :disabled="!canSubmitReports" placeholder="填写本班异常、换模、转色或交接说明……" @input="store.updateDraft(selectedTask, { remark: textFromEvent($event) })" /></label>
               </div>
             </section>
             <section class="detail-card"><div class="section-title"><h3>保存后的派生结果</h3><span>实时预览</span></div><div class="preview-stats"><div><span>欠数</span><strong>{{ selectedValues?.remaining.toLocaleString() }}</strong></div><div><span>约需班次</span><strong>{{ selectedValues?.remainingShifts.toFixed(1) }}</strong></div><div><span>完成进度</span><strong>{{ selectedValues?.progress.toFixed(1) }}%</strong></div><div><span>计划完成</span><strong>{{ formatDateTime(selectedTask.plannedEnd) }}</strong></div></div></section>
           </template>
 
           <template v-else>
-            <section class="detail-card"><div class="section-title"><h3>变更记录</h3><span>Mock 审计预览</span></div><div class="audit-list"><div><i><History :size="15" /></i><p><strong>啤机文员 · 更新累计已啤数</strong><span>2026-07-31 16:12 · 当前 revision {{ selectedTask.revision }}</span></p></div><div><i><ShieldCheck :size="15" /></i><p><strong>计划员 · 确认机台分配</strong><span>2026-07-31 09:28 · 分配至 {{ selectedMachine?.code }} · 匹配评分 {{ selectedTask.fitScore }}</span></p></div><div><i><Upload :size="15" /></i><p><strong>系统 · 从 Excel 抽样建立 Mock</strong><span>源行 {{ selectedTask.sourceRow ?? '模拟生成' }} · 未写回原工作簿</span></p></div></div></section>
-            <section class="detail-card"><div class="section-title"><h3>并发保护演示</h3><span>optimistic revision</span></div><p class="detail-copy">点击顶部“模拟并发更新”，再修改并保存本任务，可验证 409 等价冲突提示与保留草稿后的重试流程。</p></section>
+            <section class="detail-card"><div class="section-title"><h3>变更与来源</h3><span>revision {{ selectedTask.revision }}</span></div><div class="audit-list"><div><i><History :size="15" /></i><p><strong>当前任务最后更新</strong><span>{{ selectedTask.updatedAt }}</span></p></div><div><i><Upload :size="15" /></i><p><strong>{{ selectedTask.sourceRow ? 'Excel 导入来源' : '人工建立任务' }}</strong><span>源行 {{ selectedTask.sourceRow ?? '—' }} · 原工作簿只读，系统保存导入批次与来源哈希</span></p></div></div></section>
+            <section class="detail-card"><div class="section-title"><h3>并发保护</h3><span>optimistic revision</span></div><p class="detail-copy">保存生产回报时会携带当前 revision；若其他人员已更新，系统会保留输入并提示基于最新版本重试。</p></section>
           </template>
         </div>
       </aside>
@@ -549,19 +603,105 @@ onBeforeUnmount(() => {
         <header class="drawer-header"><div><span>智能排程建议 · 先解释，后确认</span><h2>待排订单池</h2><p>硬约束过滤 → 交期 / 同模 / 颜色 / 负荷排序；不会自动发布。</p></div><button class="drawer-close" type="button" aria-label="关闭待排订单池" @click="backlogDrawerOpen = false"><X :size="18" /></button></header>
         <div class="drawer-tabs"><button type="button" :class="{ active: backlogTab === 'candidates' }" @click="backlogTab = 'candidates'">候选机台</button><button type="button" :class="{ active: backlogTab === 'rules' }" @click="backlogTab = 'rules'">规则解释</button><button type="button" :class="{ active: backlogTab === 'unmatched' }" @click="backlogTab = 'unmatched'">未匹配 {{ snapshot?.backlogOrders.filter((entry) => entry.moldDimensions === null).length }}</button></div>
         <div class="backlog-layout">
-          <div class="backlog-list"><button v-for="order in snapshot?.backlogOrders" :key="order.id" type="button" :class="{ active: selectedBacklog?.id === order.id }" @click="store.selectedBacklogId = order.id"><strong>{{ order.orderNo }} · {{ order.moldCode }}</strong><span>{{ order.productName }} · {{ order.quantity.toLocaleString() }} 啤</span><small>交期 {{ order.deliveryDate }} · {{ order.note }}</small></button></div>
+          <div class="backlog-list"><button v-for="order in snapshot?.backlogOrders" :key="order.id" type="button" :class="{ active: selectedBacklog?.id === order.id }" @click="selectBacklogOrder(order.id)"><strong>{{ order.orderNo }} · {{ order.moldCode }}</strong><span>{{ order.productName }} · {{ order.quantity.toLocaleString() }} 啤</span><small>交期 {{ order.deliveryDate }} · {{ order.note }}</small></button></div>
           <div class="candidate-content" v-if="selectedBacklog">
             <template v-if="backlogTab === 'candidates'">
               <section class="order-snapshot"><div><strong>{{ selectedBacklog.orderNo }} · {{ selectedBacklog.moldCode }}</strong><span>{{ selectedBacklog.productName }} · {{ selectedBacklog.quantity.toLocaleString() }} 啤</span></div><div><span>货号</span><strong>{{ selectedBacklog.itemNo }}</strong></div><div><span>交货完成期</span><strong>{{ selectedBacklog.deliveryDate }}</strong></div><div><span>颜色 / 用料</span><strong>{{ selectedBacklog.color }} · {{ selectedBacklog.material }}</strong></div><div><span>夹具要求</span><strong>{{ selectedBacklog.fixtureRequirement }}</strong></div></section>
-              <div class="candidate-list"><article v-for="candidate in selectedBacklog.candidates" :key="candidate.machineId" class="candidate-card" :class="candidate.decision.toLowerCase()"><span class="rank">{{ candidate.rank }}</span><div><h3>{{ candidate.machineCode }} · {{ candidate.resultLabel }}</h3><p>{{ candidate.explanation }}</p><small>{{ candidate.warning }}</small><div class="constraint-chips"><span v-for="constraint in candidate.constraints" :key="constraint.key" :class="constraint.decision.toLowerCase()">{{ constraint.label }} · {{ decisionLabel(constraint.decision) }}</span></div></div><div class="candidate-score"><strong>{{ candidate.score }}</strong><span>匹配分</span><button type="button" :disabled="candidate.decision === 'FAIL' || saving || !isOnline" @click="openCandidate(candidate)">{{ candidate.decision === 'FAIL' ? '禁止排入' : !isOnline ? '离线暂停' : '放入草案' }}</button></div></article></div>
+              <section v-if="candidateError" class="operation-error candidate-error" role="alert"><AlertTriangle :size="16" /><span>{{ candidateError }}</span><button type="button" @click="store.loadCandidates(selectedBacklog.id)">重新计算</button></section>
+              <section v-if="candidateLoading" class="loading-state candidate-loading"><LoaderCircle class="spin" :size="22" /><strong>正在按当前规则计算候选机台…</strong><span>结果由后端生成，页面不会自行补分。</span></section>
+              <div v-else-if="selectedBacklog.candidates.length" class="candidate-list">
+                <article v-for="candidate in selectedBacklog.candidates" :key="candidate.machineId" class="candidate-card" :class="candidate.decision.toLowerCase()">
+                  <span class="rank">{{ candidate.rank }}</span>
+                  <div>
+                    <h3>{{ candidate.machineCode }} · {{ candidate.resultLabel }}</h3>
+                    <p>{{ candidate.explanation }}</p>
+                    <small>{{ candidate.warning }}</small>
+                    <div class="constraint-chips"><span v-for="constraint in candidate.constraints" :key="constraint.key" :class="constraint.decision.toLowerCase()">{{ constraint.label }} · {{ decisionLabel(constraint.decision) }}</span></div>
+                    <label v-if="candidate.decision === 'REVIEW_REQUIRED'" class="override-reason">人工覆盖原因（必填）<textarea v-model="candidateReasons[candidate.machineId]" rows="2" placeholder="说明已复核的资料、风险与排入依据……" /></label>
+                  </div>
+                  <div class="candidate-score">
+                    <strong>{{ candidate.score }}</strong><span>匹配分 · 规则 r{{ candidate.ruleSetRevision }}</span>
+                    <button type="button" :disabled="candidate.decision === 'FAIL' || saving || !isOnline || (candidate.decision === 'REVIEW_REQUIRED' && !candidateReasons[candidate.machineId]?.trim())" @click="openCandidate(candidate)">{{ candidate.decision === 'FAIL' ? '禁止排入' : !isOnline ? '离线暂停' : candidate.decision === 'REVIEW_REQUIRED' ? '复核后排入' : '放入草案' }}</button>
+                  </div>
+                </article>
+              </div>
+              <section v-else class="detail-card amber-card"><div class="section-title"><h3>没有可展示的候选机台</h3><span>后端已计算</span></div><p class="detail-copy">当前厂区没有符合筛选范围的机台，或订单与模具资料不足。请查看规则解释并补齐基础资料后重新计算。</p></section>
             </template>
             <template v-else-if="backlogTab === 'rules'">
-              <section class="detail-card"><div class="section-title"><h3>候选机台决策顺序</h3><span>前端规则预览</span></div><ol class="rule-steps"><li><b>1</b><div><strong>厂区边界</strong><span>只在 {{ snapshot?.factoryName }} 数据集内查找，缺数据直接显错。</span></div></li><li><b>2</b><div><strong>硬约束</strong><span>安装面、射胶量、机械手、夹具与工艺能力；FAIL 立即淘汰。</span></div></li><li><b>3</b><div><strong>资料完整性</strong><span>模具 L/W/H 缺失时标记 REVIEW_REQUIRED，不得假定适配。</span></div></li><li><b>4</b><div><strong>软评分</strong><span>同模、同色、交期、机台负荷与换模成本仅用于排序。</span></div></li><li><b>5</b><div><strong>人工确认</strong><span>候选建议只写入草案，不自动发布正式计划。</span></div></li></ol></section>
+              <section class="detail-card"><div class="section-title"><h3>候选机台决策顺序</h3><span>后端权威规则</span></div><ol class="rule-steps"><li><b>1</b><div><strong>厂区边界</strong><span>只在 {{ snapshot?.factoryName }} 数据集内查找，缺数据直接显错。</span></div></li><li><b>2</b><div><strong>硬约束</strong><span>安装面、模厚、射胶量、机械手、夹具与工艺能力；FAIL 立即淘汰。</span></div></li><li><b>3</b><div><strong>资料完整性</strong><span>关键尺寸或能力资料缺失时标记 REVIEW_REQUIRED，不得假定适配。</span></div></li><li><b>4</b><div><strong>软评分</strong><span>同模、同色、交期、优先级、机台负荷与机型适配仅用于排序。</span></div></li><li><b>5</b><div><strong>人工确认</strong><span>REVIEW 必须记录覆盖原因；规则与计划 revision 均一致后才写入草案。</span></div></li></ol></section>
             </template>
             <template v-else>
               <section class="detail-card amber-card"><div class="section-title"><h3>缺资料订单</h3><span>REVIEW_REQUIRED</span></div><p class="detail-copy">当前订单{{ selectedBacklog.moldDimensions ? '尺寸资料完整，可返回候选机台查看。' : '缺少模具尺寸，所有候选最多只能进入“需复核”状态。' }}</p><ul><li>补齐模具 L/W/H 与字段方向。</li><li>确认射胶净重是否包含水口及安全系数。</li><li>由有权限人员记录人工例外原因。</li></ul></section>
             </template>
           </div>
+        </div>
+      </aside>
+    </div>
+
+    <div v-if="importDrawerOpen" class="drawer-backdrop" @click.self="importDrawerOpen = false">
+      <aside class="drawer import-drawer" role="dialog" aria-modal="true" aria-label="Excel 导入预览与确认">
+        <header class="drawer-header">
+          <div><span>阶段 4 · 只读解析与可追溯确认</span><h2>导入注塑排产计划表</h2><p>{{ snapshot?.factoryName }} · 原工作簿不会被修改或写回</p></div>
+          <button class="drawer-close" type="button" aria-label="关闭导入计划表" @click="importDrawerOpen = false"><X :size="18" /></button>
+          <div class="drawer-actions"><button type="button" :disabled="importLoading" @click="chooseImportFile"><Upload :size="14" />{{ importBatch ? '重新选择文件' : '选择 .xlsx 文件' }}</button></div>
+          <input ref="importFileInput" class="sr-only" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" @change="handleImportFile" />
+        </header>
+        <div class="drawer-body import-body">
+          <div v-if="importError" class="operation-error" role="alert"><AlertTriangle :size="16" /><span>{{ importError }}</span></div>
+          <section v-if="importLoading" class="loading-state"><LoaderCircle class="spin" :size="24" /><strong>正在解析并校验 {{ importFileName || '工作簿' }}…</strong><span>较大的正式工作簿可能需要几十秒，请勿重复提交。</span></section>
+          <section v-else-if="!importBatch" class="import-drop-zone">
+            <Upload :size="34" />
+            <h3>先选择正式 Excel 工作簿</h3>
+            <p>系统先生成预览批次，展示机台、模具、任务和阻断问题；只有再次确认后才写入数据库草案。</p>
+            <button class="button primary" type="button" @click="chooseImportFile">选择 .xlsx 文件</button>
+          </section>
+          <template v-else>
+            <section class="detail-card import-file-card">
+              <div class="section-title"><h3>{{ importBatch.source_file_name }}</h3><span :class="['import-status', importBatch.status.toLocaleLowerCase()]">{{ importBatch.status === 'PREVIEW' ? '等待确认' : '已确认' }}</span></div>
+              <p class="detail-copy">SHA-256：{{ importBatch.source_file_hash }} · 解析器 {{ importBatch.parser_version }}</p>
+              <div class="import-summary-grid">
+                <div><span>机台</span><strong>{{ importSummaryValue('machine_count') }}</strong></div>
+                <div><span>模具</span><strong>{{ importSummaryValue('mold_count') }}</strong></div>
+                <div><span>订单</span><strong>{{ importSummaryValue('order_count') }}</strong></div>
+                <div><span>任务</span><strong>{{ importSummaryValue('task_count') }}</strong></div>
+                <div><span>问题</span><strong>{{ importSummaryValue('issue_count') }}</strong></div>
+                <div><span>阻断</span><strong class="danger-text">{{ importSummaryValue('blocking_issue_count') }}</strong></div>
+              </div>
+            </section>
+
+            <section v-if="importBatch.status === 'CONFIRMED'" class="detail-card import-success-card">
+              <div class="section-title"><h3><Check :size="16" />导入确认完成</h3><span>计划 revision {{ importBatch.confirmed_plan_revision }}</span></div>
+              <div class="import-result-grid"><div v-for="(value, key) in importBatch.result" :key="key"><span>{{ key }}</span><strong>{{ value }}</strong></div></div>
+              <button class="button primary" type="button" @click="importDrawerOpen = false">完成并返回排程板</button>
+            </section>
+
+            <template v-else>
+              <section class="detail-card">
+                <div class="section-title"><h3>解析问题</h3><span>显示 {{ visibleImportIssues.length }} / {{ importBatch.issues.length }} 条</span></div>
+                <p v-if="!importBatch.issues.length" class="detail-copy">未发现需要确认的问题，可以继续正式导入。</p>
+                <label v-if="blockingImportIssues.length" class="acknowledge-all"><input type="checkbox" :checked="allBlockingIssuesAcknowledged" @change="toggleAllIssues" /><span><strong>我已阅读并确认全部 {{ blockingImportIssues.length }} 条阻断问题</strong><small>确认后系统只导入可规范化的数据，并完整保留问题记录。</small></span></label>
+                <div class="import-issue-list">
+                  <label v-for="issue in visibleImportIssues" :key="issue.id" :class="['import-issue', issue.severity.toLocaleLowerCase()]">
+                    <input v-if="issue.blocking" type="checkbox" :checked="acknowledgedBlockingIssueIds.has(issue.id)" @change="toggleIssue($event, issue.id)" />
+                    <span v-else class="issue-dot" />
+                    <span><strong>{{ issue.code }} · {{ issue.message }}</strong><small>{{ issue.sheet_name }}{{ issue.cell_ref ? ` / ${issue.cell_ref}` : '' }}{{ issue.source_row ? ` / 第 ${issue.source_row} 行` : '' }}</small></span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="detail-card">
+                <div class="section-title"><h3>任务预览</h3><span>前 20 / {{ importBatch.tasks.length }} 条</span></div>
+                <div class="import-task-list"><div v-for="task in importBatch.tasks.slice(0, 20)" :key="`${task.machine_code}-${task.sequence_no}-${task.order_no}`"><strong>{{ task.machine_code }} · {{ task.mold_no }}</strong><span>{{ task.order_no }} / {{ task.item_no }} · {{ task.product_name }}</span><small>{{ task.order_quantity ?? 0 }} 啤 · {{ task.planned_start }} → {{ task.planned_finish }}</small></div></div>
+              </section>
+
+              <section class="detail-card import-confirm-card">
+                <div class="section-title"><h3>正式确认</h3><span>{{ snapshot?.planStatus === 'DRAFT' ? `合并当前草案 r${snapshot.planRevision}` : '创建新草案' }}</span></div>
+                <label>计划业务日期<input v-model="importBusinessDate" type="date" /></label>
+                <p>确认会把规范化结果写入当前厂区数据库，保留文件哈希、源工作表、源行、问题与操作者；不会修改上传的原工作簿，也不会自动发布计划。</p>
+                <button class="button primary" type="button" :disabled="importLoading || !importBusinessDate || !allBlockingIssuesAcknowledged" @click="store.confirmImport"><LoaderCircle v-if="importLoading" class="spin" :size="15" /><Check v-else :size="15" />确认导入数据库草案</button>
+              </section>
+            </template>
+          </template>
         </div>
       </aside>
     </div>
@@ -601,6 +741,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .timeline-view { flex:1; min-height:0; overflow:auto; padding:12px; background:#f7fafb; }.timeline-board { min-width:1300px; overflow:hidden; border:1px solid var(--line); border-radius:10px; background:#fff; }.timeline-head,.timeline-row { display:grid; grid-template-columns:210px 1fr; }.timeline-head { position:sticky; top:0; z-index:10; height:40px; background:#edf3f4; }.timeline-head strong { padding:11px 12px; border-right:1px solid var(--line); }.timeline-head span { display:none; }.timeline-head::after { content:"07-31     08-01     08-02     08-03     08-04     08-05     08-06     08-07     08-08     08-09     08-10     08-11     08-12     08-13"; align-self:center; padding:0 18px; color:#607681; word-spacing:26px; white-space:pre; }.timeline-row { position:relative; min-height:92px; border-top:1px solid var(--line); }.timeline-label { position:sticky; left:0; z-index:3; padding:15px 12px; border-right:1px solid var(--line); background:#fff; }.timeline-label strong,.timeline-label span { display:block; }.timeline-label span { margin-top:5px; color:#748891; }.timeline-grid { display:grid; grid-template-columns:repeat(14,1fr); }.timeline-grid i { border-right:1px solid #edf1f2; }.timeline-bar { position:absolute; z-index:2; height:22px; overflow:hidden; padding:2px 8px; border:1px solid #a9ddd2; border-radius:6px; color:#07584e; background:#dff5ef; font-weight:800; text-overflow:ellipsis; white-space:nowrap; }.timeline-bar.critical { color:#9d2e3a; border-color:#efbac0; background:#ffe7ea; }.timeline-bar.review { box-shadow:inset 0 -3px #e3a82d; }.workbench-footer { display:flex; justify-content:space-between; gap:24px; flex:0 0 auto; min-height:32px; padding:7px 12px; border-top:1px solid var(--line); color:#778991; background:#fbfdfd; }
 .drawer-backdrop { position:fixed; inset:0; z-index:60; background:rgba(5,31,31,.42); backdrop-filter:blur(3px); }.drawer { position:absolute; top:0; right:0; display:flex; flex-direction:column; width:min(610px,94vw); height:100%; background:#f5f8f8; box-shadow:-18px 0 42px rgba(0,0,0,.18); animation:slide-in .2s ease-out; }.backlog-drawer { width:min(820px,96vw); }.drawer-header { position:relative; padding:18px 20px 15px; color:#fff; background:linear-gradient(130deg,#063e39,#0b6a5e); }.drawer-header span { color:#a9dcd3; font-weight:750; }.drawer-header h2 { margin:5px 0 0; font-size:19px; }.drawer-header p { margin:5px 0 0; color:#d1ebe6; }.drawer-close { position:absolute; top:17px; right:18px; display:grid; width:34px; height:34px; place-items:center; border:1px solid rgba(255,255,255,.22); border-radius:9px; color:#fff; background:rgba(255,255,255,.06); }.drawer-actions { gap:7px; margin-top:13px; }.drawer-actions button { display:inline-flex; align-items:center; gap:6px; height:31px; padding:0 10px; border:1px solid rgba(255,255,255,.2); border-radius:8px; color:#fff; background:rgba(255,255,255,.07); font-weight:750; }.drawer-actions button.primary { color:#075248; background:#e4fff7; }.drawer-tabs { display:flex; gap:2px; flex:0 0 auto; height:45px; padding:6px 12px 0; border-bottom:1px solid var(--line); background:#fff; }.drawer-tabs button { position:relative; padding:0 12px; border:0; color:#697d86; background:transparent; font-weight:800; }.drawer-tabs button.active { color:var(--brand-700); }.drawer-tabs button.active::after { content:""; position:absolute; right:10px; bottom:0; left:10px; height:2px; background:var(--brand-700); }.drawer-body { flex:1; min-height:0; overflow:auto; padding:14px; }.detail-card { margin-bottom:12px; padding:14px; border:1px solid var(--line); border-radius:11px; background:#fff; }.section-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }.section-title h3 { margin:0; font-size:14px; }.section-title span { color:#778a93; }.detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.detail-grid>div { padding:10px; border-radius:9px; background:#f4f7f8; }.detail-grid label,.detail-grid strong { display:block; }.detail-grid label { margin-bottom:4px; color:#778b94; }.detail-copy { margin:0; color:#5d727c; line-height:1.7; }.match-summary { gap:14px; }.match-summary>span { display:grid; width:58px; height:58px; place-items:center; border-radius:13px; font-size:22px; font-weight:950; }.match-summary>span.pass { color:#fff; background:var(--brand-700); }.match-summary>span.review_required { color:#885400; background:#ffe9b9; }.match-summary>span.fail { color:#fff; background:#bd3341; }.match-summary h3,.match-summary p { margin:0; }.match-summary p { margin-top:4px; color:#6a7e87; }.constraint-list { display:grid; gap:8px; }.constraint-row { display:flex; align-items:center; gap:10px; padding:10px; border:1px solid #e1e8ea; border-radius:9px; }.constraint-row>div { flex:1; }.constraint-row strong,.constraint-row p { margin:0; }.constraint-row p { margin-top:3px; color:#6f838c; }.constraint-row>span,.constraint-chips span { padding:4px 7px; border-radius:999px; font-weight:800; }.constraint-row>span.pass,.constraint-chips .pass { color:#08705d; background:#ddf5ee; }.constraint-row>span.review_required,.constraint-chips .review_required { color:#986009; background:#fff0d0; }.constraint-row>span.fail,.constraint-chips .fail { color:#b22d3a; background:#ffe4e8; }.amber-card { border-color:#ead5a1; background:#fffbf0; }.detail-card ul { margin:8px 0 0; padding-left:20px; color:#5e727c; }.detail-card li { margin:6px 0; }.form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }.form-grid label { color:#516872; font-weight:750; }.form-grid input,.form-grid select,.form-grid textarea { display:block; width:100%; min-height:36px; margin-top:5px; padding:7px 9px; border:1px solid #cad9dc; border-radius:8px; color:#223b46; background:#fff; box-sizing:border-box; outline:0; }.form-grid input:focus,.form-grid select:focus,.form-grid textarea:focus { border-color:#4fae9e; box-shadow:0 0 0 3px rgba(47,170,150,.12); }.form-grid small { display:block; margin-top:4px; color:#8999a0; }.form-grid .wide { grid-column:1/-1; }.form-grid textarea { min-height:82px; resize:vertical; }.preview-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }.preview-stats div { padding:10px; border-radius:9px; background:#f1f6f6; }.preview-stats span,.preview-stats strong { display:block; }.preview-stats span { color:#738790; }.preview-stats strong { margin-top:4px; font-size:15px; }.audit-list { display:grid; gap:12px; }.audit-list>div { display:flex; gap:10px; }.audit-list i { display:grid; flex:0 0 32px; height:32px; place-items:center; border-radius:9px; color:#0b6b5f; background:#e2f4ef; }.audit-list p,.audit-list strong,.audit-list span { display:block; margin:0; }.audit-list span { margin-top:3px; color:#7b8e96; }
 .backlog-layout { display:grid; grid-template-columns:220px minmax(0,1fr); flex:1; min-height:0; }.backlog-list { overflow:auto; padding:10px; border-right:1px solid var(--line); background:#f4f7f7; }.backlog-list button { display:block; width:100%; margin-bottom:7px; padding:10px; border:1px solid #d4e0e2; border-radius:9px; color:#263f49; background:#fff; text-align:left; }.backlog-list button.active { border-color:#55b5a5; background:#ecfaf6; box-shadow:inset 3px 0 #12937f; }.backlog-list strong,.backlog-list span,.backlog-list small { display:block; }.backlog-list span { margin-top:3px; color:#697f88; }.backlog-list small { margin-top:4px; color:#8a999f; }.candidate-content { overflow:auto; padding:12px; }.order-snapshot { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-bottom:11px; padding:11px; border:1px solid var(--line); border-radius:10px; background:#fff; }.order-snapshot>div:first-child { grid-column:1/-1; }.order-snapshot span,.order-snapshot strong { display:block; }.order-snapshot span { color:#738790; }.order-snapshot>div:first-child span { margin-top:3px; }.candidate-list { display:grid; gap:9px; }.candidate-card { display:grid; grid-template-columns:42px 1fr 86px; gap:10px; align-items:start; padding:11px; border:1px solid var(--line); border-radius:10px; background:#fff; }.candidate-card.pass { border-left:3px solid #159681; }.candidate-card.review_required { border-left:3px solid #d39a28; }.candidate-card.fail { border-left:3px solid #d44b58; }.rank { display:grid; width:38px; height:38px; place-items:center; border-radius:10px; color:#fff; background:var(--brand-700); font-size:15px; font-weight:950; }.candidate-card h3,.candidate-card p { margin:0; }.candidate-card p { margin-top:4px; color:#657a84; }.candidate-card small { display:block; margin-top:4px; color:#ad6d0a; }.constraint-chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }.candidate-score { text-align:center; }.candidate-score strong,.candidate-score span { display:block; }.candidate-score strong { color:var(--brand-700); font-size:21px; }.candidate-score span { color:#7b8e96; }.candidate-score button { width:82px; min-height:30px; margin-top:8px; border:1px solid #b9ced2; border-radius:8px; color:#29434d; background:#fff; font-weight:800; }.candidate-score button:not(:disabled):hover { color:#fff; border-color:var(--brand-700); background:var(--brand-700); }.rule-steps { display:grid; gap:12px; margin:0; padding:0; list-style:none; }.rule-steps li { display:flex; gap:10px; align-items:flex-start; }.rule-steps b { display:grid; flex:0 0 30px; height:30px; place-items:center; border-radius:8px; color:#fff; background:var(--brand-700); }.rule-steps strong,.rule-steps span { display:block; }.rule-steps span { margin-top:3px; color:#6c8089; }
+.candidate-error { margin:0 0 10px; }.candidate-error button { width:auto; padding:0 9px; border:1px solid currentColor; }.candidate-loading { min-height:180px; border:1px dashed #b8cacc; border-radius:10px; background:#f8fbfb; }.candidate-loading span { color:#7a8e96; }.override-reason { display:grid; gap:5px; margin-top:10px; color:#815408; font-weight:800; }.override-reason textarea { width:100%; min-height:56px; resize:vertical; border:1px solid #d8bc76; border-radius:8px; padding:7px 9px; color:#2c4149; background:#fffdf6; font:inherit; font-weight:500; }.override-reason textarea:focus { outline:2px solid #e1b344; outline-offset:1px; }.candidate-score button:disabled { cursor:not-allowed; opacity:.5; }
+.mode-badge.live { color:#08705d; border-color:#a9dbd0; background:#e9f8f4; }.import-drawer { width:min(860px,96vw); }.import-body { padding:16px; }.import-drop-zone { display:grid; min-height:360px; place-items:center; align-content:center; gap:10px; padding:36px; border:2px dashed #a9c6c2; border-radius:14px; color:#678079; background:#f9fdfc; text-align:center; }.import-drop-zone h3,.import-drop-zone p { margin:0; }.import-drop-zone h3 { color:#203b38; }.import-drop-zone p { max-width:560px; line-height:1.7; }.import-file-card .detail-copy { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.import-status { padding:4px 8px; border-radius:999px; font-weight:850; }.import-status.preview { color:#996208; background:#fff0d2; }.import-status.confirmed { color:#08705d; background:#ddf5ee; }.import-summary-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin-top:12px; }.import-summary-grid div,.import-result-grid div { padding:10px; border-radius:9px; background:#f1f6f6; }.import-summary-grid span,.import-summary-grid strong,.import-result-grid span,.import-result-grid strong { display:block; }.import-summary-grid span,.import-result-grid span { color:#71868e; }.import-summary-grid strong { margin-top:4px; font-size:18px; }.acknowledge-all { display:flex; align-items:flex-start; gap:9px; margin-bottom:10px; padding:11px; border:1px solid #e2bd6e; border-radius:9px; color:#694805; background:#fff7df; }.acknowledge-all input,.import-issue input { margin-top:3px; accent-color:#0b7567; }.acknowledge-all span,.acknowledge-all strong,.acknowledge-all small { display:block; }.acknowledge-all small { margin-top:3px; font-weight:500; }.import-issue-list { display:grid; max-height:280px; overflow:auto; gap:7px; }.import-issue { display:flex; align-items:flex-start; gap:9px; padding:9px; border:1px solid #d9e2e4; border-radius:8px; background:#fbfdfd; }.import-issue.error { border-color:#efc0c5; background:#fff7f8; }.import-issue>span:last-child,.import-issue strong,.import-issue small { display:block; }.import-issue small { margin-top:3px; color:#7a8c94; }.issue-dot { flex:0 0 8px; width:8px; height:8px; margin-top:5px; border-radius:50%; background:#d69a2c; }.import-task-list { display:grid; max-height:260px; overflow:auto; border:1px solid #dce5e7; border-radius:9px; }.import-task-list>div { display:grid; grid-template-columns:150px minmax(0,1fr) 280px; gap:10px; padding:9px; border-bottom:1px solid #e4ebed; }.import-task-list>div:last-child { border-bottom:0; }.import-task-list span,.import-task-list small { overflow:hidden; color:#657b84; text-overflow:ellipsis; white-space:nowrap; }.import-confirm-card label { display:block; color:#526a73; font-weight:800; }.import-confirm-card input { display:block; width:220px; height:36px; margin-top:5px; padding:0 9px; border:1px solid #c9d9dc; border-radius:8px; }.import-confirm-card p { color:#667b84; line-height:1.65; }.import-result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px; }.import-result-grid strong { margin-top:4px; }.import-success-card { border-color:#a9dacf; background:#f4fcfa; }.import-success-card h3 { display:flex; align-items:center; gap:6px; }
 .conflict-banner { position:fixed; right:24px; bottom:24px; z-index:90; display:flex; align-items:center; gap:10px; max-width:600px; padding:12px; border:1px solid #e7be67; border-radius:11px; color:#724b04; background:#fff6dd; box-shadow:0 10px 30px rgba(0,0,0,.18); }.conflict-banner div { flex:1; }.conflict-banner strong,.conflict-banner span { display:block; }.conflict-banner button { min-height:30px; border:1px solid #d6b45d; border-radius:7px; color:#704a03; background:#fff; font-weight:750; }.toast { position:fixed; left:50%; bottom:22px; z-index:95; display:flex; align-items:center; gap:8px; transform:translateX(-50%); padding:11px 16px; border-radius:10px; color:#fff; background:#064a43; box-shadow:0 10px 25px rgba(0,0,0,.2); font-weight:750; }.spin { animation:spin 1s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg) } } @keyframes slide-in { from { transform:translateX(100%) } to { transform:translateX(0) } }
 @media (max-width:1280px) { .schedule-sidebar { flex-basis:200px; }.summary-grid { grid-template-columns:repeat(3,1fr); }.workbench { height:calc(100vh - 276px); }.mode-badge { display:none; }.header-actions .date-chip { display:none; } }

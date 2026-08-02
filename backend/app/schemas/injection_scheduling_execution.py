@@ -229,6 +229,7 @@ class InjectionSchedulingPlanOut(BaseModel):
     updated_at: str
     published_at: str
     archived_at: str
+    orders: list[InjectionSchedulingOrderOut]
     tasks: list[InjectionSchedulingTaskOut]
 
 
