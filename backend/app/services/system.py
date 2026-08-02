@@ -1,9 +1,10 @@
 import json
 import logging
 import secrets
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException, Request
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -12,6 +13,7 @@ from app.models.auth import (
     AuthAuthorizationEvent,
     AuthPermission,
     AuthPermissionMetadata,
+    AuthPasswordResetRequest,
     AuthRegistrationRequest,
     AuthRole,
     AuthRoleBindingMetadata,
@@ -26,6 +28,10 @@ from app.models.auth import (
     SystemNotification,
 )
 from app.schemas.system import (
+    PasswordResetApproveOut,
+    PasswordResetMatchedUserOut,
+    PasswordResetRequestOut,
+    PasswordResetReviewRequest,
     RegistrationApproveRequest,
     RegistrationRejectRequest,
     RegistrationRequestOut,
@@ -33,7 +39,6 @@ from app.schemas.system import (
     RoleOut,
     SystemNotificationOut,
     SystemNotificationUpdateRequest,
-    UserPasswordResetRequest,
     UserOut,
     UserRoleAssignmentOut,
     UserStatusUpdateRequest,
@@ -45,7 +50,9 @@ from app.services.auth import (
     add_auth_audit,
     build_auth_context,
     can,
+    generate_temporary_password,
     make_password_hash,
+    mark_password_reset_notification_handled,
     now_text,
     time_window_is_active,
     validate_password_characters,
@@ -61,6 +68,8 @@ from app.services.system_positions import (
 
 
 logger = logging.getLogger(__name__)
+PASSWORD_RESET_STATUSES = {"pending", "approved", "rejected", "completed", "expired"}
+PASSWORD_RESET_TEMPORARY_HOURS = 24
 
 
 def is_superadmin(current_user: AuthContext) -> bool:
@@ -845,63 +854,274 @@ def update_user_status(
     return user_to_out(db, user)
 
 
-def reset_user_password(
+def password_reset_request_for_update_statement(request_id: str):
+    return (
+        select(AuthPasswordResetRequest)
+        .where(AuthPasswordResetRequest.id == request_id)
+        .with_for_update()
+    )
+
+
+def can_access_password_reset_request(
     db: Session,
     current_user: AuthContext,
-    user_id: str,
-    payload: UserPasswordResetRequest,
-    request: Request | None = None,
-) -> UserOut:
-    ensure_manage_target_user(db, current_user, user_id)
-    temporary_password = payload.temporary_password.strip()
-    if len(temporary_password) < 6:
-        raise HTTPException(status_code=400, detail="临时密码至少需要 6 位")
-    validate_password_characters(temporary_password)
+    reset_request: AuthPasswordResetRequest,
+) -> bool:
+    if is_superadmin(current_user):
+        return True
+    if not reset_request.user_id:
+        return False
+    return can_manage_target_user(db, current_user, reset_request.user_id)
 
-    user = db.get(AuthUser, user_id)
+
+def ensure_password_reset_request_access(
+    db: Session,
+    current_user: AuthContext,
+    reset_request: AuthPasswordResetRequest,
+) -> None:
+    ensure_user_manage(db, current_user)
+    if can_access_password_reset_request(db, current_user, reset_request):
+        return
+    raise HTTPException(status_code=403, detail="无权查看或处理该密码重置申请")
+
+
+def expire_stale_password_reset_requests(db: Session) -> None:
+    now = now_text()
+    stale_requests = db.scalars(
+        select(AuthPasswordResetRequest).where(
+            AuthPasswordResetRequest.status == "approved",
+            AuthPasswordResetRequest.expires_at != "",
+            AuthPasswordResetRequest.expires_at <= now,
+        )
+    ).all()
+    if not stale_requests:
+        return
+    for reset_request in stale_requests:
+        reset_request.status = "expired"
+        reset_request.updated_at = now
+        mark_password_reset_notification_handled(db, reset_request, now)
+        user = db.get(AuthUser, reset_request.user_id) if reset_request.user_id else None
+        add_auth_audit(
+            db,
+            "password_reset_expired",
+            username=user.username if user else reset_request.username,
+            user_id=user.id if user else "",
+            detail=f"密码重置申请 {reset_request.id} 的临时密码已过期",
+        )
+    db.commit()
+
+
+def list_password_reset_requests(
+    db: Session,
+    current_user: AuthContext,
+    status: str = "pending",
+) -> list[PasswordResetRequestOut]:
+    ensure_user_manage(db, current_user)
+    normalized_status = status.strip().lower()
+    if normalized_status and normalized_status not in PASSWORD_RESET_STATUSES:
+        raise HTTPException(status_code=400, detail="密码重置申请状态无效")
+    expire_stale_password_reset_requests(db)
+    statement = select(AuthPasswordResetRequest).order_by(
+        AuthPasswordResetRequest.submitted_at.desc(),
+        AuthPasswordResetRequest.id.desc(),
+    )
+    if normalized_status:
+        statement = statement.where(AuthPasswordResetRequest.status == normalized_status)
+    return [
+        password_reset_request_to_out(db, item)
+        for item in db.scalars(statement).all()
+        if can_access_password_reset_request(db, current_user, item)
+    ]
+
+
+def get_password_reset_request(
+    db: Session,
+    current_user: AuthContext,
+    request_id: str,
+) -> PasswordResetRequestOut:
+    expire_stale_password_reset_requests(db)
+    reset_request = db.get(AuthPasswordResetRequest, request_id)
+    if reset_request is None:
+        raise HTTPException(status_code=404, detail="密码重置申请不存在")
+    ensure_password_reset_request_access(db, current_user, reset_request)
+    return password_reset_request_to_out(db, reset_request)
+
+
+def load_password_reset_request_for_update(
+    db: Session,
+    current_user: AuthContext,
+    request_id: str,
+) -> AuthPasswordResetRequest:
+    reset_request = db.scalar(password_reset_request_for_update_statement(request_id))
+    if reset_request is None:
+        raise HTTPException(status_code=404, detail="密码重置申请不存在")
+    ensure_password_reset_request_access(db, current_user, reset_request)
+    return reset_request
+
+
+def issue_password_reset_temporary_password(
+    db: Session,
+    current_user: AuthContext,
+    request_id: str,
+    payload: PasswordResetReviewRequest,
+    action: str,
+    request: Request | None = None,
+) -> PasswordResetApproveOut:
+    reset_request = load_password_reset_request_for_update(db, current_user, request_id)
+    expected_status = "pending" if action == "approve" else "approved"
+    if reset_request.status != expected_status:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "仅待审核申请可以批准"
+                if action == "approve"
+                else "仅已批准且未完成的申请可以重新生成临时密码"
+            ),
+        )
+    review_comment = payload.review_comment.strip()
+    if not review_comment:
+        raise HTTPException(status_code=400, detail="请填写身份核验或重新签发说明")
+    if not reset_request.user_id:
+        raise HTTPException(status_code=409, detail="未匹配系统账号的申请不能批准")
+
+    user = db.get(AuthUser, reset_request.user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    if user.status not in {"active", "suspended"}:
-        raise HTTPException(status_code=400, detail="仅可重置正常或停用账号密码")
+        raise HTTPException(status_code=409, detail="申请关联账号已不存在")
+    ensure_manage_target_user(db, current_user, user.id)
+    if user.status != "active":
+        raise HTTPException(status_code=409, detail="仅正常状态账号可以签发临时密码")
 
     now = now_text()
+    claim = db.execute(
+        update(AuthPasswordResetRequest)
+        .where(
+            AuthPasswordResetRequest.id == reset_request.id,
+            AuthPasswordResetRequest.status == expected_status,
+            AuthPasswordResetRequest.issue_count == reset_request.issue_count,
+        )
+        .values(updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if claim.rowcount != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "仅待审核申请可以批准"
+                if action == "approve"
+                else "仅已批准且未完成的申请可以重新生成临时密码"
+            ),
+        )
+    temporary_password = generate_temporary_password()
+    validate_password_characters(temporary_password)
     salt, password_hash = make_password_hash(temporary_password)
     user.password_salt = salt
     user.password_hash = password_hash
     user.force_password_change = 1
     user.updated_at = now
-
-    active_sessions = db.scalars(
+    for session in db.scalars(
         select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.status == "active")
-    ).all()
-    for session in active_sessions:
+    ).all():
         session.status = "revoked"
         session.revoked_at = now
 
-    notification_id = payload.notification_id.strip()
-    if notification_id:
-        notification = db.get(SystemNotification, notification_id)
-        if notification is None:
-            raise HTTPException(status_code=404, detail="通知不存在")
-        if not can_access_notification(db, current_user, notification):
-            raise HTTPException(status_code=403, detail="无权处理该通知")
-        if notification.type != "password_reset":
-            raise HTTPException(status_code=400, detail="该通知不是密码重置申请")
-        notification.status = "handled"
-        if not notification.read_at:
-            notification.read_at = now
-        notification.handled_at = now
-
+    reset_request.status = "approved"
+    reset_request.reviewer_user_id = current_user.id
+    reset_request.review_comment = review_comment
+    reset_request.approved_at = reset_request.approved_at or now
+    reset_request.last_issued_at = now
+    reset_request.expires_at = (
+        datetime.now() + timedelta(hours=PASSWORD_RESET_TEMPORARY_HOURS)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    reset_request.issue_count += 1
+    reset_request.updated_at = now
+    mark_password_reset_notification_handled(db, reset_request, now)
     add_auth_audit(
         db,
-        "password_reset_completed",
+        "password_reset_approved" if action == "approve" else "password_reset_reissued",
         username=user.username,
         user_id=user.id,
-        detail=f"管理员 {current_user.username} 已重置临时密码",
+        detail=(
+            f"管理员 {current_user.username} 处理申请 {reset_request.id}；"
+            f"签发次数 {reset_request.issue_count}"
+        ),
         request=request,
     )
     db.commit()
-    return user_to_out(db, user)
+    return PasswordResetApproveOut(
+        request=password_reset_request_to_out(db, reset_request),
+        temporary_password=temporary_password,
+        expires_at=reset_request.expires_at,
+    )
+
+
+def approve_password_reset_request(
+    db: Session,
+    current_user: AuthContext,
+    request_id: str,
+    payload: PasswordResetReviewRequest,
+    request: Request | None = None,
+) -> PasswordResetApproveOut:
+    return issue_password_reset_temporary_password(
+        db, current_user, request_id, payload, "approve", request=request
+    )
+
+
+def reissue_password_reset_request(
+    db: Session,
+    current_user: AuthContext,
+    request_id: str,
+    payload: PasswordResetReviewRequest,
+    request: Request | None = None,
+) -> PasswordResetApproveOut:
+    return issue_password_reset_temporary_password(
+        db, current_user, request_id, payload, "reissue", request=request
+    )
+
+
+def reject_password_reset_request(
+    db: Session,
+    current_user: AuthContext,
+    request_id: str,
+    payload: PasswordResetReviewRequest,
+    request: Request | None = None,
+) -> PasswordResetRequestOut:
+    reset_request = load_password_reset_request_for_update(db, current_user, request_id)
+    if reset_request.status != "pending":
+        raise HTTPException(status_code=409, detail="仅待审核申请可以驳回")
+    review_comment = payload.review_comment.strip()
+    if not review_comment:
+        raise HTTPException(status_code=400, detail="驳回原因不能为空")
+    now = now_text()
+    claim = db.execute(
+        update(AuthPasswordResetRequest)
+        .where(
+            AuthPasswordResetRequest.id == reset_request.id,
+            AuthPasswordResetRequest.status == "pending",
+            AuthPasswordResetRequest.issue_count == reset_request.issue_count,
+        )
+        .values(updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if claim.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="仅待审核申请可以驳回")
+    reset_request.status = "rejected"
+    reset_request.reviewer_user_id = current_user.id
+    reset_request.review_comment = review_comment
+    reset_request.rejected_at = now
+    reset_request.updated_at = now
+    mark_password_reset_notification_handled(db, reset_request, now)
+    add_auth_audit(
+        db,
+        "password_reset_rejected",
+        username=reset_request.username,
+        user_id=reset_request.user_id or "",
+        detail=f"管理员 {current_user.username} 驳回申请 {reset_request.id}",
+        request=request,
+    )
+    db.commit()
+    return password_reset_request_to_out(db, reset_request)
 
 
 def list_system_notifications(
@@ -941,8 +1161,12 @@ def update_system_notification(
     status = payload.status.strip()
     if status not in {"read", "handled"}:
         raise HTTPException(status_code=400, detail="通知状态只能设置为 read 或 handled")
-    if notification.type == "internal_quote" and status == "handled" and notification.status != "handled":
-        raise HTTPException(status_code=409, detail="内部报价通知由对应业务流程自动处理")
+    if (
+        notification.type in {"internal_quote", "password_reset"}
+        and status == "handled"
+        and notification.status != "handled"
+    ):
+        raise HTTPException(status_code=409, detail="该通知由对应业务流程自动处理")
 
     if notification.status == "handled":
         return notification_to_out(notification)
@@ -1081,6 +1305,12 @@ def notification_target_scope(
     payload = parse_payload(notification.payload_json)
 
     if notification.type == "password_reset":
+        reset_request_id = str(payload.get("password_reset_request_id") or "").strip()
+        reset_request = db.get(AuthPasswordResetRequest, reset_request_id) if reset_request_id else None
+        if reset_request and reset_request.factory_id and reset_request.department:
+            if not reset_request.user_id:
+                return None
+            return reset_request.factory_id, reset_request.department
         matched_user_id = str(payload.get("matched_user_id") or "").strip()
         if not matched_user_id:
             return None
@@ -1147,6 +1377,8 @@ def can_access_notification(
         )
         for department in target_departments
     )
+    if notification.type == "password_reset":
+        return canonical_result
     if settings.authz_mode == "enforce":
         return canonical_result
 
@@ -1300,6 +1532,64 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
         position=profile.position if profile else "",
         system_position_role_id=system_position_role.id if system_position_role else "",
         system_position_role_name=system_position_role.name if system_position_role else "",
+    )
+
+
+def password_reset_request_to_out(
+    db: Session,
+    reset_request: AuthPasswordResetRequest,
+) -> PasswordResetRequestOut:
+    user = db.get(AuthUser, reset_request.user_id) if reset_request.user_id else None
+    profile = db.get(EmployeeProfile, user.id) if user else None
+    matched_user = None
+    if user is not None:
+        matched_user = PasswordResetMatchedUserOut(
+            id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+            status=user.status,
+            factory_id=profile.primary_factory_id if profile else "",
+            department=profile.primary_department if profile else "",
+            position=profile.position if profile else "",
+            phone=profile.phone if profile else "",
+            email=profile.email if profile else "",
+        )
+    normalized_contact = reset_request.contact.strip().casefold()
+    match_checks = {
+        "username": bool(user) and user.username.strip().casefold() == reset_request.username.strip().casefold(),
+        "display_name": bool(user)
+        and bool(reset_request.display_name.strip())
+        and user.display_name.strip().casefold() == reset_request.display_name.strip().casefold(),
+        "contact": bool(profile)
+        and normalized_contact
+        in {profile.phone.strip().casefold(), profile.email.strip().casefold()} - {""},
+        "scope": bool(profile)
+        and profile.primary_factory_id == reset_request.factory_id
+        and profile.primary_department == reset_request.department,
+    }
+    return PasswordResetRequestOut(
+        id=reset_request.id,
+        user_id=reset_request.user_id,
+        username=reset_request.username,
+        display_name=reset_request.display_name,
+        contact=reset_request.contact,
+        note=reset_request.note,
+        factory_id=reset_request.factory_id,
+        department=reset_request.department,
+        status=reset_request.status,
+        reviewer_user_id=reset_request.reviewer_user_id,
+        review_comment=reset_request.review_comment,
+        notification_id=reset_request.notification_id,
+        submitted_at=serialize_process_local_timestamp(reset_request.submitted_at),
+        approved_at=serialize_process_local_timestamp(reset_request.approved_at),
+        expires_at=serialize_process_local_timestamp(reset_request.expires_at),
+        completed_at=serialize_process_local_timestamp(reset_request.completed_at),
+        rejected_at=serialize_process_local_timestamp(reset_request.rejected_at),
+        created_at=serialize_process_local_timestamp(reset_request.created_at),
+        updated_at=serialize_process_local_timestamp(reset_request.updated_at),
+        issue_count=reset_request.issue_count,
+        matched_user=matched_user,
+        match_checks=match_checks,
     )
 
 

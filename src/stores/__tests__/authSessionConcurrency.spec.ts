@@ -5,6 +5,7 @@ const authApiMock = vi.hoisted(() => ({
   getMe: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
+  changePassword: vi.fn(),
 }))
 
 vi.mock('@/api/auth', () => ({
@@ -48,6 +49,22 @@ describe('auth session loading', () => {
     await expect(pendingSessionProbe).resolves.toBe(true)
     expect(authStore.isAuthenticated).toBe(true)
     expect(authStore.currentUser?.username).toBe('admin')
+  })
+
+  it('applies the rotated session returned after changing a temporary password', async () => {
+    const changedUser = { ...user, force_password_change: false }
+    authApiMock.changePassword.mockResolvedValue(changedUser)
+    const authStore = useAuthStore()
+    authStore.applySession({ ...user, force_password_change: true })
+
+    await authStore.changePassword({
+      current_password: 'TemporaryPass1!',
+      new_password: 'FormalPass456!',
+      confirm_password: 'FormalPass456!',
+    })
+
+    expect(authStore.currentUser?.force_password_change).toBe(false)
+    expect(authStore.isAuthenticated).toBe(true)
   })
 
   it('clears the current session when an explicit refresh receives 401', async () => {

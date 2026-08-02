@@ -5,12 +5,13 @@ import SystemUserManagementView from '../SystemUserManagementView.vue'
 const listRegistrationRequestsMock = vi.hoisted(() => vi.fn())
 const listUsersMock = vi.hoisted(() => vi.fn())
 const listSystemPositionsMock = vi.hoisted(() => vi.fn())
-const listNotificationsMock = vi.hoisted(() => vi.fn())
+const listPasswordResetRequestsMock = vi.hoisted(() => vi.fn())
 const approveRegistrationRequestMock = vi.hoisted(() => vi.fn())
 const rejectRegistrationRequestMock = vi.hoisted(() => vi.fn())
 const updateUserStatusMock = vi.hoisted(() => vi.fn())
-const resetUserPasswordMock = vi.hoisted(() => vi.fn())
-const updateNotificationMock = vi.hoisted(() => vi.fn())
+const approvePasswordResetRequestMock = vi.hoisted(() => vi.fn())
+const rejectPasswordResetRequestMock = vi.hoisted(() => vi.fn())
+const reissuePasswordResetRequestMock = vi.hoisted(() => vi.fn())
 const canMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
@@ -27,12 +28,13 @@ vi.mock('@/api/system', () => ({
     listRegistrationRequests: listRegistrationRequestsMock,
     listUsers: listUsersMock,
     listSystemPositions: listSystemPositionsMock,
-    listNotifications: listNotificationsMock,
+    listPasswordResetRequests: listPasswordResetRequestsMock,
     approveRegistrationRequest: approveRegistrationRequestMock,
     rejectRegistrationRequest: rejectRegistrationRequestMock,
     updateUserStatus: updateUserStatusMock,
-    resetUserPassword: resetUserPasswordMock,
-    updateNotification: updateNotificationMock,
+    approvePasswordResetRequest: approvePasswordResetRequestMock,
+    rejectPasswordResetRequest: rejectPasswordResetRequestMock,
+    reissuePasswordResetRequest: reissuePasswordResetRequestMock,
   },
 }))
 
@@ -83,12 +85,13 @@ describe('SystemUserManagementView registration approval', () => {
     listRegistrationRequestsMock.mockReset().mockResolvedValue([pendingRequest])
     listUsersMock.mockReset().mockResolvedValue([])
     listSystemPositionsMock.mockReset().mockResolvedValue(positions)
-    listNotificationsMock.mockReset().mockResolvedValue([])
+    listPasswordResetRequestsMock.mockReset().mockResolvedValue([])
     approveRegistrationRequestMock.mockReset().mockResolvedValue({ ...pendingRequest, status: 'approved' })
     rejectRegistrationRequestMock.mockReset()
     updateUserStatusMock.mockReset()
-    resetUserPasswordMock.mockReset()
-    updateNotificationMock.mockReset()
+    approvePasswordResetRequestMock.mockReset()
+    rejectPasswordResetRequestMock.mockReset()
+    reissuePasswordResetRequestMock.mockReset()
   })
 
   it('keeps the page available without reading or exposing protected account data', async () => {
@@ -103,7 +106,7 @@ describe('SystemUserManagementView registration approval', () => {
     expect(listRegistrationRequestsMock).not.toHaveBeenCalled()
     expect(listUsersMock).not.toHaveBeenCalled()
     expect(listSystemPositionsMock).not.toHaveBeenCalled()
-    expect(listNotificationsMock).not.toHaveBeenCalled()
+    expect(listPasswordResetRequestsMock).not.toHaveBeenCalled()
     expect(wrapper.find('.stats').exists()).toBe(false)
     expect(wrapper.find('.approval-workspace').exists()).toBe(false)
     expect(wrapper.find('.users-panel').exists()).toBe(false)
@@ -128,11 +131,18 @@ describe('SystemUserManagementView registration approval', () => {
       created_at: '2026-07-14T02:00:00Z', updated_at: '2026-07-18T08:00:00Z', roles: [],
       primary_factory_id: 'huaxing', primary_department: 'engineering', position: '工程师',
     }])
-    listNotificationsMock.mockResolvedValue([{
-      id: 'password-reset-1', target_user_id: 'user-1', target_permission: 'system:user_manage',
-      target_factory_id: 'huaxing', target_department: 'engineering', type: 'password_reset',
-      title: '密码重置待处理', message: '用户申请重置密码', payload: { matched_user_id: 'user-1' },
-      status: 'unread', created_at: '2026-07-18T08:05:00Z', read_at: '', handled_at: '',
+    listPasswordResetRequestsMock.mockResolvedValue([{
+      id: 'password-reset-1', user_id: 'user-1', username: 'tech-001', display_name: '张三',
+      contact: '13800000000', note: '忘记密码', factory_id: 'huaxing', department: 'engineering',
+      status: 'pending', reviewer_user_id: null, review_comment: '', notification_id: 'notification-1',
+      submitted_at: '2026-07-18T08:05:00Z', approved_at: '', expires_at: '', completed_at: '', rejected_at: '',
+      created_at: '2026-07-18T08:05:00Z', updated_at: '2026-07-18T08:05:00Z', issue_count: 0,
+      matched_user: {
+        id: 'user-1', username: 'tech-001', display_name: '张三', status: 'active',
+        factory_id: 'huaxing', department: 'engineering', position: '工程师',
+        phone: '13800000000', email: '',
+      },
+      match_checks: { username: true, display_name: true, contact: true, scope: true },
     }])
 
     const wrapper = mountView()

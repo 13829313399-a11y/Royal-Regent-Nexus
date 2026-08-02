@@ -58,6 +58,7 @@ const passwordResetForm = ref({
 })
 const isPasswordResetSubmitting = ref(false)
 const passwordResetSubmitted = ref(false)
+const passwordResetRequestId = ref('')
 
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
@@ -213,6 +214,7 @@ function focusPasswordInput(event: KeyboardEvent) {
 function openPasswordHelp() {
   passwordHelpMessage.value = ''
   passwordResetSubmitted.value = false
+  passwordResetRequestId.value = ''
   passwordResetForm.value = {
     ...passwordResetForm.value,
     username: passwordHelpAccount.value,
@@ -225,6 +227,7 @@ function closePasswordHelp() {
   showPasswordHelp.value = false
   passwordHelpMessage.value = ''
   passwordResetSubmitted.value = false
+  passwordResetRequestId.value = ''
 }
 
 async function submitPasswordResetRequest() {
@@ -242,6 +245,10 @@ async function submitPasswordResetRequest() {
     passwordHelpMessage.value = '请先填写需要重置密码的企业账号'
     return
   }
+  if (!payload.display_name) {
+    passwordHelpMessage.value = '请填写姓名，方便管理员核验身份'
+    return
+  }
   if (!payload.contact) {
     passwordHelpMessage.value = '请填写联系电话或邮箱，方便管理员核验'
     return
@@ -251,6 +258,7 @@ async function submitPasswordResetRequest() {
   try {
     const response = await authApi.requestPasswordReset(payload)
     passwordResetSubmitted.value = true
+    passwordResetRequestId.value = response.request_id ?? ''
     passwordHelpMessage.value = response.message
   } catch (error) {
     passwordHelpMessage.value = getApiErrorMessage(error)
@@ -289,7 +297,10 @@ async function submitLogin() {
       recentAccount.value = null
     }
 
-    await router.replace(resolvePostLoginRedirect(router, route.query.redirect))
+    const target = resolvePostLoginRedirect(router, route.query.redirect)
+    await router.replace(user.force_password_change
+      ? { name: 'change-password', query: target === '/' ? {} : { redirect: target } }
+      : target)
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
   } finally {
@@ -531,7 +542,7 @@ onMounted(() => {
             </span>
             <span>
               <span id="password-help-title" class="block text-[16px] font-bold text-slate-950">密码重置协助</span>
-              <span class="mt-1 block text-[12.5px] leading-5 text-slate-500">提交后系统会通知管理员核验处理。</span>
+              <span class="mt-1 block text-[12.5px] leading-5 text-slate-500">提交后由管理员核验，并通过可信内部渠道传达临时密码。</span>
             </span>
           </span>
           <button
@@ -546,34 +557,48 @@ onMounted(() => {
 
         <div class="password-help-body space-y-3 overflow-y-auto px-5 py-3">
           <div class="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[12.5px] leading-5 text-amber-800">
-            为保护内部系统账号安全，密码重置需要管理员核验员工身份。处理完成后会提供临时密码，登录后请尽快修改。
+            为保护内部系统账号安全，系统不会透露账号是否匹配，也不会自动发送短信或邮件。管理员核验后会通过线下或企业内部可信渠道传达临时密码。
           </div>
 
           <div class="grid gap-2">
             <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <KeyRound class="mt-0.5 size-4 shrink-0 text-teal-700" aria-hidden="true" />
               <span>
-                <span class="block text-[12.5px] font-bold text-slate-900">1. 确认账号</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">填写需要重置密码的企业账号或工号。</span>
+                <span class="block text-[12.5px] font-bold text-slate-900">1. 提交申请</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">填写企业账号、姓名、联系方式与核验说明。</span>
               </span>
             </div>
             <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <LifeBuoy class="mt-0.5 size-4 shrink-0 text-sky-700" aria-hidden="true" />
               <span>
-                <span class="block text-[12.5px] font-bold text-slate-900">2. 提交内部申请</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">系统会生成铃铛通知，管理员在账号管理页处理。</span>
+                <span class="block text-[12.5px] font-bold text-slate-900">2. 管理员核验</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">管理员对照系统员工资料审核申请。</span>
               </span>
             </div>
             <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <CheckCircle2 class="mt-0.5 size-4 shrink-0 text-emerald-700" aria-hidden="true" />
               <span>
-                <span class="block text-[12.5px] font-bold text-slate-900">3. 完成后重新登录</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">管理员核验后重置为临时密码，再由员工重新登录。</span>
+                <span class="block text-[12.5px] font-bold text-slate-900">3. 获取临时密码</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">通过线下或企业内部可信渠道接收一次性临时密码。</span>
+              </span>
+            </div>
+            <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+              <ShieldCheck class="mt-0.5 size-4 shrink-0 text-teal-700" aria-hidden="true" />
+              <span>
+                <span class="block text-[12.5px] font-bold text-slate-900">4. 设置正式密码</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">使用临时密码登录后，必须先设置正式密码才能进入系统。</span>
               </span>
             </div>
           </div>
 
-          <form class="grid gap-2.5" novalidate @submit.prevent="submitPasswordResetRequest">
+          <div v-if="passwordResetSubmitted" class="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-4 text-center">
+            <CheckCircle2 class="mx-auto size-8 text-emerald-700" aria-hidden="true" />
+            <h3 class="mt-2 text-[14px] font-bold text-emerald-900">申请已提交</h3>
+            <p class="mt-1 text-[12px] leading-5 text-emerald-800">{{ passwordHelpMessage }}</p>
+            <p v-if="passwordResetRequestId" class="mt-2 font-mono text-[11.5px] text-emerald-700">申请编号：{{ passwordResetRequestId }}</p>
+          </div>
+
+          <form v-else class="grid gap-2.5" novalidate @submit.prevent="submitPasswordResetRequest">
             <label class="grid gap-1.5">
               <span class="text-[12px] font-bold text-slate-600">企业账号 / 工号</span>
               <input
@@ -616,7 +641,7 @@ onMounted(() => {
             <button
               class="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-teal-700 text-[13px] font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
               type="submit"
-              :disabled="isPasswordResetSubmitting"
+              :disabled="isPasswordResetSubmitting || passwordResetSubmitted"
             >
               <LoaderCircle v-if="isPasswordResetSubmitting" class="size-4 animate-spin" aria-hidden="true" />
               <CheckCircle2 v-else-if="passwordResetSubmitted" class="size-4" aria-hidden="true" />
@@ -625,7 +650,7 @@ onMounted(() => {
             </button>
           </form>
           <p
-            v-if="passwordHelpMessage"
+            v-if="passwordHelpMessage && !passwordResetSubmitted"
             class="rounded-lg border px-3 py-2 text-[12px] font-medium"
             :class="passwordResetSubmitted ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-600'"
           >

@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -101,6 +101,53 @@ class AuthRegistrationRequest(Base):
     review_comment: Mapped[str] = mapped_column(Text, default="")
     submitted_at: Mapped[str] = mapped_column(String(32), default="")
     reviewed_at: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class AuthPasswordResetRequest(Base):
+    __tablename__ = "auth_password_reset_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'completed', 'expired')",
+            name="ck_auth_password_reset_request_status",
+        ),
+        CheckConstraint("issue_count >= 0", name="ck_auth_password_reset_request_issue_count"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("auth_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    username: Mapped[str] = mapped_column(String(64), index=True)
+    display_name: Mapped[str] = mapped_column(String(128), default="")
+    contact: Mapped[str] = mapped_column(String(128), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    factory_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    department: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reviewer_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("auth_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    review_comment: Mapped[str] = mapped_column(Text, default="")
+    notification_id: Mapped[str | None] = mapped_column(
+        ForeignKey("system_notifications.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    request_ip: Mapped[str] = mapped_column(String(128), default="", index=True)
+    user_agent: Mapped[str] = mapped_column(Text, default="")
+    issue_count: Mapped[int] = mapped_column(Integer, default=0)
+    submitted_at: Mapped[str] = mapped_column(String(32), default="", index=True)
+    approved_at: Mapped[str] = mapped_column(String(32), default="")
+    last_issued_at: Mapped[str] = mapped_column(String(32), default="")
+    expires_at: Mapped[str] = mapped_column(String(32), default="", index=True)
+    completed_at: Mapped[str] = mapped_column(String(32), default="")
+    rejected_at: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[str] = mapped_column(String(32), default="")
     updated_at: Mapped[str] = mapped_column(String(32), default="")
 

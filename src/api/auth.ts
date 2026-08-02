@@ -42,6 +42,13 @@ export interface PasswordResetRequest {
 export interface PasswordResetResponse {
   status: string
   message: string
+  request_id?: string | null
+}
+
+export interface ChangePasswordRequest {
+  current_password: string
+  new_password: string
+  confirm_password: string
 }
 
 export type AuthGrantScopeMode = 'own_factory' | 'cross_factory_read' | 'cross_factory_operate'
@@ -112,6 +119,10 @@ export function createAuthApi(client: AuthHttpClient = http) {
     },
     async getMe() {
       const response = await client.get<AuthMeResponse>('/auth/me')
+      return response.data
+    },
+    async changePassword(payload: ChangePasswordRequest) {
+      const response = await client.post<AuthMeResponse>('/auth/change-password', payload)
       return response.data
     },
     async uploadAvatar(file: File) {

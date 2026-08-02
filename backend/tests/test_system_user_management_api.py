@@ -1129,7 +1129,7 @@ def test_password_reset_notifications_follow_profile_scope_and_unmatched_are_sup
                 profile.updated_at = now
             db.commit()
 
-        assert client.post(
+        matched_request_response = client.post(
             "/api/auth/password-reset-requests",
             json={
                 "username": "engineer",
@@ -1137,8 +1137,9 @@ def test_password_reset_notifications_follow_profile_scope_and_unmatched_are_sup
                 "contact": "13800000000",
                 "note": "忘记密码",
             },
-        ).status_code == 200
-        assert client.post(
+        )
+        assert matched_request_response.status_code == 200
+        unmatched_request_response = client.post(
             "/api/auth/password-reset-requests",
             json={
                 "username": "unknown-reset-user",
@@ -1146,7 +1147,10 @@ def test_password_reset_notifications_follow_profile_scope_and_unmatched_are_sup
                 "contact": "13900000000",
                 "note": "账号无法匹配",
             },
-        ).status_code == 200
+        )
+        assert unmatched_request_response.status_code == 200
+        matched_request_id = matched_request_response.json()["request_id"]
+        unmatched_request_id = unmatched_request_response.json()["request_id"]
 
         login(client, "admin")
         reset_notifications = [
@@ -1155,10 +1159,14 @@ def test_password_reset_notifications_follow_profile_scope_and_unmatched_are_sup
             if item["type"] == "password_reset"
         ]
         matched_notification = next(
-            item for item in reset_notifications if item["payload"]["username"] == "engineer"
+            item
+            for item in reset_notifications
+            if item["payload"]["password_reset_request_id"] == matched_request_id
         )
         unmatched_notification = next(
-            item for item in reset_notifications if item["payload"]["username"] == "unknown-reset-user"
+            item
+            for item in reset_notifications
+            if item["payload"]["password_reset_request_id"] == unmatched_request_id
         )
         assert matched_notification["target_factory_id"] == "huaxing"
         assert matched_notification["target_department"] == "engineering"
@@ -1189,7 +1197,7 @@ def test_password_reset_notifications_follow_profile_scope_and_unmatched_are_sup
         ).status_code == 403
 
 
-def test_unmatched_password_reset_keeps_legacy_visibility_until_enforce(monkeypatch):
+def test_unmatched_password_reset_is_superadmin_only_even_in_legacy_mode(monkeypatch):
     with make_client(monkeypatch, authz_mode="legacy") as client:
         assert client.post(
             "/api/auth/password-reset-requests",
@@ -1212,7 +1220,7 @@ def test_unmatched_password_reset_keeps_legacy_visibility_until_enforce(monkeypa
         create_scoped_permission_manager("legacy-reset-manager", "huaxing", "engineering")
         login(client, "legacy-reset-manager")
         visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
-        assert notification["id"] in visible_ids
+        assert notification["id"] not in visible_ids
 
 
 def test_admin_can_reset_user_password_from_password_reset_notification(monkeypatch):
@@ -1242,18 +1250,20 @@ def test_admin_can_reset_user_password_from_password_reset_notification(monkeypa
         assert request_response.status_code == 200
 
         login(client, "admin")
+        request_id = request_response.json()["request_id"]
+        reset_response = client.post(
+            f"/api/system/password-reset-requests/{request_id}/approve",
+            json={"review_comment": "已电话核验员工身份"},
+        )
+        assert reset_response.status_code == 200
+        temporary_password = reset_response.json()["temporary_password"]
+        assert temporary_password != "123456"
+        assert reset_response.json()["request"]["status"] == "approved"
         password_reset_notification = next(
             notification
             for notification in client.get("/api/system/notifications").json()
-            if notification["type"] == "password_reset"
+            if notification["payload"].get("password_reset_request_id") == request_id
         )
-
-        reset_response = client.post(
-            "/api/system/users/user-engineer/reset-password",
-            json={"temporary_password": "123456", "notification_id": password_reset_notification["id"]},
-        )
-        assert reset_response.status_code == 200
-        assert reset_response.json()["force_password_change"] is True
 
         handled_notification = next(
             notification
@@ -1267,6 +1277,9 @@ def test_admin_can_reset_user_password_from_password_reset_notification(monkeypa
         old_password_login = client.post("/api/auth/login", json={"username": "engineer", "password": "OldStrong123"})
         assert old_password_login.status_code == 401
 
-        temporary_password_login = client.post("/api/auth/login", json={"username": "engineer", "password": "123456"})
+        temporary_password_login = client.post(
+            "/api/auth/login",
+            json={"username": "engineer", "password": temporary_password},
+        )
         assert temporary_password_login.status_code == 200
         assert temporary_password_login.json()["force_password_change"] is True

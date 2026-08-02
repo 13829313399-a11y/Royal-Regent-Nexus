@@ -32,9 +32,8 @@ class UserStatusUpdateRequest(BaseModel):
     status: str
 
 
-class UserPasswordResetRequest(BaseModel):
-    temporary_password: str = "123456"
-    notification_id: str = ""
+class PasswordResetReviewRequest(BaseModel):
+    review_comment: str = Field(min_length=1, max_length=1000)
 
 
 class SystemNotificationUpdateRequest(BaseModel):
@@ -103,6 +102,49 @@ class UserOut(BaseModel):
     position: str = ""
     system_position_role_id: str = ""
     system_position_role_name: str = ""
+
+
+class PasswordResetMatchedUserOut(BaseModel):
+    id: str
+    username: str
+    display_name: str
+    status: str
+    factory_id: str = ""
+    department: str = ""
+    position: str = ""
+    phone: str = ""
+    email: str = ""
+
+
+class PasswordResetRequestOut(BaseModel):
+    id: str
+    user_id: str | None = None
+    username: str
+    display_name: str
+    contact: str
+    note: str
+    factory_id: str
+    department: str
+    status: str
+    reviewer_user_id: str | None = None
+    review_comment: str
+    notification_id: str | None = None
+    submitted_at: str
+    approved_at: str
+    expires_at: str
+    completed_at: str
+    rejected_at: str
+    created_at: str
+    updated_at: str
+    issue_count: int
+    matched_user: PasswordResetMatchedUserOut | None = None
+    match_checks: dict[str, bool] = Field(default_factory=dict)
+
+
+class PasswordResetApproveOut(BaseModel):
+    request: PasswordResetRequestOut
+    temporary_password: str
+    expires_at: str
 
 
 class SystemNotificationOut(BaseModel):

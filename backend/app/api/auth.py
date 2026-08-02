@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.db import get_db
 from app.schemas.auth import (
     AuthMeResponse,
+    ChangePasswordRequest,
     LoginRequest,
     PasswordResetRequest,
     PasswordResetResponse,
@@ -17,6 +18,7 @@ from app.services.auth import (
     AuthContext,
     authenticate_user,
     build_auth_context,
+    change_current_password,
     create_session,
     get_current_user,
     read_auth_user_avatar,
@@ -55,6 +57,27 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
 @router.post("/password-reset-requests", response_model=PasswordResetResponse)
 def request_password_reset(payload: PasswordResetRequest, request: Request, db: Session = Depends(get_db)):
     return submit_password_reset_request(db, payload, request=request)
+
+
+@router.post("/change-password", response_model=AuthMeResponse)
+def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    auth_response, token = change_current_password(db, current_user, payload, request=request)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=settings.effective_session_cookie_secure,
+        samesite="lax",
+        max_age=12 * 60 * 60,
+        path="/",
+    )
+    return auth_response
 
 
 @router.get("/me", response_model=AuthMeResponse)
