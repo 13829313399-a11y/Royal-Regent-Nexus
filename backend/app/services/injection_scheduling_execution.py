@@ -231,6 +231,33 @@ def plan_tasks(
     )
 
 
+def plan_orders(
+    db: Session,
+    factory_id: str,
+    plan_id: str,
+) -> list[InjectionSchedulingOrder]:
+    return list(
+        db.scalars(
+            select(InjectionSchedulingOrder)
+            .join(
+                InjectionSchedulingTask,
+                InjectionSchedulingTask.order_id == InjectionSchedulingOrder.id,
+            )
+            .where(
+                InjectionSchedulingTask.factory_id == factory_id,
+                InjectionSchedulingTask.plan_id == plan_id,
+                InjectionSchedulingOrder.factory_id == factory_id,
+            )
+            .distinct()
+            .order_by(
+                InjectionSchedulingOrder.order_no,
+                InjectionSchedulingOrder.item_no,
+                InjectionSchedulingOrder.id,
+            )
+        ).all()
+    )
+
+
 def plan_out(db: Session, record: InjectionSchedulingPlan) -> InjectionSchedulingPlanOut:
     return InjectionSchedulingPlanOut(
         id=record.id,
@@ -251,6 +278,10 @@ def plan_out(db: Session, record: InjectionSchedulingPlan) -> InjectionSchedulin
         updated_at=record.updated_at,
         published_at=record.published_at,
         archived_at=record.archived_at,
+        orders=[
+            order_out(item)
+            for item in plan_orders(db, record.factory_id, record.id)
+        ],
         tasks=[task_out(item) for item in plan_tasks(db, record.factory_id, record.id)],
     )
 
@@ -533,6 +564,7 @@ def add_task(
     payload: InjectionSchedulingTaskCreate,
     user: AuthContext,
     request_id: str,
+    audit_detail: dict[str, Any] | None = None,
 ) -> tuple[InjectionSchedulingPlan, InjectionSchedulingTask, int]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     plan = _require_plan(db, factory_id, plan_id)
@@ -627,6 +659,16 @@ def add_task(
             user=user,
             timestamp=timestamp,
         )
+        event_detail: dict[str, Any] = {
+            "plan_id": plan.id,
+            "plan_revision": payload.expected_revision + 1,
+            "task": payload.model_dump(
+                mode="json",
+                exclude={"factory_id", "expected_revision"},
+            ),
+        }
+        if audit_detail:
+            event_detail.update(audit_detail)
         audit = _audit(
             db,
             factory_id=factory_id,
@@ -635,14 +677,7 @@ def add_task(
             entity_id=record.id,
             entity_revision=1,
             request_id=request_id,
-            detail={
-                "plan_id": plan.id,
-                "plan_revision": payload.expected_revision + 1,
-                "task": payload.model_dump(
-                    mode="json",
-                    exclude={"factory_id", "expected_revision"},
-                ),
-            },
+            detail=event_detail,
             user=user,
         )
         db.commit()

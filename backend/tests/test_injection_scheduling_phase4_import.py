@@ -331,6 +331,9 @@ def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatc
         )
         assert plan.status_code == 200, plan.text
         task = plan.json()["plan"]["tasks"][0]
+        order = plan.json()["plan"]["orders"][0]
+        assert order["order_no"] == "000123"
+        assert order["item_no"] == "0045"
         assert task["import_batch_id"] == batch["id"]
         assert task["source_sheet_name"] == "计划表"
         assert task["source_row"] == 5
