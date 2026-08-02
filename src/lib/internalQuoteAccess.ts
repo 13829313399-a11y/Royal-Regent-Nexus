@@ -35,11 +35,18 @@ export function canReviewInternalQuoteSections(
   authStore: InternalQuoteAccessChecker,
   factoryId: string,
   businessOwnerId: string,
+  createdById = '',
 ) {
   return Boolean(
     businessOwnerId
     && authStore.currentUser?.id === businessOwnerId
-    && authStore.can('internal_quote:sales_review', factoryId, 'sales-business'),
+    && (
+      authStore.can('internal_quote:sales_review', factoryId, 'sales-business')
+      || (
+        createdById === authStore.currentUser?.id
+        && authStore.can('internal_quote:self_review', factoryId, 'sales-business')
+      )
+    ),
   )
 }
 

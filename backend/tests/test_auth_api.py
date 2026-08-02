@@ -90,6 +90,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "internal_quote:read",
                         "internal_quote:summary_read",
                         "internal_quote:timeline_read",
+                        "injection_scheduling:read",
                         "molding_sample:audit_read",
                         "molding_sample:cross_factory_cost_read",
                         "molding_sample:cross_factory_read",
@@ -433,6 +434,7 @@ def test_sales_customer_supervisor_role_is_seeded_with_customer_price_permission
                 "internal_quote:export",
                 "internal_quote:final_submit",
                 "internal_quote:final_approve",
+                "internal_quote:self_review",
                 "internal_quote:sales_edit",
                 "internal_quote:sales_review",
                 "internal_quote:reference_manage",
@@ -552,6 +554,45 @@ def test_seed_upgrades_existing_business_roles_with_internal_quote_p4_release_pe
             assert db.query(auth_models.AuthRolePermission).filter(
                 auth_models.AuthRolePermission.id.in_(expected_mappings)
             ).count() == len(expected_mappings)
+
+
+def test_seed_upgrades_existing_business_supervisor_with_self_review_once(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            permission = db.scalar(
+                auth_service.select(auth_models.AuthPermission).where(
+                    auth_models.AuthPermission.code
+                    == auth_service.INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE
+                )
+            )
+            assert permission is not None
+
+            marker = db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER,
+            )
+            assert marker is not None
+            db.delete(marker)
+
+            mapping_id = f"sales_customer_supervisor:{permission.id}"
+            mapping = db.get(auth_models.AuthRolePermission, mapping_id)
+            assert mapping is not None
+            db.delete(mapping)
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            assert db.get(auth_models.AuthRolePermission, mapping_id) is not None
+            assert db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER,
+            ) is not None
+
+            auth_service.seed_auth_defaults(db)
+            assert db.query(auth_models.AuthRolePermission).filter_by(id=mapping_id).count() == 1
 
 
 def test_seed_reconciles_fixed_system_position_template_from_code(monkeypatch):

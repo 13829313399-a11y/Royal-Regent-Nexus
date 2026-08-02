@@ -38,6 +38,11 @@ SHARED_MOLDING_DEPARTMENTS = (
     *WAREHOUSE_DEPARTMENTS,
     *MANAGEMENT_DEPARTMENTS,
 )
+INJECTION_SCHEDULING_DEPARTMENTS = (
+    *PRODUCTION_DEPARTMENTS,
+    *WAREHOUSE_DEPARTMENTS,
+    *MANAGEMENT_DEPARTMENTS,
+)
 
 
 MOLDING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
@@ -140,6 +145,10 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "internal_quote:export": ScopePolicy(("sales-business",)),
     "internal_quote:final_submit": ScopePolicy(("sales-business",)),
     "internal_quote:final_approve": ScopePolicy(("sales-business",)),
+    "internal_quote:self_review": ScopePolicy(
+        ("sales-business",),
+        guidance="仅允许获授权业务人员审核本人创建且由本人负责的内部报价",
+    ),
     "customer_price:read": ScopePolicy(("sales-business",)),
     "customer_price:import_internal_quote": ScopePolicy(("sales-business",)),
     "customer_price:export_customer_quote": ScopePolicy(("sales-business",)),
@@ -157,6 +166,23 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         for section_code, departments in INTERNAL_QUOTE_SECTION_DEPARTMENTS.items()
         for action in ("edit", "review")
     },
+}
+
+INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    permission_code: ScopePolicy(
+        INJECTION_SCHEDULING_DEPARTMENTS,
+        guidance="仅在注塑排产相关生产、PMC/仓库或管理范围生效",
+    )
+    for permission_code in (
+        "injection_scheduling:read",
+        "injection_scheduling:import",
+        "injection_scheduling:edit",
+        "injection_scheduling:report",
+        "injection_scheduling:publish",
+        "injection_scheduling:rollback",
+        "injection_scheduling:manage_master",
+        "injection_scheduling:manage_rules",
+    )
 }
 
 ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
@@ -201,9 +227,12 @@ ROLE_SCOPE_POLICIES.update(
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
     return MOLDING_PERMISSION_SCOPE_POLICIES.get(
         permission_code,
-        INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+        INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES.get(
             permission_code,
-            ScopePolicy(),
+            INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                permission_code,
+                ScopePolicy(),
+            ),
         ),
     )
 

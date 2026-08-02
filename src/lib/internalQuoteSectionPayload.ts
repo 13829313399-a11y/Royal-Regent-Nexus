@@ -14,6 +14,7 @@ export interface EngineeringMaterialRow {
   unit_price_rmb: number
   unit_price_hkd?: number
   unit_price_source_currency?: UnitPriceSourceCurrency
+  loss_rate?: number
   material: string
   surface_treatment: string
   supplier: string
@@ -91,6 +92,7 @@ export interface SalesPackagingMaterialRow {
   unit_price_rmb: number
   unit_price_hkd?: number
   unit_price_source_currency?: UnitPriceSourceCurrency
+  loss_rate?: number
   tax_rate_percent: number
   remark: string
   disney_description: string
@@ -491,6 +493,10 @@ function numberValue(value: unknown, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function multiplierValue(value: unknown, fallback = 1) {
+  return value == null || value === '' ? fallback : numberValue(value, fallback)
+}
+
 export const defaultSalesMarkupMoqs = [3000, 5000, 10000] as const
 
 export function createDefaultSalesMarkupTiers(markup = 1.2): SalesMarkupTier[] {
@@ -567,6 +573,7 @@ function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
       unit_price_rmb: numberValue(row.unit_price_rmb),
       unit_price_hkd: numberValue(row.unit_price_hkd),
       unit_price_source_currency: unitPriceSourceCurrency,
+      loss_rate: multiplierValue(row.loss_rate),
       tax_rate_percent: numberValue(row.tax_rate_percent),
       remark: textValue(row.remark),
       disney_description: textValue(row.disney_description),
@@ -618,6 +625,7 @@ type DualCurrencyUnitPrice = {
   unit_price_rmb?: number
   unit_price_hkd?: number
   unit_price_source_currency?: UnitPriceSourceCurrency
+  loss_rate?: number
 }
 
 function calculateDualCurrencyUnitPrices(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
@@ -667,9 +675,23 @@ export function calculatePackagingMaterialUnitHkd(row: DualCurrencyUnitPrice, rm
   return calculateDualCurrencyUnitPrices(row, rmbHkdRate).unitPriceHkd
 }
 
+function calculateMaterialLossRate(value: unknown) {
+  if (value == null || value === '') return 1
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+export function calculatePackagingMaterialEffectiveUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  return calculatePackagingMaterialUnitRmb(row, rmbHkdRate) * calculateMaterialLossRate(row.loss_rate)
+}
+
+export function calculatePackagingMaterialEffectiveUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  return calculatePackagingMaterialUnitHkd(row, rmbHkdRate) * calculateMaterialLossRate(row.loss_rate)
+}
+
 export function calculatePackagingMaterialAmountHkd(row: Pick<SalesPackagingMaterialRow, 'quantity'> & DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   const quantity = positivePreviewNumber(row.quantity)
-  return quantity * calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
+  return quantity * calculatePackagingMaterialEffectiveUnitHkd(row, rmbHkdRate)
 }
 
 export function calculateEngineeringMaterialUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
@@ -678,6 +700,14 @@ export function calculateEngineeringMaterialUnitRmb(row: DualCurrencyUnitPrice, 
 
 export function calculateEngineeringMaterialUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   return calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
+}
+
+export function calculateEngineeringMaterialEffectiveUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  return calculatePackagingMaterialEffectiveUnitRmb(row, rmbHkdRate)
+}
+
+export function calculateEngineeringMaterialEffectiveUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
+  return calculatePackagingMaterialEffectiveUnitHkd(row, rmbHkdRate)
 }
 
 export function calculateEngineeringMaterialAmountHkd(row: Pick<EngineeringMaterialRow, 'quantity'> & DualCurrencyUnitPrice, rmbHkdRate: unknown) {
@@ -1095,6 +1125,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         return {
           item: textValue(row.item), category, purpose: textValue(row.purpose), specification: textValue(row.specification ?? row.spec),
           quantity: numberValue(row.quantity ?? row.qty), unit: textValue(row.unit), unit_price_rmb: numberValue(row.unit_price_rmb),
+          loss_rate: multiplierValue(row.loss_rate),
           ...(category === 'hardware' ? {} : {
             unit_price_hkd: numberValue(row.unit_price_hkd),
             unit_price_source_currency: normalizeUnitPriceSourceCurrency(row),

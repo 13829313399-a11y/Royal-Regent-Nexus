@@ -65,12 +65,12 @@ describe('internal quote read-only presentation boundary', () => {
 })
 
 describe('internal quote selected reviewer boundary', () => {
-  function reviewerChecker(userId: string, allowed: boolean) {
+  function reviewerChecker(userId: string, allowed: boolean, selfReviewAllowed = false) {
     return {
       currentUser: { id: userId, profile: { primary_factory_id: 'huaxing' } },
       can: (permission: string, factoryId?: string, department?: string) => (
-        allowed
-        && permission === 'internal_quote:sales_review'
+        (permission === 'internal_quote:sales_review' ? allowed : selfReviewAllowed)
+        && ['internal_quote:sales_review', 'internal_quote:self_review'].includes(permission)
         && factoryId === 'huaxing'
         && department === 'sales-business'
       ),
@@ -96,6 +96,21 @@ describe('internal quote selected reviewer boundary', () => {
       reviewerChecker('selected-reviewer', false),
       'huaxing',
       'selected-reviewer',
+    )).toBe(false)
+  })
+
+  it('allows a personally authorized owner only on quotes created by that same user', () => {
+    expect(canReviewInternalQuoteSections(
+      reviewerChecker('independent-owner', false, true),
+      'huaxing',
+      'independent-owner',
+      'independent-owner',
+    )).toBe(true)
+    expect(canReviewInternalQuoteSections(
+      reviewerChecker('independent-owner', false, true),
+      'huaxing',
+      'independent-owner',
+      'another-creator',
     )).toBe(false)
   })
 })

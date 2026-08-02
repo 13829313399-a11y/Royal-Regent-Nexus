@@ -87,6 +87,40 @@ def ensure_user(username: str, role_id: str, department: str, factory_id: str = 
         db.commit()
 
 
+def grant_user_permission(
+    username: str,
+    permission_code: str,
+    department: str,
+    factory_id: str = "huaxing",
+) -> None:
+    db_module = importlib.import_module("app.db")
+    auth_models = importlib.import_module("app.models.auth")
+    auth_service = importlib.import_module("app.services.auth")
+    with db_module.SessionLocal() as db:
+        permission = db.query(auth_models.AuthPermission).filter_by(code=permission_code).one()
+        timestamp = auth_service.now_text()
+        db.add(
+            auth_models.AuthUserPermissionOverride(
+                id=f"override-{username}-{permission_code.replace(':', '-')}",
+                user_id=f"user-{username}",
+                permission_id=permission.id,
+                effect="allow",
+                factory_id=factory_id,
+                department=department,
+                status="active",
+                valid_from=timestamp,
+                valid_until="",
+                reason="测试个人授权",
+                source_type="manual",
+                created_by_user_id="user-admin",
+                approved_by_user_id="user-admin",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+        )
+        db.commit()
+
+
 def login(
     client: TestClient,
     username: str,
@@ -381,7 +415,7 @@ def test_section_live_preview_uses_authoritative_calculator_without_persisting(m
 
         preview_payload = {
             **saved_payload,
-            "materials": [{**saved_payload["materials"][0], "quantity": "5"}],
+            "materials": [{**saved_payload["materials"][0], "loss_rate": "1.02"}],
         }
         preview = client.post(
             f"/api/internal-quotes/{quote_id}/sections/engineering/preview",
@@ -390,9 +424,10 @@ def test_section_live_preview_uses_authoritative_calculator_without_persisting(m
         assert preview.status_code == 200, preview.text
         assert preview.json()["calculation_status"] == "valid"
         assert preview.json()["saved_factory_price_hkd"] == "20.0000"
-        assert preview.json()["preview_factory_price_hkd"] == "50.0000"
-        assert preview.json()["delta_hkd"] == "30.0000"
-        assert preview.json()["components_hkd"]["hardware_hkd"] == "50.0000"
+        assert preview.json()["preview_factory_price_hkd"] == "20.4000"
+        assert preview.json()["delta_hkd"] == "0.4000"
+        assert preview.json()["components_hkd"]["hardware_hkd"] == "20.4000"
+        assert preview.json()["calculation"]["line_breakdown"][0]["loss_rate"] == "1.0200"
 
         # A live preview must not create a revision, audit event, or saved amount.
         section = client.get(f"/api/internal-quotes/{quote_id}").json()["sections"]
@@ -996,6 +1031,130 @@ def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monke
         assert summary.status_code == 200
         assert summary.json()["completed_sections"] == 1
         assert summary.json()["calculation_phase"] == "calculated"
+
+
+def test_business_supervisor_can_self_review_an_owned_self_created_quote(monkeypatch):
+    monkeypatch.setenv("AUTHZ_MODE", "enforce")
+    with make_client(monkeypatch) as client:
+        profile = login(
+            client,
+            "iq_supervisor_self_review",
+            "position_sales_supervisor",
+            "sales-business",
+        )
+        assert "internal_quote:self_review" in profile["permissions"]
+        payload = create_payload(suffix="SUPERVISOR-SELF")
+        payload.update(
+            {
+                "business_owner_id": "user-iq_supervisor_self_review",
+                "business_owner_name": "iq_supervisor_self_review",
+            }
+        )
+        created = client.post("/api/internal-quotes", json=payload)
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+
+        saved = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/sales",
+            json={"revision": 1, "payload": {"currency": "HKD", "confirmed": True}},
+        )
+        assert saved.status_code == 200, saved.text
+        submitted = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/submit",
+            json={"revision": saved.json()["revision"]},
+        )
+        assert submitted.status_code == 200, submitted.text
+
+        approved = client.post(
+            f"/api/internal-quotes/{quote_id}/sections/sales/review",
+            json={
+                "revision": submitted.json()["revision"],
+                "decision": "approve",
+                "reason": "业务主管本人报价自审",
+            },
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "approved"
+        assert approved.json()["reviewed_by"] == "iq_supervisor_self_review"
+
+
+def test_personal_self_review_permission_is_limited_to_own_created_quotes(monkeypatch):
+    monkeypatch.setenv("AUTHZ_MODE", "enforce")
+    with make_client(monkeypatch) as client:
+        username = "iq_independent_sales_self_review"
+        ensure_user(username, "position_sales_business", "sales-business")
+        grant_user_permission(
+            username,
+            "internal_quote:self_review",
+            "sales-business",
+        )
+        profile = login(
+            client,
+            username,
+            "position_sales_business",
+            "sales-business",
+        )
+        assert "internal_quote:self_review" in profile["permissions"]
+
+        owner_options = client.get(
+            "/api/internal-quotes/business-owners?factory_id=huaxing"
+        )
+        assert owner_options.status_code == 200, owner_options.text
+        assert f"user-{username}" in {item["id"] for item in owner_options.json()}
+
+        def create_and_submit(suffix: str) -> tuple[str, int]:
+            payload = create_payload(suffix=suffix)
+            payload.update(
+                {
+                    "business_owner_id": f"user-{username}",
+                    "business_owner_name": username,
+                }
+            )
+            created = client.post("/api/internal-quotes", json=payload)
+            assert created.status_code == 201, created.text
+            quote_id = created.json()["id"]
+            saved = client.put(
+                f"/api/internal-quotes/{quote_id}/sections/sales",
+                json={"revision": 1, "payload": {"currency": "HKD", "confirmed": True}},
+            )
+            assert saved.status_code == 200, saved.text
+            submitted = client.post(
+                f"/api/internal-quotes/{quote_id}/sections/sales/submit",
+                json={"revision": saved.json()["revision"]},
+            )
+            assert submitted.status_code == 200, submitted.text
+            return quote_id, submitted.json()["revision"]
+
+        owned_quote_id, owned_revision = create_and_submit("PERSONAL-SELF")
+        approved = client.post(
+            f"/api/internal-quotes/{owned_quote_id}/sections/sales/review",
+            json={
+                "revision": owned_revision,
+                "decision": "approve",
+                "reason": "个人授权自审",
+            },
+        )
+        assert approved.status_code == 200, approved.text
+
+        foreign_quote_id, foreign_revision = create_and_submit("PERSONAL-FOREIGN")
+        db_module = importlib.import_module("app.db")
+        quote_models = importlib.import_module("app.models.internal_quote")
+        with db_module.SessionLocal() as db:
+            foreign_quote = db.get(quote_models.InternalQuote, foreign_quote_id)
+            foreign_quote.created_by = "user-another-creator"
+            foreign_quote.created_by_name = "其他建单人"
+            db.commit()
+
+        forbidden = client.post(
+            f"/api/internal-quotes/{foreign_quote_id}/sections/sales/review",
+            json={
+                "revision": foreign_revision,
+                "decision": "approve",
+                "reason": "不应允许审核别人创建的报价",
+            },
+        )
+        assert forbidden.status_code == 403, forbidden.text
+        assert "仅适用于本人创建" in forbidden.json()["detail"]
 
 
 def test_submitter_can_withdraw_before_review_and_duplicate_save_keeps_revision(monkeypatch):

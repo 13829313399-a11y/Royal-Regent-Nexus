@@ -12,12 +12,13 @@ from app.services.iam_scope import (
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     SYSTEM_MANAGEMENT_PERMISSION_CODES,
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v10"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v12"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -52,6 +53,17 @@ THREE_D_PRINTING_OPERATOR_PERMISSION_CODES = (
 THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES = (
     *THREE_D_PRINTING_OPERATOR_PERMISSION_CODES,
     "three_d_printing:audit_read",
+)
+INJECTION_SCHEDULING_CLERK_PERMISSION_CODES = (
+    "injection_scheduling:read",
+    "injection_scheduling:import",
+    "injection_scheduling:edit",
+    "injection_scheduling:report",
+)
+INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
+    *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
+    "injection_scheduling:publish",
+    "injection_scheduling:rollback",
 )
 
 
@@ -112,6 +124,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "internal_quote:export",
     "internal_quote:final_submit",
     "internal_quote:final_approve",
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     "internal_quote:sales_edit",
     "internal_quote:sales_review",
     "internal_quote:engineering_edit",
@@ -130,10 +143,15 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "internal_quote:hair_review",
     "internal_quote:assembly_edit",
     "internal_quote:assembly_review",
+    *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
 )
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
-    THREE_D_PRINTING_PERMISSION_CODES
+    (
+        *THREE_D_PRINTING_PERMISSION_CODES,
+        "injection_scheduling:manage_master",
+        "injection_scheduling:manage_rules",
+    )
 )
 
 ENGINEER_PERMISSION_CODES = (
@@ -183,6 +201,7 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
     "internal_quote:export",
     "internal_quote:final_submit",
     "internal_quote:final_approve",
+    INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     "internal_quote:sales_edit",
     "internal_quote:sales_review",
 )
@@ -219,6 +238,9 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "internal_quote:molding_edit",
     "internal_quote:molding_review",
     *THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES[1:],
+    "injection_scheduling:read",
+    "injection_scheduling:publish",
+    "injection_scheduling:rollback",
 )
 
 PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
@@ -261,9 +283,14 @@ MOLDING_CLERK_PERMISSION_CODES = (
     "molding_sample:production_fillback",
     "molding_sample:production_complete",
     "molding_sample:notification_read",
+    *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
 )
 
-MOLDING_SUPERVISOR_PERMISSION_CODES = MOLDING_CLERK_PERMISSION_CODES
+MOLDING_SUPERVISOR_PERMISSION_CODES = (
+    *MOLDING_CLERK_PERMISSION_CODES,
+    "injection_scheduling:publish",
+    "injection_scheduling:rollback",
+)
 
 WAREHOUSE_PERMISSION_CODES = (
     "molding_sample:read",
