@@ -74,6 +74,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/change-password',
+    name: 'change-password',
+    component: () => import('@/views/ForcePasswordChangeView.vue'),
+    meta: {
+      title: '设置正式密码',
+      fullPage: true,
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/production/injection-scheduling',
     name: 'injection-scheduling-workspace',
     component: () => import('@/views/InjectionSchedulingWorkspaceView.vue'),
@@ -336,10 +346,11 @@ let routeLoadingTimer: ReturnType<typeof window.setTimeout> | undefined
 let lastAuthorizationRefreshAt = 0
 const browserBackExitGuard = installBrowserBackExitGuard(router)
 
-type AuthorizationRefreshResult = 'refreshed' | 'forbidden' | 'login' | 'unchanged'
+type AuthorizationRefreshResult = 'refreshed' | 'password-change' | 'forbidden' | 'login' | 'unchanged'
 
 interface AuthorizationRefreshStore {
   isAuthenticated: boolean
+  currentUser?: { force_password_change?: boolean } | null
   refreshSession: () => Promise<boolean>
   canAny: (permissions: string[], factoryId?: string, department?: string) => boolean
 }
@@ -375,6 +386,15 @@ export async function refreshAndRevalidateAuthorization(
   }
 
   if (isPublicRoute) return 'refreshed'
+
+  if (authStore.currentUser?.force_password_change && currentRoute.name !== 'change-password') {
+    const redirect = resolvePostLoginRedirect(router, currentRoute.fullPath)
+    await activeRouter.replace({
+      name: 'change-password',
+      query: redirect === '/' ? {} : { redirect },
+    })
+    return 'password-change'
+  }
 
   const permissions = Array.isArray(currentRoute.meta.permissions)
     ? currentRoute.meta.permissions.filter((permission): permission is string => typeof permission === 'string')
@@ -444,6 +464,14 @@ router.beforeEach(async (to) => {
     }
 
     if (authStore.isAuthenticated || await authStore.ensureSession()) {
+      if (authStore.currentUser?.force_password_change) {
+        const redirect = resolvePostLoginRedirect(router, to.query.redirect)
+        return {
+          name: 'change-password',
+          query: redirect === '/' ? {} : { redirect },
+          replace: true,
+        }
+      }
       return { path: resolvePostLoginRedirect(router, to.query.redirect), replace: true }
     }
 
@@ -455,6 +483,23 @@ router.beforeEach(async (to) => {
     return {
       name: 'login',
       query: { redirect: to.fullPath },
+      replace: true,
+    }
+  }
+
+  if (authStore.currentUser?.force_password_change) {
+    if (to.name === 'change-password') return true
+    const redirect = resolvePostLoginRedirect(router, to.fullPath)
+    return {
+      name: 'change-password',
+      query: redirect === '/' ? {} : { redirect },
+      replace: true,
+    }
+  }
+
+  if (to.name === 'change-password') {
+    return {
+      path: resolvePostLoginRedirect(router, to.query.redirect),
       replace: true,
     }
   }

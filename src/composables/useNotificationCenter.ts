@@ -280,7 +280,12 @@ export function useNotificationCenter() {
         : targetRoute
     }
     if (notification.type === 'password_reset') {
-      return `/system/users?tab=password-reset&notification_id=${encodeURIComponent(notification.id)}`
+      const resetRequestId = typeof notification.payload.password_reset_request_id === 'string'
+        ? notification.payload.password_reset_request_id
+        : ''
+      return resetRequestId
+        ? `/system/users?tab=password-reset&request_id=${encodeURIComponent(resetRequestId)}`
+        : '/system/users?tab=password-reset'
     }
     const requestId = typeof notification.payload.registration_request_id === 'string'
       ? notification.payload.registration_request_id

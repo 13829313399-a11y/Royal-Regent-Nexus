@@ -63,7 +63,8 @@ INJECTION_SCHEDULING_REMOVAL_MIGRATION_REVISION = "20260731_0042"
 INJECTION_SCHEDULING_PHASE2_MASTER_MIGRATION_REVISION = "20260731_0043"
 INJECTION_SCHEDULING_PHASE3_EXECUTION_MIGRATION_REVISION = "20260731_0044"
 INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION = "20260731_0045"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION
+PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION = "20260802_0046"
+HEAD_MIGRATION_REVISION = PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -90,6 +91,7 @@ AUTH_TABLES = [
     "auth_registration_requests",
     "system_notifications",
 ]
+PASSWORD_RESET_WORKFLOW_TABLE = "auth_password_reset_requests"
 CONFIGURABLE_IAM_TABLES = [
     "employee_profiles",
     "auth_permission_metadata",
@@ -130,6 +132,25 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    password_reset_workflow_revision = script.get_revision(
+        PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION
+    )
+    assert (
+        password_reset_workflow_revision.down_revision
+        == INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION
+    )
+    password_reset_workflow_content = Path(
+        password_reset_workflow_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        PASSWORD_RESET_WORKFLOW_TABLE,
+        "ck_auth_password_reset_request_status",
+        "ck_auth_password_reset_request_issue_count",
+        "uq_auth_password_reset_request_notification",
+        "cannot be downgraded after password reset requests exist",
+    ):
+        assert expected in password_reset_workflow_content
 
     injection_scheduling_phase4_import_revision = script.get_revision(
         INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION
@@ -3242,7 +3263,7 @@ def test_injection_scheduling_phase4_import_upgrade_lineage_and_guards(tmp_path)
         connection.rollback()
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION,)
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
 
     allowed_startup = _run_dispatch_init_db(database_path)
     assert allowed_startup.returncode == 0, allowed_startup.stderr

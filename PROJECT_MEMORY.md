@@ -39,7 +39,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- Alembic has one current head: `20260731_0045`.
+- Alembic has one current head: `20260802_0046`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -84,7 +84,7 @@ For internal-quote business context, consult `docs/business/internal-quote-colla
 
 - Authentication uses account credentials and a server-side `AuthSession`.
 - The browser session cookie is `rr_session`, HttpOnly and SameSite `lax`; production configuration is expected to make it Secure.
-- Registration and password-reset requests are supported by the account workflow.
+- Registration and password-reset requests are independent persisted account workflows. Password reset approval is permission- and scope-controlled, issues a time-limited backend-generated credential, revokes prior sessions and requires a server-enforced password change before normal API access resumes.
 - The former PIN workflow and PIN endpoints are not part of the current product. Operational workflows use authenticated accounts, roles and permissions.
 - System positions are fixed, code-owned templates and are reconciled from the backend catalog. Custom roles are database-managed.
 - Effective access is derived from account state, role/system position, factory and department scope, permission grants, direct overrides and explicit denies.
@@ -100,7 +100,7 @@ For internal-quote business context, consult `docs/business/internal-quote-colla
 
 ### Accounts and IAM
 
-The backend exposes account login/session behavior, user management, role management, fixed system positions, effective-access calculation and permission administration. IAM changes must follow the configured authorization rollout mode. Default grants and code-owned system positions are reconciled from code rather than edited as arbitrary database records.
+The backend exposes account login/session behavior, registration and password-reset approval workflows, forced password change, user management, role management, fixed system positions, effective-access calculation and permission administration. Password-reset requests have their own persisted state and notification linkage; notifications are navigation signals rather than the workflow source of truth. IAM changes must follow the configured authorization rollout mode. Default grants and code-owned system positions are reconciled from code rather than edited as arbitrary database records.
 
 ### Molding-Sample Production and Raw Materials
 
@@ -220,12 +220,13 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260731_0043` rebuilds only factory-scoped injection-scheduling machine, mold and versioned rule master data, seeds conservative per-factory defaults and the eight canonical permissions, and refuses downgrade after master data or custom rule revisions exist.
 - Migration `20260731_0044` adds factory-scoped orders, plans, tasks, append-only ShiftReports, immutable plan revisions and published snapshots, audit-event polling and database guards for published-plan immutability and one active running task per machine. Downgrade is refused after any Phase 3 business or audit row exists.
 - Migration `20260731_0045` adds factory-scoped Excel import batches and append-only row issues, request/payload idempotency, source-file/sheet/row lineage on tasks, confirmed-batch and published-lineage immutability guards, and refuses downgrade after any import preview or imported task exists.
+- Migration `20260802_0046` adds the independent password-reset request state machine, reviewer and notification linkage, scope metadata, issuance count and expiry/completion timestamps. Its downgrade refuses to run after any password-reset request exists.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 
 ## 8. Active Known Issues
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
-- The current source branch contains the Phase 4 frontend HTTP/import integration and the Phase 5 stateless matching slice on top of migration head `20260731_0045`. This work is not deployed to production until a separately authorized deployment flow is completed and live state is re-verified.
+- The current source branch contains the Phase 4 frontend HTTP/import integration, the Phase 5 stateless matching slice and the password-reset approval/forced-change workflow on top of migration head `20260802_0046`. This work is not deployed to production until a separately authorized deployment flow is completed and live state is re-verified.
 - The 3D printing schema, API and UI are deployed in production. Final legacy snapshot import and real-printer pause/resume acceptance have not yet occurred.
 - Bambu LAN control behavior can vary by installed firmware, so remote pause/resume must remain an administrator-only, field-accepted capability.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.

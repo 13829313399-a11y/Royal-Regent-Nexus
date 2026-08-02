@@ -15,6 +15,7 @@ for (const requiredImplementation of [
   'isAuthenticated',
   'authApi.login',
   'authApi.getMe',
+  'authApi.changePassword',
   'authApi.logout',
   'hasPermission',
   'hasAnyPermission',

@@ -26,15 +26,22 @@ class RegisterResponse(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
-    username: str
-    display_name: str = ""
-    contact: str
-    note: str = ""
+    username: str = Field(max_length=64)
+    display_name: str = Field(max_length=128)
+    contact: str = Field(max_length=128)
+    note: str = Field(default="", max_length=500)
 
 
 class PasswordResetResponse(BaseModel):
     status: str
     message: str
+    request_id: str | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+    confirm_password: str = Field(min_length=1, max_length=256)
 
 
 class AuthGrant(BaseModel):
