@@ -217,8 +217,10 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Database startup guards intentionally refuse service when required migrations or schema contracts are missing.
 - Production updates must be based on an explicit repository revision and a clean, fast-forwardable tracked worktree.
 - Deployment should preserve rollback evidence and verify application health after database and service
-  changes. If a running container's image object has been pruned, export a checksummed rootfs archive
-  plus container metadata and import it as the rollback image instead of failing before cutover.
+  changes. The production Web container waits for a healthy API and its own health check exercises the
+  Nginx-to-API `/health` proxy path, so a static homepage alone is not considered deployment health. If a
+  running container's image object has been pruned, export a checksummed rootfs archive plus container
+  metadata and import it as the rollback image instead of failing before cutover.
 - Migration `20260723_0027` merged per-factory raw-material masters into the global master. Its data transformation is irreversible without a pre-migration backup.
 - Migration `20260723_0028` introduced production-factory dispatch and factory-scoped inventory behavior. Its preflight rejects ambiguous Huakang C/D production history and unscoped inventory; rollback requires a backup.
 - Migration `20260727_0037` removes the rebuilt injection-scheduling tables, permissions, IAM markers and PostgreSQL audit trigger. Its downgrade is intentionally blocked; recovery requires a backup from before removal.
