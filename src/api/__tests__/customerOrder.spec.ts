@@ -216,4 +216,104 @@ describe('customer order api', () => {
       timeout: 240_000,
     }))
   })
+
+  it('routes all six Huaxing mapped customers through the shared batch contract', async () => {
+    const customers = ['edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa'] as const
+    for (const customer of customers) {
+      const blob = new Blob([customer])
+      const post = vi.fn()
+        .mockResolvedValueOnce({
+          data: {
+            preview_schema_version: 'customer-order-huaxing-mapped-preview-v1',
+            customer_code: customer,
+            po_file_count: 1,
+            rows: [],
+          },
+        })
+        .mockResolvedValueOnce({
+          data: blob,
+          headers: {
+            'content-disposition': `attachment; filename*=UTF-8''${customer}%E6%96%B0%E5%8D%95.xlsx`,
+            'x-workbook-password-required': 'false',
+          },
+        })
+      const api = createCustomerOrderApi({ post })
+      const poFiles = [new File(['po'], `${customer}.xlsx`)]
+      const schedule = new File(['schedule'], `${customer}排期.xlsx`)
+
+      const preview = await api.previewHuaxingMappedBatch(
+        customer,
+        poFiles,
+        schedule,
+        '2026-08-03',
+      )
+      const exported = await api.exportHuaxingMappedBatch(
+        customer,
+        poFiles,
+        schedule,
+        '2026-08-03',
+        `${customer}新单.xlsx`,
+      )
+
+      expect(preview.customer_code).toBe(customer)
+      expect(post.mock.calls[0]![0]).toBe(`/customer-orders/${customer}/preview-batch`)
+      expect(post.mock.calls[0]![2]).toEqual(expect.objectContaining({ timeout: 240_000 }))
+      expect(post.mock.calls[1]![0]).toBe(`/customer-orders/${customer}/export-batch`)
+      expect(post.mock.calls[1]![2]).toEqual(expect.objectContaining({
+        responseType: 'blob',
+        timeout: 300_000,
+      }))
+      expect(exported.passwordRequired).toBe(false)
+    }
+  })
+
+  it('routes all five Huadeng mapped customers with the Huadeng factory contract', async () => {
+    const customers = ['casdon', 'jakks', 'simba', 'spin', 'spin-master'] as const
+    for (const customer of customers) {
+      const blob = new Blob([customer])
+      const post = vi.fn()
+        .mockResolvedValueOnce({
+          data: {
+            preview_schema_version: 'customer-order-huadeng-mapped-preview-v1',
+            customer_code: customer,
+            factory_id: 'huadeng',
+            po_file_count: 1,
+            rows: [],
+          },
+        })
+        .mockResolvedValueOnce({
+          data: blob,
+          headers: {
+            'content-disposition': `attachment; filename*=UTF-8''${customer}%E6%96%B0%E5%8D%95.xlsx`,
+            'x-workbook-password-required': 'false',
+          },
+        })
+      const api = createCustomerOrderApi({ post })
+      const poFiles = [new File(['po'], `${customer}.xlsx`)]
+      const schedule = new File(['schedule'], `${customer}排期.xlsx`)
+
+      const preview = await api.previewMappedBatch(
+        customer,
+        poFiles,
+        schedule,
+        '2026-08-03',
+        'huadeng',
+      )
+      const exported = await api.exportMappedBatch(
+        customer,
+        poFiles,
+        schedule,
+        '2026-08-03',
+        `${customer}新单.xlsx`,
+        'huadeng',
+      )
+
+      expect(preview.customer_code).toBe(customer)
+      expect(preview.factory_id).toBe('huadeng')
+      expect(post.mock.calls[0]![0]).toBe(`/customer-orders/${customer}/preview-batch`)
+      expect((post.mock.calls[0]![1] as FormData).get('factory_id')).toBe('huadeng')
+      expect(post.mock.calls[1]![0]).toBe(`/customer-orders/${customer}/export-batch`)
+      expect(exported.passwordRequired).toBe(false)
+    }
+  })
 })

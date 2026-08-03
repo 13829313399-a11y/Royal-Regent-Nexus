@@ -11,6 +11,10 @@ const customerOrderApiMock = vi.hoisted(() => ({
   exportDickieBatch: vi.fn(),
   previewCaixingBatch: vi.fn(),
   exportCaixingBatch: vi.fn(),
+  previewHuaxingMappedBatch: vi.fn(),
+  exportHuaxingMappedBatch: vi.fn(),
+  previewMappedBatch: vi.fn(),
+  exportMappedBatch: vi.fn(),
 }))
 
 vi.mock('@/api/customerOrder', () => ({
@@ -51,6 +55,220 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('客户订单中心不能修改生产任务或完成数量')
     expect(workspaceSource).not.toContain('生成更新后的总排期')
     expect(workspaceSource).not.toContain('确认并发布至PMC')
+  })
+
+  it('registers EDU, 360, Yinhui, SEASONS, Maxx and Shushupapa under Huaxing', () => {
+    for (const code of ['edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa']) {
+      expect(workspaceSource).toContain(`code: '${code}'`)
+      expect(workspaceSource).toContain(`customer-choice-${'$'}{customer.code}`)
+    }
+    expect(workspaceSource).toContain('previewMappedBatch')
+    expect(workspaceSource).toContain('exportMappedBatch')
+  })
+
+  it('registers Casdon, Jakks, Simba, Spin and Spin Master under Huadeng', () => {
+    for (const code of ['casdon', 'jakks', 'simba', 'spin', 'spin-master']) {
+      expect(workspaceSource).toContain(`code: '${code}'`)
+    }
+    expect(workspaceSource).toContain('huadeng: [')
+    expect(workspaceSource).toContain('HUADENG_CASDON_NEW_ORDER_V1')
+    expect(workspaceSource).toContain('HUADENG_SPIN_MASTER_NEW_ORDER_V1')
+  })
+
+  it('registers an independently mapped 360 customer under Huakang A', () => {
+    expect(workspaceSource).toContain("'huakang-a': [")
+    expect(workspaceSource).toContain('HUAKANG_A_360_NEW_ORDER_V1')
+    expect(workspaceSource).toContain('ThreeSixty PURCHASE ORDER RELEASE')
+    expect(workspaceSource).toContain('360客排期表新单')
+  })
+
+  it('shows only 360 in Huakang A and routes it with the Huakang A factory id', async () => {
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      preview_schema_version: 'customer-order-huakang-a-mapped-preview-v1',
+      customer_code: '360',
+      factory_id: 'huakang-a',
+      po_file_name: 'RL-100-1.xls',
+      po_file_names: ['RL-100-1.xls'],
+      po_file_count: 1,
+      schedule_file_name: '华康A 360排期.xlsx',
+      source_po_sha256: 'po',
+      source_po_sha256s: ['po'],
+      source_schedule_sha256: 'schedule',
+      input_template: 'HUAKANG_A_360_PO_RELEASE_V1',
+      target_template: 'HUAKANG_A_360_NEW_ORDER_V1',
+      output_file_name: '华康A 360排期_360新单.xlsx',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
+      rows: [],
+      warnings: [],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huakang-a',
+        factoryName: '华康A厂',
+      },
+    })
+
+    const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
+    expect(customerButtons).toHaveLength(1)
+    expect(customerButtons[0]!.text()).toContain('360')
+    expect(wrapper.text()).not.toContain('BuzzBee')
+
+    await wrapper.get('[data-testid="customer-choice-360"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf,.xls,.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx,.xlsm')
+    const po = new File(['po'], 'RL-100-1.xls')
+    const schedule = new File(['schedule'], '华康A 360排期.xlsx')
+    Object.defineProperty(inputs[0]!.element, 'files', { configurable: true, value: [po] })
+    Object.defineProperty(inputs[1]!.element, 'files', { configurable: true, value: [schedule] })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith(
+      '360',
+      [po],
+      schedule,
+      expect.any(String),
+      'huakang-a',
+    )
+  })
+
+  it('registers INDEX, JAZAWARES, MAXX, STROTTMAN and JP under Huakang C', () => {
+    expect(workspaceSource).toContain("'huakang-c': [")
+    for (const template of [
+      'HUAKANG_C_INDEX_NEW_ORDER_V1',
+      'HUAKANG_C_JAZWARES_NEW_ORDER_V1',
+      'HUAKANG_C_MAXX_NEW_ORDER_V1',
+      'HUAKANG_C_STROTTMAN_NEW_ORDER_V1',
+      'HUAKANG_C_JP_NEW_ORDER_V1',
+    ]) {
+      expect(workspaceSource).toContain(template)
+    }
+    expect(workspaceSource).toContain('旧系统无真实样例验收，结果必须逐字段复核')
+  })
+
+  it('shows only the five Huakang C customers and routes INDEX with Huakang C scope', async () => {
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      preview_schema_version: 'customer-order-huakang-c-mapped-preview-v1',
+      customer_code: 'index',
+      factory_id: 'huakang-c',
+      po_file_name: 'INDEX PO.pdf',
+      po_file_names: ['INDEX PO.pdf'],
+      po_file_count: 1,
+      schedule_file_name: 'INDEX排期.xls',
+      source_po_sha256: 'po',
+      source_po_sha256s: ['po'],
+      source_schedule_sha256: 'schedule',
+      input_template: 'HUAKANG_C_INDEX_PO_V1',
+      target_template: 'HUAKANG_C_INDEX_NEW_ORDER_V1',
+      output_file_name: 'INDEX排期_INDEX新单.xlsx',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
+      rows: [],
+      warnings: [],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huakang-c',
+        factoryName: '华康C厂',
+      },
+    })
+
+    const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
+    expect(customerButtons).toHaveLength(5)
+    expect(customerButtons.map((button) => button.text())).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('INDEX'),
+        expect.stringContaining('JAZAWARES'),
+        expect.stringContaining('MAXX'),
+        expect.stringContaining('STROTTMAN'),
+        expect.stringContaining('JP'),
+      ]),
+    )
+    expect(wrapper.text()).not.toContain('BuzzBee')
+
+    await wrapper.get('[data-testid="customer-choice-index"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf,.xls,.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xls,.xlsx,.xlsm')
+    const po = new File(['po'], 'INDEX PO.pdf')
+    const schedule = new File(['schedule'], 'INDEX排期.xls')
+    Object.defineProperty(inputs[0]!.element, 'files', { configurable: true, value: [po] })
+    Object.defineProperty(inputs[1]!.element, 'files', { configurable: true, value: [schedule] })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith(
+      'index',
+      [po],
+      schedule,
+      expect.any(String),
+      'huakang-c',
+    )
+  })
+
+  it('shows only the five Huadeng customers and routes Spin Master through mapped APIs', async () => {
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      preview_schema_version: 'customer-order-huadeng-mapped-preview-v1',
+      customer_code: 'spin-master',
+      factory_id: 'huadeng',
+      po_file_name: 'Spin Master PO.xls',
+      po_file_names: ['Spin Master PO.xls'],
+      po_file_count: 1,
+      schedule_file_name: 'Spin Master排期.xls',
+      source_po_sha256: 'po',
+      source_po_sha256s: ['po'],
+      source_schedule_sha256: 'schedule',
+      input_template: 'HUADENG_SPIN_MASTER_PO_V1',
+      target_template: 'HUADENG_SPIN_MASTER_NEW_ORDER_V1',
+      output_file_name: 'Spin Master新单.xlsx',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
+      rows: [],
+      warnings: [],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huadeng',
+        factoryName: '华登厂',
+      },
+    })
+
+    expect(wrapper.findAll('[data-testid^="customer-choice-"]')).toHaveLength(5)
+    expect(wrapper.text()).toContain('Casdon')
+    expect(wrapper.text()).toContain('Jakks')
+    expect(wrapper.text()).toContain('Simba')
+    expect(wrapper.text()).toContain('Spin Master')
+    expect(wrapper.text()).not.toContain('BuzzBee')
+
+    await wrapper.get('[data-testid="customer-choice-spin-master"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf,.xls,.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xls,.xlsx')
+    const po = new File(['po'], 'Spin Master PO.xls')
+    const schedule = new File(['schedule'], 'Spin Master排期.xls')
+    Object.defineProperty(inputs[0]!.element, 'files', { configurable: true, value: [po] })
+    Object.defineProperty(inputs[1]!.element, 'files', { configurable: true, value: [schedule] })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith(
+      'spin-master',
+      [po],
+      schedule,
+      expect.any(String),
+      'huadeng',
+    )
   })
 
   it('uses a clear text link back to the sales-business module center', () => {
