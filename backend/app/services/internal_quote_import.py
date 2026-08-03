@@ -339,17 +339,32 @@ def _parse_mold(
         and "GATE" in layout_token(18)
         and "PICTURES" in layout_token(20)
     )
-    is_zhanxing_mold_layout = (
-        len(header) >= 11
+    is_zhanxing_mold_base_layout = (
+        len(header) >= 12
         and "ITEMDESCRIPTION" in layout_token(1)
         and "MATERIAL" in layout_token(2)
         and "CAVITIES" in layout_token(3)
         and "MOULDPRICES" in layout_token(7)
+    )
+    is_zhanxing_split_capacity_machine_layout = (
+        is_zhanxing_mold_base_layout
+        and len(header) >= 13
+        and "产能" in layout_token(9)
+        and "机型" in layout_token(10)
+        and "重量" in layout_token(11)
+        and "REMARK" in layout_token(12)
+    )
+    is_zhanxing_combined_capacity_machine_layout = (
+        is_zhanxing_mold_base_layout
         and (
             "日产能" in layout_token(9)
             or "机台大小" in layout_token(9)
             or ("产能" in layout_token(9) and "机型" in layout_token(9))
         )
+    )
+    is_zhanxing_mold_layout = (
+        is_zhanxing_split_capacity_machine_layout
+        or is_zhanxing_combined_capacity_machine_layout
     )
     columns = {
         "mold_no": column_index(header, ("模号", "模具编号", "客人模具编号", "MOLD NO")),
@@ -390,10 +405,10 @@ def _parse_mold(
             "image": 20,
         })
     if is_zhanxing_mold_layout:
-        # 展兴工模报价表使用固定 A–L 列：
+        # 展兴工模报价表使用固定列。新版为 A–M：
         # A 模号、B 中文名称、C 料型、D 出模数、E 套数、F 图片、
-        # G 模具尺寸、H 模价 RMB、I 模胚材质、J 产能/机型、
-        # K 净重、L 备注。
+        # G 模具尺寸、H 模价 RMB、I 模胚材质、J 产能、K 机型、
+        # L 净重、M 备注。旧版 A–L 的 J 列仍兼容“产能/机型”。
         columns.update({
             "mold_no": 0,
             "name": 1,
@@ -407,10 +422,10 @@ def _parse_mold(
             "mold_specification": None,
             "price": 7,
             "mold_base_material": 8,
-            "machine": None,
-            "target": None,
-            "weight": 10,
-            "note": 11,
+            "machine": 10 if is_zhanxing_split_capacity_machine_layout else None,
+            "target": 9 if is_zhanxing_split_capacity_machine_layout else None,
+            "weight": 11 if is_zhanxing_split_capacity_machine_layout else 10,
+            "note": 12 if is_zhanxing_split_capacity_machine_layout else 11,
         })
     warnings: list[str] = []
     molds: list[dict[str, Any]] = []
@@ -441,7 +456,9 @@ def _parse_mold(
         chinese_name = text(value_at(row, columns["chinese_name"]))
         price = number(value_at(row, columns["price"]))
         combined_capacity_machine = (
-            text(value_at(row, 9)) if is_zhanxing_mold_layout else ""
+            text(value_at(row, 9))
+            if is_zhanxing_combined_capacity_machine_layout
+            else ""
         )
         machine_code = text(value_at(row, columns["machine"]))
         target_output = number(value_at(row, columns["target"]), Decimal("0"))

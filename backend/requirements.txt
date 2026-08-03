@@ -12,6 +12,7 @@ msoffcrypto-tool>=5.4,<6
 lxml>=5,<7
 pypdf
 pypdfium2
+pdfplumber>=0.11,<0.12
 Pillow
 pytesseract
 rapidocr>=3.9.1,<4

@@ -31,6 +31,7 @@ import {
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { customerOrderApi } from '@/api/customerOrder'
+import type { MappedCustomerCode } from '@/api/customerOrder'
 import { getApiErrorMessage } from '@/lib/http'
 import type {
   CustomerOrderImportPreview,
@@ -42,7 +43,11 @@ import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView
 type OrderStatus = 'valid' | 'warning' | 'blocked'
 type DeliveryStatus = 'overdue' | 'due-soon' | 'upcoming' | 'planned'
 type ExceptionSeverity = 'critical' | 'warning' | 'attention'
-type CustomerOrderCustomerCode = 'buzzbee' | 'dickie' | 'caixing'
+type CustomerOrderCustomerCode =
+  | 'buzzbee'
+  | 'dickie'
+  | 'caixing'
+  | MappedCustomerCode
 
 interface CustomerOrderCustomerProfile {
   code: CustomerOrderCustomerCode
@@ -55,6 +60,7 @@ interface CustomerOrderCustomerProfile {
   poDescription: string
   templateDescription: string
   targetTemplate: string
+  ruleDescription: string
 }
 
 const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[]> = {
@@ -70,6 +76,7 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poDescription: '普通合同与 WMC 首页内嵌 Excel PO',
       templateDescription: '2026年 BUZZ BEE 生产排期表',
       targetTemplate: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
+      ruleDescription: 'WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。',
     },
     {
       code: 'dickie',
@@ -82,6 +89,7 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poDescription: 'Simba Dickie Release Order 扫描版 PDF',
       templateDescription: '2026年 Dickie 生产情况排期',
       targetTemplate: 'DICKIE_PRODUCTION_SCHEDULE_V1',
+      ruleDescription: '读取 Simba Dickie Release Order 扫描版 PDF，并按 Dickie 生产排期与 Item 表规则映射。',
     },
     {
       code: 'caixing',
@@ -94,8 +102,246 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poDescription: 'Playmates OE/OL/OG/OH/OK 系列文本型 PDF PO',
       templateDescription: '彩星生产排期（正单评审表 / 接单表 / ITEM表）',
       targetTemplate: 'CAIXING_PRODUCTION_SCHEDULE_REVIEW_ORDER_ITEM_V2',
+      ruleDescription: '读取 Playmates 文本型 PDF PO，先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号，并同步写入正单评审表、接单表及 ITEM表。',
+    },
+    {
+      code: 'edu',
+      name: 'EDU',
+      version: 'V1',
+      poAccept: '.xls,.xlsx,.xlsm',
+      poExtensions: ['.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx,.xlsm',
+      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poDescription: 'EDU Excel PO（支持同 PO 修订版批量导入）',
+      templateDescription: 'EDU 华兴排期底表',
+      targetTemplate: 'HUAXING_EDU_NEW_ORDER_V1',
+      ruleDescription: '按 PO 版本去重并续编 EDUHX 单号；验货期为走货期前 7 天，遇周末向前调整。',
+    },
+    {
+      code: '360',
+      name: '360',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: '360 主合同与 Release PDF / Excel',
+      templateDescription: '360 客排期表 / 接单表',
+      targetTemplate: 'HUAXING_360_NEW_ORDER_V1',
+      ruleDescription: '主合同用于补价格，Release 用于生成新单；按 RL 修订版去重，并继承当前排期主数据和日期码。',
+    },
+    {
+      code: 'yinhui',
+      name: '银辉',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: '银辉文本 PDF、排期式 Excel 或扫描转换 Excel PO',
+      templateDescription: '银辉 Iteam / ITEM 排期',
+      targetTemplate: 'HUAXING_YINHUI_NEW_ORDER_V1',
+      ruleDescription: 'USD 按 7.75 换算 HKD，验货期为走货期前 5 天，同时核对数量、单价、行金额及大写金额。',
+    },
+    {
+      code: 'seasons',
+      name: 'SEASONS（施信）',
+      version: 'V1',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx,.xlsm',
+      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poDescription: 'SEASONS QF 预备单与正式 PO',
+      templateDescription: 'SEASONS 正单评审表',
+      targetTemplate: 'HUAXING_SEASONS_NEW_ORDER_V1',
+      ruleDescription: '区分 QF 与正式 PO；同单同货号去重，当前排期数量不一致时按修改/补单拦截。',
+    },
+    {
+      code: 'maxx',
+      name: 'Maxx',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: 'Maxx PDF / Excel PO',
+      templateDescription: 'Maxx KFC 公仔接单表',
+      targetTemplate: 'HUAXING_MAXX_NEW_ORDER_V1',
+      ruleDescription: '严格校验客户并按 PO 修订版、当前及已走货排期去重；完成与验货日期均为 Shipment 前 7 天。',
+    },
+    {
+      code: 'shushupapa',
+      name: 'Shushupapa',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: 'Shushupapa PDF / Excel PO',
+      templateDescription: 'Shushupapa 接单表',
+      targetTemplate: 'HUAXING_SHUSHUPAPA_NEW_ORDER_V1',
+      ruleDescription: '严格隔离客户数据并按 PO 修订版、当前及已走货排期去重；验货日期为走货期前 7 天。',
     },
   ],
+  'huakang-a': [
+    {
+      code: '360',
+      name: '360',
+      version: 'V1',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: 'ThreeSixty PURCHASE ORDER RELEASE PDF 或 WPS 转换 Excel',
+      templateDescription: '华康A 360客排期表',
+      targetTemplate: 'HUAKANG_A_360_NEW_ORDER_V1',
+      ruleDescription: '读取 RL 合同号、Revision Date、客户 PO、货号、数量、装箱、验货日、FCD、柜型及卸货港，生成独立“360客排期表新单”。',
+    },
+  ],
+  'huakang-c': [
+    {
+      code: 'index',
+      name: 'INDEX',
+      version: 'V1',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx,.xlsm',
+      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poDescription: 'INDEX Promotions PDF 或 WPS 转换 Excel PO',
+      templateDescription: '建文客排期表 / 生产排期',
+      targetTemplate: 'HUAKANG_C_INDEX_NEW_ORDER_V1',
+      ruleDescription: '读取PO号、PO日期、Ex-Factory、产品、数量、箱规和USD价格；按货号继承唯一排期品名并以7.75换算港币。',
+    },
+    {
+      code: 'jazwares',
+      name: 'JAZAWARES',
+      version: 'V1',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx,.xlsm',
+      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poDescription: 'JAZWARES PDF 或 WPS 转换 Excel PO',
+      templateDescription: 'JAZWARES 生产排期',
+      targetTemplate: 'HUAKANG_C_JAZWARES_NEW_ORDER_V1',
+      ruleDescription: '按旧版JAZWARES格式读取PO、版本、合同、产品、数量、PCS/CTN和走货日；同PO批量上传时保留最新修订版。',
+    },
+    {
+      code: 'maxx',
+      name: 'MAXX',
+      version: 'V1',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx,.xlsm',
+      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poDescription: 'MAXX Marketing PDF 或 WPS 转换 Excel PO',
+      templateDescription: 'MAXX排期 / MAXX放产表',
+      targetTemplate: 'HUAKANG_C_MAXX_NEW_ORDER_V1',
+      ruleDescription: '读取P.O.、S.C.合同、日期、货号、数量及USD价格；PO未提供装箱数时保持空白。',
+    },
+    {
+      code: 'strottman',
+      name: 'STROTTMAN',
+      version: 'V1',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx,.xlsm',
+      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poDescription: 'STROTTMAN PDF 或 WPS 转换 Excel PO',
+      templateDescription: '2026正单 / Strottman放产表',
+      targetTemplate: 'HUAKANG_C_STROTTMAN_NEW_ORDER_V1',
+      ruleDescription: '按Special Instructions把Case换算成PCS和每箱件数；多个走货日取最早日期写主列，其余保留在备注。',
+    },
+    {
+      code: 'jp',
+      name: 'JP',
+      version: 'V1·需复核',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx,.xlsm',
+      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
+      poDescription: '华康车衣中文采购单（需文字层）',
+      templateDescription: 'JP内部排期总表',
+      targetTemplate: 'HUAKANG_C_JP_NEW_ORDER_V1',
+      ruleDescription: '读取采购单编号、日期、交货日、货号、数量和版本；仅写入原单明确提供的出厂价。旧系统无真实样例验收，结果必须逐字段复核。',
+    },
+  ],
+  huadeng: [
+    {
+      code: 'casdon',
+      name: 'Casdon',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: 'Casdon 电子 PDF 或 WPS 转换 Excel PO',
+      templateDescription: 'Casdon 排货表总表',
+      targetTemplate: 'HUADENG_CASDON_NEW_ORDER_V1',
+      ruleDescription: '按 PO 修订版和字段完整度去重；USD 按 7.75 换算 HKD，验货期为走货期前 7 天并避开周末。',
+    },
+    {
+      code: 'jakks',
+      name: 'Jakks',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx',
+      scheduleExtensions: ['.xls', '.xlsx'],
+      poDescription: 'Jakks CONTRACT PDF 或 WPS 转换 Excel PO',
+      templateDescription: 'Jakks 排货总表',
+      targetTemplate: 'HUADENG_JAKKS_NEW_ORDER_V1',
+      ruleDescription: '文件名含 CXL/SUP 的修改、补充或取消单会被拦截；同合同、客户 PO、货号明细去重并继承唯一产品名称。',
+    },
+    {
+      code: 'simba',
+      name: 'Simba',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: 'Simba Release Order PDF / Excel',
+      templateDescription: 'Simba 客户排期',
+      targetTemplate: 'HUADENG_SIMBA_NEW_ORDER_V1',
+      ruleDescription: '同名 PDF 与 WPS Excel 优先采用 Excel；按修订版、文件类型和完整度合并，并安全继承当前排期资料。',
+    },
+    {
+      code: 'spin',
+      name: 'Spin',
+      version: 'V1',
+      poAccept: '.pdf,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: 'Spin 电子 PDF 或 WPS 转换 Excel PO',
+      templateDescription: 'Spin Master 排货表（中国）',
+      targetTemplate: 'HUADENG_SPIN_NEW_ORDER_V1',
+      ruleDescription: '按 PO 修订版去重，按客户与货号继承排期主数据；USD 按 7.75 换算 HKD，人工排期字段保持空白。',
+    },
+    {
+      code: 'spin-master',
+      name: 'Spin Master',
+      version: 'V1',
+      poAccept: '.pdf,.xls,.xlsx,.xlsm',
+      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
+      scheduleAccept: '.xls,.xlsx',
+      scheduleExtensions: ['.xls', '.xlsx'],
+      poDescription: 'Spin Master PDF 或 WPS 转换 Excel PO',
+      templateDescription: 'SPIN排期 / SPIN总汇',
+      targetTemplate: 'HUADENG_SPIN_MASTER_NEW_ORDER_V1',
+      ruleDescription: '使用独立 SPIN排期 / SPIN总汇模板；按合同、客户 PO、货号、数量、交期和金额组合去重。',
+    },
+  ],
+}
+
+const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
+  'edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa',
+  'casdon', 'jakks', 'simba', 'spin', 'spin-master',
+  'index', 'jazwares', 'strottman', 'jp',
+])
+
+function isMappedCustomerCode(code: CustomerOrderCustomerCode): code is MappedCustomerCode {
+  return MAPPED_CUSTOMERS.has(code as MappedCustomerCode)
 }
 
 interface ScheduleException {
@@ -548,21 +794,17 @@ const previewCustomerMarkets = computed(() => Array.from(new Set(
 
 const previewRuleNotice = computed(() => {
   const customerCode = previewBatch.value?.customer_code ?? selectedCustomer.value?.code
-  if (customerCode === 'caixing') {
-    return {
-      title: '当前彩星输入规则已启用',
-      description: '读取 Playmates 文本型 PDF PO，先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号，并同步写入正单评审表、接单表及 ITEM表。',
-    }
-  }
-  if (customerCode === 'dickie') {
-    return {
-      title: '当前 Dickie 输入规则已启用',
-      description: '读取 Simba Dickie Release Order 扫描版 PDF，并按 Dickie 生产排期与 Item 表规则映射。',
-    }
-  }
+  const profile = availableCustomers.value.find((customer) => customer.code === customerCode)
+  const title = customerCode === 'caixing'
+    ? '当前彩星输入规则已启用'
+    : customerCode === 'dickie'
+      ? '当前 Dickie 输入规则已启用'
+      : customerCode === 'buzzbee'
+        ? '当前 BuzzBee 两套输入规则已区分'
+        : `当前${profile?.name ?? '客户'}输入规则已启用`
   return {
-    title: '当前 BuzzBee 两套输入规则已区分',
-    description: 'WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。',
+    title,
+    description: profile?.ruleDescription ?? '请选择客户并完成解析后查看当前映射规则。',
   }
 })
 
@@ -787,15 +1029,24 @@ async function parseSelectedFiles() {
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   try {
-    const preview = selectedCustomer.value.code === 'dickie'
+    const customerCode = selectedCustomer.value.code
+    const preview = customerCode === 'dickie'
       ? await customerOrderApi.previewDickieBatch(
           poFiles.value,
           scheduleFile.value,
           receivedDate.value,
           props.factoryId,
         )
-      : selectedCustomer.value.code === 'caixing'
+      : customerCode === 'caixing'
         ? await customerOrderApi.previewCaixingBatch(
+            poFiles.value,
+            scheduleFile.value,
+            receivedDate.value,
+            props.factoryId,
+          )
+      : isMappedCustomerCode(customerCode)
+        ? await customerOrderApi.previewMappedBatch(
+            customerCode,
             poFiles.value,
             scheduleFile.value,
             receivedDate.value,
@@ -852,7 +1103,8 @@ async function confirmAndGenerateSchedule() {
   }
   exportingSchedule.value = true
   try {
-    const result = previewBatch.value.customer_code === 'dickie'
+    const customerCode = previewBatch.value.customer_code as CustomerOrderCustomerCode
+    const result = customerCode === 'dickie'
       ? await customerOrderApi.exportDickieBatch(
           poFiles.value,
           scheduleFile.value,
@@ -861,8 +1113,18 @@ async function confirmAndGenerateSchedule() {
           props.factoryId,
           skippedIssueKeys.value,
         )
-      : previewBatch.value.customer_code === 'caixing'
+      : customerCode === 'caixing'
         ? await customerOrderApi.exportCaixingBatch(
+            poFiles.value,
+            scheduleFile.value,
+            receivedDate.value,
+            previewBatch.value.output_file_name,
+            props.factoryId,
+            skippedIssueKeys.value,
+          )
+      : isMappedCustomerCode(customerCode)
+        ? await customerOrderApi.exportMappedBatch(
+            customerCode,
             poFiles.value,
             scheduleFile.value,
             receivedDate.value,
@@ -889,7 +1151,7 @@ async function confirmAndGenerateSchedule() {
     notify(
       result.passwordRequired
         ? `已生成并下载 ${result.fileName}；工作簿打开密码为 2026。`
-        : `已生成并下载 ${result.fileName}；已保持原排期文件名和加密状态。`,
+        : `已生成并下载 ${result.fileName}；原客户排期未被覆盖。`,
     )
   } catch (error) {
     notify(`生成失败：${getApiErrorMessage(error)}`)
@@ -1042,7 +1304,7 @@ onBeforeUnmount(() => {
               <ShieldCheck aria-hidden="true" />
               <div>
                 <h3>本阶段范围已锁定</h3>
-                <p>流程01已支持真实 BuzzBee PO 解析与排期下载；仍不提交PMC、不计算库存，也不进入啤机、喷油或装配排产。</p>
+                <p>流程01已支持{{ factoryName }} {{ availableCustomers.length }} 个已配置客户的真实 PO 解析与排期下载；仍不提交PMC、不计算库存，也不进入啤机、喷油或装配排产。</p>
               </div>
             </article>
           </aside>

@@ -1103,11 +1103,11 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         summary: '导入客户PO与客户排期，沉淀统一订单数据，并按月份形成可供生产部门调用的厂区总排期',
         status: '基础功能试用',
         statusTone: 'green',
-        stats: 'BuzzBee PO 解析 · 客户排期导出',
+        stats: '按厂区配置客户 PO 解析 · 客户排期导出',
         icon: CalendarClock,
         route: '/modules/sales-business/po-schedule-intake',
         statusMetrics: [
-          { label: '当前客户', value: 'BuzzBee', tone: 'blue' },
+          { label: '当前客户', value: '按厂区配置', tone: 'blue' },
           { label: '统一字段', value: '17', tone: 'amber' },
           { label: '输出工作表', value: '2', tone: 'teal' },
         ],

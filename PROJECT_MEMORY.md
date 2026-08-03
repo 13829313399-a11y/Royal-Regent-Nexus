@@ -24,7 +24,7 @@ The main implemented or partially implemented domains are:
 - Global raw-material master data
 - Internal quote collaboration and controlled customer-price conversion
 - Customer pricing records
-- Huaxing BuzzBee, Dickie and Caixing customer-order preview and schedule export
+- Huaxing BuzzBee, Dickie, Caixing, EDU, 360, Yinhui, SEASONS, Maxx and Shushupapa; Huadeng Casdon, Jakks, Simba, Spin and Spin Master; Huakang A 360; plus Huakang C INDEX, JAZAWARES/JAZWARES, MAXX, STROTTMAN and JP customer-order preview and schedule export
 - Carton-mark comparison
 - Indonesia invoice reconciliation
 - A retained injection-scheduling module card linked to a factory-scoped formal workbench with Phase 2–5 master data, plan execution, Excel import and explainable candidate-machine matching contracts
@@ -39,7 +39,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- Alembic has one current head: `20260731_0045`.
+- Alembic has one current head: `20260802_0046`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -84,7 +84,7 @@ For internal-quote business context, consult `docs/business/internal-quote-colla
 
 - Authentication uses account credentials and a server-side `AuthSession`.
 - The browser session cookie is `rr_session`, HttpOnly and SameSite `lax`; production configuration is expected to make it Secure.
-- Registration and password-reset requests are supported by the account workflow.
+- Registration and password-reset requests are independent persisted account workflows. Password reset approval is permission- and scope-controlled, issues a time-limited backend-generated credential, revokes prior sessions and requires a server-enforced password change before normal API access resumes.
 - The former PIN workflow and PIN endpoints are not part of the current product. Operational workflows use authenticated accounts, roles and permissions.
 - System positions are fixed, code-owned templates and are reconciled from the backend catalog. Custom roles are database-managed.
 - Effective access is derived from account state, role/system position, factory and department scope, permission grants, direct overrides and explicit denies.
@@ -100,7 +100,7 @@ For internal-quote business context, consult `docs/business/internal-quote-colla
 
 ### Accounts and IAM
 
-The backend exposes account login/session behavior, user management, role management, fixed system positions, effective-access calculation and permission administration. IAM changes must follow the configured authorization rollout mode. Default grants and code-owned system positions are reconciled from code rather than edited as arbitrary database records.
+The backend exposes account login/session behavior, registration and password-reset approval workflows, forced password change, user management, role management, fixed system positions, effective-access calculation and permission administration. Password-reset requests have their own persisted state and notification linkage; notifications are navigation signals rather than the workflow source of truth. IAM changes must follow the configured authorization rollout mode. Default grants and code-owned system positions are reconciled from code rather than edited as arbitrary database records.
 
 ### Molding-Sample Production and Raw Materials
 
@@ -135,6 +135,8 @@ Internal-quote section self-review is controlled by `internal_quote:self_review`
 
 The domain uses optimistic revisions, immutable revision/audit records, frozen reference snapshots, server-side decimal calculations, dependency invalidation and controlled release. A final release or downstream handoff is no longer valid when its source revisions, reference snapshot, formulas or dependencies change.
 
+Engineering mold imports and downloads use the fixed `展兴模具--工模报价表.xlsx` workbook. Its current `01` sheet maps A–M as mold number, Chinese/item name, material type, cavities, sets, embedded picture, mold size, RMB mold price, mold-base material, daily capacity, machine type, net part weight and remark. The importer still accepts the preceding A–L revision where capacity and machine type share column J as `capacity/machine`, and F-column embedded pictures remain attached to their source mold row.
+
 Hair is a standalone optional internal-quote section. Its rows record name, craft, positive weight in grams, positive HKD unit price, unit and remark; the authoritative section total is the sum of HKD unit prices. Historical sewing payloads may still contain `category=hair`, but new forms use the standalone hair section and summaries prefer it whenever that section participates.
 
 Engineering auxiliary-material rows and sales packaging-material rows accept either RMB or HKD as the entered unit-price currency. `unit_price_source_currency` identifies the authoritative input, the other unit price is derived from the quote's frozen RMB/HKD rate, and legacy rows without that field continue to prefer RMB unless they contain only an HKD price. Hardware rows remain RMB-input only. Hardware, auxiliary-material and sales packaging-material rows also carry a positive `loss_rate` multiplier that defaults to `1` for new and historical rows; the entered currency values remain the auditable supplier base price, while server-authoritative effective unit prices and amounts are calculated as base unit price × loss rate (for example `1.02`).
@@ -151,7 +153,7 @@ The pricing API persists factory- and customer-scoped pricing quotes. Totals are
 
 ### Customer Order Center
 
-The implemented backend capability supports factory-owned customer mappings in Huaxing. The import flow requires selecting a customer before files can be chosen, and the server rejects a customer mapping when the submitted factory does not own that customer. Huaxing currently exposes BuzzBee, Dickie and Caixing:
+The implemented backend capability supports factory-owned customer mappings in Huaxing, Huadeng, Huakang A and Huakang C. The import flow requires selecting a customer before files can be chosen, and the server rejects a customer mapping when the submitted factory does not own that customer. Huaxing exposes BuzzBee, Dickie, Caixing, EDU, 360, Yinhui, SEASONS (Shixin), Maxx and Shushupapa; Huadeng exposes Casdon, Jakks, Simba, Spin and Spin Master; Huakang A exposes an independently mapped 360 profile; Huakang C exposes INDEX, JAZAWARES (legacy source spelling `JAZWARES`), MAXX, STROTTMAN and JP. Shared customer codes such as `360` and `maxx` are dispatched by the explicit factory identifier, so same-name customers never share parser or exporter behavior:
 
 - Preview one or more customer purchase orders against that customer's supported production-schedule workbook.
 - Return normalized fields, validation results and source lineage.
@@ -161,6 +163,14 @@ The implemented backend capability supports factory-owned customer mappings in H
 BuzzBee accepts `.xls`/`.xlsx` PO workbooks, supports the ordinary and WMC variants, updates its order/review/ITEM sheets and deliberately rejects the Indonesia schedule variant. Dickie accepts scanned Simba Dickie Release Order PDFs, performs local OCR, splits a combined PDF at each `Release Order Page 1` into multiple order rows, handles ordinary, mixed-article and inferred dinosaur-product routing, writes the Dickie order/review/Iteam sheets, and deducts matching system-preparation quantities per child contract. Both mappings preserve the uploaded schedule filename and return a workbook protected with the configured 2026 password.
 
 Caixing accepts text-layer Playmates PDF POs with the observed OE/OL/OG/OH/OK prefixes. It reproduces the legacy plugin contract: extract PO date, S/C number, PO number, customer, product number/name, quantity, HKD unit price/amount and US/EU standard packaging; normalize digit-plus-letter product numbers with one separating space; then append records in the legacy fixed 24-column order to the uploaded workbook's current active worksheet after its last row. It preserves the uploaded schedule filename and its original encryption state. The legacy plugin deliberately leaves Chinese name, packing/carton data, dimensions/weights, line/customer Q, requested shipment container, country standard, remarks, production workshop and system-status columns blank. The supplied 16 PO samples produce 70 detail rows with no missing core extracted field.
+
+The six additional Huaxing mappings reuse the established RR-PO customer engines behind the shared Customer Order Center preview/export contract. EDU accepts `.xls`/`.xlsx`/`.xlsm`, deduplicates PO revisions, assigns the next `EDUHX` number and derives inspection seven days before shipment with weekend rollback. 360 accepts contract and Release PDF/Excel inputs, generates rows only from Releases, uses matching contracts for price, keeps the newest RL revision and inherits current-schedule product, country and date-code references. Yinhui accepts PDF or Excel PO inputs, applies the fixed 7.75 USD-to-HKD conversion, derives inspection five days before shipment and validates line and amount-in-words arithmetic. SEASONS accepts QF or formal PO documents and only the SEASONS `正单评审表` schedule family; same-order/item duplicates are excluded and quantity conflicts are blocked as modification orders. Maxx and Shushupapa accept PDF/Excel PO inputs and `.xlsx` schedules, strictly block cross-customer inputs, keep the newest PO revision and exclude orders already present in current or shipped sheets; both derive inspection seven days before shipment, and Maxx also derives completion on the same date. These six mappings export a standalone template-inherited `新单` workbook and never overwrite the uploaded schedule.
+
+The five Huadeng mappings also reuse their established RR-PO engines behind the same normalized preview/export contract while remaining separate customer profiles. Casdon accepts PDF/Excel PO inputs, keeps the newest and most complete PO revision, converts USD at 7.75 and derives inspection seven days before shipment with weekend rollback. Jakks accepts PDF/Excel contracts and `.xls`/`.xlsx` schedules, blocks filenames marked CXL/SUP, deduplicates exact and business-equivalent lines and inherits only unique schedule product/contact data. Simba accepts PDF/Excel Release Orders, prefers a same-name WPS Excel over PDF, selects newer or more complete revisions and safely inherits exact-contract or unique-item schedule data. Spin uses its `2026年未验货订单` schedule family, revision deduplication and customer-plus-item inheritance while leaving manual planning dates blank. Spin Master remains a distinct mapping using `SPIN排期`/`SPIN总汇`, `.xls`/`.xlsx` schedules and composite line deduplication. All five export standalone template-inherited new-order workbooks and never overwrite the uploaded schedule.
+
+The Huakang A 360 mapping uses the legacy ThreeSixty `PURCHASE ORDER RELEASE` rules and requires a schedule workbook containing `360客排期表`. It accepts PO PDF or WPS-converted `.xls`/`.xlsx`/`.xlsm`, extracts the RL contract, revision and revision date, customer PO/release, item, quantity, carton quantity, planned inspection date, FCD, contact, container type, transportation mode and discharge port, and calculates total cartons by rounding quantity divided by carton quantity upward. Missing contract, item or quantity blocks export; a missing FCD remains a visible warning. The exported standalone sheet is named `360客排期表新单`, uses PO `Revision Date` as the legacy entry-date value, contains only the uploaded new-order rows and never copies or overwrites historical schedule rows.
+
+The five Huakang C mappings reuse the legacy multi-customer engine with strict customer detection, batch revision deduplication and unique item-to-product-name inheritance from the uploaded schedule. All accept PO PDF or WPS-converted `.xls`/`.xlsx`/`.xlsm` and `.xls`/`.xlsx`/`.xlsm` schedule templates. The selected import date acts as the legacy email-confirmation date and overrides PO Date; USD prices use the fixed 7.75 HKD conversion. INDEX maps PO/date, Ex-Factory, product, quantity, carton packing and USD price. JAZAWARES uses the legacy `JAZWARES` document markers and maps PO revision, contract, product, PCS/CTN, shipment and price. Huakang C MAXX maps P.O./S.C., product, quantity, delivery and price while leaving absent carton fields blank, independently from Huaxing MAXX. STROTTMAN converts Case quantities from Special Instructions into PCS and pieces-per-carton, writes the earliest split shipment to the main date column and preserves all shipment dates in remarks. JP maps the Huakang car-cover Chinese purchase order into the JP internal schedule and writes only explicitly provided factory prices; because the legacy system has no real JP PO and manually confirmed output sample, every JP result remains visibly marked for field-by-field review. All five export standalone `新增排期` plus `解析明细` workbooks without historical orders and never overwrite the uploaded schedule.
 
 There is not yet a persistent normalized customer-order ledger, immutable order-version model, confirmed-demand publication contract or downstream PMC integration. Frontend ledger, scheduling, exception and feedback examples are not authoritative production data.
 
@@ -209,8 +219,10 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Database startup guards intentionally refuse service when required migrations or schema contracts are missing.
 - Production updates must be based on an explicit repository revision and a clean, fast-forwardable tracked worktree.
 - Deployment should preserve rollback evidence and verify application health after database and service
-  changes. If a running container's image object has been pruned, export a checksummed rootfs archive
-  plus container metadata and import it as the rollback image instead of failing before cutover.
+  changes. The production Web container waits for a healthy API and its own health check exercises the
+  Nginx-to-API `/health` proxy path, so a static homepage alone is not considered deployment health. If a
+  running container's image object has been pruned, export a checksummed rootfs archive plus container
+  metadata and import it as the rollback image instead of failing before cutover.
 - Migration `20260723_0027` merged per-factory raw-material masters into the global master. Its data transformation is irreversible without a pre-migration backup.
 - Migration `20260723_0028` introduced production-factory dispatch and factory-scoped inventory behavior. Its preflight rejects ambiguous Huakang C/D production history and unscoped inventory; rollback requires a backup.
 - Migration `20260727_0037` removes the rebuilt injection-scheduling tables, permissions, IAM markers and PostgreSQL audit trigger. Its downgrade is intentionally blocked; recovery requires a backup from before removal.
@@ -220,12 +232,13 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260731_0043` rebuilds only factory-scoped injection-scheduling machine, mold and versioned rule master data, seeds conservative per-factory defaults and the eight canonical permissions, and refuses downgrade after master data or custom rule revisions exist.
 - Migration `20260731_0044` adds factory-scoped orders, plans, tasks, append-only ShiftReports, immutable plan revisions and published snapshots, audit-event polling and database guards for published-plan immutability and one active running task per machine. Downgrade is refused after any Phase 3 business or audit row exists.
 - Migration `20260731_0045` adds factory-scoped Excel import batches and append-only row issues, request/payload idempotency, source-file/sheet/row lineage on tasks, confirmed-batch and published-lineage immutability guards, and refuses downgrade after any import preview or imported task exists.
+- Migration `20260802_0046` adds the independent password-reset request state machine, reviewer and notification linkage, scope metadata, issuance count and expiry/completion timestamps. Its downgrade refuses to run after any password-reset request exists.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 
 ## 8. Active Known Issues
 
 - Authenticated read-only page entry is globally enabled in the frontend policy. Whether this is the permanent product rule or a temporary rollout policy is not yet settled.
-- The current source branch contains the Phase 4 frontend HTTP/import integration and the Phase 5 stateless matching slice on top of migration head `20260731_0045`. This work is not deployed to production until a separately authorized deployment flow is completed and live state is re-verified.
+- The current source branch contains the Phase 4 frontend HTTP/import integration, the Phase 5 stateless matching slice and the password-reset approval/forced-change workflow on top of migration head `20260802_0046`. This work is not deployed to production until a separately authorized deployment flow is completed and live state is re-verified.
 - The 3D printing schema, API and UI are deployed in production. Final legacy snapshot import and real-printer pause/resume acceptance have not yet occurred.
 - Bambu LAN control behavior can vary by installed firmware, so remote pause/resume must remain an administrator-only, field-accepted capability.
 - Customer Order Center lacks persisted normalized orders, immutable versions, confirmation, downstream demand publication and live production-feedback integration.

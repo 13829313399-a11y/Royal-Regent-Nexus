@@ -57,12 +57,16 @@ describe('SystemUserManagementView source contract', () => {
 
   it('retains account operations and the reference approval shell', () => {
     for (const requiredSource of [
-      'systemApi.listNotifications',
+      'systemApi.listPasswordResetRequests',
       'systemApi.updateUserStatus',
-      'systemApi.resetUserPassword',
-      'password_reset',
+      'systemApi.approvePasswordResetRequest',
+      'systemApi.rejectPasswordResetRequest',
+      'systemApi.reissuePasswordResetRequest',
+      'PasswordResetRequestDetail',
       '密码重置',
-      '重置为临时密码',
+      '通过并生成临时密码',
+      '一次性临时密码',
+      '只在当前弹窗展示一次',
       'UserAvatar',
       'user.avatar_url',
       '停用',
@@ -90,7 +94,16 @@ describe('SystemUserManagementView source contract', () => {
     expect(source).toContain('页面可访问 · 敏感账号资料受保护')
     expect(source).toContain("canManageUsers ? '账号管理' : '只读访问'")
     expect(source).not.toContain("v-if=\"authStore.can('system:permission_catalog_read')\"")
-    expect(source.match(/if \(!ensureUserManagementPermission\(\)\) return/g)).toHaveLength(5)
+    expect(source.match(/if \(!ensureUserManagementPermission\(\)\) return/g)).toHaveLength(3)
     expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canManageUsers\.value\) \{[\s\S]*?return\s+\}/)
+  })
+
+  it('never hard-codes or persists a temporary password', () => {
+    expect(source).not.toContain("temporary_password: '123456'")
+    expect(source).not.toContain('已重置为临时密码 123456')
+    expect(source).toContain("oneTimeTemporaryPassword.value = ''")
+    expect(source).toContain('navigator.clipboard.writeText(oneTimeTemporaryPassword.value)')
+    expect(source).not.toContain('localStorage.setItem')
+    expect(source).not.toContain('sessionStorage.setItem')
   })
 })

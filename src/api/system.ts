@@ -39,9 +39,10 @@ export interface UserStatusUpdateRequest {
   status: 'active' | 'suspended'
 }
 
-export interface UserPasswordResetRequest {
-  temporary_password: string
-  notification_id?: string
+export type PasswordResetStatus = 'pending' | 'approved' | 'rejected' | 'completed' | 'expired'
+
+export interface PasswordResetReviewRequest {
+  review_comment: string
 }
 
 export interface SystemNotificationUpdateRequest {
@@ -128,6 +129,49 @@ export interface SystemNotificationResponse {
   handled_at: string
 }
 
+export interface PasswordResetMatchedUser {
+  id: string
+  username: string
+  display_name: string
+  status: string
+  factory_id: string
+  department: string
+  position: string
+  phone: string
+  email: string
+}
+
+export interface PasswordResetRequestDetail {
+  id: string
+  user_id?: string | null
+  username: string
+  display_name: string
+  contact: string
+  note: string
+  factory_id: string
+  department: string
+  status: PasswordResetStatus
+  reviewer_user_id?: string | null
+  review_comment: string
+  notification_id?: string | null
+  submitted_at: string
+  approved_at: string
+  expires_at: string
+  completed_at: string
+  rejected_at: string
+  created_at: string
+  updated_at: string
+  issue_count: number
+  matched_user?: PasswordResetMatchedUser | null
+  match_checks: Record<string, boolean>
+}
+
+export interface PasswordResetApproveResponse {
+  request: PasswordResetRequestDetail
+  temporary_password: string
+  expires_at: string
+}
+
 export interface SystemNotificationFilters {
   changed_after?: string
 }
@@ -149,6 +193,39 @@ export function createSystemApi(client: SystemHttpClient = http) {
       const response = await client.patch<SystemNotificationResponse>(`/system/notifications/${notificationId}`, payload)
       return response.data
     },
+    async listPasswordResetRequests(status: PasswordResetStatus = 'pending') {
+      const response = await client.get<PasswordResetRequestDetail[]>(
+        `/system/password-reset-requests?status=${encodeURIComponent(status)}`,
+      )
+      return response.data
+    },
+    async getPasswordResetRequest(requestId: string) {
+      const response = await client.get<PasswordResetRequestDetail>(
+        `/system/password-reset-requests/${encodeURIComponent(requestId)}`,
+      )
+      return response.data
+    },
+    async approvePasswordResetRequest(requestId: string, payload: PasswordResetReviewRequest) {
+      const response = await client.post<PasswordResetApproveResponse>(
+        `/system/password-reset-requests/${encodeURIComponent(requestId)}/approve`,
+        payload,
+      )
+      return response.data
+    },
+    async rejectPasswordResetRequest(requestId: string, payload: PasswordResetReviewRequest) {
+      const response = await client.post<PasswordResetRequestDetail>(
+        `/system/password-reset-requests/${encodeURIComponent(requestId)}/reject`,
+        payload,
+      )
+      return response.data
+    },
+    async reissuePasswordResetRequest(requestId: string, payload: PasswordResetReviewRequest) {
+      const response = await client.post<PasswordResetApproveResponse>(
+        `/system/password-reset-requests/${encodeURIComponent(requestId)}/reissue`,
+        payload,
+      )
+      return response.data
+    },
     async listRegistrationRequests(status = 'pending') {
       const response = await client.get<RegistrationRequestResponse[]>(`/system/registration-requests?status=${encodeURIComponent(status)}`)
       return response.data
@@ -168,10 +245,6 @@ export function createSystemApi(client: SystemHttpClient = http) {
     },
     async updateUserStatus(userId: string, payload: UserStatusUpdateRequest) {
       const response = await client.patch<UserResponse>(`/system/users/${userId}/status`, payload)
-      return response.data
-    },
-    async resetUserPassword(userId: string, payload: UserPasswordResetRequest) {
-      const response = await client.post<UserResponse>(`/system/users/${userId}/reset-password`, payload)
       return response.data
     },
     async listRoles() {

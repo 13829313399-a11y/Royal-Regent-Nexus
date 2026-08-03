@@ -4,27 +4,33 @@ from sqlalchemy.orm import Session
 from app.core.time import parse_business_timestamp
 from app.db import get_db
 from app.schemas.system import (
+    PasswordResetApproveOut,
+    PasswordResetRequestOut,
+    PasswordResetReviewRequest,
     RegistrationApproveRequest,
     RegistrationRejectRequest,
     RegistrationRequestOut,
     RoleOut,
     SystemNotificationOut,
     SystemNotificationUpdateRequest,
-    UserPasswordResetRequest,
     UserOut,
     UserStatusUpdateRequest,
 )
 from app.services.auth import AuthContext, get_current_user
 from app.services.system import (
+    approve_password_reset_request,
     approve_registration_request,
+    get_password_reset_request,
+    list_password_reset_requests,
     list_registration_requests,
     list_roles,
     list_system_positions,
     list_system_notifications,
     list_users,
     read_user_avatar,
+    reissue_password_reset_request,
+    reject_password_reset_request,
     reject_registration_request,
-    reset_user_password,
     update_system_notification,
     update_user_status,
 )
@@ -56,6 +62,66 @@ def update_notification(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return update_system_notification(db, current_user, notification_id, payload)
+
+
+@router.get("/password-reset-requests", response_model=list[PasswordResetRequestOut])
+def password_reset_requests(
+    status: str = "pending",
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return list_password_reset_requests(db, current_user, status=status)
+
+
+@router.get("/password-reset-requests/{request_id}", response_model=PasswordResetRequestOut)
+def password_reset_request_detail(
+    request_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return get_password_reset_request(db, current_user, request_id)
+
+
+@router.post(
+    "/password-reset-requests/{request_id}/approve",
+    response_model=PasswordResetApproveOut,
+)
+def approve_password_reset(
+    request_id: str,
+    payload: PasswordResetReviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return approve_password_reset_request(db, current_user, request_id, payload, request=request)
+
+
+@router.post(
+    "/password-reset-requests/{request_id}/reject",
+    response_model=PasswordResetRequestOut,
+)
+def reject_password_reset(
+    request_id: str,
+    payload: PasswordResetReviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return reject_password_reset_request(db, current_user, request_id, payload, request=request)
+
+
+@router.post(
+    "/password-reset-requests/{request_id}/reissue",
+    response_model=PasswordResetApproveOut,
+)
+def reissue_password_reset(
+    request_id: str,
+    payload: PasswordResetReviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return reissue_password_reset_request(db, current_user, request_id, payload, request=request)
 
 
 @router.get("/registration-requests", response_model=list[RegistrationRequestOut])
@@ -120,17 +186,6 @@ def patch_user_status(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return update_user_status(db, current_user, user_id, payload, request=request)
-
-
-@router.post("/users/{user_id}/reset-password", response_model=UserOut)
-def reset_password(
-    user_id: str,
-    payload: UserPasswordResetRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
-):
-    return reset_user_password(db, current_user, user_id, payload, request=request)
 
 
 @router.get("/roles", response_model=list[RoleOut])

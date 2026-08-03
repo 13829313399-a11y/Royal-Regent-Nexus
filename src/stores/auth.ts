@@ -5,6 +5,7 @@ import {
   type AuthGrant,
   type AuthMeResponse,
   type AuthzMode,
+  type ChangePasswordRequest,
   type LoginRequest,
 } from '@/api/auth'
 
@@ -178,6 +179,11 @@ export const useAuthStore = defineStore('auth', {
     },
     async login(payload: LoginRequest) {
       const user = await authApi.login(payload)
+      this.applySession(user)
+      return user
+    },
+    async changePassword(payload: ChangePasswordRequest) {
+      const user = await authApi.changePassword(payload)
       this.applySession(user)
       return user
     },

@@ -1,0 +1,391 @@
+from __future__ import annotations
+
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
+
+import openpyxl
+import pytest
+
+from app.api.customer_order import CUSTOMER_FACTORY_IDS
+from app.services import customer_order_huadeng as service
+
+
+def _workbook_bytes(sheet_name: str, headers: dict[int, str], row: dict[int, object]) -> bytes:
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = sheet_name
+    for column, value in headers.items():
+        worksheet.cell(1, column, value)
+    for column, value in row.items():
+        worksheet.cell(2, column, value)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def test_huadeng_mapping_registry_is_factory_scoped() -> None:
+    assert set(service.HUADENG_CUSTOMER_MAPPINGS) == {
+        "casdon", "jakks", "simba", "spin", "spin-master",
+    }
+    assert {
+        code: CUSTOMER_FACTORY_IDS[code]
+        for code in service.HUADENG_CUSTOMER_MAPPINGS
+    } == {
+        "casdon": "huadeng",
+        "jakks": "huadeng",
+        "simba": "huadeng",
+        "spin": "huadeng",
+        "spin-master": "huadeng",
+    }
+    with pytest.raises(service.HuadengCustomerOrderError, match="只属于华登厂区"):
+        service.create_huadeng_customer_preview(
+            customer_code="casdon",
+            factory_id="huaxing",
+            received_date="2026-08-03",
+            po_files=[("casdon.pdf", b"pdf")],
+            schedule_file_name="Casdon排期.xlsx",
+            schedule_content=b"schedule",
+        )
+
+
+def test_revision_dedupe_prefers_latest_and_more_complete_order() -> None:
+    original = {
+        "po_number": "PO-1",
+        "filename": "PO-1.pdf",
+        "po_date": "2026-07-01",
+        "lines": [{"item_code": "A1", "qty": 10}],
+    }
+    revision = {
+        "po_number": "PO-1",
+        "filename": "PO-1 REV2.pdf",
+        "po_date": "2026-07-02",
+        "ship_date": "2026-08-10",
+        "lines": [{"item_code": "A1", "qty": 20, "unit_price": 1, "total_usd": 20}],
+    }
+    kept, warnings = service._dedupe_revision_orders(
+        [original, revision], quality_fields=("po_date", "ship_date"),
+    )
+    assert kept == [revision]
+    assert "保留 PO-1 REV2.pdf" in warnings[0]
+
+
+def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypatch) -> None:
+    headers = {
+        2: "来单日期", 4: "合同联系人", 5: "客户PO", 6: "合同号", 7: "客名",
+        8: "版本", 9: "货号", 10: "产品名称", 11: "数量", 13: "外装箱",
+        27: "验货期", 29: "PO走货期", 32: "单价/港币", 33: "单价/美金",
+        34: "总货价/港币", 35: "总货价/美金", 37: "英文品名", 47: "走货国家",
+    }
+    schedule = _workbook_bytes(
+        "Casdon 排货表-总",
+        headers,
+        {6: "OLD", 7: "CASDON UK", 8: "A", 9: "1234(A)", 10: "玩具厨房", 11: 12, 37: "Toy Kitchen"},
+    )
+
+    def parse(_self, _path: str):
+        return {
+            "po_number": "8395",
+            "po_date": "2026-07-30",
+            "ship_date": "2026-08-10",
+            "customer": "CASDON UK",
+            "customer_po_header": "UK-PO-1",
+            "version": "A",
+            "lines": [{
+                "line_no": "1", "item_code": "1234", "description_en": "Toy Kitchen",
+                "qty": 24, "unit": "PCS", "unit_price": 10, "total_usd": 240,
+                "is_charge": False,
+            }],
+            "raw_text": "",
+        }
+
+    monkeypatch.setattr(service.casdon_po_parser.CasdonPOParser, "parse", parse)
+    preview = service.create_huadeng_customer_preview(
+        customer_code="casdon",
+        factory_id="huadeng",
+        received_date="2026-08-03",
+        po_files=[("PO 8395.pdf", b"pdf")],
+        schedule_file_name="2026年Casdon排期.xlsx",
+        schedule_content=schedule,
+    )
+    row = preview["rows"][0]
+    assert row["received_date"] == "2026-08-03"
+    assert row["contract_no"] == "8395"
+    assert row["product_name_zh"] == "玩具厨房"
+    assert row["line_q"] == "2026-08-03"
+    assert row["requested_ship_date"] == "2026-08-10"
+    assert row["unit_price_hkd"] == "77.5"
+    assert row["amount_hkd"] == "1860"
+
+    output, file_name, exported_preview = service.export_huadeng_customer_schedule(
+        customer_code="casdon",
+        factory_id="huadeng",
+        received_date="2026-08-03",
+        po_files=[("PO 8395.pdf", b"pdf")],
+        schedule_file_name="2026年Casdon排期.xlsx",
+        schedule_content=schedule,
+    )
+    workbook = openpyxl.load_workbook(BytesIO(output), data_only=False)
+    try:
+        assert workbook.sheetnames[:2] == ["新单数据", "仓单PO模版"]
+        assert workbook["新单数据"].cell(2, 6).value == "8395"
+        assert workbook["新单数据"].cell(2, 2).value == datetime(2026, 8, 3)
+    finally:
+        workbook.close()
+    assert file_name == preview["output_file_name"]
+    assert exported_preview["summary"]["total"] == 1
+
+
+def test_jakks_blocks_change_orders_and_dedupes_batch(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.jakks_schedule,
+        "load_dataset",
+        lambda _path: {"records": [{"sku": "J-1", "product": "标准公仔", "contact": "Amy", "contract_no": "C1"}]},
+    )
+
+    def parse_po(_path):
+        return {
+            "contract_no": "C1",
+            "customer_po": "PO-1",
+            "customer": "JAKKS",
+            "order_date": "2026-08-01",
+            "lines": [{
+                "item_no": "J-1", "product_name": "PO品名", "po_description": "Toy Figure",
+                "quantity": 100, "unit": "PCS", "unit_price_usd": 2, "total_usd": 200,
+                "ship_date": "2026-09-01", "special_note": "",
+            }],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(service.jakks_po_parser, "parse_po", parse_po)
+    prepared = service._prepare_jakks(
+        [("C1-CXL.pdf", b"cancel"), ("C1.pdf", b"one"), ("C1-copy.pdf", b"two")],
+        "2026年Jakks排期.xlsx",
+        b"schedule",
+    )
+    assert len(prepared.records) == 1
+    assert prepared.records[0]["product_name"] == "标准公仔"
+    assert prepared.records[0]["contact"] == "Amy"
+    assert any("CXL/SUP" in warning for warning in prepared.warnings)
+    assert any("完全重复" in warning for warning in prepared.warnings)
+
+
+def test_simba_prefers_same_name_excel_and_inherits_schedule(monkeypatch) -> None:
+    parsed_names: list[str] = []
+    monkeypatch.setattr(
+        service.simba_schedule,
+        "read_schedule",
+        lambda *_args, **_kwargs: {"sheet": "Simba排期", "records": [{"contract_no": "S1", "item_no": "A1"}]},
+    )
+
+    def parse_po_file(_content, *, filename: str):
+        parsed_names.append(filename)
+        return {
+            "filename": filename,
+            "rows": [{
+                "contract_no": "S1", "customer_po": "PO-S1", "item_no": "A1",
+                "quantity": 120, "outer_pack": 12, "po_ship_date": "2026-09-01",
+                "customer": "SIMBA", "contact": "May", "source_sheet": "转换PO",
+            }],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(service.simba_po_parser, "parse_po_file", parse_po_file)
+    monkeypatch.setattr(
+        service.simba_schedule,
+        "enrich_rows_from_schedule",
+        lambda rows, _schedule: {
+            "product_names_applied": 1,
+            "exact_fields_applied": 2,
+            "product_name_conflicts": [],
+        },
+    )
+    prepared = service._prepare_simba(
+        [("Release-S1.pdf", b"pdf"), ("Release-S1.xlsx", b"xlsx")],
+        "2026年Simba排期.xlsx",
+        b"schedule",
+        "2026-08-03",
+    )
+    assert parsed_names == ["Release-S1.xlsx"]
+    assert len(prepared.records) == 1
+    assert prepared.records[0]["order_date"] == "2026-08-03"
+    assert any("优先采用 Excel" in warning for warning in prepared.warnings)
+
+
+def test_spin_master_uses_independent_schedule_and_composite_dedupe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.spin_master_parser,
+        "validate_schedule_file",
+        lambda _path: {"sheet": "SPIN排期", "rows": [{"contract_no": "OLD"}]},
+    )
+    monkeypatch.setattr(
+        service.spin_master_parser,
+        "parse_po_file",
+        lambda path: {"source": str(path), "items": [{"line_no": 10}]},
+    )
+    monkeypatch.setattr(
+        service.spin_master_new_order_writer,
+        "_records",
+        lambda order: [{
+            "customer_po": "PO-SM", "contract_no": "45001/10", "customer": "SPIN MASTER",
+            "item_no": "GML/100/200", "product_name": "GML4pkSLD", "english_name": "GML4pkSLD",
+            "quantity": 100, "outer_pack": 4, "cartons": 25, "ship_date": "2026-09-01",
+            "unit_price_usd": 1, "total_usd": 100, "unit_price_hkd": 7.75, "total_hkd": 775,
+            "source_file": order["source"],
+        }],
+    )
+    prepared = service._prepare_spin_master(
+        [("SM-1.pdf", b"one"), ("SM-1-copy.pdf", b"two")],
+        "2026年SpinMaster排期.xlsx",
+        b"schedule",
+    )
+    assert prepared.sheet_name == "SPIN排期"
+    assert len(prepared.records) == 1
+    assert any("完全重复" in warning for warning in prepared.warnings)
+
+
+def test_spin_and_spin_master_specs_remain_separate() -> None:
+    spin = service.get_huadeng_customer_mapping("spin")
+    spin_master = service.get_huadeng_customer_mapping("spin-master")
+    assert spin.target_template == "HUADENG_SPIN_NEW_ORDER_V1"
+    assert spin_master.target_template == "HUADENG_SPIN_MASTER_NEW_ORDER_V1"
+    assert spin.schedule_extensions == (".xlsx",)
+    assert spin_master.schedule_extensions == (".xls", ".xlsx")
+
+
+def test_spin_preview_uses_spin_schedule_family_and_keeps_manual_dates_blank(monkeypatch) -> None:
+    schedule = _workbook_bytes(
+        service.spin_schedule.MASTER_SHEET,
+        {2: "来单期", 4: "联系人", 5: "客PO", 6: "合同号", 7: "客名", 8: "版本", 9: "货号", 10: "产品名称", 11: "数量", 13: "外箱", 27: "验货期", 28: "PO走货期", 36: "英文品名"},
+        {5: "OLD", 6: "OLD/10", 7: "SPIN MASTER", 9: "1111/123456/7890/9999-10", 10: "Spin标准品名", 11: 100, 13: 4, 36: "Spin Product"},
+    )
+
+    def parse(_self, _path: str):
+        return {
+            "po_number": "45000001",
+            "po_date": "2026-08-01",
+            "contact": "Karen Sun",
+            "customer": "SPIN MASTER",
+            "lines": [{
+                "line_no": "10", "qty": 100, "unit": "PC", "material_number": "123456",
+                "description_en": "GML4pkSLD Spin Product", "sales_material": "7890",
+                "material_group": "1111", "unit_price": 1.5, "total_usd": 150,
+                "ship_date": "2026-09-01", "sales_order": "9999", "line_item": "10",
+                "customer": "SPIN MASTER", "customer_po": "PO-SPIN",
+                "item_key": "1111/123456/7890",
+            }],
+            "raw_text": "",
+        }
+
+    monkeypatch.setattr(service.spin_po_parser.SpinPOParser, "parse", parse)
+    preview = service.create_huadeng_customer_preview(
+        customer_code="spin",
+        factory_id="huadeng",
+        received_date="2026-08-03",
+        po_files=[("Spin PO.pdf", b"pdf")],
+        schedule_file_name="2026年Spin排期.xlsx",
+        schedule_content=schedule,
+    )
+    row = preview["rows"][0]
+    assert row["target_template"] == "HUADENG_SPIN_NEW_ORDER_V1"
+    assert row["contract_no"] == "45000001/10"
+    assert row["product_name_zh"] == "Spin标准品名"
+    assert row["units_per_carton"] == "4"
+    assert row["line_q"] == ""
+    assert row["requested_ship_date"] == "2026-09-01"
+
+
+def test_remaining_huadeng_exporters_create_standalone_new_order_workbooks(tmp_path: Path) -> None:
+    jakks_template = _workbook_bytes(
+        "26-Jakks排货表总 Ai",
+        {1: "来单日期", 5: "客户PO", 6: "合同号", 7: "客名", 9: "货号", 10: "产品名称", 11: "数量"},
+        {5: "OLD", 6: "OLD", 7: "JAKKS", 9: "J-OLD", 10: "旧品名", 11: 1},
+    )
+    jakks_line = {
+        "order_date": "2026-08-03", "customer_po": "PO-J1", "contract_no": "J1",
+        "customer": "JAKKS", "item_no": "J-1", "product_name": "Jakks产品", "quantity": 20,
+        "unit": "PCS", "unit_price_usd": 1, "total_usd": 20, "source_file": "J1.pdf",
+    }
+    jakks_output = tmp_path / "jakks-new.xlsx"
+    service._export_prepared(
+        customer_code="jakks",
+        prepared=service.PreparedBatch(
+            [jakks_line], [], "26-Jakks排货表总 Ai",
+            export_payload={"filename": "Jakks批量", "lines": [jakks_line]},
+        ),
+        schedule_file_name="Jakks排期.xlsx",
+        schedule_content=jakks_template,
+        output_path=jakks_output,
+    )
+
+    simba_template = _workbook_bytes(
+        "Simba排期",
+        {2: "来单日期", 5: "客户PO", 6: "合同号", 7: "客名", 9: "货号", 10: "产品名称", 11: "数量"},
+        {5: "OLD", 6: "OLD", 7: "SIMBA", 9: "S-OLD", 10: "旧品名", 11: 1},
+    )
+    simba_output = tmp_path / "simba-new.xlsx"
+    service._export_prepared(
+        customer_code="simba",
+        prepared=service.PreparedBatch([{
+            "order_date": "2026-08-03", "customer_po": "PO-S1", "contract_no": "S1",
+            "customer": "SIMBA", "item_no": "S-1", "product_name": "Simba产品", "quantity": 24,
+            "outer_pack": 12, "cartons": 2, "po_ship_date": "2026-09-01", "source_file": "S1.xlsx",
+        }], [], "Simba排期"),
+        schedule_file_name="Simba排期.xlsx",
+        schedule_content=simba_template,
+        output_path=simba_output,
+    )
+
+    spin_master_template = _workbook_bytes(
+        "SPIN排期",
+        {1: "来单期", 4: "客PO", 5: "合同号", 6: "客名", 8: "货号/SI", 9: "产品名称", 10: "数量"},
+        {4: "OLD", 5: "OLD", 6: "SPIN MASTER", 8: "SM-OLD", 9: "旧品名", 10: 1},
+    )
+    spin_master_output = tmp_path / "spin-master-new.xlsx"
+    service._export_prepared(
+        customer_code="spin-master",
+        prepared=service.PreparedBatch([{
+            "order_date": "2026-08-03", "customer_po": "PO-SM", "contract_no": "45001/10",
+            "customer": "SPIN MASTER", "item_no": "GML/100/200", "product_name": "Spin产品",
+            "english_name": "Spin Product", "quantity": 100, "outer_pack": 4, "cartons": 25,
+            "ship_date": "2026-09-01", "source_file": "SM.pdf",
+        }], [], "SPIN排期"),
+        schedule_file_name="SpinMaster排期.xlsx",
+        schedule_content=spin_master_template,
+        output_path=spin_master_output,
+    )
+
+    spin_template = _workbook_bytes(
+        service.spin_schedule.MASTER_SHEET,
+        {5: "客PO", 6: "合同号", 7: "客名", 9: "货号", 10: "产品名称", 11: "数量"},
+        {5: "OLD", 6: "OLD", 7: "SPIN MASTER", 9: "SPIN-OLD", 10: "旧品名", 11: 1},
+    )
+    spin_output = tmp_path / "spin-new.xlsx"
+    spin_values = {
+        service.spin_schedule.COL["customer_po"]: "PO-SPIN",
+        service.spin_schedule.COL["contract"]: "45001/10",
+        service.spin_schedule.COL["customer"]: "SPIN MASTER",
+        service.spin_schedule.COL["item"]: "100/200/300",
+        service.spin_schedule.COL["cn_name"]: "Spin产品",
+        service.spin_schedule.COL["qty"]: 100,
+    }
+    service._export_prepared(
+        customer_code="spin",
+        prepared=service.PreparedBatch(
+            [], [], service.spin_schedule.MASTER_SHEET,
+            legacy_rows=[spin_values], inheritance={},
+        ),
+        schedule_file_name="Spin排期.xlsx",
+        schedule_content=spin_template,
+        output_path=spin_output,
+    )
+
+    for output in (jakks_output, simba_output, spin_master_output, spin_output):
+        assert output.exists()
+        workbook = openpyxl.load_workbook(output, data_only=False)
+        try:
+            assert any("新单" in name for name in workbook.sheetnames)
+            assert all("OLD" not in str(cell.value) for sheet in workbook for row in sheet for cell in row)
+        finally:
+            workbook.close()

@@ -4,10 +4,12 @@ import {
   ArrowLeft,
   Building2,
   BriefcaseBusiness,
+  ClipboardCheck,
   Check,
   CheckCircle2,
   CircleAlert,
   Clock3,
+  Copy,
   Factory,
   KeyRound,
   LifeBuoy,
@@ -29,10 +31,11 @@ import {
 import { useRoute } from 'vue-router'
 import {
   systemApi,
+  type PasswordResetRequestDetail,
+  type PasswordResetStatus,
   type RegistrationProfileRequest,
   type RegistrationRequestResponse,
   type RoleResponse,
-  type SystemNotificationResponse,
   type UserResponse,
 } from '@/api/system'
 import UserAvatar from '@/components/common/UserAvatar.vue'
@@ -52,7 +55,17 @@ const activeTab = ref<'pending' | 'password-reset' | 'users'>('pending')
 const requests = ref<RegistrationRequestResponse[]>([])
 const users = ref<UserResponse[]>([])
 const systemPositions = ref<RoleResponse[]>([])
-const systemNotifications = ref<SystemNotificationResponse[]>([])
+const passwordResetRequests = ref<PasswordResetRequestDetail[]>([])
+const passwordResetStatus = ref<PasswordResetStatus>('pending')
+const selectedPasswordResetId = ref('')
+const passwordResetReviewTarget = ref<PasswordResetRequestDetail | null>(null)
+const passwordResetReviewMode = ref<'approve' | 'reject' | 'reissue' | ''>('')
+const passwordResetReviewComment = ref('')
+const passwordResetIdentityVerified = ref(false)
+const oneTimeTemporaryPassword = ref('')
+const oneTimePasswordExpiresAt = ref('')
+const oneTimePasswordRequestId = ref('')
+const temporaryPasswordCopied = ref(false)
 const selectedSystemPositions = ref<Record<string, string>>({})
 const approvalProfiles = ref<Record<string, RegistrationProfileRequest>>({})
 const approvalComments = ref<Record<string, string>>({})
@@ -71,8 +84,10 @@ const currentAccountCode = computed(() => authStore.currentUser?.username || '�
 const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active'))
 const pendingUsers = computed(() => users.value.filter((user) => user.status === 'pending'))
-const passwordResetRequests = computed(() =>
-  systemNotifications.value.filter((notification) => notification.type === 'password_reset' && notification.status !== 'handled'),
+const selectedPasswordResetRequest = computed(() =>
+  passwordResetRequests.value.find((request) => request.id === selectedPasswordResetId.value)
+  ?? passwordResetRequests.value[0]
+  ?? null,
 )
 const selectedRequest = computed(() =>
   requests.value.find((request) => request.id === selectedRequestId.value) ?? requests.value[0] ?? null,
@@ -191,14 +206,26 @@ function contactLabel(request: RegistrationRequestResponse) {
   return request.phone || request.email || '未填写'
 }
 
-function payloadText(notification: SystemNotificationResponse, key: string) {
-  const value = notification.payload[key]
-  return typeof value === 'string' ? value : ''
+const passwordResetStatusOptions: Array<{ value: PasswordResetStatus; label: string }> = [
+  { value: 'pending', label: '待审核' },
+  { value: 'approved', label: '已批准待改密' },
+  { value: 'completed', label: '已完成' },
+  { value: 'rejected', label: '已驳回' },
+  { value: 'expired', label: '已过期' },
+]
+
+function passwordResetStatusLabel(status: PasswordResetStatus) {
+  return passwordResetStatusOptions.find((option) => option.value === status)?.label ?? status
 }
 
-function resetRequestUser(notification: SystemNotificationResponse) {
-  const userId = payloadText(notification, 'matched_user_id')
-  return users.value.find((user) => user.id === userId) ?? null
+function passwordResetStatusTone(status: PasswordResetStatus) {
+  return {
+    pending: 'pill-amber',
+    approved: 'pill-blue',
+    completed: 'pill-green',
+    rejected: 'pill-red',
+    expired: 'pill-slate',
+  }[status]
 }
 
 function approvalProfile(request: RegistrationRequestResponse) {
@@ -278,7 +305,7 @@ async function loadData() {
     requests.value = []
     users.value = []
     systemPositions.value = []
-    systemNotifications.value = []
+    passwordResetRequests.value = []
     selectedRequestId.value = ''
     isLoading.value = false
     actionKey.value = ''
@@ -289,17 +316,23 @@ async function loadData() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [pendingRequests, loadedUsers, loadedPositions, loadedNotifications] = await Promise.all([
+    const [pendingRequests, loadedUsers, loadedPositions, loadedPasswordResetRequests] = await Promise.all([
       systemApi.listRegistrationRequests('pending'),
       systemApi.listUsers(''),
       systemApi.listSystemPositions(),
-      systemApi.listNotifications(),
+      systemApi.listPasswordResetRequests(passwordResetStatus.value),
     ])
     requests.value = pendingRequests
     for (const request of pendingRequests) approvalProfile(request)
     users.value = loadedUsers
     systemPositions.value = loadedPositions
-    systemNotifications.value = loadedNotifications
+    passwordResetRequests.value = loadedPasswordResetRequests
+    const requestedResetId = typeof route.query.request_id === 'string' ? route.query.request_id : ''
+    if (requestedResetId && loadedPasswordResetRequests.some((item) => item.id === requestedResetId)) {
+      selectedPasswordResetId.value = requestedResetId
+    } else if (!loadedPasswordResetRequests.some((item) => item.id === selectedPasswordResetId.value)) {
+      selectedPasswordResetId.value = loadedPasswordResetRequests[0]?.id ?? ''
+    }
     ensureSelectedRequest()
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
@@ -401,22 +434,65 @@ async function updateStatus(user: UserResponse, status: 'active' | 'suspended') 
   }
 }
 
-async function resetPasswordFromNotification(notification: SystemNotificationResponse) {
-  if (!ensureUserManagementPermission()) return
-  const user = resetRequestUser(notification)
-  if (!user) {
-    errorMessage.value = '未匹配到系统账号，请人工核验后再处理'
+async function changePasswordResetStatus(status: PasswordResetStatus) {
+  passwordResetStatus.value = status
+  selectedPasswordResetId.value = ''
+  await loadData()
+}
+
+function openPasswordResetReview(
+  resetRequest: PasswordResetRequestDetail,
+  mode: 'approve' | 'reject' | 'reissue',
+) {
+  passwordResetReviewTarget.value = resetRequest
+  passwordResetReviewMode.value = mode
+  passwordResetReviewComment.value = ''
+  passwordResetIdentityVerified.value = false
+  errorMessage.value = ''
+}
+
+function closePasswordResetReview() {
+  if (actionKey.value.startsWith('password-reset:')) return
+  passwordResetReviewTarget.value = null
+  passwordResetReviewMode.value = ''
+  passwordResetReviewComment.value = ''
+  passwordResetIdentityVerified.value = false
+}
+
+async function submitPasswordResetReview() {
+  if (!ensureUserManagementPermission() || !passwordResetReviewTarget.value || !passwordResetReviewMode.value) return
+  const target = passwordResetReviewTarget.value
+  const mode = passwordResetReviewMode.value
+  const comment = passwordResetReviewComment.value.trim()
+  if (mode === 'reject' && !comment) {
+    errorMessage.value = '驳回申请时必须填写原因'
     return
   }
-  actionKey.value = `reset-password:${notification.id}`
+  if (mode !== 'reject' && !comment && !passwordResetIdentityVerified.value) {
+    errorMessage.value = '请填写审核说明，或确认已完成员工身份核验'
+    return
+  }
+  const reviewComment = comment || '已确认完成员工身份核验'
+  actionKey.value = `password-reset:${mode}:${target.id}`
   errorMessage.value = ''
   successMessage.value = ''
   try {
-    await systemApi.resetUserPassword(user.id, {
-      temporary_password: '123456',
-      notification_id: notification.id,
-    })
-    successMessage.value = `${user.display_name || user.username} 已重置为临时密码 123456`
+    if (mode === 'reject') {
+      await systemApi.rejectPasswordResetRequest(target.id, { review_comment: reviewComment })
+      successMessage.value = `已驳回密码重置申请 ${target.id}`
+    } else {
+      const response = mode === 'approve'
+        ? await systemApi.approvePasswordResetRequest(target.id, { review_comment: reviewComment })
+        : await systemApi.reissuePasswordResetRequest(target.id, { review_comment: reviewComment })
+      oneTimeTemporaryPassword.value = response.temporary_password
+      oneTimePasswordExpiresAt.value = response.expires_at
+      oneTimePasswordRequestId.value = response.request.id
+      temporaryPasswordCopied.value = false
+    }
+    passwordResetReviewTarget.value = null
+    passwordResetReviewMode.value = ''
+    passwordResetReviewComment.value = ''
+    passwordResetIdentityVerified.value = false
     await loadData()
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
@@ -425,27 +501,44 @@ async function resetPasswordFromNotification(notification: SystemNotificationRes
   }
 }
 
-async function markPasswordResetHandled(notification: SystemNotificationResponse) {
-  if (!ensureUserManagementPermission()) return
-  actionKey.value = `reset-handled:${notification.id}`
-  errorMessage.value = ''
-  successMessage.value = ''
+async function copyTemporaryPassword() {
+  if (!oneTimeTemporaryPassword.value) return
   try {
-    await systemApi.updateNotification(notification.id, { status: 'handled' })
-    successMessage.value = `已标记 ${payloadText(notification, 'username') || notification.title} 的密码重置申请为已处理`
-    await loadData()
-  } catch (error) {
-    errorMessage.value = getApiErrorMessage(error)
-  } finally {
-    actionKey.value = ''
+    await navigator.clipboard.writeText(oneTimeTemporaryPassword.value)
+    temporaryPasswordCopied.value = true
+  } catch {
+    errorMessage.value = '复制失败，请手动选择临时密码复制'
   }
 }
 
-onMounted(() => {
+function closeTemporaryPasswordDialog() {
+  oneTimeTemporaryPassword.value = ''
+  oneTimePasswordExpiresAt.value = ''
+  oneTimePasswordRequestId.value = ''
+  temporaryPasswordCopied.value = false
+}
+
+async function initializeData() {
   if (route.query.tab === 'password-reset') activeTab.value = 'password-reset'
   else if (route.query.tab === 'users') activeTab.value = 'users'
   else if (route.query.request_id) activeTab.value = 'pending'
-  void loadData()
+  const requestedResetId = activeTab.value === 'password-reset' && typeof route.query.request_id === 'string'
+    ? route.query.request_id
+    : ''
+  if (requestedResetId) {
+    try {
+      const detail = await systemApi.getPasswordResetRequest(requestedResetId)
+      passwordResetStatus.value = detail.status
+      selectedPasswordResetId.value = detail.id
+    } catch {
+      // The normal load below will surface permission and availability errors consistently.
+    }
+  }
+  await loadData()
+}
+
+onMounted(() => {
+  void initializeData()
 })
 </script>
 
@@ -730,73 +823,122 @@ onMounted(() => {
     </section>
 
     <section v-else-if="canManageUsers && activeTab === 'password-reset'" class="panel">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div class="seg">
+          <button
+            v-for="option in passwordResetStatusOptions"
+            :key="option.value"
+            type="button"
+            :class="{ on: passwordResetStatus === option.value }"
+            :disabled="isLoading"
+            @click="changePasswordResetStatus(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+        <button type="button" class="btn btn-sm" :disabled="isLoading" @click="loadData">
+          <RefreshCw class="size-3.5" :class="{ 'animate-spin': isLoading }" aria-hidden="true" />
+          刷新申请
+        </button>
+      </div>
       <div v-if="isLoading" class="empty-card">正在加载密码重置申请...</div>
-      <div v-else-if="!passwordResetRequests.length" class="empty-card">当前没有待处理密码重置申请。</div>
+      <div v-else-if="!passwordResetRequests.length" class="empty-card">当前筛选条件下没有密码重置申请。</div>
       <div v-else class="request-grid">
-        <article v-for="notification in passwordResetRequests" :key="notification.id" class="request-card">
+        <article
+          v-for="resetRequest in passwordResetRequests"
+          :key="resetRequest.id"
+          class="request-card"
+          :class="{ 'ring-2 ring-teal-600/30': selectedPasswordResetRequest?.id === resetRequest.id }"
+          @click="selectedPasswordResetId = resetRequest.id"
+        >
           <div class="request-top">
-            <span class="request-avatar">{{ avatarText(payloadText(notification, 'display_name'), payloadText(notification, 'username')) }}</span>
+            <span class="request-avatar">{{ avatarText(resetRequest.display_name, resetRequest.username) }}</span>
             <div class="request-person">
-              <h2>{{ payloadText(notification, 'display_name') || payloadText(notification, 'username') }}</h2>
-              <p>{{ payloadText(notification, 'username') }}</p>
+              <h2>{{ resetRequest.display_name || resetRequest.username }}</h2>
+              <p>{{ resetRequest.id }}</p>
             </div>
-            <span class="pill" :class="notification.status === 'read' ? 'pill-blue' : 'pill-amber'">
-              <span></span>{{ notification.status === 'read' ? '已读' : '未读' }}
+            <span class="pill" :class="passwordResetStatusTone(resetRequest.status)">
+              <span></span>{{ passwordResetStatusLabel(resetRequest.status) }}
             </span>
           </div>
 
           <div class="request-meta">
             <div>
               <KeyRound class="size-4" aria-hidden="true" />
-              <span>账号</span>
-              <b>{{ payloadText(notification, 'username') || '-' }}</b>
+              <span>填写账号</span>
+              <b>{{ resetRequest.username || '-' }}</b>
             </div>
             <div>
               <Phone class="size-4" aria-hidden="true" />
-              <span>联系</span>
-              <b>{{ payloadText(notification, 'contact') || '-' }}</b>
+              <span>填写联系</span>
+              <b>{{ resetRequest.contact || '-' }}</b>
             </div>
             <div class="meta-wide">
               <Clock3 class="size-4" aria-hidden="true" />
               <span>提交</span>
-              <b>{{ formatBusinessDateTime(notification.created_at, { includeSeconds: true }) }}</b>
+              <b>{{ formatBusinessDateTime(resetRequest.submitted_at, { includeSeconds: true }) }}</b>
             </div>
             <div class="meta-wide">
               <LifeBuoy class="size-4" aria-hidden="true" />
               <span>说明</span>
-              <b>{{ payloadText(notification, 'note') || notification.message }}</b>
+              <b>{{ resetRequest.note || '未填写补充说明' }}</b>
             </div>
           </div>
 
-          <div class="recommend-box">
-            <Sparkles class="size-4 shrink-0" aria-hidden="true" />
-            <span>处理方式：</span>
-            <b v-if="resetRequestUser(notification)">重置为临时密码 123456，并要求用户重新登录</b>
-            <b v-else>未匹配系统账号，请人工核验后标记处理</b>
+          <div v-if="resetRequest.matched_user" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-600">
+            <div class="flex items-center gap-2 font-bold text-slate-800">
+              <UserCheck class="size-4 text-teal-700" aria-hidden="true" />
+              系统员工资料
+            </div>
+            <div class="mt-2 grid gap-1 sm:grid-cols-2">
+              <span>姓名：<b>{{ resetRequest.matched_user.display_name || '-' }}</b></span>
+              <span>账号：<b>{{ resetRequest.matched_user.username }}</b></span>
+              <span>厂区：<b>{{ factoryLabel(resetRequest.matched_user.factory_id) || '-' }}</b></span>
+              <span>部门：<b>{{ departmentLabel(resetRequest.matched_user.department) || '-' }}</b></span>
+              <span>电话：<b>{{ resetRequest.matched_user.phone || '-' }}</b></span>
+              <span>邮箱：<b>{{ resetRequest.matched_user.email || '-' }}</b></span>
+            </div>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <span class="pill" :class="resetRequest.match_checks.display_name ? 'pill-green' : 'pill-amber'">姓名{{ resetRequest.match_checks.display_name ? '一致' : '需核验' }}</span>
+              <span class="pill" :class="resetRequest.match_checks.contact ? 'pill-green' : 'pill-amber'">联系方式{{ resetRequest.match_checks.contact ? '一致' : '需核验' }}</span>
+              <span class="pill" :class="resetRequest.match_checks.scope ? 'pill-green' : 'pill-amber'">厂区部门{{ resetRequest.match_checks.scope ? '一致' : '需核验' }}</span>
+            </div>
+          </div>
+          <div v-else class="recommend-box">
+            <CircleAlert class="size-4 shrink-0 text-amber-700" aria-hidden="true" />
+            <b>未匹配系统账号，不能批准。请人工核验后驳回，禁止通过前端猜测或关联账号。</b>
           </div>
 
           <div class="request-actions">
             <button
-              v-if="resetRequestUser(notification)"
+              v-if="resetRequest.status === 'pending' && resetRequest.matched_user"
               type="button"
               class="btn btn-primary"
               :disabled="Boolean(actionKey)"
-              @click="resetPasswordFromNotification(notification)"
+              @click.stop="openPasswordResetReview(resetRequest, 'approve')"
             >
-              <LoaderCircle v-if="actionKey === `reset-password:${notification.id}`" class="size-4 animate-spin" aria-hidden="true" />
-              <KeyRound v-else class="size-4" aria-hidden="true" />
-              重置为临时密码
+              <KeyRound class="size-4" aria-hidden="true" />
+              通过并生成临时密码
             </button>
             <button
+              v-if="resetRequest.status === 'pending'"
               type="button"
-              class="btn"
-              :class="resetRequestUser(notification) ? '' : 'btn-primary'"
+              class="btn btn-danger"
               :disabled="Boolean(actionKey)"
-              @click="markPasswordResetHandled(notification)"
+              @click.stop="openPasswordResetReview(resetRequest, 'reject')"
             >
-              <LoaderCircle v-if="actionKey === `reset-handled:${notification.id}`" class="size-4 animate-spin" aria-hidden="true" />
-              <CheckCircle2 v-else class="size-4" aria-hidden="true" />
-              标记已处理
+              <XCircle class="size-4" aria-hidden="true" />
+              驳回
+            </button>
+            <button
+              v-if="resetRequest.status === 'approved' && resetRequest.matched_user"
+              type="button"
+              class="btn btn-primary"
+              :disabled="Boolean(actionKey)"
+              @click.stop="openPasswordResetReview(resetRequest, 'reissue')"
+            >
+              <RefreshCw class="size-4" aria-hidden="true" />
+              重新生成临时密码
             </button>
           </div>
         </article>
@@ -916,6 +1058,84 @@ onMounted(() => {
         </div>
       </div>
     </section>
+
+    <div
+      v-if="passwordResetReviewTarget"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="password-reset-review-title"
+      @click.self="closePasswordResetReview"
+    >
+      <section class="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+        <div class="flex items-start gap-3">
+          <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-teal-700">
+            <ClipboardCheck class="size-5" aria-hidden="true" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <h2 id="password-reset-review-title" class="text-base font-bold text-slate-950">
+              {{ passwordResetReviewMode === 'reject' ? '驳回密码重置申请' : passwordResetReviewMode === 'reissue' ? '重新生成临时密码' : '通过并生成临时密码' }}
+            </h2>
+            <p class="mt-1 text-xs leading-5 text-slate-500">申请 {{ passwordResetReviewTarget.id }} · {{ passwordResetReviewTarget.display_name || passwordResetReviewTarget.username }}</p>
+          </div>
+        </div>
+        <div v-if="passwordResetReviewMode === 'reissue'" class="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+          重新生成后，旧临时密码与该用户所有现有会话将立即失效。新密码仍只展示一次。
+        </div>
+        <label class="mt-4 block">
+          <span class="mb-1.5 block text-xs font-bold text-slate-700">{{ passwordResetReviewMode === 'reject' ? '驳回原因' : '审核 / 核验说明' }}</span>
+          <textarea v-model="passwordResetReviewComment" class="min-h-24 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15" :placeholder="passwordResetReviewMode === 'reject' ? '请说明资料无法核验的原因' : '例如：已电话核验员工身份'"></textarea>
+        </label>
+        <label v-if="passwordResetReviewMode !== 'reject'" class="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-700">
+          <input v-model="passwordResetIdentityVerified" class="mt-0.5 size-4" type="checkbox">
+          <span>我确认已按内部流程核验员工身份，并会通过线下或企业内部可信渠道传达临时密码。</span>
+        </label>
+        <div class="mt-5 flex justify-end gap-2">
+          <button type="button" class="btn" :disabled="Boolean(actionKey)" @click="closePasswordResetReview">取消</button>
+          <button type="button" class="btn" :class="passwordResetReviewMode === 'reject' ? 'btn-danger' : 'btn-primary'" :disabled="Boolean(actionKey)" @click="submitPasswordResetReview">
+            <LoaderCircle v-if="actionKey.startsWith('password-reset:')" class="size-4 animate-spin" aria-hidden="true" />
+            <CheckCircle2 v-else class="size-4" aria-hidden="true" />
+            确认{{ passwordResetReviewMode === 'reject' ? '驳回' : passwordResetReviewMode === 'reissue' ? '重新生成' : '批准' }}
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div
+      v-if="oneTimeTemporaryPassword"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="temporary-password-title"
+      @click.self="closeTemporaryPasswordDialog"
+    >
+      <section class="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <div class="flex items-start gap-3">
+          <span class="flex size-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
+            <KeyRound class="size-5" aria-hidden="true" />
+          </span>
+          <div>
+            <h2 id="temporary-password-title" class="text-lg font-bold text-slate-950">一次性临时密码</h2>
+            <p class="mt-1 text-xs leading-5 text-slate-500">申请 {{ oneTimePasswordRequestId }} · 此密码只在当前弹窗展示一次。</p>
+          </div>
+        </div>
+        <div class="mt-5 rounded-2xl border border-teal-100 bg-teal-50 px-4 py-4">
+          <div class="flex items-center justify-between gap-3">
+            <code class="select-all break-all font-mono text-lg font-bold tracking-[0.08em] text-teal-950">{{ oneTimeTemporaryPassword }}</code>
+            <button type="button" class="btn btn-primary btn-sm shrink-0" @click="copyTemporaryPassword">
+              <CheckCircle2 v-if="temporaryPasswordCopied" class="size-4" aria-hidden="true" />
+              <Copy v-else class="size-4" aria-hidden="true" />
+              {{ temporaryPasswordCopied ? '已复制' : '复制' }}
+            </button>
+          </div>
+          <p class="mt-3 text-xs text-teal-800">到期时间：{{ formatBusinessDateTime(oneTimePasswordExpiresAt, { includeSeconds: true }) }}</p>
+        </div>
+        <div class="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900">
+          请通过线下或企业内部可信渠道传达给员工。关闭后前端会立即清除密码；如遗失，只能重新生成。
+        </div>
+        <button type="button" class="btn btn-primary mt-5 w-full justify-center" @click="closeTemporaryPasswordDialog">我已安全记录，关闭并清除</button>
+      </section>
+    </div>
     </div>
   </main>
 </template>

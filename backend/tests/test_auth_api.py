@@ -1483,10 +1483,10 @@ def test_password_reset_request_creates_admin_system_notification(monkeypatch):
         )
 
         assert reset_response.status_code == 200
-        assert reset_response.json() == {
-            "status": "submitted",
-            "message": "密码重置申请已提交，请等待管理员核验处理",
-        }
+        reset_payload = reset_response.json()
+        assert reset_payload["status"] == "submitted"
+        assert reset_payload["message"] == "申请已提交。如账号资料有效，管理员会进行核验处理。"
+        assert reset_payload["request_id"].startswith("password-reset-")
 
         client.post("/api/auth/login", json={"username": "admin", "password": ADMIN_TEST_PASSWORD})
         notifications_response = client.get("/api/system/notifications")
@@ -1498,9 +1498,9 @@ def test_password_reset_request_creates_admin_system_notification(monkeypatch):
         assert password_reset_notification["title"] == "密码重置待处理"
         assert password_reset_notification["target_permission"] == "system:user_manage"
         assert password_reset_notification["status"] == "unread"
-        assert password_reset_notification["payload"]["username"] == "admin"
-        assert password_reset_notification["payload"]["contact"] == "13800000000"
+        assert password_reset_notification["payload"]["password_reset_request_id"] == reset_payload["request_id"]
         assert password_reset_notification["payload"]["matched_user_id"] == "user-admin"
+        assert "contact" not in password_reset_notification["payload"]
 
 
 def test_password_reset_request_requires_account_and_contact(monkeypatch):
