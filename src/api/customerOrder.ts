@@ -9,6 +9,36 @@ export interface CustomerOrderHttpClient {
   ): Promise<{ data: T; headers?: Record<string, unknown> }>
 }
 
+export type HuaxingMappedCustomerCode =
+  | 'edu'
+  | '360'
+  | 'yinhui'
+  | 'seasons'
+  | 'maxx'
+  | 'shushupapa'
+
+export type HuadengMappedCustomerCode =
+  | 'casdon'
+  | 'jakks'
+  | 'simba'
+  | 'spin'
+  | 'spin-master'
+
+export type HuakangAMappedCustomerCode = '360'
+
+export type HuakangCMappedCustomerCode =
+  | 'index'
+  | 'jazwares'
+  | 'maxx'
+  | 'strottman'
+  | 'jp'
+
+export type MappedCustomerCode =
+  | HuaxingMappedCustomerCode
+  | HuadengMappedCustomerCode
+  | HuakangAMappedCustomerCode
+  | HuakangCMappedCustomerCode
+
 function buildFormData(
   poFile: File,
   scheduleFile: File,
@@ -202,6 +232,88 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
           headers: { 'Content-Type': 'multipart/form-data' },
           responseType: 'blob',
           timeout: 240_000,
+        },
+      )
+      return {
+        blob: response.data,
+        fileName: responseFileName(response.headers, fallbackFileName),
+        passwordRequired: responsePasswordRequired(response.headers),
+      }
+    },
+    async previewHuaxingMappedBatch(
+      customerCode: MappedCustomerCode,
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      factoryId = 'huaxing',
+    ) {
+      const response = await client.post<CustomerOrderImportPreview>(
+        `/customer-orders/${customerCode}/preview-batch`,
+        buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId),
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 240_000 },
+      )
+      return response.data
+    },
+    async exportHuaxingMappedBatch(
+      customerCode: MappedCustomerCode,
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      fallbackFileName: string,
+      factoryId = 'huaxing',
+      skippedIssueKeys: string[] = [],
+    ) {
+      const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
+      payload.append('confirmed', 'true')
+      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
+      const response = await client.post<Blob>(
+        `/customer-orders/${customerCode}/export-batch`,
+        payload,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: 300_000,
+        },
+      )
+      return {
+        blob: response.data,
+        fileName: responseFileName(response.headers, fallbackFileName),
+        passwordRequired: responsePasswordRequired(response.headers),
+      }
+    },
+    async previewMappedBatch(
+      customerCode: MappedCustomerCode,
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      factoryId: string,
+    ) {
+      const response = await client.post<CustomerOrderImportPreview>(
+        `/customer-orders/${customerCode}/preview-batch`,
+        buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId),
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 240_000 },
+      )
+      return response.data
+    },
+    async exportMappedBatch(
+      customerCode: MappedCustomerCode,
+      poFiles: File[],
+      scheduleFile: File,
+      receivedDate: string,
+      fallbackFileName: string,
+      factoryId: string,
+      skippedIssueKeys: string[] = [],
+    ) {
+      const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
+      payload.append('confirmed', 'true')
+      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
+      const response = await client.post<Blob>(
+        `/customer-orders/${customerCode}/export-batch`,
+        payload,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: 300_000,
         },
       )
       return {
