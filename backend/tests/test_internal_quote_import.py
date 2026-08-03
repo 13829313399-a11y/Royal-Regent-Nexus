@@ -3,7 +3,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as WorksheetImage
 from PIL import Image as PillowImage
 
@@ -49,6 +49,14 @@ def test_downloadable_import_template_uses_a_header_recognized_by_its_parser(imp
             assert parsed.sheet_name == "01"
             assert parsed.header_row == 11
             assert parsed.row_count == 0
+            workbook = load_workbook(BytesIO(content), data_only=False, read_only=True)
+            try:
+                assert [
+                    workbook["01"].cell(11, column).value
+                    for column in range(10, 14)
+                ] == ["产能", "机型", "胶件重量（g)", "Remark备注"]
+            finally:
+                workbook.close()
         else:
             assert parsed.row_count > 0
         return
@@ -181,13 +189,14 @@ def zhanxing_workbook_with_image() -> bytes:
         "Mould Size(L*W*H) 工模尺寸",
         "Mould Prices 模价(RMB)",
         "钢材/钢料硬度",
-        "产能/机型",
+        "产能",
+        "机型",
         "胶件重量（g)",
         "Remark备注",
     ])
     sheet.append([
         "M-01", "水桌主体", "PP", 1, 1, None,
-        "90*90*80", 237000, "718H", "3000/150T", 32, "热流道",
+        "90*90*80", 237000, "718H", 3000, "150T", 32, "热流道",
     ])
     image_bytes = BytesIO()
     PillowImage.new("RGB", (4, 4), color=(16, 118, 110)).save(image_bytes, format="PNG")
@@ -195,8 +204,8 @@ def zhanxing_workbook_with_image() -> bytes:
     image = WorksheetImage(image_bytes)
     image.anchor = "F12"
     sheet.add_image(image)
-    sheet.append(["M-02", "顶部桌面", "PP", 1, 1, None, "60*60*56", 100000, "718H", "3000/150T", 25, "细水口"])
-    sheet.append(["M-03", "腿", "PP", 2, .67, None, "65*65*56", 103000, "718H", "3000/60-80T", 17, ""])
+    sheet.append(["M-02", "顶部桌面", "PP", 1, 1, None, "60*60*56", 100000, "718H", 3000, "150T", 25, "细水口"])
+    sheet.append(["M-03", "腿", "PP", 2, .67, None, "65*65*56", 103000, "718H", 3000, "60-80T", 17, ""])
     sheet.append([])
     sheet.append(["工模 ( 注塑模) - 套"])
     output = BytesIO()
@@ -247,6 +256,52 @@ def test_mold_import_maps_zhanxing_fixed_template_columns_and_embedded_images():
     ]
     assert all(image.content.startswith(b"\x89PNG\r\n\x1a\n") for image in parsed.embedded_images)
     assert any("已识别并提取 F 列 1 张嵌入图片" in warning for warning in parsed.warnings)
+
+
+def test_mold_import_keeps_legacy_zhanxing_combined_capacity_machine_column():
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+            [
+                [
+                    "Item No. 模号",
+                    "Item Description 项目内容",
+                    "Material 原料",
+                    "Cavities 件",
+                    "Up套",
+                    "图片",
+                    "Mould Size(L*W*H) 工模尺寸",
+                    "Mould Prices 模价(RMB)",
+                    "钢材/钢料硬度",
+                    "产能/机型",
+                    "胶件重量（g)",
+                    "Remark备注",
+                ],
+                [
+                    "M-OLD",
+                    "旧版模具",
+                    "ABS",
+                    2,
+                    1,
+                    None,
+                    "40*50*60",
+                    28000,
+                    "718H",
+                    "3600/120T",
+                    18,
+                    "旧版兼容",
+                ],
+            ],
+            title="01",
+        ),
+        "mold",
+        fallback_qty=Decimal("3000"),
+    )
+
+    row = parsed.payload_fragment["molds"][0]
+    assert row["target_output"] == "3600.0000"
+    assert row["machine_code"] == "120T"
+    assert row["net_weight_g"] == "18.0000"
+    assert row["remark"] == "旧版兼容"
 
 
 def test_electronic_import_converts_rmb_and_maps_extra_parameters():
