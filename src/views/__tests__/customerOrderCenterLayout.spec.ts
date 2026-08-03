@@ -672,7 +672,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.emitted('navigate')).toBeUndefined()
   })
 
-  it('keeps Dickie blockers visible in both import and preview pages', async () => {
+  it('keeps duplicate orders visible and allows test-stage confirmation', async () => {
     customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-dickie-preview-v1',
       customer_code: 'dickie',
@@ -721,10 +721,10 @@ describe('customer order center static frontend', () => {
           severity: 'blocked',
           code: 'duplicate_reference',
           field: 'reference_no',
-          message: 'Reference SC700130503-200 已存在于当前排期 Iteam表第 561 行，不能重复导入',
-          can_skip: false,
-          skip_key: '',
-          skip_label: '',
+          message: 'Reference SC700130503-200 已存在于当前排期 Iteam表第 561 行；测试阶段可人工确认后重复导入',
+          can_skip: true,
+          skip_key: 'dickie-SC700130503-200|duplicate_reference|reference_no',
+          skip_label: '测试阶段确认重复导入当前排期已有 Reference',
         }],
       }],
     })
@@ -752,12 +752,30 @@ describe('customer order center static frontend', () => {
     await parseButton!.trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="import-parse-alert"]').text()).toContain('不能重复导入')
+    expect(wrapper.get('[data-testid="import-parse-alert"]').text()).toContain('可人工确认后重复导入')
     await wrapper.setProps({ activeSection: 'preview' })
     const previewAlert = wrapper.get('[data-testid="preview-blocker-alert"]')
-    expect(previewAlert.text()).toContain('当前批次有 1 项阻断')
+    expect(previewAlert.text()).toContain('当前批次有 1 项待确认/阻断')
     expect(previewAlert.text()).toContain('SC700130503-200.pdf')
     expect(previewAlert.text()).toContain('Iteam表第 561 行')
+    expect(wrapper.text()).toContain('待确认')
+    const summaryCards = wrapper.findAll('.summary-strip article')
+    expect(summaryCards[2]!.text()).toContain('警告/待确认1')
+    expect(summaryCards[2]!.text()).toContain('不形成阻断')
+    expect(summaryCards[3]!.text()).toContain('阻断项0')
+    const pendingGenerateButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('确认重复订单后生成'))
+    expect(pendingGenerateButton?.attributes('disabled')).toBeDefined()
+
+    const confirmation = wrapper.get('.skip-issue-option')
+    expect(confirmation.text()).toContain('确认通过')
+    await confirmation.get('input').trigger('change')
+
+    expect(wrapper.find('[data-testid="preview-blocker-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已确认通过')
+    const generateButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('生成并下载客户排期'))
+    expect(generateButton?.attributes('disabled')).toBeUndefined()
   })
 
   it('selects Huaxing Caixing and routes Playmates PDFs to the three-sheet schedule flow', async () => {
@@ -844,7 +862,7 @@ describe('customer order center static frontend', () => {
     await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.text()).toContain('彩星 V2')
-    expect(wrapper.text()).toContain('测试阶段：彩星重复订单仅警告')
+    expect(wrapper.text()).toContain('测试阶段：所有客户的重复订单均可在预览中人工确认后继续导出')
     expect(wrapper.text()).toContain('正单评审表 / 接单表 / ITEM表')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')

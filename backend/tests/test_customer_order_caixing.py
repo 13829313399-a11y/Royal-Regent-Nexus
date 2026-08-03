@@ -425,7 +425,7 @@ def test_caixing_three_po_batch_allows_missing_matrix_columns(monkeypatch):
     assert exported_preview["summary"]["blocked"] == 0
 
 
-def test_caixing_existing_order_line_warns_but_allows_test_export(monkeypatch):
+def test_caixing_existing_order_line_requires_test_confirmation(monkeypatch):
     monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
     source = openpyxl.load_workbook(BytesIO(build_caixing_schedule()))
     order = source[service.ORDER_SHEET]
@@ -454,15 +454,24 @@ def test_caixing_existing_order_line_warns_but_allows_test_export(monkeypatch):
         for issue in duplicate_row["issues"]
         if issue["code"] == "existing_order_line"
     )
-    assert duplicate_row["status"] == "warning"
-    assert duplicate_issue["severity"] == "warning"
-    assert duplicate_issue["can_skip"] is False
+    assert duplicate_row["status"] == "blocked"
+    assert duplicate_issue["severity"] == "blocked"
+    assert duplicate_issue["can_skip"] is True
     assert preview["summary"] == {
         "total": 3,
         "valid": 2,
-        "warning": 1,
-        "blocked": 0,
+        "warning": 0,
+        "blocked": 1,
     }
+
+    with pytest.raises(service.CustomerOrderWorkbookError, match="仍有阻断项"):
+        service.export_caixing_batch_schedule(
+            factory_id="huaxing",
+            received_date="2026-07-29",
+            po_files=po_files,
+            schedule_file_name="2026年彩星排期.xlsx",
+            schedule_content=schedule_content,
+        )
 
     exported, file_name, exported_preview = service.export_caixing_batch_schedule(
         factory_id="huaxing",
@@ -470,10 +479,11 @@ def test_caixing_existing_order_line_warns_but_allows_test_export(monkeypatch):
         po_files=po_files,
         schedule_file_name="2026年彩星排期.xlsx",
         schedule_content=schedule_content,
+        skipped_issue_keys={duplicate_issue["skip_key"]},
     )
     assert exported.startswith(b"PK")
     assert file_name == "2026年彩星排期.xlsx"
-    assert exported_preview["summary"]["blocked"] == 0
+    assert exported_preview["summary"]["blocked"] == 1
 
 
 def test_caixing_legacy_xls_uses_converter_and_preserves_format(monkeypatch):

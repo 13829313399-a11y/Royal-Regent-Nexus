@@ -1310,10 +1310,15 @@ def _preview_row(
     if business_key in existing:
         issues.append(
             _make_issue(
-                "warning",
+                "blocked",
                 "existing_order_line",
                 "po_no",
-                f"当前排期已存在相同 PO/S-C/产品 {parsed.product_no}；测试阶段允许确认后继续导出",
+                (
+                    f"当前排期已存在相同 PO/S-C/产品 {parsed.product_no}；"
+                    "测试阶段可人工确认后重复导入"
+                ),
+                can_skip=True,
+                skip_label="测试阶段确认重复导入当前排期已有订单",
             )
         )
 

@@ -832,8 +832,11 @@ def _preview_row(
                 "reference_no",
                 (
                     f"Reference {parsed.reference_no} 已存在于当前排期"
-                    f"{duplicate['sheet_name']}第 {duplicate['row']} 行，不能重复导入"
+                    f"{duplicate['sheet_name']}第 {duplicate['row']} 行；"
+                    "测试阶段可人工确认后重复导入"
                 ),
+                can_skip=True,
+                skip_label="测试阶段确认重复导入当前排期已有 Reference",
             )
         )
     if lookup is None:

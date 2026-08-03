@@ -553,7 +553,7 @@ def _format_serial(value: str) -> str:
     return service._format_iso_date(Decimal(value))
 
 
-def test_dickie_preview_blocks_reference_already_in_current_schedule(monkeypatch):
+def test_dickie_duplicate_reference_requires_test_confirmation(monkeypatch):
     workbook = openpyxl.load_workbook(BytesIO(build_dickie_schedule()))
     workbook["Iteam表"]["C4"] = "SC700142026-1200"
     schedule_output = BytesIO()
@@ -576,7 +576,29 @@ def test_dickie_preview_blocks_reference_already_in_current_schedule(monkeypatch
         if issue["code"] == "duplicate_reference"
     )
     assert duplicate_issue["severity"] == "blocked"
+    assert duplicate_issue["can_skip"] is True
+    assert duplicate_issue["skip_label"] == "测试阶段确认重复导入当前排期已有 Reference"
     assert "Iteam表第 4 行" in duplicate_issue["message"]
+
+    with pytest.raises(service.CustomerOrderWorkbookError, match="仍有阻断项"):
+        service.export_dickie_batch_schedule(
+            factory_id="huaxing",
+            received_date="2026-07-29",
+            po_files=[("SC700142026-1200.pdf", b"%PDF-1.7 synthetic")],
+            schedule_file_name="2026年.Dickie 生产情况.xlsx",
+            schedule_content=schedule_output.getvalue(),
+        )
+
+    output, _, exported_preview = service.export_dickie_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=[("SC700142026-1200.pdf", b"%PDF-1.7 synthetic")],
+        schedule_file_name="2026年.Dickie 生产情况.xlsx",
+        schedule_content=schedule_output.getvalue(),
+        skipped_issue_keys={duplicate_issue["skip_key"]},
+    )
+    assert output.startswith(b"\xd0\xcf\x11\xe0")
+    assert exported_preview["summary"]["blocked"] == 1
 
 
 def test_customer_factory_mapping_rejects_cross_factory_imports():

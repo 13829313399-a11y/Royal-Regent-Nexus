@@ -423,6 +423,16 @@ const exportingSchedule = ref(false)
 const generatedScheduleBlob = ref<Blob | null>(null)
 const generatedScheduleFileName = ref('')
 const skippedIssueKeys = ref<string[]>([])
+const testDuplicateIssueCodes = new Set([
+  'duplicate_reference',
+  'existing_order_line',
+  'duplicate_batch_order_line',
+  'duplicate_existing_order',
+])
+
+function isTestDuplicateIssue(issue: CustomerOrderIssue) {
+  return testDuplicateIssueCodes.has(issue.code)
+}
 const searchQuery = ref('')
 const includeValid = ref(true)
 const includeWarning = ref(true)
@@ -451,9 +461,7 @@ const selectedCustomerName = computed(
   () => selectedCustomer.value?.name ?? '尚未选择客户',
 )
 const preflightConfirmationText = computed(
-  () => selectedCustomer.value?.code === 'caixing'
-    ? '测试阶段：彩星重复订单仅警告，可确认后继续导出'
-    : '重复订单、日期差异、行Q与客Q',
+  () => '测试阶段：所有客户的重复订单均可在预览中人工确认后继续导出',
 )
 
 const orderRows = ref<OrderRow[]>([
@@ -546,15 +554,24 @@ const activeOrderRows = computed(() => (
         const skippedIssues = issues.filter(
           (issue) => issue.can_skip && skippedIssueKeys.value.includes(issue.skip_key),
         )
-        if (remainingBlockers.length > 0) return row
+        if (remainingBlockers.length > 0) {
+          return remainingBlockers.every(isTestDuplicateIssue)
+            ? { ...row, status: 'warning' as const, statusLabel: '待确认' }
+            : row
+        }
         if (issues.some((issue) => issue.severity === 'warning') || skippedIssues.length > 0) {
+          const confirmedDuplicates = skippedIssues.filter(isTestDuplicateIssue)
+          const skippedDataIssues = skippedIssues.filter((issue) => !isTestDuplicateIssue(issue))
           return {
             ...row,
             status: 'warning' as const,
-            statusLabel: skippedIssues.length > 0 ? '已跳过待补' : '警告',
+            statusLabel: confirmedDuplicates.length > 0 && skippedDataIssues.length === 0
+              ? '已确认通过'
+              : skippedIssues.length > 0 ? '已跳过待补' : '警告',
             issue: [
               row.issue,
-              ...skippedIssues.map((issue) => `人工跳过：${issue.skip_label}`),
+              ...confirmedDuplicates.map((issue) => `确认通过：${issue.skip_label}`),
+              ...skippedDataIssues.map((issue) => `人工跳过：${issue.skip_label}`),
             ].filter(Boolean).join('；'),
           }
         }
@@ -601,6 +618,15 @@ const orderSummary = computed(() => ({
   warning: activeOrderRows.value.filter((row) => row.status === 'warning').length,
   blocked: activeOrderRows.value.filter((row) => row.status === 'blocked').length,
 }))
+
+const unconfirmedDuplicateIssueCount = computed(() => (
+  (previewBatch.value?.rows ?? []).flatMap((row) => row.issues)
+    .filter((issue) => issue.severity === 'blocked'
+      && issue.can_skip
+      && isTestDuplicateIssue(issue)
+      && !skippedIssueKeys.value.includes(issue.skip_key))
+    .length
+))
 
 const blockingIssueDetails = computed(() => {
   const seen = new Set<string>()
@@ -1104,14 +1130,25 @@ function toggleIssueSkip(issue: CustomerOrderIssue) {
 }
 
 function resolveBlockedRow() {
-  const skippable = orderRows.value.flatMap((row) => row.issues ?? [])
-    .filter((issue) => issue.severity === 'blocked' && issue.can_skip).length
+  const blockedIssues = orderRows.value.flatMap((row) => row.issues ?? [])
+    .filter((issue) => issue.severity === 'blocked')
+  const confirmableDuplicates = blockedIssues
+    .filter((issue) => issue.can_skip && isTestDuplicateIssue(issue)).length
+  const skippable = blockedIssues
+    .filter((issue) => issue.can_skip && !isTestDuplicateIssue(issue)).length
   const required = orderRows.value.flatMap((row) => row.issues ?? [])
     .filter((issue) => issue.severity === 'blocked' && !issue.can_skip).length
-  notify(`当前可人工跳过 ${skippable} 项，必须补齐 ${required} 项；请在表格“阻断处理”列操作。`)
+  notify(
+    `当前重复订单可确认通过 ${confirmableDuplicates} 项，可人工跳过 ${skippable} 项，`
+    + `必须补齐 ${required} 项；请在表格“确认/阻断处理”列操作。`,
+  )
 }
 
 async function confirmAndGenerateSchedule() {
+  if (unconfirmedDuplicateIssueCount.value > 0) {
+    notify(`仍有 ${unconfirmedDuplicateIssueCount.value} 项重复订单待确认，请在“确认/阻断处理”列勾选后再生成。`)
+    return
+  }
   if (orderSummary.value.blocked > 0) {
     notify('仍有阻断项，不能生成排期；请修正来源文件后重新解析。')
     return
@@ -1455,7 +1492,7 @@ onBeforeUnmount(() => {
             >
               <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
               <div class="persistent-parse-alert__content">
-                <h3>{{ parseFailureMessage ? '解析未完成' : `发现 ${blockingIssueDetails.length} 项阻断` }}</h3>
+                <h3>{{ parseFailureMessage ? '解析未完成' : `发现 ${blockingIssueDetails.length} 项待确认/阻断` }}</h3>
                 <p v-if="parseFailureMessage">{{ parseFailureMessage }}</p>
                 <ul v-else>
                   <li v-for="item in blockingIssueDetails" :key="item.key">
@@ -1513,7 +1550,7 @@ onBeforeUnmount(() => {
             <article class="panel-card load-card">
               <header><h3>解析进度</h3><strong>{{ parsingFiles ? '处理中' : previewBatch ? '100%' : '0%' }}</strong></header>
               <div class="progress-track"><span :style="{ width: parsingFiles ? '55%' : previewBatch ? '100%' : '0%' }" /></div>
-              <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ previewBatch.summary.blocked }} 项阻断</p>
+              <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ unconfirmedDuplicateIssueCount }} 项待确认 · {{ orderSummary.blocked }} 项阻断</p>
               <p v-else>选择一份或多份PO及一份客户排期后开始真实解析</p>
             </article>
           </aside>
@@ -1528,8 +1565,8 @@ onBeforeUnmount(() => {
             <p>来源：<b>{{ previewBatch?.input_template || '请先导入 PO 与排期' }}</b> · 输出目标：<b>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</b></p>
           </div>
           <div class="view-heading__actions">
-            <button v-if="orderSummary.blocked > 0" type="button" class="button button--ghost" @click="resolveBlockedRow">查看阻断处理方式</button>
-            <button type="button" class="button button--primary" :disabled="!previewBatch || orderSummary.blocked > 0 || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
+            <button v-if="blockingIssueDetails.length" type="button" class="button button--ghost" @click="resolveBlockedRow">查看待确认/阻断处理</button>
+            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
         </header>
 
@@ -1541,7 +1578,7 @@ onBeforeUnmount(() => {
         >
           <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
           <div class="persistent-parse-alert__content">
-            <h3>当前批次有 {{ blockingIssueDetails.length }} 项阻断，暂不能生成排期</h3>
+            <h3>当前批次有 {{ blockingIssueDetails.length }} 项待确认/阻断，处理后可生成排期</h3>
             <ul>
               <li v-for="item in blockingIssueDetails" :key="item.key">
                 <b>{{ item.fileName }}</b>
@@ -1567,23 +1604,23 @@ onBeforeUnmount(() => {
           <span><FileCheck2 aria-hidden="true" /></span>
           <div>
             <strong>解析已完成，当前尚未输出排期</strong>
-            <p>请核对下方明细；无阻断项后点击“生成并下载客户排期”，系统才会写入并下载新的排期文件。</p>
+            <p>请核对下方明细；完成重复订单确认并处理阻断项后，点击“生成并下载客户排期”写入新排期。</p>
           </div>
           <button
             type="button"
             class="button button--primary"
-            :disabled="orderSummary.blocked > 0 || exportingSchedule"
+            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || exportingSchedule"
             @click="confirmAndGenerateSchedule"
           >
             <Download aria-hidden="true" />
-            {{ exportingSchedule ? '正在生成…' : orderSummary.blocked > 0 ? '处理阻断后生成' : '生成并下载客户排期' }}
+            {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : '生成并下载客户排期' }}
           </button>
         </article>
 
         <div class="summary-strip">
           <article><span>总行数</span><strong>{{ orderSummary.total }}</strong><small>订单明细</small></article>
           <article class="valid"><span>有效项</span><strong>{{ orderSummary.valid }}</strong><small>可直接写入</small></article>
-          <article class="warning"><span>警告</span><strong>{{ orderSummary.warning }}</strong><small>需跟客确认</small></article>
+          <article class="warning"><span>警告/待确认</span><strong>{{ orderSummary.warning }}</strong><small>不形成阻断</small></article>
           <article class="blocked"><span>阻断项</span><strong>{{ orderSummary.blocked }}</strong><small>不可生成</small></article>
         </div>
 
@@ -1591,7 +1628,7 @@ onBeforeUnmount(() => {
           <aside class="filter-panel">
             <h3><Filter aria-hidden="true" /> 活动筛选</h3>
             <label><input v-model="includeBlocked" type="checkbox"> 阻断性错误</label>
-            <label><input v-model="includeWarning" type="checkbox"> 数据警告</label>
+            <label><input v-model="includeWarning" type="checkbox"> 警告/待确认</label>
             <label><input v-model="includeValid" type="checkbox"> 已校验通过</label>
             <div class="filter-divider" />
             <label class="filter-field">客户 / 市场<select><option>全部 {{ previewCustomerName }}</option><option v-for="market in previewCustomerMarkets" :key="market">{{ market }}</option></select></label>
@@ -1615,7 +1652,7 @@ onBeforeUnmount(() => {
               <table class="unified-table">
                 <thead>
                   <tr>
-                    <th class="sticky-left">状态</th><th class="resolution-column">阻断处理</th>
+                    <th class="sticky-left">状态</th><th class="resolution-column">确认/阻断处理</th>
                     <th>来单日期</th><th>P/O#</th><th>Contract No.</th><th>客名/国家</th><th>产品编号</th>
                     <th>中文名称</th><th>产品名称</th><th>数量</th><th>装箱数</th><th>箱数</th>
                     <th>国家标准</th><th>单价HK</th><th>金额HK</th><th>包装</th><th>行Q</th><th>客Q</th><th>客要求走货期</th><th>溯源</th>
@@ -1637,7 +1674,7 @@ onBeforeUnmount(() => {
                               :checked="isIssueSkipped(issue)"
                               @change="toggleIssueSkip(issue)"
                             >
-                            <span><b>允许跳过</b>{{ issue.skip_label }}</span>
+                            <span><b>{{ isTestDuplicateIssue(issue) ? '确认通过' : '允许跳过' }}</b>{{ issue.skip_label }}</span>
                           </label>
                           <p v-else class="required-issue"><b>必须补齐</b>{{ issue.message }}</p>
                         </template>
