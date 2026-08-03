@@ -33,6 +33,7 @@ def test_customer_order_runtime_dependencies_are_declared_for_production():
         "xlrd>=2.0.1,<3",
         "msoffcrypto-tool>=5.4,<6",
         "lxml>=5,<7",
+        "pdfplumber>=0.11,<0.12",
     } <= production_requirements
 
 
