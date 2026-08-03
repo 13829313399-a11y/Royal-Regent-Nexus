@@ -637,6 +637,129 @@ describe('customer order center static frontend', () => {
     )
   })
 
+  it('keeps a Dickie parse failure visible in the import page', async () => {
+    customerOrderApiMock.previewDickieBatch.mockRejectedValueOnce(
+      new Error('Dickie PDF OCR 失败：附件页无法识别'),
+    )
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    Object.defineProperty(inputs[0]!.element, 'files', {
+      configurable: true,
+      value: [new File(['%PDF'], 'SC700130503-200.pdf', { type: 'application/pdf' })],
+    })
+    Object.defineProperty(inputs[1]!.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年.Dickie 生产情况.xlsx')],
+    })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    const alert = wrapper.get('[data-testid="import-parse-alert"]')
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toContain('解析未完成')
+    expect(alert.text()).toContain('Dickie PDF OCR 失败：附件页无法识别')
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+  })
+
+  it('keeps Dickie blockers visible in both import and preview pages', async () => {
+    customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
+      preview_schema_version: 'customer-order-dickie-preview-v1',
+      customer_code: 'dickie',
+      factory_id: 'huaxing',
+      po_file_name: 'SC700130503-200.pdf',
+      po_file_names: ['SC700130503-200.pdf'],
+      po_file_count: 1,
+      schedule_file_name: '2026年.Dickie 生产情况.xlsx',
+      source_po_sha256: 'po',
+      source_po_sha256s: ['po'],
+      source_schedule_sha256: 'schedule',
+      input_template: 'DICKIE_SIMBA_RELEASE_ORDER_PDF_V1',
+      target_template: 'DICKIE_PRODUCTION_SCHEDULE_V1',
+      output_file_name: '2026年.Dickie 生产情况.xlsx',
+      summary: { total: 1, valid: 0, warning: 0, blocked: 1 },
+      warnings: [],
+      rows: [{
+        id: 'dickie-SC700130503-200',
+        status: 'blocked',
+        status_label: '阻断',
+        received_date: '2026-08-03',
+        po_no: '',
+        contract_no: '300459663/60',
+        customer_country: 'Dickie Germany',
+        customer_name: 'Dickie Germany',
+        country: '德国',
+        product_no: '203712034ASW',
+        product_name_zh: '',
+        product_name_en: 'RC My First NL, 4-asst',
+        quantity: '14004',
+        units_per_carton: '12',
+        carton_count: '1167',
+        standard: '欧洲标准',
+        unit_price_hkd: '',
+        amount_hkd: '',
+        packaging: 'Dickie open box',
+        line_q: '2026-07-04',
+        customer_q: '',
+        requested_ship_date: '2026-07-04',
+        input_template: 'DICKIE_SIMBA_RELEASE_ORDER_PDF_V1',
+        target_template: 'DICKIE_PRODUCTION_SCHEDULE_V1',
+        item_sheet_name: 'Iteam表',
+        source_po_file_name: 'SC700130503-200.pdf',
+        lineage: {},
+        issues: [{
+          severity: 'blocked',
+          code: 'duplicate_reference',
+          field: 'reference_no',
+          message: 'Reference SC700130503-200 已存在于当前排期 Iteam表第 561 行，不能重复导入',
+          can_skip: false,
+          skip_key: '',
+          skip_label: '',
+        }],
+      }],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    Object.defineProperty(inputs[0]!.element, 'files', {
+      configurable: true,
+      value: [new File(['%PDF'], 'SC700130503-200.pdf', { type: 'application/pdf' })],
+    })
+    Object.defineProperty(inputs[1]!.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年.Dickie 生产情况.xlsx')],
+    })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="import-parse-alert"]').text()).toContain('不能重复导入')
+    await wrapper.setProps({ activeSection: 'preview' })
+    const previewAlert = wrapper.get('[data-testid="preview-blocker-alert"]')
+    expect(previewAlert.text()).toContain('当前批次有 1 项阻断')
+    expect(previewAlert.text()).toContain('SC700130503-200.pdf')
+    expect(previewAlert.text()).toContain('Iteam表第 561 行')
+  })
+
   it('selects Huaxing Caixing and routes Playmates PDFs to the three-sheet schedule flow', async () => {
     const caixingRowBase = {
       status: 'valid' as const,

@@ -84,6 +84,79 @@ MULTI_ORDER_PAGES = [
     "Release Order Page: 2 Port of discharge: MONTREAL",
 ]
 
+LEGACY_ASW_MASTER_ONLY_PAGES = [
+    """
+    Release Order Page 1
+    Reference: SC700130503/ 200
+    Date of creation: 27.AUG.2025
+    Pers. respons. Olivia Cheng - Tel:
+    Mat. No.: 2037120341AS Mat. EAN:
+    RC My First NL, 4-asst
+    Packing: 4 PC / 12 PC
+    open box
+    Quantity Master Contract No. PO Contract No. Unit Price Delivery Date
+    14,004 PC to be advised 04.JUL.2026
+    """,
+    "Release Order Page 2 Port of discharge: ROTTERDAM",
+    """
+    Release order Attachment
+    Item No. Shipment Master Purchase Delivery
+    990081000007 14,004 PC 300459663/ 50 700130503/ 206 0.60 HKD 19.JUN.2026
+    Handling cost of 2037120341AS
+    203712034ASW 3,501 PC 300459663/ 60 700130503/ 202 16.10 16.20 HKD 19.JUN.2026
+    203712039ASW 3,501 PC 300459663/ 70 700130503/ 203 16 Ao 1ya0 HKD 19.JUN.2026
+    203732000ASW 3,501 PC 300459663/ 80 700130503/ 204 1b-s0 yao HKD 19.JUN.2026
+    203742019ASW 3,501 PC 300459663/ 90 700130503/ 201 1x, fo 1g40 HKD 19.JUN.2026
+    """,
+]
+
+LEGACY_ASW_MIXED_CONTRACT_PAGES = [
+    """
+    Release Order Page 1
+    Reference: SC700130518/ 200
+    Date of creation: 28.AUG.2025
+    Pers. respons. Olivia Cheng - Tel:
+    Mat. No.: 2037120342AS Mat. EAN:
+    RC My First BE, 4-asst
+    Packing: 4 PC / 12 PC
+    open box
+    Quantity Master Contract No. PO Contract No. Unit Price Delivery Date
+    3,204 PC to be advised 04.JUL.2026
+    """,
+    "Release Order Page 2 Port of discharge: ROTTERDAM",
+    """
+    Release order Attachment
+    Item No. Shipment Master Purchase Delivery
+    990081000008 3,204 PC -300463212/ 10 700130518/ 206 0.60 HKD 19.JUN.2026
+    Handling cost of 2037120342AS
+    203712034AS1 ( BE ) 801 PC 500052799/ 20 300470070/ 10 70013051 8/ 202 16.30 HKD 19.JUN.2026
+    203712039ASW. (N L) 801 PC 300470075/ 10 700130518/ 201 17.30 HKD 19.JUN.2026
+    203732000ASW 801 PC 300470075/ 20 700130518/ 204 17.00 HKD 19.JUN.2026
+    203742019ASW 801 PC 300470075/ 30 70013051 8/ 203 16.10 HKD 19.JUN.2026
+    """,
+]
+
+LEGACY_TEDI_ATTACHMENT_PAGES = [
+    """
+    Release Order Page 1
+    Reference: SC700136228/ 100
+    Pers. respons. Michelle Wong - Tel:
+    Mat. No.: 2037120231TE Mat. EAN:
+    Lamborghini Police Car/Fendt Tractor
+    Packing: OPC / 5PC
+    Dickie open box
+    Quantity Master Contract No. PO Contract No. Unit Price Delivery Date
+    6,340 PC Please refer to attachment
+    """,
+    "Release Order Page: 2 This order is from Dickie Germany for customer Tedi Germany. Port of discharge: HAMBURG",
+    """
+    Release order Attachment
+    Item No. Shipment Master Purchase Delivery
+    203712023TED 2,536 PC 500052620/ 10 300462034/ 10 700136228/ 101 15.80 HKD 04.JUL.2026
+    203732000TED 3,804 PC 500052620/ 20 300462040/ 10 700136228/ 103 16.50 HKD 04.JUL.2026
+    """,
+]
+
 
 def build_dickie_schedule() -> bytes:
     workbook = openpyxl.Workbook()
@@ -294,6 +367,61 @@ def test_dickie_parser_maps_standard_release_order_and_mixed_allocations():
     assert mixed.country == "美国"
 
 
+def test_dickie_parser_handles_legacy_asw_and_tedi_attachment_rows():
+    master_only = service._parse_dickie_ocr_pages(
+        LEGACY_ASW_MASTER_ONLY_PAGES,
+        fallback_received_date="2026-08-03",
+    )
+    assert master_only.master_contract.splitlines() == [
+        "300459663/60",
+        "300459663/70",
+        "300459663/80",
+        "300459663/90",
+    ]
+    assert master_only.po_no == ""
+    assert master_only.quantity == Decimal("14004")
+    assert master_only.unit_price_hkd is None
+    assert master_only.allocations == [
+        ("300459663/60", Decimal("3501")),
+        ("300459663/70", Decimal("3501")),
+        ("300459663/80", Decimal("3501")),
+        ("300459663/90", Decimal("3501")),
+    ]
+
+    mixed_contracts = service._parse_dickie_ocr_pages(
+        LEGACY_ASW_MIXED_CONTRACT_PAGES,
+        fallback_received_date="2026-08-03",
+    )
+    assert mixed_contracts.master_contract.splitlines() == [
+        "500052799/20",
+        "300470075/10",
+        "300470075/20",
+        "300470075/30",
+    ]
+    assert mixed_contracts.po_no == "300470070/10"
+    assert mixed_contracts.quantity == Decimal("3204")
+    assert mixed_contracts.unit_price_hkd == Decimal("16.675")
+
+    tedi = service._parse_dickie_ocr_pages(
+        LEGACY_TEDI_ATTACHMENT_PAGES,
+        fallback_received_date="2026-08-03",
+    )
+    assert tedi.master_contract.splitlines() == [
+        "500052620/10",
+        "500052620/20",
+    ]
+    assert tedi.po_no.splitlines() == [
+        "300462034/10",
+        "300462040/10",
+    ]
+    assert tedi.quantity == Decimal("6340")
+    assert tedi.unit_price_hkd == Decimal("16.22")
+    assert tedi.allocations == [
+        ("500052620/10", Decimal("2536")),
+        ("500052620/20", Decimal("3804")),
+    ]
+
+
 def test_dickie_parser_splits_combined_pdf_and_accepts_ocr_separator_before_product_no(
     monkeypatch,
 ):
@@ -423,6 +551,32 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
 
 def _format_serial(value: str) -> str:
     return service._format_iso_date(Decimal(value))
+
+
+def test_dickie_preview_blocks_reference_already_in_current_schedule(monkeypatch):
+    workbook = openpyxl.load_workbook(BytesIO(build_dickie_schedule()))
+    workbook["Iteam表"]["C4"] = "SC700142026-1200"
+    schedule_output = BytesIO()
+    workbook.save(schedule_output)
+    workbook.close()
+    monkeypatch.setattr(service, "_extract_pdf_ocr_pages", lambda _content: STANDARD_PAGES)
+
+    preview = service.create_dickie_batch_preview(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=[("SC700142026-1200.pdf", b"%PDF-1.7 synthetic")],
+        schedule_file_name="2026年.Dickie 生产情况.xlsx",
+        schedule_content=schedule_output.getvalue(),
+    )
+
+    assert preview["summary"] == {"total": 1, "valid": 0, "warning": 0, "blocked": 1}
+    duplicate_issue = next(
+        issue
+        for issue in preview["rows"][0]["issues"]
+        if issue["code"] == "duplicate_reference"
+    )
+    assert duplicate_issue["severity"] == "blocked"
+    assert "Iteam表第 4 行" in duplicate_issue["message"]
 
 
 def test_customer_factory_mapping_rejects_cross_factory_imports():

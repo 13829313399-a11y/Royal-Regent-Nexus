@@ -417,6 +417,7 @@ const draggingUpload = ref<'po' | 'schedule' | null>(null)
 const selectedScheduleFile = ref('尚未选择客户排期')
 const receivedDate = ref(new Date().toISOString().slice(0, 10))
 const previewBatch = ref<CustomerOrderImportPreview | null>(null)
+const parseFailureMessage = ref('')
 const parsingFiles = ref(false)
 const exportingSchedule = ref(false)
 const generatedScheduleBlob = ref<Blob | null>(null)
@@ -600,6 +601,19 @@ const orderSummary = computed(() => ({
   warning: activeOrderRows.value.filter((row) => row.status === 'warning').length,
   blocked: activeOrderRows.value.filter((row) => row.status === 'blocked').length,
 }))
+
+const blockingIssueDetails = computed(() => {
+  const seen = new Set<string>()
+  return (previewBatch.value?.rows ?? []).flatMap((row) => row.issues
+    .filter((issue) => issue.severity === 'blocked'
+      && (!issue.can_skip || !skippedIssueKeys.value.includes(issue.skip_key)))
+    .flatMap((issue) => {
+      const key = [row.source_po_file_name, issue.code, issue.field, issue.message].join('|')
+      if (seen.has(key)) return []
+      seen.add(key)
+      return [{ key, fileName: row.source_po_file_name, message: issue.message }]
+    }))
+})
 
 const scheduleReferenceDate = Date.UTC(2026, 6, 27)
 
@@ -875,6 +889,7 @@ function resetImportBatch() {
   scheduleFile.value = null
   selectedScheduleFile.value = '尚未选择客户排期'
   previewBatch.value = null
+  parseFailureMessage.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   generatedScheduleFileName.value = ''
@@ -936,6 +951,7 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
     selectedScheduleFile.value = file.name
   }
   previewBatch.value = null
+  parseFailureMessage.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   generatedScheduleFileName.value = ''
@@ -1026,6 +1042,7 @@ async function parseSelectedFiles() {
     return
   }
   parsingFiles.value = true
+  parseFailureMessage.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   try {
@@ -1064,7 +1081,9 @@ async function parseSelectedFiles() {
     notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，警告 ${preview.summary.warning} 条，阻断 ${preview.summary.blocked} 条。`)
     navigate('preview')
   } catch (error) {
-    notify(`解析失败：${getApiErrorMessage(error)}`)
+    const message = `解析失败：${getApiErrorMessage(error)}`
+    parseFailureMessage.value = message
+    notify(message)
   } finally {
     parsingFiles.value = false
   }
@@ -1428,6 +1447,33 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
+            <article
+              v-if="parseFailureMessage || blockingIssueDetails.length"
+              class="persistent-parse-alert"
+              data-testid="import-parse-alert"
+              role="alert"
+            >
+              <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+              <div class="persistent-parse-alert__content">
+                <h3>{{ parseFailureMessage ? '解析未完成' : `发现 ${blockingIssueDetails.length} 项阻断` }}</h3>
+                <p v-if="parseFailureMessage">{{ parseFailureMessage }}</p>
+                <ul v-else>
+                  <li v-for="item in blockingIssueDetails" :key="item.key">
+                    <b>{{ item.fileName }}</b>
+                    <span>{{ item.message }}</span>
+                  </li>
+                </ul>
+              </div>
+              <button
+                v-if="previewBatch"
+                type="button"
+                class="button button--ghost"
+                @click="navigate('preview')"
+              >
+                查看阻断明细
+              </button>
+            </article>
+
             <article class="panel-card">
               <header class="panel-card__head">
                 <div><h3>实时导入队列</h3><p>参考HTML中的批量导入状态设计</p></div>
@@ -1486,6 +1532,24 @@ onBeforeUnmount(() => {
             <button type="button" class="button button--primary" :disabled="!previewBatch || orderSummary.blocked > 0 || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
         </header>
+
+        <article
+          v-if="blockingIssueDetails.length"
+          class="persistent-parse-alert persistent-parse-alert--preview"
+          data-testid="preview-blocker-alert"
+          role="alert"
+        >
+          <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+          <div class="persistent-parse-alert__content">
+            <h3>当前批次有 {{ blockingIssueDetails.length }} 项阻断，暂不能生成排期</h3>
+            <ul>
+              <li v-for="item in blockingIssueDetails" :key="item.key">
+                <b>{{ item.fileName }}</b>
+                <span>{{ item.message }}</span>
+              </li>
+            </ul>
+          </div>
+        </article>
 
         <ol class="wizard-steps wizard-steps--preview">
           <li class="done"><b>✓</b><span>选择客户</span></li>
@@ -2918,6 +2982,83 @@ tbody tr:hover td {
   color: #006c47;
   font-size: 9px;
   line-height: 1.45;
+}
+
+.persistent-parse-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid #ef8f85;
+  border-radius: 8px;
+  background: #fff1ef;
+  padding: 13px 14px;
+  color: #7d2018;
+}
+
+.persistent-parse-alert--preview {
+  margin-bottom: 14px;
+}
+
+.persistent-parse-alert__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: #ffd8d3;
+}
+
+.persistent-parse-alert__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.persistent-parse-alert__content {
+  min-width: 0;
+  flex: 1;
+}
+
+.persistent-parse-alert h3,
+.persistent-parse-alert p {
+  margin: 0;
+}
+
+.persistent-parse-alert h3 {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.persistent-parse-alert p,
+.persistent-parse-alert li {
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.persistent-parse-alert p {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.persistent-parse-alert ul {
+  display: grid;
+  max-height: 180px;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.persistent-parse-alert li {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 8px;
+}
+
+.persistent-parse-alert li b,
+.persistent-parse-alert li span {
+  overflow-wrap: anywhere;
 }
 
 .received-date-field {
@@ -5285,15 +5426,22 @@ tbody tr:hover td {
 
 @media (max-width: 680px) {
   .view-heading__actions,
-  .parse-banner {
+  .parse-banner,
+  .persistent-parse-alert {
     width: 100%;
     align-items: stretch;
     flex-direction: column;
   }
 
   .view-heading__actions .button,
-  .parse-banner .button {
+  .parse-banner .button,
+  .persistent-parse-alert .button {
     width: 100%;
+  }
+
+  .persistent-parse-alert li {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 
   .metric-grid,
