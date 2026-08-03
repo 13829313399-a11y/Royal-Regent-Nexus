@@ -9,11 +9,15 @@ from io import BytesIO
 from typing import Any
 import re
 
+from lxml import etree
+
 from app.services.customer_order_buzzbee import (
+    MAIN_NS,
     MAX_BATCH_PO_BYTES,
     MAX_BATCH_PO_FILES,
     MAX_PO_BYTES,
     MAX_SCHEDULE_BYTES,
+    NS,
     SCHEDULE_PASSWORD,
     CustomerOrderWorkbookError,
     OoxmlSchedule,
@@ -174,6 +178,10 @@ def _matrix_product_key(value: str) -> str:
     return match.group(1) if match else re.sub(r"\s+", "", str(value or "")).upper()
 
 
+def _assortment_product_key(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
 def _extract_metadata(text: str) -> dict[str, str]:
     date_match = re.search(r"\bDATE\s*:\s*(?:\n\s*)?([^\n]+)", text, re.IGNORECASE)
     source_po_date = _slash_date(date_match.group(1) if date_match else "")
@@ -237,6 +245,10 @@ def _extract_metadata(text: str) -> dict[str, str]:
         packaging = "美版彩盒"
     elif "EU STANDARD" in upper or "EUROPEAN STANDARD" in upper:
         packaging = "EU盒包装"
+    elif "GULLIVER PACKAGING" in upper and (
+        "RUS/KZ" in upper or "RUSSIAN" in upper or "RUSSIA" in upper
+    ):
+        packaging = "俄罗斯彩盒包装"
 
     # 彩星的“国家标准”按 REMARKS 中的包装标准判断。ASTM/EN 玩具
     # 安全合规文字不是此排期字段的分类依据；例如同一份美国包装 PO
@@ -362,7 +374,7 @@ def _extract_grouped_products(
                 assortment_line = ASSORTMENT_LINE_PATTERN.match(line)
                 if assortment_line:
                     assortment[
-                        _matrix_product_key(assortment_line.group(1))
+                        _assortment_product_key(assortment_line.group(1))
                     ] = Decimal(assortment_line.group(2))
                 carton_match = PCS_PER_CARTON_PATTERN.search(line)
                 if carton_match:
@@ -380,7 +392,7 @@ def _extract_grouped_products(
             Decimal("0"),
         )
         for product in products:
-            product_key = _matrix_product_key(product["product_no"])
+            product_key = _assortment_product_key(product["product_no"])
             units_per_carton = assortment.get(product_key)
             if units_per_carton is None and len(products) == 1:
                 units_per_carton = _infer_pack_from_product_code(product["product_no"])
@@ -918,6 +930,42 @@ class CaixingSchedule(OoxmlSchedule):
         self._write_review(groups)
         self._write_order(groups)
         self._write_item(groups)
+        self.ensure_business_header_freeze()
+
+    def ensure_business_header_freeze(self) -> None:
+        for sheet_name, frozen_rows in (
+            (REVIEW_SHEET, 2),
+            (ORDER_SHEET, 2),
+            (ITEM_SHEET, 3),
+        ):
+            path = self.sheet_paths[sheet_name]
+            root = etree.fromstring(self.parts[path])
+            sheet_views = root.find("m:sheetViews", NS)
+            if sheet_views is None:
+                sheet_views = etree.Element(f"{{{MAIN_NS}}}sheetViews")
+                sheet_pr = root.find("m:sheetPr", NS)
+                root.insert(1 if sheet_pr is not None else 0, sheet_views)
+            sheet_view = sheet_views.find("m:sheetView", NS)
+            if sheet_view is None:
+                sheet_view = etree.SubElement(
+                    sheet_views,
+                    f"{{{MAIN_NS}}}sheetView",
+                    workbookViewId="0",
+                )
+            pane = sheet_view.find("m:pane", NS)
+            if pane is None:
+                pane = etree.Element(f"{{{MAIN_NS}}}pane")
+                sheet_view.insert(0, pane)
+            pane.set("ySplit", str(frozen_rows))
+            pane.set("topLeftCell", pane.get("topLeftCell") or f"A{frozen_rows + 1}")
+            pane.set("activePane", "bottomRight" if pane.get("xSplit") else "bottomLeft")
+            pane.set("state", "frozen")
+            self.parts[path] = etree.tostring(
+                root,
+                xml_declaration=True,
+                encoding="UTF-8",
+                standalone=True,
+            )
 
 
 def _prepare_caixing_schedule(
@@ -1217,7 +1265,7 @@ def _preview_row(
                 "warning",
                 "missing_packaging",
                 "packaging",
-                "未从 PO REMARKS 识别到美版或 EU 包装要求",
+                "未从 PO REMARKS 识别到美版、EU 或俄罗斯包装要求",
             )
         )
     if not parsed.standard:
@@ -1244,12 +1292,13 @@ def _preview_row(
         )
         issues.append(
             _make_issue(
-                "blocked",
+                "warning",
                 "missing_product_matrix_column",
                 "product_no",
-                f"产品 {parsed.product_no} 在{missing_sheets}右侧产品栏没有对应列",
-                can_skip=True,
-                skip_label="横向产品栏留空，稍后由跟客补充",
+                (
+                    f"产品 {parsed.product_no} 在{missing_sheets}右侧产品栏没有对应列；"
+                    "本次仍可导出，横向产品栏保持空白"
+                ),
             )
         )
 
@@ -1261,10 +1310,15 @@ def _preview_row(
     if business_key in existing:
         issues.append(
             _make_issue(
-                "warning",
+                "blocked",
                 "existing_order_line",
                 "po_no",
-                f"当前排期已存在相同 PO/S-C/产品 {parsed.product_no}；测试阶段允许确认后继续导出",
+                (
+                    f"当前排期已存在相同 PO/S-C/产品 {parsed.product_no}；"
+                    "测试阶段可人工确认后重复导入"
+                ),
+                can_skip=True,
+                skip_label="测试阶段确认重复导入当前排期已有订单",
             )
         )
 

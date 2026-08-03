@@ -1,10 +1,14 @@
 from datetime import date
 
+import pytest
+
 from app.services.customer_order_huaxing import (
     HUAXING_CUSTOMER_MAPPINGS,
+    HuaxingCustomerOrderError,
     _dedupe_multi_orders,
     _issues,
     _record_fields,
+    _validate_skips,
 )
 from app.services.huaxing_order_legacy import (
     edu_schedule,
@@ -113,3 +117,31 @@ def test_common_preview_contract_maps_each_customer_and_blocks_high_risk_flags()
     )
     assert issues[0]["severity"] == "blocked"
     assert issues[0]["can_skip"] is False
+
+
+def test_existing_orders_are_test_stage_confirmable_but_data_risks_are_not():
+    issues = _issues(
+        {
+            "po_number": "PO-EXISTING",
+            "_duplicate_existing": True,
+            "flags": [{"level": "high", "code": "missing_item", "text": "缺货号"}],
+        },
+        "maxx-1",
+    )
+    duplicate = next(issue for issue in issues if issue["code"] == "duplicate_existing_order")
+    hard_blocker = next(issue for issue in issues if issue["code"] == "missing_item")
+
+    assert duplicate["severity"] == "blocked"
+    assert duplicate["can_skip"] is True
+    assert duplicate["skip_label"] == "测试阶段确认重复导入当前或历史排期已有订单"
+    assert hard_blocker["can_skip"] is False
+
+    preview = {"rows": [{"issues": issues}]}
+    with pytest.raises(HuaxingCustomerOrderError, match="缺货号"):
+        _validate_skips(preview, {duplicate["skip_key"]})
+    _validate_skips({"rows": [{"issues": [duplicate]}]}, {duplicate["skip_key"]})
+    with pytest.raises(HuaxingCustomerOrderError, match="不允许通过"):
+        _validate_skips(
+            preview,
+            {duplicate["skip_key"], hard_blocker["skip_key"]},
+        )

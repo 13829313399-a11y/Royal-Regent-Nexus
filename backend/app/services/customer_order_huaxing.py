@@ -210,6 +210,9 @@ def _prepare_360(
     records, existing = three_sixty_schedule.filter_existing_schedule_records(
         schedule_content, prepared,
     )
+    for record in existing:
+        record["_duplicate_existing"] = True
+    records.extend(existing)
     warnings.extend(inherited)
     missing_pack = [
         _text(row.get("production_no")) for row in records
@@ -222,7 +225,8 @@ def _prepare_360(
     if existing:
         numbers = sorted({_text(row.get("production_no")) for row in existing if row.get("production_no")})
         warnings.append(
-            f"{len(existing)} 行已存在当前/历史排期，本次未重复生成：" + "、".join(numbers[:20])
+            f"{len(existing)} 行已存在当前/历史排期，测试阶段可确认后重复生成："
+            + "、".join(numbers[:20])
         )
     return PreparedBatch(records, warnings, _text(schedule.get("sheet")) or "360客排期表")
 
@@ -276,13 +280,25 @@ def _prepare_seasons(
             row["_source_po_file_name"] = file_name
         documents.append(document)
     reconciled = shixin_schedule.reconcile_documents(documents, schedule.get("records", []))
-    warnings = list(reconciled.get("warnings", []))
+    warnings = [
+        _text(item).replace(
+            "本次不重复生成、不重复入库",
+            "测试阶段可在预览确认后重复生成",
+        )
+        for item in reconciled.get("warnings", [])
+    ]
+    existing_records = [
+        {**record, "_duplicate_existing": True}
+        for record in reconciled.get("existing_records", [])
+    ]
     if reconciled.get("modification_records"):
         warnings.append(
             f"{len(reconciled['modification_records'])} 行数量冲突已按修改/补单拦截，不进入本次新单。"
         )
     return PreparedBatch(
-        reconciled.get("records", []), warnings, _text(schedule.get("sheet")) or "正单评审表",
+        [*reconciled.get("records", []), *existing_records],
+        warnings,
+        _text(schedule.get("sheet")) or "正单评审表",
     )
 
 
@@ -361,15 +377,22 @@ def _prepare_multi(
             if line.get("is_charge"):
                 continue
             po_number = line.get("po_number") or order.get("po_number")
-            if multi_schedule.normalize_key(po_number) in existing_by_po:
+            duplicate_existing = (
+                multi_schedule.normalize_key(po_number) in existing_by_po
+            )
+            if duplicate_existing:
                 existing_count += 1
-                continue
             row = multi_schedule._line_values(order, line)
             row["_source_po_file_name"] = _text(order.get("filename"))
             row["flags"] = multi_schedule._record_flags(row, customer_code, date.today())
+            if duplicate_existing:
+                row["_duplicate_existing"] = True
             records.append(row)
     if existing_count:
-        warnings.append(f"{existing_count} 行 PO 已存在当前或已走货排期，本次未重复生成。")
+        warnings.append(
+            f"{existing_count} 行 PO 已存在当前或已走货排期，"
+            "测试阶段可在预览确认后重复生成。"
+        )
     return PreparedBatch(records, warnings, _text(info.get("sheet")))
 
 
@@ -529,6 +552,27 @@ def _issues(record: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
             "skip_key": f"{row_id}:legacy_medium_risk",
             "skip_label": "",
         })
+    if record.get("_duplicate_existing"):
+        duplicate_identity = _joined(
+            record.get("customer_po"),
+            record.get("po_no"),
+            record.get("po_number"),
+            record.get("production_no"),
+            record.get("oqf_no"),
+            record.get("contract_no"),
+        ) or "当前订单"
+        issues.append({
+            "severity": "blocked",
+            "code": "duplicate_existing_order",
+            "field": "po_no",
+            "message": (
+                f"{duplicate_identity} 已存在当前或历史排期；"
+                "测试阶段可人工确认后重复导入"
+            ),
+            "can_skip": True,
+            "skip_key": f"{row_id}:duplicate_existing_order",
+            "skip_label": "测试阶段确认重复导入当前或历史排期已有订单",
+        })
     return issues
 
 
@@ -664,6 +708,28 @@ def _export_prepared(
         )
 
 
+def _validate_skips(preview: dict[str, Any], requested_skips: set[str]) -> None:
+    available_skips = {
+        issue["skip_key"]
+        for row in preview["rows"]
+        for issue in row["issues"]
+        if issue["can_skip"]
+    }
+    if requested_skips - available_skips:
+        raise HuaxingCustomerOrderError("所选确认项已失效或不允许通过，请重新解析")
+    blockers = [
+        issue["message"]
+        for row in preview["rows"]
+        for issue in row["issues"]
+        if issue["severity"] == "blocked"
+        and issue["skip_key"] not in requested_skips
+    ]
+    if blockers:
+        raise HuaxingCustomerOrderError(
+            "仍有阻断项：" + "；".join(dict.fromkeys(blockers))
+        )
+
+
 def export_huaxing_customer_schedule(
     *, customer_code: str, factory_id: str, received_date: str,
     po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
@@ -674,14 +740,7 @@ def export_huaxing_customer_schedule(
         po_files=po_files, schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
-    if skipped_issue_keys:
-        raise HuaxingCustomerOrderError("这 6 个客户的高风险项不可跳过，请重新解析并修正源文件")
-    blockers = [
-        issue["message"] for row in preview["rows"] for issue in row["issues"]
-        if issue["severity"] == "blocked"
-    ]
-    if blockers:
-        raise HuaxingCustomerOrderError("仍有阻断项：" + "；".join(dict.fromkeys(blockers)))
+    _validate_skips(preview, skipped_issue_keys or set())
     if not preview["rows"]:
         raise HuaxingCustomerOrderError("本批文件没有可安全生成的新单明细，请查看预览告警")
     prepared = _prepare_batch(customer_code, po_files, schedule_file_name, schedule_content)

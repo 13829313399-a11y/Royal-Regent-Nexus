@@ -655,3 +655,28 @@ def test_po_number_is_optional_for_standard_customer_but_required_for_walmart():
     assert walmart_row["status"] == "blocked"
     assert po_issue["message"] == "WM 客 P/O# 未能从 PO 提取"
     assert po_issue["can_skip"] is False
+
+
+def test_batch_duplicate_order_line_is_test_stage_confirmable():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    base = {
+        "po_no": "PO-1",
+        "contract_no": "SC-1",
+        "product_no": "ITEM-1",
+        "requested_ship_date": "2026-08-20",
+        "status": "valid",
+        "status_label": "有效",
+        "issues": [],
+    }
+    rows = [
+        {**base, "id": "row-1", "source_po_file_name": "first.xlsx"},
+        {**base, "id": "row-2", "source_po_file_name": "second.xlsx", "issues": []},
+    ]
+
+    service._mark_batch_duplicates(rows)
+
+    issue = rows[1]["issues"][0]
+    assert rows[1]["status"] == "blocked"
+    assert issue["code"] == "duplicate_batch_order_line"
+    assert issue["can_skip"] is True
+    assert issue["skip_key"] == "row-2|duplicate_batch_order_line|po_no"
