@@ -165,6 +165,33 @@ THREE_D_PRINTING_REVISION = "20260729_0041"
 THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset(
     {"20260728_0039", "20260729_0040"}
 )
+INJECTION_SCHEDULING_PHASE2_REVISION = "20260731_0043"
+INJECTION_SCHEDULING_PHASE2_PREVIOUS_REVISIONS = frozenset(
+    {"20260729_0041", "20260731_0042"}
+)
+INJECTION_SCHEDULING_PHASE3_REVISION = "20260731_0044"
+INJECTION_SCHEDULING_PHASE3_PREVIOUS_REVISIONS = frozenset({"20260731_0043"})
+INJECTION_SCHEDULING_PHASE4_REVISION = "20260731_0045"
+INJECTION_SCHEDULING_PHASE4_PREVIOUS_REVISIONS = frozenset({"20260731_0044"})
+INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
+INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
+    "injection_scheduling_machines": {
+        "machine_class_raw",
+        "machine_a_class",
+        "normalization_status",
+        "process_tags_json",
+        "special_machine_type",
+    },
+    "injection_scheduling_molds": {
+        "mold_class_raw",
+        "mold_a_class",
+        "normalization_status",
+        "process_tags_json",
+        "special_machine_type",
+    },
+}
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
@@ -302,6 +329,99 @@ def ensure_three_d_printing_schema_ready() -> None:
     )
 
 
+def ensure_injection_scheduling_phase2_schema_ready() -> None:
+    """Do not let create_all bypass the injection-scheduling Phase 2 migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if "alembic_version" not in set(inspector.get_table_names()):
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+    if current_revision not in INJECTION_SCHEDULING_PHASE2_PREVIOUS_REVISIONS:
+        return
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产阶段 2 主数据迁移 "
+        f"{INJECTION_SCHEDULING_PHASE2_REVISION}；当前版本：{current_revision}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_phase3_schema_ready() -> None:
+    """Do not let create_all bypass the Phase 3 execution migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if "alembic_version" not in set(inspector.get_table_names()):
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+    if current_revision not in INJECTION_SCHEDULING_PHASE3_PREVIOUS_REVISIONS:
+        return
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产阶段 3 执行闭环迁移 "
+        f"{INJECTION_SCHEDULING_PHASE3_REVISION}；当前版本：{current_revision}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_phase4_schema_ready() -> None:
+    """Do not let create_all bypass the Phase 4 import migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if "alembic_version" not in set(inspector.get_table_names()):
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+    if current_revision not in INJECTION_SCHEDULING_PHASE4_PREVIOUS_REVISIONS:
+        return
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产阶段 4 Excel 导入迁移 "
+        f"{INJECTION_SCHEDULING_PHASE4_REVISION}；当前版本：{current_revision}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_v2_phase0_schema_ready() -> None:
+    """Do not let create_all bypass the V2 rebuild after revision 0047."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing: list[str] = []
+        for table_name, required_columns in (
+            INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS.items()
+        ):
+            if table_name not in table_names:
+                missing.append(f"table:{table_name}")
+                continue
+            columns = {
+                column["name"] for column in inspector.get_columns(table_name)
+            }
+            missing.extend(
+                f"column:{table_name}.{column_name}"
+                for column_name in sorted(required_columns - columns)
+            )
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产 V2 Phase 0 重建迁移 "
+        f"{INJECTION_SCHEDULING_V2_PHASE0_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -351,6 +471,9 @@ def ensure_sqlite_legacy_columns() -> None:
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
+        injection_scheduling,  # noqa: F401
+        injection_scheduling_execution,  # noqa: F401
+        injection_scheduling_import,  # noqa: F401
         internal_quote,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
@@ -358,6 +481,7 @@ def init_db() -> None:
         three_d_printing,  # noqa: F401
     )
     from app.services.auth import seed_auth_defaults
+    from app.services.injection_scheduling import seed_injection_scheduling_defaults
     from app.services.internal_quote_baseline import (
         seed_internal_quote_pricing_baseline_defaults,
     )
@@ -369,12 +493,17 @@ def init_db() -> None:
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
     ensure_three_d_printing_schema_ready()
+    ensure_injection_scheduling_phase2_schema_ready()
+    ensure_injection_scheduling_phase3_schema_ready()
+    ensure_injection_scheduling_phase4_schema_ready()
+    ensure_injection_scheduling_v2_phase0_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:
         seed_auth_defaults(db)
         seed_internal_quote_pricing_baseline_defaults(db)
+        seed_injection_scheduling_defaults(db)
         seed_molding_sample_defaults(db)
         seed_raw_material_defaults(db)
         seed_three_d_printing_defaults(db)
