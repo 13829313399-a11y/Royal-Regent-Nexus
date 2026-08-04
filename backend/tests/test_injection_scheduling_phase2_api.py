@@ -160,6 +160,9 @@ def test_phase2_master_data_revision_rules_and_factory_isolation(monkeypatch):
         machine_body = machine.json()
         assert machine_body["factory_id"] == "huaxing"
         assert machine_body["injection_capacity_g"] == 617
+        assert machine_body["machine_class_raw"] == "32A"
+        assert machine_body["machine_a_class"] == 32
+        assert machine_body["normalization_status"] == "COMPLETE"
         assert machine_body["revision"] == 1
 
         duplicate = client.post(
@@ -180,14 +183,18 @@ def test_phase2_master_data_revision_rules_and_factory_isolation(monkeypatch):
         )
         assert mold.status_code == 201, mold.text
         assert mold.json()["whole_shot_net_weight_g"] == 379
+        assert mold.json()["mold_class_raw"] == "32A"
+        assert mold.json()["mold_a_class"] == 32
+        assert mold.json()["normalization_status"] == "COMPLETE"
 
         incomplete = mold_payload("huaxing", "MISSING-SIZE")
         incomplete["length_mm"] = None
-        invalid_quality = client.post(
+        engineering_data_only = client.post(
             "/api/injection-scheduling/molds",
             json=incomplete,
         )
-        assert invalid_quality.status_code == 422
+        assert engineering_data_only.status_code == 201
+        assert engineering_data_only.json()["length_mm"] is None
 
         huaxing_machines = client.get(
             "/api/injection-scheduling/machines",

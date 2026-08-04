@@ -13,6 +13,7 @@ class InjectionSchedulingMatchEvaluate(StrictWriteModel):
     factory_id: str
     order_id: str = Field(min_length=1, max_length=96)
     machine_ids: list[str] = Field(default_factory=list, max_length=200)
+    allow_scheduled: bool = False
 
     @field_validator("factory_id", "order_id")
     @classmethod
@@ -25,6 +26,26 @@ class InjectionSchedulingMatchEvaluate(StrictWriteModel):
         normalized = [value.strip() for value in values if value.strip()]
         if len(normalized) != len(set(normalized)):
             raise ValueError("候选机台 ID 不能重复")
+        return normalized
+
+
+class InjectionSchedulingMatchBatchEvaluate(StrictWriteModel):
+    factory_id: str
+    order_ids: list[str] = Field(min_length=1, max_length=500)
+    machine_ids: list[str] = Field(default_factory=list, max_length=200)
+    rule_revision: int = Field(ge=1)
+
+    @field_validator("factory_id")
+    @classmethod
+    def strip_factory_id(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("order_ids", "machine_ids")
+    @classmethod
+    def normalize_ids(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values if value.strip()]
+        if len(normalized) != len(values) or len(normalized) != len(set(normalized)):
+            raise ValueError("ID 不能为空或重复")
         return normalized
 
 
@@ -48,6 +69,7 @@ class InjectionSchedulingMachineMatchOut(BaseModel):
     score: float | None
     hard_failures: list[InjectionSchedulingMatchReasonOut]
     warnings: list[InjectionSchedulingMatchReasonOut]
+    advisories: list[InjectionSchedulingMatchReasonOut] = Field(default_factory=list)
     score_breakdown: list[InjectionSchedulingScoreBreakdownOut]
     explanation: str
     rule_set_id: str
@@ -61,6 +83,13 @@ class InjectionSchedulingMatchEvaluationOut(BaseModel):
     rule_set_id: str
     rule_set_revision: int
     results: list[InjectionSchedulingMachineMatchOut]
+
+
+class InjectionSchedulingMatchBatchOut(BaseModel):
+    factory_id: str
+    rule_set_id: str
+    rule_set_revision: int
+    evaluations: list[InjectionSchedulingMatchEvaluationOut]
 
 
 class InjectionSchedulingSuggestionConfirm(StrictWriteModel):

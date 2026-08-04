@@ -13,8 +13,10 @@ from zipfile import BadZipFile, ZipFile
 from fastapi import HTTPException
 from lxml import etree
 
-PARSER_VERSION = "injection-scheduling-phase4-v1"
-PREVIEW_SCHEMA_VERSION = "phase4-import-v1"
+from app.services.injection_scheduling_rules import normalize_class_text
+
+PARSER_VERSION = "injection-scheduling-phase0-v2"
+PREVIEW_SCHEMA_VERSION = "phase0-import-v2"
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
 MAX_ZIP_ENTRY_BYTES = 64 * 1024 * 1024
@@ -365,12 +367,7 @@ def _machine_code(area: str, position: str) -> str:
 
 
 def _machine_class(value: str) -> str:
-    match = re.search(
-        r"([0-9]+(?:\.[0-9]+)?A)",
-        _clean_text(value),
-        re.IGNORECASE,
-    )
-    return match.group(1).upper() if match else _clean_text(value)[:64]
+    return _clean_text(value)[:64]
 
 
 def _robot_capabilities(value: str) -> list[str]:
@@ -392,7 +389,9 @@ def _arm_type(value: str) -> str:
         return "single"
     if "半自动" in text:
         return "manual"
-    return "none" if text in {"", "无"} else text[:64]
+    if not text:
+        return ""
+    return "none" if text == "无" else text[:64]
 
 
 def _fixture_type(value: str) -> str:
@@ -406,6 +405,40 @@ def _fixture_type(value: str) -> str:
     if "半自动" in text:
         return "manual"
     return text[:128]
+
+
+def _enrich_class_normalization(
+    items: list[dict[str, Any]],
+    *,
+    raw_key: str,
+    class_key: str,
+    entity_label: str,
+    issues: list[dict[str, Any]],
+) -> None:
+    for item in items:
+        normalized = normalize_class_text(item.get(raw_key, ""))
+        item[f"{class_key}_class_raw"] = normalized.raw
+        item[f"{class_key}_a_class"] = (
+            float(normalized.a_class) if normalized.a_class is not None else None
+        )
+        item["normalization_status"] = normalized.status
+        item["process_tags"] = list(normalized.process_tags)
+        item["special_machine_type"] = normalized.special_machine_type
+        if normalized.status != "REVIEW_REQUIRED":
+            continue
+        source = item.get("source", {})
+        identifier = item.get("machine_code") or item.get("mold_no") or "未命名"
+        issues.append(
+            _issue(
+                code="A_CLASS_REVIEW_REQUIRED",
+                message=f"{entity_label} {identifier} 的安数原文无法可信标准化",
+                sheet_name=source.get("sheet_name", ""),
+                source_row=source.get("source_row"),
+                field_name=raw_key,
+                raw_value=normalized.raw,
+                blocking=False,
+            )
+        )
 
 
 def _parse_machines(reader: _WorkbookReader, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -833,6 +866,20 @@ def parse_injection_scheduling_workbook(content: bytes, source_file_name: str) -
         machines = _parse_machines(reader, issues)
         molds = _parse_molds(reader, issues)
         tasks, molds = _parse_tasks(reader, molds, issues)
+        _enrich_class_normalization(
+            machines,
+            raw_key="machine_class",
+            class_key="machine",
+            entity_label="机台",
+            issues=issues,
+        )
+        _enrich_class_normalization(
+            molds,
+            raw_key="recommended_machine_class",
+            class_key="mold",
+            entity_label="模具",
+            issues=issues,
+        )
         known_machine_codes = {item["machine_code"] for item in machines}
         for task in tasks:
             if task["machine_code"] and task["machine_code"] not in known_machine_codes:

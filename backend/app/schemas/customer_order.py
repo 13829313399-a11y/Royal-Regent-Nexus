@@ -65,6 +65,33 @@ class CustomerOrderImportPreviewOut(BaseModel):
     input_template: str
     target_template: str
     output_file_name: str
+    duplicate_confirmation_enabled: bool = False
+    duplicate_confirmation_authorized: bool = False
+    confirmation_count: int = 0
+    preview_fingerprint: str
     summary: CustomerOrderImportSummaryOut
     rows: list[CustomerOrderLineOut]
     warnings: list[str]
+
+
+class CustomerOrderExportAuditOut(BaseModel):
+    id: str
+    actor_user_id: str | None
+    actor_username: str
+    actor_display_name: str
+    factory_id: str
+    customer_code: str
+    received_date: str
+    preview_schema_version: str
+    preview_fingerprint: str
+    po_file_names: list[str]
+    source_po_sha256s: list[str]
+    schedule_file_name: str
+    source_schedule_sha256: str
+    output_file_name: str
+    output_sha256: str
+    output_template: str
+    confirmed_issue_keys: list[str]
+    confirmed_issue_count: int
+    confirmation_reason: str
+    created_at: str

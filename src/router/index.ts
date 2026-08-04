@@ -45,6 +45,15 @@ const routes: RouteRecordRaw[] = [
     redirect: '/modules/engineering',
   },
   {
+    path: '/tools',
+    name: 'shared-tool-center',
+    component: () => import('@/views/ToolCenterView.vue'),
+    meta: {
+      title: '公共工具栏',
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/:department',
     name: 'modules-department',
     component: () => import('@/views/ModuleCenterView.vue'),
@@ -74,21 +83,24 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/injection-scheduling',
+    name: 'injection-scheduling-v2',
+    component: () => import('@/views/InjectionSchedulingV2View.vue'),
+    meta: {
+      title: '注塑排产中枢',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['injection_scheduling:read'],
+      enforcePermissions: true,
+      allowAuthenticatedReadOnly: true,
+    },
+  },
+  {
     path: '/change-password',
     name: 'change-password',
     component: () => import('@/views/ForcePasswordChangeView.vue'),
     meta: {
       title: '设置正式密码',
-      fullPage: true,
-      requiresAuth: true,
-    },
-  },
-  {
-    path: '/modules/production/injection-scheduling',
-    name: 'injection-scheduling-workspace',
-    component: () => import('@/views/InjectionSchedulingWorkspaceView.vue'),
-    meta: {
-      title: '注塑排产中枢',
       fullPage: true,
       requiresAuth: true,
     },

@@ -410,18 +410,44 @@ const emit = defineEmits<{
 
 const poInput = ref<HTMLInputElement | null>(null)
 const scheduleInput = ref<HTMLInputElement | null>(null)
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 const selectedCustomerCode = ref<CustomerOrderCustomerCode | ''>('')
 const poFiles = ref<File[]>([])
 const scheduleFile = ref<File | null>(null)
 const draggingUpload = ref<'po' | 'schedule' | null>(null)
 const selectedScheduleFile = ref('尚未选择客户排期')
-const receivedDate = ref(new Date().toISOString().slice(0, 10))
+const receivedDate = ref(formatLocalDate(new Date()))
 const previewBatch = ref<CustomerOrderImportPreview | null>(null)
+const parseFailureMessage = ref('')
+const exportFailureMessage = ref('')
 const parsingFiles = ref(false)
 const exportingSchedule = ref(false)
 const generatedScheduleBlob = ref<Blob | null>(null)
 const generatedScheduleFileName = ref('')
+const generatedPasswordRequired = ref(false)
 const skippedIssueKeys = ref<string[]>([])
+const confirmationReason = ref('')
+const testDuplicateIssueCodes = new Set([
+  'duplicate_reference',
+  'existing_order_line',
+  'duplicate_batch_order_line',
+  'duplicate_existing_order',
+])
+
+function isTestDuplicateIssue(issue: CustomerOrderIssue) {
+  return testDuplicateIssueCodes.has(issue.code)
+}
+
+function isConfirmationIssue(issue: CustomerOrderIssue) {
+  return issue.severity === 'confirmation'
+    || (issue.severity === 'blocked' && issue.can_skip && isTestDuplicateIssue(issue))
+}
 const searchQuery = ref('')
 const includeValid = ref(true)
 const includeWarning = ref(true)
@@ -437,6 +463,8 @@ const exceptionSearch = ref('')
 const acknowledgedExceptionIds = ref<string[]>([])
 const notice = ref('')
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
+let parseRequestSequence = 0
+let exportRequestSequence = 0
 
 const availableCustomers = computed(
   () => CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? [],
@@ -450,9 +478,11 @@ const selectedCustomerName = computed(
   () => selectedCustomer.value?.name ?? '尚未选择客户',
 )
 const preflightConfirmationText = computed(
-  () => selectedCustomer.value?.code === 'caixing'
-    ? '测试阶段：彩星重复订单仅警告，可确认后继续导出'
-    : '重复订单、日期差异、行Q与客Q',
+  () => previewBatch.value?.duplicate_confirmation_enabled
+    ? previewBatch.value?.duplicate_confirmation_authorized
+      ? '当前环境已启用测试阶段重复订单确认；请在预览中逐项确认并填写原因后导出'
+      : '当前环境已启用重复订单确认，但当前账号没有确认权限'
+    : '重复订单是否允许确认以当前环境策略和预览结果为准',
 )
 
 const orderRows = ref<OrderRow[]>([
@@ -540,20 +570,35 @@ const activeOrderRows = computed(() => (
         if (issues.length === 0) return row
         const remainingBlockers = issues.filter(
           (issue) => issue.severity === 'blocked'
+            && !isConfirmationIssue(issue)
             && (!issue.can_skip || !skippedIssueKeys.value.includes(issue.skip_key)),
+        )
+        const unresolvedConfirmations = issues.filter(
+          (issue) => isConfirmationIssue(issue)
+            && !skippedIssueKeys.value.includes(issue.skip_key),
         )
         const skippedIssues = issues.filter(
           (issue) => issue.can_skip && skippedIssueKeys.value.includes(issue.skip_key),
         )
-        if (remainingBlockers.length > 0) return row
+        if (remainingBlockers.length > 0) {
+          return row
+        }
+        if (unresolvedConfirmations.length > 0) {
+          return { ...row, status: 'warning' as const, statusLabel: '待确认' }
+        }
         if (issues.some((issue) => issue.severity === 'warning') || skippedIssues.length > 0) {
+          const confirmedDuplicates = skippedIssues.filter(isTestDuplicateIssue)
+          const skippedDataIssues = skippedIssues.filter((issue) => !isTestDuplicateIssue(issue))
           return {
             ...row,
             status: 'warning' as const,
-            statusLabel: skippedIssues.length > 0 ? '已跳过待补' : '警告',
+            statusLabel: confirmedDuplicates.length > 0 && skippedDataIssues.length === 0
+              ? '已确认通过'
+              : skippedIssues.length > 0 ? '已跳过待补' : '警告',
             issue: [
               row.issue,
-              ...skippedIssues.map((issue) => `人工跳过：${issue.skip_label}`),
+              ...confirmedDuplicates.map((issue) => `确认通过：${issue.skip_label}`),
+              ...skippedDataIssues.map((issue) => `人工跳过：${issue.skip_label}`),
             ].filter(Boolean).join('；'),
           }
         }
@@ -562,6 +607,9 @@ const activeOrderRows = computed(() => (
 ))
 
 const skippedIssueCount = computed(() => skippedIssueKeys.value.length)
+const confirmationReasonMissing = computed(() => (
+  skippedIssueCount.value > 0 && confirmationReason.value.trim().length < 4
+))
 const selectedPoFile = computed(() => {
   if (poFiles.value.length === 0) return '尚未选择 PO 文件'
   if (poFiles.value.length === 1) return poFiles.value[0]!.name
@@ -601,7 +649,38 @@ const orderSummary = computed(() => ({
   blocked: activeOrderRows.value.filter((row) => row.status === 'blocked').length,
 }))
 
-const scheduleReferenceDate = Date.UTC(2026, 6, 27)
+const unconfirmedDuplicateIssueCount = computed(() => (
+  (previewBatch.value?.rows ?? []).flatMap((row) => row.issues)
+    .filter((issue) => isConfirmationIssue(issue)
+      && issue.can_skip
+      && isTestDuplicateIssue(issue)
+      && !skippedIssueKeys.value.includes(issue.skip_key))
+    .length
+))
+
+const blockingIssueDetails = computed(() => {
+  const seen = new Set<string>()
+  return (previewBatch.value?.rows ?? []).flatMap((row) => row.issues
+    .filter((issue) => (
+      issue.severity === 'blocked'
+      && !isConfirmationIssue(issue)
+      && (!issue.can_skip || !skippedIssueKeys.value.includes(issue.skip_key))
+    ) || (
+      isConfirmationIssue(issue)
+      && !skippedIssueKeys.value.includes(issue.skip_key)
+    ))
+    .flatMap((issue) => {
+      const key = [row.source_po_file_name, issue.code, issue.field, issue.message].join('|')
+      if (seen.has(key)) return []
+      seen.add(key)
+      return [{ key, fileName: row.source_po_file_name, message: issue.message }]
+    }))
+})
+
+const scheduleReferenceDate = (() => {
+  const today = new Date()
+  return Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
+})()
 
 function getDeliveryMeta(requestedShipDate: string): {
   daysUntil: number
@@ -623,7 +702,7 @@ function getDeliveryMeta(requestedShipDate: string): {
   return { daysUntil, deliveryStatus: 'planned', deliveryStatusLabel: `计划中 · ${daysUntil} 天后` }
 }
 
-const factoryScheduleRows = computed(() => orderRows.value.map((row) => ({
+const factoryScheduleRows = computed(() => activeOrderRows.value.map((row) => ({
   ...row,
   deliveryMonth: row.requestedShipDate.slice(0, 7) || '待补日期',
   demandVersion: 'V1',
@@ -808,12 +887,23 @@ const previewRuleNotice = computed(() => {
   }
 })
 
+const generatedOutputDescription = computed(() => {
+  const customerName = previewCustomerName.value || selectedCustomerName.value
+  const targetTemplate = previewBatch.value?.target_template || selectedCustomer.value?.targetTemplate || '客户排期模板'
+  const confirmationText = skippedIssueCount.value > 0
+    ? `本批已人工确认/跳过 ${skippedIssueCount.value} 项。`
+    : '本批没有人工确认或跳过项。'
+  const passwordText = generatedPasswordRequired.value ? '工作簿打开密码为 2026。' : ''
+  return `已按 ${customerName} 映射处理 ${previewBatch.value?.po_file_count || poFiles.value.length} 份 PO，生成 ${targetTemplate}；源排期文件未被覆盖。${confirmationText}${passwordText}`
+})
+
 const canParseFiles = computed(() => Boolean(
   selectedCustomer.value
   && poFiles.value.length > 0
   && scheduleFile.value
   && receivedDate.value
-  && !parsingFiles.value,
+  && !parsingFiles.value
+  && !exportingSchedule.value,
 ))
 
 const traceFields = computed(() => {
@@ -870,15 +960,29 @@ function navigate(section: CustomerOrderCenterSection) {
   emit('navigate', section)
 }
 
-function resetImportBatch() {
-  poFiles.value = []
-  scheduleFile.value = null
-  selectedScheduleFile.value = '尚未选择客户排期'
+function clearPreviewState() {
+  parseRequestSequence += 1
+  exportRequestSequence += 1
+  parsingFiles.value = false
+  exportingSchedule.value = false
   previewBatch.value = null
+  parseFailureMessage.value = ''
+  exportFailureMessage.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   generatedScheduleFileName.value = ''
+  generatedPasswordRequired.value = false
   skippedIssueKeys.value = []
+  confirmationReason.value = ''
+  orderRows.value = []
+  traceRow.value = null
+}
+
+function resetImportBatch() {
+  clearPreviewState()
+  poFiles.value = []
+  scheduleFile.value = null
+  selectedScheduleFile.value = '尚未选择客户排期'
 }
 
 function selectCustomer(customerCode: CustomerOrderCustomerCode) {
@@ -935,11 +1039,7 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
     scheduleFile.value = file
     selectedScheduleFile.value = file.name
   }
-  previewBatch.value = null
-  scheduleGenerated.value = false
-  generatedScheduleBlob.value = null
-  generatedScheduleFileName.value = ''
-  skippedIssueKeys.value = []
+  clearPreviewState()
   notify(
     kind === 'po'
       ? `已选择 ${files.length} 份 PO；客户排期齐全后可批量解析。`
@@ -1025,48 +1125,65 @@ async function parseSelectedFiles() {
     notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和当前客户排期。`)
     return
   }
+  const requestId = ++parseRequestSequence
+  const customerCode = selectedCustomer.value.code
+  const requestedPoFiles = [...poFiles.value]
+  const requestedScheduleFile = scheduleFile.value
+  const requestedReceivedDate = receivedDate.value
+  const requestedFactoryId = props.factoryId
   parsingFiles.value = true
+  parseFailureMessage.value = ''
+  exportFailureMessage.value = ''
+  previewBatch.value = null
+  orderRows.value = []
+  skippedIssueKeys.value = []
+  confirmationReason.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
+  generatedScheduleFileName.value = ''
+  generatedPasswordRequired.value = false
   try {
-    const customerCode = selectedCustomer.value.code
     const preview = customerCode === 'dickie'
       ? await customerOrderApi.previewDickieBatch(
-          poFiles.value,
-          scheduleFile.value,
-          receivedDate.value,
-          props.factoryId,
+          requestedPoFiles,
+          requestedScheduleFile,
+          requestedReceivedDate,
+          requestedFactoryId,
         )
       : customerCode === 'caixing'
         ? await customerOrderApi.previewCaixingBatch(
-            poFiles.value,
-            scheduleFile.value,
-            receivedDate.value,
-            props.factoryId,
+            requestedPoFiles,
+            requestedScheduleFile,
+            requestedReceivedDate,
+            requestedFactoryId,
           )
       : isMappedCustomerCode(customerCode)
         ? await customerOrderApi.previewMappedBatch(
             customerCode,
-            poFiles.value,
-            scheduleFile.value,
-            receivedDate.value,
-            props.factoryId,
+            requestedPoFiles,
+            requestedScheduleFile,
+            requestedReceivedDate,
+            requestedFactoryId,
           )
       : await customerOrderApi.previewBuzzbeeBatch(
-          poFiles.value,
-          scheduleFile.value,
-          receivedDate.value,
-          props.factoryId,
+          requestedPoFiles,
+          requestedScheduleFile,
+          requestedReceivedDate,
+          requestedFactoryId,
         )
+    if (requestId !== parseRequestSequence) return
     previewBatch.value = preview
     orderRows.value = preview.rows.map(mapPreviewRow)
     skippedIssueKeys.value = []
-    notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，警告 ${preview.summary.warning} 条，阻断 ${preview.summary.blocked} 条。`)
+    notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，待确认 ${preview.confirmation_count ?? 0} 条，警告 ${preview.summary.warning} 条，阻断 ${preview.summary.blocked} 条。`)
     navigate('preview')
   } catch (error) {
-    notify(`解析失败：${getApiErrorMessage(error)}`)
+    if (requestId !== parseRequestSequence) return
+    const message = `解析失败：${getApiErrorMessage(error)}`
+    parseFailureMessage.value = message
+    notify(message)
   } finally {
-    parsingFiles.value = false
+    if (requestId === parseRequestSequence) parsingFiles.value = false
   }
 }
 
@@ -1079,20 +1196,35 @@ function toggleIssueSkip(issue: CustomerOrderIssue) {
   skippedIssueKeys.value = isIssueSkipped(issue)
     ? skippedIssueKeys.value.filter((key) => key !== issue.skip_key)
     : [...skippedIssueKeys.value, issue.skip_key]
+  if (skippedIssueKeys.value.length === 0) confirmationReason.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
   generatedScheduleFileName.value = ''
+  generatedPasswordRequired.value = false
+  exportFailureMessage.value = ''
 }
 
 function resolveBlockedRow() {
-  const skippable = orderRows.value.flatMap((row) => row.issues ?? [])
-    .filter((issue) => issue.severity === 'blocked' && issue.can_skip).length
-  const required = orderRows.value.flatMap((row) => row.issues ?? [])
+  const issues = orderRows.value.flatMap((row) => row.issues ?? [])
+  const confirmableDuplicates = issues
+    .filter((issue) => isConfirmationIssue(issue))
+    .filter((issue) => issue.can_skip && isTestDuplicateIssue(issue)).length
+  const skippable = issues
+    .filter((issue) => issue.severity === 'blocked')
+    .filter((issue) => issue.can_skip && !isTestDuplicateIssue(issue)).length
+  const required = issues
     .filter((issue) => issue.severity === 'blocked' && !issue.can_skip).length
-  notify(`当前可人工跳过 ${skippable} 项，必须补齐 ${required} 项；请在表格“阻断处理”列操作。`)
+  notify(
+    `当前重复订单可确认通过 ${confirmableDuplicates} 项，可人工跳过 ${skippable} 项，`
+    + `必须补齐 ${required} 项；请在表格“确认/阻断处理”列操作。`,
+  )
 }
 
 async function confirmAndGenerateSchedule() {
+  if (unconfirmedDuplicateIssueCount.value > 0) {
+    notify(`仍有 ${unconfirmedDuplicateIssueCount.value} 项重复订单待确认，请在“确认/阻断处理”列勾选后再生成。`)
+    return
+  }
   if (orderSummary.value.blocked > 0) {
     notify('仍有阻断项，不能生成排期；请修正来源文件后重新解析。')
     return
@@ -1101,52 +1233,71 @@ async function confirmAndGenerateSchedule() {
     notify('请先从“PO 与客户排期导入”完成真实解析。')
     return
   }
+  if (confirmationReasonMissing.value) {
+    notify('本批存在人工确认或跳过项，请填写至少 4 个字的确认原因。')
+    return
+  }
+  const requestId = ++exportRequestSequence
+  const requestedPreview = previewBatch.value
+  const requestedPoFiles = [...poFiles.value]
+  const requestedScheduleFile = scheduleFile.value
+  const requestedReceivedDate = receivedDate.value
+  const requestedFactoryId = props.factoryId
+  const requestedSkippedIssueKeys = [...skippedIssueKeys.value]
+  const requestedConfirmationReason = confirmationReason.value.trim()
   exportingSchedule.value = true
+  exportFailureMessage.value = ''
   try {
-    const customerCode = previewBatch.value.customer_code as CustomerOrderCustomerCode
+    const customerCode = requestedPreview.customer_code as CustomerOrderCustomerCode
     const result = customerCode === 'dickie'
       ? await customerOrderApi.exportDickieBatch(
-          poFiles.value,
-          scheduleFile.value,
-          receivedDate.value,
-          previewBatch.value.output_file_name,
-          props.factoryId,
-          skippedIssueKeys.value,
+          requestedPoFiles,
+          requestedScheduleFile,
+          requestedReceivedDate,
+          requestedPreview.output_file_name,
+          requestedFactoryId,
+          requestedSkippedIssueKeys,
+          requestedPreview.preview_fingerprint,
+          requestedConfirmationReason,
         )
       : customerCode === 'caixing'
         ? await customerOrderApi.exportCaixingBatch(
-            poFiles.value,
-            scheduleFile.value,
-            receivedDate.value,
-            previewBatch.value.output_file_name,
-            props.factoryId,
-            skippedIssueKeys.value,
+            requestedPoFiles,
+            requestedScheduleFile,
+            requestedReceivedDate,
+            requestedPreview.output_file_name,
+            requestedFactoryId,
+            requestedSkippedIssueKeys,
+            requestedPreview.preview_fingerprint,
+            requestedConfirmationReason,
           )
       : isMappedCustomerCode(customerCode)
         ? await customerOrderApi.exportMappedBatch(
             customerCode,
-            poFiles.value,
-            scheduleFile.value,
-            receivedDate.value,
-            previewBatch.value.output_file_name,
-            props.factoryId,
-            skippedIssueKeys.value,
+            requestedPoFiles,
+            requestedScheduleFile,
+            requestedReceivedDate,
+            requestedPreview.output_file_name,
+            requestedFactoryId,
+            requestedSkippedIssueKeys,
+            requestedPreview.preview_fingerprint,
+            requestedConfirmationReason,
           )
       : await customerOrderApi.exportBuzzbeeBatch(
-          poFiles.value,
-          scheduleFile.value,
-          receivedDate.value,
-          previewBatch.value.output_file_name,
-          props.factoryId,
-          skippedIssueKeys.value,
+          requestedPoFiles,
+          requestedScheduleFile,
+          requestedReceivedDate,
+          requestedPreview.output_file_name,
+          requestedFactoryId,
+          requestedSkippedIssueKeys,
+          requestedPreview.preview_fingerprint,
+          requestedConfirmationReason,
         )
+    if (requestId !== exportRequestSequence) return
     generatedScheduleBlob.value = result.blob
     generatedScheduleFileName.value = result.fileName
+    generatedPasswordRequired.value = result.passwordRequired
     scheduleGenerated.value = true
-    orderRows.value.forEach((row) => {
-      row.status = 'valid'
-      row.statusLabel = '已确认'
-    })
     downloadGeneratedSchedule()
     notify(
       result.passwordRequired
@@ -1154,9 +1305,12 @@ async function confirmAndGenerateSchedule() {
         : `已生成并下载 ${result.fileName}；原客户排期未被覆盖。`,
     )
   } catch (error) {
-    notify(`生成失败：${getApiErrorMessage(error)}`)
+    if (requestId !== exportRequestSequence) return
+    const message = `生成失败：${getApiErrorMessage(error)}`
+    exportFailureMessage.value = message
+    notify(message)
   } finally {
-    exportingSchedule.value = false
+    if (requestId === exportRequestSequence) exportingSchedule.value = false
   }
 }
 
@@ -1193,6 +1347,14 @@ watch(
     resetImportBatch()
   },
 )
+
+watch(receivedDate, (currentDate, previousDate) => {
+  if (currentDate === previousDate) return
+  if (previewBatch.value || parsingFiles.value || scheduleGenerated.value || exportingSchedule.value) {
+    clearPreviewState()
+    notify('来单日期已变更，原预览已失效；请按新日期重新解析。')
+  }
+})
 
 onBeforeUnmount(() => {
   if (noticeTimer) window.clearTimeout(noticeTimer)
@@ -1428,6 +1590,34 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
+            <article
+              v-if="parseFailureMessage || exportFailureMessage || blockingIssueDetails.length"
+              class="persistent-parse-alert"
+              data-testid="import-parse-alert"
+              role="alert"
+            >
+              <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+              <div class="persistent-parse-alert__content">
+                <h3>{{ parseFailureMessage ? '解析未完成' : exportFailureMessage ? '排期生成未完成' : `发现 ${blockingIssueDetails.length} 项待确认/阻断` }}</h3>
+                <p v-if="parseFailureMessage">{{ parseFailureMessage }}</p>
+                <p v-else-if="exportFailureMessage">{{ exportFailureMessage }}</p>
+                <ul v-else>
+                  <li v-for="item in blockingIssueDetails" :key="item.key">
+                    <b>{{ item.fileName }}</b>
+                    <span>{{ item.message }}</span>
+                  </li>
+                </ul>
+              </div>
+              <button
+                v-if="previewBatch"
+                type="button"
+                class="button button--ghost"
+                @click="navigate('preview')"
+              >
+                查看阻断明细
+              </button>
+            </article>
+
             <article class="panel-card">
               <header class="panel-card__head">
                 <div><h3>实时导入队列</h3><p>参考HTML中的批量导入状态设计</p></div>
@@ -1467,7 +1657,7 @@ onBeforeUnmount(() => {
             <article class="panel-card load-card">
               <header><h3>解析进度</h3><strong>{{ parsingFiles ? '处理中' : previewBatch ? '100%' : '0%' }}</strong></header>
               <div class="progress-track"><span :style="{ width: parsingFiles ? '55%' : previewBatch ? '100%' : '0%' }" /></div>
-              <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ previewBatch.summary.blocked }} 项阻断</p>
+              <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ unconfirmedDuplicateIssueCount }} 项待确认 · {{ orderSummary.blocked }} 项阻断</p>
               <p v-else>选择一份或多份PO及一份客户排期后开始真实解析</p>
             </article>
           </aside>
@@ -1482,10 +1672,49 @@ onBeforeUnmount(() => {
             <p>来源：<b>{{ previewBatch?.input_template || '请先导入 PO 与排期' }}</b> · 输出目标：<b>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</b></p>
           </div>
           <div class="view-heading__actions">
-            <button v-if="orderSummary.blocked > 0" type="button" class="button button--ghost" @click="resolveBlockedRow">查看阻断处理方式</button>
-            <button type="button" class="button button--primary" :disabled="!previewBatch || orderSummary.blocked > 0 || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
+            <button v-if="blockingIssueDetails.length" type="button" class="button button--ghost" @click="resolveBlockedRow">查看待确认/阻断处理</button>
+            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
         </header>
+
+        <article
+          v-if="blockingIssueDetails.length"
+          class="persistent-parse-alert persistent-parse-alert--preview"
+          data-testid="preview-blocker-alert"
+          role="alert"
+        >
+          <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
+          <div class="persistent-parse-alert__content">
+            <h3>当前批次有 {{ blockingIssueDetails.length }} 项待确认/阻断，处理后可生成排期</h3>
+            <ul>
+              <li v-for="item in blockingIssueDetails" :key="item.key">
+                <b>{{ item.fileName }}</b>
+                <span>{{ item.message }}</span>
+              </li>
+            </ul>
+          </div>
+        </article>
+
+        <article
+          v-if="skippedIssueCount > 0"
+          class="confirmation-reason-card"
+          data-testid="confirmation-reason-card"
+        >
+          <div>
+            <strong>人工确认原因</strong>
+            <p>本批已选择 {{ skippedIssueCount }} 项确认/跳过。原因将与操作者、源文件哈希和输出文件哈希一起写入审计记录。</p>
+          </div>
+          <label>
+            <span>确认原因（必填，4–500 字）</span>
+            <textarea
+              v-model="confirmationReason"
+              maxlength="500"
+              rows="2"
+              placeholder="例如：测试阶段验证客户映射，已核对订单号、货号和数量一致"
+            />
+            <small :class="{ invalid: confirmationReasonMissing }">{{ confirmationReason.trim().length }} / 500</small>
+          </label>
+        </article>
 
         <ol class="wizard-steps wizard-steps--preview">
           <li class="done"><b>✓</b><span>选择客户</span></li>
@@ -1503,23 +1732,23 @@ onBeforeUnmount(() => {
           <span><FileCheck2 aria-hidden="true" /></span>
           <div>
             <strong>解析已完成，当前尚未输出排期</strong>
-            <p>请核对下方明细；无阻断项后点击“生成并下载客户排期”，系统才会写入并下载新的排期文件。</p>
+            <p>请核对下方明细；完成重复订单确认并处理阻断项后，点击“生成并下载客户排期”写入新排期。</p>
           </div>
           <button
             type="button"
             class="button button--primary"
-            :disabled="orderSummary.blocked > 0 || exportingSchedule"
+            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule"
             @click="confirmAndGenerateSchedule"
           >
             <Download aria-hidden="true" />
-            {{ exportingSchedule ? '正在生成…' : orderSummary.blocked > 0 ? '处理阻断后生成' : '生成并下载客户排期' }}
+            {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : '生成并下载客户排期' }}
           </button>
         </article>
 
         <div class="summary-strip">
           <article><span>总行数</span><strong>{{ orderSummary.total }}</strong><small>订单明细</small></article>
           <article class="valid"><span>有效项</span><strong>{{ orderSummary.valid }}</strong><small>可直接写入</small></article>
-          <article class="warning"><span>警告</span><strong>{{ orderSummary.warning }}</strong><small>需跟客确认</small></article>
+          <article class="warning"><span>警告/待确认</span><strong>{{ orderSummary.warning }}</strong><small>不形成阻断</small></article>
           <article class="blocked"><span>阻断项</span><strong>{{ orderSummary.blocked }}</strong><small>不可生成</small></article>
         </div>
 
@@ -1527,7 +1756,7 @@ onBeforeUnmount(() => {
           <aside class="filter-panel">
             <h3><Filter aria-hidden="true" /> 活动筛选</h3>
             <label><input v-model="includeBlocked" type="checkbox"> 阻断性错误</label>
-            <label><input v-model="includeWarning" type="checkbox"> 数据警告</label>
+            <label><input v-model="includeWarning" type="checkbox"> 警告/待确认</label>
             <label><input v-model="includeValid" type="checkbox"> 已校验通过</label>
             <div class="filter-divider" />
             <label class="filter-field">客户 / 市场<select><option>全部 {{ previewCustomerName }}</option><option v-for="market in previewCustomerMarkets" :key="market">{{ market }}</option></select></label>
@@ -1551,7 +1780,7 @@ onBeforeUnmount(() => {
               <table class="unified-table">
                 <thead>
                   <tr>
-                    <th class="sticky-left">状态</th><th class="resolution-column">阻断处理</th>
+                    <th class="sticky-left">状态</th><th class="resolution-column">确认/阻断处理</th>
                     <th>来单日期</th><th>P/O#</th><th>Contract No.</th><th>客名/国家</th><th>产品编号</th>
                     <th>中文名称</th><th>产品名称</th><th>数量</th><th>装箱数</th><th>箱数</th>
                     <th>国家标准</th><th>单价HK</th><th>金额HK</th><th>包装</th><th>行Q</th><th>客Q</th><th>客要求走货期</th><th>溯源</th>
@@ -1565,15 +1794,15 @@ onBeforeUnmount(() => {
                   >
                     <td class="sticky-left"><span :class="['status-chip', `status-chip--${row.status}`]">{{ row.statusLabel }}</span></td>
                     <td class="resolution-column">
-                      <div v-if="row.issues?.some((issue) => issue.severity === 'blocked')" class="issue-resolution-list">
-                        <template v-for="issue in (row.issues ?? []).filter((item) => item.severity === 'blocked')" :key="`${row.id}-${issue.code}-${issue.field}`">
+                      <div v-if="row.issues?.some((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue))" class="issue-resolution-list">
+                        <template v-for="issue in (row.issues ?? []).filter((item) => item.severity === 'blocked' || isConfirmationIssue(item))" :key="`${row.id}-${issue.code}-${issue.field}`">
                           <label v-if="issue.can_skip" class="skip-issue-option">
                             <input
                               type="checkbox"
                               :checked="isIssueSkipped(issue)"
                               @change="toggleIssueSkip(issue)"
                             >
-                            <span><b>允许跳过</b>{{ issue.skip_label }}</span>
+                            <span><b>{{ isTestDuplicateIssue(issue) ? '确认通过' : '允许跳过' }}</b>{{ issue.skip_label }}</span>
                           </label>
                           <p v-else class="required-issue"><b>必须补齐</b>{{ issue.message }}</p>
                         </template>
@@ -1594,7 +1823,7 @@ onBeforeUnmount(() => {
               </table>
             </div>
             <footer class="table-footer">
-              <span><CircleAlert aria-hidden="true" /> 普通客P/O#可空；WM客P/O#、合同、产品、数量、装箱数和交期仍必须补齐。</span>
+              <span><CircleAlert aria-hidden="true" /> {{ previewRuleNotice.description }}</span>
               <div><button type="button"><ChevronLeft aria-hidden="true" /></button><b>1</b><button type="button"><ChevronRight aria-hidden="true" /></button></div>
             </footer>
           </article>
@@ -1605,7 +1834,7 @@ onBeforeUnmount(() => {
           <div class="generated-output-card__main">
             <span class="status-chip status-chip--valid">真实输出已生成</span>
             <h3>{{ outputScheduleFile }}</h3>
-            <p>合并写入本批 {{ previewBatch?.po_file_count || poFiles.length }} 份PO，同步更新“接单表”“正单评审表”和对应的子弹枪/水枪ITEM表；ITEM新增订单行，存在同货号备料单时按本合同数量扣减H列，不自动补3000，也不新增样板或备料行。输出保持原排期文件名。人工跳过 {{ skippedIssueCount }} 项，对应字段留空。打开密码：2026。</p>
+            <p>{{ generatedOutputDescription }}</p>
             <dl>
               <div><dt>输入模板</dt><dd>{{ previewBatch?.input_template }}</dd></div>
               <div><dt>输出模板</dt><dd>{{ previewBatch?.target_template }}</dd></div>
@@ -2918,6 +3147,141 @@ tbody tr:hover td {
   color: #006c47;
   font-size: 9px;
   line-height: 1.45;
+}
+
+.persistent-parse-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid #ef8f85;
+  border-radius: 8px;
+  background: #fff1ef;
+  padding: 13px 14px;
+  color: #7d2018;
+}
+
+.persistent-parse-alert--preview {
+  margin-bottom: 14px;
+}
+
+.persistent-parse-alert__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: #ffd8d3;
+}
+
+.persistent-parse-alert__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.persistent-parse-alert__content {
+  min-width: 0;
+  flex: 1;
+}
+
+.persistent-parse-alert h3,
+.persistent-parse-alert p {
+  margin: 0;
+}
+
+.persistent-parse-alert h3 {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.persistent-parse-alert p,
+.persistent-parse-alert li {
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.persistent-parse-alert p {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-reason-card {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+  gap: 18px;
+  margin-bottom: 14px;
+  border: 1px solid #d8b55f;
+  border-radius: 8px;
+  background: #fffaf0;
+  padding: 14px;
+  color: #5f4507;
+}
+
+.confirmation-reason-card strong,
+.confirmation-reason-card p {
+  margin: 0;
+}
+
+.confirmation-reason-card strong {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.confirmation-reason-card p {
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.confirmation-reason-card label {
+  display: grid;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.confirmation-reason-card textarea {
+  width: 100%;
+  min-height: 58px;
+  resize: vertical;
+  border: 1px solid #c9b06f;
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px 10px;
+  color: #232323;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.confirmation-reason-card small {
+  justify-self: end;
+  color: #806920;
+  font-weight: 700;
+}
+
+.confirmation-reason-card small.invalid {
+  color: #b42318;
+}
+
+.persistent-parse-alert ul {
+  display: grid;
+  max-height: 180px;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.persistent-parse-alert li {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 8px;
+}
+
+.persistent-parse-alert li b,
+.persistent-parse-alert li span {
+  overflow-wrap: anywhere;
 }
 
 .received-date-field {
@@ -5285,15 +5649,22 @@ tbody tr:hover td {
 
 @media (max-width: 680px) {
   .view-heading__actions,
-  .parse-banner {
+  .parse-banner,
+  .persistent-parse-alert {
     width: 100%;
     align-items: stretch;
     flex-direction: column;
   }
 
   .view-heading__actions .button,
-  .parse-banner .button {
+  .parse-banner .button,
+  .persistent-parse-alert .button {
     width: 100%;
+  }
+
+  .persistent-parse-alert li {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 
   .metric-grid,

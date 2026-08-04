@@ -45,6 +45,54 @@ DELIVERY DATE: 2026/05/13 CHN PC 3,000 0.0000 0.00
 TOTAL : 0.00
 """
 
+PDQ_PO_TEXT = """
+Page: 1 of 8
+OG-1932327 DATE: 2026/02/12
+CUSTOMER: PLAYMATES-USA                                        OUR CONF NO: SG -1926410
+PRODUCT NO DESCRIPTION REF C.O. U/M ORDER QTY. UNIT PRICE AMOUNT
+40644E24 COLOR CHANGE MERMAID PDQ / PRODUCT LINE: MERMAID MAGIC
+MIX: 40644E24-01
+DELIVERY DATE: 2026/05/13 CHN PC
+40644A1E24          COLOR CHANGE MERMAID A1 240 10.0000 2,400.00
+40644AE24           COLOR CHANGE MERMAID A 240 10.0000 2,400.00
+40644B1E24          COLOR CHANGE MERMAID B1 240 10.0000 2,400.00
+40644BE24           COLOR CHANGE MERMAID B 240 10.0000 2,400.00
+40644C1E24          COLOR CHANGE MERMAID C1 240 10.0000 2,400.00
+40644CE24           COLOR CHANGE MERMAID C 240 10.0000 2,400.00
+40644D1E24          COLOR CHANGE MERMAID D1 240 10.0000 2,400.00
+40644DE24           COLOR CHANGE MERMAID D 240 10.0000 2,400.00
+40644E1E24          COLOR CHANGE MERMAID E1 240 10.0000 2,400.00
+40644EE24           COLOR CHANGE MERMAID E 240 10.0000 2,400.00
+40644FE24           COLOR CHANGE MERMAID F 240 10.0000 2,400.00
+ASSORTMENT : 40644A1E24 2
+40644AE24 3
+40644B1E24 2
+40644BE24 2
+40644C1E24 2
+40644CE24 2
+40644D1E24 2
+40644DE24 2
+40644E1E24 2
+40644EE24 3
+40644FE24 2
+24 PCS/CTN
+USE US STANDARD PACKAGING AND US STANDARD INSTRUCTION SHEET WHENEVER APPLICABLE.
+"""
+
+RUSSIAN_PACKAGING_TEXT = """
+Page: 1 of 9
+OG-1932087 DATE: 2026/02/03
+CUSTOMER: GULLIVER TOYS                                      OUR CONF NO: SG -1926350
+PRODUCT NO DESCRIPTION REF C.O. U/M ORDER QTY. UNIT PRICE AMOUNT
+57810GU8 GULLIVER FASHION DOLL ASST.
+MIX: 57810GU8-01
+DELIVERY DATE: 2026/05/06 CHN PC
+57816GU8            GULLIVER FASHION DOLL 240 12.0000 2,880.00
+ASSORTMENT : 57816GU8 8
+8 PCS/CTN
+USE GULLIVER PACKAGING (UNLESS SPECIFY) AND RUS/KZ BI-LINGUAL INSTRUCTION SHEET.
+"""
+
 
 def build_caixing_schedule() -> bytes:
     workbook = openpyxl.Workbook()
@@ -152,6 +200,10 @@ def build_caixing_schedule() -> bytes:
     item["AG6"] = "=SUM(AG4:AG5)"
     item["AH6"] = "=SUM(AH4:AH5)"
 
+    review.freeze_panes = "J3"
+    order.freeze_panes = "A3"
+    item.freeze_panes = "J4"
+
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -198,6 +250,36 @@ def test_caixing_parser_handles_quantity_on_delivery_date_line(monkeypatch):
     assert rows[0].requested_ship_date == "2026/05/13"
     assert rows[0].raw_unit_price_hkd == 0
     assert rows[0].amount_hkd == 0
+
+
+def test_caixing_parser_keeps_full_pdq_assortment_product_codes(monkeypatch):
+    monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PDQ_PO_TEXT)
+
+    rows = service.parse_caixing_pdf("1932327.pdf", b"%PDF synthetic")
+    packs = {row.product_no: row.units_per_carton for row in rows}
+
+    assert len(rows) == 11
+    assert {row.parent_product_no for row in rows} == {"40644 E24"}
+    assert packs["40644 AE24"] == 3
+    assert packs["40644 EE24"] == 3
+    assert packs["40644 A1E24"] == 2
+    assert packs["40644 FE24"] == 2
+    assert sum(packs.values(), Decimal("0")) == 24
+
+
+def test_caixing_parser_recognizes_gulliver_russian_packaging(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "_extract_pdf_text",
+        lambda _content: RUSSIAN_PACKAGING_TEXT,
+    )
+
+    rows = service.parse_caixing_pdf("1932087.pdf", b"%PDF synthetic")
+
+    assert len(rows) == 1
+    assert rows[0].parent_product_no == "57810 GU8"
+    assert rows[0].packaging == "俄罗斯彩盒包装"
+    assert rows[0].standard == ""
 
 
 def test_caixing_preview_and_export_write_review_order_and_item(monkeypatch):
@@ -252,6 +334,9 @@ def test_caixing_preview_and_export_write_review_order_and_item(monkeypatch):
     assert rendered[service.ORDER_SHEET]["G5"].fill.fgColor.rgb == "FFFFFF00"
     assert rendered[service.ITEM_SHEET]["G6"].fill.fgColor.rgb == "FFFFFF00"
     assert rendered[service.REVIEW_SHEET]["G4"].fill.fgColor.rgb != "FFFFFF00"
+    assert rendered[service.REVIEW_SHEET].freeze_panes == "J3"
+    assert rendered[service.ORDER_SHEET].freeze_panes == "A3"
+    assert rendered[service.ITEM_SHEET].freeze_panes == "J4"
     rendered.close()
     workbook = service.CaixingSchedule(plain)
 
@@ -294,7 +379,53 @@ def test_caixing_preview_and_export_write_review_order_and_item(monkeypatch):
     assert item_rows[7]["O"] == "2026/04/08"
 
 
-def test_caixing_existing_order_line_warns_but_allows_test_export(monkeypatch):
+def test_caixing_three_po_batch_allows_missing_matrix_columns(monkeypatch):
+    texts = {
+        b"standard": PLAYMATES_PO_TEXT,
+        b"pdq": PDQ_PO_TEXT,
+        b"single": SINGLE_PRODUCT_TEXT,
+    }
+    monkeypatch.setattr(service, "_extract_pdf_text", lambda content: texts[content])
+    schedule_content = build_caixing_schedule()
+    po_files = [
+        ("1932232.pdf", b"standard"),
+        ("1932327.pdf", b"pdq"),
+        ("1932524.pdf", b"single"),
+    ]
+
+    preview = service.create_caixing_batch_preview(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星排期.xlsx",
+        schedule_content=schedule_content,
+    )
+
+    matrix_issues = [
+        issue
+        for row in preview["rows"]
+        for issue in row["issues"]
+        if issue["code"] == "missing_product_matrix_column"
+    ]
+    assert preview["summary"]["blocked"] == 0
+    assert matrix_issues
+    assert all(issue["severity"] == "warning" for issue in matrix_issues)
+    assert all(issue["can_skip"] is False for issue in matrix_issues)
+
+    output, file_name, exported_preview = service.export_caixing_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星排期.xlsx",
+        schedule_content=schedule_content,
+    )
+
+    assert output.startswith(b"PK")
+    assert file_name == "2026年彩星排期.xlsx"
+    assert exported_preview["summary"]["blocked"] == 0
+
+
+def test_caixing_existing_order_line_requires_test_confirmation(monkeypatch):
     monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
     source = openpyxl.load_workbook(BytesIO(build_caixing_schedule()))
     order = source[service.ORDER_SHEET]
@@ -323,15 +454,24 @@ def test_caixing_existing_order_line_warns_but_allows_test_export(monkeypatch):
         for issue in duplicate_row["issues"]
         if issue["code"] == "existing_order_line"
     )
-    assert duplicate_row["status"] == "warning"
-    assert duplicate_issue["severity"] == "warning"
-    assert duplicate_issue["can_skip"] is False
+    assert duplicate_row["status"] == "blocked"
+    assert duplicate_issue["severity"] == "blocked"
+    assert duplicate_issue["can_skip"] is True
     assert preview["summary"] == {
         "total": 3,
         "valid": 2,
-        "warning": 1,
-        "blocked": 0,
+        "warning": 0,
+        "blocked": 1,
     }
+
+    with pytest.raises(service.CustomerOrderWorkbookError, match="仍有阻断项"):
+        service.export_caixing_batch_schedule(
+            factory_id="huaxing",
+            received_date="2026-07-29",
+            po_files=po_files,
+            schedule_file_name="2026年彩星排期.xlsx",
+            schedule_content=schedule_content,
+        )
 
     exported, file_name, exported_preview = service.export_caixing_batch_schedule(
         factory_id="huaxing",
@@ -339,10 +479,11 @@ def test_caixing_existing_order_line_warns_but_allows_test_export(monkeypatch):
         po_files=po_files,
         schedule_file_name="2026年彩星排期.xlsx",
         schedule_content=schedule_content,
+        skipped_issue_keys={duplicate_issue["skip_key"]},
     )
     assert exported.startswith(b"PK")
     assert file_name == "2026年彩星排期.xlsx"
-    assert exported_preview["summary"]["blocked"] == 0
+    assert exported_preview["summary"]["blocked"] == 1
 
 
 def test_caixing_legacy_xls_uses_converter_and_preserves_format(monkeypatch):

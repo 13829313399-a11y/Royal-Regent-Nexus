@@ -325,7 +325,8 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('彩星')
     expect(workspaceSource).toContain('WMC读取首页双语PO区且P/O#必填')
     expect(workspaceSource).toContain('普通合同扫描标签和唛头区，P/O#允许为空')
-    expect(workspaceSource).toContain('ITEM新增订单行，存在同货号备料单时按本合同数量扣减H列')
+    expect(workspaceSource).toContain('已按 ${customerName} 映射处理')
+    expect(workspaceSource).toContain('源排期文件未被覆盖')
     expect(workspaceSource).toContain('ITEM去向')
 
     expect(wrapper.text()).toContain('真实文件试用')
@@ -502,8 +503,13 @@ describe('customer order center static frontend', () => {
     await skipCheckbox.setValue(true)
     expect(wrapper.text()).toContain('已跳过待补')
     expect(wrapper.get('.summary-strip .blocked strong').text()).toBe('0')
-    const generateButton = wrapper.findAll('button').find((button) => button.text().includes('生成客户排期'))
-    expect((generateButton!.element as HTMLButtonElement).disabled).toBe(false)
+    expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('人工确认原因')
+    const generateButton = wrapper.get('[data-testid="preview-next-step"] .button')
+    expect((generateButton.element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.get('[data-testid="confirmation-reason-card"] textarea').setValue(
+      '测试阶段已核对单价留空',
+    )
+    expect((generateButton.element as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('keeps unconfirmed demand visible but unavailable to production consumers', async () => {
@@ -637,6 +643,147 @@ describe('customer order center static frontend', () => {
     )
   })
 
+  it('keeps a Dickie parse failure visible in the import page', async () => {
+    customerOrderApiMock.previewDickieBatch.mockRejectedValueOnce(
+      new Error('Dickie PDF OCR 失败：附件页无法识别'),
+    )
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    Object.defineProperty(inputs[0]!.element, 'files', {
+      configurable: true,
+      value: [new File(['%PDF'], 'SC700130503-200.pdf', { type: 'application/pdf' })],
+    })
+    Object.defineProperty(inputs[1]!.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年.Dickie 生产情况.xlsx')],
+    })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    const alert = wrapper.get('[data-testid="import-parse-alert"]')
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toContain('解析未完成')
+    expect(alert.text()).toContain('Dickie PDF OCR 失败：附件页无法识别')
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+  })
+
+  it('keeps duplicate orders visible and allows test-stage confirmation', async () => {
+    customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
+      preview_schema_version: 'customer-order-dickie-preview-v1',
+      customer_code: 'dickie',
+      factory_id: 'huaxing',
+      po_file_name: 'SC700130503-200.pdf',
+      po_file_names: ['SC700130503-200.pdf'],
+      po_file_count: 1,
+      schedule_file_name: '2026年.Dickie 生产情况.xlsx',
+      source_po_sha256: 'po',
+      source_po_sha256s: ['po'],
+      source_schedule_sha256: 'schedule',
+      input_template: 'DICKIE_SIMBA_RELEASE_ORDER_PDF_V1',
+      target_template: 'DICKIE_PRODUCTION_SCHEDULE_V1',
+      output_file_name: '2026年.Dickie 生产情况.xlsx',
+      summary: { total: 1, valid: 0, warning: 0, blocked: 1 },
+      warnings: [],
+      rows: [{
+        id: 'dickie-SC700130503-200',
+        status: 'blocked',
+        status_label: '阻断',
+        received_date: '2026-08-03',
+        po_no: '',
+        contract_no: '300459663/60',
+        customer_country: 'Dickie Germany',
+        customer_name: 'Dickie Germany',
+        country: '德国',
+        product_no: '203712034ASW',
+        product_name_zh: '',
+        product_name_en: 'RC My First NL, 4-asst',
+        quantity: '14004',
+        units_per_carton: '12',
+        carton_count: '1167',
+        standard: '欧洲标准',
+        unit_price_hkd: '',
+        amount_hkd: '',
+        packaging: 'Dickie open box',
+        line_q: '2026-07-04',
+        customer_q: '',
+        requested_ship_date: '2026-07-04',
+        input_template: 'DICKIE_SIMBA_RELEASE_ORDER_PDF_V1',
+        target_template: 'DICKIE_PRODUCTION_SCHEDULE_V1',
+        item_sheet_name: 'Iteam表',
+        source_po_file_name: 'SC700130503-200.pdf',
+        lineage: {},
+        issues: [{
+          severity: 'blocked',
+          code: 'duplicate_reference',
+          field: 'reference_no',
+          message: 'Reference SC700130503-200 已存在于当前排期 Iteam表第 561 行；测试阶段可人工确认后重复导入',
+          can_skip: true,
+          skip_key: 'dickie-SC700130503-200|duplicate_reference|reference_no',
+          skip_label: '测试阶段确认重复导入当前排期已有 Reference',
+        }],
+      }],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    Object.defineProperty(inputs[0]!.element, 'files', {
+      configurable: true,
+      value: [new File(['%PDF'], 'SC700130503-200.pdf', { type: 'application/pdf' })],
+    })
+    Object.defineProperty(inputs[1]!.element, 'files', {
+      configurable: true,
+      value: [new File(['schedule'], '2026年.Dickie 生产情况.xlsx')],
+    })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    const parseButton = wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))
+    await parseButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="import-parse-alert"]').text()).toContain('可人工确认后重复导入')
+    await wrapper.setProps({ activeSection: 'preview' })
+    const previewAlert = wrapper.get('[data-testid="preview-blocker-alert"]')
+    expect(previewAlert.text()).toContain('当前批次有 1 项待确认/阻断')
+    expect(previewAlert.text()).toContain('SC700130503-200.pdf')
+    expect(previewAlert.text()).toContain('Iteam表第 561 行')
+    expect(wrapper.text()).toContain('待确认')
+    const summaryCards = wrapper.findAll('.summary-strip article')
+    expect(summaryCards[2]!.text()).toContain('警告/待确认1')
+    expect(summaryCards[2]!.text()).toContain('不形成阻断')
+    expect(summaryCards[3]!.text()).toContain('阻断项0')
+    const pendingGenerateButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('确认重复订单后生成'))
+    expect(pendingGenerateButton?.attributes('disabled')).toBeDefined()
+
+    const confirmation = wrapper.get('.skip-issue-option')
+    expect(confirmation.text()).toContain('确认通过')
+    await confirmation.get('input').trigger('change')
+
+    expect(wrapper.find('[data-testid="preview-blocker-alert"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已确认通过')
+    const generateButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('生成并下载客户排期'))
+    expect(generateButton?.attributes('disabled')).toBeUndefined()
+  })
+
   it('selects Huaxing Caixing and routes Playmates PDFs to the three-sheet schedule flow', async () => {
     const caixingRowBase = {
       status: 'valid' as const,
@@ -721,7 +868,7 @@ describe('customer order center static frontend', () => {
     await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.text()).toContain('彩星 V2')
-    expect(wrapper.text()).toContain('测试阶段：彩星重复订单仅警告')
+    expect(wrapper.text()).toContain('重复订单是否允许确认以当前环境策略和预览结果为准')
     expect(wrapper.text()).toContain('正单评审表 / 接单表 / ITEM表')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')

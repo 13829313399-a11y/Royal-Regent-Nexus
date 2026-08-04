@@ -285,6 +285,8 @@ def test_buzzbee_preview_requires_sales_permission_and_maps_seventeen_fields(mon
         profile = login(client, "customer_order_sales", "sales_customer_owner", "sales-business")
         assert "customer_order:read" in profile["permissions"]
         assert "customer_order:export" in profile["permissions"]
+        assert "customer_order:duplicate_confirm" in profile["permissions"]
+        assert "customer_order:audit_read" not in profile["permissions"]
 
         response = upload_preview(client)
         assert response.status_code == 200, response.text
@@ -363,16 +365,50 @@ def test_buzzbee_export_requires_confirmation_and_returns_updated_encrypted_sche
         )
         assert rejected.status_code == 400
 
+        preview_response = client.post(
+            "/api/customer-orders/buzzbee/preview",
+            data=common,
+            files=files,
+        )
+        assert preview_response.status_code == 200, preview_response.text
+        preview_fingerprint = preview_response.json()["preview_fingerprint"]
+
         exported = client.post(
             "/api/customer-orders/buzzbee/export",
-            data={**common, "confirmed": "true"},
+            data={
+                **common,
+                "confirmed": "true",
+                "preview_fingerprint": preview_fingerprint,
+            },
             files=files,
         )
         assert exported.status_code == 200, exported.text
         assert exported.content.startswith(b"\xd0\xcf\x11\xe0")
         assert exported.headers["x-workbook-password-required"] == "true"
         assert exported.headers["x-output-template"] == "BUZZBEE_PRODUCTION_SCHEDULE_V1"
+        assert exported.headers["x-preview-fingerprint"] == preview_fingerprint
+        assert exported.headers["x-export-audit-id"].startswith("customer-order-export-")
+        assert len(exported.headers["x-content-sha256"]) == 64
         assert "2026%E5%B9%B4%20BUZZ%20BEE" in exported.headers["content-disposition"]
+
+        assert client.get("/api/customer-orders/audits?factory_id=huaxing").status_code == 403
+        client.post("/api/auth/logout")
+        supervisor_profile = login(
+            client,
+            "customer_order_auditor",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        assert "customer_order:audit_read" in supervisor_profile["permissions"]
+        audits_response = client.get("/api/customer-orders/audits?factory_id=huaxing")
+        assert audits_response.status_code == 200, audits_response.text
+        audits = audits_response.json()
+        assert len(audits) == 1
+        assert audits[0]["id"] == exported.headers["x-export-audit-id"]
+        assert audits[0]["actor_username"] == "customer_order_exporter"
+        assert audits[0]["preview_fingerprint"] == preview_fingerprint
+        assert audits[0]["confirmed_issue_count"] == 0
+        assert audits[0]["output_sha256"] == exported.headers["x-content-sha256"]
 
         service = importlib.import_module("app.services.customer_order_buzzbee")
         workbook = service.OoxmlSchedule(decrypt_xlsx(exported.content))
@@ -415,6 +451,9 @@ def test_batch_preview_and_export_merge_multiple_po_files_without_renaming_sched
             "factory_id": "huaxing",
             "received_date": "2026-07-27",
         }
+        first_po_content = build_wmc_po()
+        second_po_content = build_wmc_po(contract_no=53139, po_no="0009382482")
+        schedule_content = build_schedule()
 
         def batch_files():
             return [
@@ -422,7 +461,7 @@ def test_batch_preview_and_export_merge_multiple_po_files_without_renaming_sched
                     "po_files",
                     (
                         "WM-67771-53138-WMC.xlsx",
-                        build_wmc_po(),
+                        first_po_content,
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     ),
                 ),
@@ -430,7 +469,7 @@ def test_batch_preview_and_export_merge_multiple_po_files_without_renaming_sched
                     "po_files",
                     (
                         "WM-67771-53139-WMC.xlsx",
-                        build_wmc_po(contract_no=53139, po_no="0009382482"),
+                        second_po_content,
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     ),
                 ),
@@ -438,7 +477,7 @@ def test_batch_preview_and_export_merge_multiple_po_files_without_renaming_sched
                     "schedule_file",
                     (
                         "2026年 BUZZ BEE 生产排期表.xls.xlsx",
-                        build_schedule(),
+                        schedule_content,
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     ),
                 ),
@@ -462,7 +501,12 @@ def test_batch_preview_and_export_merge_multiple_po_files_without_renaming_sched
 
         exported = client.post(
             "/api/customer-orders/buzzbee/export-batch",
-            data={**common, "confirmed": "true", "skipped_issue_keys": "[]"},
+            data={
+                **common,
+                "confirmed": "true",
+                "skipped_issue_keys": "[]",
+                "preview_fingerprint": preview["preview_fingerprint"],
+            },
             files=batch_files(),
         )
         assert exported.status_code == 200, exported.text
@@ -498,17 +542,19 @@ def test_missing_price_can_be_explicitly_skipped_and_exports_blank_amounts(monke
             "factory_id": "huaxing",
             "received_date": "2026-07-27",
         }
+        po_content = build_wmc_po()
+        schedule_content = build_schedule(include_price=False)
 
         def files():
             return {
                 "po_file": (
                     "WM-67771-53138-WMC.xlsx",
-                    build_wmc_po(),
+                    po_content,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 ),
                 "schedule_file": (
                     "2026年 BUZZ BEE 生产排期表.xls.xlsx",
-                    build_schedule(include_price=False),
+                    schedule_content,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 ),
             }
@@ -532,7 +578,12 @@ def test_missing_price_can_be_explicitly_skipped_and_exports_blank_amounts(monke
 
         rejected = client.post(
             "/api/customer-orders/buzzbee/export",
-            data={**common, "confirmed": "true", "skipped_issue_keys": "[]"},
+            data={
+                **common,
+                "confirmed": "true",
+                "skipped_issue_keys": "[]",
+                "preview_fingerprint": preview["preview_fingerprint"],
+            },
             files=files(),
         )
         assert rejected.status_code == 400
@@ -544,6 +595,8 @@ def test_missing_price_can_be_explicitly_skipped_and_exports_blank_amounts(monke
                 **common,
                 "confirmed": "true",
                 "skipped_issue_keys": json.dumps([price_issue["skip_key"]]),
+                "preview_fingerprint": preview["preview_fingerprint"],
+                "confirmation_reason": "测试阶段核对缺失单价处理",
             },
             files=files(),
         )
@@ -655,3 +708,28 @@ def test_po_number_is_optional_for_standard_customer_but_required_for_walmart():
     assert walmart_row["status"] == "blocked"
     assert po_issue["message"] == "WM 客 P/O# 未能从 PO 提取"
     assert po_issue["can_skip"] is False
+
+
+def test_batch_duplicate_order_line_is_test_stage_confirmable():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    base = {
+        "po_no": "PO-1",
+        "contract_no": "SC-1",
+        "product_no": "ITEM-1",
+        "requested_ship_date": "2026-08-20",
+        "status": "valid",
+        "status_label": "有效",
+        "issues": [],
+    }
+    rows = [
+        {**base, "id": "row-1", "source_po_file_name": "first.xlsx"},
+        {**base, "id": "row-2", "source_po_file_name": "second.xlsx", "issues": []},
+    ]
+
+    service._mark_batch_duplicates(rows)
+
+    issue = rows[1]["issues"][0]
+    assert rows[1]["status"] == "blocked"
+    assert issue["code"] == "duplicate_batch_order_line"
+    assert issue["can_skip"] is True
+    assert issue["skip_key"] == "row-2|duplicate_batch_order_line|po_no"

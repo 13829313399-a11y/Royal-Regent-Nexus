@@ -21,6 +21,12 @@ from app.api.injection_scheduling_import import (
 from app.api.injection_scheduling_matching import (
     router as injection_scheduling_matching_router,
 )
+from app.api.injection_scheduling_phase5 import (
+    router as injection_scheduling_phase5_router,
+)
+from app.api.injection_scheduling_scheduler import (
+    router as injection_scheduling_scheduler_router,
+)
 from app.api.internal_quote import (
     customer_price_artifact_router,
 )
@@ -32,6 +38,7 @@ from app.api.pricing import router as pricing_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
 from app.api.three_d_printing import router as three_d_printing_router
+from app.api.tools import router as tools_router
 from app.core.config import settings
 from app.db import init_db
 
@@ -96,12 +103,15 @@ app.include_router(injection_scheduling_router)
 app.include_router(injection_scheduling_execution_router)
 app.include_router(injection_scheduling_import_router)
 app.include_router(injection_scheduling_matching_router)
+app.include_router(injection_scheduling_scheduler_router)
+app.include_router(injection_scheduling_phase5_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)
 app.include_router(system_router)
 app.include_router(three_d_printing_router)
+app.include_router(tools_router)
 
 
 @app.get("/health")

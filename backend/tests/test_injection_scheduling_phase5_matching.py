@@ -55,7 +55,7 @@ def machine_payload(code: str, *, capacity: float = 617, arms=None) -> dict:
         "max_mold_thickness_mm": None,
         "opening_stroke_mm": None,
         "machine_type": "standard",
-        "robot_capabilities": arms or ["single", "dual"],
+        "robot_capabilities": ["single", "dual"] if arms is None else arms,
         "fixture_capabilities": ["suction_cup"],
         "process_restrictions": [],
         "status": "available",
@@ -120,6 +120,10 @@ def test_phase5_hard_constraints_explanations_and_human_confirmation(monkeypatch
             "/api/injection-scheduling/machines",
             json=machine_payload("单臂机", arms=["single"]),
         ).json()
+        review = client.post(
+            "/api/injection-scheduling/machines",
+            json=machine_payload("机械手待复核", arms=[]),
+        ).json()
         small = client.post(
             "/api/injection-scheduling/machines",
             json=machine_payload("射胶357", capacity=357),
@@ -141,11 +145,23 @@ def test_phase5_hard_constraints_explanations_and_human_confirmation(monkeypatch
         body = evaluation.json()
         assert body["rule_set_revision"] == 1
         results = {item["machine_id"]: item for item in body["results"]}
-        assert results[old2["id"]]["decision"] == "REVIEW_REQUIRED"
+        assert results[old2["id"]]["decision"] == "PASS"
         assert results[old2["id"]]["score"] is not None
+        assert results[old2["id"]]["warnings"] == []
+        assert not {
+            "INSTALLATION_DIMENSIONS_MISSING",
+            "INSTALLATION_DIMENSIONS_EXCEEDED",
+            "MOLD_THICKNESS_UNCONFIRMED",
+            "MOLD_THICKNESS_OUT_OF_RANGE",
+        }.intersection(
+            reason["rule_code"]
+            for result in results.values()
+            for reason in (*result["hard_failures"], *result["warnings"])
+        )
+        assert results[review["id"]]["decision"] == "REVIEW_REQUIRED"
         assert any(
-            warning["rule_code"] == "MOLD_THICKNESS_UNCONFIRMED"
-            for warning in results[old2["id"]]["warnings"]
+            warning["rule_code"] == "ARM_CAPABILITY_MISSING"
+            for warning in results[review["id"]]["warnings"]
         )
         assert results[single["id"]]["decision"] == "FAIL"
         assert any(
@@ -160,7 +176,11 @@ def test_phase5_hard_constraints_explanations_and_human_confirmation(monkeypatch
 
         draft = client.post(
             "/api/injection-scheduling/plans/drafts",
-            json={"factory_id": "huaxing", "expected_revision": 0, "business_date": "2026-08-01"},
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": 0,
+                "business_date": "2026-08-01",
+            },
         ).json()
         base_confirm = {
             "factory_id": "huaxing",
@@ -179,7 +199,7 @@ def test_phase5_hard_constraints_explanations_and_human_confirmation(monkeypatch
 
         missing_reason = client.post(
             f"/api/injection-scheduling/plans/{draft['id']}/suggest",
-            json={**base_confirm, "machine_id": old2["id"]},
+            json={**base_confirm, "machine_id": review["id"]},
         )
         assert missing_reason.status_code == 409
         assert missing_reason.json()["detail"]["override_reason_required"] is True
@@ -188,10 +208,10 @@ def test_phase5_hard_constraints_explanations_and_human_confirmation(monkeypatch
             f"/api/injection-scheduling/plans/{draft['id']}/suggest",
             json={
                 **base_confirm,
-                "machine_id": old2["id"],
+                "machine_id": review["id"],
                 "expected_rule_revision": 99,
                 "request_id": "phase5-confirm-stale",
-                "override_reason": "模厚待现场复核",
+                "override_reason": "机械手能力待现场复核",
             },
         )
         assert stale_rule.status_code == 409
@@ -201,31 +221,33 @@ def test_phase5_hard_constraints_explanations_and_human_confirmation(monkeypatch
             f"/api/injection-scheduling/plans/{draft['id']}/suggest",
             json={
                 **base_confirm,
-                "machine_id": old2["id"],
+                "machine_id": review["id"],
                 "request_id": "phase5-confirm-0002",
-                "override_reason": "主管确认模厚待上机前现场复核",
+                "override_reason": "主管确认机械手能力待上机前现场复核",
             },
         )
         assert confirmed.status_code == 200, confirmed.text
         confirmed_body = confirmed.json()
         assert confirmed_body["match"]["decision"] == "REVIEW_REQUIRED"
         assert confirmed_body["plan"]["revision"] == 2
-        assert confirmed_body["plan"]["tasks"][0]["machine_id"] == old2["id"]
-        assert confirmed_body["plan"]["tasks"][0]["manual_override_reason"] == "主管确认模厚待上机前现场复核"
+        assert confirmed_body["plan"]["tasks"][0]["machine_id"] == review["id"]
+        assert (
+            confirmed_body["plan"]["tasks"][0]["manual_override_reason"]
+            == "主管确认机械手能力待上机前现场复核"
+        )
 
         events = client.get(
             "/api/injection-scheduling/events",
             params={"factory_id": "huaxing", "after_sequence": 0},
         ).json()["events"]
         confirmation_event = next(
-            event for event in events
-            if event["request_id"] == "phase5-confirm-0002"
+            event for event in events if event["request_id"] == "phase5-confirm-0002"
         )
         saved_match = confirmation_event["detail"]["match_result"]
         assert saved_match["rule_set_id"] == body["rule_set_id"]
         assert saved_match["rule_set_revision"] == body["rule_set_revision"]
         assert saved_match["decision"] == "REVIEW_REQUIRED"
-        assert saved_match["score"] == results[old2["id"]]["score"]
+        assert saved_match["score"] == results[review["id"]]["score"]
         assert saved_match["warnings"]
 
         current = client.get(

@@ -1,4 +1,5 @@
 import re
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -12,12 +13,17 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingEventsOut,
     InjectionSchedulingOrderCreate,
     InjectionSchedulingOrderOut,
+    InjectionSchedulingOrderUpdate,
     InjectionSchedulingPlanOperationOut,
     InjectionSchedulingPlanOut,
     InjectionSchedulingPublishInput,
     InjectionSchedulingRollbackInput,
+    InjectionSchedulingShiftReportBulkCreate,
+    InjectionSchedulingShiftReportBulkResult,
     InjectionSchedulingShiftReportCreate,
     InjectionSchedulingShiftReportResult,
+    InjectionSchedulingTaskBulkMove,
+    InjectionSchedulingTaskBulkMoveResult,
     InjectionSchedulingTaskCreate,
     InjectionSchedulingTaskUpdate,
 )
@@ -36,17 +42,20 @@ from app.services.injection_scheduling_execution import (
     create_draft_plan,
     create_order,
     create_shift_report,
+    create_shift_reports_bulk,
     current_plan,
     event_out,
     latest_event_sequence,
     list_backlog_orders,
     list_events,
+    move_tasks_bulk,
     order_out,
     plan_out,
     publish_plan,
     rollback_plan,
     shift_report_out,
     task_out,
+    update_order,
     update_task,
 )
 
@@ -54,6 +63,9 @@ router = APIRouter(
     prefix="/api/injection-scheduling",
     tags=["injection-scheduling"],
 )
+
+DbSession = Annotated[Session, Depends(get_db)]
+CurrentUser = Annotated[AuthContext, Depends(get_current_user)]
 
 
 def _request_id(request: Request) -> str:
@@ -89,8 +101,8 @@ def _ensure_permission(
 def post_order(
     payload: InjectionSchedulingOrderCreate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     _ensure_permission(
         db, current_user, "injection_scheduling:edit", payload.factory_id
@@ -99,11 +111,32 @@ def post_order(
     return order_out(record)
 
 
+@router.patch("/orders/{order_id}", response_model=InjectionSchedulingOrderOut)
+def patch_order(
+    order_id: str,
+    payload: InjectionSchedulingOrderUpdate,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    record, _ = update_order(
+        db,
+        order_id,
+        payload,
+        current_user,
+        _request_id(request),
+    )
+    return order_out(record)
+
+
 @router.get("/backlog", response_model=InjectionSchedulingBacklogOut)
 def get_backlog(
     factory_id: str,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     factory_id = _ensure_permission(
         db, current_user, "injection_scheduling:read", factory_id
@@ -122,8 +155,8 @@ def get_backlog(
 def post_draft(
     payload: InjectionSchedulingDraftCreate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     _ensure_permission(
         db, current_user, "injection_scheduling:edit", payload.factory_id
@@ -135,8 +168,8 @@ def post_draft(
 @router.get("/plans/current", response_model=InjectionSchedulingCurrentPlanOut)
 def get_current_plan(
     factory_id: str,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     factory_id = _ensure_permission(
         db, current_user, "injection_scheduling:read", factory_id
@@ -158,8 +191,8 @@ def post_task(
     plan_id: str,
     payload: InjectionSchedulingTaskCreate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     _ensure_permission(
         db, current_user, "injection_scheduling:edit", payload.factory_id
@@ -190,8 +223,8 @@ def patch_task(
     task_id: str,
     payload: InjectionSchedulingTaskUpdate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     _ensure_permission(
         db, current_user, "injection_scheduling:edit", payload.factory_id
@@ -215,14 +248,45 @@ def patch_task(
 
 
 @router.post(
+    "/plans/{plan_id}/tasks/bulk-move",
+    response_model=InjectionSchedulingTaskBulkMoveResult,
+)
+def post_task_bulk_move(
+    plan_id: str,
+    payload: InjectionSchedulingTaskBulkMove,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    can_override_review = any(
+        has_permission_in_scope(
+            current_user,
+            "injection_scheduling:publish",
+            factory_id,
+            department,
+        )
+        for department in SCHEDULING_DEPARTMENTS
+    )
+    return move_tasks_bulk(
+        db,
+        plan_id,
+        payload,
+        current_user,
+        can_override_review=can_override_review,
+    )
+
+
+@router.post(
     "/plans/{plan_id}/publish",
     response_model=InjectionSchedulingPlanOperationOut,
 )
 def post_publish(
     plan_id: str,
     payload: InjectionSchedulingPublishInput,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     _ensure_permission(
         db, current_user, "injection_scheduling:publish", payload.factory_id
@@ -245,8 +309,8 @@ def post_publish(
 def post_rollback(
     plan_id: str,
     payload: InjectionSchedulingRollbackInput,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     _ensure_permission(
         db, current_user, "injection_scheduling:rollback", payload.factory_id
@@ -269,8 +333,8 @@ def post_rollback(
 def post_shift_report(
     task_id: str,
     payload: InjectionSchedulingShiftReportCreate,
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
 ):
     _ensure_permission(
         db, current_user, "injection_scheduling:report", payload.factory_id
@@ -287,13 +351,28 @@ def post_shift_report(
     )
 
 
+@router.post(
+    "/tasks/shift-reports/bulk",
+    response_model=InjectionSchedulingShiftReportBulkResult,
+)
+def post_shift_reports_bulk(
+    payload: InjectionSchedulingShiftReportBulkCreate,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_permission(
+        db, current_user, "injection_scheduling:report", payload.factory_id
+    )
+    return create_shift_reports_bulk(db, payload, current_user)
+
+
 @router.get("/events", response_model=InjectionSchedulingEventsOut)
 def get_events(
     factory_id: str,
-    after_sequence: int = Query(default=0, ge=0),
-    limit: int = Query(default=200, ge=1, le=500),
-    db: Session = Depends(get_db),
-    current_user: AuthContext = Depends(get_current_user),
+    db: DbSession,
+    current_user: CurrentUser,
+    after_sequence: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ):
     factory_id = _ensure_permission(
         db, current_user, "injection_scheduling:read", factory_id

@@ -64,7 +64,13 @@ INJECTION_SCHEDULING_PHASE2_MASTER_MIGRATION_REVISION = "20260731_0043"
 INJECTION_SCHEDULING_PHASE3_EXECUTION_MIGRATION_REVISION = "20260731_0044"
 INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION = "20260731_0045"
 PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION = "20260802_0046"
-HEAD_MIGRATION_REVISION = PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION
+INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION = "20260804_0047"
+INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
+CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION = "20260804_0049"
+INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
+INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
+INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_V2_PHASE5_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -92,6 +98,7 @@ AUTH_TABLES = [
     "system_notifications",
 ]
 PASSWORD_RESET_WORKFLOW_TABLE = "auth_password_reset_requests"
+CUSTOMER_ORDER_EXPORT_AUDIT_TABLE = "customer_order_export_audits"
 CONFIGURABLE_IAM_TABLES = [
     "employee_profiles",
     "auth_permission_metadata",
@@ -132,6 +139,79 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    phase5_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE5_REVISION)
+    assert phase5_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE4_REVISION
+
+    phase4_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE4_REVISION)
+    assert phase4_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE3_REVISION
+    phase3_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE3_REVISION)
+    assert (
+        phase3_revision.down_revision
+        == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    )
+
+    customer_order_audit_revision = script.get_revision(
+        CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    )
+    assert (
+        customer_order_audit_revision.down_revision
+        == INJECTION_SCHEDULING_V2_PHASE0_REVISION
+    )
+    customer_order_audit_content = Path(
+        customer_order_audit_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        CUSTOMER_ORDER_EXPORT_AUDIT_TABLE,
+        "preview_fingerprint",
+        "source_schedule_sha256",
+        "confirmed_issue_keys_json",
+        "confirmation_reason",
+        "cannot be downgraded after customer-order export audits exist",
+    ):
+        assert expected in customer_order_audit_content
+
+    injection_scheduling_v2_revision = script.get_revision(
+        INJECTION_SCHEDULING_V2_PHASE0_REVISION
+    )
+    assert (
+        injection_scheduling_v2_revision.down_revision
+        == INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION
+    )
+    injection_scheduling_v2_content = Path(
+        injection_scheduling_v2_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        "machine_a_class",
+        "mold_a_class",
+        "machine_class_raw",
+        "mold_class_raw",
+        "normalization_status",
+        "process_tags_json",
+        "phase0-v2",
+    ):
+        assert expected in injection_scheduling_v2_content
+
+    injection_scheduling_module_removal_revision = script.get_revision(
+        INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION
+    )
+    assert (
+        injection_scheduling_module_removal_revision.down_revision
+        == PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION
+    )
+    injection_scheduling_module_removal_content = Path(
+        injection_scheduling_module_removal_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        "injection_scheduling_import_issues",
+        "injection_scheduling_shift_reports",
+        "injection_scheduling_import_batches",
+        "UPDATE auth_access_requests",
+        "code LIKE 'injection_scheduling:%'",
+        "Restore a verified ",
+        "pre-removal database backup",
+    ):
+        assert expected in injection_scheduling_module_removal_content
 
     password_reset_workflow_revision = script.get_revision(
         PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION
@@ -2689,28 +2769,6 @@ def test_new_injection_scheduling_backend_upgrade_creates_isolated_contract(
         ).fetchone() == (INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION,)
 
 
-@pytest.mark.parametrize(
-    "revision",
-    (
-        THREE_D_PRINTING_FACTORY_MIGRATION_REVISION,
-        INJECTION_SCHEDULING_REMOVAL_MIGRATION_REVISION,
-    ),
-)
-def test_injection_scheduling_phase2_startup_refuses_unmigrated_database(
-    tmp_path,
-    revision,
-):
-    database_path = tmp_path / f"injection_scheduling_phase2_preflight_{revision}.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", revision)
-    assert upgraded.returncode == 0, upgraded.stderr
-
-    refused_startup = _run_dispatch_init_db(database_path)
-    assert refused_startup.returncode != 0
-    assert INJECTION_SCHEDULING_PHASE2_MASTER_MIGRATION_REVISION in (
-        refused_startup.stderr
-    )
-
-
 def test_injection_scheduling_phase2_master_rebuild_is_scoped_and_requires_phase3(
     tmp_path,
 ):
@@ -2830,12 +2888,6 @@ def test_injection_scheduling_phase2_master_rebuild_is_scoped_and_requires_phase
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (INJECTION_SCHEDULING_PHASE2_MASTER_MIGRATION_REVISION,)
-
-    refused_startup = _run_dispatch_init_db(database_path)
-    assert refused_startup.returncode != 0
-    assert INJECTION_SCHEDULING_PHASE3_EXECUTION_MIGRATION_REVISION in (
-        refused_startup.stderr
-    )
 
     downgrade = _run_dispatch_alembic(
         database_path,
@@ -3082,11 +3134,6 @@ def test_injection_scheduling_phase3_execution_upgrade_and_guards(tmp_path):
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (INJECTION_SCHEDULING_PHASE3_EXECUTION_MIGRATION_REVISION,)
 
-    refused_startup = _run_dispatch_init_db(database_path)
-    assert refused_startup.returncode != 0
-    assert INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION in refused_startup.stderr
-
-
 def test_injection_scheduling_phase3_postgresql_offline_sql_contains_contract():
     env = os.environ.copy()
     env["DATABASE_URL"] = "postgresql+psycopg://unused:unused@localhost/unused"
@@ -3147,7 +3194,11 @@ def test_injection_scheduling_phase4_import_upgrade_lineage_and_guards(tmp_path)
         INJECTION_SCHEDULING_PHASE3_EXECUTION_MIGRATION_REVISION,
     )
     assert phase3.returncode == 0, phase3.stderr
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION,
+    )
     assert upgraded.returncode == 0, upgraded.stderr
 
     with sqlite3.connect(database_path) as connection:
@@ -3263,10 +3314,11 @@ def test_injection_scheduling_phase4_import_upgrade_lineage_and_guards(tmp_path)
         connection.rollback()
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION,)
 
-    allowed_startup = _run_dispatch_init_db(database_path)
-    assert allowed_startup.returncode == 0, allowed_startup.stderr
+    blocked_startup = _run_dispatch_init_db(database_path)
+    assert blocked_startup.returncode != 0
+    assert INJECTION_SCHEDULING_V2_PHASE0_REVISION in blocked_startup.stderr
 
 
 def test_injection_scheduling_phase4_postgresql_offline_sql_contains_contract():
@@ -3796,3 +3848,163 @@ def test_molding_sample_dispatch_offline_has_controlled_online_only_error(tmp_pa
         output = f"{result.stdout}\n{result.stderr}".lower()
         assert "20260720_0028 cannot run as offline sql" in output
         assert "run this revision in online mode" in output
+
+
+def test_injection_scheduling_module_removal_drops_runtime_contract(tmp_path):
+    database_path = tmp_path / "injection_scheduling_module_removal_0047.db"
+    upgraded = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        injection_tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name LIKE 'injection_scheduling_%'
+                """
+            ).fetchall()
+        }
+        injection_triggers = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name LIKE 'trg_injection_scheduling_%'
+                """
+            ).fetchall()
+        }
+        assert injection_tables == set()
+        assert injection_triggers == set()
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM auth_permissions
+            WHERE code LIKE 'injection_scheduling:%'
+            """
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM auth_password_reset_requests"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION,)
+
+    downgrade = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION,
+    )
+    assert downgrade.returncode != 0
+    assert "verified pre-removal database backup" in downgrade.stderr
+
+
+def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
+    database_path = tmp_path / "injection_scheduling_v2_current_0052.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        injection_tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name LIKE 'injection_scheduling_%'
+                """
+            ).fetchall()
+        }
+        assert injection_tables == {
+            "injection_scheduling_machines",
+            "injection_scheduling_molds",
+            "injection_scheduling_rule_sets",
+            "injection_scheduling_orders",
+            "injection_scheduling_plans",
+            "injection_scheduling_tasks",
+            "injection_scheduling_shift_reports",
+            "injection_scheduling_plan_revisions",
+            "injection_scheduling_published_snapshots",
+            "injection_scheduling_audit_events",
+            "injection_scheduling_import_batches",
+            "injection_scheduling_import_issues",
+            "injection_scheduling_runs",
+            "injection_scheduling_run_assignments",
+            "injection_scheduling_transition_rules",
+            "injection_scheduling_machine_calendars",
+            "injection_scheduling_integration_cursors",
+            "injection_scheduling_external_events",
+            "injection_scheduling_cycle_observations",
+            "injection_scheduling_speed_models",
+        }
+        machine_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_scheduling_machines')"
+            ).fetchall()
+        }
+        mold_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_scheduling_molds')"
+            ).fetchall()
+        }
+        assert {
+            "machine_class_raw",
+            "machine_a_class",
+            "normalization_status",
+            "process_tags_json",
+            "special_machine_type",
+        } <= machine_columns
+        assert {
+            "mold_class_raw",
+            "mold_a_class",
+            "normalization_status",
+            "process_tags_json",
+            "special_machine_type",
+        } <= mold_columns
+        run_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_scheduling_runs')"
+            ).fetchall()
+        }
+        assert {
+            "requested_solver",
+            "solver_status",
+            "fallback_used",
+            "fallback_reason",
+            "scenario_group_id",
+            "scenario_name",
+            "alternative_no",
+            "replay_of_run_id",
+        } <= run_columns
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM auth_permissions
+            WHERE code LIKE 'injection_scheduling:%'
+            """
+        ).fetchone() == (8,)
+        config_json = connection.execute(
+            """
+            SELECT config_json FROM injection_scheduling_rule_sets
+            WHERE factory_id = 'huaxing' AND status = 'active'
+            """
+        ).fetchone()[0]
+        assert '"schema_version":"phase0-v2"' in config_json
+        assert "required_dimension_fields" not in config_json
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+    allowed_startup = _run_dispatch_init_db(database_path)
+    assert allowed_startup.returncode == 0, allowed_startup.stderr

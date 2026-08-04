@@ -11,6 +11,7 @@ MoldStatus = Literal[
     "retired",
 ]
 DataQualityStatus = Literal["complete", "needs_review"]
+NormalizationStatus = Literal["COMPLETE", "REVIEW_REQUIRED"]
 
 
 class InjectionSchedulingMachineData(BaseModel):
@@ -18,6 +19,11 @@ class InjectionSchedulingMachineData(BaseModel):
     area: str = Field(default="", max_length=128)
     position: str = Field(default="", max_length=128)
     machine_class: str = Field(default="", max_length=64)
+    machine_class_raw: str = Field(default="", max_length=128)
+    machine_a_class: float | None = Field(default=None, gt=0)
+    normalization_status: NormalizationStatus = "REVIEW_REQUIRED"
+    process_tags: list[str] = Field(default_factory=list, max_length=32)
+    special_machine_type: str = Field(default="", max_length=64)
     clamping_force_tons: float | None = Field(default=None, gt=0)
     injection_capacity_g: float | None = Field(default=None, gt=0)
     tie_bar_x_mm: float | None = Field(default=None, gt=0)
@@ -38,7 +44,9 @@ class InjectionSchedulingMachineData(BaseModel):
         "area",
         "position",
         "machine_class",
+        "machine_class_raw",
         "machine_type",
+        "special_machine_type",
     )
     @classmethod
     def strip_text(cls, value: str) -> str:
@@ -48,6 +56,7 @@ class InjectionSchedulingMachineData(BaseModel):
         "robot_capabilities",
         "fixture_capabilities",
         "process_restrictions",
+        "process_tags",
     )
     @classmethod
     def normalize_capabilities(cls, values: list[str]) -> list[str]:
@@ -104,9 +113,14 @@ class InjectionSchedulingMoldData(BaseModel):
     height_mm: float | None = Field(default=None, gt=0)
     weight_kg: float | None = Field(default=None, gt=0)
     recommended_machine_class: str = Field(default="", max_length=64)
+    mold_class_raw: str = Field(default="", max_length=128)
+    mold_a_class: float | None = Field(default=None, gt=0)
+    normalization_status: NormalizationStatus = "REVIEW_REQUIRED"
+    process_tags: list[str] = Field(default_factory=list, max_length=32)
+    special_machine_type: str = Field(default="", max_length=64)
     whole_shot_net_weight_g: float | None = Field(default=None, gt=0)
     whole_shot_gross_weight_g: float | None = Field(default=None, gt=0)
-    required_arm_type: str = Field(default="none", max_length=64)
+    required_arm_type: str = Field(default="", max_length=64)
     required_fixture_type: str = Field(default="", max_length=128)
     material_code: str = Field(default="", max_length=128)
     material_name: str = Field(default="", max_length=255)
@@ -120,17 +134,19 @@ class InjectionSchedulingMoldData(BaseModel):
         "mold_no",
         "name",
         "recommended_machine_class",
+        "mold_class_raw",
         "required_arm_type",
         "required_fixture_type",
         "material_code",
         "material_name",
         "color_profile",
+        "special_machine_type",
     )
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("process_requirements")
+    @field_validator("process_requirements", "process_tags")
     @classmethod
     def normalize_requirements(cls, values: list[str]) -> list[str]:
         normalized = [value.strip() for value in values if value.strip()]
@@ -146,10 +162,6 @@ class InjectionSchedulingMoldData(BaseModel):
             and self.whole_shot_net_weight_g > self.whole_shot_gross_weight_g
         ):
             raise ValueError("整啤净重不能大于整啤毛重")
-        if self.data_quality_status == "complete" and any(
-            value is None for value in (self.length_mm, self.width_mm, self.height_mm)
-        ):
-            raise ValueError("模具尺寸不完整时只能标记为需复核")
         return self
 
 
@@ -181,9 +193,8 @@ class InjectionSchedulingMoldListOut(BaseModel):
 
 
 class InjectionSchedulingRuleConfig(BaseModel):
-    schema_version: str = Field(default="phase2-v1", min_length=1, max_length=64)
+    schema_version: str = Field(default="phase0-v2", min_length=1, max_length=64)
     arm_coverage: dict[str, list[str]] = Field(default_factory=dict)
-    required_dimension_fields: list[str] = Field(default_factory=list)
     process_rule_codes: list[str] = Field(default_factory=list)
     scoring_weights: dict[str, float] = Field(default_factory=dict)
     color_scale: list[str] = Field(default_factory=list)

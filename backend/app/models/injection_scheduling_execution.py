@@ -298,6 +298,18 @@ class InjectionSchedulingTask(Base):
     source_sheet_name: Mapped[str] = mapped_column(String(128), default="")
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     source_file_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    setup_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    production_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    planned_downtime_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    changeover_type: Mapped[str] = mapped_column(String(64), default="")
+    auto_schedule_run_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    auto_score: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 3), nullable=True
+    )
+    auto_explanation_json: Mapped[str] = mapped_column(Text, default="{}")
+    manual_adjusted: Mapped[bool] = mapped_column(Boolean, default=False)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(64), default="", index=True)
     created_by_name: Mapped[str] = mapped_column(String(128), default="")

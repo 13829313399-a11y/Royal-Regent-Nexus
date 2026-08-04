@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.injection_scheduling_matching import (
+    InjectionSchedulingMatchBatchEvaluate,
+    InjectionSchedulingMatchBatchOut,
     InjectionSchedulingMatchEvaluate,
     InjectionSchedulingMatchEvaluationOut,
     InjectionSchedulingSuggestionConfirm,
@@ -23,6 +25,9 @@ from app.services.injection_scheduling import (
 from app.services.injection_scheduling_matching import (
     confirm_suggestion,
     evaluate_order_matches,
+)
+from app.services.injection_scheduling_scheduler.eligibility import (
+    evaluate_batch_matches,
 )
 
 router = APIRouter(
@@ -76,6 +81,31 @@ def post_match_evaluate(
         factory_id=factory_id,
         order_id=payload.order_id,
         machine_ids=payload.machine_ids,
+        allow_scheduled=payload.allow_scheduled,
+    )
+
+
+@router.post(
+    "/matches/evaluate-batch",
+    response_model=InjectionSchedulingMatchBatchOut,
+)
+def post_match_evaluate_batch(
+    payload: InjectionSchedulingMatchBatchEvaluate,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    factory_id = _ensure_permission(
+        db,
+        current_user,
+        "injection_scheduling:read",
+        payload.factory_id,
+    )
+    return evaluate_batch_matches(
+        db,
+        factory_id=factory_id,
+        order_ids=payload.order_ids,
+        machine_ids=payload.machine_ids,
+        expected_rule_revision=payload.rule_revision,
     )
 
 

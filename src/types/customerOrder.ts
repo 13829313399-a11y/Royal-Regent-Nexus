@@ -55,6 +55,10 @@ export interface CustomerOrderImportPreview {
   input_template: string
   target_template: string
   output_file_name: string
+  duplicate_confirmation_enabled?: boolean
+  duplicate_confirmation_authorized?: boolean
+  confirmation_count?: number
+  preview_fingerprint: string
   summary: {
     total: number
     valid: number

@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from math import ceil, floor
 from typing import Any
 from uuid import uuid4
@@ -33,12 +34,19 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingEventOut,
     InjectionSchedulingOrderCreate,
     InjectionSchedulingOrderOut,
+    InjectionSchedulingOrderUpdate,
     InjectionSchedulingPlanOut,
     InjectionSchedulingPublishInput,
     InjectionSchedulingRollbackInput,
+    InjectionSchedulingShiftReportBulkCreate,
+    InjectionSchedulingShiftReportBulkResult,
     InjectionSchedulingShiftReportCreate,
     InjectionSchedulingShiftReportOut,
+    InjectionSchedulingShiftReportResult,
+    InjectionSchedulingTaskBulkMove,
+    InjectionSchedulingTaskBulkMoveResult,
     InjectionSchedulingTaskCreate,
+    InjectionSchedulingTaskMoveResult,
     InjectionSchedulingTaskOut,
     InjectionSchedulingTaskUpdate,
 )
@@ -200,6 +208,16 @@ def task_out(record: InjectionSchedulingTask) -> InjectionSchedulingTaskOut:
         source_sheet_name=record.source_sheet_name,
         source_row=record.source_row,
         source_file_hash=record.source_file_hash,
+        setup_minutes=record.setup_minutes,
+        production_minutes=record.production_minutes,
+        planned_downtime_minutes=record.planned_downtime_minutes,
+        changeover_type=record.changeover_type,
+        auto_schedule_run_id=record.auto_schedule_run_id,
+        auto_score=(
+            _float(record.auto_score) if record.auto_score is not None else None
+        ),
+        auto_explanation=_load_json(record.auto_explanation_json, {}),
+        manual_adjusted=record.manual_adjusted,
         revision=record.revision,
         created_by=record.created_by,
         created_by_name=record.created_by_name,
@@ -390,11 +408,86 @@ def create_order(
         entity_id=record.id,
         entity_revision=1,
         request_id=request_id,
-        detail={"order_no": record.order_no, "item_no": record.item_no},
+        detail={
+            "order_no": record.order_no,
+            "item_no": record.item_no,
+            "order": order_out(record).model_dump(mode="json"),
+        },
         user=user,
     )
     db.commit()
     return record, audit.sequence
+
+
+def update_order(
+    db: Session,
+    order_id: str,
+    payload: InjectionSchedulingOrderUpdate,
+    user: AuthContext,
+    request_id: str,
+) -> tuple[InjectionSchedulingOrder, int]:
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    record = _require_order(db, factory_id, order_id)
+    if record.revision != payload.expected_revision:
+        raise _revision_conflict(
+            "排产订单",
+            payload.expected_revision,
+            record.revision,
+            diff={
+                "warehouse_text": record.warehouse_text,
+                "remark": record.remark,
+            },
+        )
+    changes = payload.model_dump(
+        exclude_none=True,
+        exclude={"factory_id", "expected_revision"},
+    )
+    timestamp = _now()
+    result = db.execute(
+        update(InjectionSchedulingOrder)
+        .where(
+            InjectionSchedulingOrder.id == record.id,
+            InjectionSchedulingOrder.factory_id == factory_id,
+            InjectionSchedulingOrder.revision == payload.expected_revision,
+        )
+        .values(
+            **changes,
+            revision=payload.expected_revision + 1,
+            updated_by=user.id,
+            updated_by_name=_actor_name(user),
+            updated_at=timestamp,
+        )
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        latest = _require_order(db, factory_id, order_id)
+        raise _revision_conflict(
+            "排产订单",
+            payload.expected_revision,
+            latest.revision,
+            diff={
+                "warehouse_text": latest.warehouse_text,
+                "remark": latest.remark,
+            },
+        )
+    db.flush()
+    refreshed = _require_order(db, factory_id, order_id)
+    audit = _audit(
+        db,
+        factory_id=factory_id,
+        event_type="order_updated",
+        entity_type="order",
+        entity_id=record.id,
+        entity_revision=payload.expected_revision + 1,
+        request_id=request_id,
+        detail={
+            "changes": changes,
+            "order": order_out(refreshed).model_dump(mode="json"),
+        },
+        user=user,
+    )
+    db.commit()
+    return refreshed, audit.sequence
 
 
 def list_backlog_orders(
@@ -662,10 +755,8 @@ def add_task(
         event_detail: dict[str, Any] = {
             "plan_id": plan.id,
             "plan_revision": payload.expected_revision + 1,
-            "task": payload.model_dump(
-                mode="json",
-                exclude={"factory_id", "expected_revision"},
-            ),
+            "task": task_out(record).model_dump(mode="json"),
+            "order": order_out(order).model_dump(mode="json"),
         }
         if audit_detail:
             event_detail.update(audit_detail)
@@ -751,6 +842,7 @@ def update_task(
             )
             .values(
                 **values,
+                manual_adjusted=(task.manual_adjusted or bool(task.auto_schedule_run_id)),
                 revision=payload.expected_revision + 1,
                 updated_by=user.id,
                 updated_by_name=_actor_name(user),
@@ -820,6 +912,12 @@ def update_task(
                         "expected_plan_revision",
                     },
                 ),
+                "task": task_out(
+                    _require_task(db, factory_id, plan.id, task.id)
+                ).model_dump(mode="json"),
+                "order": order_out(
+                    _require_order(db, factory_id, values["order_id"])
+                ).model_dump(mode="json"),
             },
             user=user,
         )
@@ -834,6 +932,349 @@ def update_task(
         _require_plan(db, factory_id, plan.id),
         _require_task(db, factory_id, plan.id, task.id),
         audit.sequence,
+    )
+
+
+def _validate_proposed_task_windows(
+    placements: list[dict[str, Any]],
+) -> None:
+    by_machine: dict[str, list[dict[str, Any]]] = {}
+    by_mold_copy: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for placement in placements:
+        placement["_start"] = datetime.fromisoformat(placement["planned_start"])
+        placement["_finish"] = datetime.fromisoformat(placement["planned_finish"])
+        by_machine.setdefault(placement["machine_id"], []).append(placement)
+        if placement["mold_id"]:
+            key = (placement["mold_id"], placement["mold_copy_no"])
+            by_mold_copy.setdefault(key, []).append(placement)
+
+    def ensure_no_overlap(
+        groups: dict[Any, list[dict[str, Any]]],
+        message: str,
+    ) -> None:
+        for items in groups.values():
+            ordered = sorted(items, key=lambda item: (item["_start"], item["id"]))
+            for previous, current in pairwise(ordered):
+                if current["_start"] < previous["_finish"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": message,
+                            "task_ids": [previous["id"], current["id"]],
+                        },
+                    )
+
+    ensure_no_overlap(by_machine, "移动后的同一机台任务时间发生重叠")
+    ensure_no_overlap(by_mold_copy, "移动后的同一实体模具时间发生重叠")
+
+
+def move_tasks_bulk(
+    db: Session,
+    plan_id: str,
+    payload: InjectionSchedulingTaskBulkMove,
+    user: AuthContext,
+    *,
+    can_override_review: bool,
+) -> InjectionSchedulingTaskBulkMoveResult:
+    from app.services.injection_scheduling_matching import evaluate_order_matches
+
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    request_payload = payload.model_dump(mode="json") | {"plan_id": plan_id}
+    request_hash = _payload_hash(request_payload)
+    replay = db.scalar(
+        select(InjectionSchedulingAuditEvent)
+        .where(
+            InjectionSchedulingAuditEvent.factory_id == factory_id,
+            InjectionSchedulingAuditEvent.event_type == "plan_tasks_bulk_moved",
+            InjectionSchedulingAuditEvent.request_id == payload.request_id,
+        )
+        .order_by(InjectionSchedulingAuditEvent.sequence.desc())
+    )
+    if replay is not None:
+        detail = _load_json(replay.detail_json, {})
+        if detail.get("payload_hash") != request_hash:
+            raise _idempotency_conflict()
+        plan = _require_plan(db, factory_id, plan_id)
+        return InjectionSchedulingTaskBulkMoveResult(
+            plan=plan_out(db, plan),
+            moves=[
+                InjectionSchedulingTaskMoveResult.model_validate(item)
+                for item in detail.get("moves", [])
+            ],
+            audit_sequence=replay.sequence,
+            idempotent_replay=True,
+        )
+
+    plan = _require_plan(db, factory_id, plan_id)
+    _require_draft(plan)
+    if plan.revision != payload.expected_plan_revision:
+        raise _revision_conflict(
+            "计划草案",
+            payload.expected_plan_revision,
+            plan.revision,
+        )
+    tasks = plan_tasks(db, factory_id, plan.id)
+    task_by_id = {task.id: task for task in tasks}
+    move_by_task_id = {move.task_id: move for move in payload.moves}
+    missing = [task_id for task_id in move_by_task_id if task_id not in task_by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail={"message": "排产任务不存在", "task_ids": missing})
+
+    match_by_task_id: dict[str, dict[str, Any]] = {}
+    move_results: list[InjectionSchedulingTaskMoveResult] = []
+    for move in payload.moves:
+        task = task_by_id[move.task_id]
+        if task.revision != move.expected_revision:
+            raise _revision_conflict(
+                "排产任务",
+                move.expected_revision,
+                task.revision,
+                diff={
+                    "machine_id": task.machine_id,
+                    "sequence_no": task.sequence_no,
+                    "planned_start": task.planned_start,
+                    "planned_finish": task.planned_finish,
+                },
+            )
+        if task.locked or task.active_execution or task.execution_status == "RUNNING":
+            raise HTTPException(status_code=409, detail="运行中或已锁定任务不能移动")
+        evaluation = evaluate_order_matches(
+            db,
+            factory_id=factory_id,
+            order_id=task.order_id,
+            machine_ids=[move.machine_id],
+            allow_scheduled=True,
+        )
+        match = evaluation.results[0]
+        if (
+            match.rule_set_revision != payload.expected_rule_revision
+            or plan.rule_revision != match.rule_set_revision
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "排产规则版本已变化，请重新评估资格",
+                    "expected_rule_revision": payload.expected_rule_revision,
+                    "current_rule_revision": match.rule_set_revision,
+                    "plan_rule_revision": plan.rule_revision,
+                },
+            )
+        match_payload = match.model_dump(mode="json")
+        match_payload["placement_change"] = {
+            "machine_changed": task.machine_id != move.machine_id,
+            "sequence_changed": task.sequence_no != move.sequence_no,
+            "time_changed": (
+                task.planned_start != move.planned_start
+                or task.planned_finish != move.planned_finish
+            ),
+            "setup_review": (
+                "跨机移动，需复核前后任务的换模与转色影响"
+                if task.machine_id != move.machine_id
+                else "同机重排，需复核相邻任务的换模与转色影响"
+            ),
+        }
+        if match.decision == "FAIL":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "目标机台资格硬失败，禁止移动",
+                    "task_id": task.id,
+                    "match": match_payload,
+                },
+            )
+        if match.decision == "REVIEW_REQUIRED":
+            if not can_override_review:
+                raise HTTPException(status_code=403, detail="待复核移动需要发布/覆盖权限")
+            if not move.override_reason:
+                raise HTTPException(status_code=409, detail="待复核移动必须填写人工覆盖原因")
+        match_by_task_id[task.id] = match_payload
+        move_results.append(
+            InjectionSchedulingTaskMoveResult(
+                task_id=task.id,
+                from_machine_id=task.machine_id,
+                to_machine_id=move.machine_id,
+                from_sequence_no=task.sequence_no,
+                to_sequence_no=move.sequence_no,
+                previous_start=task.planned_start,
+                previous_finish=task.planned_finish,
+                planned_start=move.planned_start,
+                planned_finish=move.planned_finish,
+                match=match_payload,
+            )
+        )
+
+    moving_task_ids = set(move_by_task_id)
+    affected_machine_ids = {
+        task_by_id[task_id].machine_id for task_id in moving_task_ids
+    } | {move.machine_id for move in payload.moves}
+    queues: dict[str, list[InjectionSchedulingTask]] = {
+        machine_id: sorted(
+            [
+                task
+                for task in tasks
+                if task.machine_id == machine_id and task.id not in moving_task_ids
+            ],
+            key=lambda task: (task.sequence_no, task.id),
+        )
+        for machine_id in affected_machine_ids
+    }
+    for move in payload.moves:
+        queue = queues.setdefault(move.machine_id, [])
+        queue.insert(min(move.sequence_no, len(queue)), task_by_id[move.task_id])
+
+    proposed_by_id: dict[str, dict[str, Any]] = {
+        task.id: {
+            "id": task.id,
+            "machine_id": task.machine_id,
+            "sequence_no": task.sequence_no,
+            "planned_start": task.planned_start,
+            "planned_finish": task.planned_finish,
+            "mold_id": task.mold_id,
+            "mold_copy_no": task.mold_copy_no,
+        }
+        for task in tasks
+    }
+    for machine_id, queue in queues.items():
+        for sequence_no, task in enumerate(queue):
+            proposed_by_id[task.id]["machine_id"] = machine_id
+            proposed_by_id[task.id]["sequence_no"] = sequence_no
+    for move in payload.moves:
+        proposed_by_id[move.task_id]["planned_start"] = move.planned_start
+        proposed_by_id[move.task_id]["planned_finish"] = move.planned_finish
+
+    _validate_proposed_task_windows(list(proposed_by_id.values()))
+    changed_tasks = [
+        task
+        for task in tasks
+        if any(
+            (
+                task.machine_id != proposed_by_id[task.id]["machine_id"],
+                task.sequence_no != proposed_by_id[task.id]["sequence_no"],
+                task.planned_start != proposed_by_id[task.id]["planned_start"],
+                task.planned_finish != proposed_by_id[task.id]["planned_finish"],
+            )
+        )
+    ]
+    if not changed_tasks:
+        raise HTTPException(status_code=409, detail="任务位置和计划时间没有变化")
+
+    timestamp = _now()
+    temp_base = max((task.sequence_no for task in tasks), default=0) + len(tasks) + 1000
+    try:
+        for index, task in enumerate(changed_tasks):
+            result = db.execute(
+                update(InjectionSchedulingTask)
+                .where(
+                    InjectionSchedulingTask.id == task.id,
+                    InjectionSchedulingTask.factory_id == factory_id,
+                    InjectionSchedulingTask.plan_id == plan.id,
+                    InjectionSchedulingTask.revision == task.revision,
+                )
+                .values(sequence_no=temp_base + index)
+            )
+            if result.rowcount != 1:
+                raise _revision_conflict("排产任务", task.revision, task.revision + 1)
+        db.flush()
+        for task in changed_tasks:
+            proposed = proposed_by_id[task.id]
+            move = move_by_task_id.get(task.id)
+            values: dict[str, Any] = {
+                "machine_id": proposed["machine_id"],
+                "sequence_no": proposed["sequence_no"],
+                "planned_start": proposed["planned_start"],
+                "planned_finish": proposed["planned_finish"],
+                "revision": task.revision + 1,
+                "updated_by": user.id,
+                "updated_by_name": _actor_name(user),
+                "updated_at": timestamp,
+                "manual_adjusted": (
+                    task.manual_adjusted or bool(task.auto_schedule_run_id)
+                ),
+            }
+            if move is not None:
+                values.update(
+                    estimated_start=move.planned_start,
+                    estimated_finish=move.planned_finish,
+                    manual_override_reason=(
+                        move.override_reason
+                        if match_by_task_id[task.id]["decision"] == "REVIEW_REQUIRED"
+                        else task.manual_override_reason
+                    ),
+                )
+            result = db.execute(
+                update(InjectionSchedulingTask)
+                .where(
+                    InjectionSchedulingTask.id == task.id,
+                    InjectionSchedulingTask.factory_id == factory_id,
+                    InjectionSchedulingTask.plan_id == plan.id,
+                    InjectionSchedulingTask.revision == task.revision,
+                )
+                .values(**values)
+            )
+            if result.rowcount != 1:
+                raise _revision_conflict("排产任务", task.revision, task.revision + 1)
+        plan_result = db.execute(
+            update(InjectionSchedulingPlan)
+            .where(
+                InjectionSchedulingPlan.id == plan.id,
+                InjectionSchedulingPlan.factory_id == factory_id,
+                InjectionSchedulingPlan.status == "DRAFT",
+                InjectionSchedulingPlan.revision == payload.expected_plan_revision,
+            )
+            .values(
+                revision=payload.expected_plan_revision + 1,
+                updated_by=user.id,
+                updated_by_name=_actor_name(user),
+                updated_at=timestamp,
+            )
+        )
+        if plan_result.rowcount != 1:
+            db.rollback()
+            latest = _require_plan(db, factory_id, plan.id)
+            raise _revision_conflict(
+                "计划草案",
+                payload.expected_plan_revision,
+                latest.revision,
+            )
+        db.flush()
+        refreshed_plan = _require_plan(db, factory_id, plan.id)
+        _record_plan_revision(
+            db,
+            plan=refreshed_plan,
+            user=user,
+            timestamp=timestamp,
+        )
+        refreshed_tasks = [
+            task_out(_require_task(db, factory_id, plan.id, task.id)).model_dump(
+                mode="json"
+            )
+            for task in changed_tasks
+        ]
+        serialized_moves = [item.model_dump(mode="json") for item in move_results]
+        audit = _audit(
+            db,
+            factory_id=factory_id,
+            event_type="plan_tasks_bulk_moved",
+            entity_type="plan",
+            entity_id=plan.id,
+            entity_revision=payload.expected_plan_revision + 1,
+            request_id=payload.request_id,
+            detail={
+                "payload_hash": request_hash,
+                "plan_revision": payload.expected_plan_revision + 1,
+                "moves": serialized_moves,
+                "tasks": refreshed_tasks,
+            },
+            user=user,
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="批量移动违反队列或时间约束") from exc
+    return InjectionSchedulingTaskBulkMoveResult(
+        plan=plan_out(db, _require_plan(db, factory_id, plan.id)),
+        moves=move_results,
+        audit_sequence=audit.sequence,
     )
 
 
@@ -1336,6 +1777,8 @@ def create_shift_report(
     task_id: str,
     payload: InjectionSchedulingShiftReportCreate,
     user: AuthContext,
+    *,
+    commit: bool = True,
 ) -> tuple[
     InjectionSchedulingShiftReport,
     InjectionSchedulingTask,
@@ -1519,10 +1962,25 @@ def create_shift_report(
                 "estimated_remaining_shifts": order.estimated_remaining_shifts,
                 "delivery_slack_days": order.delivery_slack_days,
                 "recalculated_task_ids": changed_projection_task_ids,
+                "task": task_out(
+                    _require_task_by_id(db, factory_id, task.id)
+                ).model_dump(mode="json"),
+                "order": order_out(
+                    _require_order(db, factory_id, order.id)
+                ).model_dump(mode="json"),
+                "tasks": [
+                    task_out(
+                        _require_task_by_id(db, factory_id, changed_task_id)
+                    ).model_dump(mode="json")
+                    for changed_task_id in changed_projection_task_ids
+                ],
             },
             user=user,
         )
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         replay = db.scalar(
@@ -1549,6 +2007,45 @@ def create_shift_report(
         _require_order(db, factory_id, order.id),
         audit.sequence,
         False,
+    )
+
+
+def create_shift_reports_bulk(
+    db: Session,
+    payload: InjectionSchedulingShiftReportBulkCreate,
+    user: AuthContext,
+) -> InjectionSchedulingShiftReportBulkResult:
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    results: list[InjectionSchedulingShiftReportResult] = []
+    try:
+        for item in payload.reports:
+            item_payload = item.model_dump(exclude={"task_id"})
+            report, task, order, audit_sequence, replay = create_shift_report(
+                db,
+                item.task_id,
+                InjectionSchedulingShiftReportCreate(
+                    factory_id=factory_id,
+                    **item_payload,
+                ),
+                user,
+                commit=False,
+            )
+            results.append(
+                InjectionSchedulingShiftReportResult(
+                    report=shift_report_out(report),
+                    task=task_out(task),
+                    order=order_out(order),
+                    audit_sequence=audit_sequence,
+                    idempotent_replay=replay,
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return InjectionSchedulingShiftReportBulkResult(
+        results=results,
+        latest_sequence=latest_event_sequence(db, factory_id),
     )
 
 

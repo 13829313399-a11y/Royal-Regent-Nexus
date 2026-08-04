@@ -27,6 +27,7 @@ from app.schemas.injection_scheduling import (
     InjectionSchedulingRuleSetUpdate,
 )
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
+from app.services.injection_scheduling_rules import normalize_class_text
 
 SCHEDULING_DEPARTMENTS = (
     "production",
@@ -37,14 +38,13 @@ SCHEDULING_DEPARTMENTS = (
 )
 
 DEFAULT_RULE_CONFIG: dict[str, Any] = {
-    "schema_version": "phase2-v1",
+    "schema_version": "phase0-v2",
     "arm_coverage": {
         "none": ["none"],
         "single": ["none", "single"],
         "dual": ["none", "single", "dual"],
         "multi": ["none", "single", "dual", "multi"],
     },
-    "required_dimension_fields": ["length_mm", "width_mm", "height_mm"],
     "process_rule_codes": [
         "pvc_screw",
         "pc_screw",
@@ -64,7 +64,7 @@ DEFAULT_RULE_CONFIG: dict[str, Any] = {
         "queue_balance": 10,
     },
     "color_scale": [],
-    "notes": "阶段2保守默认规则；缺失关键尺寸时必须人工复核。",
+    "notes": "V2 Phase 0：尺寸仅作工程资料，不参与机台资格判定。",
 }
 
 
@@ -121,6 +121,11 @@ def machine_out(record: InjectionSchedulingMachine) -> InjectionSchedulingMachin
         area=record.area,
         position=record.position,
         machine_class=record.machine_class,
+        machine_class_raw=record.machine_class_raw,
+        machine_a_class=_float_or_none(record.machine_a_class),
+        normalization_status=record.normalization_status,
+        process_tags=_load_json(record.process_tags_json, []),
+        special_machine_type=record.special_machine_type,
         clamping_force_tons=_float_or_none(record.clamping_force_tons),
         injection_capacity_g=_float_or_none(record.injection_capacity_g),
         tie_bar_x_mm=_float_or_none(record.tie_bar_x_mm),
@@ -156,6 +161,11 @@ def mold_out(record: InjectionSchedulingMold) -> InjectionSchedulingMoldOut:
         height_mm=_float_or_none(record.height_mm),
         weight_kg=_float_or_none(record.weight_kg),
         recommended_machine_class=record.recommended_machine_class,
+        mold_class_raw=record.mold_class_raw,
+        mold_a_class=_float_or_none(record.mold_a_class),
+        normalization_status=record.normalization_status,
+        process_tags=_load_json(record.process_tags_json, []),
+        special_machine_type=record.special_machine_type,
         whole_shot_net_weight_g=_float_or_none(record.whole_shot_net_weight_g),
         whole_shot_gross_weight_g=_float_or_none(record.whole_shot_gross_weight_g),
         required_arm_type=record.required_arm_type,
@@ -197,22 +207,31 @@ def _apply_machine(
     record: InjectionSchedulingMachine,
     payload: InjectionSchedulingMachineCreate | InjectionSchedulingMachineUpdate,
 ) -> None:
+    normalized = normalize_class_text(
+        payload.machine_class_raw or payload.machine_class
+    )
+    process_tags = list(
+        dict.fromkeys((*normalized.process_tags, *payload.process_tags))
+    )
     record.machine_code = payload.machine_code
     record.area = payload.area
     record.position = payload.position
-    record.machine_class = payload.machine_class
+    record.machine_class = normalized.raw
+    record.machine_class_raw = normalized.raw
+    record.machine_a_class = normalized.a_class
+    record.normalization_status = normalized.status
+    record.process_tags_json = _json(process_tags)
+    record.special_machine_type = (
+        normalized.special_machine_type or payload.special_machine_type
+    )
     record.clamping_force_tons = _decimal_or_none(payload.clamping_force_tons)
     record.injection_capacity_g = _decimal_or_none(payload.injection_capacity_g)
     record.tie_bar_x_mm = _decimal_or_none(payload.tie_bar_x_mm)
     record.tie_bar_y_mm = _decimal_or_none(payload.tie_bar_y_mm)
     record.platen_x_mm = _decimal_or_none(payload.platen_x_mm)
     record.platen_y_mm = _decimal_or_none(payload.platen_y_mm)
-    record.min_mold_thickness_mm = _decimal_or_none(
-        payload.min_mold_thickness_mm
-    )
-    record.max_mold_thickness_mm = _decimal_or_none(
-        payload.max_mold_thickness_mm
-    )
+    record.min_mold_thickness_mm = _decimal_or_none(payload.min_mold_thickness_mm)
+    record.max_mold_thickness_mm = _decimal_or_none(payload.max_mold_thickness_mm)
     record.opening_stroke_mm = _decimal_or_none(payload.opening_stroke_mm)
     record.machine_type = payload.machine_type
     record.robot_capabilities_json = _json(payload.robot_capabilities)
@@ -224,11 +243,24 @@ def _apply_machine(
 def _machine_update_values(
     payload: InjectionSchedulingMachineUpdate,
 ) -> dict[str, Any]:
+    normalized = normalize_class_text(
+        payload.machine_class_raw or payload.machine_class
+    )
+    process_tags = list(
+        dict.fromkeys((*normalized.process_tags, *payload.process_tags))
+    )
     return {
         "machine_code": payload.machine_code,
         "area": payload.area,
         "position": payload.position,
-        "machine_class": payload.machine_class,
+        "machine_class": normalized.raw,
+        "machine_class_raw": normalized.raw,
+        "machine_a_class": normalized.a_class,
+        "normalization_status": normalized.status,
+        "process_tags_json": _json(process_tags),
+        "special_machine_type": (
+            normalized.special_machine_type or payload.special_machine_type
+        ),
         "clamping_force_tons": _decimal_or_none(payload.clamping_force_tons),
         "injection_capacity_g": _decimal_or_none(payload.injection_capacity_g),
         "tie_bar_x_mm": _decimal_or_none(payload.tie_bar_x_mm),
@@ -250,13 +282,26 @@ def _apply_mold(
     record: InjectionSchedulingMold,
     payload: InjectionSchedulingMoldCreate | InjectionSchedulingMoldUpdate,
 ) -> None:
+    normalized = normalize_class_text(
+        payload.mold_class_raw or payload.recommended_machine_class
+    )
+    process_tags = list(
+        dict.fromkeys((*normalized.process_tags, *payload.process_tags))
+    )
     record.mold_no = payload.mold_no
     record.name = payload.name
     record.length_mm = _decimal_or_none(payload.length_mm)
     record.width_mm = _decimal_or_none(payload.width_mm)
     record.height_mm = _decimal_or_none(payload.height_mm)
     record.weight_kg = _decimal_or_none(payload.weight_kg)
-    record.recommended_machine_class = payload.recommended_machine_class
+    record.recommended_machine_class = normalized.raw
+    record.mold_class_raw = normalized.raw
+    record.mold_a_class = normalized.a_class
+    record.normalization_status = normalized.status
+    record.process_tags_json = _json(process_tags)
+    record.special_machine_type = (
+        normalized.special_machine_type or payload.special_machine_type
+    )
     record.whole_shot_net_weight_g = _decimal_or_none(payload.whole_shot_net_weight_g)
     record.whole_shot_gross_weight_g = _decimal_or_none(
         payload.whole_shot_gross_weight_g
@@ -275,6 +320,12 @@ def _apply_mold(
 def _mold_update_values(
     payload: InjectionSchedulingMoldUpdate,
 ) -> dict[str, Any]:
+    normalized = normalize_class_text(
+        payload.mold_class_raw or payload.recommended_machine_class
+    )
+    process_tags = list(
+        dict.fromkeys((*normalized.process_tags, *payload.process_tags))
+    )
     return {
         "mold_no": payload.mold_no,
         "name": payload.name,
@@ -282,10 +333,15 @@ def _mold_update_values(
         "width_mm": _decimal_or_none(payload.width_mm),
         "height_mm": _decimal_or_none(payload.height_mm),
         "weight_kg": _decimal_or_none(payload.weight_kg),
-        "recommended_machine_class": payload.recommended_machine_class,
-        "whole_shot_net_weight_g": _decimal_or_none(
-            payload.whole_shot_net_weight_g
+        "recommended_machine_class": normalized.raw,
+        "mold_class_raw": normalized.raw,
+        "mold_a_class": normalized.a_class,
+        "normalization_status": normalized.status,
+        "process_tags_json": _json(process_tags),
+        "special_machine_type": (
+            normalized.special_machine_type or payload.special_machine_type
         ),
+        "whole_shot_net_weight_g": _decimal_or_none(payload.whole_shot_net_weight_g),
         "whole_shot_gross_weight_g": _decimal_or_none(
             payload.whole_shot_gross_weight_g
         ),
@@ -603,9 +659,7 @@ def update_rule_set(
         factory_id=factory_id,
         revision=current.revision + 1,
         status="active",
-        configured_max_utilization=Decimal(
-            str(payload.configured_max_utilization)
-        ),
+        configured_max_utilization=Decimal(str(payload.configured_max_utilization)),
         allow_mold_rotation_90=payload.allow_mold_rotation_90,
         config_json=_json(payload.config.model_dump(mode="json")),
         created_by=user.id,
