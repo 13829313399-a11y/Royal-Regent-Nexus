@@ -46,6 +46,7 @@ from app.services.injection_scheduling_execution import (
     _remaining_shifts,
     _validate_schedule_conflicts,
 )
+from app.services.injection_scheduling_rules import normalize_class_text
 
 
 def _json(value: Any) -> str:
@@ -67,7 +68,9 @@ def _decimal(value: float | str | None) -> Decimal:
     return Decimal(str(value or 0))
 
 
-def _issue_out(record: InjectionSchedulingImportIssue) -> InjectionSchedulingImportIssueOut:
+def _issue_out(
+    record: InjectionSchedulingImportIssue,
+) -> InjectionSchedulingImportIssueOut:
     return InjectionSchedulingImportIssueOut(
         id=record.id,
         severity=record.severity,
@@ -165,7 +168,9 @@ def preview_import(
 ) -> tuple[InjectionSchedulingImportBatch, bool]:
     factory_id = require_injection_scheduling_factory(factory_id)
     if expected_revision != 0:
-        raise HTTPException(status_code=409, detail="新导入预览 expected_revision 必须为 0")
+        raise HTTPException(
+            status_code=409, detail="新导入预览 expected_revision 必须为 0"
+        )
     normalized, issues = parse_injection_scheduling_workbook(content, source_file_name)
     preview_payload_hash = _payload_hash(
         {
@@ -279,7 +284,9 @@ def _create_missing_masters(
     normalized: dict[str, Any],
     user: AuthContext,
     timestamp: str,
-) -> tuple[dict[str, InjectionSchedulingMachine], dict[str, InjectionSchedulingMold], int, int]:
+) -> tuple[
+    dict[str, InjectionSchedulingMachine], dict[str, InjectionSchedulingMold], int, int
+]:
     machines = {
         item.machine_code: item
         for item in db.scalars(
@@ -293,13 +300,19 @@ def _create_missing_masters(
         code = source["machine_code"]
         if code in machines:
             continue
+        normalized_class = normalize_class_text(source.get("machine_class", ""))
         record = InjectionSchedulingMachine(
             id=f"ismachine-{uuid4().hex}",
             factory_id=factory_id,
             machine_code=code,
             area=source.get("area", ""),
             position=source.get("position", ""),
-            machine_class=source.get("machine_class", ""),
+            machine_class=normalized_class.raw,
+            machine_class_raw=normalized_class.raw,
+            machine_a_class=normalized_class.a_class,
+            normalization_status=normalized_class.status,
+            process_tags_json=_json(normalized_class.process_tags),
+            special_machine_type=normalized_class.special_machine_type,
             clamping_force_tons=source.get("clamping_force_tons"),
             injection_capacity_g=source.get("injection_capacity_g"),
             tie_bar_x_mm=source.get("tie_bar_x_mm"),
@@ -339,6 +352,9 @@ def _create_missing_masters(
         mold_no = source["mold_no"]
         if mold_no in molds:
             continue
+        normalized_class = normalize_class_text(
+            source.get("recommended_machine_class", "")
+        )
         record = InjectionSchedulingMold(
             id=f"ismold-{uuid4().hex}",
             factory_id=factory_id,
@@ -348,10 +364,15 @@ def _create_missing_masters(
             width_mm=source.get("width_mm"),
             height_mm=source.get("height_mm"),
             weight_kg=source.get("weight_kg"),
-            recommended_machine_class=source.get("recommended_machine_class", ""),
+            recommended_machine_class=normalized_class.raw,
+            mold_class_raw=normalized_class.raw,
+            mold_a_class=normalized_class.a_class,
+            normalization_status=normalized_class.status,
+            process_tags_json=_json(normalized_class.process_tags),
+            special_machine_type=normalized_class.special_machine_type,
             whole_shot_net_weight_g=source.get("whole_shot_net_weight_g"),
             whole_shot_gross_weight_g=source.get("whole_shot_gross_weight_g"),
-            required_arm_type=source.get("required_arm_type", "none"),
+            required_arm_type=source.get("required_arm_type", ""),
             required_fixture_type=source.get("required_fixture_type", ""),
             material_code=source.get("material_code", ""),
             material_name=source.get("material_name", ""),
@@ -391,7 +412,9 @@ def _prepare_plan(
     )
     if payload.confirm_mode == "create_draft":
         if draft is not None:
-            raise HTTPException(status_code=409, detail="当前厂区已有草案，请改用合并草案")
+            raise HTTPException(
+                status_code=409, detail="当前厂区已有草案，请改用合并草案"
+            )
         rules = db.scalar(
             select(InjectionSchedulingRuleSet)
             .where(
@@ -515,7 +538,10 @@ def confirm_import(
     if unknown_ids:
         raise HTTPException(
             status_code=422,
-            detail={"message": "包含不属于本批次的阻断问题 ID", "issue_ids": sorted(unknown_ids)},
+            detail={
+                "message": "包含不属于本批次的阻断问题 ID",
+                "issue_ids": sorted(unknown_ids),
+            },
         )
     unacknowledged = blocking_issue_ids - acknowledged
     if unacknowledged:
@@ -606,7 +632,9 @@ def confirm_import(
             machine = machines.get(source["machine_code"])
             mold = molds.get(source["mold_no"])
             if machine is None or mold is None:
-                raise HTTPException(status_code=409, detail="预览引用的机台或模具不存在")
+                raise HTTPException(
+                    status_code=409, detail="预览引用的机台或模具不存在"
+                )
             quantity = _decimal(source["order_quantity"])
             completed = _decimal(source["completed_quantity"])
             order_key = _order_business_key(
@@ -659,7 +687,9 @@ def confirm_import(
                                 "source_file_hash": batch.source_file_hash,
                                 "order_date": source["order_date"],
                                 "legacy_marker": source["legacy_marker"],
-                                "formula_cells": source["source"].get("formula_cells", {}),
+                                "formula_cells": source["source"].get(
+                                    "formula_cells", {}
+                                ),
                             }
                         ),
                         status=status,

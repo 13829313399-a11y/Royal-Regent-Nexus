@@ -13,6 +13,7 @@ class InjectionSchedulingMatchEvaluate(StrictWriteModel):
     factory_id: str
     order_id: str = Field(min_length=1, max_length=96)
     machine_ids: list[str] = Field(default_factory=list, max_length=200)
+    allow_scheduled: bool = False
 
     @field_validator("factory_id", "order_id")
     @classmethod
@@ -48,6 +49,7 @@ class InjectionSchedulingMachineMatchOut(BaseModel):
     score: float | None
     hard_failures: list[InjectionSchedulingMatchReasonOut]
     warnings: list[InjectionSchedulingMatchReasonOut]
+    advisories: list[InjectionSchedulingMatchReasonOut] = Field(default_factory=list)
     score_breakdown: list[InjectionSchedulingScoreBreakdownOut]
     explanation: str
     rule_set_id: str

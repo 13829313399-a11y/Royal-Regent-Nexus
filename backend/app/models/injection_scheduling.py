@@ -36,6 +36,14 @@ class InjectionSchedulingMachine(Base):
             "revision >= 1",
             name="ck_injection_scheduling_machine_revision",
         ),
+        CheckConstraint(
+            "machine_a_class IS NULL OR machine_a_class > 0",
+            name="ck_injection_scheduling_machine_a_class",
+        ),
+        CheckConstraint(
+            "normalization_status IN ('COMPLETE', 'REVIEW_REQUIRED')",
+            name="ck_injection_scheduling_machine_normalization_status",
+        ),
         Index(
             "ix_injection_scheduling_machine_factory_status_code",
             "factory_id",
@@ -50,6 +58,15 @@ class InjectionSchedulingMachine(Base):
     area: Mapped[str] = mapped_column(String(128), default="")
     position: Mapped[str] = mapped_column(String(128), default="")
     machine_class: Mapped[str] = mapped_column(String(64), default="", index=True)
+    machine_class_raw: Mapped[str] = mapped_column(String(128), default="")
+    machine_a_class: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 3), nullable=True, index=True
+    )
+    normalization_status: Mapped[str] = mapped_column(
+        String(32), default="REVIEW_REQUIRED", index=True
+    )
+    process_tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    special_machine_type: Mapped[str] = mapped_column(String(64), default="")
     clamping_force_tons: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 3), nullable=True
     )
@@ -113,6 +130,14 @@ class InjectionSchedulingMold(Base):
             "revision >= 1",
             name="ck_injection_scheduling_mold_revision",
         ),
+        CheckConstraint(
+            "mold_a_class IS NULL OR mold_a_class > 0",
+            name="ck_injection_scheduling_mold_a_class",
+        ),
+        CheckConstraint(
+            "normalization_status IN ('COMPLETE', 'REVIEW_REQUIRED')",
+            name="ck_injection_scheduling_mold_normalization_status",
+        ),
         Index(
             "ix_injection_scheduling_mold_factory_status_no",
             "factory_id",
@@ -132,13 +157,22 @@ class InjectionSchedulingMold(Base):
     recommended_machine_class: Mapped[str] = mapped_column(
         String(64), default="", index=True
     )
+    mold_class_raw: Mapped[str] = mapped_column(String(128), default="")
+    mold_a_class: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 3), nullable=True, index=True
+    )
+    normalization_status: Mapped[str] = mapped_column(
+        String(32), default="REVIEW_REQUIRED", index=True
+    )
+    process_tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    special_machine_type: Mapped[str] = mapped_column(String(64), default="")
     whole_shot_net_weight_g: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 3), nullable=True
     )
     whole_shot_gross_weight_g: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 3), nullable=True
     )
-    required_arm_type: Mapped[str] = mapped_column(String(64), default="none")
+    required_arm_type: Mapped[str] = mapped_column(String(64), default="")
     required_fixture_type: Mapped[str] = mapped_column(String(128), default="")
     material_code: Mapped[str] = mapped_column(String(128), default="", index=True)
     material_name: Mapped[str] = mapped_column(String(255), default="")

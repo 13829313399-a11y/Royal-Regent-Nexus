@@ -1,7 +1,7 @@
 """create immutable customer-order export audit evidence
 
-Revision ID: 20260804_0047
-Revises: 20260802_0046
+Revision ID: 20260804_0049
+Revises: 20260804_0048
 Create Date: 2026-08-04
 """
 
@@ -10,8 +10,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20260804_0047"
-down_revision: str | Sequence[str] | None = "20260802_0046"
+revision: str = "20260804_0049"
+down_revision: str | Sequence[str] | None = "20260804_0048"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -75,7 +75,7 @@ def downgrade() -> None:
     ).scalar_one()
     if audit_count:
         raise RuntimeError(
-            "20260804_0047 cannot be downgraded after customer-order export audits exist; "
+            "20260804_0049 cannot be downgraded after customer-order export audits exist; "
             "back up the audit evidence first"
         )
     op.drop_table("customer_order_export_audits")

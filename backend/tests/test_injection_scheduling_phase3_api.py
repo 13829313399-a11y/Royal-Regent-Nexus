@@ -537,6 +537,19 @@ def test_phase3_plan_publish_report_rollback_and_polling_contract(monkeypatch):
             "plan_published",
             "shift_report_recorded",
         } <= {item["event_type"] for item in events.json()["events"]}
+        order_created_event = next(
+            item
+            for item in events.json()["events"]
+            if item["event_type"] == "order_created"
+        )
+        task_created_event = next(
+            item
+            for item in events.json()["events"]
+            if item["event_type"] == "plan_task_created"
+        )
+        assert order_created_event["detail"]["order"]["id"]
+        assert task_created_event["detail"]["task"]["id"]
+        assert task_created_event["detail"]["order"]["id"]
 
         rollback_payload = {
             "factory_id": factory_id,
@@ -913,3 +926,283 @@ def test_phase3_rejects_machine_and_physical_mold_overlap(monkeypatch):
             },
         )
         assert second_copy.status_code == 201, second_copy.text
+
+
+def test_v2_phase2_bulk_move_revalidates_eligibility_and_revisions(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        factory_id = "huaxing"
+        first_machine = client.post(
+            "/api/injection-scheduling/machines",
+            json=machine_payload(factory_id, "V2-P2-32A-1"),
+        ).json()
+        second_machine = client.post(
+            "/api/injection-scheduling/machines",
+            json=machine_payload(factory_id, "V2-P2-32A-2"),
+        ).json()
+        small_payload = machine_payload(factory_id, "V2-P2-12A")
+        small_payload["machine_class"] = "12A"
+        small_machine = client.post(
+            "/api/injection-scheduling/machines",
+            json=small_payload,
+        ).json()
+        mold = client.post(
+            "/api/injection-scheduling/molds",
+            json=mold_payload(factory_id, "V2-P2-MOLD"),
+        ).json()
+
+        first_order_payload = order_payload(factory_id, "V2-P2-ORDER-1")
+        first_order_payload["mold_id"] = mold["id"]
+        second_order_payload = order_payload(factory_id, "V2-P2-ORDER-2")
+        second_order_payload["mold_id"] = mold["id"]
+        first_order = client.post(
+            "/api/injection-scheduling/orders", json=first_order_payload
+        ).json()
+        second_order = client.post(
+            "/api/injection-scheduling/orders", json=second_order_payload
+        ).json()
+        draft = client.post(
+            "/api/injection-scheduling/plans/drafts",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": 0,
+                "business_date": "2026-08-04",
+            },
+        ).json()
+        client.post(
+            f"/api/injection-scheduling/plans/{draft['id']}/tasks",
+            json=task_payload(
+                factory_id,
+                1,
+                first_machine["id"],
+                first_order["id"],
+                1,
+            ),
+        )
+        second_plan = client.post(
+            f"/api/injection-scheduling/plans/{draft['id']}/tasks",
+            json=task_payload(
+                factory_id,
+                2,
+                first_machine["id"],
+                second_order["id"],
+                2,
+            ),
+        ).json()
+        second_task = next(
+            item
+            for item in second_plan["tasks"]
+            if item["order_id"] == second_order["id"]
+        )
+        move_payload = {
+            "factory_id": factory_id,
+            "expected_plan_revision": 3,
+            "expected_rule_revision": draft["rule_revision"],
+            "request_id": "v2-phase2-bulk-move-001",
+            "moves": [
+                {
+                    "task_id": second_task["id"],
+                    "expected_revision": second_task["revision"],
+                    "machine_id": second_machine["id"],
+                    "sequence_no": 0,
+                    "planned_start": second_task["planned_start"],
+                    "planned_finish": second_task["planned_finish"],
+                    "override_reason": "",
+                }
+            ],
+        }
+        moved = client.post(
+            f"/api/injection-scheduling/plans/{draft['id']}/tasks/bulk-move",
+            json=move_payload,
+        )
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["plan"]["revision"] == 4
+        assert moved.json()["moves"][0]["match"]["decision"] == "PASS"
+        moved_task = next(
+            item
+            for item in moved.json()["plan"]["tasks"]
+            if item["id"] == second_task["id"]
+        )
+        assert moved_task["machine_id"] == second_machine["id"]
+        assert moved_task["sequence_no"] == 0
+
+        replay = client.post(
+            f"/api/injection-scheduling/plans/{draft['id']}/tasks/bulk-move",
+            json=move_payload,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["idempotent_replay"] is True
+
+        hard_fail_payload = {
+            **move_payload,
+            "expected_plan_revision": 4,
+            "request_id": "v2-phase2-bulk-move-fail",
+            "moves": [
+                {
+                    **move_payload["moves"][0],
+                    "expected_revision": moved_task["revision"],
+                    "machine_id": small_machine["id"],
+                }
+            ],
+        }
+        hard_fail = client.post(
+            f"/api/injection-scheduling/plans/{draft['id']}/tasks/bulk-move",
+            json=hard_fail_payload,
+        )
+        assert hard_fail.status_code == 409
+        assert hard_fail.json()["detail"]["match"]["decision"] == "FAIL"
+        unchanged = client.get(
+            "/api/injection-scheduling/plans/current",
+            params={"factory_id": factory_id},
+        ).json()["plan"]
+        assert unchanged["revision"] == 4
+
+        order_after_schedule = next(
+            item
+            for item in moved.json()["plan"]["orders"]
+            if item["id"] == first_order["id"]
+        )
+        order_update = client.patch(
+            f"/api/injection-scheduling/orders/{first_order['id']}",
+            headers={"X-Request-ID": "v2-phase2-order-edit-001"},
+            json={
+                "factory_id": factory_id,
+                "expected_revision": order_after_schedule["revision"],
+                "warehouse_text": "V2 成品仓",
+                "remark": "Phase 2 单元格编辑",
+            },
+        )
+        assert order_update.status_code == 200, order_update.text
+        assert order_update.json()["warehouse_text"] == "V2 成品仓"
+        stale_order_update = client.patch(
+            f"/api/injection-scheduling/orders/{first_order['id']}",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": order_after_schedule["revision"],
+                "remark": "不应覆盖",
+            },
+        )
+        assert stale_order_update.status_code == 409
+        assert (
+            stale_order_update.json()["detail"]["diff"]["remark"]
+            == "Phase 2 单元格编辑"
+        )
+
+
+def test_v2_phase2_bulk_shift_reports_are_atomic(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        factory_id = "huaxing"
+        machines = [
+            client.post(
+                "/api/injection-scheduling/machines",
+                json=machine_payload(factory_id, f"V2-P2-REPORT-{index}"),
+            ).json()
+            for index in (1, 2)
+        ]
+        mold = client.post(
+            "/api/injection-scheduling/molds",
+            json=mold_payload(factory_id, "V2-P2-REPORT-MOLD"),
+        ).json()
+        orders = []
+        for index in (1, 2):
+            payload = order_payload(factory_id, f"V2-P2-REPORT-ORDER-{index}")
+            payload["mold_id"] = mold["id"]
+            orders.append(
+                client.post("/api/injection-scheduling/orders", json=payload).json()
+            )
+        draft = client.post(
+            "/api/injection-scheduling/plans/drafts",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": 0,
+                "business_date": "2026-08-04",
+            },
+        ).json()
+        plan = draft
+        for index, (machine, order) in enumerate(zip(machines, orders, strict=True)):
+            task = task_payload(
+                factory_id,
+                index + 1,
+                machine["id"],
+                order["id"],
+                1,
+            )
+            task["mold_copy_no"] = index + 1
+            plan = client.post(
+                f"/api/injection-scheduling/plans/{draft['id']}/tasks",
+                json=task,
+            ).json()
+        published = client.post(
+            f"/api/injection-scheduling/plans/{draft['id']}/publish",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": plan["revision"],
+                "request_id": "v2-phase2-publish-reports",
+            },
+        ).json()["plan"]
+        tasks = sorted(published["tasks"], key=lambda item: item["machine_id"])
+
+        def report_item(task: dict, suffix: str, expected_revision: int) -> dict:
+            return {
+                "task_id": task["id"],
+                "expected_revision": expected_revision,
+                "request_id": f"v2-phase2-bulk-report-{suffix}",
+                "business_date": "2026-08-04",
+                "shift_code": "DAY",
+                "quantity_mode": "CUMULATIVE",
+                "reported_quantity": 12,
+                "shift_target_quantity": 40,
+                "downtime_minutes": 5,
+                "exception_code": "",
+                "exception_detail": "",
+                "reported_status": "RUNNING",
+            }
+
+        first_batch = client.post(
+            "/api/injection-scheduling/tasks/shift-reports/bulk",
+            json={
+                "factory_id": factory_id,
+                "reports": [
+                    report_item(tasks[0], "001", tasks[0]["revision"]),
+                    report_item(tasks[1], "002", tasks[1]["revision"]),
+                ],
+            },
+        )
+        assert first_batch.status_code == 200, first_batch.text
+        assert len(first_batch.json()["results"]) == 2
+        assert all(
+            item["task"]["reported_quantity"] == 12
+            for item in first_batch.json()["results"]
+        )
+
+        refreshed = client.get(
+            "/api/injection-scheduling/plans/current",
+            params={"factory_id": factory_id},
+        ).json()["plan"]
+        refreshed_tasks = sorted(refreshed["tasks"], key=lambda item: item["machine_id"])
+        rollback_batch = client.post(
+            "/api/injection-scheduling/tasks/shift-reports/bulk",
+            json={
+                "factory_id": factory_id,
+                "reports": [
+                    {
+                        **report_item(
+                            refreshed_tasks[0],
+                            "rollback-first",
+                            refreshed_tasks[0]["revision"],
+                        ),
+                        "reported_quantity": 15,
+                    },
+                    report_item(refreshed_tasks[1], "rollback-stale", 999),
+                ],
+            },
+        )
+        assert rollback_batch.status_code == 409
+        after_rollback = client.get(
+            "/api/injection-scheduling/plans/current",
+            params={"factory_id": factory_id},
+        ).json()["plan"]
+        after_tasks = sorted(after_rollback["tasks"], key=lambda item: item["machine_id"])
+        assert after_tasks[0]["reported_quantity"] == 12
+        assert after_tasks[0]["revision"] == refreshed_tasks[0]["revision"]

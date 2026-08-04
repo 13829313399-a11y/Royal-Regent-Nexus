@@ -69,6 +69,24 @@ class InjectionSchedulingOrderCreate(StrictWriteModel):
         return self
 
 
+class InjectionSchedulingOrderUpdate(StrictWriteModel):
+    factory_id: str
+    expected_revision: int = Field(ge=1)
+    warehouse_text: str | None = Field(default=None, max_length=255)
+    remark: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("warehouse_text", "remark")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if self.warehouse_text is None and self.remark is None:
+            raise ValueError("至少提交一个可编辑字段")
+        return self
+
+
 class InjectionSchedulingOrderOut(BaseModel):
     id: str
     factory_id: str
@@ -176,6 +194,50 @@ class InjectionSchedulingTaskUpdate(StrictWriteModel):
         return self
 
 
+class InjectionSchedulingTaskMove(StrictWriteModel):
+    task_id: str = Field(min_length=1, max_length=96)
+    expected_revision: int = Field(ge=1)
+    machine_id: str = Field(min_length=1, max_length=96)
+    sequence_no: int = Field(ge=0)
+    planned_start: str = Field(min_length=1, max_length=32)
+    planned_finish: str = Field(min_length=1, max_length=32)
+    override_reason: str = Field(default="", max_length=2000)
+
+    @field_validator("task_id", "machine_id", "override_reason")
+    @classmethod
+    def strip_move_text(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        start = _parse_datetime(self.planned_start, "计划开始时间")
+        finish = _parse_datetime(self.planned_finish, "计划完成时间")
+        if start >= finish:
+            raise ValueError("计划开始时间必须早于计划完成时间")
+        return self
+
+
+class InjectionSchedulingTaskBulkMove(StrictWriteModel):
+    factory_id: str
+    expected_plan_revision: int = Field(ge=1)
+    expected_rule_revision: int = Field(ge=1)
+    request_id: str = Field(min_length=8, max_length=128)
+    moves: list[InjectionSchedulingTaskMove] = Field(min_length=1, max_length=100)
+
+    @field_validator("factory_id", "request_id")
+    @classmethod
+    def strip_bulk_move_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("moves")
+    @classmethod
+    def unique_tasks(cls, value: list[InjectionSchedulingTaskMove]):
+        task_ids = [item.task_id for item in value]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("同一次移动中任务 ID 不能重复")
+        return value
+
+
 class InjectionSchedulingTaskOut(BaseModel):
     id: str
     factory_id: str
@@ -231,6 +293,26 @@ class InjectionSchedulingPlanOut(BaseModel):
     archived_at: str
     orders: list[InjectionSchedulingOrderOut]
     tasks: list[InjectionSchedulingTaskOut]
+
+
+class InjectionSchedulingTaskMoveResult(BaseModel):
+    task_id: str
+    from_machine_id: str
+    to_machine_id: str
+    from_sequence_no: int
+    to_sequence_no: int
+    previous_start: str
+    previous_finish: str
+    planned_start: str
+    planned_finish: str
+    match: dict[str, Any]
+
+
+class InjectionSchedulingTaskBulkMoveResult(BaseModel):
+    plan: InjectionSchedulingPlanOut
+    moves: list[InjectionSchedulingTaskMoveResult]
+    audit_sequence: int
+    idempotent_replay: bool = False
 
 
 class InjectionSchedulingCurrentPlanOut(BaseModel):
@@ -310,6 +392,57 @@ class InjectionSchedulingShiftReportResult(BaseModel):
     order: InjectionSchedulingOrderOut
     audit_sequence: int
     idempotent_replay: bool = False
+
+
+class InjectionSchedulingShiftReportBulkItem(StrictWriteModel):
+    task_id: str = Field(min_length=1, max_length=96)
+    expected_revision: int = Field(ge=1)
+    request_id: str = Field(min_length=8, max_length=128)
+    business_date: date
+    shift_code: ShiftCode
+    quantity_mode: QuantityMode
+    reported_quantity: float = Field(ge=0)
+    shift_target_quantity: float = Field(default=0, ge=0)
+    downtime_minutes: int = Field(default=0, ge=0, le=1440)
+    exception_code: str = Field(default="", max_length=64)
+    exception_detail: str = Field(default="", max_length=2000)
+    reported_status: Literal["QUEUED", "RUNNING", "BLOCKED", "COMPLETED"] = (
+        "RUNNING"
+    )
+
+    @field_validator("task_id", "request_id", "exception_code", "exception_detail")
+    @classmethod
+    def strip_bulk_report_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class InjectionSchedulingShiftReportBulkCreate(StrictWriteModel):
+    factory_id: str
+    reports: list[InjectionSchedulingShiftReportBulkItem] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    @field_validator("factory_id")
+    @classmethod
+    def strip_bulk_report_factory(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("reports")
+    @classmethod
+    def unique_report_requests(cls, value: list[InjectionSchedulingShiftReportBulkItem]):
+        request_ids = [item.request_id for item in value]
+        if len(request_ids) != len(set(request_ids)):
+            raise ValueError("批量回报 request_id 不能重复")
+        task_ids = [item.task_id for item in value]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("同一次批量回报中任务 ID 不能重复")
+        return value
+
+
+class InjectionSchedulingShiftReportBulkResult(BaseModel):
+    results: list[InjectionSchedulingShiftReportResult]
+    latest_sequence: int
 
 
 class InjectionSchedulingEventOut(BaseModel):

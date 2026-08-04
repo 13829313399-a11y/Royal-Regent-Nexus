@@ -76,6 +76,7 @@ def post_match_evaluate(
         factory_id=factory_id,
         order_id=payload.order_id,
         machine_ids=payload.machine_ids,
+        allow_scheduled=payload.allow_scheduled,
     )
 
 
