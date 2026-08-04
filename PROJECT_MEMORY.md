@@ -27,6 +27,7 @@ The main implemented or partially implemented domains are:
 - Huaxing BuzzBee, Dickie, Caixing, EDU, 360, Yinhui, SEASONS, Maxx and Shushupapa; Huadeng Casdon, Jakks, Simba, Spin and Spin Master; Huakang A 360; plus Huakang C INDEX, JAZAWARES/JAZWARES, MAXX, STROTTMAN and JP customer-order preview and schedule export
 - Carton-mark comparison
 - Indonesia invoice reconciliation
+- Injection-scheduling V2 Phase 1 read-only planning workspace and Phase 0 backend contract
 
 The intended Customer Order Center boundary is to own original purchase orders, normalized order facts, validation, confirmation, immutable versions and source lineage, then publish confirmed demand to PMC. Detailed material planning, workshop scheduling, inventory execution and shipping execution belong to downstream modules and should appear in the order center only as summaries or links.
 
@@ -38,7 +39,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- Alembic has one current head: `20260804_0047`.
+- Alembic has one current head: `20260804_0048`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -179,9 +180,17 @@ Carton-mark comparison is a permission-protected, request-time PDF/OCR/photo com
 
 Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF inputs for an authenticated user. It is also request-time processing rather than a persisted workflow.
 
-### Removed Injection-Scheduling Center
+### Injection-Scheduling V2 Phase 2 Editing Workspace
 
-The injection-scheduling center is no longer an active module. Its production-module card, Vue route and workspace, frontend API/repository/store/types, FastAPI routes, models, schemas, services, permission catalog entries, scope policies, system-position grants and active module tests have been removed. Migration `20260804_0047` is the irreversible forward removal of the current `injection_scheduling_*` tables, permissions, IAM markers and database guard functions. Historical migrations remain immutable history. `/api/injection` remains the separate molding-sample production domain and is not affected by this removal.
+The injection-scheduling center has a Phase 2 Vue workspace at `/modules/production/injection-scheduling?factory=<factory-id>` and a production-module card. The feature is isolated under `src/features/injection-scheduling-v2/`, uses TanStack Table and TanStack Virtual for the machine-grouped plan grid, and exposes the plan grid, machine timeline, backlog, alerts and audit/history views. It also includes four column presets, configurable visibility and widths, default frozen planning identifiers, a right task inspector and a bottom backlog dock. The complete preset exposes all uploaded-plan fields. If the API is unavailable, the workspace explicitly labels its fallback data as read-only instead of presenting it as formal data.
+
+Phase 2 adds permission- and plan-state-aware cell editing for task status, shift target, cumulative production quantities, downtime, exception, planned window, warehouse and remarks. Published active tasks submit shift reports through one atomic bulk endpoint; draft tasks support same-machine and cross-machine drag/keyboard moves only after eligibility re-evaluation. `FAIL` moves remain blocked, while `REVIEW_REQUIRED` moves require publish/override authority and a reason. Every write retains factory scope, optimistic task/order/plan/rule revisions and request correlation. Revision conflicts preserve local drafts, refresh server state and require an explicit server-value or reapply choice. The workspace polls audit events every 12 seconds after the last sequence and merges included task/order snapshots without overwriting pending local drafts.
+
+The Phase 0 backend remains the source for factory-scoped machine/mold/rule masters, orders, draft/published/archived plans, tasks, shift reports, revisions, snapshots, audit events, Excel preview/confirmation, permissions, scope policies and fixed-position grants.
+
+Machine and mold class source text is preserved in `machine_class_raw` and `mold_class_raw`; trusted numeric values live in `machine_a_class` and `mold_a_class`, with `normalization_status`, structured process tags and special-machine type kept separately. Values without an explicit `A` marker are not guessed unless an explicit mapping exists. Eligibility uses only numeric A-class coverage, the exact 100% whole-shot net-weight/injection-capacity boundary, mechanical-arm coverage, fixture coverage, machine/mold availability and structured process restrictions. Tie-bar/platen dimensions, mold L/W/H, mold thickness and rotation remain engineering data and do not affect eligibility. Missing A-class, weight, arm or fixture data produces `REVIEW_REQUIRED`; hard failures cannot be confirmed, while review-required candidates need a supervisor-authorized reason. Local candidate scoring prefers the smallest sufficient A-class but is not yet a global scheduler.
+
+Migration `20260804_0047` remains the irreversible historical removal boundary. Forward migration `20260804_0048` recreates the V2 Phase 0 tables, permissions and database guards. Phase 2 adds API and UI behavior without another schema migration. `/api/injection` remains the separate molding-sample production domain. There is still no Phase 3 global solver.
 
 ### Huakang A 3D Printing Management
 
@@ -223,6 +232,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260731_0045` adds factory-scoped Excel import batches and append-only row issues, request/payload idempotency, source-file/sheet/row lineage on tasks, confirmed-batch and published-lineage immutability guards, and refuses downgrade after any import preview or imported task exists.
 - Migration `20260802_0046` adds the independent password-reset request state machine, reviewer and notification linkage, scope metadata, issuance count and expiry/completion timestamps. Its downgrade refuses to run after any password-reset request exists.
 - Migration `20260804_0047` irreversibly removes the current injection-scheduling tables, data, permissions, IAM markers and database guard functions. Recovery requires a verified pre-removal database backup.
+- Migration `20260804_0048` rebuilds the injection-scheduling V2 Phase 0 backend after the removal boundary, restores the eight canonical permissions and execution/import guards, adds raw and numeric A-class fields plus normalization/process metadata, and refuses downgrade after V2 business data exists. Application startup refuses to let `create_all` bypass this migration.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 
 ## 8. Active Known Issues
@@ -235,6 +245,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
+- Injection-scheduling V2 has no current frontend entry, global solver, setup/shift calendar, conflict-resolution UI or KPI acceptance surface; those belong to later rebuild phases.
 
 ## 9. Current Next Steps
 

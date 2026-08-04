@@ -90,6 +90,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "internal_quote:read",
                         "internal_quote:summary_read",
                         "internal_quote:timeline_read",
+                        "injection_scheduling:read",
                         "molding_sample:audit_read",
                         "molding_sample:cross_factory_cost_read",
                         "molding_sample:cross_factory_read",

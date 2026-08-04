@@ -787,6 +787,31 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     panelSubtitle: '承载生产计划、啤办任务和各车间生产管理模块',
     modules: [
       {
+        id: 'injection-scheduling',
+        title: '注塑排产中枢',
+        owner: '啤机部 / PMC',
+        summary: '统一查看机台队列、待排订单、资格校验、交期异常与排期审计',
+        status: 'Phase 1',
+        statusTone: 'teal',
+        stats: '只读工作台 · V2 资格口径',
+        icon: CalendarClock,
+        route: '/modules/production/injection-scheduling',
+        permissions: ['injection_scheduling:read'],
+        statusMetrics: [
+          { label: '视图', value: '5', tone: 'teal' },
+          { label: '字段', value: '47+', tone: 'blue' },
+          { label: '模式', value: '只读', tone: 'slate' },
+        ],
+        todos: ['Phase 2 开放任务调整与生产回报', 'Phase 3 接入全局排期求解器'],
+        children: [
+          { label: '计划总表', summary: '按机台分组查看当前生产与后续队列' },
+          { label: '机台时间轴', summary: '按日期观察机台任务窗口与释放时间' },
+          { label: '待排订单', summary: '查看未排订单及资格复核状态' },
+          { label: '异常预警', summary: '聚合交期、机台与资料完整性风险' },
+          { label: '排期记录', summary: '追溯计划事件与后续求解器运行记录' },
+        ],
+      },
+      {
         id: 'production-plan',
         title: '生产计划管理',
         owner: '计划排程',

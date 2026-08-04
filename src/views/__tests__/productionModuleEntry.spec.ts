@@ -13,10 +13,16 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('does not expose the removed injection scheduling module', () => {
-    expect(enterpriseSource).not.toContain("id: 'injection-scheduling'")
-    expect(enterpriseSource).not.toContain("title: '注塑排产中枢'")
-    expect(routerSource).not.toContain('/modules/production/injection-scheduling')
+  it('exposes the Phase 1 injection scheduling V2 read-only workspace', () => {
+    expect(enterpriseSource).toContain("id: 'injection-scheduling'")
+    expect(enterpriseSource).toContain("title: '注塑排产中枢'")
+    expect(enterpriseSource).toContain("route: '/modules/production/injection-scheduling'")
+    expect(enterpriseSource).toContain("permissions: ['injection_scheduling:read']")
+    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).toContain("name: 'injection-scheduling-v2'")
+    expect(routerSource).toContain("import('@/views/InjectionSchedulingV2View.vue')")
+    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}fullPage: true/)
+    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}permissions: \['injection_scheduling:read'\]/)
     expect(routerSource).not.toContain('InjectionSchedulingWorkspaceView.vue')
   })
 
