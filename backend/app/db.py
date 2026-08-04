@@ -471,6 +471,7 @@ def ensure_sqlite_legacy_columns() -> None:
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
+        customer_order,  # noqa: F401
         injection_scheduling,  # noqa: F401
         injection_scheduling_execution,  # noqa: F401
         injection_scheduling_import,  # noqa: F401
