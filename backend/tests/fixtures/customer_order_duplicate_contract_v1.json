@@ -1,0 +1,30 @@
+{
+  "schema_version": "customer-order-duplicate-contract-v1",
+  "identity_rule": "same normalized order identifier + same normalized item + same quantity",
+  "duplicate_issue": {
+    "code": "duplicate_existing_order",
+    "severity_before_environment_policy": "blocked",
+    "can_skip_before_environment_policy": true
+  },
+  "quantity_conflict_issue": {
+    "code": "existing_quantity_conflict",
+    "severity": "blocked",
+    "can_skip": false
+  },
+  "factory_customer_codes": {
+    "huaxing": [
+      "buzzbee",
+      "dickie",
+      "caixing",
+      "edu",
+      "360",
+      "yinhui",
+      "seasons",
+      "maxx",
+      "shushupapa"
+    ],
+    "huadeng": ["casdon", "jakks", "simba", "spin", "spin-master"],
+    "huakang-a": ["360"],
+    "huakang-c": ["index", "jazwares", "maxx", "strottman", "jp"]
+  }
+}

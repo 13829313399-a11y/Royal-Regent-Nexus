@@ -86,6 +86,14 @@ INTERNAL_QUOTE_CUSTOMER_PERMISSION = "internal_quote:customer_manage"
 INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
 INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER = "internal_quote_self_review_grant_v1_completed"
 INTERNAL_QUOTE_SELF_REVIEW_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
+CUSTOMER_ORDER_CONTROL_GRANT_MARKER = "customer_order_control_grant_v1_completed"
+CUSTOMER_ORDER_CONTROL_ROLE_PERMISSIONS = {
+    "sales_customer_owner": ("customer_order:duplicate_confirm",),
+    "sales_customer_supervisor": (
+        "customer_order:duplicate_confirm",
+        "customer_order:audit_read",
+    ),
+}
 INTERNAL_QUOTE_BASELINE_ROLE_PERMISSIONS = {
     "sales_customer_owner": ("internal_quote:baseline_read",),
     "sales_customer_supervisor": (
@@ -294,6 +302,7 @@ ROLE_PERMISSIONS = {
         "customer_price:compare",
         "customer_order:read",
         "customer_order:export",
+        "customer_order:duplicate_confirm",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["sales_customer_owner"],
     },
     "sales_customer_supervisor": {
@@ -303,6 +312,8 @@ ROLE_PERMISSIONS = {
         "customer_price:compare",
         "customer_order:read",
         "customer_order:export",
+        "customer_order:duplicate_confirm",
+        "customer_order:audit_read",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["sales_customer_supervisor"],
     },
     "factory_permission_admin": {
@@ -1446,6 +1457,85 @@ def seed_internal_quote_customer_grants_once(db: Session, now: str) -> int:
     return created_count
 
 
+def seed_customer_order_control_grants_once(db: Session, now: str) -> int:
+    """Add separately revocable confirmation/audit capabilities to existing sales roles."""
+    if db.get(AuthIamState, CUSTOMER_ORDER_CONTROL_GRANT_MARKER) is not None:
+        return 0
+
+    permission_codes = {
+        code
+        for codes in CUSTOMER_ORDER_CONTROL_ROLE_PERMISSIONS.values()
+        for code in codes
+    }
+    permissions_by_code = {
+        permission.code: permission
+        for permission in db.scalars(
+            select(AuthPermission).where(AuthPermission.code.in_(permission_codes))
+        ).all()
+    }
+    created_count = 0
+    updated_role_ids: set[str] = set()
+    for role_id, codes in CUSTOMER_ORDER_CONTROL_ROLE_PERMISSIONS.items():
+        if db.get(AuthRole, role_id) is None:
+            continue
+        for code in codes:
+            permission = permissions_by_code.get(code)
+            if permission is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+    for role_id in updated_role_ids:
+        metadata = db.get(AuthRoleMetadata, role_id)
+        if metadata is not None:
+            metadata.version += 1
+            metadata.updated_at = now
+    if updated_role_ids:
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(
+                    AuthUserAuthorizationRevision(
+                        user_id=user_id,
+                        revision=1,
+                        updated_at=now,
+                    )
+                )
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key=CUSTOMER_ORDER_CONTROL_GRANT_MARKER,
+            value_json=json.dumps(
+                {"completed_at": now, "created_role_permission_count": created_count},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
 def seed_legacy_export_compat_once(db: Session, now: str) -> int:
     if db.get(AuthIamState, LEGACY_EXPORT_COMPAT_MARKER) is not None:
         return 0
@@ -1664,6 +1754,7 @@ def seed_auth_defaults(db: Session) -> None:
     seed_internal_quote_release_grants_once(db, now)
     seed_internal_quote_baseline_grants_once(db, now)
     seed_internal_quote_customer_grants_once(db, now)
+    seed_customer_order_control_grants_once(db, now)
     seed_legacy_export_compat_once(db, now)
     reconcile_system_position_catalog(db, now=now)
     ensure_authz_startup_safety(db)

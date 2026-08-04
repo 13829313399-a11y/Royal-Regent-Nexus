@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -102,6 +103,23 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
         f"{name}:{digest}" for name, digest in zip(file_names, hashes, strict=True)
     )
     return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _quantity_key(value: Any) -> str:
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (InvalidOperation, TypeError, ValueError):
+        return _text(value)
+
+
+def _schedule_quantity_column(profile_code: str) -> int:
+    return {
+        "index": 10,
+        "jazwares": 11,
+        "maxx": 11,
+        "strottman": 11,
+        "supplier": 7,
+    }[profile_code]
 
 
 def _safe_output_name(schedule_file_name: str, customer_name: str) -> str:
@@ -229,6 +247,7 @@ def _prepare_batch(
 
         workbook, worksheet = _load_schedule(schedule_path, spec)
         try:
+            profile = huakang_schedule.PROFILES[spec.legacy_code]
             entries = [
                 (order, line)
                 for order in orders
@@ -236,9 +255,23 @@ def _prepare_batch(
             ]
             entries, inheritance = huakang_schedule._inherit_product_names(
                 worksheet,
-                huakang_schedule.PROFILES[spec.legacy_code],
+                profile,
                 entries,
             )
+            existing_index = huakang_schedule._build_existing_index(worksheet, profile)
+            quantity_column = _schedule_quantity_column(profile.code)
+            for order, line in entries:
+                key = huakang_schedule._row_key_from_order(profile, order, line)
+                existing_rows = existing_index.get(key, []) if all(key) else []
+                existing_quantities = {
+                    _quantity_key(worksheet.cell(row, quantity_column).value)
+                    for row in existing_rows
+                }
+                quantity = _quantity_key(line.get("qty"))
+                if existing_quantities and quantity and quantity in existing_quantities:
+                    line["_duplicate_existing"] = True
+                elif existing_quantities:
+                    line["_existing_quantity_conflict"] = True
         finally:
             workbook.close()
 
@@ -301,7 +334,7 @@ def _record_fields(
     }
 
 
-def _issues(order: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
+def _issues(order: dict[str, Any], line: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for index, message in enumerate(order.get("warnings") or [], start=1):
         code = f"legacy_warning_{index}"
@@ -313,6 +346,30 @@ def _issues(order: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
             "can_skip": False,
             "skip_key": f"{row_id}:{code}",
             "skip_label": "",
+        })
+    if line.get("_existing_quantity_conflict"):
+        issues.append({
+            "severity": "blocked",
+            "code": "existing_quantity_conflict",
+            "field": "quantity",
+            "message": "相同合同/PO及货号已存在排期，但数量不同；按修改/补单阻断",
+            "can_skip": False,
+            "skip_key": f"{row_id}:existing_quantity_conflict",
+            "skip_label": "",
+        })
+    if line.get("_duplicate_existing"):
+        identity = _joined(
+            order.get("contract_no") or order.get("po_number"),
+            line.get("item_code"),
+        ) or "当前订单"
+        issues.append({
+            "severity": "blocked",
+            "code": "duplicate_existing_order",
+            "field": "po_no",
+            "message": f"{identity} 已存在当前{_text(order.get('customer_code')).upper()}排期；测试阶段可人工确认后重复导入",
+            "can_skip": True,
+            "skip_key": f"{row_id}:duplicate_existing_order",
+            "skip_label": "测试阶段确认重复导入当前排期已有订单",
         })
     return issues
 
@@ -327,12 +384,12 @@ def _preview_row(
     sheet_name: str,
 ) -> dict[str, Any]:
     row_id = f"huakang-c-{spec.code}-{index}"
-    issues = _issues(order, row_id)
+    issues = _issues(order, line, row_id)
     source_file = _text(order.get("filename"))
     common: dict[str, Any] = {
         "id": row_id,
-        "status": "warning" if issues else "valid",
-        "status_label": "需复核" if issues else "可导出",
+        "status": "blocked" if any(issue["severity"] == "blocked" for issue in issues) else "warning" if issues else "valid",
+        "status_label": "已阻断" if any(issue["severity"] == "blocked" for issue in issues) else "需复核" if issues else "可导出",
         "row_role": "detail",
         "parent_product_no": "",
         "received_date": received_date,
@@ -429,7 +486,7 @@ def create_huakang_c_customer_preview(
             "total": len(rows),
             "valid": sum(row["status"] == "valid" for row in rows),
             "warning": sum(row["status"] == "warning" for row in rows),
-            "blocked": 0,
+            "blocked": sum(row["status"] == "blocked" for row in rows),
         },
         "rows": rows,
         "warnings": list(dict.fromkeys([
@@ -459,8 +516,23 @@ def export_huakang_c_customer_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
-    if skipped_issue_keys:
-        raise HuakangCCustomerOrderError("华康C五个客户的复核项不可跳过")
+    requested_skips = set(skipped_issue_keys or set())
+    skippable = {
+        issue["skip_key"]
+        for row in preview["rows"]
+        for issue in row["issues"]
+        if issue.get("can_skip")
+    }
+    if requested_skips - skippable:
+        raise HuakangCCustomerOrderError("确认项已失效，请重新预览后再生成")
+    blockers = [
+        issue["message"]
+        for row in preview["rows"]
+        for issue in row["issues"]
+        if issue["severity"] == "blocked" and issue["skip_key"] not in requested_skips
+    ]
+    if blockers:
+        raise HuakangCCustomerOrderError("仍有阻断项：" + "；".join(dict.fromkeys(blockers)))
     if not preview["rows"]:
         raise HuakangCCustomerOrderError("本批文件没有可生成的新单明细")
 

@@ -64,7 +64,8 @@ INJECTION_SCHEDULING_PHASE2_MASTER_MIGRATION_REVISION = "20260731_0043"
 INJECTION_SCHEDULING_PHASE3_EXECUTION_MIGRATION_REVISION = "20260731_0044"
 INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION = "20260731_0045"
 PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION = "20260802_0046"
-HEAD_MIGRATION_REVISION = PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION
+CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION = "20260804_0047"
+HEAD_MIGRATION_REVISION = CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -92,6 +93,7 @@ AUTH_TABLES = [
     "system_notifications",
 ]
 PASSWORD_RESET_WORKFLOW_TABLE = "auth_password_reset_requests"
+CUSTOMER_ORDER_EXPORT_AUDIT_TABLE = "customer_order_export_audits"
 CONFIGURABLE_IAM_TABLES = [
     "employee_profiles",
     "auth_permission_metadata",
@@ -132,6 +134,26 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    customer_order_audit_revision = script.get_revision(
+        CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    )
+    assert (
+        customer_order_audit_revision.down_revision
+        == PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION
+    )
+    customer_order_audit_content = Path(
+        customer_order_audit_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        CUSTOMER_ORDER_EXPORT_AUDIT_TABLE,
+        "preview_fingerprint",
+        "source_schedule_sha256",
+        "confirmed_issue_keys_json",
+        "confirmation_reason",
+        "cannot be downgraded after customer-order export audits exist",
+    ):
+        assert expected in customer_order_audit_content
 
     password_reset_workflow_revision = script.get_revision(
         PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION

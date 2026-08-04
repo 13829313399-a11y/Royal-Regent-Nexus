@@ -19,6 +19,7 @@ from app.core.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models import (
     auth,  # noqa: F401,E402
+    customer_order,  # noqa: F401,E402
     injection_scheduling,  # noqa: F401,E402
     injection_scheduling_execution,  # noqa: F401,E402
     injection_scheduling_import,  # noqa: F401,E402

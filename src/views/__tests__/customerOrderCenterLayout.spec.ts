@@ -325,7 +325,8 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('彩星')
     expect(workspaceSource).toContain('WMC读取首页双语PO区且P/O#必填')
     expect(workspaceSource).toContain('普通合同扫描标签和唛头区，P/O#允许为空')
-    expect(workspaceSource).toContain('ITEM新增订单行，存在同货号备料单时按本合同数量扣减H列')
+    expect(workspaceSource).toContain('已按 ${customerName} 映射处理')
+    expect(workspaceSource).toContain('源排期文件未被覆盖')
     expect(workspaceSource).toContain('ITEM去向')
 
     expect(wrapper.text()).toContain('真实文件试用')
@@ -502,8 +503,13 @@ describe('customer order center static frontend', () => {
     await skipCheckbox.setValue(true)
     expect(wrapper.text()).toContain('已跳过待补')
     expect(wrapper.get('.summary-strip .blocked strong').text()).toBe('0')
-    const generateButton = wrapper.findAll('button').find((button) => button.text().includes('生成客户排期'))
-    expect((generateButton!.element as HTMLButtonElement).disabled).toBe(false)
+    expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('人工确认原因')
+    const generateButton = wrapper.get('[data-testid="preview-next-step"] .button')
+    expect((generateButton.element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.get('[data-testid="confirmation-reason-card"] textarea').setValue(
+      '测试阶段已核对单价留空',
+    )
+    expect((generateButton.element as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('keeps unconfirmed demand visible but unavailable to production consumers', async () => {
@@ -862,7 +868,7 @@ describe('customer order center static frontend', () => {
     await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.text()).toContain('彩星 V2')
-    expect(wrapper.text()).toContain('测试阶段：所有客户的重复订单均可在预览中人工确认后继续导出')
+    expect(wrapper.text()).toContain('重复订单是否允许确认以当前环境策略和预览结果为准')
     expect(wrapper.text()).toContain('正单评审表 / 接单表 / ITEM表')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')

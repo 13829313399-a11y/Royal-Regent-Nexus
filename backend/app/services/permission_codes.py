@@ -44,6 +44,8 @@ CUSTOMER_PRICE_PERMISSION_CODES = (
 CUSTOMER_ORDER_PERMISSION_CODES = (
     "customer_order:read",
     "customer_order:export",
+    "customer_order:duplicate_confirm",
+    "customer_order:audit_read",
 )
 
 THREE_D_PRINTING_PERMISSION_CODES = (

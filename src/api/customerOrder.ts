@@ -1,3 +1,4 @@
+import axios from 'axios'
 import { http } from '@/lib/http'
 import type { CustomerOrderImportPreview } from '@/types/customerOrder'
 
@@ -67,6 +68,18 @@ function buildBatchFormData(
   return payload
 }
 
+function appendExportControls(
+  payload: FormData,
+  skippedIssueKeys: string[],
+  previewFingerprint: string,
+  confirmationReason: string,
+) {
+  payload.append('confirmed', 'true')
+  payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
+  payload.append('preview_fingerprint', previewFingerprint)
+  payload.append('confirmation_reason', confirmationReason)
+}
+
 function responseFileName(headers: Record<string, unknown> | undefined, fallback: string) {
   const disposition = String(headers?.['content-disposition'] ?? '')
   const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
@@ -80,6 +93,39 @@ function responseFileName(headers: Record<string, unknown> | undefined, fallback
 
 function responsePasswordRequired(headers: Record<string, unknown> | undefined) {
   return String(headers?.['x-workbook-password-required'] ?? '').toLowerCase() === 'true'
+}
+
+async function postCustomerOrderBlob(
+  client: CustomerOrderHttpClient,
+  url: string,
+  payload: FormData,
+  timeout: number,
+) {
+  try {
+    return await client.post<Blob>(url, payload, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      responseType: 'blob',
+      timeout,
+    })
+  } catch (error) {
+    if (!axios.isAxiosError(error) || !(error.response?.data instanceof Blob)) {
+      throw error
+    }
+    const raw = await error.response.data.text()
+    try {
+      const payload = JSON.parse(raw) as { detail?: unknown; message?: unknown }
+      const message = typeof payload.detail === 'string'
+        ? payload.detail
+        : typeof payload.message === 'string' ? payload.message : ''
+      if (message) throw new Error(message)
+    } catch (parseError) {
+      if (parseError instanceof SyntaxError) {
+        throw new Error(raw.trim() || error.message)
+      }
+      throw parseError
+    }
+    throw error
+  }
 }
 
 export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
@@ -104,18 +150,13 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       fallbackFileName: string,
       factoryId = 'huaxing',
       skippedIssueKeys: string[] = [],
+      previewFingerprint = '',
+      confirmationReason = '',
     ) {
       const payload = buildFormData(poFile, scheduleFile, receivedDate, factoryId)
-      payload.append('confirmed', 'true')
-      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
-      const response = await client.post<Blob>(
-        '/customer-orders/buzzbee/export',
-        payload,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          responseType: 'blob',
-          timeout: 120_000,
-        },
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      const response = await postCustomerOrderBlob(
+        client, '/customer-orders/buzzbee/export', payload, 120_000,
       )
       return {
         blob: response.data,
@@ -143,18 +184,13 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       fallbackFileName: string,
       factoryId = 'huaxing',
       skippedIssueKeys: string[] = [],
+      previewFingerprint = '',
+      confirmationReason = '',
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      payload.append('confirmed', 'true')
-      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
-      const response = await client.post<Blob>(
-        '/customer-orders/buzzbee/export-batch',
-        payload,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          responseType: 'blob',
-          timeout: 180_000,
-        },
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      const response = await postCustomerOrderBlob(
+        client, '/customer-orders/buzzbee/export-batch', payload, 180_000,
       )
       return {
         blob: response.data,
@@ -182,18 +218,13 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       fallbackFileName: string,
       factoryId = 'huaxing',
       skippedIssueKeys: string[] = [],
+      previewFingerprint = '',
+      confirmationReason = '',
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      payload.append('confirmed', 'true')
-      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
-      const response = await client.post<Blob>(
-        '/customer-orders/dickie/export-batch',
-        payload,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          responseType: 'blob',
-          timeout: 240_000,
-        },
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      const response = await postCustomerOrderBlob(
+        client, '/customer-orders/dickie/export-batch', payload, 240_000,
       )
       return {
         blob: response.data,
@@ -221,18 +252,13 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       fallbackFileName: string,
       factoryId = 'huaxing',
       skippedIssueKeys: string[] = [],
+      previewFingerprint = '',
+      confirmationReason = '',
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      payload.append('confirmed', 'true')
-      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
-      const response = await client.post<Blob>(
-        '/customer-orders/caixing/export-batch',
-        payload,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          responseType: 'blob',
-          timeout: 240_000,
-        },
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      const response = await postCustomerOrderBlob(
+        client, '/customer-orders/caixing/export-batch', payload, 240_000,
       )
       return {
         blob: response.data,
@@ -262,18 +288,13 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       fallbackFileName: string,
       factoryId = 'huaxing',
       skippedIssueKeys: string[] = [],
+      previewFingerprint = '',
+      confirmationReason = '',
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      payload.append('confirmed', 'true')
-      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
-      const response = await client.post<Blob>(
-        `/customer-orders/${customerCode}/export-batch`,
-        payload,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          responseType: 'blob',
-          timeout: 300_000,
-        },
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      const response = await postCustomerOrderBlob(
+        client, `/customer-orders/${customerCode}/export-batch`, payload, 300_000,
       )
       return {
         blob: response.data,
@@ -303,18 +324,13 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       fallbackFileName: string,
       factoryId: string,
       skippedIssueKeys: string[] = [],
+      previewFingerprint = '',
+      confirmationReason = '',
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      payload.append('confirmed', 'true')
-      payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
-      const response = await client.post<Blob>(
-        `/customer-orders/${customerCode}/export-batch`,
-        payload,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          responseType: 'blob',
-          timeout: 300_000,
-        },
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      const response = await postCustomerOrderBlob(
+        client, `/customer-orders/${customerCode}/export-batch`, payload, 300_000,
       )
       return {
         blob: response.data,

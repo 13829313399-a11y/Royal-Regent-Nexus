@@ -36,6 +36,7 @@ READ_PERMISSION_CODES = frozenset(
         "customer_price:read",
         "customer_price:compare",
         "customer_order:read",
+        "customer_order:audit_read",
         "internal_quote:read",
         "internal_quote:baseline_read",
         "internal_quote:summary_read",
