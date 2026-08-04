@@ -1,4 +1,5 @@
 import { mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { describe, expect, it } from 'vitest'
 
 import Phase5OperationsDashboard from '../components/Phase5OperationsDashboard.vue'
@@ -42,10 +43,11 @@ describe('Phase 5 运营分析', () => {
     expect(wrapper.emitted('refresh')).toHaveLength(1)
   })
 
-  it('保持 Phase 5 页面标识和明确的超期口径', () => {
-    const commandBar = mount(SchedulingCommandBar, { props: { factoryId: 'huaxing', factoryName: '华兴', sourceMode: 'live', sourceMessage: '正式数据库', refreshing: false, search: '', lastSyncedAt: '', planStatus: '', pendingCount: 0, saving: false, canSave: true, saveMessage: '' } })
+  it('使用正式业务标识并保持明确的超期口径', () => {
+    const commandBar = mount(SchedulingCommandBar, { global: { plugins: [createPinia()] }, props: { factoryId: 'huaxing', factoryName: '华兴', sourceMode: 'live', sourceMessage: '正式数据库', refreshing: false, search: '', lastSyncedAt: '', planStatus: '', pendingCount: 0, saving: false, canSave: true, saveMessage: '' } })
     const kpis = mount(SchedulingKpiStrip, { props: { summary: { availableMachines: 1, totalMachines: 1, scheduledTasks: 1, runningTasks: 0, overdue: 1, dueSoon: 0, remaining: 0, completeness: 100, backlog: 0, review: 0 } } })
-    expect(commandBar.text()).toContain('Phase 5 · 运营与校准')
+    expect(commandBar.text()).toContain('智能优化引擎')
+    expect(commandBar.text()).not.toContain('Phase 5')
     expect(kpis.text()).toContain('已超交期')
     expect(kpis.text()).not.toContain('已经交期')
   })

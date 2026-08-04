@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Activity, AlertTriangle, CheckCircle2, Database, Gauge, RefreshCw, RotateCcw } from '@lucide/vue'
-import type { Phase5AnalyticsRecord, Phase5MetricRecord } from '../types'
+import AnimatedMetricValue from './AnimatedMetricValue.vue'
+import type { Phase5AnalyticsRecord } from '../types'
 
 const props = defineProps<{
   analytics: Phase5AnalyticsRecord | null
@@ -21,12 +22,6 @@ const metricCards: Array<{
   { key: 'overdueRate', label: '超期率', tone: 'red' },
   { key: 'machineUtilization', label: '机台利用率', tone: 'amber' },
 ]
-
-function formatMetric(metric: Phase5MetricRecord | undefined) {
-  if (!metric) return '—'
-  if (metric.unit === '%') return `${metric.value.toFixed(1)}%`
-  return `${metric.value.toLocaleString('zh-CN')}${metric.unit}`
-}
 
 function formatDateTime(value: string) {
   if (!value) return '尚无数据'
@@ -50,7 +45,7 @@ function integrationStatusLabel(status: string) {
       <div class="phase5-actions">
         <span v-if="analytics">{{ analytics.dateFrom }} 至 {{ analytics.dateTo }} · {{ formatDateTime(analytics.generatedAt) }}</span>
         <button type="button" :disabled="loading" @click="emit('refresh')"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
-        <button type="button" class="primary" :disabled="loading || !canManageRules" :title="canManageRules ? '按历史设备周期重建速度模型' : '需要排产规则管理权限'" @click="emit('calibrate')"><RotateCcw :size="14" />重新校准</button>
+        <button type="button" class="primary" :disabled="loading || !canManageRules" :title="canManageRules ? '按历史设备周期重建速度模型' : '需要排产规则管理权限'" @click="emit('calibrate')"><RotateCcw :size="14" :class="{ spin: loading }" />{{ loading ? '校准中' : '重新校准' }}</button>
       </div>
     </header>
 
@@ -60,7 +55,7 @@ function integrationStatusLabel(status: string) {
       <div class="phase5-metrics">
         <article v-for="card in metricCards" :key="card.key" :class="card.tone">
           <span>{{ card.label }}</span>
-          <strong>{{ formatMetric(analytics[card.key]) }}</strong>
+          <strong><AnimatedMetricValue :value="analytics[card.key].value" :decimals="analytics[card.key].unit === '%' ? 1 : 0" />{{ analytics[card.key].unit }}</strong>
           <p>样本 {{ analytics[card.key].sampleCount }} · {{ analytics[card.key].formula }}</p>
         </article>
       </div>
@@ -93,7 +88,7 @@ function integrationStatusLabel(status: string) {
       <section class="phase5-notes"><strong>统计口径</strong><ul><li v-for="note in analytics.notes" :key="note">{{ note }}</li></ul></section>
     </template>
 
-    <div v-else-if="loading" class="phase5-empty"><span class="phase5-spinner"></span><strong>正在计算运营指标…</strong></div>
+    <div v-else-if="loading" class="phase5-skeleton" role="status" aria-label="正在计算运营指标"><span v-for="item in 6" :key="item"></span></div>
     <div v-else class="phase5-empty"><Activity :size="28" /><strong>尚未读取运营分析</strong><p>点击刷新读取当前厂区指标与接口状态。</p><button type="button" @click="emit('refresh')">读取数据</button></div>
   </section>
 </template>

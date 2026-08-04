@@ -8,7 +8,7 @@ import ScheduleTaskRow from './ScheduleTaskRow.vue'
 import { useScheduleDragDrop } from '../composables/useScheduleDragDrop'
 import type { CellDraft, EditableCellKey, ScheduleGridRow, SchedulingColumnDefinition } from '../types'
 
-const props = defineProps<{ rows: ScheduleGridRow[]; columns: SchedulingColumnDefinition[]; collapsedMachineIds: string[]; widths: Record<string, number>; sort: { key: string; desc: boolean } | null; planStatus: string; canEdit: boolean; canReport: boolean; pendingEdits: Record<string, CellDraft> }>()
+const props = defineProps<{ rows: ScheduleGridRow[]; columns: SchedulingColumnDefinition[]; collapsedMachineIds: string[]; widths: Record<string, number>; sort: { key: string; desc: boolean } | null; selectedTaskId: string | null; planStatus: string; canEdit: boolean; canReport: boolean; pendingEdits: Record<string, CellDraft> }>()
 const emit = defineEmits<{
   toggleMachine: [id: string]
   select: [id: string]
@@ -71,8 +71,8 @@ function forwardKeyboard(taskId: string, direction: 'up' | 'down' | 'previous-ma
       </thead>
       <tbody :style="{ height: `${virtualizer.getTotalSize()}px`, width: `${totalWidth}px` }">
         <template v-for="virtualRow in virtualRows" :key="tableRows[virtualRow.index]!.id">
-          <MachineGroupRow v-if="tableRows[virtualRow.index]!.original.rowType === 'machine'" :row="tableRows[virtualRow.index]!.original" :collapsed="collapsedMachineIds.includes(tableRows[virtualRow.index]!.original.machine.id)" :top="virtualRow.start" :width="totalWidth" :task-count="groupCount(tableRows[virtualRow.index]!.original.machine.id)" :current-label="currentLabel(tableRows[virtualRow.index]!.original.machine.id)" :release-at="releaseAt(tableRows[virtualRow.index]!.original.machine.id)" :drop-enabled="planStatus === 'DRAFT' && canEdit && Boolean(drag.draggedTaskId.value)" @toggle="emit('toggleMachine', $event)" @drop-task="dropAtEnd" />
-          <ScheduleTaskRow v-else :row="tableRows[virtualRow.index]!" :top="virtualRow.start" :width="totalWidth" :sticky-left="stickyLeft" :plan-status="planStatus" :can-edit="canEdit" :can-report="canReport" :pending-edits="pendingEdits" @select="emit('select', $event)" @edit="forwardEdit" @drag-start="drag.start" @drag-end="drag.end" @drop-task="dropAtTask" @keyboard-move="forwardKeyboard" />
+          <MachineGroupRow v-if="tableRows[virtualRow.index]!.original.rowType === 'machine'" :row="tableRows[virtualRow.index]!.original" :collapsed="collapsedMachineIds.includes(tableRows[virtualRow.index]!.original.machine.id)" :top="virtualRow.start" :width="totalWidth" :task-count="groupCount(tableRows[virtualRow.index]!.original.machine.id)" :current-label="currentLabel(tableRows[virtualRow.index]!.original.machine.id)" :release-at="releaseAt(tableRows[virtualRow.index]!.original.machine.id)" :drop-enabled="planStatus === 'DRAFT' && canEdit && Boolean(drag.draggedTaskId.value)" :drop-target="drag.dropTargetMachineId.value === tableRows[virtualRow.index]!.original.machine.id" @toggle="emit('toggleMachine', $event)" @drop-task="dropAtEnd" @drag-hover="drag.hover" @drag-leave="drag.leave" />
+          <ScheduleTaskRow v-else :row="tableRows[virtualRow.index]!" :top="virtualRow.start" :width="totalWidth" :sticky-left="stickyLeft" :selected="selectedTaskId === tableRows[virtualRow.index]!.original.id" :dragging="drag.draggedTaskId.value === tableRows[virtualRow.index]!.original.id" :drop-target="drag.dropTargetMachineId.value === tableRows[virtualRow.index]!.original.machine.id" :plan-status="planStatus" :can-edit="canEdit" :can-report="canReport" :pending-edits="pendingEdits" @select="emit('select', $event)" @edit="forwardEdit" @drag-start="drag.start" @drag-end="drag.end" @drag-hover="drag.hover" @drag-leave="drag.leave" @drop-task="dropAtTask" @keyboard-move="forwardKeyboard" />
         </template>
       </tbody>
     </table>
