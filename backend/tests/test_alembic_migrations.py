@@ -67,7 +67,10 @@ PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION = "20260802_0046"
 INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION = "20260804_0047"
 INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
 CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION = "20260804_0049"
-HEAD_MIGRATION_REVISION = CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
+INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
+INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_V2_PHASE5_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -136,6 +139,17 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    phase5_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE5_REVISION)
+    assert phase5_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE4_REVISION
+
+    phase4_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE4_REVISION)
+    assert phase4_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE3_REVISION
+    phase3_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE3_REVISION)
+    assert (
+        phase3_revision.down_revision
+        == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    )
 
     customer_order_audit_revision = script.get_revision(
         CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
@@ -3893,8 +3907,8 @@ def test_injection_scheduling_module_removal_drops_runtime_contract(tmp_path):
     assert "verified pre-removal database backup" in downgrade.stderr
 
 
-def test_injection_scheduling_v2_phase0_rebuilds_backend_contract(tmp_path):
-    database_path = tmp_path / "injection_scheduling_v2_phase0_0048.db"
+def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
+    database_path = tmp_path / "injection_scheduling_v2_current_0052.db"
     upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
 
@@ -3923,6 +3937,14 @@ def test_injection_scheduling_v2_phase0_rebuilds_backend_contract(tmp_path):
             "injection_scheduling_audit_events",
             "injection_scheduling_import_batches",
             "injection_scheduling_import_issues",
+            "injection_scheduling_runs",
+            "injection_scheduling_run_assignments",
+            "injection_scheduling_transition_rules",
+            "injection_scheduling_machine_calendars",
+            "injection_scheduling_integration_cursors",
+            "injection_scheduling_external_events",
+            "injection_scheduling_cycle_observations",
+            "injection_scheduling_speed_models",
         }
         machine_columns = {
             row[1]
@@ -3950,6 +3972,22 @@ def test_injection_scheduling_v2_phase0_rebuilds_backend_contract(tmp_path):
             "process_tags_json",
             "special_machine_type",
         } <= mold_columns
+        run_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('injection_scheduling_runs')"
+            ).fetchall()
+        }
+        assert {
+            "requested_solver",
+            "solver_status",
+            "fallback_used",
+            "fallback_reason",
+            "scenario_group_id",
+            "scenario_name",
+            "alternative_no",
+            "replay_of_run_id",
+        } <= run_columns
         assert connection.execute(
             """
             SELECT COUNT(*) FROM auth_permissions
@@ -3966,7 +4004,7 @@ def test_injection_scheduling_v2_phase0_rebuilds_backend_contract(tmp_path):
         assert "required_dimension_fields" not in config_json
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULING_V2_PHASE0_REVISION,)
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
 
     allowed_startup = _run_dispatch_init_db(database_path)
     assert allowed_startup.returncode == 0, allowed_startup.stderr

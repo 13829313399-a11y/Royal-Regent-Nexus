@@ -1,5 +1,5 @@
 export type FactoryId = 'huaxing' | 'huakang-a' | 'huakang-b' | 'huakang-c' | 'huakang-d' | 'huadeng'
-export type WorkspaceView = 'plan' | 'timeline' | 'backlog' | 'alerts' | 'history'
+export type WorkspaceView = 'plan' | 'timeline' | 'backlog' | 'alerts' | 'history' | 'analytics'
 export type ColumnPreset = 'planner' | 'production' | 'fit' | 'full'
 export type TaskStatus = 'RUNNING' | 'QUEUED' | 'BLOCKED' | 'COMPLETED' | 'CANCELLED' | 'REVIEW'
 export type FitDecision = 'PASS' | 'REVIEW_REQUIRED' | 'FAIL'
@@ -84,6 +84,160 @@ export interface ScheduleTaskRecord {
   estimatedRemainingShifts: number
   deliverySlackDays: number | null
   revision: number
+  setupMinutes?: number
+  productionMinutes?: number
+  plannedDowntimeMinutes?: number
+  changeoverType?: string
+  autoScheduleRunId?: string | null
+  autoScore?: number | null
+  autoExplanation?: Record<string, unknown>
+  manualAdjusted?: boolean
+}
+
+export interface AutoScheduleAssignmentRecord {
+  id: string
+  orderId: string
+  existingTaskId: string | null
+  moldId: string | null
+  moldCopyNo: number
+  machineId: string | null
+  sequence: number | null
+  plannedStart: string
+  plannedFinish: string
+  setupMinutes: number
+  productionMinutes: number
+  plannedDowntimeMinutes: number
+  changeoverType: string
+  decision: 'PASS' | 'REVIEW_REQUIRED' | 'UNASSIGNED'
+  score: number | null
+  explanation: Record<string, unknown>
+  unassignedReasonCode: string
+}
+
+export interface AutoScheduleMetricDelta {
+  before: number
+  after: number
+  change: number
+}
+
+export interface AutoScheduleObjectiveWeights {
+  tardinessWeight: number
+  transitionWeight: number
+  classGapWeight: number
+  loadBalanceWeight: number
+  existingTaskMoveCost: number
+}
+
+export interface AutoScheduleGenerationOptions {
+  solver: 'HEURISTIC' | 'CP_SAT' | 'AUTO'
+  scenarioName: string
+  objectiveWeights: AutoScheduleObjectiveWeights
+  scenarioGroupId?: string
+  alternativeNo?: number
+  replayOfRunId?: string | null
+}
+
+export interface AutoScheduleRunSummary {
+  inputOrderCount: number
+  scheduledCount: number
+  reviewCount: number
+  unassignedCount: number
+  movedTaskCount: number
+  localImprovementMoveCount: number
+  frozenTaskCount: number
+  overdue: AutoScheduleMetricDelta
+  moldChanges: AutoScheduleMetricDelta
+  darkToLightChanges: AutoScheduleMetricDelta
+  machineLoads: Array<{ machineId: string; machineCode: string; scheduledMinutes: number; loadRatio: number }>
+  solverElapsedMs: number
+  solverStatus: 'NOT_RUN' | 'HEURISTIC' | 'OPTIMAL' | 'FEASIBLE' | 'INFEASIBLE' | 'TIME_LIMIT' | 'UNAVAILABLE'
+  objectiveValue: number | null
+  bestObjectiveBound: number | null
+  fallbackUsed: boolean
+  fallbackReason: string
+}
+
+export interface AutoScheduleRunRecord {
+  id: string
+  factoryId: string
+  planId: string
+  expectedPlanRevision: number
+  ruleRevision: number
+  solverType: 'HEURISTIC' | 'CP_SAT'
+  requestedSolver: 'HEURISTIC' | 'CP_SAT' | 'AUTO'
+  solverVersion: string
+  solverStatus: AutoScheduleRunSummary['solverStatus']
+  fallbackUsed: boolean
+  fallbackReason: string
+  scenarioGroupId: string
+  scenarioName: string
+  alternativeNo: number
+  replayOfRunId: string | null
+  objectiveWeights: AutoScheduleObjectiveWeights
+  status: 'CREATED' | 'VALIDATING' | 'GENERATING_CANDIDATES' | 'SOLVING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'CANCELLED' | 'APPLIED'
+  horizonStart: string
+  horizonEnd: string
+  summary: AutoScheduleRunSummary
+  errorDetail: string
+  createdByName: string
+  createdAt: string
+  appliedByName: string
+  appliedAt: string
+  assignments: AutoScheduleAssignmentRecord[]
+}
+
+export interface Phase5MetricRecord {
+  value: number
+  numerator: number
+  denominator: number
+  unit: string
+  sampleCount: number
+  formula: string
+}
+
+export interface IntegrationStatusRecord {
+  sourceType: 'ERP' | 'DEVICE'
+  sourceKey: string
+  cursor: string
+  status: 'ACTIVE' | 'ERROR' | 'NOT_CONFIGURED'
+  lastReceivedAt: string
+  lastSuccessAt: string
+  lastError: string
+  eventCount: number
+  revision: number
+}
+
+export interface SpeedModelRecord {
+  id: string
+  factoryId: string
+  moldId: string
+  moldNo: string
+  sampleCount: number
+  calibratedCycleSeconds: number
+  unitsPerCycle: number
+  calibratedUnitsPerHour: number
+  confidence: number
+  status: 'ACTIVE' | 'INSUFFICIENT_DATA'
+  sourceWindowStart: string
+  sourceWindowEnd: string
+  lastObservedAt: string
+  revision: number
+  updatedAt: string
+}
+
+export interface Phase5AnalyticsRecord {
+  factoryId: string
+  dateFrom: string
+  dateTo: string
+  generatedAt: string
+  planAccuracy: Phase5MetricRecord
+  moldChangeCount: Phase5MetricRecord
+  overdueRate: Phase5MetricRecord
+  machineUtilization: Phase5MetricRecord
+  integrationStatuses: IntegrationStatusRecord[]
+  speedModels: SpeedModelRecord[]
+  deviceInterfaceConfigured: boolean
+  notes: string[]
 }
 
 export interface EligibilityCheck {

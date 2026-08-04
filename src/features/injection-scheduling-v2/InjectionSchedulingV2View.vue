@@ -13,7 +13,10 @@ import SchedulingCommandBar from './components/SchedulingCommandBar.vue'
 import SchedulingKpiStrip from './components/SchedulingKpiStrip.vue'
 import TaskInspectorDrawer from './components/TaskInspectorDrawer.vue'
 import ManualMoveDialog from './components/ManualMoveDialog.vue'
+import Phase5OperationsDashboard from './components/Phase5OperationsDashboard.vue'
 import RevisionConflictDialog from './components/RevisionConflictDialog.vue'
+import ScheduleRunHistory from './components/ScheduleRunHistory.vue'
+import type { AutoScheduleRunRecord } from './types'
 import type { ColumnPreset, EditableCellKey, FactoryId, WorkspaceView } from './types'
 import './injection-scheduling-v2.css'
 
@@ -23,8 +26,9 @@ const store = useInjectionSchedulingV2Store()
 const tabs: Array<{ key: WorkspaceView; label: string; icon: typeof ListChecks }> = [
   { key: 'plan', label: '计划总表', icon: ListChecks }, { key: 'timeline', label: '机台时间轴', icon: Clock3 },
   { key: 'backlog', label: '待排订单', icon: Boxes }, { key: 'alerts', label: '异常预警', icon: ShieldAlert }, { key: 'history', label: '自动排期记录', icon: History },
+  { key: 'analytics', label: '运营分析', icon: SlidersHorizontal },
 ]
-const tabCount = computed<Record<WorkspaceView, number>>(() => ({ plan: store.tasks.length, timeline: store.machines.length, backlog: store.backlogOrders.length, alerts: store.alerts.length, history: store.events.length }))
+const tabCount = computed<Record<WorkspaceView, number>>(() => ({ plan: store.tasks.length, timeline: store.machines.length, backlog: store.backlogOrders.length, alerts: store.alerts.length, history: store.autoScheduleRuns.length, analytics: store.phase5Analytics?.speedModels.length ?? 0 }))
 const visibleKeys = computed(() => store.visibleColumns.map((column) => String(column.key)))
 const selectedOpen = computed(() => Boolean(store.selectedTaskId && store.activeView === 'plan'))
 const presetLabels: Record<ColumnPreset, string> = { planner: '计划员视图', production: '生产视图', fit: '资格适配', full: '完整字段' }
@@ -33,7 +37,9 @@ async function changeFactory(value: string) {
   store.setFactory(value)
   await router.replace({ query: { ...route.query, factory: value } })
   await store.load()
+  if (store.activeView === 'analytics') await store.loadPhase5Analytics()
 }
+function selectView(view: WorkspaceView) { store.activeView = view; if (view === 'analytics') void store.loadPhase5Analytics() }
 function resizeColumn(key: string, width: number) { store.columnWidths = { ...store.columnWidths, [key]: Math.max(54, Math.min(420, width)) } }
 function closeInspector() { store.selectedTaskId = null }
 function openBacklogOrder(orderId: string) { store.activeView = 'backlog'; const order = store.orders.find((item) => item.id === orderId); store.search = order?.orderNo ?? '' }
@@ -42,10 +48,15 @@ function stageReport(edits: Array<{ key: EditableCellKey; value: string | number
   edits.forEach((edit) => store.stageCellEdit(store.selectedTaskId!, edit.key, edit.value))
 }
 async function reapplyConflict() { await store.revisionConflict?.retry?.() }
+function openScheduleRun(run: AutoScheduleRunRecord) { store.selectAutoScheduleRun(run); store.autoScheduleDialogOpen = true }
 
-watch(() => route.query.factory, (value) => {
+watch(() => route.query.factory, async (value) => {
   const normalized = Array.isArray(value) ? value[0] : value
-  if (typeof normalized === 'string' && normalized !== store.factoryId) { store.setFactory(normalized); void store.load() }
+  if (typeof normalized === 'string' && normalized !== store.factoryId) {
+    store.setFactory(normalized)
+    await store.load()
+    if (store.activeView === 'analytics') await store.loadPhase5Analytics()
+  }
 })
 onMounted(async () => {
   const requested = Array.isArray(route.query.factory) ? route.query.factory[0] : route.query.factory
@@ -63,7 +74,7 @@ useScheduleLiveEvents(store.pollEvents)
       <SchedulingKpiStrip :summary="store.summary" />
       <section class="scheduling-workspace">
         <nav class="workspace-tabs" aria-label="排产视图">
-          <button v-for="tab in tabs" :key="tab.key" :class="{ active: store.activeView === tab.key }" @click="store.activeView = tab.key"><component :is="tab.icon" :size="15" /><span>{{ tab.label }}</span><em>{{ tabCount[tab.key] }}</em></button>
+          <button v-for="tab in tabs" :key="tab.key" :class="{ active: store.activeView === tab.key }" @click="selectView(tab.key)"><component :is="tab.icon" :size="15" /><span>{{ tab.label }}</span><em>{{ tabCount[tab.key] }}</em></button>
           <div class="workspace-status"><span class="status-dot"></span>{{ store.plan ? `${store.plan.status} · r${store.plan.revision}` : '暂无当前计划' }}<b>轮询 {{ store.pollingRevision }}</b></div>
         </nav>
 
@@ -92,10 +103,12 @@ useScheduleLiveEvents(store.pollEvents)
 
         <section v-else-if="store.activeView === 'alerts'" class="alert-view"><header><div><span class="view-icon danger"><ShieldAlert :size="18" /></span><div><strong>异常预警</strong><p>按当前快照聚合交期、资料与机台风险</p></div></div></header><div class="alert-list"><article v-for="alert in store.alerts" :key="alert.title" :class="alert.tone"><span><AlertOctagon v-if="alert.tone === 'danger'" :size="18" /><ShieldAlert v-else :size="18" /></span><div><strong>{{ alert.title }}</strong><p>{{ alert.description }}</p></div><button @click="store.activeView = 'plan'; store.riskFilter = alert.tone === 'danger' ? 'overdue' : alert.tone === 'warning' ? 'review' : 'all'">查看计划</button></article></div></section>
 
-        <section v-else class="history-view"><header><div><span class="view-icon"><History :size="18" /></span><div><strong>计划与人工调度记录</strong><p>按事件序号增量同步；求解器运行记录将在 Phase 3 接入</p></div></div></header><div class="history-table"><div class="history-head"><span>序号</span><span>事件</span><span>操作人</span><span>时间</span><span>摘要</span></div><article v-for="event in store.events" :key="event.id"><b>#{{ event.sequence }}</b><strong>{{ event.eventType }}</strong><span>{{ event.actorName || '系统' }}</span><time>{{ event.createdAt }}</time><span>{{ Object.entries(event.detail).slice(0, 3).map(([key, value]) => `${key}: ${value}`).join(' · ') || '—' }}</span></article><p v-if="!store.events.length" class="empty-copy">暂无计划或人工调度审计记录</p></div></section>
+        <Phase5OperationsDashboard v-else-if="store.activeView === 'analytics'" :analytics="store.phase5Analytics" :loading="store.phase5AnalyticsLoading" :error="store.phase5AnalyticsError" :can-manage-rules="store.canManageRules" @refresh="store.loadPhase5Analytics" @calibrate="store.calibratePhase5SpeedModels" />
+
+        <section v-else class="history-view"><header><div><span class="view-icon"><History :size="18" /></span><div><strong>自动排期运行记录</strong><p>保留输入快照、方案指标、未排原因、应用人和 revision</p></div></div></header><ScheduleRunHistory :runs="store.autoScheduleRuns" @select="openScheduleRun" /></section>
       </section>
     </main>
-    <AutoSchedulePreviewDialog :open="store.autoScheduleDialogOpen" :backlog-count="store.backlogOrders.length" :machine-count="store.machines.length" @close="store.autoScheduleDialogOpen = false" />
+    <AutoSchedulePreviewDialog :open="store.autoScheduleDialogOpen" :backlog-count="store.backlogOrders.length" :machine-count="store.machines.length" :plan-status="store.plan?.status ?? ''" :can-edit="store.canEdit" :can-override="store.canOverride" :run="store.autoScheduleRun" :comparison-runs="store.autoScheduleComparisonRuns" :loading="store.autoScheduleLoading" :error="store.autoScheduleError" :orders="store.orders" :machines="store.machines" @close="store.autoScheduleDialogOpen = false" @generate="store.generateAutoSchedulePreview" @compare="store.generateAutoScheduleAlternatives" @select="store.selectAutoScheduleRun" @replay="store.replayAutoScheduleRun" @apply="store.applyAutoScheduleRun" />
     <ManualMoveDialog :preview="store.movePreview" :machines="store.machines" :loading="store.moveLoading" :can-override="store.canOverride" @close="store.movePreview = null" @update="store.updateMovePreview" @confirm="store.confirmMove" />
     <RevisionConflictDialog :conflict="store.revisionConflict" :loading="store.savingEdits || store.moveLoading" @close="store.revisionConflict = null" @use-server="store.discardPendingEdits" @reapply="reapplyConflict" />
     <div v-if="store.loading" class="loading-layer"><span></span><strong>正在读取 {{ store.factoryName }} 排产快照…</strong></div>

@@ -16,7 +16,7 @@ const today = computed(() => new Intl.DateTimeFormat('zh-CN', { year: 'numeric',
     <div class="topbar-actions"><button aria-label="帮助"><CircleHelp :size="18" /></button><button aria-label="消息"><MessageSquareText :size="18" /></button><button aria-label="通知"><Bell :size="18" /></button><div class="avatar">KS</div></div>
   </header>
   <section class="scheduling-commandbar" aria-label="排产命令栏">
-    <div class="page-identity"><span class="eyebrow">生产部 / 注塑排产</span><strong>注塑排产中枢</strong><span class="readonly-badge editable">Phase 2 · 编辑与回报</span></div>
+    <div class="page-identity"><span class="eyebrow">生产部 / 注塑排产</span><strong>注塑排产中枢</strong><span class="readonly-badge editable">Phase 5 · 运营与校准</span></div>
     <label class="command-field factory-field"><span>厂区</span><select :value="factoryId" @change="emit('update:factoryId', ($event.target as HTMLSelectElement).value)"><option value="huaxing">华兴</option><option value="huakang-a">华康 A</option><option value="huakang-b">华康 B</option><option value="huakang-c">华康 C</option><option value="huakang-d">华康 D</option><option value="huadeng">华登</option></select></label>
     <div class="command-field date-field"><CalendarDays :size="15" /><span>{{ today }}</span></div>
     <label class="command-search"><Search :size="16" /><input :value="search" placeholder="搜索机台、工模、订单、货号…" @input="emit('update:search', ($event.target as HTMLInputElement).value)" /></label>

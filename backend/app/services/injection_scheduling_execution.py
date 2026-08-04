@@ -208,6 +208,16 @@ def task_out(record: InjectionSchedulingTask) -> InjectionSchedulingTaskOut:
         source_sheet_name=record.source_sheet_name,
         source_row=record.source_row,
         source_file_hash=record.source_file_hash,
+        setup_minutes=record.setup_minutes,
+        production_minutes=record.production_minutes,
+        planned_downtime_minutes=record.planned_downtime_minutes,
+        changeover_type=record.changeover_type,
+        auto_schedule_run_id=record.auto_schedule_run_id,
+        auto_score=(
+            _float(record.auto_score) if record.auto_score is not None else None
+        ),
+        auto_explanation=_load_json(record.auto_explanation_json, {}),
+        manual_adjusted=record.manual_adjusted,
         revision=record.revision,
         created_by=record.created_by,
         created_by_name=record.created_by_name,
@@ -832,6 +842,7 @@ def update_task(
             )
             .values(
                 **values,
+                manual_adjusted=(task.manual_adjusted or bool(task.auto_schedule_run_id)),
                 revision=payload.expected_revision + 1,
                 updated_by=user.id,
                 updated_by_name=_actor_name(user),
@@ -1176,6 +1187,9 @@ def move_tasks_bulk(
                 "updated_by": user.id,
                 "updated_by_name": _actor_name(user),
                 "updated_at": timestamp,
+                "manual_adjusted": (
+                    task.manual_adjusted or bool(task.auto_schedule_run_id)
+                ),
             }
             if move is not None:
                 values.update(

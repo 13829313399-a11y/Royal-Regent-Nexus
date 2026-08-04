@@ -263,6 +263,14 @@ class InjectionSchedulingTaskOut(BaseModel):
     source_sheet_name: str
     source_row: int | None
     source_file_hash: str
+    setup_minutes: int
+    production_minutes: int
+    planned_downtime_minutes: int
+    changeover_type: str
+    auto_schedule_run_id: str | None
+    auto_score: float | None
+    auto_explanation: dict[str, Any]
+    manual_adjusted: bool
     revision: int
     created_by: str
     created_by_name: str
