@@ -34,6 +34,7 @@ ITEM_BOUNDARY_KEYWORDS = ("取消单", "转单", "已走货")
 SKIPPABLE_BLOCKER_LABELS = {
     "missing_product_name_zh": "中文名称留空，稍后由跟客补充",
     "missing_unit_price": "单价及金额留空，稍后由跟客补充",
+    "existing_order_line": "测试阶段确认重复导入当前排期已有订单",
 }
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -1021,10 +1022,13 @@ def _build_preview_rows(
             ):
                 issues.append(
                     _make_issue(
-                        "warning",
+                        "blocked",
                         "existing_order_line",
                         "po_no",
-                        f"当前排期接单表第 {existing['row']} 行已有相同 PO/合同/产品；继续导出会新增一行",
+                        (
+                            f"当前排期接单表第 {existing['row']} 行已有相同 PO/合同/产品；"
+                            "测试阶段可人工确认后重复导入"
+                        ),
                     )
                 )
                 existing_date = existing.get("requested_ship_date", "")
@@ -1132,19 +1136,22 @@ def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
             seen[identity] = row
             continue
         issue = _make_issue(
-            "warning",
+            "blocked",
             "duplicate_batch_order_line",
             "po_no",
             (
                 f"本批次与 {previous['source_po_file_name']} 存在相同订单行；"
-                "继续导出会分别写入"
+                "测试阶段可人工确认后分别写入"
             ),
         )
-        issue.update({"can_skip": False, "skip_key": "", "skip_label": ""})
+        issue.update({
+            "can_skip": True,
+            "skip_key": f"{row['id']}|duplicate_batch_order_line|po_no",
+            "skip_label": "测试阶段确认重复导入本批相同订单行",
+        })
         row["issues"].append(issue)
-        if row["status"] == "valid":
-            row["status"] = "warning"
-            row["status_label"] = "警告"
+        row["status"] = "blocked"
+        row["status_label"] = "阻断"
 
 
 def create_buzzbee_batch_preview(

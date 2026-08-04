@@ -78,6 +78,15 @@ class DickieParsedOrder:
     lineage: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class DickieAttachmentAllocation:
+    item_no: str
+    master_contract: str
+    po_no: str
+    quantity: Decimal
+    unit_price_hkd: Decimal | None
+
+
 def _normalize_ocr_text(value: str) -> str:
     value = value.replace("\r", "\n")
     value = value.replace("—", "-").replace("–", "-")
@@ -236,33 +245,101 @@ def _extract_customer(text: str) -> tuple[str, str]:
     return "", ""
 
 
-ATTACHMENT_ROW_PATTERN = re.compile(
-    r"(?P<item>\d{6,12})\s+"
-    r"(?P<quantity>[\d,]+)\s*PC\s+[-=]?\s*"
-    r"(?P<master>5\d{8})\s*/\s*(?P<master_suffix>\d{1,2})\s+"
-    r"(?P<po>3\d{8})\s*/\s*(?P<po_suffix>\d{1,2})\s+"
-    r"\d{7,9}\s*/\s*\d{1,4}\s+"
-    r"(?P<price>\d+(?:\.\d+)?)\s*HKD",
+ATTACHMENT_DETAIL_ROW_PATTERN = re.compile(
+    r"^\s*(?P<item>\d[A-Z0-9]{5,20})[.,]?"
+    r"(?:\s*\([^()\n]{1,24}\))*\s+"
+    r"(?P<quantity>[\d,]+)\s*PCS?\s+"
+    r"(?P<remainder>.+)$",
+    re.IGNORECASE,
+)
+ATTACHMENT_CONTRACT_PATTERN = re.compile(
+    r"(?<!\d)(?P<number>[35]\d{8})\s*/\s*(?P<suffix>\d{1,2})(?!\d)",
+    re.IGNORECASE,
+)
+ATTACHMENT_REFERENCE_PATTERN = re.compile(
+    r"(?<!\d)(?P<number>7(?:\s*\d){8})\s*/\s*(?P<suffix>\d{1,4})(?!\d)",
     re.IGNORECASE,
 )
 
 
+def _extract_single_attachment_price(text: str) -> Decimal | None:
+    before_hkd, separator, _ = text.upper().partition("HKD")
+    if not separator:
+        return None
+    candidates = re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d{1,2})?)(?!\d)", before_hkd)
+    if len(candidates) != 1:
+        # Handwritten revisions are commonly placed beside a struck-through
+        # printed price. Never guess which of multiple OCR numbers is active.
+        return None
+    return Decimal(candidates[0].replace(",", "."))
+
+
+def _parse_attachment_detail_row(line: str) -> DickieAttachmentAllocation | None:
+    row_match = ATTACHMENT_DETAIL_ROW_PATTERN.match(line)
+    if not row_match:
+        return None
+    item_no = row_match.group("item").upper()
+    if item_no.startswith("990"):
+        # Simba Dickie uses 990... rows for handling charges. Their shipment
+        # quantity repeats the full order and must not be counted as product.
+        return None
+
+    remainder = row_match.group("remainder")
+    reference_match = ATTACHMENT_REFERENCE_PATTERN.search(remainder)
+    if not reference_match:
+        return None
+    contracts = [
+        f"{match.group('number')}/{match.group('suffix')}"
+        for match in ATTACHMENT_CONTRACT_PATTERN.finditer(
+            remainder[:reference_match.start()]
+        )
+    ]
+    if not contracts:
+        return None
+    return DickieAttachmentAllocation(
+        item_no=item_no,
+        master_contract=contracts[0],
+        po_no=contracts[1] if len(contracts) > 1 else "",
+        quantity=Decimal(row_match.group("quantity").replace(",", "")),
+        unit_price_hkd=_extract_single_attachment_price(
+            remainder[reference_match.end():]
+        ),
+    )
+
+
 def _extract_attachment_allocations(
     text: str,
-) -> list[tuple[str, str, str, Decimal, Decimal]]:
+) -> list[DickieAttachmentAllocation]:
+    return [
+        allocation
+        for line in text.splitlines()
+        if (allocation := _parse_attachment_detail_row(line)) is not None
+    ]
+
+
+def _extract_release_quantity(text: str) -> Decimal | None:
     flattened = re.sub(r"\s+", " ", text)
-    allocations: list[tuple[str, str, str, Decimal, Decimal]] = []
-    for match in ATTACHMENT_ROW_PATTERN.finditer(flattened):
-        allocations.append(
-            (
-                match.group("item"),
-                f"{match.group('master')}/{match.group('master_suffix')}",
-                f"{match.group('po')}/{match.group('po_suffix')}",
-                Decimal(match.group("quantity").replace(",", "")),
-                Decimal(match.group("price")),
-            )
+    header = re.search(
+        r"\bQuantity\b.{0,180}?\bDelivery\s+Date\b",
+        flattened,
+        re.IGNORECASE,
+    )
+    if header:
+        quantity_match = re.search(
+            r"(?<!\d)([\d,]+)\s*PCS?\b",
+            flattened[header.end():header.end() + 100],
+            re.IGNORECASE,
         )
-    return allocations
+        if quantity_match:
+            return Decimal(quantity_match.group(1).replace(",", ""))
+
+    candidates = [
+        Decimal(match.group(1).replace(",", ""))
+        for line in text.splitlines()
+        if "PACKING" not in line.upper()
+        for match in re.finditer(r"(?<!\d)([\d,]+)\s*PCS?\b", line, re.IGNORECASE)
+    ]
+    return max(candidates) if candidates else None
 
 
 def _extract_main_order_numbers(
@@ -278,11 +355,10 @@ def _extract_main_order_numbers(
         re.IGNORECASE,
     )
     if not match:
-        quantity_match = re.search(r"(?<!\d)([\d,]+)\s*PC\b", flattened, re.IGNORECASE)
         return (
             "",
             "",
-            Decimal(quantity_match.group(1).replace(",", "")) if quantity_match else None,
+            _extract_release_quantity(text),
             None,
         )
     return (
@@ -350,17 +426,50 @@ def _parse_dickie_ocr_pages(
     master_contract, po_no, quantity, unit_price = _extract_main_order_numbers(first_page)
 
     attachment_text = "\n".join(
-        page for page in pages if "Release order Attachment" in page or "Release Order Attachment" in page
+        page
+        for page in pages
+        if re.search(r"Release\s+order\s+Attachment", page, re.IGNORECASE)
     )
     attachment_allocations = _extract_attachment_allocations(attachment_text)
     allocations: list[tuple[str, Decimal]] = []
-    if len(attachment_allocations) > 1:
-        master_contract = "\n".join(item[1] for item in attachment_allocations)
-        po_no = "\n".join(item[2] for item in attachment_allocations)
-        quantity = sum((item[3] for item in attachment_allocations), Decimal("0"))
-        total_amount = sum((item[3] * item[4] for item in attachment_allocations), Decimal("0"))
-        unit_price = total_amount / quantity if quantity else None
-        allocations = [(item[1], item[3]) for item in attachment_allocations]
+    if attachment_allocations:
+        attachment_quantity = sum(
+            (item.quantity for item in attachment_allocations),
+            Decimal("0"),
+        )
+        attachment_is_complete = quantity is None or attachment_quantity == quantity
+        master_contract = "\n".join(
+            item.master_contract for item in attachment_allocations
+        )
+        po_no = "\n".join(
+            item.po_no for item in attachment_allocations if item.po_no
+        )
+        if attachment_is_complete:
+            quantity = attachment_quantity
+        attachment_prices = [
+            item.unit_price_hkd for item in attachment_allocations
+        ]
+        if (
+            attachment_is_complete
+            and quantity
+            and all(price is not None for price in attachment_prices)
+        ):
+            total_amount = sum(
+                (
+                    item.quantity * item.unit_price_hkd
+                    for item in attachment_allocations
+                    if item.unit_price_hkd is not None
+                ),
+                Decimal("0"),
+            )
+            unit_price = total_amount / quantity
+        elif unit_price is None:
+            unit_price = None
+        allocations = [
+            (item.master_contract, item.quantity)
+            for item in attachment_allocations
+            if item.master_contract
+        ]
     elif master_contract and quantity is not None:
         allocations = [(master_contract, quantity)]
 
@@ -707,6 +816,27 @@ def _preview_row(
                 "missing_required_field",
                 "units_per_carton",
                 "装箱数未能从 Dickie PDF Packing 提取",
+            )
+        )
+    duplicate_rows = [
+        existing
+        for existing in (lookup.existing_rows if lookup else [])
+        if existing["reference_no"] == parsed.reference_no
+    ]
+    if duplicate_rows:
+        duplicate = duplicate_rows[0]
+        issues.append(
+            _make_issue(
+                "blocked",
+                "duplicate_reference",
+                "reference_no",
+                (
+                    f"Reference {parsed.reference_no} 已存在于当前排期"
+                    f"{duplicate['sheet_name']}第 {duplicate['row']} 行；"
+                    "测试阶段可人工确认后重复导入"
+                ),
+                can_skip=True,
+                skip_label="测试阶段确认重复导入当前排期已有 Reference",
             )
         )
     if lookup is None:
