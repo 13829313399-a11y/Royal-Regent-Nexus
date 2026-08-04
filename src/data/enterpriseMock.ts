@@ -787,28 +787,6 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
     panelSubtitle: '承载生产计划、啤办任务和各车间生产管理模块',
     modules: [
       {
-        id: 'injection-scheduling',
-        title: '注塑排产中枢',
-        owner: '生产部 / PMC / 计划',
-        summary: '机台日排程、后续模具队列、交期风险与待排订单统一工作台',
-        status: '前端预览',
-        statusTone: 'teal',
-        stats: '华兴 Excel 抽样 · Mock 交互草案',
-        icon: Boxes,
-        route: getDepartmentRoute('production', 'injection-scheduling'),
-        statusMetrics: [
-          { label: '机台', value: '69 / 75', tone: 'teal' },
-          { label: '任务', value: '257', tone: 'blue' },
-          { label: '数据', value: 'Mock', tone: 'amber' },
-        ],
-        todos: ['确认模具尺寸与射胶量业务口径', '确认机台主数据来源后再建设后端'],
-        children: [
-          { label: '机台排程板', summary: '查看当前任务与后续模具队列' },
-          { label: '时间轴总览', summary: '横向浏览机台负荷与任务区间' },
-          { label: '待排订单池', summary: '查看候选机台并确认排程草案' },
-        ],
-      },
-      {
         id: 'production-plan',
         title: '生产计划管理',
         owner: '计划排程',

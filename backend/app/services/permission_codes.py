@@ -55,17 +55,6 @@ THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:audit_read",
 )
 
-INJECTION_SCHEDULING_PERMISSION_CODES = (
-    "injection_scheduling:read",
-    "injection_scheduling:import",
-    "injection_scheduling:edit",
-    "injection_scheduling:report",
-    "injection_scheduling:publish",
-    "injection_scheduling:rollback",
-    "injection_scheduling:manage_master",
-    "injection_scheduling:manage_rules",
-)
-
 INTERNAL_QUOTE_SECTION_CODES = (
     "sales",
     "engineering",
@@ -122,7 +111,6 @@ BUSINESS_PERMISSION_CODES = (
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,
-    *INJECTION_SCHEDULING_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
 

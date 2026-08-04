@@ -11,16 +11,6 @@ from app.api.carton_mark import router as carton_mark_router
 from app.api.customer_order import router as customer_order_router
 from app.api.iam import router as iam_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
-from app.api.injection_scheduling import router as injection_scheduling_router
-from app.api.injection_scheduling_execution import (
-    router as injection_scheduling_execution_router,
-)
-from app.api.injection_scheduling_import import (
-    router as injection_scheduling_import_router,
-)
-from app.api.injection_scheduling_matching import (
-    router as injection_scheduling_matching_router,
-)
 from app.api.internal_quote import (
     customer_price_artifact_router,
 )
@@ -92,10 +82,6 @@ app.include_router(customer_order_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
-app.include_router(injection_scheduling_router)
-app.include_router(injection_scheduling_execution_router)
-app.include_router(injection_scheduling_import_router)
-app.include_router(injection_scheduling_matching_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
