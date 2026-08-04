@@ -176,6 +176,12 @@ The five Huakang C mappings reuse the legacy multi-customer engine with strict c
 
 There is not yet a persistent normalized customer-order ledger, immutable order-version model, confirmed-demand publication contract or downstream PMC integration. The export audit table is evidence for generated artifacts and manual confirmations only; it is not an authoritative order ledger. Frontend ledger, scheduling, exception and feedback examples are not authoritative production data.
 
+### Shared Tool Center
+
+The authenticated shared tool center is available at `/tools?factory=<factory-id>` from a dedicated `TOOLS` sidebar group for every factory. It is department-independent and preserves the selected factory only as UI context; its tools must not infer data scope or persistence from that selection.
+
+The first reusable tool module converts one PDF into a new `.xlsx` artifact through `POST /api/tools/pdf-to-excel`. Processing is request-time and in-memory: source PDFs, generated workbooks and conversion history are not persisted. Ruled or structurally stable tables become data sheets, while orders/forms without reliable table boundaries become coordinate-preserving layout sheets instead of fragmented pseudo-tables. Native CJK text with suspicious glyph repetition and scanned pages fall back to the server's local Tesseract OCR; the local `tools/Tesseract-OCR/tessdata` directory can provide `chi_tra`/`chi_sim`/`eng` language files without changing the source PDF. Output cells remain text so identifiers retain leading zeroes, and each detected table or page is written to an independent worksheet.
+
 ### Carton Mark and Indonesia Invoice
 
 Carton-mark comparison is a permission-protected, request-time PDF/OCR/photo comparison service. It does not currently define a persistent carton-mark business model.

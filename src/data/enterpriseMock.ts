@@ -60,6 +60,7 @@ export interface NavigationItem {
   icon: Component
   departmentId?: DepartmentId
   permissions?: string[]
+  preserveFactory?: boolean
 }
 
 export interface NavigationGroup {
@@ -464,6 +465,12 @@ export const navigationGroups: NavigationGroup[] = [
       { label: 'QA 部', to: getDepartmentRoute('qa'), icon: ShieldCheck, departmentId: 'qa' },
       { label: '业务部', to: getDepartmentRoute('sales-business'), icon: ClipboardCheck, departmentId: 'sales-business' },
       { label: '会计部', to: getDepartmentRoute('accounting'), icon: Calculator, departmentId: 'accounting' },
+    ],
+  },
+  {
+    label: 'TOOLS',
+    items: [
+      { label: '公共工具栏', to: '/tools', icon: FileSpreadsheet, preserveFactory: true },
     ],
   },
   {

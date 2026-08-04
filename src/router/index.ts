@@ -45,6 +45,15 @@ const routes: RouteRecordRaw[] = [
     redirect: '/modules/engineering',
   },
   {
+    path: '/tools',
+    name: 'shared-tool-center',
+    component: () => import('@/views/ToolCenterView.vue'),
+    meta: {
+      title: '公共工具栏',
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules/:department',
     name: 'modules-department',
     component: () => import('@/views/ModuleCenterView.vue'),

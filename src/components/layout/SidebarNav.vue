@@ -46,7 +46,7 @@ function isActive(item: NavigationItem) {
 }
 
 function getNavigationTarget(item: NavigationItem) {
-  if (!item.departmentId) {
+  if (!item.departmentId && !item.preserveFactory) {
     return item.to
   }
 
