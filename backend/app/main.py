@@ -38,6 +38,7 @@ from app.api.pricing import router as pricing_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
 from app.api.three_d_printing import router as three_d_printing_router
+from app.api.tools import router as tools_router
 from app.core.config import settings
 from app.db import init_db
 
@@ -110,6 +111,7 @@ app.include_router(pricing_router)
 app.include_router(raw_material_router)
 app.include_router(system_router)
 app.include_router(three_d_printing_router)
+app.include_router(tools_router)
 
 
 @app.get("/health")
