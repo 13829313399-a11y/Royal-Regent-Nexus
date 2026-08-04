@@ -5,8 +5,9 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 if context.is_offline_mode():
     os.environ["ALEMBIC_OFFLINE_METADATA_ONLY"] = "1"
@@ -19,6 +20,7 @@ from app.core.config import settings
 from app.db import Base
 from app.models import (
     auth,  # noqa: F401
+    customer_order,  # noqa: F401
     injection_scheduling,  # noqa: F401
     injection_scheduling_execution,  # noqa: F401
     injection_scheduling_import,  # noqa: F401

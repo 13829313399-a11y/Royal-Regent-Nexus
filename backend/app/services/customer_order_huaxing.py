@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -111,6 +112,52 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _business_key(*values: Any) -> tuple[str, ...]:
+    return tuple(re.sub(r"[^A-Z0-9]", "", _text(value).upper()) for value in values)
+
+
+def _quantity_key(value: Any) -> str:
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (InvalidOperation, TypeError, ValueError):
+        return _text(value)
+
+
+def _mark_existing_order_lines(
+    records: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+    *,
+    identity_fields: tuple[str, ...],
+    quantity_field: str = "quantity",
+) -> tuple[int, int]:
+    existing_by_key: defaultdict[tuple[str, ...], set[str]] = defaultdict(set)
+    for row in existing:
+        key = _business_key(*(row.get(field) for field in identity_fields))
+        if key and all(key):
+            existing_by_key[key].add(_quantity_key(row.get(quantity_field)))
+
+    duplicate_count = 0
+    conflict_count = 0
+    for record in records:
+        key = _business_key(*(record.get(field) for field in identity_fields))
+        quantities = existing_by_key.get(key) if key and all(key) else None
+        if not quantities:
+            continue
+        quantity = _quantity_key(record.get(quantity_field))
+        if quantity and quantity in quantities:
+            record["_duplicate_existing"] = True
+            duplicate_count += 1
+            continue
+        record.setdefault("flags", []).append({
+            "level": "high",
+            "code": "existing_quantity_conflict",
+            "text": "相同订单及货号已存在排期，但数量不同；按修改/补单阻断",
+        })
+        record["risk_level"] = "high"
+        conflict_count += 1
+    return duplicate_count, conflict_count
+
+
 def _safe_output_name(schedule_file_name: str, customer_name: str) -> str:
     stem = re.sub(r"[\\/:*?\"<>|]+", "_", Path(schedule_file_name).stem).strip(" ._")
     return f"{stem or '华兴客户排期'}_{customer_name}新单.xlsx"
@@ -175,6 +222,15 @@ def _prepare_edu(
             edu_schedule.add_derived_fields(row)
         next_number += 1
     records, dedupe = edu_po_parser.merge_po_results(parsed_files)
+    duplicate_count, conflict_count = _mark_existing_order_lines(
+        records,
+        schedule["records"],
+        identity_fields=("customer_po", "item_no"),
+    )
+    if duplicate_count:
+        warnings.append(f"当前 EDU 排期已有 {duplicate_count} 行相同订单，测试阶段需逐项确认。")
+    if conflict_count:
+        warnings.append(f"当前 EDU 排期有 {conflict_count} 行相同订单但数量不同，已按修改/补单阻断。")
     return PreparedBatch(records, [*warnings, *dedupe], _text(schedule.get("sheet")) or "EDU排期")
 
 
@@ -257,6 +313,15 @@ def _prepare_yinhui(
             records.append(row)
     if duplicate_count:
         warnings.append(f"本批去除 {duplicate_count} 行完全重复的银辉明细。")
+    existing_count, conflict_count = _mark_existing_order_lines(
+        records,
+        schedule["records"],
+        identity_fields=("contract_no", "item_no"),
+    )
+    if existing_count:
+        warnings.append(f"当前银辉排期已有 {existing_count} 行相同订单，测试阶段需逐项确认。")
+    if conflict_count:
+        warnings.append(f"当前银辉排期有 {conflict_count} 行相同订单但数量不同，已按修改/补单阻断。")
     return PreparedBatch(records, warnings, _text(schedule.get("sheet")) or "银辉排期")
 
 

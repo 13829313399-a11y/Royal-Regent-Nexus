@@ -1,17 +1,18 @@
 """add injection scheduling V2 phase 5 integrations and analytics
 
-Revision ID: 20260804_0051
-Revises: 20260804_0050
+Revision ID: 20260804_0052
+Revises: 20260804_0051
 Create Date: 2026-08-04
 """
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
-revision: str = "20260804_0051"
-down_revision: str | Sequence[str] | None = "20260804_0050"
+revision: str = "20260804_0052"
+down_revision: str | Sequence[str] | None = "20260804_0051"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -325,7 +326,7 @@ def downgrade() -> None:
             sa.text(f"SELECT COUNT(*) FROM {table_name}")
         ).scalar_one():
             raise RuntimeError(
-                "Phase 5 integration history exists; restore a verified pre-0051 backup instead of downgrading."
+                "Phase 5 integration history exists; restore a verified pre-0052 backup instead of downgrading."
             )
     op.drop_table("injection_scheduling_speed_models")
     op.drop_table("injection_scheduling_cycle_observations")

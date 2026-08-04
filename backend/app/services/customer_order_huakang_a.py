@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -107,6 +109,17 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _duplicate_key(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", _text(value).upper())
+
+
+def _quantity_key(value: Any) -> str:
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (InvalidOperation, TypeError, ValueError):
+        return _text(value)
+
+
 def _safe_output_name(schedule_file_name: str) -> str:
     stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(schedule_file_name).stem).strip(" ._")
     return f"{stem or '华康A排期'}_360新单.xlsx"
@@ -134,6 +147,14 @@ def _prepare_batch(
             raise HuakangACustomerOrderError(
                 f"{schedule_file_name}：无法读取华康A 360排期：{exc}"
             ) from exc
+        existing_by_key: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+        for existing in schedule.get("rows") or []:
+            key = (
+                _duplicate_key(existing.get("contract_no")),
+                _duplicate_key(existing.get("item_no")),
+            )
+            if all(key):
+                existing_by_key[key].add(_quantity_key(existing.get("quantity")))
 
         for index, (file_name, content) in enumerate(po_files, start=1):
             po_path = root / _temporary_name(index, file_name)
@@ -147,6 +168,16 @@ def _prepare_batch(
             record["file_name"] = file_name
             record["relative_path"] = file_name
             record["_source_po_file_name"] = file_name
+            key = (
+                _duplicate_key(record.get("contract_no")),
+                _duplicate_key(record.get("item_no")),
+            )
+            existing_quantities = existing_by_key.get(key, set()) if all(key) else set()
+            quantity = _quantity_key(record.get("quantity"))
+            if existing_quantities and quantity and quantity in existing_quantities:
+                record["_duplicate_existing"] = True
+            elif existing_quantities:
+                record["_existing_quantity_conflict"] = True
             records.append(record)
             warnings.extend(
                 f"{file_name}：{message}"
@@ -226,6 +257,27 @@ def _issues(record: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
             "can_skip": False,
             "skip_key": f"{row_id}:parse_failed",
             "skip_label": "",
+        })
+    if record.get("_existing_quantity_conflict"):
+        issues.append({
+            "severity": "blocked",
+            "code": "existing_quantity_conflict",
+            "field": "quantity",
+            "message": "相同合同及货号已存在排期，但数量不同；按修改/补单阻断",
+            "can_skip": False,
+            "skip_key": f"{row_id}:existing_quantity_conflict",
+            "skip_label": "",
+        })
+    if record.get("_duplicate_existing"):
+        identity = _joined(record.get("contract_no"), record.get("item_no")) or "当前订单"
+        issues.append({
+            "severity": "blocked",
+            "code": "duplicate_existing_order",
+            "field": "contract_no",
+            "message": f"{identity} 已存在当前华康A 360排期；测试阶段可人工确认后重复导入",
+            "can_skip": True,
+            "skip_key": f"{row_id}:duplicate_existing_order",
+            "skip_label": "测试阶段确认重复导入当前排期已有订单",
         })
     return issues
 
@@ -391,13 +443,20 @@ def export_huakang_a_customer_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
-    if skipped_issue_keys:
-        raise HuakangACustomerOrderError("华康A 360 的风险项不可跳过，请修正源文件后重新解析")
+    requested_skips = set(skipped_issue_keys or set())
+    skippable = {
+        issue["skip_key"]
+        for row in preview["rows"]
+        for issue in row["issues"]
+        if issue.get("can_skip")
+    }
+    if requested_skips - skippable:
+        raise HuakangACustomerOrderError("确认项已失效，请重新预览后再生成")
     blockers = [
         issue["message"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue["severity"] == "blocked"
+        if issue["severity"] == "blocked" and issue["skip_key"] not in requested_skips
     ]
     if blockers:
         raise HuakangACustomerOrderError("仍有阻断项：" + "；".join(dict.fromkeys(blockers)))

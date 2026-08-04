@@ -1,17 +1,18 @@
 """add injection scheduling V2 phase 4 solver metadata
 
-Revision ID: 20260804_0050
-Revises: 20260804_0049
+Revision ID: 20260804_0051
+Revises: 20260804_0050
 Create Date: 2026-08-04
 """
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
-revision: str = "20260804_0050"
-down_revision: str | Sequence[str] | None = "20260804_0049"
+revision: str = "20260804_0051"
+down_revision: str | Sequence[str] | None = "20260804_0050"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

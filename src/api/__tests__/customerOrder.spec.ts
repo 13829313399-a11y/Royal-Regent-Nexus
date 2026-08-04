@@ -43,6 +43,8 @@ describe('customer order api', () => {
       'fallback.xlsx',
       'huaxing',
       ['row-1|missing_unit_price|unit_price_hkd'],
+      'preview-fingerprint-1',
+      '测试阶段已核对单价留空',
     )
 
     expect(result.blob).toBe(blob)
@@ -52,6 +54,8 @@ describe('customer order api', () => {
     expect(payload.get('skipped_issue_keys')).toBe(
       '["row-1|missing_unit_price|unit_price_hkd"]',
     )
+    expect(payload.get('preview_fingerprint')).toBe('preview-fingerprint-1')
+    expect(payload.get('confirmation_reason')).toBe('测试阶段已核对单价留空')
     expect(post.mock.calls[0]![2]).toEqual(expect.objectContaining({
       responseType: 'blob',
       timeout: 120_000,
@@ -215,6 +219,28 @@ describe('customer order api', () => {
       responseType: 'blob',
       timeout: 240_000,
     }))
+  })
+
+  it('surfaces the backend detail when a blob export fails', async () => {
+    const error = Object.assign(new Error('Request failed with status code 409'), {
+      isAxiosError: true,
+      response: {
+        data: new Blob([
+          JSON.stringify({ detail: '当前环境未启用测试阶段重复订单确认' }),
+        ], { type: 'application/json' }),
+      },
+    })
+    const post = vi.fn().mockRejectedValue(error)
+    const api = createCustomerOrderApi({ post })
+
+    await expect(api.exportBuzzbeeBatch(
+      [new File(['po'], 'PO.xlsx')],
+      new File(['schedule'], 'schedule.xlsx'),
+      '2026-08-04',
+      'schedule.xlsx',
+      'huaxing',
+      ['row-1|duplicate_reference|reference_no'],
+    )).rejects.toThrow('当前环境未启用测试阶段重复订单确认')
   })
 
   it('routes all six Huaxing mapped customers through the shared batch contract', async () => {

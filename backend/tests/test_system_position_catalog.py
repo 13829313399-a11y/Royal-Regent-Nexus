@@ -49,8 +49,8 @@ def test_fixed_system_position_definition_contract():
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 84
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 77
+    assert len(registered_codes) == 86
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 79
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -87,7 +87,7 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 69
+    assert len(general_manager.permission_codes) == 71
     assert (
         set(general_manager.permission_codes)
         | positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
@@ -166,11 +166,15 @@ def test_fixed_system_position_definition_contract():
     assert "internal_quote:baseline_read" in sales_business.permission_codes
     assert "customer_order:read" in sales_business.permission_codes
     assert "customer_order:export" in sales_business.permission_codes
+    assert "customer_order:duplicate_confirm" in sales_business.permission_codes
+    assert "customer_order:audit_read" not in sales_business.permission_codes
     assert "internal_quote:baseline_manage" not in sales_business.permission_codes
     assert "internal_quote:customer_manage" not in sales_business.permission_codes
     assert "internal_quote:baseline_read" in sales_supervisor.permission_codes
     assert "internal_quote:baseline_manage" in sales_supervisor.permission_codes
     assert "internal_quote:customer_manage" in sales_supervisor.permission_codes
+    assert "customer_order:duplicate_confirm" in sales_supervisor.permission_codes
+    assert "customer_order:audit_read" in sales_supervisor.permission_codes
     assert "internal_quote:self_review" not in sales_business.permission_codes
     assert "internal_quote:self_review" in sales_supervisor.permission_codes
     assert sales_manager.permission_codes == sales_supervisor.permission_codes

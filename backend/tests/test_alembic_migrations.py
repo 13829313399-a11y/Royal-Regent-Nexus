@@ -66,9 +66,10 @@ INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION = "20260731_0045"
 PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION = "20260802_0046"
 INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION = "20260804_0047"
 INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
-INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0049"
-INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0050"
-INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0051"
+CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION = "20260804_0049"
+INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
+INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
+INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
 HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_V2_PHASE5_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
@@ -97,6 +98,7 @@ AUTH_TABLES = [
     "system_notifications",
 ]
 PASSWORD_RESET_WORKFLOW_TABLE = "auth_password_reset_requests"
+CUSTOMER_ORDER_EXPORT_AUDIT_TABLE = "customer_order_export_audits"
 CONFIGURABLE_IAM_TABLES = [
     "employee_profiles",
     "auth_permission_metadata",
@@ -144,7 +146,30 @@ def test_alembic_has_single_molding_sample_head():
     phase4_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE4_REVISION)
     assert phase4_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE3_REVISION
     phase3_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE3_REVISION)
-    assert phase3_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE0_REVISION
+    assert (
+        phase3_revision.down_revision
+        == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    )
+
+    customer_order_audit_revision = script.get_revision(
+        CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    )
+    assert (
+        customer_order_audit_revision.down_revision
+        == INJECTION_SCHEDULING_V2_PHASE0_REVISION
+    )
+    customer_order_audit_content = Path(
+        customer_order_audit_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        CUSTOMER_ORDER_EXPORT_AUDIT_TABLE,
+        "preview_fingerprint",
+        "source_schedule_sha256",
+        "confirmed_issue_keys_json",
+        "confirmation_reason",
+        "cannot be downgraded after customer-order export audits exist",
+    ):
+        assert expected in customer_order_audit_content
 
     injection_scheduling_v2_revision = script.get_revision(
         INJECTION_SCHEDULING_V2_PHASE0_REVISION
@@ -3883,7 +3908,7 @@ def test_injection_scheduling_module_removal_drops_runtime_contract(tmp_path):
 
 
 def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
-    database_path = tmp_path / "injection_scheduling_v2_current_0051.db"
+    database_path = tmp_path / "injection_scheduling_v2_current_0052.db"
     upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
 

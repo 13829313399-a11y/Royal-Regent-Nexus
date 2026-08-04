@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -111,6 +112,83 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
         f"{name}:{digest}" for name, digest in zip(file_names, hashes, strict=True)
     )
     return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _duplicate_key(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", _text(value).upper())
+
+
+def _duplicate_quantity(value: Any) -> str:
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (InvalidOperation, TypeError, ValueError):
+        return _text(value)
+
+
+def _schedule_line_index(
+    records: list[dict[str, Any]],
+    *,
+    order_fields: tuple[str, ...],
+    item_fields: tuple[str, ...],
+    quantity_field: str = "quantity",
+) -> defaultdict[tuple[str, str], set[str]]:
+    result: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+    for record in records:
+        order_keys = {_duplicate_key(record.get(field)) for field in order_fields}
+        item_keys = {_duplicate_key(record.get(field)) for field in item_fields}
+        for order_key in order_keys - {""}:
+            for item_key in item_keys - {""}:
+                result[(order_key, item_key)].add(_duplicate_quantity(record.get(quantity_field)))
+    return result
+
+
+def _mark_record_from_existing_quantities(
+    record: dict[str, Any],
+    quantities: set[str],
+) -> str:
+    if not quantities:
+        return ""
+    quantity = _duplicate_quantity(record.get("quantity"))
+    if quantity and quantity in quantities:
+        record["_duplicate_existing"] = True
+        return "duplicate"
+    record.setdefault("flags", []).append({
+        "level": "high",
+        "code": "existing_quantity_conflict",
+        "text": "相同订单及货号已存在排期，但数量不同；按修改/补单阻断",
+    })
+    return "conflict"
+
+
+def _mark_records_from_schedule(
+    records: list[dict[str, Any]],
+    schedule_records: list[dict[str, Any]],
+    *,
+    record_order_fields: tuple[str, ...],
+    record_item_fields: tuple[str, ...],
+    schedule_order_fields: tuple[str, ...],
+    schedule_item_fields: tuple[str, ...],
+    schedule_quantity_field: str = "quantity",
+) -> tuple[int, int]:
+    index = _schedule_line_index(
+        schedule_records,
+        order_fields=schedule_order_fields,
+        item_fields=schedule_item_fields,
+        quantity_field=schedule_quantity_field,
+    )
+    duplicates = 0
+    conflicts = 0
+    for record in records:
+        quantities: set[str] = set()
+        order_keys = {_duplicate_key(record.get(field)) for field in record_order_fields} - {""}
+        item_keys = {_duplicate_key(record.get(field)) for field in record_item_fields} - {""}
+        for order_key in order_keys:
+            for item_key in item_keys:
+                quantities.update(index.get((order_key, item_key), set()))
+        outcome = _mark_record_from_existing_quantities(record, quantities)
+        duplicates += outcome == "duplicate"
+        conflicts += outcome == "conflict"
+    return duplicates, conflicts
 
 
 def _safe_output_name(schedule_file_name: str, customer_name: str) -> str:
@@ -314,11 +392,31 @@ def _prepare_casdon_or_spin(
         legacy_rows: list[dict[int, Any]] = []
         records: list[dict[str, Any]] = []
         inherited_rows = 0
+        existing_duplicates = 0
+        existing_conflicts = 0
         for order in orders:
             for line in order.get("lines", []):
                 values = schedule_module._compose_row(order, line, index)
                 legacy_rows.append(values)
-                records.append(_legacy_row_record(customer_code, order, line, values))
+                record = _legacy_row_record(customer_code, order, line, values)
+                if is_casdon:
+                    schedule_key = (
+                        casdon_schedule.normalize_po(values.get(schedule_module.COL["contract"])),
+                        casdon_schedule.item_base(values.get(schedule_module.COL["item"])),
+                    )
+                    existing_rows = index.index.get(schedule_key, []) if all(schedule_key) else []
+                else:
+                    schedule_key = spin_schedule.normalize_contract(
+                        values.get(schedule_module.COL["contract"])
+                    )
+                    existing_rows = index.index.get(schedule_key, []) if schedule_key else []
+                outcome = _mark_record_from_existing_quantities(
+                    record,
+                    {_duplicate_quantity(existing[-1]) for existing in existing_rows},
+                )
+                existing_duplicates += outcome == "duplicate"
+                existing_conflicts += outcome == "conflict"
+                records.append(record)
                 if values.get(schedule_module.COL["cn_name"]) or values.get(schedule_module.COL["english_name"]):
                     inherited_rows += 1
                 if not line.get("is_charge") and not values.get(schedule_module.COL["cn_name"]):
@@ -336,6 +434,15 @@ def _prepare_casdon_or_spin(
         if inheritance["conflicts"]:
             warnings.append(
                 f"排期中有 {len(inheritance['conflicts'])} 组货号/品名冲突，相关品名未自动继承。"
+            )
+        if existing_duplicates:
+            warnings.append(
+                f"当前 {get_huadeng_customer_mapping(customer_code).name} 排期已有 "
+                f"{existing_duplicates} 行相同订单，测试阶段需逐项确认。"
+            )
+        if existing_conflicts:
+            warnings.append(
+                f"当前排期有 {existing_conflicts} 行相同订单但数量不同，已按修改/补单阻断。"
             )
         return PreparedBatch(records, warnings, sheet_name, legacy_rows, inheritance=inheritance)
 
@@ -460,6 +567,18 @@ def _prepare_jakks(
             warnings.append(f"批内发现 {duplicate_count} 行完全重复 Jakks 明细，已去重。")
         if not combined:
             raise HuadengCustomerOrderError("本批没有可生成的 Jakks 新单明细；修改/取消单或异常文件已按提示拦截")
+        existing_count, conflict_count = _mark_records_from_schedule(
+            combined,
+            dataset.get("records") or [],
+            record_order_fields=("contract_no", "customer_po"),
+            record_item_fields=("item_no",),
+            schedule_order_fields=("contract_no", "customer_po"),
+            schedule_item_fields=("sku",),
+        )
+        if existing_count:
+            warnings.append(f"当前 Jakks 排期已有 {existing_count} 行相同订单，测试阶段需逐项确认。")
+        if conflict_count:
+            warnings.append(f"当前 Jakks 排期有 {conflict_count} 行相同订单但数量不同，已按修改/补单阻断。")
         return PreparedBatch(
             combined, warnings, "26-Jakks排货表总 Ai",
             export_payload={"filename": f"Jakks批量上传（{len(parsed_orders)}份新单）", "lines": combined},
@@ -585,6 +704,18 @@ def _prepare_simba(
             "当前 Simba 排期同货号存在多个品名，未自动猜测："
             + "、".join(inheritance["product_name_conflicts"])
         )
+    existing_count, conflict_count = _mark_records_from_schedule(
+        records,
+        schedule.get("records") or [],
+        record_order_fields=("contract_no", "customer_po"),
+        record_item_fields=("item_no",),
+        schedule_order_fields=("contract_no", "customer_po"),
+        schedule_item_fields=("item_no",),
+    )
+    if existing_count:
+        warnings.append(f"当前 Simba 排期已有 {existing_count} 行相同订单，测试阶段需逐项确认。")
+    if conflict_count:
+        warnings.append(f"当前 Simba 排期有 {conflict_count} 行相同订单但数量不同，已按修改/补单阻断。")
     return PreparedBatch(records, warnings, _text(schedule.get("sheet")) or "Simba排期")
 
 
@@ -629,6 +760,18 @@ def _prepare_spin_master(
             warnings.append(f"本批去除 {duplicate_count} 行完全重复的 Spin Master 明细。")
         if not records:
             raise HuadengCustomerOrderError("本批文件未识别到可生成的 Spin Master 新单明细")
+        existing_count, conflict_count = _mark_records_from_schedule(
+            records,
+            schedule.get("rows") or [],
+            record_order_fields=("contract_no", "customer_po"),
+            record_item_fields=("item_no",),
+            schedule_order_fields=("contract_no", "customer_po"),
+            schedule_item_fields=("item_si", "item_no"),
+        )
+        if existing_count:
+            warnings.append(f"当前 Spin Master 排期已有 {existing_count} 行相同订单，测试阶段需逐项确认。")
+        if conflict_count:
+            warnings.append(f"当前 Spin Master 排期有 {conflict_count} 行相同订单但数量不同，已按修改/补单阻断。")
         return PreparedBatch(records, warnings, _text(schedule.get("sheet")) or "SPIN排期")
 
 
@@ -736,6 +879,23 @@ def _issues(record: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
             "can_skip": False,
             "skip_key": f"{row_id}:{code}",
             "skip_label": "",
+        })
+    if record.get("_duplicate_existing"):
+        identity = _joined(
+            record.get("contract_no"),
+            record.get("po_no"),
+            record.get("customer_po"),
+            record.get("product_no"),
+            record.get("item_no"),
+        ) or "当前订单"
+        issues.append({
+            "severity": "blocked",
+            "code": "duplicate_existing_order",
+            "field": "po_no",
+            "message": f"{identity} 已存在当前客户排期；测试阶段可人工确认后重复导入",
+            "can_skip": True,
+            "skip_key": f"{row_id}:duplicate_existing_order",
+            "skip_label": "测试阶段确认重复导入当前排期已有订单",
         })
     return issues
 
@@ -880,11 +1040,19 @@ def export_huadeng_customer_schedule(
         po_files=po_files, schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
-    if skipped_issue_keys:
-        raise HuadengCustomerOrderError("这 5 个客户的高风险项不可跳过，请修正源文件后重新解析")
+    requested_skips = set(skipped_issue_keys or set())
+    skippable = {
+        issue["skip_key"]
+        for row in preview["rows"]
+        for issue in row["issues"]
+        if issue.get("can_skip")
+    }
+    unknown_skips = requested_skips - skippable
+    if unknown_skips:
+        raise HuadengCustomerOrderError("确认项已失效，请重新预览后再生成")
     blockers = [
         issue["message"] for row in preview["rows"] for issue in row["issues"]
-        if issue["severity"] == "blocked"
+        if issue["severity"] == "blocked" and issue["skip_key"] not in requested_skips
     ]
     if blockers:
         raise HuadengCustomerOrderError("仍有阻断项：" + "；".join(dict.fromkeys(blockers)))
