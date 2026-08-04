@@ -4,6 +4,8 @@ import { isAxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import {
+  applyAutoSchedulePreview,
+  createAutoSchedulePreview,
   fetchCurrentSchedulingPlan,
   fetchEligibility,
   fetchIncrementalEvents,
@@ -19,6 +21,8 @@ import { schedulingColumns } from '../composables/useSchedulingColumns'
 import { cellDraftKey, isOrderEdit, isPlanEdit, isReportEdit, normalizeCellValue, resolveReportedQuantity } from '../composables/useScheduleDraftEdits'
 import { demoEvents, demoMachines, demoMolds, demoOrders, demoTasks } from '../data/demo'
 import type {
+  AutoScheduleRunRecord,
+  AutoScheduleGenerationOptions,
   AuditEvent,
   CellDraft,
   ColumnPreset,
@@ -45,6 +49,10 @@ const gridValue = (order: OrderRecord | undefined, key: string, fallback: string
   return typeof value === 'string' || typeof value === 'number' ? value : fallback
 }
 const formatA = (value: number | null, raw: string) => value ? `${value}A${raw && !raw.includes(String(value)) ? ` · ${raw}` : ''}` : raw || '待复核'
+const balancedScheduleOptions = (): AutoScheduleGenerationOptions => ({
+  solver: 'CP_SAT', scenarioName: '方案 A · 综合平衡',
+  objectiveWeights: { tardinessWeight: 100, transitionWeight: 2, classGapWeight: 1.5, loadBalanceWeight: 25, existingTaskMoveCost: 40 },
+})
 
 export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v2', () => {
   const authStore = useAuthStore()
@@ -55,6 +63,11 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const tasks = ref<ScheduleTaskRecord[]>([])
   const backlogOrderIds = ref<string[]>([])
   const events = ref<AuditEvent[]>([])
+  const autoScheduleRuns = ref<AutoScheduleRunRecord[]>([])
+  const autoScheduleRun = ref<AutoScheduleRunRecord | null>(null)
+  const autoScheduleComparisonRuns = ref<AutoScheduleRunRecord[]>([])
+  const autoScheduleLoading = ref(false)
+  const autoScheduleError = ref('')
   const plan = ref<SchedulingPlanRecord | null>(null)
   const pollingRevision = ref(0)
   const sourceMode = ref<'live' | 'fallback'>('live')
@@ -197,6 +210,9 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   function applyData(data: Awaited<ReturnType<typeof fetchSchedulingWorkspace>>) {
     machines.value = data.machines; molds.value = data.molds; orders.value = data.orders; tasks.value = data.tasks
     backlogOrderIds.value = data.backlogOrderIds; events.value = data.events; plan.value = data.plan; pollingRevision.value = data.pollingRevision
+    autoScheduleRuns.value = data.autoScheduleRuns
+    if (autoScheduleRun.value) autoScheduleRun.value = data.autoScheduleRuns.find((item) => item.id === autoScheduleRun.value?.id) ?? autoScheduleRun.value
+    if (autoScheduleRun.value) autoScheduleComparisonRuns.value = data.autoScheduleRuns.filter((item) => item.scenarioGroupId === autoScheduleRun.value?.scenarioGroupId)
     selectedTaskId.value = selectedTaskId.value && data.tasks.some((task) => task.id === selectedTaskId.value) ? selectedTaskId.value : data.tasks[0]?.id ?? null
   }
 
@@ -204,6 +220,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     machines.value = demoMachines; molds.value = demoMolds; orders.value = demoOrders; tasks.value = demoTasks
     backlogOrderIds.value = demoOrders.filter((order) => order.status === 'BACKLOG').map((order) => order.id)
     events.value = demoEvents; plan.value = { id: 'DEMO-PLAN', status: 'PUBLISHED', revision: 7, ruleRevision: 1, businessDate: '2026-08-04' }; pollingRevision.value = 4
+    autoScheduleRuns.value = []; autoScheduleRun.value = null; autoScheduleComparisonRuns.value = []; autoScheduleError.value = ''
     sourceMode.value = 'fallback'; sourceMessage.value = `后端暂不可用，当前显示只读演示数据 · ${reason}`; selectedTaskId.value = demoTasks[0]?.id ?? null
   }
 
@@ -379,6 +396,120 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     saveMessage.value = '已采用服务器数据'
   }
 
+  function addDays(dateText: string, days: number) {
+    const [year, month, day] = dateText.split('-').map(Number)
+    const value = new Date(Date.UTC(year!, month! - 1, day! + days))
+    return value.toISOString().slice(0, 10)
+  }
+
+  function scheduleHorizon() {
+    const baseDate = plan.value?.businessDate || new Date().toISOString().slice(0, 10)
+    return [`${baseDate}T08:00:00+08:00`, `${addDays(baseDate, 14)}T20:00:00+08:00`] as const
+  }
+
+  function rememberAutoScheduleRun(run: AutoScheduleRunRecord) {
+    autoScheduleRun.value = run
+    autoScheduleRuns.value = [run, ...autoScheduleRuns.value.filter((item) => item.id !== run.id)]
+    autoScheduleComparisonRuns.value = autoScheduleRuns.value.filter((item) => item.scenarioGroupId === run.scenarioGroupId)
+  }
+
+  async function generateAutoSchedulePreview(options: AutoScheduleGenerationOptions = balancedScheduleOptions()) {
+    if (!plan.value || plan.value.status !== 'DRAFT' || !canEdit.value || autoScheduleLoading.value) return
+    if (pendingEditCount.value) {
+      autoScheduleError.value = '请先保存或放弃当前单元格修改，再生成自动排期预览。'
+      return
+    }
+    autoScheduleLoading.value = true
+    autoScheduleError.value = ''
+    try {
+      const [horizonStart, horizonEnd] = scheduleHorizon()
+      const run = await createAutoSchedulePreview(
+        factoryId.value,
+        plan.value,
+        horizonStart,
+        horizonEnd,
+        options,
+      )
+      rememberAutoScheduleRun(run)
+    } catch (error) {
+      autoScheduleError.value = `自动排期预览生成失败：${getApiErrorMessage(error)}`
+    } finally {
+      autoScheduleLoading.value = false
+    }
+  }
+
+  async function generateAutoScheduleAlternatives() {
+    if (!plan.value || plan.value.status !== 'DRAFT' || !canEdit.value || autoScheduleLoading.value) return
+    if (pendingEditCount.value) {
+      autoScheduleError.value = '请先保存或放弃当前单元格修改，再生成多方案。'
+      return
+    }
+    autoScheduleLoading.value = true
+    autoScheduleError.value = ''
+    const groupId = `isscenario-ui-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const alternatives: AutoScheduleGenerationOptions[] = [
+      { ...balancedScheduleOptions(), scenarioGroupId: groupId, alternativeNo: 1 },
+      { solver: 'CP_SAT', scenarioGroupId: groupId, scenarioName: '方案 B · 交期优先', alternativeNo: 2, objectiveWeights: { tardinessWeight: 220, transitionWeight: 1, classGapWeight: 1, loadBalanceWeight: 10, existingTaskMoveCost: 30 } },
+      { solver: 'CP_SAT', scenarioGroupId: groupId, scenarioName: '方案 C · 少换模均衡', alternativeNo: 3, objectiveWeights: { tardinessWeight: 80, transitionWeight: 8, classGapWeight: 2, loadBalanceWeight: 60, existingTaskMoveCost: 60 } },
+    ]
+    try {
+      const [horizonStart, horizonEnd] = scheduleHorizon()
+      const generated: AutoScheduleRunRecord[] = []
+      for (const option of alternatives) {
+        generated.push(await createAutoSchedulePreview(factoryId.value, plan.value, horizonStart, horizonEnd, option))
+      }
+      generated.forEach((run) => {
+        autoScheduleRuns.value = [run, ...autoScheduleRuns.value.filter((item) => item.id !== run.id)]
+      })
+      autoScheduleComparisonRuns.value = generated
+      autoScheduleRun.value = generated[0] ?? null
+    } catch (error) {
+      autoScheduleError.value = `多方案生成失败：${getApiErrorMessage(error)}`
+    } finally {
+      autoScheduleLoading.value = false
+    }
+  }
+
+  async function replayAutoScheduleRun(run: AutoScheduleRunRecord) {
+    await generateAutoSchedulePreview({
+      solver: run.requestedSolver,
+      scenarioGroupId: run.scenarioGroupId,
+      scenarioName: `${run.scenarioName} · 回放`,
+      alternativeNo: run.alternativeNo,
+      replayOfRunId: run.id,
+      objectiveWeights: { ...run.objectiveWeights },
+    })
+  }
+
+  function selectAutoScheduleRun(run: AutoScheduleRunRecord) {
+    autoScheduleRun.value = run
+    autoScheduleComparisonRuns.value = autoScheduleRuns.value.filter((item) => item.scenarioGroupId === run.scenarioGroupId)
+  }
+
+  async function applyAutoScheduleRun(reviewOverrideReason: string) {
+    if (!plan.value || !autoScheduleRun.value || autoScheduleLoading.value) return
+    autoScheduleLoading.value = true
+    autoScheduleError.value = ''
+    try {
+      const result = await applyAutoSchedulePreview(
+        factoryId.value,
+        plan.value,
+        autoScheduleRun.value,
+        reviewOverrideReason.trim(),
+      )
+      autoScheduleRun.value = result.run
+      autoScheduleRuns.value = [result.run, ...autoScheduleRuns.value.filter((item) => item.id !== result.run.id)]
+      mergePlanResult(result)
+      pollingRevision.value = Math.max(pollingRevision.value, result.auditSequence)
+      saveMessage.value = `自动方案已应用 · 计划 r${result.plan?.revision ?? plan.value?.revision}`
+      await load({ quiet: true })
+    } catch (error) {
+      autoScheduleError.value = `自动方案应用失败：${getApiErrorMessage(error)}`
+    } finally {
+      autoScheduleLoading.value = false
+    }
+  }
+
   async function prepareMove(taskId: string, targetMachineId: string, targetSequence: number) {
     const task = taskMap.value.get(taskId)
     if (!task || !plan.value || plan.value.status !== 'DRAFT' || !canEdit.value) {
@@ -528,6 +659,10 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     cellDrafts.value = {}
     revisionConflict.value = null
     movePreview.value = null
+    autoScheduleRun.value = null
+    autoScheduleComparisonRuns.value = []
+    autoScheduleRuns.value = []
+    autoScheduleError.value = ''
   }
   function setPreset(preset: ColumnPreset) { activePreset.value = preset; customVisibleColumns.value = {} }
   function toggleMachine(machineId: string) { collapsedMachineIds.value = collapsedMachineIds.value.includes(machineId) ? collapsedMachineIds.value.filter((id) => id !== machineId) : [...collapsedMachineIds.value, machineId] }
@@ -544,10 +679,11 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   function selectTask(taskId: string) { selectedTaskId.value = taskId }
   function cycleSort(key: string) { sort.value = sort.value?.key === key ? (sort.value.desc ? null : { key, desc: true }) : { key, desc: false } }
 
-  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, plan, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
+  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
     activeView, activePreset, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
     backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, gridRows,
     cellDrafts, pendingEditCount, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride,
     load, setFactory, setPreset, toggleMachine, toggleColumn, moveColumn, resetColumns, selectTask, cycleSort,
-    draftValue, stageCellEdit, savePendingEdits, discardPendingEdits, prepareMove, updateMovePreview, confirmMove, moveByKeyboard, pollEvents }
+    draftValue, stageCellEdit, savePendingEdits, discardPendingEdits, prepareMove, updateMovePreview, confirmMove, moveByKeyboard, pollEvents,
+    generateAutoSchedulePreview, generateAutoScheduleAlternatives, replayAutoScheduleRun, selectAutoScheduleRun, applyAutoScheduleRun }
 })

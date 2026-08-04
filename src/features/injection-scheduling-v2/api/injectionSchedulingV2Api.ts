@@ -1,5 +1,8 @@
 import { http } from '@/lib/http'
 import type {
+  AutoScheduleAssignmentRecord,
+  AutoScheduleGenerationOptions,
+  AutoScheduleRunRecord,
   AuditEvent,
   MachineRecord,
   MoldRecord,
@@ -82,7 +85,11 @@ export function mapTask(source: UnknownRecord): ScheduleTaskRecord {
     manualOverrideReason: text(source.manual_override_reason), activeExecution: Boolean(source.active_execution),
     estimatedStart: text(source.estimated_start), estimatedFinish: text(source.estimated_finish),
     estimatedRemainingShifts: numberValue(source.estimated_remaining_shifts), deliverySlackDays: numberOrNull(source.delivery_slack_days),
-    revision: numberValue(source.revision),
+    revision: numberValue(source.revision), setupMinutes: numberValue(source.setup_minutes),
+    productionMinutes: numberValue(source.production_minutes), plannedDowntimeMinutes: numberValue(source.planned_downtime_minutes),
+    changeoverType: text(source.changeover_type), autoScheduleRunId: text(source.auto_schedule_run_id) || null,
+    autoScore: numberOrNull(source.auto_score), autoExplanation: source.auto_explanation && typeof source.auto_explanation === 'object' ? source.auto_explanation as UnknownRecord : {},
+    manualAdjusted: Boolean(source.manual_adjusted),
   }
 }
 
@@ -95,7 +102,7 @@ function mapEvent(source: UnknownRecord): AuditEvent {
   }
 }
 
-function mapPlan(source: UnknownRecord | null): { plan: SchedulingPlanRecord | null; orders: OrderRecord[]; tasks: ScheduleTaskRecord[] } {
+export function mapPlan(source: UnknownRecord | null): { plan: SchedulingPlanRecord | null; orders: OrderRecord[]; tasks: ScheduleTaskRecord[] } {
   if (!source) return { plan: null, orders: [], tasks: [] }
   return {
     plan: {
@@ -107,13 +114,63 @@ function mapPlan(source: UnknownRecord | null): { plan: SchedulingPlanRecord | n
   }
 }
 
+function mapAssignment(source: UnknownRecord): AutoScheduleAssignmentRecord {
+  return {
+    id: text(source.id), orderId: text(source.order_id), existingTaskId: text(source.existing_task_id) || null,
+    moldId: text(source.mold_id) || null, moldCopyNo: numberValue(source.mold_copy_no), machineId: text(source.machine_id) || null,
+    sequence: numberOrNull(source.sequence_no), plannedStart: text(source.planned_start), plannedFinish: text(source.planned_finish),
+    setupMinutes: numberValue(source.setup_minutes), productionMinutes: numberValue(source.production_minutes),
+    plannedDowntimeMinutes: numberValue(source.planned_downtime_minutes), changeoverType: text(source.changeover_type),
+    decision: (text(source.decision) || 'UNASSIGNED') as AutoScheduleAssignmentRecord['decision'], score: numberOrNull(source.score),
+    explanation: source.explanation && typeof source.explanation === 'object' ? source.explanation as UnknownRecord : {},
+    unassignedReasonCode: text(source.unassigned_reason_code),
+  }
+}
+
+export function mapAutoScheduleRun(source: UnknownRecord): AutoScheduleRunRecord {
+  const summary = source.summary && typeof source.summary === 'object' ? source.summary as UnknownRecord : {}
+  const objective = source.objective_config && typeof source.objective_config === 'object' ? source.objective_config as UnknownRecord : {}
+  const metric = (value: unknown) => {
+    const item = value && typeof value === 'object' ? value as UnknownRecord : {}
+    return { before: numberValue(item.before), after: numberValue(item.after), change: numberValue(item.change) }
+  }
+  const loads = Array.isArray(summary.machine_loads) ? summary.machine_loads as UnknownRecord[] : []
+  return {
+    id: text(source.id), factoryId: text(source.factory_id), planId: text(source.plan_id), expectedPlanRevision: numberValue(source.expected_plan_revision),
+    ruleRevision: numberValue(source.rule_revision), solverType: (text(source.solver_type) || 'HEURISTIC') as AutoScheduleRunRecord['solverType'],
+    requestedSolver: (text(source.requested_solver) || 'HEURISTIC') as AutoScheduleRunRecord['requestedSolver'], solverVersion: text(source.solver_version),
+    solverStatus: (text(source.solver_status) || text(summary.solver_status) || 'NOT_RUN') as AutoScheduleRunRecord['solverStatus'],
+    fallbackUsed: Boolean(source.fallback_used), fallbackReason: text(source.fallback_reason),
+    scenarioGroupId: text(source.scenario_group_id), scenarioName: text(source.scenario_name) || '方案 A', alternativeNo: numberValue(source.alternative_no) || 1,
+    replayOfRunId: text(source.replay_of_run_id) || null, status: (text(source.status) || 'FAILED') as AutoScheduleRunRecord['status'],
+    horizonStart: text(source.horizon_start), horizonEnd: text(source.horizon_end), errorDetail: text(source.error_detail),
+    createdByName: text(source.created_by_name), createdAt: text(source.created_at), appliedByName: text(source.applied_by_name), appliedAt: text(source.applied_at),
+    objectiveWeights: {
+      tardinessWeight: numberValue(objective.tardiness_weight), transitionWeight: numberValue(objective.transition_weight),
+      classGapWeight: numberValue(objective.class_gap_weight), loadBalanceWeight: numberValue(objective.load_balance_weight),
+      existingTaskMoveCost: numberValue(objective.existing_task_move_cost),
+    },
+    summary: {
+      inputOrderCount: numberValue(summary.input_order_count), scheduledCount: numberValue(summary.scheduled_count), reviewCount: numberValue(summary.review_count),
+      unassignedCount: numberValue(summary.unassigned_count), movedTaskCount: numberValue(summary.moved_task_count), localImprovementMoveCount: numberValue(summary.local_improvement_move_count), frozenTaskCount: numberValue(summary.frozen_task_count),
+      overdue: metric(summary.overdue), moldChanges: metric(summary.mold_changes), darkToLightChanges: metric(summary.dark_to_light_changes),
+      machineLoads: loads.map((item) => ({ machineId: text(item.machine_id), machineCode: text(item.machine_code), scheduledMinutes: numberValue(item.scheduled_minutes), loadRatio: numberValue(item.load_ratio) })),
+      solverElapsedMs: numberValue(summary.solver_elapsed_ms), solverStatus: (text(summary.solver_status) || text(source.solver_status) || 'NOT_RUN') as AutoScheduleRunRecord['solverStatus'],
+      objectiveValue: numberOrNull(summary.objective_value), bestObjectiveBound: numberOrNull(summary.best_objective_bound),
+      fallbackUsed: Boolean(summary.fallback_used ?? source.fallback_used), fallbackReason: text(summary.fallback_reason) || text(source.fallback_reason),
+    },
+    assignments: (Array.isArray(source.assignments) ? source.assignments as UnknownRecord[] : []).map(mapAssignment),
+  }
+}
+
 export async function fetchSchedulingWorkspace(factoryId: string) {
-  const [machinesResponse, moldsResponse, planResponse, backlogResponse, eventsResponse] = await Promise.all([
+  const [machinesResponse, moldsResponse, planResponse, backlogResponse, eventsResponse, runsResponse] = await Promise.all([
     http.get('/injection-scheduling/machines', { params: { factory_id: factoryId } }),
     http.get('/injection-scheduling/molds', { params: { factory_id: factoryId } }),
     http.get('/injection-scheduling/plans/current', { params: { factory_id: factoryId } }),
     http.get('/injection-scheduling/backlog', { params: { factory_id: factoryId } }),
     http.get('/injection-scheduling/events', { params: { factory_id: factoryId, after_sequence: 0, limit: 100 } }),
+    http.get('/injection-scheduling/auto-schedule/runs', { params: { factory_id: factoryId, limit: 30 } }),
   ])
   const planPayload = planResponse.data as { plan?: UnknownRecord | null; polling_revision?: number }
   const mappedPlan = mapPlan(planPayload.plan ?? null)
@@ -133,7 +190,50 @@ export async function fetchSchedulingWorkspace(factoryId: string) {
     plan: mappedPlan.plan,
     pollingRevision: numberValue(planPayload.polling_revision),
     events: (((eventsResponse.data as UnknownRecord).events as UnknownRecord[]) ?? []).map(mapEvent),
+    autoScheduleRuns: (((runsResponse.data as UnknownRecord).items as UnknownRecord[]) ?? []).map(mapAutoScheduleRun),
   }
+}
+
+export async function createAutoSchedulePreview(
+  factoryId: string,
+  plan: SchedulingPlanRecord,
+  horizonStart: string,
+  horizonEnd: string,
+  options: AutoScheduleGenerationOptions,
+) {
+  const requestId = newRequestId('auto-preview')
+  const { data } = await http.post('/injection-scheduling/auto-schedule/runs', {
+    factory_id: factoryId, plan_id: plan.id, expected_plan_revision: plan.revision,
+    rule_revision: plan.ruleRevision, mode: 'PREVIEW', horizon_start: horizonStart,
+    horizon_end: horizonEnd, order_ids: [], respect_locked_tasks: true,
+    solver: options.solver, time_limit_seconds: 10,
+    objective_weights: {
+      tardiness_weight: options.objectiveWeights.tardinessWeight,
+      transition_weight: options.objectiveWeights.transitionWeight,
+      class_gap_weight: options.objectiveWeights.classGapWeight,
+      load_balance_weight: options.objectiveWeights.loadBalanceWeight,
+      existing_task_move_cost: options.objectiveWeights.existingTaskMoveCost,
+    },
+    scenario_group_id: options.scenarioGroupId ?? '', scenario_name: options.scenarioName,
+    alternative_no: options.alternativeNo ?? 1, replay_of_run_id: options.replayOfRunId ?? null,
+  }, { headers: { 'X-Request-ID': requestId } })
+  return mapAutoScheduleRun(data as UnknownRecord)
+}
+
+export async function applyAutoSchedulePreview(
+  factoryId: string,
+  plan: SchedulingPlanRecord,
+  run: AutoScheduleRunRecord,
+  reviewOverrideReason: string,
+) {
+  const requestId = newRequestId('auto-apply')
+  const { data } = await http.post(`/injection-scheduling/auto-schedule/runs/${run.id}/apply`, {
+    factory_id: factoryId, expected_plan_revision: plan.revision,
+    expected_rule_revision: plan.ruleRevision, request_id: requestId,
+    review_override_reason: reviewOverrideReason,
+  })
+  const payload = data as { run: UnknownRecord; plan: UnknownRecord; audit_sequence?: number }
+  return { run: mapAutoScheduleRun(payload.run), ...mapPlan(payload.plan), auditSequence: numberValue(payload.audit_sequence) }
 }
 
 export async function fetchEligibility(factoryId: string, orderId: string, machineIds: string[] = [], allowScheduled = false) {
