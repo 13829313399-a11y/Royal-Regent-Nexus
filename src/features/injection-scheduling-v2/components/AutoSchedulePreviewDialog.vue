@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { AlertTriangle, Bot, CheckCircle2, Clock3, Gauge, GitCompareArrows, Layers3, LoaderCircle, LockKeyhole, RotateCcw, Sparkles, X } from '@lucide/vue'
+import { useDialogFocus } from '../composables/useDialogFocus'
 import type { AutoScheduleAssignmentRecord, AutoScheduleGenerationOptions, AutoScheduleObjectiveWeights, AutoScheduleRunRecord, MachineRecord, OrderRecord } from '../types'
 
 const props = defineProps<{
@@ -36,6 +37,8 @@ const selectedPreset = ref<Preset>('balanced')
 const solver = ref<'CP_SAT' | 'HEURISTIC'>('CP_SAT')
 const weights = ref<AutoScheduleObjectiveWeights>({ ...presets.balanced.weights })
 const reviewOverrideReason = ref('')
+const dialogRoot = ref<HTMLElement | null>(null)
+useDialogFocus(() => props.open, dialogRoot)
 const orderMap = computed(() => new Map(props.orders.map((item) => [item.id, item])))
 const machineMap = computed(() => new Map(props.machines.map((item) => [item.id, item])))
 const groupRuns = computed(() => props.comparisonRuns?.length ? [...props.comparisonRuns].sort((a, b) => a.alternativeNo - b.alternativeNo) : props.run ? [props.run] : [])
@@ -66,9 +69,11 @@ watch(() => props.run?.id, () => { reviewOverrideReason.value = '' })
 </script>
 
 <template>
-  <div v-if="open" class="modal-layer" role="dialog" aria-modal="true" aria-labelledby="auto-schedule-title" @click.self="emit('close')">
+  <Teleport to="body">
+  <Transition name="modal">
+  <div v-if="open" ref="dialogRoot" class="modal-layer" role="dialog" aria-modal="true" aria-labelledby="auto-schedule-title" tabindex="-1" @click.self="emit('close')" @keydown.esc="emit('close')">
     <section class="auto-schedule-dialog phase3-dialog phase4-dialog">
-      <header><div><span class="modal-icon"><Bot :size="20" /></span><div><span class="eyebrow">PHASE 4 · CP-SAT</span><strong id="auto-schedule-title">自动排期优化与方案对比</strong></div></div><button aria-label="关闭" @click="emit('close')"><X :size="18" /></button></header>
+      <header><div><span class="modal-icon"><Bot :size="20" /></span><div><span class="eyebrow">求解器配置 · CP-SAT</span><strong id="auto-schedule-title">智能排产优化与方案对比</strong></div></div><button aria-label="关闭智能排产弹窗" @click="emit('close')"><X :size="18" /></button></header>
 
       <div v-if="!run" class="phase3-intro">
         <div class="phase-notice" :class="{ blocked: planStatus !== 'DRAFT' }"><LockKeyhole :size="18" /><div><strong>独立求解，选定后再应用</strong><p>{{ planStatus === 'DRAFT' ? 'CP-SAT 生成 optional interval 方案，约束机台、实体模具副本和锁定任务；超时或组件不可用时自动回退启发式。' : '当前不是可编辑草案，任何方案都不会覆盖已发布计划。' }}</p></div></div>
@@ -101,4 +106,6 @@ watch(() => props.run?.id, () => { reviewOverrideReason.value = '' })
       <footer><button @click="emit('close')">关闭</button><button v-if="!run" :disabled="!canGenerate" @click="emit('compare')"><LoaderCircle v-if="loading" class="spin" :size="15" /><Layers3 v-else :size="15" />生成三套方案</button><button v-if="run && run.status !== 'APPLIED'" :disabled="!canGenerate" @click="emit('replay', run)"><RotateCcw :size="15" />按此权重回放</button><button v-if="run && run.status !== 'APPLIED'" :disabled="loading" @click="emit('generate', generationOptions)"><LoaderCircle v-if="loading" class="spin" :size="15" /><Sparkles v-else :size="15" />重新生成</button><button v-if="run && run.status !== 'APPLIED'" class="primary enabled" :disabled="!canApply" @click="emit('apply', reviewOverrideReason)"><LoaderCircle v-if="loading" class="spin" :size="15" /><CheckCircle2 v-else :size="15" />应用到草案</button><button v-else-if="!run" class="primary enabled" :disabled="!canGenerate" @click="emit('generate', generationOptions)"><LoaderCircle v-if="loading" class="spin" :size="15" /><Sparkles v-else :size="15" />生成选定方案</button></footer>
     </section>
   </div>
+  </Transition>
+  </Teleport>
 </template>

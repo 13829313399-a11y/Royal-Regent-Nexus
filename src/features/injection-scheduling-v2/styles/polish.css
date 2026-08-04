@@ -1,0 +1,283 @@
+.injection-scheduling-v2 {
+  background:
+    radial-gradient(circle at 92% 0%, rgba(8, 122, 100, 0.055), transparent 28%),
+    var(--is-bg-canvas);
+  color: var(--is-text-primary);
+  font-size: 12px;
+}
+
+.modal-layer,
+.modal-backdrop,
+.scheduling-feedback-toast {
+  --is-border: #d2dde4;
+  --is-accent: #087a64;
+  --is-accent-hover: #066a57;
+  --is-radius-lg: 15px;
+  --is-motion-fast: 120ms;
+  --is-motion-base: 180ms;
+  --is-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --is-shadow-lg: 0 20px 60px rgba(5, 20, 35, 0.18);
+}
+
+.injection-scheduling-v2 .scheduling-topbar {
+  height: 52px;
+  padding-inline: 16px;
+  background: linear-gradient(112deg, var(--is-navy-950), var(--is-navy-900) 62%, var(--is-navy-800));
+  box-shadow: inset 0 1px rgba(255,255,255,.04), 0 1px 0 rgba(44, 210, 178, .12);
+}
+
+.injection-scheduling-v2 .brand-mark {
+  width: 32px;
+  height: 32px;
+  border-color: rgba(103, 225, 201, .34);
+  background: rgba(8, 122, 100, .22);
+  box-shadow: 0 0 0 4px rgba(8, 122, 100, .07);
+}
+
+.injection-scheduling-v2 .brand-copy { min-width: 300px; }
+.injection-scheduling-v2 .brand-copy strong { font-size: 13px; }
+.injection-scheduling-v2 .brand-copy span { margin-top: 3px; font-size: 9px; color: #89a2b7; letter-spacing: .13em; }
+.injection-scheduling-v2 .topbar-live { height: 30px; border-color: rgba(128, 164, 192, .16); background: rgba(255,255,255,.03); }
+.injection-scheduling-v2 .topbar-actions { min-width: 128px; justify-content: flex-end; }
+.injection-scheduling-v2 .account-summary { color: #d9e5ed; gap: 8px; }
+.injection-scheduling-v2 .account-name { max-width: 86px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.injection-scheduling-v2 .neutral-avatar { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: #9eb3c4; background: rgba(255,255,255,.07); }
+
+.injection-scheduling-v2 .scheduling-commandbar {
+  height: 56px;
+  border: 0;
+  border-bottom: 1px solid var(--is-border-soft);
+  box-shadow: var(--is-shadow-sm);
+}
+.injection-scheduling-v2 .page-identity { min-width: 258px; }
+.injection-scheduling-v2 .page-identity .eyebrow { font-size: 10px; }
+.injection-scheduling-v2 .page-identity strong { font-size: 18px; line-height: 1.1; }
+.injection-scheduling-v2 .readonly-badge { padding: 4px 8px; color: var(--is-accent); background: var(--is-accent-soft); font-size: 10px; }
+.injection-scheduling-v2 .command-search { max-width: 300px; }
+.injection-scheduling-v2 .command-field,
+.injection-scheduling-v2 .command-search,
+.injection-scheduling-v2 .source-pill,
+.injection-scheduling-v2 .toolbar-search,
+.injection-scheduling-v2 .plan-toolbar label,
+.injection-scheduling-v2 .backlog-view header label {
+  border-color: var(--is-border-soft);
+  background: var(--is-bg-subtle);
+}
+
+.injection-scheduling-v2 .command-button,
+.injection-scheduling-v2 .toolbar-button,
+.injection-scheduling-v2 .candidate-button,
+.injection-scheduling-v2 .phase5-actions button,
+.auto-schedule-dialog button,
+.phase2-dialog button {
+  transition:
+    background-color var(--is-motion-fast) var(--is-ease-standard),
+    border-color var(--is-motion-fast) var(--is-ease-standard),
+    color var(--is-motion-fast) var(--is-ease-standard),
+    box-shadow var(--is-motion-base) var(--is-ease-standard),
+    transform var(--is-motion-fast) var(--is-ease-standard);
+}
+.injection-scheduling-v2 .command-button:not(:disabled):hover,
+.injection-scheduling-v2 .toolbar-button:not(:disabled):hover,
+.injection-scheduling-v2 .candidate-button:not(:disabled):hover,
+.injection-scheduling-v2 .phase5-actions button:not(:disabled):hover,
+.auto-schedule-dialog button:not(:disabled):hover,
+.phase2-dialog button:not(:disabled):hover { transform: translateY(-1px); }
+.injection-scheduling-v2 .command-button:not(:disabled):active,
+.injection-scheduling-v2 .toolbar-button:not(:disabled):active,
+.injection-scheduling-v2 .candidate-button:not(:disabled):active,
+.auto-schedule-dialog button:not(:disabled):active,
+.phase2-dialog button:not(:disabled):active { transform: translateY(0) scale(.98); }
+.injection-scheduling-v2 .command-button:disabled,
+.injection-scheduling-v2 .toolbar-button:disabled,
+.auto-schedule-dialog button:disabled,
+.phase2-dialog button:disabled { opacity: .52; cursor: not-allowed; transform: none; }
+.injection-scheduling-v2 .command-button.auto {
+  border-color: var(--is-accent);
+  background: var(--is-accent);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(8, 122, 100, .18);
+}
+.injection-scheduling-v2 .command-button.auto:hover { border-color: var(--is-accent-hover); background: var(--is-accent-hover); box-shadow: 0 7px 16px rgba(8, 122, 100, .22); }
+.injection-scheduling-v2 .quick-schedule { color: var(--is-accent); border-color: #b7d9d1; background: #f3faf8; }
+.injection-scheduling-v2 .sync-time { max-width: 135px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+
+.injection-scheduling-v2 > main { height: calc(100vh - 108px); padding: 12px 14px 14px; gap: 10px; }
+.injection-scheduling-v2 .kpi-strip { grid-template-columns: repeat(8, minmax(116px, 1fr)); gap: 8px; }
+.injection-scheduling-v2 .kpi-card {
+  height: 76px;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: var(--is-radius-md);
+  background: var(--is-surface);
+  box-shadow: var(--is-shadow-sm);
+  transition: box-shadow var(--is-motion-base) var(--is-ease-standard), border-color var(--is-motion-fast) var(--is-ease-standard);
+}
+.injection-scheduling-v2 .kpi-card:hover { box-shadow: var(--is-shadow-md); }
+.injection-scheduling-v2 .kpi-card.core { height: 86px; }
+.injection-scheduling-v2 .kpi-card.core strong { font-size: 25px; }
+.injection-scheduling-v2 .kpi-card.compact { background: #fbfcfd; }
+.injection-scheduling-v2 .kpi-card.compact strong { font-size: 19px; }
+.injection-scheduling-v2 .kpi-card span { font-size: 11px; color: var(--is-text-secondary); }
+.injection-scheduling-v2 .kpi-card p { font-size: 10px; color: var(--is-text-muted); }
+.injection-scheduling-v2 .kpi-card.red { border-left-color: var(--is-danger); }
+.injection-scheduling-v2 .kpi-card.teal.core { border-left-color: var(--is-accent); }
+.injection-scheduling-v2 .kpi-card.blue.core { border-left-color: var(--is-info); }
+.injection-scheduling-v2 .kpi-card.violet.core { border-left-color: #7259b8; }
+.injection-scheduling-v2 .kpi-strip.is-loading .kpi-card { color: transparent; }
+
+.injection-scheduling-v2 .scheduling-workspace {
+  border: 0;
+  border-radius: var(--is-radius-lg);
+  box-shadow: var(--is-shadow-md);
+}
+.injection-scheduling-v2 .workspace-tabs { height: 46px; min-height: 46px; border-color: var(--is-border-soft); background: #f8fafb; }
+.injection-scheduling-v2 .workspace-tabs button {
+  position: relative;
+  border: 0;
+  color: var(--is-text-secondary);
+  transition: color var(--is-motion-fast), background-color var(--is-motion-fast), transform var(--is-motion-fast);
+}
+.injection-scheduling-v2 .workspace-tabs button::after { content: ''; position: absolute; left: 12px; right: 12px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--is-accent); transform: scaleX(0); transition: transform var(--is-motion-base) var(--is-ease-emphasized); }
+.injection-scheduling-v2 .workspace-tabs button:hover { background: #f0f5f6; color: var(--is-text-primary); }
+.injection-scheduling-v2 .workspace-tabs button:active { transform: scale(.98); }
+.injection-scheduling-v2 .workspace-tabs button.active { border: 0; color: var(--is-accent); background: var(--is-surface); }
+.injection-scheduling-v2 .workspace-tabs button.active::after { transform: scaleX(1); }
+.injection-scheduling-v2 .workspace-tabs em { font-size: 10px; transition: color var(--is-motion-base), background-color var(--is-motion-base); }
+.injection-scheduling-v2 .plan-view { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.injection-scheduling-v2 .plan-toolbar { min-height: 46px; border-color: var(--is-border-soft); background: rgba(255,255,255,.96); }
+.injection-scheduling-v2 .rule-note { font-size: 10px; }
+.injection-scheduling-v2 .plan-work-area { transition: grid-template-columns var(--is-motion-slow) var(--is-ease-emphasized); }
+.injection-scheduling-v2 .plan-work-area.inspector-open { grid-template-columns: minmax(0,1fr) 368px; }
+
+.injection-scheduling-v2 .machine-plan-table thead { color: var(--is-text-secondary); background: #f2f6f8; box-shadow: 0 4px 10px rgba(17, 39, 58, .05); }
+.injection-scheduling-v2 .machine-plan-table th { border-right-color: #dce4e9; border-bottom-color: var(--is-border); font-size: 11px; }
+.injection-scheduling-v2 .column-group-row th { background: #eaf0f3; color: #6f8291; font-size: 10px; }
+.injection-scheduling-v2 .column-title-row th:hover .sort-muted { color: var(--is-info); }
+.injection-scheduling-v2 .column-title-row th.frozen,
+.injection-scheduling-v2 .schedule-task-row td.frozen { box-shadow: 5px 0 9px -8px rgba(7, 28, 44, .55), 1px 0 0 #d3dde4; }
+.injection-scheduling-v2 .column-resizer { width: 6px; }
+.injection-scheduling-v2 .column-resizer:hover,
+.injection-scheduling-v2 .column-resizer.resizing { background: var(--is-info); box-shadow: 0 0 0 1px rgba(46,110,230,.22); }
+.injection-scheduling-v2 .schedule-task-row { transition: background-color 140ms var(--is-ease-standard), box-shadow 140ms var(--is-ease-standard), opacity 140ms; }
+.injection-scheduling-v2 .schedule-task-row:hover { background: #f4f8fa; box-shadow: inset 0 1px rgba(72, 106, 130, .08), inset 0 -1px rgba(72, 106, 130, .08); }
+.injection-scheduling-v2 .schedule-task-row.is-selected { background: #eaf7f3; box-shadow: inset 3px 0 0 var(--is-accent), inset 0 0 0 1px rgba(8,122,100,.12); }
+.injection-scheduling-v2 .schedule-task-row.is-selected td.frozen { background: #eaf7f3; }
+.injection-scheduling-v2 .schedule-task-row.is-dragging { opacity: .62; outline: 1px dashed var(--is-info); outline-offset: -2px; cursor: grabbing; }
+.injection-scheduling-v2 .schedule-task-row.status-completed { opacity: .66; }
+.injection-scheduling-v2 .schedule-task-row.has-pending-edit { box-shadow: inset 3px 0 0 var(--is-info); }
+.injection-scheduling-v2 .schedule-task-row.drop-target:not(.is-dragging) { background: #f1faf7; }
+.injection-scheduling-v2 .schedule-task-row td { border-right-color: #e5ebef; border-bottom-color: #e8edf0; color: #2d4354; transition: background-color 140ms, color 140ms; }
+.injection-scheduling-v2 .status-chip,
+.injection-scheduling-v2 .fit-chip { font-size: 10px; }
+.injection-scheduling-v2 .progress-cell i b,
+.injection-scheduling-v2 .report-progress i b { background: linear-gradient(90deg, #20947e, #52af9c); transition: width 280ms var(--is-ease-standard); }
+
+.injection-scheduling-v2 .machine-group-row td { position: relative; transition: background-color 150ms, box-shadow 150ms; }
+.injection-scheduling-v2 .machine-group-row.drop-enabled td { background: #f3f8f7; }
+.injection-scheduling-v2 .machine-group-row.drop-target td { background: #e6f5f0; box-shadow: inset 0 0 0 1px rgba(8,122,100,.3); }
+.injection-scheduling-v2 .drop-target-copy { margin-left: 10px; padding: 5px 9px; border-radius: 999px; color: var(--is-accent); background: white; box-shadow: var(--is-shadow-sm); font-size: 10px; font-weight: 800; }
+
+.injection-scheduling-v2 .grid-editor button { position: relative; border-radius: 5px; transition: background-color var(--is-motion-fast), box-shadow var(--is-motion-fast), color var(--is-motion-fast); }
+.injection-scheduling-v2 .grid-editor button:hover { background: #f0f6f8; box-shadow: inset 0 0 0 1px #c9dce5; }
+.injection-scheduling-v2 .grid-editor.editing input,
+.injection-scheduling-v2 .grid-editor.editing select { background: #fff; border-color: var(--is-info); box-shadow: 0 0 0 3px rgba(46,110,230,.11); }
+.injection-scheduling-v2 .grid-editor.saved button { background: #e9f7f2; box-shadow: inset 0 0 0 1px rgba(8,122,100,.28); }
+
+.injection-scheduling-v2 .task-inspector { border-left: 0; background: #f6f8fa; box-shadow: -10px 0 28px rgba(12, 35, 52, .08); }
+.injection-scheduling-v2 .task-inspector > header { height: 58px; border-color: var(--is-border-soft); }
+.injection-scheduling-v2 .task-inspector .eyebrow { font-size: 10px; letter-spacing: .08em; }
+.injection-scheduling-v2 .task-inspector nav { border: 0; background: #fff; }
+.injection-scheduling-v2 .task-inspector nav button { min-height: 30px; font-size: 10px; transition: background-color var(--is-motion-fast), color var(--is-motion-fast), box-shadow var(--is-motion-fast); }
+.injection-scheduling-v2 .task-inspector nav button.active { border-color: transparent; background: var(--is-accent-soft); color: var(--is-accent); box-shadow: inset 0 -2px var(--is-accent); }
+.injection-scheduling-v2 .inspector-section,
+.injection-scheduling-v2 .eligibility-panel { border: 0; border-radius: var(--is-radius-md); box-shadow: var(--is-shadow-sm); }
+.injection-scheduling-v2 .inspector-section dt { font-size: 10px; }
+
+.injection-scheduling-v2 .backlog-dock { border-color: var(--is-border-soft); background: #f8fafb; }
+.injection-scheduling-v2 .backlog-expand { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--is-motion-slow) var(--is-ease-emphasized), opacity var(--is-motion-base); }
+.injection-scheduling-v2 .backlog-expand > div { min-height: 0; overflow: hidden; }
+.injection-scheduling-v2 .backlog-dock.open .backlog-expand { grid-template-rows: 1fr; opacity: 1; }
+.injection-scheduling-v2 .dock-chevron { padding: 0 !important; background: transparent !important; transition: transform var(--is-motion-base) var(--is-ease-standard); }
+.injection-scheduling-v2 .backlog-dock.open .dock-chevron { transform: rotate(180deg); }
+.injection-scheduling-v2 .backlog-cards { scrollbar-width: thin; scrollbar-color: var(--is-border-strong) transparent; }
+.injection-scheduling-v2 .backlog-cards article { border-color: var(--is-border-soft); border-radius: var(--is-radius-md); box-shadow: var(--is-shadow-sm); }
+
+.injection-scheduling-v2 .table-skeleton { min-height: 0; flex: 1; padding: 18px; display: grid; align-content: start; gap: 9px; background: #fff; }
+.injection-scheduling-v2 .table-skeleton span { height: 36px; border-radius: 8px; background: linear-gradient(100deg, #edf2f4 20%, #f8fafb 38%, #edf2f4 56%); background-size: 220% 100%; animation: scheduling-skeleton 1.4s ease-in-out infinite; animation-delay: var(--skeleton-delay); }
+.injection-scheduling-v2 .sync-progress { position: fixed; z-index: 90; top: 108px; left: 0; right: 0; height: 2px; overflow: hidden; pointer-events: none; }
+.injection-scheduling-v2 .sync-progress span { display: block; width: 32%; height: 100%; background: var(--is-accent); animation: sync-progress 1.2s ease-in-out infinite; }
+
+.modal-layer,
+.modal-backdrop { background: rgba(4, 15, 27, .5); backdrop-filter: none; }
+.auto-schedule-dialog,
+.phase2-dialog { border-color: rgba(189,202,211,.8); border-radius: var(--is-radius-lg); box-shadow: var(--is-shadow-lg); }
+.auto-schedule-dialog > header,
+.phase2-dialog > header { flex: 0 0 auto; background: #fff; }
+.auto-schedule-dialog .phase3-intro,
+.auto-schedule-dialog .auto-run-result { min-height: 0; overflow-y: auto; }
+.auto-schedule-dialog footer,
+.phase2-dialog footer { position: sticky; bottom: 0; flex: 0 0 auto; background: rgba(248,250,251,.97); }
+.auto-schedule-dialog .scenario-strip button { transition: border-color var(--is-motion-base), background-color var(--is-motion-base), box-shadow var(--is-motion-base), transform var(--is-motion-fast); }
+.auto-schedule-dialog .scenario-strip button.active { box-shadow: inset 0 0 0 1px var(--is-accent), 0 5px 16px rgba(8,122,100,.1); }
+.auto-schedule-dialog .load-section i b { transition: width 280ms var(--is-ease-standard); }
+.scheduling-feedback-toast {
+  position: fixed;
+  z-index: 180;
+  top: 118px;
+  right: 18px;
+  max-width: min(420px, calc(100vw - 36px));
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--is-border, #d2dde4);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #33495a;
+  background: rgba(255,255,255,.98);
+  box-shadow: 0 12px 32px rgba(5,20,35,.16);
+}
+.scheduling-feedback-toast.success { border-left: 3px solid #087a64; color: #07614f; }
+.scheduling-feedback-toast.error { border-left: 3px solid #d34152; color: #a72f3f; }
+.scheduling-feedback-toast button { width: 26px; height: 26px; margin-left: auto; border: 0; border-radius: 6px; display: grid; place-items: center; background: transparent; color: currentColor; cursor: pointer; }
+
+.injection-scheduling-v2 .phase5-dashboard { background: var(--is-bg-subtle); }
+.injection-scheduling-v2 .phase5-metrics article,
+.injection-scheduling-v2 .integration-panel,
+.injection-scheduling-v2 .speed-model-panel,
+.injection-scheduling-v2 .phase5-notes { border-color: var(--is-border-soft); border-radius: var(--is-radius-md); box-shadow: var(--is-shadow-sm); }
+.injection-scheduling-v2 .phase5-skeleton { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.injection-scheduling-v2 .phase5-skeleton span { min-height: 84px; border-radius: var(--is-radius-md); background: linear-gradient(100deg,#e9eff2 20%,#f8fafb 38%,#e9eff2 56%); background-size: 220% 100%; animation: scheduling-skeleton 1.4s ease-in-out infinite; }
+.injection-scheduling-v2 .phase5-skeleton span:nth-child(n+5) { min-height: 220px; grid-column: span 2; }
+.injection-scheduling-v2 .timeline-scale { background: #eef3f5; color: var(--is-text-secondary); font-size: 10px; }
+.injection-scheduling-v2 .timeline-track { background: repeating-linear-gradient(90deg,#f8fafb 0,#f8fafb calc(12.5% - 1px),#dbe4e9 calc(12.5% - 1px),#dbe4e9 12.5%); }
+.injection-scheduling-v2 .timeline-track button { transition: width 220ms var(--is-ease-standard), left 220ms var(--is-ease-standard), box-shadow var(--is-motion-fast), border-color var(--is-motion-fast); }
+.injection-scheduling-v2 .timeline-track button:hover { box-shadow: 0 5px 14px rgba(12,38,56,.14); z-index: 3; }
+.injection-scheduling-v2 .timeline-track button.running { border-color: #4b9f8e; background: #dff3ed; color: #075f50; box-shadow: inset 3px 0 0 var(--is-accent); }
+.injection-scheduling-v2 .timeline-track button.blocked { border-color: #dda74f; background: #fff5df; color: #8b5908; }
+.injection-scheduling-v2 .timeline-track button.completed { opacity: .62; }
+.injection-scheduling-v2 .timeline-track button.overdue { border-color: var(--is-danger); box-shadow: inset 0 0 0 1px rgba(211,65,82,.2); }
+.injection-scheduling-v2 .timeline-now { position: absolute; z-index: 2; top: -5px; bottom: -5px; width: 1px; background: var(--is-danger); pointer-events: none; }
+.injection-scheduling-v2 .timeline-now span { position: absolute; top: -14px; left: 4px; color: var(--is-danger); font-size: 9px; font-style: normal; font-weight: 800; }
+
+@media (max-width: 1599px) {
+  .injection-scheduling-v2 .kpi-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .injection-scheduling-v2 .kpi-card,
+  .injection-scheduling-v2 .kpi-card.core { height: 70px; }
+  .injection-scheduling-v2 .kpi-card.core strong { font-size: 21px; }
+  .injection-scheduling-v2 .kpi-card p { margin-top: 3px; }
+  .injection-scheduling-v2 .rule-note { display: none; }
+  .injection-scheduling-v2 .command-search { max-width: 220px; }
+}
+
+@media (max-width: 1390px) {
+  .injection-scheduling-v2 .brand-copy { min-width: 260px; }
+  .injection-scheduling-v2 .account-name,
+  .injection-scheduling-v2 .sync-time,
+  .injection-scheduling-v2 .command-search { display: none; }
+  .injection-scheduling-v2 .page-identity { min-width: 235px; }
+  .injection-scheduling-v2 .workspace-tabs button { padding-inline: 9px; }
+  .injection-scheduling-v2 .workspace-status b { display: none; }
+  .injection-scheduling-v2 .plan-work-area.inspector-open { grid-template-columns: minmax(0,1fr) 350px; }
+}
