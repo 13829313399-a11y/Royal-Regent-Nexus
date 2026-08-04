@@ -9,12 +9,14 @@ import {
   fetchCurrentSchedulingPlan,
   fetchEligibility,
   fetchIncrementalEvents,
+  fetchPhase5Analytics,
   fetchSchedulingWorkspace,
   mapOrder,
   mapTask,
   moveScheduleTask,
   patchScheduleOrder,
   patchScheduleTask,
+  rebuildPhase5SpeedModels,
   saveShiftReportsBulk,
 } from '../api/injectionSchedulingV2Api'
 import { schedulingColumns } from '../composables/useSchedulingColumns'
@@ -32,6 +34,7 @@ import type {
   MoldRecord,
   MovePreview,
   OrderRecord,
+  Phase5AnalyticsRecord,
   RevisionConflict,
   ScheduleGridRow,
   ScheduleTaskRecord,
@@ -97,12 +100,16 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const movePreview = ref<MovePreview | null>(null)
   const moveLoading = ref(false)
   const pollingEvents = ref(false)
+  const phase5Analytics = ref<Phase5AnalyticsRecord | null>(null)
+  const phase5AnalyticsLoading = ref(false)
+  const phase5AnalyticsError = ref('')
 
   const schedulingDepartments = ['production', 'molding', 'pmc-warehouse', 'warehouse', 'management']
   const hasScopedPermission = (permission: string) => schedulingDepartments.some((department) => authStore.can(permission, factoryId.value, department))
   const canEdit = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:edit'))
   const canReport = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:report'))
   const canOverride = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:publish'))
+  const canManageRules = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:manage_rules'))
   const pendingEditCount = computed(() => Object.keys(cellDrafts.value).length)
 
   const factoryName = computed(() => factoryNames[factoryId.value])
@@ -233,6 +240,33 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       if (!options.quiet || sourceMode.value !== 'fallback') applyFallback(error instanceof Error ? error.message : '网络错误')
     } finally {
       loading.value = false; refreshing.value = false
+    }
+  }
+
+  async function loadPhase5Analytics() {
+    if (sourceMode.value !== 'live' || phase5AnalyticsLoading.value) return
+    phase5AnalyticsLoading.value = true
+    phase5AnalyticsError.value = ''
+    try {
+      phase5Analytics.value = await fetchPhase5Analytics(factoryId.value)
+    } catch (error) {
+      phase5AnalyticsError.value = `运营分析读取失败：${getApiErrorMessage(error)}`
+    } finally {
+      phase5AnalyticsLoading.value = false
+    }
+  }
+
+  async function calibratePhase5SpeedModels() {
+    if (!canManageRules.value || phase5AnalyticsLoading.value) return
+    phase5AnalyticsLoading.value = true
+    phase5AnalyticsError.value = ''
+    try {
+      phase5Analytics.value = await rebuildPhase5SpeedModels(factoryId.value)
+      saveMessage.value = '速度模型已根据历史周期重新校准'
+    } catch (error) {
+      phase5AnalyticsError.value = `速度模型校准失败：${getApiErrorMessage(error)}`
+    } finally {
+      phase5AnalyticsLoading.value = false
     }
   }
 
@@ -663,6 +697,9 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     autoScheduleComparisonRuns.value = []
     autoScheduleRuns.value = []
     autoScheduleError.value = ''
+    saveMessage.value = ''
+    phase5Analytics.value = null
+    phase5AnalyticsError.value = ''
   }
   function setPreset(preset: ColumnPreset) { activePreset.value = preset; customVisibleColumns.value = {} }
   function toggleMachine(machineId: string) { collapsedMachineIds.value = collapsedMachineIds.value.includes(machineId) ? collapsedMachineIds.value.filter((id) => id !== machineId) : [...collapsedMachineIds.value, machineId] }
@@ -682,8 +719,10 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
     activeView, activePreset, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
     backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, gridRows,
-    cellDrafts, pendingEditCount, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride,
+    cellDrafts, pendingEditCount, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride, canManageRules,
+    phase5Analytics, phase5AnalyticsLoading, phase5AnalyticsError,
     load, setFactory, setPreset, toggleMachine, toggleColumn, moveColumn, resetColumns, selectTask, cycleSort,
     draftValue, stageCellEdit, savePendingEdits, discardPendingEdits, prepareMove, updateMovePreview, confirmMove, moveByKeyboard, pollEvents,
-    generateAutoSchedulePreview, generateAutoScheduleAlternatives, replayAutoScheduleRun, selectAutoScheduleRun, applyAutoScheduleRun }
+    generateAutoSchedulePreview, generateAutoScheduleAlternatives, replayAutoScheduleRun, selectAutoScheduleRun, applyAutoScheduleRun,
+    loadPhase5Analytics, calibratePhase5SpeedModels }
 })

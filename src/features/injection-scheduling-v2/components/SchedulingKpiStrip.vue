@@ -8,7 +8,7 @@ const number = new Intl.NumberFormat('zh-CN')
   <section class="kpi-strip" aria-label="排产关键指标">
     <article class="kpi-card teal"><div><span>机台覆盖</span><strong>{{ summary.availableMachines }}<small>/ {{ summary.totalMachines }}</small></strong><p>可用机台 / 全部机台</p></div><Cog :size="19" /></article>
     <article class="kpi-card blue"><div><span>已排任务</span><strong>{{ summary.scheduledTasks }}<small> 条</small></strong><p>{{ summary.runningTasks }} 条正在生产</p></div><Boxes :size="19" /></article>
-    <article class="kpi-card red"><div><span>已经交期</span><strong>{{ summary.overdue }}<small> 条</small></strong><p>交期差小于 0</p></div><AlertTriangle :size="19" /></article>
+    <article class="kpi-card red"><div><span>已超交期</span><strong>{{ summary.overdue }}<small> 条</small></strong><p>交期差小于 0</p></div><AlertTriangle :size="19" /></article>
     <article class="kpi-card amber"><div><span>3 天内到期</span><strong>{{ summary.dueSoon }}<small> 条</small></strong><p>需要优先确认</p></div><Clock3 :size="19" /></article>
     <article class="kpi-card violet"><div><span>当前欠数</span><strong>{{ number.format(summary.remaining) }}</strong><p>按订单剩余数量</p></div><Gauge :size="19" /></article>
     <article class="kpi-card teal"><div><span>模具资料完整率</span><strong>{{ summary.completeness.toFixed(1) }}<small>%</small></strong><p>按标准化状态计算</p></div><CheckCircle2 :size="19" /></article>

@@ -22,6 +22,7 @@ from app.models.injection_scheduling_execution import (
     InjectionSchedulingPlan,
     InjectionSchedulingTask,
 )
+from app.models.injection_scheduling_phase5 import InjectionSchedulingSpeedModel
 from app.models.injection_scheduling_scheduler import (
     InjectionSchedulingMachineCalendar,
     InjectionSchedulingRun,
@@ -412,6 +413,19 @@ def create_run(
                 .order_by(InjectionSchedulingTransitionRule.revision.desc())
             ).all()
         )
+        speed_models = (
+            list(
+                db.scalars(
+                    select(InjectionSchedulingSpeedModel).where(
+                        InjectionSchedulingSpeedModel.factory_id == factory_id,
+                        InjectionSchedulingSpeedModel.status == "ACTIVE",
+                        InjectionSchedulingSpeedModel.mold_id.in_(all_mold_ids),
+                    )
+                ).all()
+            )
+            if all_mold_ids
+            else []
+        )
         record.status = "GENERATING_CANDIDATES"
         matches = evaluate_batch_matches(
             db,
@@ -443,9 +457,20 @@ def create_run(
                 }
                 for item in transition_rules
             ],
+            "speed_models": {
+                item.mold_id: {
+                    "status": item.status,
+                    "units_per_hour": float(item.calibrated_units_per_hour),
+                    "cycle_seconds": float(item.calibrated_cycle_seconds),
+                    "units_per_cycle": float(item.units_per_cycle),
+                    "sample_count": item.sample_count,
+                    "revision": item.revision,
+                }
+                for item in speed_models
+            },
         }
         snapshot = {
-            "schema_version": "phase4-v1",
+            "schema_version": "phase5-v1",
             "factory_id": factory_id,
             "plan": {"id": plan.id, "revision": plan.revision, "status": plan.status},
             "rule": {"id": rules.id, "revision": rules.revision},

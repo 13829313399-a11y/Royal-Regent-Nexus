@@ -68,7 +68,8 @@ INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION = "20260804_0047"
 INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
 INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0049"
 INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0050"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_V2_PHASE4_REVISION
+INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0051"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_V2_PHASE5_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -136,6 +137,9 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    phase5_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE5_REVISION)
+    assert phase5_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE4_REVISION
 
     phase4_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE4_REVISION)
     assert phase4_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE3_REVISION
@@ -3879,7 +3883,7 @@ def test_injection_scheduling_module_removal_drops_runtime_contract(tmp_path):
 
 
 def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
-    database_path = tmp_path / "injection_scheduling_v2_current_0050.db"
+    database_path = tmp_path / "injection_scheduling_v2_current_0051.db"
     upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
 
@@ -3912,6 +3916,10 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
             "injection_scheduling_run_assignments",
             "injection_scheduling_transition_rules",
             "injection_scheduling_machine_calendars",
+            "injection_scheduling_integration_cursors",
+            "injection_scheduling_external_events",
+            "injection_scheduling_cycle_observations",
+            "injection_scheduling_speed_models",
         }
         machine_columns = {
             row[1]

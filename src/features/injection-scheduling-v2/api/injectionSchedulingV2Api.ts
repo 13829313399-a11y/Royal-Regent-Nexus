@@ -7,6 +7,7 @@ import type {
   MachineRecord,
   MoldRecord,
   OrderRecord,
+  Phase5AnalyticsRecord,
   ScheduleTaskRecord,
   SchedulingPlanRecord,
   ShiftReportDraft,
@@ -161,6 +162,77 @@ export function mapAutoScheduleRun(source: UnknownRecord): AutoScheduleRunRecord
     },
     assignments: (Array.isArray(source.assignments) ? source.assignments as UnknownRecord[] : []).map(mapAssignment),
   }
+}
+
+function mapPhase5Metric(source: unknown): Phase5AnalyticsRecord['planAccuracy'] {
+  const item = source && typeof source === 'object' ? source as UnknownRecord : {}
+  return {
+    value: numberValue(item.value),
+    numerator: numberValue(item.numerator),
+    denominator: numberValue(item.denominator),
+    unit: text(item.unit),
+    sampleCount: numberValue(item.sample_count),
+    formula: text(item.formula),
+  }
+}
+
+export function mapPhase5Analytics(source: UnknownRecord): Phase5AnalyticsRecord {
+  const integrations = Array.isArray(source.integration_statuses) ? source.integration_statuses as UnknownRecord[] : []
+  const speedModels = Array.isArray(source.speed_models) ? source.speed_models as UnknownRecord[] : []
+  return {
+    factoryId: text(source.factory_id),
+    dateFrom: text(source.date_from),
+    dateTo: text(source.date_to),
+    generatedAt: text(source.generated_at),
+    planAccuracy: mapPhase5Metric(source.plan_accuracy),
+    moldChangeCount: mapPhase5Metric(source.mold_change_count),
+    overdueRate: mapPhase5Metric(source.overdue_rate),
+    machineUtilization: mapPhase5Metric(source.machine_utilization),
+    integrationStatuses: integrations.map((item) => ({
+      sourceType: (text(item.source_type) || 'ERP') as 'ERP' | 'DEVICE',
+      sourceKey: text(item.source_key),
+      cursor: text(item.cursor),
+      status: (text(item.status) || 'NOT_CONFIGURED') as 'ACTIVE' | 'ERROR' | 'NOT_CONFIGURED',
+      lastReceivedAt: text(item.last_received_at),
+      lastSuccessAt: text(item.last_success_at),
+      lastError: text(item.last_error),
+      eventCount: numberValue(item.event_count),
+      revision: numberValue(item.revision),
+    })),
+    speedModels: speedModels.map((item) => ({
+      id: text(item.id),
+      factoryId: text(item.factory_id),
+      moldId: text(item.mold_id),
+      moldNo: text(item.mold_no),
+      sampleCount: numberValue(item.sample_count),
+      calibratedCycleSeconds: numberValue(item.calibrated_cycle_seconds),
+      unitsPerCycle: numberValue(item.units_per_cycle),
+      calibratedUnitsPerHour: numberValue(item.calibrated_units_per_hour),
+      confidence: numberValue(item.confidence),
+      status: (text(item.status) || 'INSUFFICIENT_DATA') as 'ACTIVE' | 'INSUFFICIENT_DATA',
+      sourceWindowStart: text(item.source_window_start),
+      sourceWindowEnd: text(item.source_window_end),
+      lastObservedAt: text(item.last_observed_at),
+      revision: numberValue(item.revision),
+      updatedAt: text(item.updated_at),
+    })),
+    deviceInterfaceConfigured: Boolean(source.device_interface_configured),
+    notes: strings(source.notes),
+  }
+}
+
+export async function fetchPhase5Analytics(factoryId: string) {
+  const response = await http.get('/injection-scheduling/analytics/overview', { params: { factory_id: factoryId } })
+  return mapPhase5Analytics(response.data as UnknownRecord)
+}
+
+export async function rebuildPhase5SpeedModels(factoryId: string) {
+  await http.post('/injection-scheduling/calibration/speed-models/rebuild', {
+    factory_id: factoryId,
+    mold_ids: [],
+    minimum_sample_count: 3,
+  }, { headers: { 'X-Request-ID': `phase5-calibration-${crypto.randomUUID()}` } })
+  return fetchPhase5Analytics(factoryId)
 }
 
 export async function fetchSchedulingWorkspace(factoryId: string) {

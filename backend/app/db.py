@@ -251,6 +251,7 @@ INJECTION_SCHEDULING_PHASE4_PREVIOUS_REVISIONS = frozenset({"20260731_0044"})
 INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
 INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0049"
 INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0050"
+INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0051"
 INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
     "injection_scheduling_machines": {
         "machine_class_raw",
@@ -292,6 +293,12 @@ INJECTION_SCHEDULING_V2_PHASE4_RUN_COLUMNS = {
     "scenario_name",
     "alternative_no",
     "replay_of_run_id",
+}
+INJECTION_SCHEDULING_V2_PHASE5_REQUIRED_TABLES = {
+    "injection_scheduling_integration_cursors",
+    "injection_scheduling_external_events",
+    "injection_scheduling_cycle_observations",
+    "injection_scheduling_speed_models",
 }
 
 
@@ -597,6 +604,29 @@ def ensure_injection_scheduling_v2_phase4_schema_ready() -> None:
     )
 
 
+def ensure_injection_scheduling_v2_phase5_schema_ready() -> None:
+    """Refuse to let create_all silently bypass Phase 5 integration tables."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(INJECTION_SCHEDULING_V2_PHASE5_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产 V2 Phase 5 集成与分析迁移 "
+        f"{INJECTION_SCHEDULING_V2_PHASE5_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'table:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -656,6 +686,7 @@ def init_db() -> None:
         injection_scheduling,  # noqa: F401
         injection_scheduling_execution,  # noqa: F401
         injection_scheduling_import,  # noqa: F401
+        injection_scheduling_phase5,  # noqa: F401
         injection_scheduling_scheduler,  # noqa: F401
         internal_quote,  # noqa: F401
         molding_sample,  # noqa: F401
@@ -682,6 +713,7 @@ def init_db() -> None:
     ensure_injection_scheduling_v2_phase0_schema_ready()
     ensure_injection_scheduling_v2_phase3_schema_ready()
     ensure_injection_scheduling_v2_phase4_schema_ready()
+    ensure_injection_scheduling_v2_phase5_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

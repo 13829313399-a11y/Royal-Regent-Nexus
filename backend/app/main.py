@@ -21,6 +21,9 @@ from app.api.injection_scheduling_import import (
 from app.api.injection_scheduling_matching import (
     router as injection_scheduling_matching_router,
 )
+from app.api.injection_scheduling_phase5 import (
+    router as injection_scheduling_phase5_router,
+)
 from app.api.injection_scheduling_scheduler import (
     router as injection_scheduling_scheduler_router,
 )
@@ -100,6 +103,7 @@ app.include_router(injection_scheduling_execution_router)
 app.include_router(injection_scheduling_import_router)
 app.include_router(injection_scheduling_matching_router)
 app.include_router(injection_scheduling_scheduler_router)
+app.include_router(injection_scheduling_phase5_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
