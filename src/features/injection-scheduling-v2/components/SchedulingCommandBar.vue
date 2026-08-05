@@ -1,27 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Bot, CalendarDays, CircleUserRound, Database, RefreshCw, RotateCcw, Save, Search, Sparkles } from '@lucide/vue'
-import UserAvatar from '../../../components/common/UserAvatar.vue'
-import { useAuthStore } from '../../../stores/auth'
+import { Bot, CalendarDays, Database, House, RefreshCw, RotateCcw, Save, Search, Sparkles } from '@lucide/vue'
+import AccountMenu from '../../../components/layout/AccountMenu.vue'
 import type { FactoryId } from '../types'
 
 const props = defineProps<{ factoryId: FactoryId; factoryName: string; sourceMode: 'live' | 'fallback'; sourceMessage: string; refreshing: boolean; search: string; lastSyncedAt: string; planStatus: string; pendingCount: number; saving: boolean; canSave: boolean; saveMessage: string }>()
-const emit = defineEmits<{ 'update:factoryId': [value: string]; 'update:search': [value: string]; refresh: []; openAutoSchedule: []; save: []; discard: [] }>()
-const authStore = useAuthStore()
+const emit = defineEmits<{ 'update:factoryId': [value: string]; 'update:search': [value: string]; home: []; refresh: []; openAutoSchedule: []; save: []; discard: [] }>()
 const today = computed(() => new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()).replaceAll('/', '-'))
-const accountName = computed(() => authStore.currentUser?.display_name || authStore.currentUser?.username || '')
 </script>
 
 <template>
   <header class="scheduling-topbar">
     <div class="brand-mark"><Bot :size="22" /></div>
     <div class="brand-copy"><strong>Royal Regent Nexus</strong><span>ROYAL REGENT · PRODUCTION INTELLIGENCE</span></div>
+    <button type="button" class="topbar-home-button" aria-label="返回主页" @click="emit('home')"><House :size="15" /><span>返回主页</span></button>
     <div class="topbar-live"><span class="live-dot"></span><span>智能排产中枢在线</span><b>{{ sourceMode === 'live' ? '正式数据' : '只读演示' }}</b></div>
-    <div class="topbar-actions account-summary" :title="accountName || '当前账号资料暂不可用'">
-      <UserAvatar v-if="authStore.currentUser" :src="authStore.currentUser.avatar_url || ''" :name="accountName" size="md" shape="rounded" />
-      <span v-else class="neutral-avatar" aria-label="当前账号"><CircleUserRound :size="17" /></span>
-      <span class="account-name">{{ accountName || '当前账号' }}</span>
-    </div>
+    <AccountMenu compact class="scheduling-account-menu" />
   </header>
   <section class="scheduling-commandbar" aria-label="排产命令栏">
     <div class="page-identity"><span class="eyebrow">生产部 / 注塑排产</span><strong>注塑排产中枢</strong><span class="readonly-badge editable">智能优化引擎</span></div>
