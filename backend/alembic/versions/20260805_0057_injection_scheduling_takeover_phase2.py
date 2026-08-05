@@ -1,7 +1,7 @@
 """add plan-aware injection scheduling takeover contracts
 
-Revision ID: 20260805_0054
-Revises: 20260805_0053
+Revision ID: 20260805_0057
+Revises: 20260805_0056
 Create Date: 2026-08-05
 """
 
@@ -12,12 +12,11 @@ import json
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from alembic import op
 from alembic.util.exc import CommandError
 
-from alembic import op
-
-revision: str = "20260805_0054"
-down_revision: str | Sequence[str] | None = "20260805_0053"
+revision: str = "20260805_0057"
+down_revision: str | Sequence[str] | None = "20260805_0056"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -707,9 +706,9 @@ def downgrade() -> None:
             or profile_state["referenced_batches"]
         ):
             raise RuntimeError(
-                "20260805_0054 cannot be downgraded past 20260805_0053 after "
+                "20260805_0057 cannot be downgraded past 20260805_0056 after "
                 "Profile lifecycle, binding, custom revision, or referenced ImportBatch "
-                "data exists; restore a verified pre-0053 backup instead."
+                "data exists; restore a verified pre-0056 backup instead."
             )
     populated = connection.execute(
         sa.text(
@@ -728,8 +727,8 @@ def downgrade() -> None:
     ).mappings().one()
     if any(populated.values()):
         raise RuntimeError(
-            "20260805_0054 cannot be downgraded after takeover, reconciliation, "
-            "progress, or successor lineage data exists; restore a verified pre-0054 backup instead."
+            "20260805_0057 cannot be downgraded after takeover, reconciliation, "
+            "progress, or successor lineage data exists; restore a verified pre-0057 backup instead."
         )
     _drop_guards()
     op.drop_table("injection_scheduling_import_master_decisions")

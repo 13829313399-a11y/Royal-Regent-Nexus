@@ -216,6 +216,19 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/pmc-warehouse/carton-procurement',
+    name: 'carton-procurement',
+    component: () => import('@/views/CartonProcurementView.vue'),
+    meta: {
+      title: '纸箱采购协同',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['carton_procurement:read'],
+      enforcePermissions: true,
+      strictPermissions: true,
+    },
+  },
+  {
     path: '/modules/qa/carton-mark-check',
     name: 'carton-mark-check',
     component: () => import('@/views/CartonMarkVerificationView.vue'),

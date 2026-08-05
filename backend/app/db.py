@@ -252,8 +252,8 @@ INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
 INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
 INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
 INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
-INJECTION_SCHEDULING_PROFILE_REVISION = "20260805_0053"
-INJECTION_SCHEDULING_TAKEOVER_REVISION = "20260805_0054"
+INJECTION_SCHEDULING_PROFILE_REVISION = "20260805_0056"
+INJECTION_SCHEDULING_TAKEOVER_REVISION = "20260805_0057"
 INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
     "injection_scheduling_machines": {
         "machine_class_raw",
@@ -813,6 +813,7 @@ def ensure_sqlite_legacy_columns() -> None:
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
+        carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401
         injection_scheduling,  # noqa: F401
         injection_scheduling_execution,  # noqa: F401
@@ -826,6 +827,7 @@ def init_db() -> None:
         three_d_printing,  # noqa: F401
     )
     from app.services.auth import seed_auth_defaults
+    from app.services.carton_procurement import seed_carton_supplier_defaults
     from app.services.injection_scheduling import seed_injection_scheduling_defaults
     from app.services.injection_scheduling_profile_registry import (
         seed_builtin_import_profiles,
@@ -855,6 +857,7 @@ def init_db() -> None:
 
     with SessionLocal() as db:
         seed_auth_defaults(db)
+        seed_carton_supplier_defaults(db)
         seed_internal_quote_pricing_baseline_defaults(db)
         seed_injection_scheduling_defaults(db)
         seed_builtin_import_profiles(db)

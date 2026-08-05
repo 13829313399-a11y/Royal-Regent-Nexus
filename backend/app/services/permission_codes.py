@@ -48,6 +48,17 @@ CUSTOMER_ORDER_PERMISSION_CODES = (
     "customer_order:audit_read",
 )
 
+CARTON_PROCUREMENT_PERMISSION_CODES = (
+    "carton_procurement:read",
+    "carton_procurement:order_write",
+    "carton_procurement:receipt_write",
+    "carton_procurement:inventory_write",
+    "carton_procurement:closing_manage",
+    "carton_procurement:import",
+    "carton_procurement:exception_manage",
+    "carton_procurement:customer_manage",
+)
+
 THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:read",
     "three_d_printing:operate",
@@ -123,6 +134,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 BUSINESS_PERMISSION_CODES = (
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
+    *CARTON_PROCUREMENT_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,

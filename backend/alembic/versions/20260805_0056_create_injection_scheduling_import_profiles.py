@@ -1,7 +1,7 @@
 """create versioned injection scheduling import profiles
 
-Revision ID: 20260805_0053
-Revises: 20260804_0052
+Revision ID: 20260805_0056
+Revises: 20260805_0055
 Create Date: 2026-08-05
 """
 
@@ -10,11 +10,10 @@ import zlib
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-
 from alembic import op
 
-revision: str = "20260805_0053"
-down_revision: str | Sequence[str] | None = "20260804_0052"
+revision: str = "20260805_0056"
+down_revision: str | Sequence[str] | None = "20260805_0055"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -493,7 +492,7 @@ def downgrade() -> None:
         or populated["referenced_batches"]
     ):
         raise RuntimeError(
-            "20260805_0053 cannot be downgraded after Profile lifecycle, binding, "
+            "20260805_0056 cannot be downgraded after Profile lifecycle, binding, "
             "custom revision, or referenced ImportBatch data exists; "
             "restore a verified pre-0053 backup instead."
         )

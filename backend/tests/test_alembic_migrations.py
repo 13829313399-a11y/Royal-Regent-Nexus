@@ -67,11 +67,16 @@ PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION = "20260802_0046"
 INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION = "20260804_0047"
 INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
 CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION = "20260804_0049"
+CARTON_PROCUREMENT_MIGRATION_REVISION = "20260805_0050"
+CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION = "20260805_0051"
 INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
 INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
 INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
-INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION = "20260805_0053"
-INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION = "20260805_0054"
+CURRENT_BRANCH_MERGE_REVISION = "20260805_0053"
+CARTON_CUSTOMER_MASTER_MIGRATION_REVISION = "20260805_0054"
+CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION = "20260805_0055"
+INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION = "20260805_0056"
+INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION = "20260805_0057"
 HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
@@ -101,6 +106,19 @@ AUTH_TABLES = [
 ]
 PASSWORD_RESET_WORKFLOW_TABLE = "auth_password_reset_requests"
 CUSTOMER_ORDER_EXPORT_AUDIT_TABLE = "customer_order_export_audits"
+CARTON_PROCUREMENT_TABLES = {
+    "carton_customers",
+    "carton_suppliers",
+    "carton_orders",
+    "carton_order_lines",
+    "carton_import_batches",
+    "carton_receipts",
+    "carton_receipt_lines",
+    "carton_inventory_movements",
+    "carton_closings",
+    "carton_exceptions",
+    "carton_audit_events",
+}
 CONFIGURABLE_IAM_TABLES = [
     "employee_profiles",
     "auth_permission_metadata",
@@ -148,7 +166,40 @@ def test_alembic_has_single_molding_sample_head():
     assert takeover_revision.down_revision == INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION
 
     profile_revision = script.get_revision(INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION)
-    assert profile_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE5_REVISION
+    assert profile_revision.down_revision == CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION
+
+    auto_flow_revision = script.get_revision(CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION)
+    assert auto_flow_revision.down_revision == CARTON_CUSTOMER_MASTER_MIGRATION_REVISION
+    auto_flow_content = Path(auto_flow_revision.path).read_text(encoding="utf-8")
+    assert "status = 'CONFIRMED'" in auto_flow_content
+    assert "status = 'PENDING_SUPPLIER'" in auto_flow_content
+
+    customer_revision = script.get_revision(CARTON_CUSTOMER_MASTER_MIGRATION_REVISION)
+    assert customer_revision.down_revision == CURRENT_BRANCH_MERGE_REVISION
+
+    merge_revision = script.get_revision(CURRENT_BRANCH_MERGE_REVISION)
+    assert set(merge_revision.down_revision) == {
+        INJECTION_SCHEDULING_V2_PHASE5_REVISION,
+        CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION,
+    }
+
+    carton_revision = script.get_revision(CARTON_PROCUREMENT_MIGRATION_REVISION)
+    assert carton_revision.down_revision == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    exception_revision = script.get_revision(CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION)
+    assert exception_revision.down_revision == CARTON_PROCUREMENT_MIGRATION_REVISION
+    carton_content = Path(carton_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "carton_orders",
+        "carton_order_lines",
+        "usage_quantity",
+        "required_quantity",
+        "carton_receipts",
+        "carton_inventory_movements",
+        "carton_closings",
+        "carton_procurement:read",
+        "cannot be downgraded after carton procurement data exists",
+    ):
+        assert expected in carton_content
 
     phase5_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE5_REVISION)
     assert phase5_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE4_REVISION
@@ -4059,12 +4110,12 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
     assert allowed_startup.returncode == 0, allowed_startup.stderr
 
 
-def test_injection_scheduling_profile_schema_gate_requires_0053(tmp_path):
+def test_injection_scheduling_profile_schema_gate_requires_0056(tmp_path):
     database_path = tmp_path / "injection_scheduling_profile_schema_gate.db"
     initial_upgrade = _run_dispatch_alembic(
         database_path,
         "upgrade",
-        INJECTION_SCHEDULING_V2_PHASE5_REVISION,
+        CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION,
     )
     assert initial_upgrade.returncode == 0, initial_upgrade.stderr
     schema_before_startup = _sqlite_schema_signature(database_path)
@@ -4082,7 +4133,7 @@ def test_injection_scheduling_profile_schema_gate_requires_0053(tmp_path):
     assert allowed_startup.returncode == 0, allowed_startup.stderr
 
 
-def test_injection_scheduling_takeover_schema_gate_requires_0054(tmp_path):
+def test_injection_scheduling_takeover_schema_gate_requires_0057(tmp_path):
     database_path = tmp_path / "injection_scheduling_takeover_schema_gate.db"
     initial_upgrade = _run_dispatch_alembic(
         database_path,
@@ -4154,7 +4205,7 @@ def test_injection_scheduling_profile_downgrade_rejects_lifecycle_data(tmp_path)
     rejected = _run_dispatch_alembic(
         database_path,
         "downgrade",
-        INJECTION_SCHEDULING_V2_PHASE5_REVISION,
+        CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION,
     )
     assert rejected.returncode != 0
     assert "cannot be downgraded" in rejected.stderr
@@ -4172,7 +4223,7 @@ def test_injection_scheduling_profile_upgrade_preserves_existing_import_batch(tm
     initial_upgrade = _run_dispatch_alembic(
         database_path,
         "upgrade",
-        INJECTION_SCHEDULING_V2_PHASE5_REVISION,
+        CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION,
     )
     assert initial_upgrade.returncode == 0, initial_upgrade.stderr
     with sqlite3.connect(database_path) as connection:
@@ -4223,6 +4274,33 @@ def test_injection_scheduling_profile_upgrade_preserves_existing_import_batch(tm
             "",
             "LEGACY_PREVIEW",
         )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+
+def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path):
+    database_path = tmp_path / "carton_procurement_0050.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        carton_tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name LIKE 'carton_%'
+                """
+            ).fetchall()
+        }
+        assert carton_tables == CARTON_PROCUREMENT_TABLES
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM auth_permissions
+            WHERE code LIKE 'carton_procurement:%'
+            """
+        ).fetchone() == (8,)
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)

@@ -10,7 +10,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 ADMIN_TEST_PASSWORD = "AdminSeed123!"
@@ -42,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v13"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v16"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 88
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 81
+    assert len(registered_codes) == 96
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 89
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -87,7 +86,7 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 72
+    assert len(general_manager.permission_codes) == 80
     assert (
         set(general_manager.permission_codes)
         | positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
@@ -277,6 +276,11 @@ def test_fixed_system_position_definition_contract():
             "position_warehouse_keeper",
         )
     )
+    customer_manage = "carton_procurement:customer_manage"
+    assert customer_manage in positions.get_system_position("position_carton_manager").permission_codes
+    assert customer_manage in positions.get_system_position("position_carton_supervisor").permission_codes
+    assert customer_manage not in positions.get_system_position("position_carton_warehouse_keeper").permission_codes
+    assert customer_manage not in positions.get_system_position("position_warehouse_keeper").permission_codes
 
     hashes = [
         positions.system_position_definition_hash(definition)
