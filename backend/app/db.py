@@ -35,7 +35,9 @@ def _create_engine():
 
 
 engine = _create_engine()
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+SessionLocal = sessionmaker(
+    bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
+)
 
 SQLITE_LEGACY_COLUMNS = {
     "auth_users": [
@@ -45,10 +47,19 @@ SQLITE_LEGACY_COLUMNS = {
     "molding_sample_items": [
         ("production_machine", "production_machine VARCHAR(128) NOT NULL DEFAULT ''"),
         ("mold_dimensions", "mold_dimensions VARCHAR(128) NOT NULL DEFAULT ''"),
-        ("mold_presence_status", "mold_presence_status VARCHAR(20) NOT NULL DEFAULT 'unknown'"),
+        (
+            "mold_presence_status",
+            "mold_presence_status VARCHAR(20) NOT NULL DEFAULT 'unknown'",
+        ),
         ("material_components", "material_components JSON NOT NULL DEFAULT '[]'"),
-        ("material_usage_type", "material_usage_type VARCHAR(20) NOT NULL DEFAULT 'production'"),
-        ("actual_material_cost_components", "actual_material_cost_components JSON NOT NULL DEFAULT '[]'"),
+        (
+            "material_usage_type",
+            "material_usage_type VARCHAR(20) NOT NULL DEFAULT 'production'",
+        ),
+        (
+            "actual_material_cost_components",
+            "actual_material_cost_components JSON NOT NULL DEFAULT '[]'",
+        ),
     ],
     "molding_sample_audit_logs": [
         ("actor_user_id", "actor_user_id VARCHAR(64) NOT NULL DEFAULT ''"),
@@ -70,43 +81,94 @@ SQLITE_LEGACY_COLUMNS = {
         ("scope_mode", "scope_mode VARCHAR(32) NOT NULL DEFAULT 'own_factory'"),
     ],
     "internal_quotes": [
-        ("initiator_department", "initiator_department VARCHAR(64) NOT NULL DEFAULT 'sales-business'"),
+        (
+            "initiator_department",
+            "initiator_department VARCHAR(64) NOT NULL DEFAULT 'sales-business'",
+        ),
         ("business_owner_id", "business_owner_id VARCHAR(64) NOT NULL DEFAULT ''"),
         ("business_owner_name", "business_owner_name VARCHAR(128) NOT NULL DEFAULT ''"),
-        ("target_customer_price", "target_customer_price VARCHAR(128) NOT NULL DEFAULT '无'"),
+        (
+            "target_customer_price",
+            "target_customer_price VARCHAR(128) NOT NULL DEFAULT '无'",
+        ),
         ("target_date", "target_date VARCHAR(32) NOT NULL DEFAULT ''"),
         ("remark", "remark TEXT NOT NULL DEFAULT ''"),
-        ("module_version", "module_version VARCHAR(32) NOT NULL DEFAULT 'legacy_rr2_compatible'"),
-        ("reference_snapshot_id", "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
-        ("formula_version", "formula_version VARCHAR(64) NOT NULL DEFAULT 'legacy_rr2_compatible'"),
+        (
+            "module_version",
+            "module_version VARCHAR(32) NOT NULL DEFAULT 'legacy_rr2_compatible'",
+        ),
+        (
+            "reference_snapshot_id",
+            "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''",
+        ),
+        (
+            "formula_version",
+            "formula_version VARCHAR(64) NOT NULL DEFAULT 'legacy_rr2_compatible'",
+        ),
         ("header_revision", "header_revision INTEGER NOT NULL DEFAULT 1"),
-        ("cloned_from_quote_id", "cloned_from_quote_id VARCHAR(64) NOT NULL DEFAULT ''"),
+        (
+            "cloned_from_quote_id",
+            "cloned_from_quote_id VARCHAR(64) NOT NULL DEFAULT ''",
+        ),
         ("archived_by", "archived_by VARCHAR(64) NOT NULL DEFAULT ''"),
         ("archived_at", "archived_at VARCHAR(32) NOT NULL DEFAULT ''"),
         ("archive_reason", "archive_reason TEXT NOT NULL DEFAULT ''"),
-        ("final_release_status", "final_release_status VARCHAR(32) NOT NULL DEFAULT ''"),
-        ("final_submission_revision", "final_submission_revision INTEGER NOT NULL DEFAULT 0"),
-        ("final_submission_manifest_json", "final_submission_manifest_json TEXT NOT NULL DEFAULT '{}'"),
+        (
+            "final_release_status",
+            "final_release_status VARCHAR(32) NOT NULL DEFAULT ''",
+        ),
+        (
+            "final_submission_revision",
+            "final_submission_revision INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "final_submission_manifest_json",
+            "final_submission_manifest_json TEXT NOT NULL DEFAULT '{}'",
+        ),
         ("final_submitted_by", "final_submitted_by VARCHAR(64) NOT NULL DEFAULT ''"),
-        ("final_submitted_by_name", "final_submitted_by_name VARCHAR(128) NOT NULL DEFAULT ''"),
+        (
+            "final_submitted_by_name",
+            "final_submitted_by_name VARCHAR(128) NOT NULL DEFAULT ''",
+        ),
         ("final_submitted_at", "final_submitted_at VARCHAR(32) NOT NULL DEFAULT ''"),
         ("final_reviewed_by", "final_reviewed_by VARCHAR(64) NOT NULL DEFAULT ''"),
-        ("final_reviewed_by_name", "final_reviewed_by_name VARCHAR(128) NOT NULL DEFAULT ''"),
+        (
+            "final_reviewed_by_name",
+            "final_reviewed_by_name VARCHAR(128) NOT NULL DEFAULT ''",
+        ),
         ("final_reviewed_at", "final_reviewed_at VARCHAR(32) NOT NULL DEFAULT ''"),
         ("final_review_comment", "final_review_comment TEXT NOT NULL DEFAULT ''"),
         ("final_release_revision", "final_release_revision INTEGER NOT NULL DEFAULT 0"),
-        ("final_release_invalidated_at", "final_release_invalidated_at VARCHAR(32) NOT NULL DEFAULT ''"),
-        ("final_release_invalidation_reason", "final_release_invalidation_reason TEXT NOT NULL DEFAULT ''"),
+        (
+            "final_release_invalidated_at",
+            "final_release_invalidated_at VARCHAR(32) NOT NULL DEFAULT ''",
+        ),
+        (
+            "final_release_invalidation_reason",
+            "final_release_invalidation_reason TEXT NOT NULL DEFAULT ''",
+        ),
     ],
     "internal_quote_sections": [
         ("is_required", "is_required BOOLEAN NOT NULL DEFAULT 1"),
-        ("calculation_status", "calculation_status VARCHAR(32) NOT NULL DEFAULT 'pending'"),
+        (
+            "calculation_status",
+            "calculation_status VARCHAR(32) NOT NULL DEFAULT 'pending'",
+        ),
         ("calculation_hash", "calculation_hash VARCHAR(64) NOT NULL DEFAULT ''"),
-        ("calculation_formula_version", "calculation_formula_version VARCHAR(64) NOT NULL DEFAULT ''"),
-        ("calculation_reference_snapshot_id", "calculation_reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        (
+            "calculation_formula_version",
+            "calculation_formula_version VARCHAR(64) NOT NULL DEFAULT ''",
+        ),
+        (
+            "calculation_reference_snapshot_id",
+            "calculation_reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''",
+        ),
         ("calculated_at", "calculated_at VARCHAR(32) NOT NULL DEFAULT ''"),
         ("dependency_hash", "dependency_hash VARCHAR(64) NOT NULL DEFAULT ''"),
-        ("dependency_status", "dependency_status VARCHAR(32) NOT NULL DEFAULT 'current'"),
+        (
+            "dependency_status",
+            "dependency_status VARCHAR(32) NOT NULL DEFAULT 'current'",
+        ),
     ],
     "internal_quote_audit_logs": [
         ("factory_id", "factory_id VARCHAR(64) NOT NULL DEFAULT ''"),
@@ -119,23 +181,38 @@ SQLITE_LEGACY_COLUMNS = {
     "internal_quote_section_revisions": [
         ("formula_version", "formula_version VARCHAR(64) NOT NULL DEFAULT ''"),
         ("input_hash", "input_hash VARCHAR(64) NOT NULL DEFAULT ''"),
-        ("reference_snapshot_id", "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        (
+            "reference_snapshot_id",
+            "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''",
+        ),
         ("dependency_hash", "dependency_hash VARCHAR(64) NOT NULL DEFAULT ''"),
         ("warnings_json", "warnings_json TEXT NOT NULL DEFAULT '[]'"),
     ],
     "internal_quote_import_batches": [
         ("source_size_bytes", "source_size_bytes INTEGER NOT NULL DEFAULT 0"),
-        ("preview_schema_version", "preview_schema_version VARCHAR(32) NOT NULL DEFAULT 'p3-v1'"),
+        (
+            "preview_schema_version",
+            "preview_schema_version VARCHAR(32) NOT NULL DEFAULT 'p3-v1'",
+        ),
         ("target_revision", "target_revision INTEGER NOT NULL DEFAULT 0"),
         ("confirm_mode", "confirm_mode VARCHAR(16) NOT NULL DEFAULT ''"),
         ("confirmed_revision", "confirmed_revision INTEGER NOT NULL DEFAULT 0"),
     ],
     "internal_quote_export_files": [
-        ("template_version", "template_version VARCHAR(64) NOT NULL DEFAULT 'internal-quote-p3-v1'"),
+        (
+            "template_version",
+            "template_version VARCHAR(64) NOT NULL DEFAULT 'internal-quote-p3-v1'",
+        ),
         ("formula_version", "formula_version VARCHAR(64) NOT NULL DEFAULT ''"),
-        ("reference_snapshot_id", "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''"),
+        (
+            "reference_snapshot_id",
+            "reference_snapshot_id VARCHAR(96) NOT NULL DEFAULT ''",
+        ),
         ("header_revision", "header_revision INTEGER NOT NULL DEFAULT 0"),
-        ("release_stage", "release_stage VARCHAR(32) NOT NULL DEFAULT 'p3_section_approved'"),
+        (
+            "release_stage",
+            "release_stage VARCHAR(32) NOT NULL DEFAULT 'p3_section_approved'",
+        ),
         ("export_manifest_json", "export_manifest_json TEXT NOT NULL DEFAULT '{}'"),
     ],
 }
@@ -162,9 +239,7 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION = "20260721_0029"
 INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
 INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
 THREE_D_PRINTING_REVISION = "20260729_0041"
-THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset(
-    {"20260728_0039", "20260729_0040"}
-)
+THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset({"20260728_0039", "20260729_0040"})
 INJECTION_SCHEDULING_PHASE2_REVISION = "20260731_0043"
 INJECTION_SCHEDULING_PHASE2_PREVIOUS_REVISIONS = frozenset(
     {"20260729_0041", "20260731_0042"}
@@ -174,6 +249,9 @@ INJECTION_SCHEDULING_PHASE3_PREVIOUS_REVISIONS = frozenset({"20260731_0043"})
 INJECTION_SCHEDULING_PHASE4_REVISION = "20260731_0045"
 INJECTION_SCHEDULING_PHASE4_PREVIOUS_REVISIONS = frozenset({"20260731_0044"})
 INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
+INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
+INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
+INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
 INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
     "injection_scheduling_machines": {
         "machine_class_raw",
@@ -189,6 +267,38 @@ INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
         "process_tags_json",
         "special_machine_type",
     },
+}
+INJECTION_SCHEDULING_V2_PHASE3_REQUIRED_TABLES = {
+    "injection_scheduling_runs",
+    "injection_scheduling_run_assignments",
+    "injection_scheduling_transition_rules",
+    "injection_scheduling_machine_calendars",
+}
+INJECTION_SCHEDULING_V2_PHASE3_TASK_COLUMNS = {
+    "setup_minutes",
+    "production_minutes",
+    "planned_downtime_minutes",
+    "changeover_type",
+    "auto_schedule_run_id",
+    "auto_score",
+    "auto_explanation_json",
+    "manual_adjusted",
+}
+INJECTION_SCHEDULING_V2_PHASE4_RUN_COLUMNS = {
+    "requested_solver",
+    "solver_status",
+    "fallback_used",
+    "fallback_reason",
+    "scenario_group_id",
+    "scenario_name",
+    "alternative_no",
+    "replay_of_run_id",
+}
+INJECTION_SCHEDULING_V2_PHASE5_REQUIRED_TABLES = {
+    "injection_scheduling_integration_cursors",
+    "injection_scheduling_external_events",
+    "injection_scheduling_cycle_observations",
+    "injection_scheduling_speed_models",
 }
 
 
@@ -216,7 +326,10 @@ def ensure_molding_dispatch_schema_ready() -> None:
             ).scalar_one_or_none()
             if current_revision == MOLDING_SAMPLE_DISPATCH_PREVIOUS_REVISION:
                 missing_schema.append(f"revision:{current_revision}")
-        for table_name, required_columns in MOLDING_SAMPLE_DISPATCH_REQUIRED_COLUMNS.items():
+        for (
+            table_name,
+            required_columns,
+        ) in MOLDING_SAMPLE_DISPATCH_REQUIRED_COLUMNS.items():
             if table_name not in table_names:
                 missing_schema.append(f"table:{table_name}")
                 continue
@@ -230,7 +343,9 @@ def ensure_molding_dispatch_schema_ready() -> None:
 
         missing_schema.extend(
             f"table:{table_name}"
-            for table_name in sorted(MOLDING_SAMPLE_DISPATCH_REQUIRED_TABLES - table_names)
+            for table_name in sorted(
+                MOLDING_SAMPLE_DISPATCH_REQUIRED_TABLES - table_names
+            )
         )
         if not missing_schema:
             return
@@ -398,15 +513,14 @@ def ensure_injection_scheduling_v2_phase0_schema_ready() -> None:
             "SELECT version_num FROM alembic_version"
         ).scalar_one_or_none()
         missing: list[str] = []
-        for table_name, required_columns in (
-            INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS.items()
-        ):
+        for (
+            table_name,
+            required_columns,
+        ) in INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS.items():
             if table_name not in table_names:
                 missing.append(f"table:{table_name}")
                 continue
-            columns = {
-                column["name"] for column in inspector.get_columns(table_name)
-            }
+            columns = {column["name"] for column in inspector.get_columns(table_name)}
             missing.extend(
                 f"column:{table_name}.{column_name}"
                 for column_name in sorted(required_columns - columns)
@@ -422,6 +536,97 @@ def ensure_injection_scheduling_v2_phase0_schema_ready() -> None:
     )
 
 
+def ensure_injection_scheduling_v2_phase3_schema_ready() -> None:
+    """Refuse to let create_all silently bypass the Phase 3 data migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = [
+            f"table:{table_name}"
+            for table_name in sorted(
+                INJECTION_SCHEDULING_V2_PHASE3_REQUIRED_TABLES - table_names
+            )
+        ]
+        if "injection_scheduling_tasks" in table_names:
+            task_columns = {
+                column["name"]
+                for column in inspector.get_columns("injection_scheduling_tasks")
+            }
+            missing.extend(
+                f"column:injection_scheduling_tasks.{column_name}"
+                for column_name in sorted(
+                    INJECTION_SCHEDULING_V2_PHASE3_TASK_COLUMNS - task_columns
+                )
+            )
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产 V2 Phase 3 启发式排期迁移 "
+        f"{INJECTION_SCHEDULING_V2_PHASE3_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_v2_phase4_schema_ready() -> None:
+    """Refuse to let create_all silently bypass Phase 4 run metadata."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        if "injection_scheduling_runs" not in table_names:
+            return
+        run_columns = {
+            column["name"]
+            for column in inspector.get_columns("injection_scheduling_runs")
+        }
+        missing = sorted(INJECTION_SCHEDULING_V2_PHASE4_RUN_COLUMNS - run_columns)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产 V2 Phase 4 求解器迁移 "
+        f"{INJECTION_SCHEDULING_V2_PHASE4_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'column:injection_scheduling_runs.{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_v2_phase5_schema_ready() -> None:
+    """Refuse to let create_all silently bypass Phase 5 integration tables."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(INJECTION_SCHEDULING_V2_PHASE5_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产 V2 Phase 5 集成与分析迁移 "
+        f"{INJECTION_SCHEDULING_V2_PHASE5_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'table:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -430,14 +635,18 @@ def ensure_sqlite_legacy_columns() -> None:
         for table_name, columns in SQLITE_LEGACY_COLUMNS.items():
             existing_columns = {
                 row["name"]
-                for row in connection.exec_driver_sql(f"PRAGMA table_info({table_name})").mappings()
+                for row in connection.exec_driver_sql(
+                    f"PRAGMA table_info({table_name})"
+                ).mappings()
             }
             if not existing_columns:
                 continue
 
             for column_name, column_ddl in columns:
                 if column_name not in existing_columns:
-                    connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_ddl}")
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_ddl}"
+                    )
 
         # Adding the column defaults historical rows to the safe ``operate``
         # kind. Reconcile the known read-only permissions so an upgraded local
@@ -454,7 +663,10 @@ def ensure_sqlite_legacy_columns() -> None:
                 "PRAGMA table_info(auth_permissions)"
             ).mappings()
         }
-        if "access_kind" in permission_metadata_columns and {"id", "code"} <= permission_columns:
+        if (
+            "access_kind" in permission_metadata_columns
+            and {"id", "code"} <= permission_columns
+        ):
             from app.services.iam_scope import READ_PERMISSION_CODES
 
             for permission_code in READ_PERMISSION_CODES:
@@ -476,6 +688,8 @@ def init_db() -> None:
         injection_scheduling,  # noqa: F401
         injection_scheduling_execution,  # noqa: F401
         injection_scheduling_import,  # noqa: F401
+        injection_scheduling_phase5,  # noqa: F401
+        injection_scheduling_scheduler,  # noqa: F401
         internal_quote,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
@@ -500,6 +714,9 @@ def init_db() -> None:
     ensure_injection_scheduling_phase3_schema_ready()
     ensure_injection_scheduling_phase4_schema_ready()
     ensure_injection_scheduling_v2_phase0_schema_ready()
+    ensure_injection_scheduling_v2_phase3_schema_ready()
+    ensure_injection_scheduling_v2_phase4_schema_ready()
+    ensure_injection_scheduling_v2_phase5_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

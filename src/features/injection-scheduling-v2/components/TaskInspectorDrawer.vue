@@ -11,7 +11,7 @@ const number = new Intl.NumberFormat('zh-CN')
 
 <template>
   <aside class="task-inspector" aria-label="任务详情抽屉">
-    <header><div><span class="eyebrow">TASK INSPECTOR</span><strong>{{ order ? `${order.orderNo} · ${mold?.moldNo ?? '未关联模具'}` : '任务详情' }}</strong></div><button aria-label="关闭任务详情" @click="emit('close')"><X :size="17" /></button></header>
+    <header><div><span class="eyebrow">任务执行档案</span><strong>{{ order ? `${order.orderNo} · ${mold?.moldNo ?? '未关联模具'}` : '任务详情' }}</strong></div><button aria-label="关闭任务详情" @click="emit('close')"><X :size="17" /></button></header>
     <nav><button :class="{ active: tab === 'order' }" @click="emit('update:tab', 'order')"><PackageSearch :size="14" />订单 / 模具</button><button :class="{ active: tab === 'eligibility' }" @click="emit('update:tab', 'eligibility')"><ShieldCheck :size="14" />资格</button><button :class="{ active: tab === 'report' }" @click="emit('update:tab', 'report')"><ClipboardClock :size="14" />生产回报</button><button :class="{ active: tab === 'history' }" @click="emit('update:tab', 'history')"><History :size="14" />历史</button></nav>
     <div class="inspector-body">
       <template v-if="task && order">

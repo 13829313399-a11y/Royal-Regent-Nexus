@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = withDefaults(defineProps<{
   value: string | number
@@ -12,8 +12,18 @@ const emit = defineEmits<{ commit: [value: string | number] }>()
 const editing = ref(false)
 const draft = ref<string | number>(props.value)
 const input = ref<HTMLInputElement | HTMLSelectElement | null>(null)
+const saved = ref(false)
+let savedTimer: number | undefined
 
 watch(() => props.value, (value) => { if (!editing.value) draft.value = value })
+watch(() => props.pending, (pending, previous) => {
+  if (previous && !pending) {
+    saved.value = true
+    window.clearTimeout(savedTimer)
+    savedTimer = window.setTimeout(() => { saved.value = false }, 650)
+  }
+})
+onBeforeUnmount(() => window.clearTimeout(savedTimer))
 
 async function begin() {
   if (props.disabled) return
@@ -43,12 +53,12 @@ function handleKey(event: KeyboardEvent) {
 </script>
 
 <template>
-  <span class="grid-editor" :class="{ pending, disabled, editing }" @click.stop>
+  <span class="grid-editor" :class="{ pending, disabled, editing, saved }" @click.stop>
     <select v-if="editing && kind === 'select'" ref="input" v-model="draft" @change="commit" @blur="commit" @keydown="handleKey">
       <option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option>
     </select>
     <input v-else-if="editing" ref="input" v-model="draft" :type="kind === 'number' ? 'number' : kind === 'datetime' ? 'datetime-local' : 'text'" :min="kind === 'number' ? 0 : undefined" @blur="commit" @keydown="handleKey" />
-    <button v-else type="button" :disabled="disabled" :title="disabled ? '当前状态或权限不允许编辑' : '双击或按 Enter 编辑'" @dblclick="begin" @keydown.enter.prevent="begin">
+    <button v-else type="button" :disabled="disabled" :title="disabled ? '当前状态或权限不允许编辑' : '双击或按 Enter 编辑'" :aria-label="disabled ? '当前单元格不可编辑' : '可编辑单元格，双击或按 Enter 编辑'" @dblclick="begin" @keydown.enter.prevent="begin">
       <slot>{{ value || '—' }}</slot><i v-if="pending"></i>
     </button>
   </span>
