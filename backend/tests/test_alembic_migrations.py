@@ -73,7 +73,9 @@ INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
 INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
 INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
 CURRENT_BRANCH_MERGE_REVISION = "20260805_0053"
-HEAD_MIGRATION_REVISION = CURRENT_BRANCH_MERGE_REVISION
+CARTON_CUSTOMER_MASTER_MIGRATION_REVISION = "20260805_0054"
+CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION = "20260805_0055"
+HEAD_MIGRATION_REVISION = CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -103,6 +105,7 @@ AUTH_TABLES = [
 PASSWORD_RESET_WORKFLOW_TABLE = "auth_password_reset_requests"
 CUSTOMER_ORDER_EXPORT_AUDIT_TABLE = "customer_order_export_audits"
 CARTON_PROCUREMENT_TABLES = {
+    "carton_customers",
     "carton_suppliers",
     "carton_orders",
     "carton_order_lines",
@@ -154,6 +157,15 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    auto_flow_revision = script.get_revision(CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION)
+    assert auto_flow_revision.down_revision == CARTON_CUSTOMER_MASTER_MIGRATION_REVISION
+    auto_flow_content = Path(auto_flow_revision.path).read_text(encoding="utf-8")
+    assert "status = 'CONFIRMED'" in auto_flow_content
+    assert "status = 'PENDING_SUPPLIER'" in auto_flow_content
+
+    customer_revision = script.get_revision(CARTON_CUSTOMER_MASTER_MIGRATION_REVISION)
+    assert customer_revision.down_revision == CURRENT_BRANCH_MERGE_REVISION
 
     merge_revision = script.get_revision(CURRENT_BRANCH_MERGE_REVISION)
     assert set(merge_revision.down_revision) == {
@@ -4070,7 +4082,7 @@ def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path
             SELECT COUNT(*) FROM auth_permissions
             WHERE code LIKE 'carton_procurement:%'
             """
-        ).fetchone() == (7,)
+        ).fetchone() == (8,)
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)

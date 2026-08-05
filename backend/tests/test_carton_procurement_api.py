@@ -1,9 +1,10 @@
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from test_molding_sample_api import login_as, make_client
 
@@ -54,9 +55,115 @@ def _order_payload() -> dict[str, object]:
 
 
 def _create_order(client) -> dict[str, object]:
+    customers = client.get(
+        "/api/carton-procurement/customers",
+        params={"factory_id": "huaxing"},
+    )
+    assert customers.status_code == 200, customers.text
+    if customers.json()["total"] == 0:
+        login_as(client, "admin")
+        created_customer = client.post(
+            "/api/carton-procurement/customers",
+            json={
+                "factory_id": "huaxing",
+                "customer_code": "DICKIE",
+                "customer_name": "Dickie",
+                "country_region": "德国",
+            },
+        )
+        assert created_customer.status_code == 201, created_customer.text
+        login_as(client, "warehouse_keeper")
     response = client.post("/api/carton-procurement/orders", json=_order_payload())
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_customer_master_crud_permission_and_order_snapshot(monkeypatch):
+    with make_client(monkeypatch) as client:
+        warehouse_profile = login_as(client, "warehouse_keeper")
+        assert "carton_procurement:customer_manage" not in warehouse_profile["permissions"]
+        forbidden = client.post(
+            "/api/carton-procurement/customers",
+            json={
+                "factory_id": "huaxing",
+                "customer_code": "DICKIE",
+                "customer_name": "Dickie",
+            },
+        )
+        assert forbidden.status_code == 403
+
+        login_as(client, "admin")
+        created = client.post(
+            "/api/carton-procurement/customers",
+            json={
+                "factory_id": "huaxing",
+                "customer_code": "dickie",
+                "customer_name": "Dickie 原名称",
+                "country_region": "德国",
+                "contact_name": "采购联系人",
+                "contact_phone": "12345678",
+                "note": "纸箱部维护",
+            },
+        )
+        assert created.status_code == 201, created.text
+        customer = created.json()
+        assert customer["customer_code"] == "DICKIE"
+
+        updated = client.patch(
+            f"/api/carton-procurement/customers/{customer['id']}",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": customer["revision"],
+                "customer_name": "Dickie 正式名称",
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        customer = updated.json()
+        assert customer["customer_name"] == "Dickie 正式名称"
+
+        unused = client.post(
+            "/api/carton-procurement/customers",
+            json={
+                "factory_id": "huaxing",
+                "customer_code": "UNUSED",
+                "customer_name": "未使用客户",
+            },
+        ).json()
+        removed = client.delete(
+            f"/api/carton-procurement/customers/{unused['id']}",
+            params={"factory_id": "huaxing"},
+        )
+        assert removed.status_code == 204
+
+        login_as(client, "warehouse_keeper")
+        order_payload = _order_payload()
+        order_payload["customer_name"] = "客户端伪造名称"
+        order_response = client.post("/api/carton-procurement/orders", json=order_payload)
+        assert order_response.status_code == 201, order_response.text
+        assert order_response.json()["customer_name"] == "Dickie 正式名称"
+
+        login_as(client, "admin")
+        blocked_delete = client.delete(
+            f"/api/carton-procurement/customers/{customer['id']}",
+            params={"factory_id": "huaxing"},
+        )
+        assert blocked_delete.status_code == 409
+        assert "停用" in blocked_delete.json()["detail"]
+
+        disabled = client.patch(
+            f"/api/carton-procurement/customers/{customer['id']}",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": customer["revision"],
+                "status": "INACTIVE",
+            },
+        )
+        assert disabled.status_code == 200, disabled.text
+
+        login_as(client, "warehouse_keeper")
+        blocked_order = client.post("/api/carton-procurement/orders", json=_order_payload())
+        assert blocked_order.status_code == 422
+        assert "已停用" in blocked_order.json()["detail"]
 
 
 def _create_receipt(client, order: dict[str, object]) -> dict[str, object]:
@@ -113,6 +220,7 @@ def test_grouped_order_calculation_and_factory_scope(monkeypatch):
         _freeze_carton_time(monkeypatch)
 
         order = _create_order(client)
+        assert order["status"] == "CONFIRMED"
         assert order["customer_code"] == "DICKIE"
         assert len(order["lines"]) == 2
         assert order["lines"][0]["packaging_type"] == "外箱"
@@ -134,6 +242,40 @@ def test_grouped_order_calculation_and_factory_scope(monkeypatch):
             params={"factory_id": "huadeng"},
         )
         assert forbidden.status_code == 403
+
+
+def test_purchase_order_export_contains_grouped_lines_and_formula(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        order = _create_order(client)
+
+        response = client.get(
+            f"/api/carton-procurement/orders/{order['order_no']}/purchase-order.xlsx",
+            params={"factory_id": "huaxing"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert "纸箱采购单.xlsx" in unquote(response.headers["content-disposition"])
+
+        workbook = load_workbook(BytesIO(response.content), data_only=False)
+        sheet = workbook["纸箱采购单"]
+        assert "华兴厂纸箱采购单" in sheet["A1"].value
+        assert sheet["B4"].value == order["order_no"]
+        assert sheet["E5"].value == "河源东康纸品有限公司"
+        assert sheet["B6"].value == "Dickie"
+        assert sheet["E6"].value == "SC700145365"
+        assert sheet["H6"].value == "203302044"
+        assert sheet["H7"].value == "已下单"
+        assert sheet["A9"].value == "序号"
+        assert sheet["B10"].value == "外箱"
+        assert sheet["B11"].value == "滑板纸"
+        assert sheet["G10"].value == "=ROUND(E10*F10,4)"
+        assert "无需供应商回签确认" in sheet[f"A{sheet.max_row}"].value
+        workbook.close()
 
 
 def test_receipt_confirmation_is_human_gated_idempotent_and_creates_inventory(monkeypatch):
@@ -300,6 +442,14 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert duplicate.status_code == 201
         assert duplicate.json()["id"] == first.json()["id"]
         assert duplicate.json()["duplicate"] is True
+
+        latest = client.get(
+            "/api/carton-procurement/receipt-imports/latest",
+            params={"factory_id": "huaxing"},
+        )
+        assert latest.status_code == 200, latest.text
+        assert latest.json()["id"] == first.json()["id"]
+        assert latest.json()["parse_summary"]["row_count"] == 2
 
         exceptions = client.get(
             "/api/carton-procurement/exceptions",

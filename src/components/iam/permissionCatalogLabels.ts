@@ -80,6 +80,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'carton_procurement:closing_manage': '管理纸箱库存月结',
   'carton_procurement:import': '导入纸箱送货单与排期',
   'carton_procurement:exception_manage': '处理纸箱异常',
+  'carton_procurement:customer_manage': '维护纸箱客户资料',
   'customer_price:compare': '比较报价差异',
   'customer_price:export_customer_quote': '导出客户报价',
   'customer_price:import_internal_quote': '导入内部报价',

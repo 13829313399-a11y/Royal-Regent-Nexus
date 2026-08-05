@@ -1,4 +1,8 @@
+from io import BytesIO
+from urllib.parse import quote as url_quote
+
 from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -6,6 +10,10 @@ from app.schemas.carton_procurement import (
     CartonClosingGenerateRequest,
     CartonClosingOut,
     CartonClosingStatusRequest,
+    CartonCustomerCreate,
+    CartonCustomerListOut,
+    CartonCustomerOut,
+    CartonCustomerUpdate,
     CartonDashboardOut,
     CartonExceptionListOut,
     CartonExceptionOut,
@@ -33,14 +41,20 @@ from app.services.auth import (
 from app.services.carton_procurement import (
     CARTON_DEPARTMENTS,
     confirm_receipt,
+    create_customer,
     create_import_batch,
     create_inventory_movement,
     create_order,
     create_receipt,
+    delete_customer,
     dashboard,
     generate_closings,
     get_import_batch,
+    get_latest_import_batch,
+    get_order_by_no,
+    get_order_lines,
     inventory_balances,
+    list_customers,
     list_closings,
     list_exceptions,
     list_movements,
@@ -51,8 +65,14 @@ from app.services.carton_procurement import (
     require_carton_factory,
     reverse_inventory_movement,
     update_closing_status,
+    update_customer,
     update_exception,
 )
+from app.services.carton_procurement_export import (
+    XLSX_MEDIA_TYPE,
+    build_purchase_order_workbook,
+)
+from app.core.time import business_now
 
 
 router = APIRouter(
@@ -75,6 +95,56 @@ def _ensure_permission(
         return factory_id
     ensure_permission_in_scope(db, user, permission, factory_id, CARTON_DEPARTMENTS[0])
     return factory_id
+
+
+@router.get("/customers", response_model=CartonCustomerListOut)
+def get_customers(
+    factory_id: str,
+    include_inactive: bool = False,
+    search: str = Query(default="", max_length=128),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    items = list_customers(
+        db,
+        factory_id,
+        include_inactive=include_inactive,
+        search=search.strip(),
+    )
+    return CartonCustomerListOut(factory_id=factory_id, total=len(items), items=items)
+
+
+@router.post("/customers", response_model=CartonCustomerOut, status_code=201)
+def post_customer(
+    payload: CartonCustomerCreate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:customer_manage", payload.factory_id)
+    return create_customer(db, payload, current_user)
+
+
+@router.patch("/customers/{customer_id}", response_model=CartonCustomerOut)
+def patch_customer(
+    customer_id: str,
+    payload: CartonCustomerUpdate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:customer_manage", payload.factory_id)
+    return update_customer(db, customer_id, payload, current_user)
+
+
+@router.delete("/customers/{customer_id}", status_code=204)
+def remove_customer(
+    customer_id: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:customer_manage", factory_id)
+    delete_customer(db, factory_id, customer_id, current_user)
 
 
 @router.get("/dashboard", response_model=CartonDashboardOut)
@@ -123,6 +193,28 @@ def post_order(
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     return order_out(db, create_order(db, payload, current_user))
+
+
+@router.get("/orders/{order_no}/purchase-order.xlsx")
+def get_purchase_order_workbook(
+    order_no: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    content = build_purchase_order_workbook(
+        order,
+        get_order_lines(db, order.id),
+        generated_at=business_now(),
+    )
+    file_name = f"{order.order_no}_纸箱采购单.xlsx"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
+    )
 
 
 @router.get("/receipts", response_model=CartonReceiptListOut)
@@ -196,6 +288,16 @@ async def post_weekly_import(
     _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
     content = await file.read()
     return create_import_batch(db, factory_id, "WEEKLY_SCHEDULE", file, content, current_user)
+
+
+@router.get("/receipt-imports/latest", response_model=CartonImportBatchOut | None)
+def get_latest_receipt_import(
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return get_latest_import_batch(db, factory_id, "DELIVERY_NOTE")
 
 
 @router.get("/imports/{batch_id}", response_model=CartonImportBatchOut)

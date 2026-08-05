@@ -17,6 +17,7 @@ from app.core.time import business_now, business_today
 from app.models.carton_procurement import (
     CartonAuditEvent,
     CartonClosing,
+    CartonCustomer,
     CartonException,
     CartonImportBatch,
     CartonInventoryMovement,
@@ -30,6 +31,8 @@ from app.schemas.carton_procurement import (
     CartonClosingGenerateRequest,
     CartonClosingOut,
     CartonClosingStatusRequest,
+    CartonCustomerCreate,
+    CartonCustomerUpdate,
     CartonDashboardOut,
     CartonExceptionListOut,
     CartonExceptionOut,
@@ -139,12 +142,148 @@ def get_active_supplier(db: Session, factory_id: str, supplier_id: str | None) -
     return supplier
 
 
+def list_customers(
+    db: Session,
+    factory_id: str,
+    *,
+    include_inactive: bool = False,
+    search: str = "",
+) -> list[CartonCustomer]:
+    statement = select(CartonCustomer).where(CartonCustomer.factory_id == factory_id)
+    if not include_inactive:
+        statement = statement.where(CartonCustomer.status == "ACTIVE")
+    if search:
+        term = f"%{search}%"
+        statement = statement.where(
+            or_(
+                CartonCustomer.customer_code.ilike(term),
+                CartonCustomer.customer_name.ilike(term),
+                CartonCustomer.country_region.ilike(term),
+                CartonCustomer.contact_name.ilike(term),
+            )
+        )
+    return list(
+        db.scalars(
+            statement.order_by(CartonCustomer.status, CartonCustomer.customer_name, CartonCustomer.customer_code)
+        ).all()
+    )
+
+
+def get_active_customer(db: Session, factory_id: str, customer_code: str) -> CartonCustomer:
+    customer = db.scalar(
+        select(CartonCustomer).where(
+            CartonCustomer.factory_id == factory_id,
+            CartonCustomer.customer_code == customer_code.strip().upper(),
+        )
+    )
+    if customer is None:
+        raise HTTPException(status_code=422, detail="客户不存在或不属于当前厂区，请先由纸箱部主管维护客户资料")
+    if customer.status != "ACTIVE":
+        raise HTTPException(status_code=422, detail="客户已停用，不能用于新建纸箱订单")
+    return customer
+
+
+def create_customer(db: Session, payload: CartonCustomerCreate, user: AuthContext) -> CartonCustomer:
+    factory_id = require_carton_factory(payload.factory_id)
+    timestamp = now_text()
+    customer = CartonCustomer(
+        id=f"CCU-{uuid4().hex}",
+        factory_id=factory_id,
+        customer_code=payload.customer_code.upper(),
+        customer_name=payload.customer_name,
+        country_region=payload.country_region,
+        contact_name=payload.contact_name,
+        contact_phone=payload.contact_phone,
+        note=payload.note,
+        status=payload.status,
+        revision=1,
+        created_by=user.id,
+        created_by_name=user.display_name,
+        updated_by=user.id,
+        updated_by_name=user.display_name,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    db.add(customer)
+    _audit(db, user, factory_id, "CUSTOMER_CREATED", "carton_customer", customer.id, {
+        "customer_code": customer.customer_code,
+        "customer_name": customer.customer_name,
+    })
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="当前厂区已存在相同客户编号") from exc
+    db.refresh(customer)
+    return customer
+
+
+def _get_customer(db: Session, factory_id: str, customer_id: str) -> CartonCustomer:
+    customer = db.get(CartonCustomer, customer_id)
+    if customer is None or customer.factory_id != factory_id:
+        raise HTTPException(status_code=404, detail="客户资料不存在")
+    return customer
+
+
+def update_customer(
+    db: Session,
+    customer_id: str,
+    payload: CartonCustomerUpdate,
+    user: AuthContext,
+) -> CartonCustomer:
+    factory_id = require_carton_factory(payload.factory_id)
+    customer = _get_customer(db, factory_id, customer_id)
+    if customer.revision != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="客户资料已被其他人更新，请刷新后重试")
+    changes = payload.model_dump(exclude={"factory_id", "expected_revision"}, exclude_none=True)
+    if "customer_code" in changes:
+        changes["customer_code"] = changes["customer_code"].upper()
+    previous = {field: getattr(customer, field) for field in changes}
+    for field, value in changes.items():
+        setattr(customer, field, value)
+    customer.revision += 1
+    customer.updated_by = user.id
+    customer.updated_by_name = user.display_name
+    customer.updated_at = now_text()
+    _audit(db, user, factory_id, "CUSTOMER_UPDATED", "carton_customer", customer.id, {
+        "before": previous,
+        "after": changes,
+    })
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="当前厂区已存在相同客户编号") from exc
+    db.refresh(customer)
+    return customer
+
+
+def delete_customer(db: Session, factory_id: str, customer_id: str, user: AuthContext) -> None:
+    factory_id = require_carton_factory(factory_id)
+    customer = _get_customer(db, factory_id, customer_id)
+    order_count = db.scalar(
+        select(func.count(CartonOrder.id)).where(
+            CartonOrder.factory_id == factory_id,
+            CartonOrder.customer_code == customer.customer_code,
+        )
+    ) or 0
+    if order_count:
+        raise HTTPException(status_code=409, detail="客户已有纸箱订单，不能删除；如不再使用请改为停用")
+    _audit(db, user, factory_id, "CUSTOMER_DELETED", "carton_customer", customer.id, {
+        "customer_code": customer.customer_code,
+        "customer_name": customer.customer_name,
+    })
+    db.delete(customer)
+    db.commit()
+
+
 def _new_number(prefix: str) -> str:
     return f"{prefix}-{business_now().strftime('%y%m%d')}-{uuid4().hex[:6].upper()}"
 
 
 def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
+    customer = get_active_customer(db, factory_id, payload.customer_code)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
     timestamp = now_text()
     order_id = f"CTO-{uuid4().hex}"
@@ -152,8 +291,8 @@ def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> 
         id=order_id,
         factory_id=factory_id,
         order_no=_new_number("CT"),
-        customer_code=payload.customer_code,
-        customer_name=payload.customer_name,
+        customer_code=customer.customer_code,
+        customer_name=customer.customer_name,
         supplier_id=supplier.id,
         supplier_name_snapshot=supplier.supplier_name,
         contract_no=payload.contract_no,
@@ -162,7 +301,7 @@ def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> 
         product_order_quantity=payload.product_order_quantity,
         order_date=payload.order_date,
         due_date=payload.due_date,
-        status=payload.status,
+        status="CONFIRMED",
         note=payload.note,
         revision=1,
         created_by=user.id,
@@ -183,7 +322,7 @@ def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> 
                 factory_id=factory_id,
                 order_id=order_id,
                 line_no=index,
-                customer_code=payload.customer_code,
+                customer_code=customer.customer_code,
                 contract_no=payload.contract_no,
                 item_no=payload.item_no,
                 packaging_type=line.packaging_type,
@@ -217,6 +356,18 @@ def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> 
     return order
 
 
+def get_order_by_no(db: Session, factory_id: str, order_no: str) -> CartonOrder:
+    order = db.scalar(
+        select(CartonOrder).where(
+            CartonOrder.factory_id == factory_id,
+            CartonOrder.order_no == order_no,
+        )
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="纸箱订单不存在")
+    return order
+
+
 def _order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
     return list(
         db.scalars(
@@ -225,6 +376,10 @@ def _order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
             .order_by(CartonOrderLine.line_no)
         ).all()
     )
+
+
+def get_order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
+    return _order_lines(db, order_id)
 
 
 def _posted_received_by_line(db: Session, line_ids: list[str]) -> dict[str, Decimal]:
@@ -1024,6 +1179,23 @@ def get_import_batch(
     if batch is None or batch.factory_id != require_carton_factory(factory_id):
         raise HTTPException(status_code=404, detail="导入批次不存在")
     return import_batch_out(batch)
+
+
+def get_latest_import_batch(
+    db: Session,
+    factory_id: str,
+    import_type: str,
+) -> CartonImportBatchOut | None:
+    batch = db.scalar(
+        select(CartonImportBatch)
+        .where(
+            CartonImportBatch.factory_id == require_carton_factory(factory_id),
+            CartonImportBatch.import_type == import_type,
+        )
+        .order_by(CartonImportBatch.created_at.desc(), CartonImportBatch.id.desc())
+        .limit(1)
+    )
+    return import_batch_out(batch) if batch is not None else None
 
 
 def list_exceptions(

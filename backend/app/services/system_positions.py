@@ -19,7 +19,7 @@ from app.services.permission_codes import (
 )
 
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v14"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v15"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -65,6 +65,12 @@ INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
     *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
     "injection_scheduling:publish",
     "injection_scheduling:rollback",
+)
+CARTON_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_procurement:customer_manage"
+CARTON_OPERATION_PERMISSION_CODES = tuple(
+    code
+    for code in CARTON_PROCUREMENT_PERMISSION_CODES
+    if code != CARTON_CUSTOMER_MANAGE_PERMISSION_CODE
 )
 
 
@@ -307,7 +313,7 @@ WAREHOUSE_PERMISSION_CODES = (
     "molding_sample:warehouse_requisition",
     "molding_sample:inventory_issue",
     "molding_sample:notification_read",
-    *CARTON_PROCUREMENT_PERMISSION_CODES,
+    *CARTON_OPERATION_PERMISSION_CODES,
 )
 
 QA_INSPECTOR_PERMISSION_CODES = (
@@ -325,7 +331,11 @@ CARTON_WAREHOUSE_PERMISSION_CODES = (
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "carton_mark:read",
     "carton_mark:template_upload",
-    *CARTON_PROCUREMENT_PERMISSION_CODES,
+    *CARTON_OPERATION_PERMISSION_CODES,
+)
+CARTON_SUPERVISOR_PERMISSION_CODES = (
+    *CARTON_WAREHOUSE_PERMISSION_CODES,
+    CARTON_CUSTOMER_MANAGE_PERMISSION_CODE,
 )
 CARTON_EXTERNAL_PERMISSION_CODES = (
     PRODUCTION_TASK_READ_PERMISSION_CODE,
@@ -602,8 +612,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="carton",
         department_name="纸箱部",
         sort_order=800,
-        description="纸箱箱唛模板与仓务管理",
-        permission_codes=CARTON_WAREHOUSE_PERMISSION_CODES,
+        description="纸箱箱唛模板、采购仓务与客户主数据管理",
+        permission_codes=CARTON_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_carton_supervisor",
@@ -611,8 +621,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="carton",
         department_name="纸箱部",
         sort_order=810,
-        description="纸箱箱唛模板与仓务管理",
-        permission_codes=CARTON_WAREHOUSE_PERMISSION_CODES,
+        description="纸箱箱唛模板、采购仓务与客户主数据管理",
+        permission_codes=CARTON_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_carton_warehouse_keeper",
