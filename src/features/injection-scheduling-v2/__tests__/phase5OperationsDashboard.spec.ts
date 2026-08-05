@@ -43,10 +43,13 @@ describe('Phase 5 运营分析', () => {
     expect(wrapper.emitted('refresh')).toHaveLength(1)
   })
 
-  it('使用正式业务标识并保持明确的超期口径', () => {
-    const commandBar = mount(SchedulingCommandBar, { global: { plugins: [createPinia()] }, props: { factoryId: 'huaxing', factoryName: '华兴', sourceMode: 'live', sourceMessage: '正式数据库', refreshing: false, search: '', lastSyncedAt: '', planStatus: '', pendingCount: 0, saving: false, canSave: true, saveMessage: '' } })
+  it('使用正式业务标识并保持明确的超期口径', async () => {
+    const commandBar = mount(SchedulingCommandBar, { global: { plugins: [createPinia()], stubs: { AccountMenu: { template: '<button aria-label="账号与头像设置">账号</button>' } } }, props: { factoryId: 'huaxing', factoryName: '华兴', sourceMode: 'live', sourceMessage: '正式数据库', refreshing: false, search: '', lastSyncedAt: '', planStatus: '', pendingCount: 0, saving: false, canSave: true, saveMessage: '' } })
     const kpis = mount(SchedulingKpiStrip, { props: { summary: { availableMachines: 1, totalMachines: 1, scheduledTasks: 1, runningTasks: 0, overdue: 1, dueSoon: 0, remaining: 0, completeness: 100, backlog: 0, review: 0 } } })
     expect(commandBar.text()).toContain('智能优化引擎')
+    await commandBar.get('button[aria-label="返回主页"]').trigger('click')
+    expect(commandBar.emitted('home')).toHaveLength(1)
+    expect(commandBar.get('button[aria-label="账号与头像设置"]')).toBeTruthy()
     expect(commandBar.text()).not.toContain('Phase 5')
     expect(kpis.text()).toContain('已超交期')
     expect(kpis.text()).not.toContain('已经交期')
