@@ -5,12 +5,14 @@ import { GripVertical, LockKeyhole } from '@lucide/vue'
 import GridEditableCell from './GridEditableCell.vue'
 import type { CellDraft, EditableCellKey, ScheduleGridRow } from '../types'
 
-const props = defineProps<{ row: Row<ScheduleGridRow>; top: number; width: number; stickyLeft: Record<string, number>; planStatus: string; canEdit: boolean; canReport: boolean; pendingEdits: Record<string, CellDraft> }>()
+const props = defineProps<{ row: Row<ScheduleGridRow>; top: number; width: number; stickyLeft: Record<string, number>; selected: boolean; dragging: boolean; dropTarget: boolean; planStatus: string; canEdit: boolean; canReport: boolean; pendingEdits: Record<string, CellDraft> }>()
 const emit = defineEmits<{
   select: [taskId: string]
   edit: [taskId: string, key: EditableCellKey, value: string | number]
   dragStart: [taskId: string, event: DragEvent]
   dragEnd: []
+  dragHover: [machineId: string]
+  dragLeave: [machineId: string]
   dropTask: [machineId: string, sequence: number, event: DragEvent]
   keyboardMove: [taskId: string, direction: 'up' | 'down' | 'previous-machine' | 'next-machine']
 }>()
@@ -63,7 +65,7 @@ function keyboard(event: KeyboardEvent) {
 </script>
 
 <template>
-  <tr class="schedule-task-row" :class="[`status-${row.original.status.toLowerCase()}`, { overdue: Number(row.original.slack) < 0, shortage: row.original.materialReadiness === 'blocked', 'has-pending-edit': Object.keys(pendingEdits).some((key) => key.startsWith(`${row.original.id}:`)), draggable: draggable() }]" :style="{ transform: `translateY(${top}px)`, width: `${width}px` }" :draggable="draggable()" tabindex="0" @click="emit('select', row.original.id)" @dragstart="emit('dragStart', row.original.id, $event)" @dragend="emit('dragEnd')" @dragover.prevent @drop="emit('dropTask', row.original.machine.id, Number(row.original.sequence), $event)" @keydown="keyboard">
+  <tr class="schedule-task-row" :class="[`status-${row.original.status.toLowerCase()}`, { overdue: Number(row.original.slack) < 0, shortage: row.original.materialReadiness === 'blocked', 'is-selected': selected, 'is-dragging': dragging, 'drop-target': dropTarget, 'has-pending-edit': Object.keys(pendingEdits).some((key) => key.startsWith(`${row.original.id}:`)), draggable: draggable() }]" :style="{ transform: `translateY(${top}px)`, width: `${width}px` }" :draggable="draggable()" :aria-selected="selected" tabindex="0" @click="emit('select', row.original.id)" @dragstart="emit('dragStart', row.original.id, $event)" @dragend="emit('dragEnd')" @dragenter.prevent="emit('dragHover', row.original.machine.id)" @dragover.prevent="emit('dragHover', row.original.machine.id)" @dragleave="emit('dragLeave', row.original.machine.id)" @drop="emit('dropTask', row.original.machine.id, Number(row.original.sequence), $event)" @keydown="keyboard">
     <td v-for="cell in row.getVisibleCells()" :key="cell.id" :class="['grid-cell', { frozen: stickyLeft[cell.column.id] !== undefined }]" :style="cellStyle(cell)">
       <GridEditableCell v-if="canEditCell(cell.column.id)" :value="editValue(cell.column.id, cell.getValue())" :kind="kind(cell.column.id)" :options="cell.column.id === 'status' ? statusOptions() : []" :pending="pending(cell.column.id)" @commit="commitEdit(cell.column.id, $event)"><span v-if="cell.column.id === 'status'" class="status-chip" :class="String(editValue(cell.column.id, cell.getValue())).toLowerCase()">{{ statusLabel(editValue(cell.column.id, cell.getValue())) }}</span><span v-else>{{ display(editValue(cell.column.id, cell.getValue())) }}</span></GridEditableCell>
       <span v-else-if="cell.column.id === 'status'" class="status-chip" :class="row.original.status.toLowerCase()">{{ statusLabel(row.original.status) }}</span>

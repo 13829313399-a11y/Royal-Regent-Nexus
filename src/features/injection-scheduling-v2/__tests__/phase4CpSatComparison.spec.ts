@@ -21,7 +21,7 @@ const dueRun: AutoScheduleRunRecord = { ...baseRun, id: 'cp-run-b', scenarioName
 
 describe('Phase 4 CP-SAT 多方案', () => {
   it('生成页暴露求解器、权重和三方案入口', async () => {
-    const wrapper = mount(AutoSchedulePreviewDialog, { props: { open: true, backlogCount: 8, machineCount: 4, planStatus: 'DRAFT', canEdit: true, canOverride: true, run: null, comparisonRuns: [], loading: false, error: '', orders: [], machines: [] } })
+    const wrapper = mount(AutoSchedulePreviewDialog, { global: { stubs: { Teleport: true } }, props: { open: true, backlogCount: 8, machineCount: 4, planStatus: 'DRAFT', canEdit: true, canOverride: true, run: null, comparisonRuns: [], loading: false, error: '', orders: [], machines: [] } })
     expect(wrapper.text()).toContain('CP-SAT 优化')
     expect(wrapper.text()).toContain('双重 NoOverlap')
     await wrapper.findAll('button').find((item) => item.text().includes('生成三套方案'))!.trigger('click')
@@ -29,7 +29,7 @@ describe('Phase 4 CP-SAT 多方案', () => {
   })
 
   it('对比方案并支持按保存权重回放', async () => {
-    const wrapper = mount(AutoSchedulePreviewDialog, { props: { open: true, backlogCount: 2, machineCount: 2, planStatus: 'DRAFT', canEdit: true, canOverride: true, run: baseRun, comparisonRuns: [baseRun, dueRun], loading: false, error: '', orders: [], machines: [] } })
+    const wrapper = mount(AutoSchedulePreviewDialog, { global: { stubs: { Teleport: true } }, props: { open: true, backlogCount: 2, machineCount: 2, planStatus: 'DRAFT', canEdit: true, canOverride: true, run: baseRun, comparisonRuns: [baseRun, dueRun], loading: false, error: '', orders: [], machines: [] } })
     expect(wrapper.text()).toContain('CP-SAT · OPTIMAL')
     expect(wrapper.text()).toContain('方案 B · 交期优先')
     await wrapper.findAll('.scenario-strip button')[1]!.trigger('click')

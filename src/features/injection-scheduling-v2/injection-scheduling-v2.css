@@ -1,4 +1,4 @@
-:root { --isv2-navy: #08111f; --isv2-ink: #182536; --isv2-muted: #68798b; --isv2-border: #d6e0e8; --isv2-canvas: #edf2f5; --isv2-green: #087a64; --isv2-blue: #2e6ee6; --isv2-amber: #d98a12; --isv2-red: #d94152; --isv2-violet: #6b4bc3; }
+.injection-scheduling-v2 { --isv2-navy: #08111f; --isv2-ink: #182536; --isv2-muted: #68798b; --isv2-border: #d6e0e8; --isv2-canvas: #edf2f5; --isv2-green: #087a64; --isv2-blue: #2e6ee6; --isv2-amber: #d98a12; --isv2-red: #d94152; --isv2-violet: #6b4bc3; }
 .injection-scheduling-v2 { height: 100vh; min-width: 1180px; overflow: hidden; background: var(--isv2-canvas); color: var(--isv2-ink); font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 12px; }
 .injection-scheduling-v2 button:focus-visible,.injection-scheduling-v2 input:focus-visible,.injection-scheduling-v2 select:focus-visible { outline: 2px solid #2e6ee6; outline-offset: 2px; }
 .scheduling-topbar { height: 58px; padding: 0 18px; display: flex; align-items: center; gap: 10px; color: white; background: linear-gradient(115deg, #07111f 0%, #10243b 72%, #15324c 100%); border-bottom: 1px solid rgba(255,255,255,.08); }

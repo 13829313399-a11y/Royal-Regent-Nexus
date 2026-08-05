@@ -41,6 +41,7 @@ const run: AutoScheduleRunRecord = {
 describe('Phase 3 自动排期预览', () => {
   it('展示指标、负荷和逐条解释，并强制待复核覆盖原因', async () => {
     const wrapper = mount(AutoSchedulePreviewDialog, {
+      global: { stubs: { Teleport: true } },
       props: {
         open: true, backlogCount: 2, machineCount: 1, planStatus: 'DRAFT', canEdit: true,
         canOverride: true, run, loading: false, error: '', orders: [order], machines: [machine],
