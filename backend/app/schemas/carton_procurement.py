@@ -16,6 +16,7 @@ CartonOrderStatus = Literal[
 CartonReceiptStatus = Literal["DRAFT", "PENDING_CONFIRMATION", "POSTED", "REVERSED"]
 CartonMovementType = Literal["INBOUND", "OUTBOUND", "ADJUSTMENT", "REVERSAL"]
 CartonClosingStatus = Literal["DRAFT", "PENDING", "CONFIRMED", "LOCKED"]
+CartonCustomerStatus = Literal["ACTIVE", "INACTIVE"]
 
 
 def _strip(value: str) -> str:
@@ -29,6 +30,99 @@ def _validate_iso_date(value: str) -> str:
     except ValueError as exc:
         raise ValueError("日期必须使用 YYYY-MM-DD 格式") from exc
     return value
+
+
+class CartonCustomerCreate(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    customer_code: str = Field(min_length=1, max_length=64)
+    customer_name: str = Field(min_length=1, max_length=255)
+    country_region: str = Field(default="", max_length=128)
+    contact_name: str = Field(default="", max_length=128)
+    contact_phone: str = Field(default="", max_length=64)
+    note: str = Field(default="", max_length=2000)
+    status: CartonCustomerStatus = "ACTIVE"
+
+    @field_validator(
+        "factory_id",
+        "customer_code",
+        "customer_name",
+        "country_region",
+        "contact_name",
+        "contact_phone",
+        "note",
+    )
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+
+class CartonCustomerUpdate(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    customer_code: str | None = Field(default=None, min_length=1, max_length=64)
+    customer_name: str | None = Field(default=None, min_length=1, max_length=255)
+    country_region: str | None = Field(default=None, max_length=128)
+    contact_name: str | None = Field(default=None, max_length=128)
+    contact_phone: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=2000)
+    status: CartonCustomerStatus | None = None
+
+    @field_validator(
+        "factory_id",
+        "customer_code",
+        "customer_name",
+        "country_region",
+        "contact_name",
+        "contact_phone",
+        "note",
+    )
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return _strip(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_change(self):
+        if not any(
+            getattr(self, field) is not None
+            for field in (
+                "customer_code",
+                "customer_name",
+                "country_region",
+                "contact_name",
+                "contact_phone",
+                "note",
+                "status",
+            )
+        ):
+            raise ValueError("至少需要提交一项客户资料变更")
+        return self
+
+
+class CartonCustomerOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    factory_id: str
+    customer_code: str
+    customer_name: str
+    country_region: str
+    contact_name: str
+    contact_phone: str
+    note: str
+    status: CartonCustomerStatus
+    revision: int
+    created_by: str
+    created_by_name: str
+    updated_by: str
+    updated_by_name: str
+    created_at: str
+    updated_at: str
+
+
+class CartonCustomerListOut(BaseModel):
+    factory_id: str
+    total: int
+    items: list[CartonCustomerOut]
 
 
 class CartonOrderLineCreate(BaseModel):
@@ -69,7 +163,7 @@ class CartonOrderCreate(BaseModel):
     product_order_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
     order_date: str
     due_date: str
-    status: Literal["DRAFT", "PENDING_SUPPLIER", "CONFIRMED"] = "PENDING_SUPPLIER"
+    status: Literal["DRAFT", "PENDING_SUPPLIER", "CONFIRMED"] = "CONFIRMED"
     note: str = Field(default="", max_length=4000)
     lines: list[CartonOrderLineCreate] = Field(min_length=1, max_length=50)
 

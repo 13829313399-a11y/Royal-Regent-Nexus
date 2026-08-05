@@ -10,13 +10,22 @@ const appStoreMock = vi.hoisted(() => ({
   activeProductionFactory: { id: 'huaxing', name: '华兴', shortName: '华兴' },
   setActiveFactory: vi.fn(),
 }))
+const authStoreMock = vi.hoisted(() => ({
+  can: vi.fn(() => true),
+}))
 const cartonApiMock = vi.hoisted(() => ({
+  listCustomers: vi.fn(),
+  createCustomer: vi.fn(),
+  updateCustomer: vi.fn(),
+  deleteCustomer: vi.fn(),
   listOrders: vi.fn(),
   listMovements: vi.fn(),
   listClosings: vi.fn(),
   listExceptions: vi.fn(),
   createOrder: vi.fn(),
+  exportPurchaseOrder: vi.fn(),
   uploadReceipt: vi.fn(),
+  latestReceiptImport: vi.fn(),
   uploadWeeklySchedule: vi.fn(),
   createReceipt: vi.fn(),
   confirmReceipt: vi.fn(),
@@ -43,6 +52,10 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => appStoreMock,
 }))
 
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => authStoreMock,
+}))
+
 function mountView(tab?: string) {
   routeState.query = tab
     ? { factory: 'huaxing', tab }
@@ -67,10 +80,22 @@ describe('CartonProcurementView frontend workspace', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     appStoreMock.activeProductionFactory = { id: 'huaxing', name: '华兴', shortName: '华兴' }
+    authStoreMock.can.mockReturnValue(true)
+    cartonApiMock.listCustomers.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listOrders.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listMovements.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listClosings.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listExceptions.mockRejectedValue(new Error('offline test'))
+    cartonApiMock.latestReceiptImport.mockResolvedValue(null)
+    cartonApiMock.exportPurchaseOrder.mockResolvedValue(new Blob(['xlsx']))
+    Object.defineProperty(window.URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:carton-purchase-order'),
+    })
+    Object.defineProperty(window.URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
     cartonApiMock.createOrder.mockImplementation(async (payload: any) => ({
       id: 'CTO-TEST',
       factory_id: payload.factory_id,
@@ -85,7 +110,7 @@ describe('CartonProcurementView frontend workspace', () => {
       product_order_quantity: String(payload.product_order_quantity),
       order_date: payload.order_date,
       due_date: payload.due_date,
-      status: 'PENDING_SUPPLIER',
+      status: 'CONFIRMED',
       note: payload.note,
       revision: 1,
       created_by: 'user-test',
@@ -167,9 +192,15 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('203399999')
     expect(wrapper.text()).toContain('合同内纸品明细 · 2 行')
     expect(wrapper.text()).toContain('A9A')
-    expect(wrapper.text()).toContain('待供应商确认')
+    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED' }))
+    expect(wrapper.text()).toContain('已下单')
     expect(wrapper.text()).toContain('含 2 条纸品明细')
-    expect(wrapper.text()).toContain('需求数量由后端重新计算')
+    expect(wrapper.text()).toContain('已自动进入排期核对、收料和库存后续流程')
+
+    await wrapper.get('button[aria-label="导出 CT-260805-ABC123 采购单"]').trigger('click')
+    await flushPromises()
+    expect(cartonApiMock.exportPurchaseOrder).toHaveBeenCalledWith('huaxing', 'CT-260805-ABC123')
+    expect(wrapper.text()).toContain('CT-260805-ABC123 采购单已生成并开始下载')
   })
 
   it('calculates effective receipts from manual unusable quantities without posting inventory', async () => {
@@ -197,6 +228,61 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).not.toContain('SC700145011/3600-203302044')
   })
 
+  it('shows a visible OCR result when a real delivery image has no matching formal orders', async () => {
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.uploadReceipt.mockResolvedValue({
+      id: 'CIB-REAL-IMAGE',
+      factory_id: 'huaxing',
+      import_type: 'DELIVERY_NOTE',
+      original_filename: 'DN26061301.jpg',
+      source_sha256: 'abc123',
+      status: 'REQUIRES_REVIEW',
+      duplicate: false,
+      parse_summary: {
+        engine: 'rapidocr-pp-ocrv6',
+        row_count: 18,
+        matched_count: 0,
+        issue_count: 18,
+        warnings: ['图片/PDF 仅作为 OCR 预览，数量和纸品字段必须逐行人工复核'],
+        document: { delivery_note_no: 'DN26061301', delivery_date: '2013-06-26' },
+        rows: [{
+          source_sheet: 'OCR',
+          source_row: 1,
+          delivery_note_no: 'DN26061301',
+          contract_no: 'SC700145011/3600',
+          item_no: '203302038',
+          packaging_type: '待复核',
+          paper_quality: '待复核',
+          delivered_quantity: 0,
+          match_status: 'MISSING_ORDER',
+          suggestion: '未找到可关联的正式订单明细',
+        }],
+      },
+    })
+
+    const wrapper = mountView('receipts')
+    await flushPromises()
+    const input = wrapper.get('input[aria-label="选择送货单文件"]')
+    const file = new File(['delivery-note-image'], 'DN26061301.jpg', { type: 'image/jpeg' })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(cartonApiMock.uploadReceipt).toHaveBeenCalledWith('huaxing', file)
+    expect(wrapper.text()).toContain('送货单识别完成')
+    expect(wrapper.text()).toContain('识别总行数18 行')
+    expect(wrapper.text()).toContain('已匹配正式订单0 行')
+    expect(wrapper.text()).toContain('需要人工处理18 行')
+    expect(wrapper.text()).toContain('文件已成功导入，但没有找到可关联的正式纸箱订单')
+    expect(wrapper.text()).toContain('SC700145011/3600')
+    expect(wrapper.text()).toContain('前往异常中心')
+    expect(wrapper.text()).not.toContain('等待导入并复核送货单')
+  })
+
   it('separates realtime inventory operations from period-end reconciliation', () => {
     const inventoryWrapper = mountView('inventory')
     expect(inventoryWrapper.text()).toContain('实时库存作业页')
@@ -212,7 +298,65 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(closingWrapper.text()).not.toContain('逐笔交易流水')
   })
 
+  it('lets an authorized carton supervisor maintain factory customer data', async () => {
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.createCustomer.mockImplementation(async (payload: any) => ({
+      id: 'CCU-NEW',
+      ...payload,
+      revision: 1,
+      created_by: 'supervisor',
+      created_by_name: '纸箱部主管',
+      updated_by: 'supervisor',
+      updated_by_name: '纸箱部主管',
+      created_at: '2026-08-05T10:00:00+08:00',
+      updated_at: '2026-08-05T10:00:00+08:00',
+    }))
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+    await findButton(wrapper, '客户资料维护').trigger('click')
+
+    expect(wrapper.text()).toContain('仅维护 华兴 客户')
+    await wrapper.get('input[aria-label="客户编号"]').setValue('new-customer')
+    await wrapper.get('input[aria-label="客户名称"]').setValue('新客户')
+    await wrapper.get('input[aria-label="客户国家地区"]').setValue('德国')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(cartonApiMock.createCustomer).toHaveBeenCalledWith(expect.objectContaining({
+      factory_id: 'huaxing',
+      customer_code: 'NEW-CUSTOMER',
+      customer_name: '新客户',
+      country_region: '德国',
+      status: 'ACTIVE',
+    }))
+    expect(wrapper.text()).toContain('客户 新客户 已加入 华兴 客户主数据')
+    expect(wrapper.text()).toContain('NEW-CUSTOMER')
+  })
+
   it('switches to formal ledger state when the backend responds', async () => {
+    cartonApiMock.listCustomers.mockResolvedValue([{
+      id: 'CCU-DICKIE',
+      factory_id: 'huaxing',
+      customer_code: 'DICKIE',
+      customer_name: 'Dickie',
+      country_region: '德国',
+      contact_name: '',
+      contact_phone: '',
+      note: '',
+      status: 'ACTIVE',
+      revision: 1,
+      created_by: 'admin',
+      created_by_name: '管理员',
+      updated_by: 'admin',
+      updated_by_name: '管理员',
+      created_at: '2026-08-05T10:00:00+08:00',
+      updated_at: '2026-08-05T10:00:00+08:00',
+    }])
     cartonApiMock.listOrders.mockResolvedValue([])
     cartonApiMock.listMovements.mockResolvedValue([])
     cartonApiMock.listClosings.mockResolvedValue([])

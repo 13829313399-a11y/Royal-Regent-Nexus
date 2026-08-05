@@ -8,16 +8,20 @@ import {
   CalendarClock,
   CheckCircle2,
   ClipboardCheck,
+  Download,
   FileSpreadsheet,
   GitBranch,
   LayoutDashboard,
   PackageCheck,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
   ShieldCheck,
   Truck,
+  Trash2,
   Upload,
+  Users,
   X,
 } from '@lucide/vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
@@ -25,6 +29,8 @@ import AccountMenu from '@/components/layout/AccountMenu.vue'
 import {
   cartonProcurementApi,
   type CartonClosingResponse,
+  type CartonCustomerResponse,
+  type CartonCustomerSaveRequest,
   type CartonExceptionResponse,
   type CartonImportBatchResponse,
   type CartonImportPreviewRow,
@@ -54,6 +60,7 @@ import {
   type WeeklyCheckRow,
 } from '@/features/carton-procurement/demoData'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 
 type CartonTab = 'dashboard' | 'orders' | 'weekly-check' | 'receipts' | 'inventory' | 'closing' | 'exceptions'
@@ -68,6 +75,7 @@ interface CartonTabItem {
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const tabs: CartonTabItem[] = [
   { id: 'dashboard', label: '纸箱采购协同看板', shortLabel: '协同看板', icon: LayoutDashboard },
@@ -80,13 +88,19 @@ const tabs: CartonTabItem[] = [
 ]
 
 const validTabs = new Set<CartonTab>(tabs.map((tab) => tab.id))
-const selectedCustomer = ref<(typeof cartonCustomers)[number]>('全部客户')
+const selectedCustomer = ref('全部客户')
 const globalSearch = ref('')
 const actionMessage = ref('正在读取纸箱采购台账…')
 const apiConnected = ref(false)
 const backendLoading = ref(false)
 const savingOrder = ref(false)
+const exportingOrderNo = ref('')
 const showOrderModal = ref(false)
+const showCustomerModal = ref(false)
+const customerSearch = ref('')
+const savingCustomer = ref(false)
+const deletingCustomerId = ref('')
+const editingCustomerId = ref('')
 const receiptSaved = ref(false)
 const receiptSearchInput = ref('')
 const receiptSearchTerm = ref('')
@@ -99,6 +113,8 @@ const importingReceipt = ref(false)
 const savingReceipt = ref(false)
 const confirmingReceipt = ref(false)
 const receiptBatchId = ref('')
+const receiptImportBatch = ref<CartonImportBatchResponse | null>(null)
+const receiptImportRows = ref<CartonImportPreviewRow[]>([])
 const receiptDeliveryNoteNo = ref('DN26061301')
 const receiptDeliveryDate = ref('2026-06-13')
 const currentReceipt = ref<CartonReceiptResponse | null>(null)
@@ -116,6 +132,7 @@ const localWeeklyChecks = reactive<WeeklyCheckRow[]>(weeklyChecks.map((row) => (
 const localExceptions = reactive<CartonExceptionRow[]>(cartonExceptions.map((row) => ({ ...row })))
 const closingRecords = ref<CartonClosingResponse[]>([])
 const exceptionRecords = ref<CartonExceptionResponse[]>([])
+const customerRecords = ref<CartonCustomerResponse[]>([])
 
 interface ReceiptReviewLine extends ReceiptLineSeed {
   orderLineId: string
@@ -133,7 +150,7 @@ const receiptLines = reactive<ReceiptReviewLine[]>(receiptSeed.map((line) => ({
 type OrderFormMaterialLine = Omit<CartonMaterialLine, 'id'> & { id: string }
 
 const orderForm = reactive({
-  customer: 'Dickie',
+  customerCode: '',
   contractNo: '',
   itemNo: '',
   orderQuantity: 3600,
@@ -151,6 +168,38 @@ const orderForm = reactive({
   ] as OrderFormMaterialLine[],
 })
 
+const customerForm = reactive<CartonCustomerSaveRequest>({
+  factory_id: '',
+  customer_code: '',
+  customer_name: '',
+  country_region: '',
+  contact_name: '',
+  contact_phone: '',
+  note: '',
+  status: 'ACTIVE',
+})
+
+function demoCustomers(factoryId: string): CartonCustomerResponse[] {
+  return cartonCustomers.filter((name) => name !== '全部客户').map((name) => ({
+    id: `DEMO-${factoryId}-${name}`,
+    factory_id: factoryId,
+    customer_code: ({ Dickie: 'DICKIE', '360': '360', 施信: 'SHIXIN', BuzzBee: 'BUZZBEE' } as Record<string, string>)[name] ?? name.toUpperCase(),
+    customer_name: name,
+    country_region: '',
+    contact_name: '',
+    contact_phone: '',
+    note: '只读演示客户',
+    status: 'ACTIVE',
+    revision: 1,
+    created_by: 'demo',
+    created_by_name: '演示数据',
+    updated_by: 'demo',
+    updated_by_name: '演示数据',
+    created_at: '',
+    updated_at: '',
+  }))
+}
+
 const selectedFactoryId = computed<ProductionFactoryContextId>(() => {
   const routeFactory = route.query.factory
   if (typeof routeFactory === 'string' && isProductionFactoryContextId(routeFactory)) {
@@ -166,6 +215,32 @@ const activeFactory = computed(() =>
   factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
   ?? factoryContexts.find((factory) => factory.id === 'huaxing')!,
 )
+const canManageCustomers = computed(() =>
+  authStore.can('carton_procurement:customer_manage', selectedFactoryId.value, 'carton')
+  || authStore.can('carton_procurement:customer_manage', selectedFactoryId.value, 'pmc-warehouse'),
+)
+const activeCustomers = computed(() => customerRecords.value.filter((customer) => customer.status === 'ACTIVE'))
+const selectedOrderCustomer = computed(() =>
+  activeCustomers.value.find((customer) => customer.customer_code === orderForm.customerCode) ?? null,
+)
+const customerFilterOptions = computed(() => [
+  '全部客户',
+  ...new Set([
+    ...customerRecords.value.map((customer) => customer.customer_name),
+    ...localOrders.map((order) => order.customer),
+  ]),
+])
+const visibleCustomerRecords = computed(() => {
+  const term = customerSearch.value.trim().toLowerCase()
+  if (!term) return customerRecords.value
+  return customerRecords.value.filter((customer) => [
+    customer.customer_code,
+    customer.customer_name,
+    customer.country_region,
+    customer.contact_name,
+    customer.contact_phone,
+  ].join(' ').toLowerCase().includes(term))
+})
 
 const activeTab = computed<CartonTab>(() => {
   const routeTab = route.query.tab
@@ -287,9 +362,21 @@ const receiptAmount = computed(() => visibleReceiptLines.value.reduce(
   (total, row) => total + Number(row.deliveryQuantity || 0) * Number(row.unitPrice || 0),
   0,
 ))
+const receiptImportStats = computed(() => ({
+  total: receiptImportBatch.value?.parse_summary.row_count ?? receiptImportRows.value.length,
+  matched: receiptImportBatch.value?.parse_summary.matched_count ?? 0,
+  issues: receiptImportBatch.value?.parse_summary.issue_count ?? 0,
+}))
+const receiptImportPreviewRows = computed(() => receiptImportRows.value.slice(0, 50))
 
 watch(selectedFactoryId, (factoryId) => {
   appStore.setActiveFactory(factoryId)
+  selectedCustomer.value = '全部客户'
+  orderForm.customerCode = ''
+  receiptImportBatch.value = null
+  receiptImportRows.value = []
+  receiptBatchId.value = ''
+  selectedReceiptFileName.value = ''
   void loadBackendData(factoryId)
 }, { immediate: true })
 
@@ -358,13 +445,28 @@ function formatMoney(value: number) {
   }).format(value)
 }
 
-function customerCode(customer: string) {
-  return ({ Dickie: 'DICKIE', '360': '360', 施信: 'SHIXIN', BuzzBee: 'BUZZBEE' } as Record<string, string>)[customer]
-    ?? customer.trim().toUpperCase()
+function importMatchLabel(status?: CartonImportPreviewRow['match_status']) {
+  return ({
+    MATCHED: '已匹配',
+    MISSING_ORDER: '未找到订单',
+    QUANTITY_MISMATCH: '数量不一致',
+    AMBIGUOUS: '匹配不唯一',
+  } as Record<string, string>)[status ?? ''] ?? '待人工复核'
+}
+
+function importMatchTone(status?: CartonImportPreviewRow['match_status']) {
+  if (status === 'MATCHED') return 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+  if (status === 'QUANTITY_MISMATCH' || status === 'AMBIGUOUS') return 'bg-amber-50 text-amber-700 ring-amber-200'
+  return 'bg-red-50 text-red-700 ring-red-200'
+}
+
+function importQuantityLabel(row: CartonImportPreviewRow) {
+  const value = Number(row.delivered_quantity ?? row.quantity ?? 0)
+  return value > 0 ? formatNumber(value) : '待复核'
 }
 
 function orderTone(status: string): CartonTone {
-  if (status === 'COMPLETED' || status === 'CONFIRMED') return 'green'
+  if (status === 'COMPLETED' || status === 'CONFIRMED' || status === 'PENDING_SUPPLIER') return 'green'
   if (status === 'PARTIALLY_RECEIVED') return 'blue'
   if (status === 'CANCELLED') return 'red'
   if (status === 'DRAFT') return 'slate'
@@ -374,8 +476,8 @@ function orderTone(status: string): CartonTone {
 function orderStatusLabel(status: string) {
   return ({
     DRAFT: '草稿',
-    PENDING_SUPPLIER: '待供应商确认',
-    CONFIRMED: '已确认交期',
+    PENDING_SUPPLIER: '已下单',
+    CONFIRMED: '已下单',
     PARTIALLY_RECEIVED: '部分收料',
     COMPLETED: '已完成',
     CANCELLED: '已取消',
@@ -499,6 +601,8 @@ function mapException(row: CartonExceptionResponse): CartonExceptionRow {
 
 function applyReceiptImport(batch: CartonImportBatchResponse) {
   const rows = batch.parse_summary.rows ?? []
+  receiptImportBatch.value = batch
+  receiptImportRows.value = rows
   const matched = rows.filter((row) => row.match_status === 'MATCHED' && row.order_line_id)
   const deliveryNumbers = [...new Set(matched.map((row) => row.delivery_note_no).filter(Boolean))] as string[]
   const selectedDeliveryNo = deliveryNumbers[0]
@@ -528,19 +632,25 @@ function applyReceiptImport(batch: CartonImportBatchResponse) {
   currentReceipt.value = null
   receiptSaved.value = false
   const extraDocuments = Math.max(0, deliveryNumbers.length - 1)
-  actionMessage.value = `已解析 ${batch.parse_summary.row_count ?? rows.length} 行，自动匹配 ${batch.parse_summary.matched_count ?? matched.length} 行，${batch.parse_summary.issue_count ?? 0} 行已进入异常中心。${extraDocuments ? `本次还包含 ${extraDocuments} 张其他送货单，请分批复核。` : ''}`
+  actionMessage.value = `送货单识别完成：共 ${batch.parse_summary.row_count ?? rows.length} 行，已匹配 ${batch.parse_summary.matched_count ?? matched.length} 行，${batch.parse_summary.issue_count ?? 0} 行需要人工处理。${extraDocuments ? `本次还包含 ${extraDocuments} 张其他送货单，请分批复核。` : ''}`
 }
 
 async function loadBackendData(factoryId = selectedFactoryId.value) {
   if (backendLoading.value) return
   backendLoading.value = true
   try {
-    const [orders, movements, closings, exceptions] = await Promise.all([
+    const [customers, orders, movements, closings, exceptions, latestReceiptImport] = await Promise.all([
+      cartonProcurementApi.listCustomers(factoryId),
       cartonProcurementApi.listOrders(factoryId),
       cartonProcurementApi.listMovements(factoryId),
       cartonProcurementApi.listClosings(factoryId),
       cartonProcurementApi.listExceptions(factoryId),
+      cartonProcurementApi.latestReceiptImport(factoryId),
     ])
+    customerRecords.value = customers
+    if (!customers.some((customer) => customer.status === 'ACTIVE' && customer.customer_code === orderForm.customerCode)) {
+      orderForm.customerCode = customers.find((customer) => customer.status === 'ACTIVE')?.customer_code ?? ''
+    }
     localOrders.splice(0, localOrders.length, ...orders.map(mapOrder))
     localMovements.splice(0, localMovements.length, ...movements.map(mapMovement))
     localClosings.splice(0, localClosings.length, ...closings.map(mapClosing))
@@ -552,10 +662,18 @@ async function loadBackendData(factoryId = selectedFactoryId.value) {
       receiptLines.splice(0)
       receiptDeliveryNoteNo.value = ''
       receiptDeliveryDate.value = ''
+      if (latestReceiptImport) {
+        selectedReceiptFileName.value = latestReceiptImport.original_filename
+        applyReceiptImport(latestReceiptImport)
+      }
     }
     apiConnected.value = true
-    actionMessage.value = `已连接 ${activeFactory.value.shortName} 正式台账；订单、收料导入、库存流水和月结均由后端保存。`
+    actionMessage.value = latestReceiptImport && activeTab.value === 'receipts'
+      ? `已恢复最近送货单导入：共 ${latestReceiptImport.parse_summary.row_count ?? 0} 行，已匹配 ${latestReceiptImport.parse_summary.matched_count ?? 0} 行，${latestReceiptImport.parse_summary.issue_count ?? 0} 行需要人工处理。`
+      : `已连接 ${activeFactory.value.shortName} 正式台账；订单、收料导入、库存流水和月结均由后端保存。`
   } catch (error) {
+    customerRecords.value = demoCustomers(factoryId)
+    if (!orderForm.customerCode) orderForm.customerCode = customerRecords.value[0]?.customer_code ?? ''
     apiConnected.value = false
     actionMessage.value = `后端暂不可用，当前显示只读演示数据：${getApiErrorMessage(error)}`
   } finally {
@@ -570,6 +688,10 @@ async function createLocalOrder() {
     && material.specification.trim()
     && Number(material.usage) > 0,
   )
+  if (!selectedOrderCustomer.value) {
+    actionMessage.value = '当前厂区没有可用客户，请先由纸箱部主管在“客户资料维护”中新增或启用客户。'
+    return
+  }
   if (!orderForm.contractNo.trim() || !orderForm.itemNo.trim() || validMaterials.length !== orderForm.materials.length) {
     actionMessage.value = '请填写合同号、货号，并补齐每条纸品明细的类型、纸质、规格和单件用量。'
     return
@@ -579,14 +701,14 @@ async function createLocalOrder() {
   try {
     const created = await cartonProcurementApi.createOrder({
       factory_id: selectedFactoryId.value,
-      customer_code: customerCode(orderForm.customer),
-      customer_name: orderForm.customer,
+      customer_code: selectedOrderCustomer.value.customer_code,
+      customer_name: selectedOrderCustomer.value.customer_name,
       contract_no: orderForm.contractNo.trim(),
       item_no: orderForm.itemNo.trim(),
       product_order_quantity: Number(orderForm.orderQuantity),
       order_date: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }),
       due_date: orderForm.dueDate,
-      status: 'PENDING_SUPPLIER',
+      status: 'CONFIRMED',
       note: orderForm.note.trim(),
       lines: validMaterials.map((material) => ({
         packaging_type: material.packagingType.trim(),
@@ -600,12 +722,128 @@ async function createLocalOrder() {
     localOrders.unshift(mapOrder(created))
     apiConnected.value = true
     showOrderModal.value = false
-    actionMessage.value = `正式纸箱订单 ${created.order_no} 已保存，含 ${created.lines.length} 条纸品明细；需求数量由后端重新计算。`
+    actionMessage.value = `正式纸箱订单 ${created.order_no} 已保存并生效，含 ${created.lines.length} 条纸品明细；已自动进入排期核对、收料和库存后续流程。`
   } catch (error) {
     actionMessage.value = `订单未保存：${getApiErrorMessage(error)}`
   } finally {
     savingOrder.value = false
   }
+}
+
+async function exportPurchaseOrder(orderNo: string) {
+  if (!apiConnected.value || exportingOrderNo.value) return
+  exportingOrderNo.value = orderNo
+  try {
+    const blob = await cartonProcurementApi.exportPurchaseOrder(selectedFactoryId.value, orderNo)
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${orderNo}_纸箱采购单.xlsx`
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 0)
+    actionMessage.value = `${orderNo} 采购单已生成并开始下载。`
+  } catch (error) {
+    actionMessage.value = `采购单导出失败：${getApiErrorMessage(error)}`
+  } finally {
+    exportingOrderNo.value = ''
+  }
+}
+
+function resetCustomerForm() {
+  editingCustomerId.value = ''
+  Object.assign(customerForm, {
+    factory_id: selectedFactoryId.value,
+    customer_code: '',
+    customer_name: '',
+    country_region: '',
+    contact_name: '',
+    contact_phone: '',
+    note: '',
+    status: 'ACTIVE',
+  } satisfies CartonCustomerSaveRequest)
+}
+
+function openCustomerManager() {
+  resetCustomerForm()
+  customerSearch.value = ''
+  showCustomerModal.value = true
+}
+
+function editCustomer(customer: CartonCustomerResponse) {
+  editingCustomerId.value = customer.id
+  Object.assign(customerForm, {
+    factory_id: selectedFactoryId.value,
+    customer_code: customer.customer_code,
+    customer_name: customer.customer_name,
+    country_region: customer.country_region,
+    contact_name: customer.contact_name,
+    contact_phone: customer.contact_phone,
+    note: customer.note,
+    status: customer.status,
+  } satisfies CartonCustomerSaveRequest)
+}
+
+async function saveCustomer() {
+  if (!customerForm.customer_code.trim() || !customerForm.customer_name.trim()) {
+    actionMessage.value = '请填写客户编号和客户名称。'
+    return
+  }
+  savingCustomer.value = true
+  const payload: CartonCustomerSaveRequest = {
+    ...customerForm,
+    factory_id: selectedFactoryId.value,
+    customer_code: customerForm.customer_code.trim().toUpperCase(),
+    customer_name: customerForm.customer_name.trim(),
+    country_region: customerForm.country_region.trim(),
+    contact_name: customerForm.contact_name.trim(),
+    contact_phone: customerForm.contact_phone.trim(),
+    note: customerForm.note.trim(),
+  }
+  try {
+    const current = customerRecords.value.find((customer) => customer.id === editingCustomerId.value)
+    const saved = current
+      ? await cartonProcurementApi.updateCustomer(current, payload)
+      : await cartonProcurementApi.createCustomer(payload)
+    const index = customerRecords.value.findIndex((customer) => customer.id === saved.id)
+    if (index >= 0) customerRecords.value.splice(index, 1, saved)
+    else customerRecords.value.push(saved)
+    customerRecords.value.sort((left, right) => left.customer_name.localeCompare(right.customer_name, 'zh-CN'))
+    if (!orderForm.customerCode && saved.status === 'ACTIVE') orderForm.customerCode = saved.customer_code
+    actionMessage.value = current
+      ? `客户 ${saved.customer_name} 的资料已更新。`
+      : `客户 ${saved.customer_name} 已加入 ${activeFactory.value.shortName} 客户主数据。`
+    resetCustomerForm()
+  } catch (error) {
+    actionMessage.value = `客户资料未保存：${getApiErrorMessage(error)}`
+  } finally {
+    savingCustomer.value = false
+  }
+}
+
+async function removeCustomer(customer: CartonCustomerResponse) {
+  if (!window.confirm(`确定删除客户“${customer.customer_name}”吗？已有订单的客户不能删除，只能停用。`)) return
+  deletingCustomerId.value = customer.id
+  try {
+    await cartonProcurementApi.deleteCustomer(selectedFactoryId.value, customer.id)
+    customerRecords.value = customerRecords.value.filter((item) => item.id !== customer.id)
+    if (orderForm.customerCode === customer.customer_code) {
+      orderForm.customerCode = activeCustomers.value[0]?.customer_code ?? ''
+    }
+    if (editingCustomerId.value === customer.id) resetCustomerForm()
+    actionMessage.value = `客户 ${customer.customer_name} 已删除。`
+  } catch (error) {
+    actionMessage.value = `客户未删除：${getApiErrorMessage(error)}`
+  } finally {
+    deletingCustomerId.value = ''
+  }
+}
+
+function openOrderModal() {
+  if (!orderForm.customerCode) orderForm.customerCode = activeCustomers.value[0]?.customer_code ?? ''
+  showOrderModal.value = true
 }
 
 function addOrderMaterialLine() {
@@ -946,7 +1184,7 @@ function refreshDemo() {
             aria-label="客户筛选"
             class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 outline-none focus:border-teal-500"
           >
-            <option v-for="customer in cartonCustomers" :key="customer" :value="customer">{{ customer }}</option>
+            <option v-for="customer in customerFilterOptions" :key="customer" :value="customer">{{ customer }}</option>
           </select>
           <button
             type="button"
@@ -1078,12 +1316,19 @@ function refreshDemo() {
         <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div>
             <h2 class="font-bold text-slate-950">纸箱合同订单台账</h2>
-            <p class="mt-1 text-[11px] text-slate-500">一张合同作为一条主记录，外箱、内箱、滑板纸、卡纸等纸品集中列在合同内；纸品类型、纸质和规格分别保存。</p>
+            <p class="mt-1 text-[11px] text-slate-500">一张合同作为一条主记录；新建即生效并进入后续流程，每张订单可导出正式纸箱采购单。</p>
           </div>
-          <button type="button" class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-3.5 text-[12px] font-bold text-white transition hover:bg-teal-800" @click="showOrderModal = true">
-            <Plus class="size-4" aria-hidden="true" />
-            新建纸箱订单
-          </button>
+          <div class="flex flex-wrap items-center gap-2">
+            <span v-if="!canManageCustomers" class="text-[10px] text-slate-500">客户资料由纸箱部主管维护</span>
+            <button v-if="canManageCustomers" type="button" :disabled="!apiConnected" class="inline-flex h-9 items-center gap-2 rounded-lg border border-teal-200 bg-white px-3.5 text-[12px] font-bold text-teal-700 transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50" @click="openCustomerManager">
+              <Users class="size-4" aria-hidden="true" />
+              客户资料维护
+            </button>
+            <button type="button" :disabled="apiConnected && activeCustomers.length === 0" class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-3.5 text-[12px] font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300" @click="openOrderModal">
+              <Plus class="size-4" aria-hidden="true" />
+              新建纸箱订单
+            </button>
+          </div>
         </div>
 
         <div class="space-y-3">
@@ -1094,7 +1339,12 @@ function refreshDemo() {
               <div><div class="text-[10px] font-bold text-slate-400">货号</div><div class="mt-1 font-mono font-semibold">{{ row.itemNo }}</div></div>
               <div><div class="text-[10px] font-bold text-slate-400">产品数量</div><div class="mt-1 font-semibold tabular-nums">{{ formatNumber(row.orderQuantity) }}</div></div>
               <div><div class="text-[10px] font-bold text-slate-400">计划交期</div><div class="mt-1 font-semibold">{{ row.dueDate }}</div></div>
-              <span class="w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(row.tone)">{{ row.status }}</span>
+              <div class="flex flex-wrap items-center gap-2 md:justify-end">
+                <span class="w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(row.tone)">{{ row.status }}</span>
+                <button type="button" :disabled="!apiConnected || Boolean(exportingOrderNo)" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 text-[10px] font-bold text-teal-700 transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" :aria-label="`导出 ${row.id} 采购单`" @click="exportPurchaseOrder(row.id)">
+                  <Download class="size-3.5" />{{ exportingOrderNo === row.id ? '生成中…' : '导出采购单' }}
+                </button>
+              </div>
             </div>
 
             <div class="px-4 py-3">
@@ -1194,12 +1444,51 @@ function refreshDemo() {
           <div v-if="selectedReceiptFileName" class="text-[10px] text-slate-500 lg:max-w-52">已选择：<span class="font-semibold text-slate-700">{{ selectedReceiptFileName }}</span></div>
         </form>
 
-        <div v-if="apiConnected && receiptLines.length === 0" class="rounded-xl border border-teal-200 bg-teal-50 p-5 text-teal-900 shadow-sm">
+        <article v-if="receiptImportBatch" class="overflow-hidden rounded-xl border bg-white shadow-sm" :class="receiptImportStats.issues ? 'border-amber-300' : 'border-emerald-300'">
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3" :class="receiptImportStats.issues ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'">
+            <div>
+              <div class="flex flex-wrap items-center gap-2 font-bold" :class="receiptImportStats.issues ? 'text-amber-950' : 'text-emerald-950'">
+                <CheckCircle2 class="size-4" />送货单识别完成
+                <span v-if="receiptImportBatch.duplicate" class="rounded-full bg-white px-2 py-0.5 text-[9px] font-bold text-slate-600 ring-1 ring-inset ring-slate-200">重复文件 · 已恢复原结果</span>
+              </div>
+              <p class="mt-1 text-[11px]" :class="receiptImportStats.issues ? 'text-amber-800' : 'text-emerald-800'">{{ receiptImportBatch.original_filename }} · {{ receiptImportBatch.parse_summary.engine || '文件解析' }} · 批次 {{ receiptImportBatch.id }}</p>
+            </div>
+            <button v-if="receiptImportStats.issues" type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 text-[11px] font-bold text-amber-800 hover:bg-amber-100" @click="setActiveTab('exceptions')"><AlertTriangle class="size-3.5" />前往异常中心</button>
+          </div>
+          <div class="grid gap-3 border-b border-slate-200 p-4 sm:grid-cols-3">
+            <div class="rounded-lg border border-slate-200 bg-slate-50 p-3"><div class="text-[10px] text-slate-500">识别总行数</div><div class="mt-1 text-xl font-bold text-slate-950">{{ receiptImportStats.total }} 行</div></div>
+            <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><div class="text-[10px] text-emerald-700">已匹配正式订单</div><div class="mt-1 text-xl font-bold text-emerald-900">{{ receiptImportStats.matched }} 行</div></div>
+            <div class="rounded-lg border border-amber-200 bg-amber-50 p-3"><div class="text-[10px] text-amber-700">需要人工处理</div><div class="mt-1 text-xl font-bold text-amber-900">{{ receiptImportStats.issues }} 行</div></div>
+          </div>
+          <div v-if="receiptImportStats.matched === 0" class="border-b border-red-200 bg-red-50 px-4 py-3 text-[11px] leading-5 text-red-800"><strong>文件已成功导入，但没有找到可关联的正式纸箱订单。</strong> 系统没有生成收料明细或库存；识别行已保存到异常中心，请先补建订单或人工核对关联关系。</div>
+          <div v-if="receiptImportBatch.parse_summary.warnings?.length" class="border-b border-blue-200 bg-blue-50 px-4 py-3 text-[10px] leading-5 text-blue-800"><div v-for="warning in receiptImportBatch.parse_summary.warnings.slice(0, 3)" :key="warning">• {{ warning }}</div></div>
+          <div class="overflow-x-auto">
+            <table class="min-w-[1050px] w-full text-left">
+              <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2.5">来源</th><th class="px-3 py-2.5">送货单 / 日期</th><th class="px-3 py-2.5">合同号</th><th class="px-3 py-2.5">货号</th><th class="px-3 py-2.5">识别纸品</th><th class="px-3 py-2.5 text-right">数量</th><th class="px-3 py-2.5">匹配结果</th><th class="px-3 py-2.5">处理建议</th></tr></thead>
+              <tbody class="divide-y divide-slate-100">
+                <tr v-for="(row, index) in receiptImportPreviewRows" :key="`${row.source_sheet}-${row.source_row}-${index}`" class="hover:bg-slate-50/70">
+                  <td class="px-3 py-2.5 text-[10px] text-slate-500">{{ row.source_sheet || '文件' }} · 第 {{ row.source_row || index + 1 }} 行</td>
+                  <td class="px-3 py-2.5"><div class="font-mono text-[11px] font-semibold">{{ row.delivery_note_no || receiptImportBatch.parse_summary.document?.delivery_note_no || '待识别' }}</div><div class="text-[9px] text-slate-400">{{ row.delivery_date || receiptImportBatch.parse_summary.document?.delivery_date || '日期待复核' }}</div></td>
+                  <td class="px-3 py-2.5 font-mono text-[11px] font-semibold">{{ row.contract_no || row.reference || '待识别' }}</td>
+                  <td class="px-3 py-2.5 font-mono text-[11px]">{{ row.item_no || '待识别' }}</td>
+                  <td class="px-3 py-2.5 text-[11px]"><div class="font-semibold">{{ row.packaging_type || '待复核' }}</div><div class="text-[9px] text-slate-400">{{ row.paper_quality || '' }}</div></td>
+                  <td class="px-3 py-2.5 text-right font-semibold tabular-nums">{{ importQuantityLabel(row) }}</td>
+                  <td class="px-3 py-2.5"><span class="rounded-full px-2 py-0.5 text-[9px] font-bold ring-1 ring-inset" :class="importMatchTone(row.match_status)">{{ importMatchLabel(row.match_status) }}</span></td>
+                  <td class="max-w-[260px] px-3 py-2.5 text-[10px] text-slate-500">{{ row.suggestion || '请人工复核识别结果' }}</td>
+                </tr>
+                <tr v-if="receiptImportPreviewRows.length === 0"><td colspan="8" class="px-4 py-10 text-center text-slate-400">文件已登记，但没有识别到可展示的明细行</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="receiptImportRows.length > receiptImportPreviewRows.length" class="border-t border-slate-200 px-4 py-2 text-[10px] text-slate-500">当前显示前 {{ receiptImportPreviewRows.length }} 行，共 {{ receiptImportRows.length }} 行；全部问题行均已保存。</div>
+        </article>
+
+        <div v-if="apiConnected && receiptLines.length === 0 && !receiptImportBatch" class="rounded-xl border border-teal-200 bg-teal-50 p-5 text-teal-900 shadow-sm">
           <div class="flex items-center gap-2 font-bold"><Upload class="size-4" />等待导入并复核送货单</div>
           <p class="mt-1 text-[11px] leading-5 text-teal-800">选择文件后，后端先登记唯一指纹和待复核批次；字段匹配与数量确认完成前，不会创建收料单或库存流水。</p>
         </div>
 
-        <div v-else class="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+        <div v-else-if="receiptLines.length > 0" class="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
           <article class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -1370,6 +1659,50 @@ function refreshDemo() {
       </section>
     </div>
 
+    <div v-if="showCustomerModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" @click.self="showCustomerModal = false">
+      <div class="max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+        <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+          <div><h2 class="text-[16px] font-bold text-slate-950">客户资料维护</h2><p class="mt-1 text-[11px] text-slate-500">仅维护 {{ activeFactory.shortName }} 客户；停用客户保留历史订单，但不能用于新建订单。</p></div>
+          <button type="button" aria-label="关闭客户资料维护" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="showCustomerModal = false"><X class="size-4" /></button>
+        </div>
+        <div class="grid gap-5 p-5 lg:grid-cols-[340px_minmax(0,1fr)]">
+          <form class="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4" @submit.prevent="saveCustomer">
+            <div class="flex items-center justify-between"><div class="font-bold text-slate-950">{{ editingCustomerId ? '编辑客户' : '新增客户' }}</div><button v-if="editingCustomerId" type="button" class="text-[11px] font-bold text-teal-700" @click="resetCustomerForm">改为新增</button></div>
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+              <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-600">客户编号 *</span><input v-model="customerForm.customer_code" aria-label="客户编号" placeholder="例如 DICKIE" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 uppercase outline-none focus:border-teal-500"></label>
+              <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-600">客户名称 *</span><input v-model="customerForm.customer_name" aria-label="客户名称" placeholder="客户正式名称" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 outline-none focus:border-teal-500"></label>
+              <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-600">国家 / 地区</span><input v-model="customerForm.country_region" aria-label="客户国家地区" placeholder="例如 德国" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 outline-none focus:border-teal-500"></label>
+              <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-600">联系人</span><input v-model="customerForm.contact_name" aria-label="客户联系人" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 outline-none focus:border-teal-500"></label>
+              <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-600">联系电话</span><input v-model="customerForm.contact_phone" aria-label="客户联系电话" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 outline-none focus:border-teal-500"></label>
+              <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-600">状态</span><select v-model="customerForm.status" aria-label="客户状态" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 outline-none focus:border-teal-500"><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select></label>
+              <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-600">备注</span><textarea v-model="customerForm.note" aria-label="客户备注" rows="3" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 outline-none focus:border-teal-500"></textarea></label>
+            </div>
+            <button type="submit" :disabled="savingCustomer" class="h-9 w-full rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ savingCustomer ? '正在保存…' : editingCustomerId ? '保存客户修改' : '新增客户' }}</button>
+          </form>
+
+          <section class="min-w-0">
+            <div class="mb-3 flex flex-wrap items-center justify-between gap-3"><div><div class="font-bold text-slate-950">本厂客户清单 · {{ customerRecords.length }} 家</div><p class="mt-0.5 text-[10px] text-slate-500">已有订单的客户请停用，不要删除。</p></div><label class="relative"><Search class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input v-model="customerSearch" aria-label="搜索客户资料" placeholder="搜索编号、名称、联系人" class="h-9 w-64 rounded-lg border border-slate-200 pl-8 pr-3 text-[11px] outline-none focus:border-teal-500"></label></div>
+            <div class="overflow-x-auto rounded-xl border border-slate-200">
+              <table class="min-w-[720px] w-full text-left">
+                <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2.5">客户编号</th><th class="px-3 py-2.5">客户名称</th><th class="px-3 py-2.5">国家 / 地区</th><th class="px-3 py-2.5">联系人</th><th class="px-3 py-2.5">状态</th><th class="px-3 py-2.5 text-right">操作</th></tr></thead>
+                <tbody class="divide-y divide-slate-100">
+                  <tr v-for="customer in visibleCustomerRecords" :key="customer.id" class="hover:bg-slate-50/70">
+                    <td class="px-3 py-3 font-mono text-[11px] font-bold text-teal-700">{{ customer.customer_code }}</td>
+                    <td class="px-3 py-3"><div class="font-semibold text-slate-900">{{ customer.customer_name }}</div><div v-if="customer.note" class="mt-0.5 max-w-56 truncate text-[9px] text-slate-400">{{ customer.note }}</div></td>
+                    <td class="px-3 py-3 text-[11px] text-slate-600">{{ customer.country_region || '—' }}</td>
+                    <td class="px-3 py-3 text-[11px] text-slate-600"><div>{{ customer.contact_name || '—' }}</div><div class="text-[9px] text-slate-400">{{ customer.contact_phone }}</div></td>
+                    <td class="px-3 py-3"><span class="rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="customer.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-slate-100 text-slate-500 ring-slate-200'">{{ customer.status === 'ACTIVE' ? '启用' : '停用' }}</span></td>
+                    <td class="px-3 py-3"><div class="flex justify-end gap-1.5"><button type="button" :aria-label="`编辑客户 ${customer.customer_name}`" class="flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-teal-200 hover:text-teal-700" @click="editCustomer(customer)"><Pencil class="size-3.5" /></button><button type="button" :disabled="deletingCustomerId === customer.id" :aria-label="`删除客户 ${customer.customer_name}`" class="flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:border-red-200 hover:text-red-600 disabled:opacity-50" @click="removeCustomer(customer)"><Trash2 class="size-3.5" /></button></div></td>
+                  </tr>
+                  <tr v-if="visibleCustomerRecords.length === 0"><td colspan="6" class="px-4 py-12 text-center text-slate-400">没有符合条件的客户资料</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showOrderModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" @click.self="showOrderModal = false">
       <form class="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white shadow-2xl" @submit.prevent="createLocalOrder">
         <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
@@ -1380,7 +1713,7 @@ function refreshDemo() {
           <section>
             <div class="mb-3 text-[11px] font-bold text-slate-900">合同主信息</div>
             <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">客户</span><select v-model="orderForm.customer" aria-label="订单客户" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500"><option v-for="customer in cartonCustomers.filter((item) => item !== '全部客户')" :key="customer" :value="customer">{{ customer }}</option></select></label>
+              <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">客户</span><select v-model="orderForm.customerCode" aria-label="订单客户" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500"><option v-if="activeCustomers.length === 0" value="">当前厂区暂无启用客户</option><option v-for="customer in activeCustomers" :key="customer.id" :value="customer.customer_code">{{ customer.customer_name }}（{{ customer.customer_code }}）</option></select></label>
               <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">纸箱供应商</span><input value="河源东康纸品有限公司（系统固定）" aria-label="纸箱供应商" disabled class="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-slate-500"></label>
               <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同号 *</span><input v-model="orderForm.contractNo" aria-label="合同号" placeholder="例如 SC700145365" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500"></label>
               <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">货号 *</span><input v-model="orderForm.itemNo" aria-label="货号" placeholder="例如 203302044" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500"></label>
@@ -1409,7 +1742,7 @@ function refreshDemo() {
 
           <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同备注</span><textarea v-model="orderForm.note" aria-label="订单备注" rows="3" placeholder="历史规格来源、刀模版本或特殊交付要求" class="w-full rounded-lg border border-slate-200 px-3 py-2 outline-none focus:border-teal-500"></textarea></label>
         </div>
-        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4"><p class="text-[10px] text-slate-500">提交后写入正式台账，需求数量由后端按用量重新计算。</p><div class="flex gap-2"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="showOrderModal = false">取消</button><button type="submit" :disabled="savingOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ savingOrder ? '正在保存…' : '建立正式订单' }}</button></div></div>
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4"><p class="text-[10px] text-slate-500">提交后立即生效，无需供应商确认；系统自动输出到排期核对、收料和库存后续流程。</p><div class="flex gap-2"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="showOrderModal = false">取消</button><button type="submit" :disabled="savingOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ savingOrder ? '正在保存…' : '建立并生效' }}</button></div></div>
       </form>
     </div>
   </main>

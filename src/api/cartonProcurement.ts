@@ -1,5 +1,35 @@
 import { http } from '@/lib/http'
 
+export interface CartonCustomerResponse {
+  id: string
+  factory_id: string
+  customer_code: string
+  customer_name: string
+  country_region: string
+  contact_name: string
+  contact_phone: string
+  note: string
+  status: 'ACTIVE' | 'INACTIVE'
+  revision: number
+  created_by: string
+  created_by_name: string
+  updated_by: string
+  updated_by_name: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CartonCustomerSaveRequest {
+  factory_id: string
+  customer_code: string
+  customer_name: string
+  country_region: string
+  contact_name: string
+  contact_phone: string
+  note: string
+  status: 'ACTIVE' | 'INACTIVE'
+}
+
 export interface CartonOrderLineResponse {
   id: string
   line_no: number
@@ -53,7 +83,7 @@ export interface CartonOrderCreateRequest {
   product_order_quantity: number
   order_date: string
   due_date: string
-  status: 'PENDING_SUPPLIER'
+  status: 'CONFIRMED'
   note: string
   lines: Array<{
     packaging_type: string
@@ -222,6 +252,28 @@ export interface CartonDashboardResponse {
 }
 
 export const cartonProcurementApi = {
+  async listCustomers(factoryId: string, includeInactive = true) {
+    const response = await http.get<{ items: CartonCustomerResponse[] }>('/carton-procurement/customers', {
+      params: { factory_id: factoryId, include_inactive: includeInactive },
+    })
+    return response.data.items
+  },
+  async createCustomer(payload: CartonCustomerSaveRequest) {
+    const response = await http.post<CartonCustomerResponse>('/carton-procurement/customers', payload)
+    return response.data
+  },
+  async updateCustomer(customer: CartonCustomerResponse, payload: CartonCustomerSaveRequest) {
+    const response = await http.patch<CartonCustomerResponse>(`/carton-procurement/customers/${customer.id}`, {
+      ...payload,
+      expected_revision: customer.revision,
+    })
+    return response.data
+  },
+  async deleteCustomer(factoryId: string, customerId: string) {
+    await http.delete(`/carton-procurement/customers/${customerId}`, {
+      params: { factory_id: factoryId },
+    })
+  },
   async dashboard(factoryId: string) {
     const response = await http.get<CartonDashboardResponse>('/carton-procurement/dashboard', {
       params: { factory_id: factoryId },
@@ -236,6 +288,13 @@ export const cartonProcurementApi = {
   },
   async createOrder(payload: CartonOrderCreateRequest) {
     const response = await http.post<CartonOrderResponse>('/carton-procurement/orders', payload)
+    return response.data
+  },
+  async exportPurchaseOrder(factoryId: string, orderNo: string) {
+    const response = await http.get<Blob>(
+      `/carton-procurement/orders/${encodeURIComponent(orderNo)}/purchase-order.xlsx`,
+      { params: { factory_id: factoryId }, responseType: 'blob', timeout: 30_000 },
+    )
     return response.data
   },
   async listMovements(factoryId: string) {
@@ -259,6 +318,12 @@ export const cartonProcurementApi = {
       form,
       { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } },
     )
+    return response.data
+  },
+  async latestReceiptImport(factoryId: string) {
+    const response = await http.get<CartonImportBatchResponse | null>('/carton-procurement/receipt-imports/latest', {
+      params: { factory_id: factoryId },
+    })
     return response.data
   },
   async uploadWeeklySchedule(factoryId: string, file: File) {

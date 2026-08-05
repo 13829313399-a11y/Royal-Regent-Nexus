@@ -16,6 +16,34 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
 
+class CartonCustomer(Base):
+    __tablename__ = "carton_customers"
+    __table_args__ = (
+        UniqueConstraint("factory_id", "customer_code", name="uq_carton_customer_factory_code"),
+        UniqueConstraint("id", "factory_id", name="uq_carton_customer_id_factory"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_carton_customer_status"),
+        CheckConstraint("revision >= 1", name="ck_carton_customer_revision"),
+        Index("ix_carton_customer_factory_status_name", "factory_id", "status", "customer_name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    customer_code: Mapped[str] = mapped_column(String(64), index=True)
+    customer_name: Mapped[str] = mapped_column(String(255), index=True)
+    country_region: Mapped[str] = mapped_column(String(128), default="")
+    contact_name: Mapped[str] = mapped_column(String(128), default="")
+    contact_phone: Mapped[str] = mapped_column(String(64), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64), index=True)
+    created_by_name: Mapped[str] = mapped_column(String(128), default="")
+    updated_by: Mapped[str] = mapped_column(String(64), index=True)
+    updated_by_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(40), index=True)
+    updated_at: Mapped[str] = mapped_column(String(40), index=True)
+
+
 class CartonSupplier(Base):
     __tablename__ = "carton_suppliers"
     __table_args__ = (
