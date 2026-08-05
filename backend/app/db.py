@@ -683,6 +683,7 @@ def ensure_sqlite_legacy_columns() -> None:
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
+        carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401
         injection_scheduling,  # noqa: F401
         injection_scheduling_execution,  # noqa: F401
@@ -696,6 +697,7 @@ def init_db() -> None:
         three_d_printing,  # noqa: F401
     )
     from app.services.auth import seed_auth_defaults
+    from app.services.carton_procurement import seed_carton_supplier_defaults
     from app.services.injection_scheduling import seed_injection_scheduling_defaults
     from app.services.internal_quote_baseline import (
         seed_internal_quote_pricing_baseline_defaults,
@@ -720,6 +722,7 @@ def init_db() -> None:
 
     with SessionLocal() as db:
         seed_auth_defaults(db)
+        seed_carton_supplier_defaults(db)
         seed_internal_quote_pricing_baseline_defaults(db)
         seed_injection_scheduling_defaults(db)
         seed_molding_sample_defaults(db)

@@ -67,10 +67,13 @@ PASSWORD_RESET_WORKFLOW_MIGRATION_REVISION = "20260802_0046"
 INJECTION_SCHEDULING_MODULE_REMOVAL_REVISION = "20260804_0047"
 INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
 CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION = "20260804_0049"
+CARTON_PROCUREMENT_MIGRATION_REVISION = "20260805_0050"
+CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION = "20260805_0051"
 INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
 INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
 INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_V2_PHASE5_REVISION
+CURRENT_BRANCH_MERGE_REVISION = "20260805_0053"
+HEAD_MIGRATION_REVISION = CURRENT_BRANCH_MERGE_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -99,6 +102,18 @@ AUTH_TABLES = [
 ]
 PASSWORD_RESET_WORKFLOW_TABLE = "auth_password_reset_requests"
 CUSTOMER_ORDER_EXPORT_AUDIT_TABLE = "customer_order_export_audits"
+CARTON_PROCUREMENT_TABLES = {
+    "carton_suppliers",
+    "carton_orders",
+    "carton_order_lines",
+    "carton_import_batches",
+    "carton_receipts",
+    "carton_receipt_lines",
+    "carton_inventory_movements",
+    "carton_closings",
+    "carton_exceptions",
+    "carton_audit_events",
+}
 CONFIGURABLE_IAM_TABLES = [
     "employee_profiles",
     "auth_permission_metadata",
@@ -139,6 +154,30 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    merge_revision = script.get_revision(CURRENT_BRANCH_MERGE_REVISION)
+    assert set(merge_revision.down_revision) == {
+        INJECTION_SCHEDULING_V2_PHASE5_REVISION,
+        CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION,
+    }
+
+    carton_revision = script.get_revision(CARTON_PROCUREMENT_MIGRATION_REVISION)
+    assert carton_revision.down_revision == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    exception_revision = script.get_revision(CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION)
+    assert exception_revision.down_revision == CARTON_PROCUREMENT_MIGRATION_REVISION
+    carton_content = Path(carton_revision.path).read_text(encoding="utf-8")
+    for expected in (
+        "carton_orders",
+        "carton_order_lines",
+        "usage_quantity",
+        "required_quantity",
+        "carton_receipts",
+        "carton_inventory_movements",
+        "carton_closings",
+        "carton_procurement:read",
+        "cannot be downgraded after carton procurement data exists",
+    ):
+        assert expected in carton_content
 
     phase5_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE5_REVISION)
     assert phase5_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE4_REVISION
@@ -4008,3 +4047,30 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
 
     allowed_startup = _run_dispatch_init_db(database_path)
     assert allowed_startup.returncode == 0, allowed_startup.stderr
+
+
+def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path):
+    database_path = tmp_path / "carton_procurement_0050.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        carton_tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name LIKE 'carton_%'
+                """
+            ).fetchall()
+        }
+        assert carton_tables == CARTON_PROCUREMENT_TABLES
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM auth_permissions
+            WHERE code LIKE 'carton_procurement:%'
+            """
+        ).fetchone() == (7,)
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
