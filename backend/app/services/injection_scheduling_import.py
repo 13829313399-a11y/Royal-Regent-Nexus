@@ -23,14 +23,19 @@ from app.models.injection_scheduling_execution import (
     InjectionSchedulingTask,
 )
 from app.models.injection_scheduling_import import (
+    InjectionSchedulingImportAction,
     InjectionSchedulingImportBatch,
     InjectionSchedulingImportIssue,
+    InjectionSchedulingImportMasterDecision,
+    InjectionSchedulingImportProfile,
+    InjectionSchedulingImportProfileFactory,
 )
 from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportBatchOut,
     InjectionSchedulingImportConfirm,
     InjectionSchedulingImportIssueOut,
     InjectionSchedulingImportTaskPreview,
+    InjectionSchedulingMasterApproval,
 )
 from app.services.auth import AuthContext
 from app.services.injection_scheduling import require_injection_scheduling_factory
@@ -46,7 +51,15 @@ from app.services.injection_scheduling_execution import (
     _remaining_shifts,
     _validate_schedule_conflicts,
 )
+from app.services.injection_scheduling_profile_registry import (
+    active_profiles_for_factory,
+)
 from app.services.injection_scheduling_rules import normalize_class_text
+from app.services.injection_scheduling_takeover import (
+    apply_takeover_actions,
+    build_reconciliation_preview,
+    prepare_takeover_plan,
+)
 
 
 def _json(value: Any) -> str:
@@ -88,23 +101,23 @@ def _issue_out(
 
 def _task_preview(task: dict[str, Any]) -> InjectionSchedulingImportTaskPreview:
     return InjectionSchedulingImportTaskPreview(
-        machine_code=task["machine_code"],
-        sequence_no=task["sequence_no"],
-        execution_status=task["execution_status"],
-        status_inferred=task["status_inferred"],
-        legacy_marker=task["legacy_marker"],
-        mold_no=task["mold_no"],
-        product_name=task["product_name"],
-        order_no=task["order_no"],
-        item_no=task["item_no"],
-        order_quantity=task["order_quantity"],
-        completed_quantity=task["completed_quantity"],
-        shift_target_quantity=task["shift_target_quantity"],
-        delivery_due_date=task["delivery_due_date"],
-        planned_start=task["planned_start"],
-        planned_finish=task["planned_finish"],
-        priority_code=task["priority_code"],
-        source=task["source"],
+        machine_code=task.get("machine_code", ""),
+        sequence_no=int(task.get("sequence_no", 0)),
+        execution_status=task.get("execution_status", "QUEUED"),
+        status_inferred=bool(task.get("status_inferred", True)),
+        legacy_marker=task.get("legacy_marker", ""),
+        mold_no=task.get("mold_no", ""),
+        product_name=task.get("product_name", ""),
+        order_no=task.get("order_no", ""),
+        item_no=task.get("item_no", ""),
+        order_quantity=task.get("order_quantity"),
+        completed_quantity=task.get("completed_quantity"),
+        shift_target_quantity=float(task.get("shift_target_quantity") or 0),
+        delivery_due_date=task.get("delivery_due_date", ""),
+        planned_start=task.get("planned_start", ""),
+        planned_finish=task.get("planned_finish", ""),
+        priority_code=task.get("priority_code", "NORMAL"),
+        source=task.get("source", {}),
     )
 
 
@@ -135,6 +148,19 @@ def import_batch_out(
         parser_version=record.parser_version,
         preview_schema_version=record.preview_schema_version,
         normalized_sha256=record.normalized_sha256,
+        batch_state=record.batch_state,
+        profile=normalized.get("profile"),
+        sheet_roles=normalized.get("sheet_roles", []),
+        mapping=normalized.get("mapping", []),
+        mapping_fingerprint=record.mapping_fingerprint,
+        scheduled_baseline_tasks=normalized.get("scheduled_baseline_tasks", []),
+        backlog_orders=normalized.get("backlog_orders", []),
+        invalid_rows=normalized.get("invalid_rows", []),
+        master_differences=normalized.get("master_differences", []),
+        calculation_comparisons=normalized.get("calculation_comparisons", []),
+        reconciliation_actions=normalized.get("reconciliation_actions", []),
+        plan_context=normalized.get("plan_context", {}),
+        action_fingerprint=record.action_fingerprint,
         summary=_load_json(record.summary_json, {}),
         status=record.status,
         revision=record.revision,
@@ -171,7 +197,60 @@ def preview_import(
         raise HTTPException(
             status_code=409, detail="新导入预览 expected_revision 必须为 0"
         )
-    normalized, issues = parse_injection_scheduling_workbook(content, source_file_name)
+    system_machine_codes = set(
+        db.scalars(
+            select(InjectionSchedulingMachine.machine_code).where(
+                InjectionSchedulingMachine.factory_id == factory_id
+            )
+        ).all()
+    )
+    system_mold_nos = set(
+        db.scalars(
+            select(InjectionSchedulingMold.mold_no).where(
+                InjectionSchedulingMold.factory_id == factory_id
+            )
+        ).all()
+    )
+    normalized, issues = parse_injection_scheduling_workbook(
+        content,
+        source_file_name,
+        factory_id=factory_id,
+        system_machine_codes=system_machine_codes,
+        system_mold_nos=system_mold_nos,
+        profiles=active_profiles_for_factory(db, factory_id),
+    )
+    if (
+        normalized.get("schema_version") == "injection-scheduling-canonical-v1"
+        and normalized.get("profile") is not None
+    ):
+        reconciliation = build_reconciliation_preview(
+            db,
+            factory_id=factory_id,
+            normalized=normalized,
+        )
+        normalized.update(reconciliation)
+        normalized["summary"].update(
+            {
+                "reconciliation_action_count": len(
+                    reconciliation["reconciliation_actions"]
+                ),
+                "reconciliation_action_counts": reconciliation["action_summary"],
+                "restricted_action_count": reconciliation[
+                    "restricted_action_count"
+                ],
+            }
+        )
+        if (
+            reconciliation["has_reconciliation_conflicts"]
+            and normalized.get("batch_state") == "PREVIEW_READY"
+        ):
+            normalized["batch_state"] = "RECONCILIATION_CONFLICT"
+        normalized["summary"]["can_confirm"] = (
+            normalized["batch_state"] == "PREVIEW_READY"
+            and normalized["summary"].get("blocking_issue_count", 0) == 0
+        )
+        normalized.pop("normalized_sha256", None)
+        normalized["normalized_sha256"] = _payload_hash(normalized)
     preview_payload_hash = _payload_hash(
         {
             "factory_id": factory_id,
@@ -201,7 +280,45 @@ def preview_import(
         source_file_name=source_file_name[:255],
         source_file_hash=normalized["source_file_hash"],
         source_size_bytes=normalized["source_size_bytes"],
-        plan_sheet_name="计划表",
+        plan_sheet_name=next(
+            (
+                item["sheet_name"]
+                for item in normalized.get("sheet_roles", [])
+                if item.get("role") == "CURRENT_PLAN"
+            ),
+            "",
+        ),
+        profile_id=(normalized.get("profile") or {}).get("profile_id"),
+        profile_revision=(normalized.get("profile") or {}).get("revision"),
+        profile_definition_sha256=(normalized.get("profile") or {}).get(
+            "definition_digest", ""
+        ),
+        template_signature=normalized.get("template_signature", ""),
+        mapping_fingerprint=normalized.get("mapping_fingerprint", ""),
+        batch_state=normalized.get("batch_state", "MAPPING_REQUIRED"),
+        target_draft_plan_id=normalized.get("plan_context", {}).get(
+            "target_draft_plan_id", ""
+        ),
+        target_draft_plan_revision=normalized.get("plan_context", {}).get(
+            "target_draft_plan_revision", 0
+        ),
+        reference_published_plan_id=normalized.get("plan_context", {}).get(
+            "reference_published_plan_id", ""
+        ),
+        reference_published_plan_revision=normalized.get("plan_context", {}).get(
+            "reference_published_plan_revision", 0
+        ),
+        reference_published_event_sequence=normalized.get("plan_context", {}).get(
+            "reference_published_event_sequence", 0
+        ),
+        order_task_revision_digest=normalized.get("plan_context", {}).get(
+            "order_task_revision_digest", ""
+        ),
+        action_fingerprint=normalized.get("action_fingerprint", ""),
+        rule_revision=normalized.get("plan_context", {}).get("rule_revision", 0),
+        master_revision_digest=normalized.get("plan_context", {}).get(
+            "master_revision_digest", ""
+        ),
         parser_version=normalized["parser_version"],
         preview_schema_version=normalized["schema_version"],
         normalized_json=_json(normalized),
@@ -227,6 +344,26 @@ def preview_import(
         confirmed_at="",
     )
     db.add(record)
+    for action in normalized.get("reconciliation_actions", []):
+        db.add(
+            InjectionSchedulingImportAction(
+                id=f"isaction-{record.id.removeprefix('isimport-')}-{action['action_sha256'][:16]}",
+                batch_id=record.id,
+                factory_id=factory_id,
+                action_type=action["action_type"],
+                stable_order_key=action.get("stable_order_key", ""),
+                stable_row_key=action.get("stable_row_key", ""),
+                source_sheet_name=action.get("source_sheet_name", ""),
+                source_row=action.get("source_row"),
+                target_order_id=action.get("target_order_id", ""),
+                target_task_id=action.get("target_task_id", ""),
+                requires_publish=bool(action.get("requires_publish")),
+                reason_code=action.get("reason_code", ""),
+                detail_json=_json(action.get("detail", {})),
+                action_sha256=action["action_sha256"],
+                created_at=timestamp,
+            )
+        )
     for issue in issues:
         db.add(
             InjectionSchedulingImportIssue(
@@ -275,6 +412,283 @@ def preview_import(
             return replay, True
         raise HTTPException(status_code=409, detail="导入预览写入冲突") from exc
     return record, False
+
+
+def approve_master_differences(
+    db: Session,
+    *,
+    batch_id: str,
+    payload: InjectionSchedulingMasterApproval,
+    user: AuthContext,
+) -> tuple[InjectionSchedulingImportBatch, bool]:
+    existing_decisions = list(
+        db.scalars(
+            select(InjectionSchedulingImportMasterDecision).where(
+                InjectionSchedulingImportMasterDecision.factory_id
+                == payload.factory_id,
+                InjectionSchedulingImportMasterDecision.batch_id == batch_id,
+                InjectionSchedulingImportMasterDecision.request_id
+                == payload.request_id,
+            )
+        ).all()
+    )
+    if existing_decisions:
+        existing_keys = {
+            f"{item.entity_type}:{item.business_key}" for item in existing_decisions
+        }
+        if existing_keys != set(payload.differences):
+            raise HTTPException(status_code=409, detail="相同 request_id 已用于其他主数据审批")
+        replay = db.scalar(
+            select(InjectionSchedulingImportBatch).where(
+                InjectionSchedulingImportBatch.id == batch_id,
+                InjectionSchedulingImportBatch.factory_id == payload.factory_id,
+            )
+        )
+        if replay is None:
+            raise HTTPException(status_code=409, detail="主数据审批批次不存在")
+        return replay, True
+    batch = db.scalar(
+        select(InjectionSchedulingImportBatch)
+        .where(
+            InjectionSchedulingImportBatch.id == batch_id,
+            InjectionSchedulingImportBatch.factory_id == payload.factory_id,
+        )
+        .with_for_update()
+    )
+    if batch is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    if batch.status != "PREVIEW":
+        raise HTTPException(status_code=409, detail="已确认批次不能审批主数据差异")
+    if batch.revision != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "导入批次已变化",
+                "expected_revision": payload.expected_revision,
+                "current_revision": batch.revision,
+            },
+        )
+    normalized = _load_json(batch.normalized_json, {})
+    difference_by_key = {
+        f"{item.get('entity_type', '')}:{item.get('business_key', '')}": item
+        for item in normalized.get("master_differences", [])
+    }
+    unknown = set(payload.differences) - set(difference_by_key)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "包含不属于本批次的主数据差异", "differences": sorted(unknown)},
+        )
+    timestamp = _now()
+    rows = [
+        *normalized.get("scheduled_baseline_tasks", []),
+        *normalized.get("backlog_orders", []),
+    ]
+    source_machines = {
+        item.get("machine_code", ""): item for item in normalized.get("machines", [])
+    }
+    existing_machines = {
+        item.machine_code
+        for item in db.scalars(
+            select(InjectionSchedulingMachine).where(
+                InjectionSchedulingMachine.factory_id == payload.factory_id
+            )
+        ).all()
+    }
+    existing_molds = {
+        item.mold_no
+        for item in db.scalars(
+            select(InjectionSchedulingMold).where(
+                InjectionSchedulingMold.factory_id == payload.factory_id
+            )
+        ).all()
+    }
+    created_machines = 0
+    created_molds = 0
+    try:
+        for key in payload.differences:
+            difference = difference_by_key[key]
+            entity_type = difference["entity_type"]
+            business_key = difference["business_key"]
+            decision_id = f"ismasterdecision-{uuid4().hex}"
+            if entity_type == "MACHINE" and business_key not in existing_machines:
+                source = source_machines.get(business_key, {})
+                normalized_class = normalize_class_text(source.get("machine_class", ""))
+                db.add(
+                    InjectionSchedulingMachine(
+                        id=f"ismachine-{uuid4().hex}",
+                        factory_id=payload.factory_id,
+                        machine_code=business_key,
+                        area=source.get("area", ""),
+                        position=source.get("position", ""),
+                        machine_class=normalized_class.raw,
+                        machine_class_raw=normalized_class.raw,
+                        machine_a_class=normalized_class.a_class,
+                        normalization_status=normalized_class.status,
+                        process_tags_json=_json(normalized_class.process_tags),
+                        special_machine_type=normalized_class.special_machine_type,
+                        clamping_force_tons=source.get("clamping_force_tons"),
+                        injection_capacity_g=source.get("injection_capacity_g"),
+                        tie_bar_x_mm=source.get("tie_bar_x_mm"),
+                        tie_bar_y_mm=source.get("tie_bar_y_mm"),
+                        platen_x_mm=None,
+                        platen_y_mm=None,
+                        min_mold_thickness_mm=None,
+                        max_mold_thickness_mm=None,
+                        opening_stroke_mm=None,
+                        machine_type=source.get("machine_type", "standard"),
+                        robot_capabilities_json=_json(source.get("robot_capabilities", [])),
+                        fixture_capabilities_json=_json(source.get("fixture_capabilities", [])),
+                        process_restrictions_json=_json(source.get("process_restrictions", [])),
+                        status="available",
+                        revision=1,
+                        created_by=user.id,
+                        created_by_name=_actor_name(user),
+                        updated_by=user.id,
+                        updated_by_name=_actor_name(user),
+                        created_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                )
+                existing_machines.add(business_key)
+                created_machines += 1
+            elif entity_type == "MOLD" and business_key not in existing_molds:
+                row = next((item for item in rows if item.get("mold_no") == business_key), {})
+                normalized_class = normalize_class_text(
+                    row.get("legacy_machine_class_text", "")
+                )
+                db.add(
+                    InjectionSchedulingMold(
+                        id=f"ismold-{uuid4().hex}",
+                        factory_id=payload.factory_id,
+                        mold_no=business_key,
+                        name=row.get("product_name", ""),
+                        length_mm=None,
+                        width_mm=None,
+                        height_mm=None,
+                        weight_kg=None,
+                        recommended_machine_class=normalized_class.raw,
+                        mold_class_raw=normalized_class.raw,
+                        mold_a_class=normalized_class.a_class,
+                        normalization_status=normalized_class.status,
+                        process_tags_json=_json(normalized_class.process_tags),
+                        special_machine_type=normalized_class.special_machine_type,
+                        whole_shot_net_weight_g=row.get("whole_shot_net_weight_g"),
+                        whole_shot_gross_weight_g=row.get("whole_shot_gross_weight_g"),
+                        required_arm_type="",
+                        required_fixture_type="",
+                        material_code=row.get("material_code", ""),
+                        material_name=row.get("material_name", ""),
+                        color_profile=row.get("color", ""),
+                        process_requirements_json="[]",
+                        copy_count=1,
+                        data_quality_status="needs_review",
+                        status="available",
+                        revision=1,
+                        created_by=user.id,
+                        created_by_name=_actor_name(user),
+                        updated_by=user.id,
+                        updated_by_name=_actor_name(user),
+                        created_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                )
+                existing_molds.add(business_key)
+                created_molds += 1
+            elif entity_type not in {"MACHINE", "MOLD"}:
+                raise HTTPException(status_code=422, detail="不支持的主数据差异类型")
+            db.add(
+                InjectionSchedulingImportMasterDecision(
+                    id=decision_id,
+                    batch_id=batch.id,
+                    factory_id=payload.factory_id,
+                    entity_type=entity_type,
+                    business_key=business_key,
+                    decision="APPROVED",
+                    reason=payload.reason,
+                    request_id=payload.request_id,
+                    decided_by=user.id,
+                    decided_by_name=_actor_name(user),
+                    created_at=timestamp,
+                )
+            )
+            difference["status"] = "APPROVED_CREATED"
+            difference["decision_id"] = decision_id
+        db.flush()
+        remaining = [
+            item
+            for item in normalized.get("master_differences", [])
+            if item.get("status") != "APPROVED_CREATED"
+        ]
+        reconciliation = build_reconciliation_preview(
+            db,
+            factory_id=payload.factory_id,
+            normalized=normalized,
+        )
+        normalized.update(reconciliation)
+        normalized["batch_state"] = (
+            "MASTER_REVIEW_REQUIRED"
+            if remaining
+            else "RECONCILIATION_CONFLICT"
+            if reconciliation["has_reconciliation_conflicts"]
+            else "PREVIEW_READY"
+        )
+        normalized["summary"].update(
+            {
+                "master_difference_count": len(remaining),
+                "approved_master_difference_count": len(payload.differences),
+                "reconciliation_action_count": len(reconciliation["reconciliation_actions"]),
+                "reconciliation_action_counts": reconciliation["action_summary"],
+                "can_confirm": normalized["batch_state"] == "PREVIEW_READY"
+                and normalized["summary"].get("blocking_issue_count", 0) == 0,
+            }
+        )
+        normalized.pop("normalized_sha256", None)
+        normalized["normalized_sha256"] = _payload_hash(normalized)
+        context = reconciliation["plan_context"]
+        batch.batch_state = normalized["batch_state"]
+        batch.normalized_json = _json(normalized)
+        batch.normalized_sha256 = normalized["normalized_sha256"]
+        batch.summary_json = _json(normalized["summary"])
+        batch.action_fingerprint = reconciliation["action_fingerprint"]
+        batch.target_draft_plan_id = context["target_draft_plan_id"]
+        batch.target_draft_plan_revision = context["target_draft_plan_revision"]
+        batch.reference_published_plan_id = context["reference_published_plan_id"]
+        batch.reference_published_plan_revision = context[
+            "reference_published_plan_revision"
+        ]
+        batch.reference_published_event_sequence = context[
+            "reference_published_event_sequence"
+        ]
+        batch.order_task_revision_digest = context["order_task_revision_digest"]
+        batch.rule_revision = context["rule_revision"]
+        batch.master_revision_digest = context["master_revision_digest"]
+        batch.revision += 1
+        _audit(
+            db,
+            factory_id=payload.factory_id,
+            event_type="import_master_differences_approved",
+            entity_type="import_batch",
+            entity_id=batch.id,
+            entity_revision=batch.revision,
+            request_id=payload.request_id,
+            detail={
+                "differences": payload.differences,
+                "reason": payload.reason,
+                "created_machines": created_machines,
+                "created_molds": created_molds,
+                "batch_state": batch.batch_state,
+            },
+            user=user,
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="主数据审批写入冲突") from exc
+    return batch, False
 
 
 def _create_missing_masters(
@@ -480,11 +894,167 @@ def _order_business_key(
     )
 
 
+def _confirm_canonical_takeover(
+    db: Session,
+    *,
+    batch: InjectionSchedulingImportBatch,
+    payload: InjectionSchedulingImportConfirm,
+    normalized: dict[str, Any],
+    confirm_payload_hash: str,
+    can_publish: bool,
+    user: AuthContext,
+) -> InjectionSchedulingImportBatch:
+    current = build_reconciliation_preview(
+        db,
+        factory_id=batch.factory_id,
+        normalized=normalized,
+    )
+    current_context = current["plan_context"]
+    if (
+        current["action_fingerprint"] != batch.action_fingerprint
+        or current_context.get("order_task_revision_digest")
+        != batch.order_task_revision_digest
+        or current_context.get("master_revision_digest")
+        != batch.master_revision_digest
+        or current_context.get("rule_revision") != batch.rule_revision
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "IMPORT_RECONCILIATION_STALE",
+                "message": "计划、任务、报工、主数据或规则已变化，请重新预览",
+                "current_action_fingerprint": current["action_fingerprint"],
+            },
+        )
+    if (
+        payload.expected_action_fingerprint
+        and payload.expected_action_fingerprint != batch.action_fingerprint
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ACTION_FINGERPRINT_MISMATCH",
+                "current_action_fingerprint": batch.action_fingerprint,
+            },
+        )
+    if current["has_reconciliation_conflicts"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RECONCILIATION_CONFLICT",
+                "message": "批次仍含计划或报工水位冲突，不能确认",
+            },
+        )
+    timestamp = _now()
+    try:
+        plan, created_plan, successor_created = prepare_takeover_plan(
+            db,
+            factory_id=batch.factory_id,
+            business_date=payload.business_date.isoformat(),
+            user=user,
+            timestamp=timestamp,
+        )
+        if created_plan:
+            if payload.confirm_mode != "create_draft" or payload.expected_plan_revision != 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="当前确认将创建接管草案，请使用 create_draft 且 revision=0",
+                )
+        else:
+            if payload.confirm_mode != "merge_draft":
+                raise HTTPException(status_code=409, detail="当前厂区已有草案，请使用 merge_draft")
+            if (
+                plan.revision != payload.expected_plan_revision
+                or plan.id != batch.target_draft_plan_id
+                or plan.revision != batch.target_draft_plan_revision
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "TARGET_DRAFT_STALE",
+                        "current_plan_id": plan.id,
+                        "current_revision": plan.revision,
+                    },
+                )
+        action_result = apply_takeover_actions(
+            db,
+            plan=plan,
+            batch=batch,
+            normalized=normalized,
+            actions=current["reconciliation_actions"],
+            action_reasons=payload.action_reasons,
+            can_publish=can_publish,
+            user=user,
+            timestamp=timestamp,
+        )
+        mutating_actions = sum(
+            count
+            for action_type, count in action_result["action_counts"].items()
+            if action_type not in {"SKIP_IDENTICAL", "CREATE_ORDER"}
+        )
+        if not created_plan and mutating_actions:
+            plan.revision += 1
+        plan.updated_by = user.id
+        plan.updated_by_name = _actor_name(user)
+        plan.updated_at = timestamp
+        db.flush()
+        if created_plan or mutating_actions:
+            _record_plan_revision(db, plan=plan, user=user, timestamp=timestamp)
+        result = {
+            "plan_created": created_plan,
+            "successor_created": successor_created,
+            "action_counts": action_result["action_counts"],
+            "created_machines": 0,
+            "created_molds": 0,
+            "locked_baseline": True,
+            "backlog_without_tasks": True,
+            "action_fingerprint": batch.action_fingerprint,
+        }
+        batch.status = "CONFIRMED"
+        batch.revision += 1
+        batch.confirm_request_id = payload.request_id
+        batch.confirm_payload_hash = confirm_payload_hash
+        batch.confirm_mode = payload.confirm_mode
+        batch.confirmed_plan_id = plan.id
+        batch.confirmed_plan_revision = plan.revision
+        batch.result_json = _json(result)
+        batch.confirmed_by = user.id
+        batch.confirmed_by_name = _actor_name(user)
+        batch.confirmed_at = timestamp
+        _audit(
+            db,
+            factory_id=batch.factory_id,
+            event_type="import_takeover_confirmed",
+            entity_type="import_batch",
+            entity_id=batch.id,
+            entity_revision=batch.revision,
+            request_id=payload.request_id,
+            detail={
+                "plan_id": plan.id,
+                "plan_revision": plan.revision,
+                "based_on_plan_id": plan.based_on_plan_id,
+                "action_reasons": payload.action_reasons,
+                "result": result,
+            },
+            user=user,
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="接管确认事务写入冲突") from exc
+    return batch
+
+
 def confirm_import(
     db: Session,
     batch_id: str,
     payload: InjectionSchedulingImportConfirm,
     user: AuthContext,
+    *,
+    can_publish: bool = False,
 ) -> tuple[InjectionSchedulingImportBatch, bool]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     confirm_payload_hash = _payload_hash(payload.model_dump(mode="json"))
@@ -505,7 +1075,7 @@ def confirm_import(
         select(InjectionSchedulingImportBatch).where(
             InjectionSchedulingImportBatch.id == batch_id,
             InjectionSchedulingImportBatch.factory_id == factory_id,
-        )
+        ).with_for_update()
     )
     if batch is None:
         raise HTTPException(status_code=404, detail="导入批次不存在")
@@ -525,6 +1095,81 @@ def confirm_import(
                 "current_revision": batch.revision,
             },
         )
+    normalized = _load_json(batch.normalized_json, {})
+    normalized_copy = dict(normalized)
+    expected_normalized_sha256 = normalized_copy.pop("normalized_sha256", "")
+    if _payload_hash(normalized_copy) != expected_normalized_sha256:
+        raise HTTPException(status_code=409, detail="导入预览内容校验失败，请重新上传")
+    if batch.preview_schema_version == "injection-scheduling-canonical-v1":
+        active_profile_record = db.scalar(
+            select(InjectionSchedulingImportProfile)
+            .join(
+                InjectionSchedulingImportProfileFactory,
+                InjectionSchedulingImportProfileFactory.profile_id
+                == InjectionSchedulingImportProfile.id,
+            )
+            .where(
+                InjectionSchedulingImportProfile.id == batch.profile_id,
+                InjectionSchedulingImportProfile.revision == batch.profile_revision,
+                InjectionSchedulingImportProfile.status == "ACTIVE",
+                InjectionSchedulingImportProfileFactory.factory_id == factory_id,
+            )
+            .with_for_update()
+        )
+        if (
+            active_profile_record is None
+            or batch.profile_definition_sha256
+            != active_profile_record.definition_sha256
+            or batch.profile_definition_sha256
+            != (normalized.get("profile") or {}).get("definition_digest", "")
+            or batch.mapping_fingerprint != normalized.get("mapping_fingerprint", "")
+            or batch.template_signature != normalized.get("template_signature", "")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "IMPORT_PROFILE_STALE",
+                    "message": "Profile revision 或映射指纹已变化，请重新预览",
+                    "profile_id": batch.profile_id,
+                    "profile_revision": batch.profile_revision,
+                },
+            )
+        non_overridable = list(
+            db.scalars(
+                select(InjectionSchedulingImportIssue).where(
+                    InjectionSchedulingImportIssue.batch_id == batch.id,
+                    InjectionSchedulingImportIssue.blocking.is_(True),
+                    InjectionSchedulingImportIssue.code.in_(
+                        {
+                            "PROFILE_NOT_IDENTIFIED",
+                            "REQUIRED_MAPPING_MISSING",
+                            "STABLE_IDENTITY_AMBIGUOUS",
+                            "CANONICAL_ROW_INVALID",
+                            "FORMULA_CACHE_MISSING",
+                            "FORMULA_ERROR",
+                        }
+                    ),
+                )
+            ).all()
+        )
+        if non_overridable:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "NON_OVERRIDABLE_CANONICAL_ERRORS",
+                    "message": "规范映射或来源完整性错误不可通过确认问题强制跳过",
+                    "issue_ids": [item.id for item in non_overridable],
+                },
+            )
+        if batch.batch_state != "PREVIEW_READY":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CANONICAL_BATCH_NOT_READY",
+                    "message": "批次尚未完成字段映射或主数据审批，不能确认写入",
+                    "batch_state": batch.batch_state,
+                },
+            )
     blocking_issue_ids = set(
         db.scalars(
             select(InjectionSchedulingImportIssue.id).where(
@@ -552,11 +1197,19 @@ def confirm_import(
                 "unacknowledged_issue_ids": sorted(unacknowledged),
             },
         )
-    normalized = _load_json(batch.normalized_json, {})
-    normalized_copy = dict(normalized)
-    expected_normalized_sha256 = normalized_copy.pop("normalized_sha256", "")
-    if _payload_hash(normalized_copy) != expected_normalized_sha256:
-        raise HTTPException(status_code=409, detail="导入预览内容校验失败，请重新上传")
+    if batch.preview_schema_version == "injection-scheduling-canonical-v1":
+        return (
+            _confirm_canonical_takeover(
+                db,
+                batch=batch,
+                payload=payload,
+                normalized=normalized,
+                confirm_payload_hash=confirm_payload_hash,
+                can_publish=can_publish,
+                user=user,
+            ),
+            False,
+        )
     if not normalized.get("tasks"):
         raise HTTPException(status_code=409, detail="导入预览没有可写入的有效任务")
 

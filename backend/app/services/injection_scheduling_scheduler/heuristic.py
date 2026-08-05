@@ -19,6 +19,7 @@ from app.schemas.injection_scheduling_matching import (
     InjectionSchedulingMachineMatchOut,
     InjectionSchedulingMatchBatchOut,
 )
+from app.services.injection_scheduling_scheduler.anchor import next_feasible_start
 from app.services.injection_scheduling_scheduler.duration import production_minutes
 from app.services.injection_scheduling_scheduler.explanation import (
     assignment_explanation,
@@ -49,29 +50,6 @@ class HeuristicResult:
     assignments: tuple[dict[str, Any], ...]
     summary: dict[str, Any]
     frozen_task_ids: tuple[str, ...]
-
-
-def _next_calendar_start(
-    start: datetime,
-    duration: timedelta,
-    calendars: list[InjectionSchedulingMachineCalendar],
-) -> datetime:
-    candidate = start
-    while True:
-        finish = candidate + duration
-        conflict = next(
-            (
-                window
-                for window in calendars
-                if not window.available
-                and candidate < as_business_datetime(window.window_end)
-                and finish > as_business_datetime(window.window_start)
-            ),
-            None,
-        )
-        if conflict is None:
-            return candidate
-        candidate = as_business_datetime(conflict.window_end)
 
 
 def _order_sort_key(order: InjectionSchedulingOrder) -> tuple[Any, ...]:
@@ -181,12 +159,14 @@ def solve_heuristic(
     horizon_end: datetime,
     objective_config: dict[str, Any],
     time_limit_seconds: int,
+    machine_anchors: dict[str, datetime] | None = None,
 ) -> HeuristicResult:
     started = monotonic()
     order_ids = {item.id for item in orders}
-    task_by_order = {
-        item.order_id: item for item in plan_tasks if item.order_id in order_ids
-    }
+    task_by_order: dict[str, InjectionSchedulingTask] = {}
+    for item in sorted(plan_tasks, key=lambda task: task.id):
+        if item.order_id in order_ids:
+            task_by_order.setdefault(item.order_id, item)
     evaluation_by_order = {item.order_id: item for item in matches.evaluations}
     machine_by_id = {item.id: item for item in machines}
     calendar_by_machine: dict[str, list[InjectionSchedulingMachineCalendar]] = {}
@@ -214,6 +194,7 @@ def solve_heuristic(
         or item.execution_status == "RUNNING"
     ]
     frozen_task_ids = tuple(sorted(item.id for item in fixed_tasks))
+    frozen_order_ids = {item.order_id for item in fixed_tasks}
     slots_by_machine: dict[str, list[QueueSlot]] = {item.id: [] for item in machines}
     mold_available: dict[tuple[str, int], datetime] = {}
     for task in fixed_tasks:
@@ -264,15 +245,7 @@ def solve_heuristic(
         if monotonic() - started > time_limit_seconds:
             raise TimeoutError("启发式排期超过时间上限")
         existing_task = task_by_order.get(order.id)
-        if (
-            existing_task
-            and existing_task.id in frozen_task_ids
-            and (
-                existing_task.locked
-                or existing_task.active_execution
-                or existing_task.execution_status == "RUNNING"
-            )
-        ):
+        if order.id in frozen_order_ids:
             continue
         if order.material_readiness_status == "blocked":
             assignments.append(
@@ -387,14 +360,16 @@ def solve_heuristic(
             transition = transition_impact(previous_mold, mold, objective_config)
             duration = timedelta(minutes=transition.setup_minutes + production)
             machine_start = max(
-                horizon_start, last_slot.finish if last_slot else horizon_start
+                horizon_start,
+                (machine_anchors or {}).get(machine.id, horizon_start),
+                last_slot.finish if last_slot else horizon_start,
             )
             best_copy: tuple[datetime, int] | None = None
             for copy_no in range(1, mold.copy_count + 1):
                 copy_start = max(
                     machine_start, mold_available.get((mold.id, copy_no), horizon_start)
                 )
-                copy_start = _next_calendar_start(
+                copy_start = next_feasible_start(
                     copy_start, duration, calendar_by_machine.get(machine.id, [])
                 )
                 if best_copy is None or (copy_start, copy_no) < best_copy:

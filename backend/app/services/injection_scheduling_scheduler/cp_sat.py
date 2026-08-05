@@ -143,28 +143,31 @@ def solve_cp_sat(
     horizon_end: datetime,
     objective_config: dict[str, Any],
     time_limit_seconds: int,
+    machine_anchors: dict[str, datetime] | None = None,
 ) -> HeuristicResult:
     cp_model = _load_cp_sat()
     started = monotonic()
     horizon_minutes = max(1, ceil((horizon_end - horizon_start).total_seconds() / 60))
     order_ids = {item.id for item in orders}
     order_by_id = {item.id: item for item in orders}
-    task_by_order = {
-        item.order_id: item for item in plan_tasks if item.order_id in order_ids
-    }
+    task_by_order: dict[str, InjectionSchedulingTask] = {}
+    for item in sorted(plan_tasks, key=lambda task: task.id):
+        if item.order_id in order_ids:
+            task_by_order.setdefault(item.order_id, item)
     machine_by_id = {item.id: item for item in machines}
     evaluation_by_order = {item.order_id: item for item in matches.evaluations}
 
     assignments: list[dict[str, Any]] = []
     candidate_orders: list[InjectionSchedulingOrder] = []
     eligible_by_order: dict[str, list[InjectionSchedulingMachineMatchOut]] = {}
+    frozen_order_ids = {
+        item.order_id
+        for item in plan_tasks
+        if item.locked or item.active_execution or item.execution_status == "RUNNING"
+    }
     for order in orders:
         existing_task = task_by_order.get(order.id)
-        if existing_task and (
-            existing_task.locked
-            or existing_task.active_execution
-            or existing_task.execution_status == "RUNNING"
-        ):
+        if order.id in frozen_order_ids:
             continue
         if order.material_readiness_status == "blocked":
             assignments.append(
@@ -228,7 +231,10 @@ def solve_cp_sat(
         or item.execution_status == "RUNNING"
     ]
     frozen_task_ids = tuple(sorted(item.id for item in fixed_tasks))
-    machine_release_minutes: dict[str, int] = {}
+    machine_release_minutes: dict[str, int] = {
+        machine_id: max(0, _minute_offset(anchor, horizon_start))
+        for machine_id, anchor in (machine_anchors or {}).items()
+    }
     for task in fixed_tasks:
         if not task.planned_finish:
             continue

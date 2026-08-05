@@ -20,6 +20,7 @@ from app.models.injection_scheduling_execution import (
     InjectionSchedulingAuditEvent,
     InjectionSchedulingOrder,
     InjectionSchedulingPlan,
+    InjectionSchedulingPlanOrderState,
     InjectionSchedulingTask,
 )
 from app.models.injection_scheduling_phase5 import InjectionSchedulingSpeedModel
@@ -47,8 +48,12 @@ from app.services.injection_scheduling_execution import (
     _delivery_slack_days,
     _record_plan_revision,
     _remaining_shifts,
+    _stable_order_key,
     _validate_proposed_task_windows,
     plan_out,
+)
+from app.services.injection_scheduling_scheduler.anchor import (
+    build_machine_continuation_anchors,
 )
 from app.services.injection_scheduling_scheduler.cp_sat import (
     CpSatUnavailableError,
@@ -403,6 +408,14 @@ def create_run(
                 )
             ).all()
         )
+        continuation_anchors = build_machine_continuation_anchors(
+            db,
+            factory_id=factory_id,
+            target_plan=plan,
+            target_tasks=plan_tasks,
+            calendars=calendars,
+            horizon_start=horizon_start,
+        )
         transition_rules = list(
             db.scalars(
                 select(InjectionSchedulingTransitionRule)
@@ -513,6 +526,13 @@ def create_run(
                 }
                 for item in plan_tasks
             ],
+            "continuation_anchors": [
+                item.as_dict()
+                for item in sorted(
+                    continuation_anchors.values(),
+                    key=lambda anchor: anchor.machine_id,
+                )
+            ],
         }
         record.input_snapshot_json = _json(snapshot)
         record.objective_config_json = _json(objective_config)
@@ -528,6 +548,10 @@ def create_run(
             "horizon_end": horizon_end,
             "objective_config": objective_config,
             "time_limit_seconds": payload.time_limit_seconds,
+            "machine_anchors": {
+                machine_id: anchor.starts_at
+                for machine_id, anchor in continuation_anchors.items()
+            },
         }
         fallback_reason = ""
         if payload.solver == "HEURISTIC":
@@ -562,6 +586,13 @@ def create_run(
             "scenario_group_id": scenario_group_id,
             "scenario_name": payload.scenario_name,
             "alternative_no": payload.alternative_no,
+            "continuation_anchors": [
+                item.as_dict()
+                for item in sorted(
+                    continuation_anchors.values(),
+                    key=lambda anchor: anchor.machine_id,
+                )
+            ],
         }
         for item in result.assignments:
             db.add(
@@ -838,7 +869,54 @@ def apply_run(
             )
         ).all()
     )
+    current_calendars = list(
+        db.scalars(
+            select(InjectionSchedulingMachineCalendar).where(
+                InjectionSchedulingMachineCalendar.factory_id == factory_id,
+                InjectionSchedulingMachineCalendar.window_end > run.horizon_start,
+                InjectionSchedulingMachineCalendar.window_start < run.horizon_end,
+            )
+        ).all()
+    )
+    current_anchors = build_machine_continuation_anchors(
+        db,
+        factory_id=factory_id,
+        target_plan=plan,
+        target_tasks=current_tasks,
+        calendars=current_calendars,
+        horizon_start=as_business_datetime(run.horizon_start),
+    )
+    anchor_violations = [
+        {
+            "assignment_id": item.id,
+            "machine_id": item.machine_id,
+            "planned_start": item.planned_start,
+            "continuation_anchor": current_anchors[item.machine_id].as_dict(),
+        }
+        for item in assignments
+        if item.machine_id in current_anchors
+        and as_business_datetime(item.planned_start)
+        < current_anchors[item.machine_id].starts_at
+    ]
+    if anchor_violations:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONTINUATION_ANCHOR_STALE",
+                "message": "执行计划或机台接续点已变化，请重新生成排期预览",
+                "violations": anchor_violations,
+            },
+        )
     task_by_id = {item.id: item for item in current_tasks}
+    states = {
+        item.order_id: item
+        for item in db.scalars(
+            select(InjectionSchedulingPlanOrderState).where(
+                InjectionSchedulingPlanOrderState.factory_id == factory_id,
+                InjectionSchedulingPlanOrderState.plan_id == plan.id,
+            )
+        ).all()
+    }
     placements = [
         {
             "id": item.id,
@@ -953,6 +1031,7 @@ def apply_run(
                     )
             else:
                 order = db.get(InjectionSchedulingOrder, assignment.order_id)
+                stable_order_key = _stable_order_key(order)
                 task = InjectionSchedulingTask(
                     id=f"istask-{uuid4().hex}",
                     factory_id=factory_id,
@@ -984,6 +1063,22 @@ def apply_run(
                     source_sheet_name="",
                     source_row=None,
                     source_file_hash="",
+                    allocated_quantity=max(
+                        order.order_quantity - order.completed_quantity,
+                        Decimal(0),
+                    ),
+                    takeover_source_completed_quantity=order.source_completed_quantity,
+                    origin="auto_schedule",
+                    stable_order_key=stable_order_key,
+                    stable_row_key=_hash(
+                        [run.id, assignment.order_id, assignment.id]
+                    ),
+                    source_task_id=None,
+                    inherited_report_counter=Decimal(0),
+                    completed_at_clone=Decimal(0),
+                    report_event_watermark=0,
+                    profile_id=None,
+                    profile_revision=None,
                     setup_minutes=assignment.setup_minutes,
                     production_minutes=assignment.production_minutes,
                     planned_downtime_minutes=assignment.planned_downtime_minutes,
@@ -1001,6 +1096,48 @@ def apply_run(
                     updated_at=timestamp,
                 )
                 db.add(task)
+            state = states.get(assignment.order_id)
+            order = db.get(InjectionSchedulingOrder, assignment.order_id)
+            if state is None:
+                state = InjectionSchedulingPlanOrderState(
+                    id=f"ispostate-{uuid4().hex}",
+                    factory_id=factory_id,
+                    plan_id=plan.id,
+                    order_id=order.id,
+                    stable_order_key=_stable_order_key(order),
+                    order_quantity=order.order_quantity,
+                    delivery_start_date=order.delivery_start_date,
+                    delivery_due_date=order.delivery_due_date,
+                    takeover_source_completed_quantity=order.source_completed_quantity,
+                    report_increment_total=Decimal(0),
+                    progress_adjustment_total=Decimal(0),
+                    completed_quantity=order.completed_quantity,
+                    status="SCHEDULED",
+                    quantity_scope="ORDER_CUMULATIVE",
+                    source_batch_id=None,
+                    source_sheet_name="",
+                    source_row=None,
+                    source_profile_id=None,
+                    source_profile_revision=None,
+                    source_lineage_json=_json(
+                        {"origin": "auto_schedule", "run_id": run.id}
+                    ),
+                    revision=1,
+                    created_by=user.id,
+                    created_by_name=_actor_name(user),
+                    updated_by=user.id,
+                    updated_by_name=_actor_name(user),
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                db.add(state)
+                states[assignment.order_id] = state
+            elif state.status == "BACKLOG":
+                state.status = "SCHEDULED"
+                state.revision += 1
+                state.updated_by = user.id
+                state.updated_by_name = _actor_name(user)
+                state.updated_at = timestamp
         for order_id in affected_order_ids:
             order = db.get(InjectionSchedulingOrder, order_id)
             if order.status == "BACKLOG":

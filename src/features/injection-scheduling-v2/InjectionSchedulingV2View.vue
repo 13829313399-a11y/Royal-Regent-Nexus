@@ -86,7 +86,7 @@ useScheduleLiveEvents(store.pollEvents)
       <section class="scheduling-workspace">
         <nav class="workspace-tabs" aria-label="排产视图">
           <button v-for="tab in tabs" :key="tab.key" :class="{ active: store.activeView === tab.key }" @click="selectView(tab.key)"><component :is="tab.icon" :size="15" /><span>{{ tab.label }}</span><em>{{ tabCount[tab.key] }}</em></button>
-          <div class="workspace-status"><span class="status-dot"></span>{{ store.plan ? `${store.plan.status} · r${store.plan.revision}` : '暂无当前计划' }}<b>轮询 {{ store.pollingRevision }}</b></div>
+          <div class="workspace-status"><span class="status-dot"></span><span>执行 {{ store.executionPlan ? `PUBLISHED · r${store.executionPlan.revision}` : '暂无' }}</span><span>规划 {{ store.planningPlan ? `DRAFT · r${store.planningPlan.revision}` : '暂无' }}</span><b>轮询 {{ store.pollingRevision }}</b></div>
         </nav>
 
         <Transition name="workspace-view" mode="out-in">

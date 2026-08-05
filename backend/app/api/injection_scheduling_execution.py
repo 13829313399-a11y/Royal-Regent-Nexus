@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal
 from typing import Annotated
 from uuid import uuid4
 
@@ -14,8 +15,11 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingOrderCreate,
     InjectionSchedulingOrderOut,
     InjectionSchedulingOrderUpdate,
+    InjectionSchedulingPlanContextOut,
     InjectionSchedulingPlanOperationOut,
     InjectionSchedulingPlanOut,
+    InjectionSchedulingProgressAdjustmentCreate,
+    InjectionSchedulingProgressAdjustmentResult,
     InjectionSchedulingPublishInput,
     InjectionSchedulingRollbackInput,
     InjectionSchedulingShiftReportBulkCreate,
@@ -50,13 +54,19 @@ from app.services.injection_scheduling_execution import (
     list_events,
     move_tasks_bulk,
     order_out,
+    plan_order_state_out,
     plan_out,
+    progress_adjustment_out,
     publish_plan,
     rollback_plan,
     shift_report_out,
     task_out,
     update_order,
     update_task,
+)
+from app.services.injection_scheduling_takeover import (
+    explicit_plan_context,
+    manual_progress_adjustment,
 )
 
 router = APIRouter(
@@ -226,8 +236,17 @@ def patch_task(
     db: DbSession,
     current_user: CurrentUser,
 ):
-    _ensure_permission(
+    factory_id = _ensure_permission(
         db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    can_override_baseline = any(
+        has_permission_in_scope(
+            current_user,
+            "injection_scheduling:publish",
+            factory_id,
+            department,
+        )
+        for department in SCHEDULING_DEPARTMENTS
     )
     if payload.locked is not None or payload.manual_override_reason is not None:
         _ensure_permission(
@@ -243,6 +262,7 @@ def patch_task(
         payload,
         current_user,
         _request_id(request),
+        can_override_baseline=can_override_baseline,
     )
     return plan_out(db, plan)
 
@@ -275,6 +295,24 @@ def post_task_bulk_move(
         payload,
         current_user,
         can_override_review=can_override_review,
+    )
+
+
+@router.get("/plans/context", response_model=InjectionSchedulingPlanContextOut)
+def get_plan_context(
+    factory_id: str,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:read", factory_id
+    )
+    published, draft = explicit_plan_context(db, factory_id)
+    return InjectionSchedulingPlanContextOut(
+        factory_id=factory_id,
+        execution_published_plan=(plan_out(db, published) if published else None),
+        planning_draft_plan=(plan_out(db, draft) if draft else None),
+        polling_revision=latest_event_sequence(db, factory_id),
     )
 
 
@@ -364,6 +402,38 @@ def post_shift_reports_bulk(
         db, current_user, "injection_scheduling:report", payload.factory_id
     )
     return create_shift_reports_bulk(db, payload, current_user)
+
+
+@router.post(
+    "/progress-adjustments",
+    response_model=InjectionSchedulingProgressAdjustmentResult,
+)
+def post_progress_adjustment(
+    payload: InjectionSchedulingProgressAdjustmentCreate,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:publish", payload.factory_id
+    )
+    adjustment, state, sequence, replay = manual_progress_adjustment(
+        db,
+        factory_id=factory_id,
+        plan_id=payload.plan_id,
+        order_id=payload.order_id,
+        task_id=payload.task_id,
+        expected_state_revision=payload.expected_state_revision,
+        signed_quantity=Decimal(str(payload.signed_quantity)),
+        reason=payload.reason,
+        request_id=payload.request_id,
+        user=current_user,
+    )
+    return InjectionSchedulingProgressAdjustmentResult(
+        adjustment=progress_adjustment_out(adjustment),
+        state=plan_order_state_out(state),
+        audit_sequence=sequence,
+        idempotent_replay=replay,
+    )
 
 
 @router.get("/events", response_model=InjectionSchedulingEventsOut)

@@ -91,6 +91,11 @@ export function mapTask(source: UnknownRecord): ScheduleTaskRecord {
     changeoverType: text(source.changeover_type), autoScheduleRunId: text(source.auto_schedule_run_id) || null,
     autoScore: numberOrNull(source.auto_score), autoExplanation: source.auto_explanation && typeof source.auto_explanation === 'object' ? source.auto_explanation as UnknownRecord : {},
     manualAdjusted: Boolean(source.manual_adjusted),
+    allocatedQuantity: numberValue(source.allocated_quantity), takeoverSourceCompletedQuantity: numberValue(source.takeover_source_completed_quantity),
+    origin: text(source.origin), stableOrderKey: text(source.stable_order_key), stableRowKey: text(source.stable_row_key),
+    sourceTaskId: text(source.source_task_id) || null, inheritedReportCounter: numberValue(source.inherited_report_counter),
+    completedAtClone: numberValue(source.completed_at_clone), reportEventWatermark: numberValue(source.report_event_watermark),
+    profileId: text(source.profile_id) || null, profileRevision: numberOrNull(source.profile_revision),
   }
 }
 
@@ -109,6 +114,8 @@ export function mapPlan(source: UnknownRecord | null): { plan: SchedulingPlanRec
     plan: {
       id: text(source.id), status: text(source.status), revision: numberValue(source.revision),
       ruleRevision: numberValue(source.rule_revision), businessDate: text(source.business_date),
+      basedOnPlanId: text(source.based_on_plan_id), basedOnEventSequence: numberValue(source.based_on_event_sequence),
+      basedOnReportWatermark: numberValue(source.based_on_report_watermark),
     },
     orders: (Array.isArray(source.orders) ? source.orders as UnknownRecord[] : []).map(mapOrder),
     tasks: (Array.isArray(source.tasks) ? source.tasks as UnknownRecord[] : []).map(mapTask),
@@ -136,6 +143,7 @@ export function mapAutoScheduleRun(source: UnknownRecord): AutoScheduleRunRecord
     return { before: numberValue(item.before), after: numberValue(item.after), change: numberValue(item.change) }
   }
   const loads = Array.isArray(summary.machine_loads) ? summary.machine_loads as UnknownRecord[] : []
+  const anchors = Array.isArray(summary.continuation_anchors) ? summary.continuation_anchors as UnknownRecord[] : []
   return {
     id: text(source.id), factoryId: text(source.factory_id), planId: text(source.plan_id), expectedPlanRevision: numberValue(source.expected_plan_revision),
     ruleRevision: numberValue(source.rule_revision), solverType: (text(source.solver_type) || 'HEURISTIC') as AutoScheduleRunRecord['solverType'],
@@ -159,6 +167,10 @@ export function mapAutoScheduleRun(source: UnknownRecord): AutoScheduleRunRecord
       solverElapsedMs: numberValue(summary.solver_elapsed_ms), solverStatus: (text(summary.solver_status) || text(source.solver_status) || 'NOT_RUN') as AutoScheduleRunRecord['solverStatus'],
       objectiveValue: numberOrNull(summary.objective_value), bestObjectiveBound: numberOrNull(summary.best_objective_bound),
       fallbackUsed: Boolean(summary.fallback_used ?? source.fallback_used), fallbackReason: text(summary.fallback_reason) || text(source.fallback_reason),
+      continuationAnchors: anchors.map((item) => ({
+        machineId: text(item.machine_id), startsAt: text(item.starts_at),
+        sources: Array.isArray(item.sources) ? item.sources.filter((source): source is UnknownRecord => Boolean(source) && typeof source === 'object') : [],
+      })),
     },
     assignments: (Array.isArray(source.assignments) ? source.assignments as UnknownRecord[] : []).map(mapAssignment),
   }
@@ -239,13 +251,15 @@ export async function fetchSchedulingWorkspace(factoryId: string) {
   const [machinesResponse, moldsResponse, planResponse, backlogResponse, eventsResponse, runsResponse] = await Promise.all([
     http.get('/injection-scheduling/machines', { params: { factory_id: factoryId } }),
     http.get('/injection-scheduling/molds', { params: { factory_id: factoryId } }),
-    http.get('/injection-scheduling/plans/current', { params: { factory_id: factoryId } }),
+    http.get('/injection-scheduling/plans/context', { params: { factory_id: factoryId } }),
     http.get('/injection-scheduling/backlog', { params: { factory_id: factoryId } }),
     http.get('/injection-scheduling/events', { params: { factory_id: factoryId, after_sequence: 0, limit: 100 } }),
     http.get('/injection-scheduling/auto-schedule/runs', { params: { factory_id: factoryId, limit: 30 } }),
   ])
-  const planPayload = planResponse.data as { plan?: UnknownRecord | null; polling_revision?: number }
-  const mappedPlan = mapPlan(planPayload.plan ?? null)
+  const planPayload = planResponse.data as { execution_published_plan?: UnknownRecord | null; planning_draft_plan?: UnknownRecord | null; polling_revision?: number }
+  const publishedPlan = mapPlan(planPayload.execution_published_plan ?? null)
+  const draftPlan = mapPlan(planPayload.planning_draft_plan ?? null)
+  const mappedPlan = draftPlan.plan ? draftPlan : publishedPlan
   const planOrders = mappedPlan.orders
   const backlogItems = Array.isArray((backlogResponse.data as UnknownRecord).items) ? (backlogResponse.data as { items: UnknownRecord[] }).items : []
   const orderMap = new Map<string, OrderRecord>()
@@ -260,6 +274,8 @@ export async function fetchSchedulingWorkspace(factoryId: string) {
     tasks: mappedPlan.tasks,
     backlogOrderIds: backlogItems.map((source) => text(source.id)),
     plan: mappedPlan.plan,
+    executionPlan: publishedPlan.plan,
+    planningPlan: draftPlan.plan,
     pollingRevision: numberValue(planPayload.polling_revision),
     events: (((eventsResponse.data as UnknownRecord).events as UnknownRecord[]) ?? []).map(mapEvent),
     autoScheduleRuns: (((runsResponse.data as UnknownRecord).items as UnknownRecord[]) ?? []).map(mapAutoScheduleRun),
@@ -423,9 +439,16 @@ export async function fetchIncrementalEvents(factoryId: string, afterSequence: n
 }
 
 export async function fetchCurrentSchedulingPlan(factoryId: string) {
-  const { data } = await http.get('/injection-scheduling/plans/current', { params: { factory_id: factoryId } })
-  const payload = data as { plan?: UnknownRecord | null; polling_revision?: number }
-  return { ...mapPlan(payload.plan ?? null), pollingRevision: numberValue(payload.polling_revision) }
+  const { data } = await http.get('/injection-scheduling/plans/context', { params: { factory_id: factoryId } })
+  const payload = data as { execution_published_plan?: UnknownRecord | null; planning_draft_plan?: UnknownRecord | null; polling_revision?: number }
+  const publishedPlan = mapPlan(payload.execution_published_plan ?? null)
+  const draftPlan = mapPlan(payload.planning_draft_plan ?? null)
+  return {
+    ...(draftPlan.plan ? draftPlan : publishedPlan),
+    executionPlan: publishedPlan.plan,
+    planningPlan: draftPlan.plan,
+    pollingRevision: numberValue(payload.polling_revision),
+  }
 }
 
 function newRequestId(prefix: string) {

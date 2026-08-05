@@ -263,6 +263,17 @@ class InjectionSchedulingTaskOut(BaseModel):
     source_sheet_name: str
     source_row: int | None
     source_file_hash: str
+    allocated_quantity: float
+    takeover_source_completed_quantity: float
+    origin: str
+    stable_order_key: str
+    stable_row_key: str
+    source_task_id: str | None
+    inherited_report_counter: float
+    completed_at_clone: float
+    report_event_watermark: int
+    profile_id: str | None
+    profile_revision: int | None
     setup_minutes: int
     production_minutes: int
     planned_downtime_minutes: int
@@ -280,6 +291,31 @@ class InjectionSchedulingTaskOut(BaseModel):
     updated_at: str
 
 
+class InjectionSchedulingPlanOrderStateOut(BaseModel):
+    id: str
+    factory_id: str
+    plan_id: str
+    order_id: str
+    stable_order_key: str
+    order_quantity: float
+    delivery_start_date: str
+    delivery_due_date: str
+    takeover_source_completed_quantity: float
+    report_increment_total: float
+    progress_adjustment_total: float
+    completed_quantity: float
+    outstanding_quantity: float
+    status: OrderStatus
+    quantity_scope: Literal["ORDER_CUMULATIVE", "SPLIT_CUMULATIVE"]
+    source_batch_id: str | None
+    source_sheet_name: str
+    source_row: int | None
+    source_profile_id: str | None
+    source_profile_revision: int | None
+    source_lineage: dict[str, Any]
+    revision: int
+
+
 class InjectionSchedulingPlanOut(BaseModel):
     id: str
     factory_id: str
@@ -289,6 +325,8 @@ class InjectionSchedulingPlanOut(BaseModel):
     rule_set_id: str
     rule_revision: int
     based_on_plan_id: str
+    based_on_event_sequence: int
+    based_on_report_watermark: int
     created_by: str
     created_by_name: str
     updated_by: str
@@ -300,6 +338,7 @@ class InjectionSchedulingPlanOut(BaseModel):
     published_at: str
     archived_at: str
     orders: list[InjectionSchedulingOrderOut]
+    plan_order_states: list[InjectionSchedulingPlanOrderStateOut]
     tasks: list[InjectionSchedulingTaskOut]
 
 
@@ -326,6 +365,13 @@ class InjectionSchedulingTaskBulkMoveResult(BaseModel):
 class InjectionSchedulingCurrentPlanOut(BaseModel):
     factory_id: str
     plan: InjectionSchedulingPlanOut | None
+    polling_revision: int
+
+
+class InjectionSchedulingPlanContextOut(BaseModel):
+    factory_id: str
+    execution_published_plan: InjectionSchedulingPlanOut | None
+    planning_draft_plan: InjectionSchedulingPlanOut | None
     polling_revision: int
 
 
@@ -451,6 +497,60 @@ class InjectionSchedulingShiftReportBulkCreate(StrictWriteModel):
 class InjectionSchedulingShiftReportBulkResult(BaseModel):
     results: list[InjectionSchedulingShiftReportResult]
     latest_sequence: int
+
+
+class InjectionSchedulingProgressAdjustmentCreate(StrictWriteModel):
+    factory_id: str
+    plan_id: str = Field(min_length=1, max_length=96)
+    order_id: str = Field(min_length=1, max_length=96)
+    task_id: str | None = Field(default=None, max_length=96)
+    expected_state_revision: int = Field(ge=1)
+    signed_quantity: float
+    reason: str = Field(min_length=4, max_length=500)
+    request_id: str = Field(min_length=8, max_length=128)
+
+    @field_validator("factory_id", "plan_id", "order_id", "reason", "request_id")
+    @classmethod
+    def strip_adjustment_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("task_id")
+    @classmethod
+    def strip_adjustment_task(cls, value: str | None) -> str | None:
+        return value.strip() if value else None
+
+    @model_validator(mode="after")
+    def require_nonzero_adjustment(self):
+        if self.signed_quantity == 0:
+            raise ValueError("进度更正数量不能为 0")
+        return self
+
+
+class InjectionSchedulingProgressAdjustmentOut(BaseModel):
+    id: str
+    factory_id: str
+    plan_id: str
+    order_id: str
+    task_id: str | None
+    signed_quantity: float
+    before_quantity: float
+    after_quantity: float
+    reason: str
+    source_kind: str
+    source_batch_id: str | None
+    source_sheet_name: str
+    source_row: int | None
+    request_id: str
+    adjusted_by: str
+    adjusted_by_name: str
+    created_at: str
+
+
+class InjectionSchedulingProgressAdjustmentResult(BaseModel):
+    adjustment: InjectionSchedulingProgressAdjustmentOut
+    state: InjectionSchedulingPlanOrderStateOut
+    audit_sequence: int
+    idempotent_replay: bool = False
 
 
 class InjectionSchedulingEventOut(BaseModel):

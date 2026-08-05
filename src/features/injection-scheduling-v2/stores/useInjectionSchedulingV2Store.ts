@@ -72,6 +72,8 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const autoScheduleLoading = ref(false)
   const autoScheduleError = ref('')
   const plan = ref<SchedulingPlanRecord | null>(null)
+  const executionPlan = ref<SchedulingPlanRecord | null>(null)
+  const planningPlan = ref<SchedulingPlanRecord | null>(null)
   const pollingRevision = ref(0)
   const sourceMode = ref<'live' | 'fallback'>('live')
   const sourceMessage = ref('正式数据库')
@@ -217,6 +219,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   function applyData(data: Awaited<ReturnType<typeof fetchSchedulingWorkspace>>) {
     machines.value = data.machines; molds.value = data.molds; orders.value = data.orders; tasks.value = data.tasks
     backlogOrderIds.value = data.backlogOrderIds; events.value = data.events; plan.value = data.plan; pollingRevision.value = data.pollingRevision
+    executionPlan.value = data.executionPlan; planningPlan.value = data.planningPlan
     autoScheduleRuns.value = data.autoScheduleRuns
     if (autoScheduleRun.value) autoScheduleRun.value = data.autoScheduleRuns.find((item) => item.id === autoScheduleRun.value?.id) ?? autoScheduleRun.value
     if (autoScheduleRun.value) autoScheduleComparisonRuns.value = data.autoScheduleRuns.filter((item) => item.scenarioGroupId === autoScheduleRun.value?.scenarioGroupId)
@@ -226,7 +229,8 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   function applyFallback(reason: string) {
     machines.value = demoMachines; molds.value = demoMolds; orders.value = demoOrders; tasks.value = demoTasks
     backlogOrderIds.value = demoOrders.filter((order) => order.status === 'BACKLOG').map((order) => order.id)
-    events.value = demoEvents; plan.value = { id: 'DEMO-PLAN', status: 'PUBLISHED', revision: 7, ruleRevision: 1, businessDate: '2026-08-04' }; pollingRevision.value = 4
+    events.value = demoEvents; plan.value = { id: 'DEMO-PLAN', status: 'PUBLISHED', revision: 7, ruleRevision: 1, businessDate: '2026-08-04', basedOnPlanId: '', basedOnEventSequence: 0, basedOnReportWatermark: 0 }; pollingRevision.value = 4
+    executionPlan.value = plan.value; planningPlan.value = null
     autoScheduleRuns.value = []; autoScheduleRun.value = null; autoScheduleComparisonRuns.value = []; autoScheduleError.value = ''
     sourceMode.value = 'fallback'; sourceMessage.value = `后端暂不可用，当前显示只读演示数据 · ${reason}`; selectedTaskId.value = demoTasks[0]?.id ?? null
   }
@@ -285,7 +289,11 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   }
 
   function mergePlanResult(data: { plan: SchedulingPlanRecord | null; tasks: ScheduleTaskRecord[]; orders: OrderRecord[] }) {
-    if (data.plan) plan.value = data.plan
+    if (data.plan) {
+      plan.value = data.plan
+      if (data.plan.status === 'DRAFT') planningPlan.value = data.plan
+      if (data.plan.status === 'PUBLISHED') executionPlan.value = data.plan
+    }
     tasks.value = data.tasks
     data.orders.forEach(mergeOrder)
   }
@@ -332,6 +340,8 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   async function refreshPlanForConflict() {
     const latest = await fetchCurrentSchedulingPlan(factoryId.value)
     mergePlanResult(latest)
+    executionPlan.value = latest.executionPlan
+    planningPlan.value = latest.planningPlan
     pollingRevision.value = Math.max(pollingRevision.value, latest.pollingRevision)
   }
 
@@ -674,6 +684,8 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       if (needsPlanRefresh) {
         const latest = await fetchCurrentSchedulingPlan(factoryId.value)
         mergePlanResult(latest)
+        executionPlan.value = latest.executionPlan
+        planningPlan.value = latest.planningPlan
       }
       const merged = new Map(events.value.map((event) => [event.id, event]))
       response.events.forEach((event) => merged.set(event.id, event))
@@ -716,7 +728,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   function selectTask(taskId: string) { selectedTaskId.value = taskId }
   function cycleSort(key: string) { sort.value = sort.value?.key === key ? (sort.value.desc ? null : { key, desc: true }) : { key, desc: false } }
 
-  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
+  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, executionPlan, planningPlan, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
     activeView, activePreset, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
     backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, gridRows,
     cellDrafts, pendingEditCount, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride, canManageRules,
