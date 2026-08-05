@@ -33,6 +33,7 @@ READ_PERMISSION_CODES = frozenset(
         "molding_sample:audit_read",
         "molding_sample:notification_read",
         "carton_mark:read",
+        "carton_procurement:read",
         "customer_price:read",
         "customer_price:compare",
         "customer_order:read",
