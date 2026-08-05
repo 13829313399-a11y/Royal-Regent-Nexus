@@ -10,7 +10,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 ADMIN_TEST_PASSWORD = "AdminSeed123!"
@@ -42,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v15"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v16"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 94
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 87
+    assert len(registered_codes) == 96
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 89
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -87,7 +86,7 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 79
+    assert len(general_manager.permission_codes) == 80
     assert (
         set(general_manager.permission_codes)
         | positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
@@ -98,8 +97,11 @@ def test_fixed_system_position_definition_contract():
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             "injection_scheduling:manage_master",
             "injection_scheduling:manage_rules",
+            "injection_scheduling:manage_import_profiles",
         )
     )
+    assert "injection_scheduling:export" in general_manager.permission_codes
+    assert "injection_scheduling:manage_import_profiles" not in general_manager.permission_codes
     assert not any(
         code.startswith("three_d_printing:")
         for code in general_manager.permission_codes
@@ -202,14 +204,16 @@ def test_fixed_system_position_definition_contract():
     expected_clerk_scheduling_permissions = {
         "injection_scheduling:read",
         "injection_scheduling:import",
-        "injection_scheduling:edit",
-        "injection_scheduling:report",
+            "injection_scheduling:edit",
+            "injection_scheduling:report",
+            "injection_scheduling:export",
     }
     expected_supervisor_scheduling_permissions = {
         *expected_clerk_scheduling_permissions,
         "injection_scheduling:publish",
-        "injection_scheduling:rollback",
-    }
+            "injection_scheduling:rollback",
+            "injection_scheduling:manage_import_profiles",
+        }
     assert molding_clerk.scope_mode == positions.CROSS_FACTORY_READ_SCOPE
     assert molding_supervisor.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
     assert molding_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE

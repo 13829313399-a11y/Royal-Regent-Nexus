@@ -6,8 +6,8 @@ from app.services.iam_scope import (
     CROSS_FACTORY_OPERATE_SCOPE,
     CROSS_FACTORY_READ_SCOPE,
     OWN_FACTORY_SCOPE,
-    ScopeMode,
     VALID_SCOPE_MODES,
+    ScopeMode,
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
@@ -18,8 +18,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v15"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v16"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -60,11 +59,13 @@ INJECTION_SCHEDULING_CLERK_PERMISSION_CODES = (
     "injection_scheduling:import",
     "injection_scheduling:edit",
     "injection_scheduling:report",
+    "injection_scheduling:export",
 )
 INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
     *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
     "injection_scheduling:publish",
     "injection_scheduling:rollback",
+    "injection_scheduling:manage_import_profiles",
 )
 CARTON_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_procurement:customer_manage"
 CARTON_OPERATION_PERMISSION_CODES = tuple(
@@ -153,7 +154,11 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "internal_quote:hair_review",
     "internal_quote:assembly_edit",
     "internal_quote:assembly_review",
-    *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
+    *(
+        permission
+        for permission in INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES
+        if permission != "injection_scheduling:manage_import_profiles"
+    ),
 )
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
@@ -161,6 +166,7 @@ GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
         *THREE_D_PRINTING_PERMISSION_CODES,
         "injection_scheduling:manage_master",
         "injection_scheduling:manage_rules",
+        "injection_scheduling:manage_import_profiles",
     )
 )
 
@@ -303,6 +309,7 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
     *MOLDING_CLERK_PERMISSION_CODES,
     "injection_scheduling:publish",
     "injection_scheduling:rollback",
+    "injection_scheduling:manage_import_profiles",
 )
 
 WAREHOUSE_PERMISSION_CODES = (

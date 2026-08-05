@@ -47,6 +47,7 @@ backend/data/*.sqlite3
 !/docs/injection-production-hub-context-memory.md
 !/docs/business/internal-quote-collaboration-design.md
 !/docs/business/internal-quote-l6-release-readiness.md
+!/docs/business/injection-scheduling-public-takeover-phase0-audit.md
 !/edge/three-d-printing-agent/README.md
 
 # Editor directories and files

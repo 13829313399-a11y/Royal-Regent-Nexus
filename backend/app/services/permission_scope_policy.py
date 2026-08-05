@@ -182,6 +182,8 @@ INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         "injection_scheduling:rollback",
         "injection_scheduling:manage_master",
         "injection_scheduling:manage_rules",
+        "injection_scheduling:manage_import_profiles",
+        "injection_scheduling:export",
     )
 }
 

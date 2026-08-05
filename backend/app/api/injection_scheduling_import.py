@@ -9,6 +9,7 @@ from app.db import get_db
 from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportBatchOut,
     InjectionSchedulingImportConfirm,
+    InjectionSchedulingMasterApproval,
 )
 from app.services.auth import (
     AuthContext,
@@ -22,6 +23,7 @@ from app.services.injection_scheduling import (
 )
 from app.services.injection_scheduling_excel import MAX_SOURCE_BYTES
 from app.services.injection_scheduling_import import (
+    approve_master_differences,
     confirm_import,
     import_batch_out,
     preview_import,
@@ -110,5 +112,45 @@ def post_import_confirm(
         "injection_scheduling:import",
         payload.factory_id,
     )
-    record, replay = confirm_import(db, batch_id, payload, current_user)
+    can_publish = any(
+        has_permission_in_scope(
+            current_user,
+            "injection_scheduling:publish",
+            payload.factory_id,
+            department,
+        )
+        for department in SCHEDULING_DEPARTMENTS
+    )
+    record, replay = confirm_import(
+        db,
+        batch_id,
+        payload,
+        current_user,
+        can_publish=can_publish,
+    )
+    return import_batch_out(db, record, idempotent_replay=replay)
+
+
+@router.post(
+    "/{batch_id}/master-differences/approve",
+    response_model=InjectionSchedulingImportBatchOut,
+)
+def post_master_difference_approval(
+    batch_id: str,
+    payload: InjectionSchedulingMasterApproval,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    _ensure_permission(
+        db,
+        current_user,
+        "injection_scheduling:manage_master",
+        payload.factory_id,
+    )
+    record, replay = approve_master_differences(
+        db,
+        batch_id=batch_id,
+        payload=payload,
+        user=current_user,
+    )
     return import_batch_out(db, record, idempotent_replay=replay)

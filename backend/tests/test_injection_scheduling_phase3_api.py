@@ -566,12 +566,18 @@ def test_phase3_plan_publish_report_rollback_and_polling_contract(monkeypatch):
         assert rolled_back.json()["plan"]["based_on_plan_id"] == plan_id
         assert rolled_back.json()["plan"]["business_date"] == "2026-08-02"
         assert rolled_back.json()["idempotent_replay"] is False
+        rollback_tasks = rolled_back.json()["plan"]["tasks"]
         assert all(
-            item["reported_quantity"] == 0
-            and item["active_execution"] is False
-            and item["execution_status"] in {"QUEUED", "BLOCKED"}
-            for item in rolled_back.json()["plan"]["tasks"]
+            item["active_execution"] is False
+            and item["source_task_id"]
+            and item["origin"] == "successor_clone"
+            for item in rollback_tasks
         )
+        assert sum(item["reported_quantity"] for item in rollback_tasks) == 35
+        assert {item["execution_status"] for item in rollback_tasks} == {
+            "RUNNING",
+            "BLOCKED",
+        }
 
         rollback_replay = client.post(
             f"/api/injection-scheduling/plans/{plan_id}/rollback",

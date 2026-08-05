@@ -839,7 +839,15 @@ def _parse_tasks(
     return tasks, sorted(mold_by_no.values(), key=lambda item: item["mold_no"])
 
 
-def parse_injection_scheduling_workbook(content: bytes, source_file_name: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def parse_injection_scheduling_workbook(
+    content: bytes,
+    source_file_name: str,
+    *,
+    factory_id: str = "",
+    system_machine_codes: set[str] | None = None,
+    system_mold_nos: set[str] | None = None,
+    profiles: tuple[Any, ...] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if not content:
         raise HTTPException(status_code=422, detail="上传的 Excel 文件为空")
     if len(content) > MAX_SOURCE_BYTES:
@@ -852,86 +860,21 @@ def parse_injection_scheduling_workbook(content: bytes, source_file_name: str) -
     except (BadZipFile, KeyError, etree.XMLSyntaxError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Excel 文件结构损坏或无法解析") from exc
     try:
-        issues: list[dict[str, Any]] = []
-        required_sheets = {"计划表", "机安", "华兴机器设备"}
-        for sheet_name in sorted(required_sheets - set(reader.sheet_paths)):
-            issues.append(
-                _issue(
-                    code="SHEET_MISSING",
-                    message=f"缺少必需工作表“{sheet_name}”",
-                    sheet_name=sheet_name,
-                    blocking=True,
-                )
-            )
-        machines = _parse_machines(reader, issues)
-        molds = _parse_molds(reader, issues)
-        tasks, molds = _parse_tasks(reader, molds, issues)
-        _enrich_class_normalization(
-            machines,
-            raw_key="machine_class",
-            class_key="machine",
-            entity_label="机台",
-            issues=issues,
+        # Imported lazily so the low-level ZIP/XML reader stays reusable while the
+        # profile/canonical layer can import its safe cell helpers without a cycle.
+        from app.services.injection_scheduling_canonical import (
+            parse_canonical_workbook,
         )
-        _enrich_class_normalization(
-            molds,
-            raw_key="recommended_machine_class",
-            class_key="mold",
-            entity_label="模具",
-            issues=issues,
+
+        return parse_canonical_workbook(
+            reader,
+            source_file_name=source_file_name,
+            source_file_hash=source_hash,
+            source_size_bytes=len(content),
+            factory_id=factory_id,
+            system_machine_codes=system_machine_codes,
+            system_mold_nos=system_mold_nos,
+            profiles=profiles,
         )
-        known_machine_codes = {item["machine_code"] for item in machines}
-        for task in tasks:
-            if task["machine_code"] and task["machine_code"] not in known_machine_codes:
-                issues.append(
-                    _issue(
-                        code="MACHINE_MASTER_MISSING",
-                        message=f"机台 {task['machine_code']} 未在设备或标题行找到",
-                        sheet_name="计划表",
-                        source_row=task["source"]["source_row"],
-                        field_name="machine_code",
-                        raw_value=task["machine_code"],
-                        blocking=True,
-                    )
-                )
-        order_keys: set[tuple[Any, ...]] = set()
-        duplicate_order_rows = 0
-        for task in tasks:
-            key = (
-                task["order_no"],
-                task["item_no"],
-                task["mold_no"],
-                task["product_name"],
-                task["order_quantity"],
-            )
-            if key in order_keys:
-                duplicate_order_rows += 1
-            order_keys.add(key)
-        blocking_count = sum(bool(item["blocking"]) for item in issues)
-        normalized = {
-            "schema_version": PREVIEW_SCHEMA_VERSION,
-            "parser_version": PARSER_VERSION,
-            "source_file_name": source_file_name,
-            "source_file_hash": source_hash,
-            "source_size_bytes": len(content),
-            "sheet_names": list(reader.sheet_paths),
-            "machines": machines,
-            "molds": molds,
-            "tasks": tasks,
-            "summary": {
-                "machine_count": len(machines),
-                "mold_count": len(molds),
-                "task_count": len(tasks),
-                "order_count": len(order_keys),
-                "duplicate_order_rows": duplicate_order_rows,
-                "issue_count": len(issues),
-                "blocking_issue_count": blocking_count,
-                "can_confirm": blocking_count == 0,
-            },
-        }
-        normalized["normalized_sha256"] = hashlib.sha256(
-            _json_text(normalized).encode("utf-8")
-        ).hexdigest()
-        return normalized, issues
     finally:
         reader.close()

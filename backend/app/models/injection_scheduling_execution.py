@@ -156,6 +156,8 @@ class InjectionSchedulingPlan(Base):
     rule_set_id: Mapped[str] = mapped_column(String(96), default="")
     rule_revision: Mapped[int] = mapped_column(Integer, default=0)
     based_on_plan_id: Mapped[str] = mapped_column(String(96), default="", index=True)
+    based_on_event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    based_on_report_watermark: Mapped[int] = mapped_column(Integer, default=0)
     rollback_request_id: Mapped[str | None] = mapped_column(
         String(128), nullable=True, index=True
     )
@@ -298,6 +300,29 @@ class InjectionSchedulingTask(Base):
     source_sheet_name: Mapped[str] = mapped_column(String(128), default="")
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     source_file_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    allocated_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    takeover_source_completed_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    origin: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    stable_order_key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    stable_row_key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source_task_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    inherited_report_counter: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    completed_at_clone: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    report_event_watermark: Mapped[int] = mapped_column(Integer, default=0)
+    profile_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    profile_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     setup_minutes: Mapped[int] = mapped_column(Integer, default=0)
     production_minutes: Mapped[int] = mapped_column(Integer, default=0)
     planned_downtime_minutes: Mapped[int] = mapped_column(Integer, default=0)
@@ -384,6 +409,153 @@ class InjectionSchedulingShiftReport(Base):
     payload_hash: Mapped[str] = mapped_column(String(64))
     reported_by: Mapped[str] = mapped_column(String(64), index=True)
     reported_by_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(32), index=True)
+
+
+class InjectionSchedulingPlanOrderState(Base):
+    __tablename__ = "injection_scheduling_plan_order_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_id",
+            "order_id",
+            name="uq_injection_scheduling_plan_order_state_plan_order",
+        ),
+        UniqueConstraint(
+            "plan_id",
+            "stable_order_key",
+            name="uq_injection_scheduling_plan_order_state_stable_key",
+        ),
+        ForeignKeyConstraint(
+            ["plan_id", "factory_id"],
+            ["injection_scheduling_plans.id", "injection_scheduling_plans.factory_id"],
+            name="fk_injection_scheduling_plan_order_state_plan_factory",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["order_id", "factory_id"],
+            ["injection_scheduling_orders.id", "injection_scheduling_orders.factory_id"],
+            name="fk_injection_scheduling_plan_order_state_order_factory",
+        ),
+        CheckConstraint(
+            "order_quantity > 0 AND takeover_source_completed_quantity >= 0 "
+            "AND report_increment_total >= 0 AND completed_quantity >= 0",
+            name="ck_injection_scheduling_plan_order_state_quantities",
+        ),
+        CheckConstraint(
+            "status IN ('BACKLOG', 'SCHEDULED', 'COMPLETED', 'CANCELLED')",
+            name="ck_injection_scheduling_plan_order_state_status",
+        ),
+        CheckConstraint(
+            "quantity_scope IN ('ORDER_CUMULATIVE', 'SPLIT_CUMULATIVE')",
+            name="ck_injection_scheduling_plan_order_state_quantity_scope",
+        ),
+        CheckConstraint(
+            "revision >= 1",
+            name="ck_injection_scheduling_plan_order_state_revision",
+        ),
+        Index(
+            "ix_injection_scheduling_plan_order_state_plan_status",
+            "plan_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    plan_id: Mapped[str] = mapped_column(String(96), index=True)
+    order_id: Mapped[str] = mapped_column(String(96), index=True)
+    stable_order_key: Mapped[str] = mapped_column(String(64), index=True)
+    order_quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    delivery_start_date: Mapped[str] = mapped_column(String(32), default="")
+    delivery_due_date: Mapped[str] = mapped_column(String(32), default="")
+    takeover_source_completed_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    report_increment_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    progress_adjustment_total: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    completed_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal(0)
+    )
+    status: Mapped[str] = mapped_column(String(32), default="BACKLOG", index=True)
+    quantity_scope: Mapped[str] = mapped_column(
+        String(32), default="ORDER_CUMULATIVE"
+    )
+    source_batch_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    source_sheet_name: Mapped[str] = mapped_column(String(128), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_profile_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    source_profile_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_lineage_json: Mapped[str] = mapped_column(Text, default="{}")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64), index=True)
+    created_by_name: Mapped[str] = mapped_column(String(128), default="")
+    updated_by: Mapped[str] = mapped_column(String(64), index=True)
+    updated_by_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(32), index=True)
+    updated_at: Mapped[str] = mapped_column(String(32), index=True)
+
+
+class InjectionSchedulingProgressAdjustment(Base):
+    __tablename__ = "injection_scheduling_progress_adjustments"
+    __table_args__ = (
+        UniqueConstraint(
+            "factory_id",
+            "request_id",
+            name="uq_injection_scheduling_progress_adjustment_request",
+        ),
+        ForeignKeyConstraint(
+            ["plan_id", "factory_id"],
+            ["injection_scheduling_plans.id", "injection_scheduling_plans.factory_id"],
+            name="fk_injection_scheduling_progress_adjustment_plan_factory",
+        ),
+        ForeignKeyConstraint(
+            ["order_id", "factory_id"],
+            ["injection_scheduling_orders.id", "injection_scheduling_orders.factory_id"],
+            name="fk_injection_scheduling_progress_adjustment_order_factory",
+        ),
+        CheckConstraint(
+            "signed_quantity <> 0",
+            name="ck_injection_scheduling_progress_adjustment_nonzero",
+        ),
+        CheckConstraint(
+            "source_kind IN ('IMPORT_RECONCILIATION', 'MANUAL_CORRECTION', 'PUBLISH_REBASE')",
+            name="ck_injection_scheduling_progress_adjustment_source_kind",
+        ),
+        Index(
+            "ix_injection_scheduling_progress_adjustment_plan_order_created",
+            "plan_id",
+            "order_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    plan_id: Mapped[str] = mapped_column(String(96), index=True)
+    order_id: Mapped[str] = mapped_column(String(96), index=True)
+    task_id: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)
+    signed_quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    before_quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    after_quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3))
+    reason: Mapped[str] = mapped_column(Text)
+    source_kind: Mapped[str] = mapped_column(String(32), index=True)
+    source_batch_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    source_sheet_name: Mapped[str] = mapped_column(String(128), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_id: Mapped[str] = mapped_column(String(128), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), index=True)
+    adjusted_by: Mapped[str] = mapped_column(String(64), index=True)
+    adjusted_by_name: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[str] = mapped_column(String(32), index=True)
 
 

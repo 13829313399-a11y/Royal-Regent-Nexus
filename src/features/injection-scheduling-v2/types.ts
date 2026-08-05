@@ -92,6 +92,17 @@ export interface ScheduleTaskRecord {
   autoScore?: number | null
   autoExplanation?: Record<string, unknown>
   manualAdjusted?: boolean
+  allocatedQuantity?: number
+  takeoverSourceCompletedQuantity?: number
+  origin?: string
+  stableOrderKey?: string
+  stableRowKey?: string
+  sourceTaskId?: string | null
+  inheritedReportCounter?: number
+  completedAtClone?: number
+  reportEventWatermark?: number
+  profileId?: string | null
+  profileRevision?: number | null
 }
 
 export interface AutoScheduleAssignmentRecord {
@@ -155,6 +166,11 @@ export interface AutoScheduleRunSummary {
   bestObjectiveBound: number | null
   fallbackUsed: boolean
   fallbackReason: string
+  continuationAnchors?: Array<{
+    machineId: string
+    startsAt: string
+    sources: Array<Record<string, unknown>>
+  }>
 }
 
 export interface AutoScheduleRunRecord {
@@ -341,6 +357,9 @@ export interface SchedulingPlanRecord {
   revision: number
   ruleRevision: number
   businessDate: string
+  basedOnPlanId?: string
+  basedOnEventSequence?: number
+  basedOnReportWatermark?: number
 }
 
 export type EditableCellKey =
