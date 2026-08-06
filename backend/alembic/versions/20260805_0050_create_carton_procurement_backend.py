@@ -10,7 +10,6 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "20260805_0050"
 down_revision: str | Sequence[str] | None = "20260804_0049"
 branch_labels: str | Sequence[str] | None = None
@@ -46,23 +45,41 @@ def _seed_permissions() -> None:
         permission_id = f"perm-{code.replace(':', '-')}"
         connection.execute(
             sa.text(
-                "INSERT INTO auth_permissions (id, code, name, description) "
-                "SELECT :id, :code, :code, '' "
-                "WHERE NOT EXISTS (SELECT 1 FROM auth_permissions WHERE code = :code)"
+                """
+                INSERT INTO auth_permissions (id, code, name, description)
+                SELECT
+                    CAST(:id AS VARCHAR(96)),
+                    CAST(:code AS VARCHAR(128)),
+                    CAST(:name AS VARCHAR(128)),
+                    CAST(:description AS TEXT)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM auth_permissions
+                    WHERE code = CAST(:code AS VARCHAR(128))
+                )
+                """
             ),
-            {"id": permission_id, "code": code},
+            {"id": permission_id, "code": code, "name": code, "description": ""},
         )
         for role_id in FULL_ACCESS_ROLES:
             link_id = f"{role_id}:{permission_id}"
             connection.execute(
                 sa.text(
-                    "INSERT INTO auth_role_permissions (id, role_id, permission_id) "
-                    "SELECT :id, :role_id, :permission_id "
-                    "WHERE EXISTS (SELECT 1 FROM auth_roles WHERE id = :role_id) "
-                    "AND NOT EXISTS ("
-                    "SELECT 1 FROM auth_role_permissions "
-                    "WHERE role_id = :role_id AND permission_id = :permission_id"
-                    ")"
+                    """
+                    INSERT INTO auth_role_permissions (id, role_id, permission_id)
+                    SELECT
+                        CAST(:id AS VARCHAR(128)),
+                        CAST(:role_id AS VARCHAR(96)),
+                        CAST(:permission_id AS VARCHAR(96))
+                    WHERE EXISTS (
+                        SELECT 1 FROM auth_roles
+                        WHERE id = CAST(:role_id AS VARCHAR(96))
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM auth_role_permissions
+                        WHERE role_id = CAST(:role_id AS VARCHAR(96))
+                          AND permission_id = CAST(:permission_id AS VARCHAR(96))
+                    )
+                    """
                 ),
                 {"id": link_id, "role_id": role_id, "permission_id": permission_id},
             )
