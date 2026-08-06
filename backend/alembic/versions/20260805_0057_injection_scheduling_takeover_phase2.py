@@ -12,13 +12,29 @@ import json
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from alembic.util.exc import CommandError
+
+from alembic import op
 
 revision: str = "20260805_0057"
 down_revision: str | Sequence[str] | None = "20260805_0056"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+IMPORT_BATCH_INDEXES = (
+    (
+        "target_draft_plan_id",
+        "ix_injection_scheduling_import_batches_target_draft_plan_id",
+    ),
+    (
+        "reference_published_plan_id",
+        "ix_inj_sched_import_batches_reference_published_plan_id",
+    ),
+    (
+        "action_fingerprint",
+        "ix_injection_scheduling_import_batches_action_fingerprint",
+    ),
+)
 
 
 def _add_columns() -> None:
@@ -142,13 +158,9 @@ def _add_columns() -> None:
     with op.batch_alter_table("injection_scheduling_import_batches") as batch_op:
         for column in batch_columns:
             batch_op.add_column(column)
-    for column in (
-        "target_draft_plan_id",
-        "reference_published_plan_id",
-        "action_fingerprint",
-    ):
+    for column, index_name in IMPORT_BATCH_INDEXES:
         op.create_index(
-            f"ix_injection_scheduling_import_batches_{column}",
+            index_name,
             "injection_scheduling_import_batches",
             [column],
         )
@@ -735,13 +747,9 @@ def downgrade() -> None:
     op.drop_table("injection_scheduling_import_actions")
     op.drop_table("injection_scheduling_progress_adjustments")
     op.drop_table("injection_scheduling_plan_order_states")
-    for column in (
-        "action_fingerprint",
-        "reference_published_plan_id",
-        "target_draft_plan_id",
-    ):
+    for _, index_name in reversed(IMPORT_BATCH_INDEXES):
         op.drop_index(
-            f"ix_injection_scheduling_import_batches_{column}",
+            index_name,
             table_name="injection_scheduling_import_batches",
         )
     with op.batch_alter_table("injection_scheduling_import_batches") as batch_op:
