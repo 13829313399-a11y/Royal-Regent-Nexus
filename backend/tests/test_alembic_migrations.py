@@ -31,6 +31,12 @@ CARTON_PERMISSION_MIGRATION_PATHS = (
     / "versions"
     / "20260805_0054_create_carton_customer_master.py",
 )
+INJECTION_SCHEDULING_TAKEOVER_MIGRATION_PATH = (
+    BACKEND_DIR
+    / "alembic"
+    / "versions"
+    / "20260805_0057_injection_scheduling_takeover_phase2.py"
+)
 BASE_MIGRATION_REVISION = "20260701_0001"
 NOTIFICATION_MIGRATION_REVISION = "20260703_0002"
 AUTH_MIGRATION_REVISION = "20260703_0003"
@@ -185,6 +191,27 @@ def test_carton_permission_seeds_cast_reused_postgresql_parameters():
             assert expected_cast in migration_source
         assert "SELECT :id, :code, :code, ''" not in migration_source
         assert "SELECT :id, :role_id, :permission_id" not in migration_source
+
+
+def test_takeover_migration_import_batch_indexes_fit_postgresql_limit():
+    migration_source = INJECTION_SCHEDULING_TAKEOVER_MIGRATION_PATH.read_text(
+        encoding="utf-8"
+    )
+    expected_index_names = (
+        "ix_injection_scheduling_import_batches_target_draft_plan_id",
+        "ix_inj_sched_import_batches_reference_published_plan_id",
+        "ix_injection_scheduling_import_batches_action_fingerprint",
+    )
+
+    assert all(len(index_name) <= 63 for index_name in expected_index_names)
+    for index_name in expected_index_names:
+        assert index_name in migration_source
+    assert (
+        "ix_injection_scheduling_import_batches_reference_published_plan_id"
+        not in migration_source
+    )
+    assert "for column, index_name in IMPORT_BATCH_INDEXES" in migration_source
+    assert "for _, index_name in reversed(IMPORT_BATCH_INDEXES)" in migration_source
 
 
 def test_alembic_has_single_molding_sample_head():
