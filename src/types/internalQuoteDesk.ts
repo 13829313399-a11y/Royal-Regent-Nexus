@@ -113,6 +113,9 @@ export interface InternalQuoteAttachmentRecord {
   sha256: string
   uploadedBy: string
   uploadedAt: string
+  isImportSource: boolean
+  importBatchId: string
+  importType: string
 }
 
 export interface InternalQuoteShippingScenario {
