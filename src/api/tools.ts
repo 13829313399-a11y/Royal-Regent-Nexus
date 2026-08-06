@@ -3,6 +3,8 @@ import { http } from '@/lib/http'
 
 
 export const PDF_TO_EXCEL_TIMEOUT_MS = 180_000
+export const PDF_TO_WORD_TIMEOUT_MS = 180_000
+export const PDF_SPLIT_TIMEOUT_MS = 60_000
 
 export interface PdfToExcelMetrics {
   pageCount: number
@@ -15,6 +17,26 @@ export interface PdfToExcelResult {
   blob: Blob
   fileName: string
   metrics: PdfToExcelMetrics
+}
+
+export type PdfToWordMetrics = PdfToExcelMetrics
+
+export interface PdfToWordResult {
+  blob: Blob
+  fileName: string
+  metrics: PdfToWordMetrics
+}
+
+export interface PdfSplitOptions {
+  mode: 'each_page' | 'ranges'
+  pageRanges?: string
+}
+
+export interface PdfSplitResult {
+  blob: Blob
+  fileName: string
+  pageCount: number
+  fileCount: number
 }
 
 export interface SharedToolsHttpClient {
@@ -85,6 +107,58 @@ export function createSharedToolsApi(client: SharedToolsHttpClient = http) {
             textPageCount: headerCount(response.headers, 'x-pdf-text-page-count'),
             ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
           },
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
+    },
+
+    async convertPdfToWord(pdfFile: File): Promise<PdfToWordResult> {
+      const payload = new FormData()
+      payload.append('pdf_file', pdfFile)
+      const fallbackFileName = `${pdfFile.name.replace(/\.pdf$/i, '') || 'PDF文件'}_转换结果.docx`
+
+      try {
+        const response = await client.post<Blob>('/tools/pdf-to-word', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: PDF_TO_WORD_TIMEOUT_MS,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, fallbackFileName),
+          metrics: {
+            pageCount: headerCount(response.headers, 'x-pdf-page-count'),
+            tableCount: headerCount(response.headers, 'x-pdf-table-count'),
+            textPageCount: headerCount(response.headers, 'x-pdf-text-page-count'),
+            ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
+          },
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
+    },
+
+    async splitPdf(pdfFile: File, options: PdfSplitOptions): Promise<PdfSplitResult> {
+      const payload = new FormData()
+      payload.append('pdf_file', pdfFile)
+      payload.append('split_mode', options.mode)
+      payload.append('page_ranges', options.pageRanges?.trim() ?? '')
+      const fallbackFileName = `${pdfFile.name.replace(/\.pdf$/i, '') || 'PDF文件'}_拆分结果.zip`
+
+      try {
+        const response = await client.post<Blob>('/tools/pdf-split', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: PDF_SPLIT_TIMEOUT_MS,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, fallbackFileName),
+          pageCount: headerCount(response.headers, 'x-pdf-page-count'),
+          fileCount: headerCount(response.headers, 'x-pdf-split-file-count'),
         }
       }
       catch (error) {
