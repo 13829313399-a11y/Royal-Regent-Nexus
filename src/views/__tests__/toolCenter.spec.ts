@@ -18,15 +18,24 @@ describe('public tool center', () => {
     )
   })
 
-  it('registers an authenticated tool-center route and a reusable PDF module', () => {
+  it('registers an authenticated tool-center route and all reusable PDF modules', () => {
     const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
     const viewSource = readFileSync(join(process.cwd(), 'src/views/ToolCenterView.vue'), 'utf8')
-    const componentSource = readFileSync(join(process.cwd(), 'src/components/tools/PdfToExcelTool.vue'), 'utf8')
+    const excelSource = readFileSync(join(process.cwd(), 'src/components/tools/PdfToExcelTool.vue'), 'utf8')
+    const wordSource = readFileSync(join(process.cwd(), 'src/components/tools/PdfToWordTool.vue'), 'utf8')
+    const splitSource = readFileSync(join(process.cwd(), 'src/components/tools/PdfSplitTool.vue'), 'utf8')
 
     expect(routerSource).toContain("path: '/tools'")
     expect(routerSource).toContain("component: () => import('@/views/ToolCenterView.vue')")
     expect(viewSource).toContain('<PdfToExcelTool')
-    expect(componentSource).toContain('sharedToolsApi.convertPdfToExcel')
-    expect(componentSource).toContain('文件仅用于本次转换')
+    expect(viewSource).toContain('<PdfToWordTool')
+    expect(viewSource).toContain('<PdfSplitTool')
+    expect(viewSource).toContain('PDF 转 Word')
+    expect(viewSource).toContain('PDF 拆分')
+    expect(excelSource).toContain('sharedToolsApi.convertPdfToExcel')
+    expect(wordSource).toContain('sharedToolsApi.convertPdfToWord')
+    expect(wordSource).toContain('文件仅用于本次转换')
+    expect(splitSource).toContain('sharedToolsApi.splitPdf')
+    expect(splitSource).toContain('按指定页段拆分')
   })
 })

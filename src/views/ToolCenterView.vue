@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { FileSpreadsheet, Plus, ShieldCheck } from '@lucide/vue'
-import { computed } from 'vue'
+import { FileSpreadsheet, FileText, Plus, Scissors, ShieldCheck } from '@lucide/vue'
+import { computed, ref } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import PdfSplitTool from '@/components/tools/PdfSplitTool.vue'
 import PdfToExcelTool from '@/components/tools/PdfToExcelTool.vue'
+import PdfToWordTool from '@/components/tools/PdfToWordTool.vue'
 import { useAppStore } from '@/stores/app'
 
 
 const appStore = useAppStore()
 const factoryContextLabel = computed(() => `${appStore.activeProductionFactory.shortName}厂区`)
+const activeTool = ref<'pdf-to-excel' | 'pdf-to-word' | 'pdf-split'>('pdf-to-excel')
+const toolItems = [
+  { id: 'pdf-to-excel' as const, label: 'PDF 转 Excel', description: '表格与版式转换', icon: FileSpreadsheet },
+  { id: 'pdf-to-word' as const, label: 'PDF 转 Word', description: '可编辑文档转换', icon: FileText },
+  { id: 'pdf-split' as const, label: 'PDF 拆分', description: '逐页或页段拆分', icon: Scissors },
+]
 </script>
 
 <template>
@@ -32,15 +40,30 @@ const factoryContextLabel = computed(() => `${appStore.activeProductionFactory.s
           <p class="mt-1 text-xs leading-5 text-slate-500">后续公共工具会继续在这里增加。</p>
         </div>
 
-        <a href="#pdf-to-excel" class="flex items-center gap-3 rounded-xl bg-teal-50 px-3 py-3 text-teal-900 ring-1 ring-teal-100">
-          <span class="flex size-9 items-center justify-center rounded-lg bg-white text-teal-700 shadow-sm">
-            <FileSpreadsheet class="size-4.5" aria-hidden="true" />
-          </span>
-          <span class="min-w-0">
-            <strong class="block truncate text-sm">PDF 转 Excel</strong>
-            <small class="mt-0.5 block text-xs text-teal-700/70">文件转换</small>
-          </span>
-        </a>
+        <nav class="space-y-2" aria-label="PDF 工具">
+          <button
+            v-for="tool in toolItems"
+            :key="tool.id"
+            type="button"
+            class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition"
+            :class="activeTool === tool.id
+              ? 'bg-teal-50 text-teal-900 ring-1 ring-teal-100'
+              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+            :aria-current="activeTool === tool.id ? 'page' : undefined"
+            @click="activeTool = tool.id"
+          >
+            <span
+              class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-white shadow-sm ring-1"
+              :class="activeTool === tool.id ? 'text-teal-700 ring-teal-100' : 'text-slate-500 ring-slate-200'"
+            >
+              <component :is="tool.icon" class="size-4.5" aria-hidden="true" />
+            </span>
+            <span class="min-w-0">
+              <strong class="block truncate text-sm">{{ tool.label }}</strong>
+              <small class="mt-0.5 block truncate text-xs" :class="activeTool === tool.id ? 'text-teal-700/70' : 'text-slate-400'">{{ tool.description }}</small>
+            </span>
+          </button>
+        </nav>
 
         <div class="mt-2 flex items-center gap-3 rounded-xl border border-dashed border-slate-200 px-3 py-3 text-slate-400">
           <span class="flex size-9 items-center justify-center rounded-lg bg-slate-50">
@@ -53,8 +76,10 @@ const factoryContextLabel = computed(() => `${appStore.activeProductionFactory.s
         </div>
       </aside>
 
-      <div id="pdf-to-excel" class="min-w-0 scroll-mt-24">
-        <PdfToExcelTool :context-label="factoryContextLabel" />
+      <div class="min-w-0">
+        <PdfToExcelTool v-if="activeTool === 'pdf-to-excel'" :context-label="factoryContextLabel" />
+        <PdfToWordTool v-else-if="activeTool === 'pdf-to-word'" :context-label="factoryContextLabel" />
+        <PdfSplitTool v-else :context-label="factoryContextLabel" />
       </div>
     </section>
   </div>
