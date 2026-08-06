@@ -936,6 +936,11 @@ function textValue(value: unknown) {
   return value == null ? '' : String(value)
 }
 
+function importBatchMetadata(row: Record<string, unknown>) {
+  const importBatchId = textValue(row.import_batch_id).trim()
+  return importBatchId ? { import_batch_id: importBatchId } : {}
+}
+
 export function splitEngineeringMoldPartNames(value: unknown): string[] {
   const source = textValue(value).replaceAll('／', '/').trim()
   if (!source) return []
@@ -966,6 +971,7 @@ function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPart
 
 function electronicRows(value: unknown): ElectronicComponentRow[] {
   return rows(value).map((row) => ({
+    ...importBatchMetadata(row),
     item: textValue(row.item),
     specification: textValue(row.specification ?? row.spec),
     quantity: numberValue(row.quantity),
@@ -1095,6 +1101,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'engineering') {
     const hasLegacyCartons = Object.prototype.hasOwnProperty.call(source, 'cartons')
     const normalizedMolds: EngineeringMoldRow[] = rows(source.molds).map((row) => ({
+      ...importBatchMetadata(row),
       item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), chinese_name: textValue(row.chinese_name), mold_base_type: textValue(row.mold_base_type ?? row.mold_type),
       mold_base_material: textValue(row.mold_base_material), structure: textValue(row.structure), process: textValue(row.process), material: textValue(row.material), material_type: textValue(row.material_type), color: textValue(row.color), cavity: textValue(row.cavity),
       quantity: numberValue(row.quantity ?? row.sets, 1), net_weight_g: numberValue(row.net_weight_g ?? row.weight_g),
@@ -1123,6 +1130,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
             ? textValue(row.auxiliary_category)
             : '其他外购'
         return {
+          ...importBatchMetadata(row),
           item: textValue(row.item), category, purpose: textValue(row.purpose), specification: textValue(row.specification ?? row.spec),
           quantity: numberValue(row.quantity ?? row.qty), unit: textValue(row.unit), unit_price_rmb: numberValue(row.unit_price_rmb),
           loss_rate: multiplierValue(row.loss_rate),
@@ -1182,6 +1190,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
+        ...importBatchMetadata(row),
         engineering_source_key: textValue(row.engineering_source_key),
         engineering_synced_fields: Array.isArray(row.engineering_synced_fields)
           ? row.engineering_synced_fields.filter((field): field is string => typeof field === 'string')
@@ -1195,6 +1204,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         disney_mold_no: textValue(row.disney_mold_no), disney_resin_cost_usd_kg: numberValue(row.disney_resin_cost_usd_kg), disney_cycle_time_seconds: numberValue(row.disney_cycle_time_seconds), disney_labor_rate_usd_hr: numberValue(row.disney_labor_rate_usd_hr),
       })),
       blow_lines: rows(source.blow_lines).map((row) => ({
+        ...importBatchMetadata(row),
         item: textValue(row.item ?? row.name), daily_capacity: textValue(row.daily_capacity ?? row.capacity), material: textValue(row.material), grade: textValue(row.grade),
         estimated_weight_g: numberValue(row.estimated_weight_g ?? row.weight_g), labor_hkd: numberValue(row.labor_hkd ?? row.blow_labor), burr_hkd: numberValue(row.burr_hkd ?? row.flash),
         profit_multiplier: numberValue(row.profit_multiplier ?? row.profit_x, 1.05), quantity: numberValue(row.quantity, 1),
@@ -1213,6 +1223,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       paint_tax_rate_percent: 13,
     },
     rows: rows(source.rows).map((row) => ({
+      ...importBatchMetadata(row),
       image_reference: textValue(row.image_reference ?? row.image),
       name: textValue(row.name ?? row.item),
       position: textValue(row.position),
@@ -1224,6 +1235,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   }
   if (code === 'slush') return {
     lines: rows(source.lines).map((row) => ({
+      ...importBatchMetadata(row),
       product_code: textValue(row.product_code ?? row.product_no),
       item: textValue(row.item ?? row.name),
       material: textValue(row.material),
@@ -1253,6 +1265,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         unit_price_hkd: numberValue(row.unit_price_hkd ?? row.price_hkd),
       })),
       groups: rows(source.groups).map((group) => ({
+        ...importBatchMetadata(group),
         name: textValue(group.name),
         category: ['hair', '车发'].includes(textValue(group.category)) ? 'hair' : 'clothes',
         labor_rmb: numberValue(group.labor_rmb ?? group.labor_amount),
@@ -1281,6 +1294,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         const productionQty = numberValue(group.production_qty ?? legacyReference?.production_qty)
         const teams = numberValue(group.teams ?? legacyReference?.teams, 1)
         return {
+          ...importBatchMetadata(group),
           name: textValue(group.name),
           category: textValue(group.category) === 'packaging' ? 'packaging' : 'assembly',
           production_qty: productionQty,

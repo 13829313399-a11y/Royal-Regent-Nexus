@@ -660,7 +660,9 @@ class InternalQuoteReferenceSetOut(BaseModel):
 
 class InternalQuoteImportConfirmRequest(BaseModel):
     revision: int = Field(ge=1)
-    mode: Literal["append", "replace"] = "append"
+    # Kept for backward compatibility with older clients. Internal quote
+    # imports now always replace the data region owned by their template.
+    mode: Literal["append", "replace"] = "replace"
 
 
 class InternalQuoteImportPreviewOut(BaseModel):
@@ -704,6 +706,9 @@ class InternalQuoteAttachmentOut(BaseModel):
     uploaded_by: str
     uploaded_by_name: str
     uploaded_at: str
+    is_import_source: bool = False
+    import_batch_id: str = ""
+    import_type: str = ""
 
 
 class InternalQuoteExportFileOut(BaseModel):

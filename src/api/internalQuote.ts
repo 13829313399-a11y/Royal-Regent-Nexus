@@ -180,6 +180,9 @@ export interface ApiInternalQuoteAttachment {
   uploaded_by: string
   uploaded_by_name: string
   uploaded_at: string
+  is_import_source: boolean
+  import_batch_id: string
+  import_type: string
 }
 
 export interface ApiInternalQuoteExport {
@@ -657,8 +660,8 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       )
       return response.data
     },
-    async confirmImport(quoteId: string, batchId: string, revision: number, mode: 'append' | 'replace') {
-      const response = await client.post<ApiInternalQuoteImportConfirm>(`/internal-quotes/${quoteId}/imports/${batchId}/confirm`, { revision, mode })
+    async confirmImport(quoteId: string, batchId: string, revision: number) {
+      const response = await client.post<ApiInternalQuoteImportConfirm>(`/internal-quotes/${quoteId}/imports/${batchId}/confirm`, { revision })
       return response.data
     },
     async uploadAttachment(quoteId: string, department: string, file: File) {
@@ -675,6 +678,11 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async downloadAttachment(quoteId: string, attachmentId: string) {
       const response = await client.get<Blob>(`/internal-quotes/${quoteId}/attachments/${attachmentId}/download`, { responseType: 'blob' })
       return response.data
+    },
+    async deleteImportAttachment(quoteId: string, attachmentId: string, revision: number) {
+      await client.delete(`/internal-quotes/${quoteId}/attachments/${attachmentId}`, {
+        params: { revision },
+      })
     },
     async createExport(quoteId: string) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/exports`)

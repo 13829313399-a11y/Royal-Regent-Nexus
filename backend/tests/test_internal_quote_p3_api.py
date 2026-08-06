@@ -228,9 +228,12 @@ def test_hardware_template_preview_maps_only_shared_material_fields_and_replace_
 
         confirmed = client.post(
             f"/api/internal-quotes/{quote_id}/imports/{preview['batch_id']}/confirm",
-            json={"revision": 2, "mode": "replace"},
+            # Older clients may still submit append. The server owns the new
+            # deterministic contract and must replace the template region.
+            json={"revision": 2, "mode": "append"},
         )
         assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["batch"]["confirm_mode"] == "replace"
         section = confirmed.json()["section"]
         materials = section["payload"]["materials"]
         assert [row["item"] for row in materials] == ["胶水", "螺丝"]
@@ -240,6 +243,85 @@ def test_hardware_template_preview_maps_only_shared_material_fields_and_replace_
         assert hardware_line["auxiliary_category"] == "五金"
         assert hardware_line["tax_rate_percent"] == "13.0000"
         assert "冻结 RMB→HKD 汇率" in hardware_line["formula"]
+
+
+def test_import_source_attachment_delete_clears_generated_data_and_allows_clean_reimport(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p3_delete_import_creator", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="P3-DELETE-IMPORT", participating_sections=ALL_SECTION_CODES),
+        ).json()
+        quote_id = created["id"]
+
+        logout(client)
+        login(client, "iq_p3_delete_import_engineer", "engineer", "engineering")
+        source = workbook_bytes_with_image(
+            [
+                ["模号", "产品名称", "材质", "克重", "套数", "模价", "机型", "目标数"],
+                ["M-DELETE", "待删除主体模", "ABS", 100, 1, 7750, "4A", 5000],
+            ],
+            "U2",
+        )
+        preview = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/mold/preview",
+            files={"file": ("待删除模具报价.xlsx", source, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        ).json()
+        confirmed = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/{preview['batch_id']}/confirm",
+            json={"revision": 1},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["batch"]["confirm_mode"] == "replace"
+        imported_row = confirmed.json()["section"]["payload"]["molds"][0]
+        assert imported_row["import_batch_id"] == preview["batch_id"]
+        image_attachment_ids = imported_row["image_attachment_ids"]
+
+        attachments = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments?department=engineering"
+        ).json()
+        source_attachment = next(item for item in attachments if item["is_import_source"])
+        assert source_attachment["file_name"] == "待删除模具报价.xlsx"
+        assert source_attachment["import_batch_id"] == preview["batch_id"]
+        assert source_attachment["import_type"] == "mold"
+
+        stale_delete = client.delete(
+            f"/api/internal-quotes/{quote_id}/attachments/{source_attachment['id']}",
+            params={"revision": 1},
+        )
+        assert stale_delete.status_code == 409
+
+        deleted = client.delete(
+            f"/api/internal-quotes/{quote_id}/attachments/{source_attachment['id']}",
+            params={"revision": 2},
+        )
+        assert deleted.status_code == 204, deleted.text
+
+        detail = client.get(f"/api/internal-quotes/{quote_id}").json()
+        engineering = next(item for item in detail["sections"] if item["department"] == "engineering")
+        assert engineering["revision"] == 3
+        assert engineering["status"] == "draft"
+        assert engineering["payload"]["molds"] == []
+        remaining_attachments = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments?department=engineering"
+        ).json()
+        assert source_attachment["id"] not in {item["id"] for item in remaining_attachments}
+        assert not set(image_attachment_ids).intersection(item["id"] for item in remaining_attachments)
+        batches = client.get(f"/api/internal-quotes/{quote_id}/imports").json()
+        assert next(item for item in batches if item["batch_id"] == preview["batch_id"])["status"] == "deleted"
+        timeline = client.get(f"/api/internal-quotes/{quote_id}/timeline").json()
+        assert any(item["action"] == "delete_import_attachment" for item in timeline["business_events"])
+
+        reimport_preview = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/mold/preview",
+            files={"file": ("待删除模具报价.xlsx", source, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        ).json()
+        reimported = client.post(
+            f"/api/internal-quotes/{quote_id}/imports/{reimport_preview['batch_id']}/confirm",
+            json={"revision": 3},
+        )
+        assert reimported.status_code == 200, reimported.text
+        assert reimported.json()["section"]["payload"]["molds"][0]["mold_no"] == "M-DELETE"
 
 
 def test_molding_quote_preview_and_confirm_recalculate_from_frozen_reference(monkeypatch):
@@ -401,6 +483,13 @@ def test_p3_attachment_validates_magic_deduplicates_and_downloads(monkeypatch):
         assert downloaded.status_code == 200
         assert downloaded.content == image
         assert downloaded.headers["x-content-sha256"] == attachment["sha256"]
+
+        supporting_attachment_delete = client.delete(
+            f"/api/internal-quotes/{quote_id}/attachments/{attachment['id']}",
+            params={"revision": 1},
+        )
+        assert supporting_attachment_delete.status_code == 409
+        assert "不是结构化报价导入源文件" in supporting_attachment_delete.json()["detail"]
 
         saved = client.put(
             f"/api/internal-quotes/{quote_id}/sections/engineering",

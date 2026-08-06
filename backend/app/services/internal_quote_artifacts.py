@@ -83,6 +83,17 @@ OOXML_EXTENSIONS = {".xlsx", ".xlsm", ".docx"}
 OLE_EXTENSIONS = {".xls", ".doc"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 EXPORT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+IMPORT_LIST_FIELDS = {
+    "mold": ("molds",),
+    "hardware": ("materials",),
+    "electronic": ("components",),
+    "molding": ("injection_lines", "blow_lines"),
+    "painting": ("rows",),
+    "slush": ("lines",),
+    "sewing": ("groups",),
+    "assembly": ("groups",),
+}
+IMPORT_BATCH_FIELD = "import_batch_id"
 
 
 @dataclass(frozen=True)
@@ -346,11 +357,10 @@ def _merge_import_payload(
     mode: str,
     rmb_hkd_rate: object = "0.85",
 ) -> dict[str, Any]:
-    # An electronic workbook is a complete department quote: its component
-    # list and the five summary costs describe the same whole quotation.
-    # Appending it would duplicate both sets of values on every re-import.
-    if import_type == "electronic":
-        mode = "replace"
+    # Every mapped workbook owns one deterministic data region. Re-importing
+    # that template replaces that region so users never have to decide between
+    # append/replace and repeated imports cannot duplicate quote amounts.
+    mode = "replace"
     merged = json.loads(json.dumps(current, ensure_ascii=False))
     if import_type == "molding":
         for list_field in ("injection_lines", "blow_lines"):
@@ -458,6 +468,110 @@ def _merge_import_payload(
     return merged
 
 
+def _tag_import_fragment(
+    import_type: str,
+    fragment: dict[str, Any],
+    batch_id: str,
+) -> dict[str, Any]:
+    tagged = json.loads(json.dumps(fragment, ensure_ascii=False))
+    for list_field in IMPORT_LIST_FIELDS[import_type]:
+        rows = tagged.get(list_field, [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                row[IMPORT_BATCH_FIELD] = batch_id
+    return tagged
+
+
+def _collect_attachment_ids(value: object) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        attachment_ids = value.get("image_attachment_ids", [])
+        if isinstance(attachment_ids, list):
+            found.update(str(item) for item in attachment_ids if str(item))
+        for child in value.values():
+            found.update(_collect_attachment_ids(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.update(_collect_attachment_ids(child))
+    return found
+
+
+def _remove_import_rows(
+    rows: object,
+    batch_ids: set[str],
+    *,
+    hardware_only: bool = False,
+) -> tuple[list[Any], list[Any]]:
+    source_rows = rows if isinstance(rows, list) else []
+    matching_markers = any(
+        isinstance(row, dict) and str(row.get(IMPORT_BATCH_FIELD, "")) in batch_ids
+        for row in source_rows
+    )
+    removed: list[Any] = []
+    retained: list[Any] = []
+    for row in source_rows:
+        is_hardware = isinstance(row, dict) and row.get("category") == "hardware"
+        if hardware_only and not is_hardware:
+            retained.append(row)
+            continue
+        should_remove = (
+            isinstance(row, dict)
+            and str(row.get(IMPORT_BATCH_FIELD, "")) in batch_ids
+        ) if matching_markers else True
+        if should_remove:
+            removed.append(row)
+        else:
+            retained.append(row)
+    return retained, removed
+
+
+def _clear_import_generated_payload(
+    current: dict[str, Any],
+    batches: list[InternalQuoteImportBatch],
+) -> tuple[dict[str, Any], set[str]]:
+    cleared = json.loads(json.dumps(current, ensure_ascii=False))
+    removed_attachment_ids: set[str] = set()
+    batches_by_type: dict[str, list[InternalQuoteImportBatch]] = {}
+    for batch in batches:
+        batches_by_type.setdefault(batch.import_type, []).append(batch)
+
+    for import_type, type_batches in batches_by_type.items():
+        batch_ids = {batch.id for batch in type_batches}
+        for list_field in IMPORT_LIST_FIELDS.get(import_type, ()):
+            retained, removed = _remove_import_rows(
+                cleared.get(list_field, []),
+                batch_ids,
+                hardware_only=import_type == "hardware",
+            )
+            cleared[list_field] = retained
+            removed_attachment_ids.update(_collect_attachment_ids(removed))
+
+        fragments = [
+            _json_object(batch.preview_json).get("payload_fragment", {})
+            for batch in type_batches
+        ]
+        if import_type == "electronic":
+            for fragment in fragments:
+                if not isinstance(fragment, dict):
+                    continue
+                for key in fragment:
+                    if key != "components":
+                        cleared.pop(key, None)
+        elif import_type == "molding" and any(
+            isinstance(fragment, dict) and "injection_loss_rate_percent" in fragment
+            for fragment in fragments
+        ):
+            cleared.pop("injection_loss_rate_percent", None)
+        elif import_type == "mold" and any(
+            isinstance(fragment, dict) and "amortization_qty" in fragment
+            for fragment in fragments
+        ):
+            cleared.pop("amortization_qty", None)
+    return cleared, removed_attachment_ids
+
+
 def _materialize_imported_mold_images(
     db: Session,
     quote: InternalQuote,
@@ -465,14 +579,14 @@ def _materialize_imported_mold_images(
     fragment: dict[str, Any],
     preview: dict[str, Any],
     user: AuthContext,
-) -> int:
+) -> list[str]:
     image_records = preview.get("embedded_images", [])
     mold_rows = fragment.get("molds", [])
     if not isinstance(image_records, list) or not isinstance(mold_rows, list):
-        return 0
+        return []
 
     attachments_by_row: dict[int, list[str]] = {}
-    materialized_count = 0
+    materialized_attachment_ids: list[str] = []
     for record in image_records:
         if not isinstance(record, dict):
             continue
@@ -510,8 +624,8 @@ def _materialize_imported_mold_images(
             )
             db.add(attachment)
             db.flush()
-            materialized_count += 1
         attachments_by_row.setdefault(source_row, []).append(attachment.id)
+        materialized_attachment_ids.append(attachment.id)
 
     for row in mold_rows:
         if not isinstance(row, dict):
@@ -523,7 +637,7 @@ def _materialize_imported_mold_images(
         attachment_ids = list(dict.fromkeys(attachments_by_row.get(source_row, [])))
         if attachment_ids:
             row["image_attachment_ids"] = attachment_ids
-    return materialized_count
+    return list(dict.fromkeys(materialized_attachment_ids))
 
 
 def _materialize_imported_source_workbook(
@@ -614,7 +728,9 @@ def confirm_import_batch(
     fragment = preview.get("payload_fragment", {})
     if not isinstance(fragment, dict):
         raise HTTPException(status_code=400, detail="导入预览批次结构无效")
-    effective_mode = "replace" if batch.import_type == "electronic" else payload.mode
+    effective_mode = "replace"
+    fragment = _tag_import_fragment(batch.import_type, fragment, batch.id)
+    preview["payload_fragment"] = fragment
     source_workbook_attachment_id = _materialize_imported_source_workbook(
         db,
         quote,
@@ -623,9 +739,9 @@ def confirm_import_batch(
         preview,
         user,
     )
-    embedded_image_count = 0
+    embedded_image_attachment_ids: list[str] = []
     if batch.import_type == "mold":
-        embedded_image_count = _materialize_imported_mold_images(
+        embedded_image_attachment_ids = _materialize_imported_mold_images(
             db,
             quote,
             section,
@@ -633,6 +749,9 @@ def confirm_import_batch(
             preview,
             user,
         )
+    preview["source_workbook_attachment_id"] = source_workbook_attachment_id
+    preview["embedded_image_attachment_ids"] = embedded_image_attachment_ids
+    batch.preview_json = canonical_json(preview)
 
     previous_dependency_hashes = _downstream_dependency_hashes(
         db,
@@ -690,7 +809,7 @@ def confirm_import_batch(
                 "mode": effective_mode,
                 "source_sha256": batch.source_sha256,
                 "source_workbook_attachment_id": source_workbook_attachment_id,
-                "embedded_image_count": embedded_image_count,
+                "embedded_image_count": len(embedded_image_attachment_ids),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -706,7 +825,10 @@ def confirm_import_batch(
     return InternalQuoteImportConfirmOut(batch=_import_out(batch), section=_section_out(section))
 
 
-def _attachment_out(attachment: InternalQuoteAttachment) -> InternalQuoteAttachmentOut:
+def _attachment_out(
+    attachment: InternalQuoteAttachment,
+    import_batch: InternalQuoteImportBatch | None = None,
+) -> InternalQuoteAttachmentOut:
     return InternalQuoteAttachmentOut(
         id=attachment.id,
         quote_id=attachment.quote_id,
@@ -718,6 +840,9 @@ def _attachment_out(attachment: InternalQuoteAttachment) -> InternalQuoteAttachm
         uploaded_by=attachment.uploaded_by,
         uploaded_by_name=attachment.uploaded_by_name,
         uploaded_at=attachment.uploaded_at,
+        is_import_source=import_batch is not None,
+        import_batch_id=import_batch.id if import_batch is not None else "",
+        import_type=import_batch.import_type if import_batch is not None else "",
     )
 
 
@@ -797,7 +922,164 @@ def list_attachments(
     if department:
         statement = statement.where(InternalQuoteAttachment.department == department)
     statement = statement.order_by(InternalQuoteAttachment.uploaded_at.desc(), InternalQuoteAttachment.id.desc())
-    return [_attachment_out(item) for item in db.scalars(statement).all()]
+    attachments = list(db.scalars(statement).all())
+    batches = list(db.scalars(
+        select(InternalQuoteImportBatch)
+        .where(
+            InternalQuoteImportBatch.quote_id == quote.id,
+            InternalQuoteImportBatch.status == "confirmed",
+        )
+        .order_by(InternalQuoteImportBatch.confirmed_at.desc(), InternalQuoteImportBatch.id.desc())
+    ).all())
+    source_batch_by_attachment_id: dict[str, InternalQuoteImportBatch] = {}
+    for batch in batches:
+        preview = _json_object(batch.preview_json)
+        source_attachment_id = str(preview.get("source_workbook_attachment_id", ""))
+        if source_attachment_id:
+            source_batch_by_attachment_id.setdefault(source_attachment_id, batch)
+            continue
+        # Compatibility for imports confirmed before source attachment ids were
+        # written into preview metadata.
+        for attachment in attachments:
+            if (
+                attachment.department == batch.target_department
+                and attachment.sha256 == batch.source_sha256
+            ):
+                source_batch_by_attachment_id.setdefault(attachment.id, batch)
+                break
+    return [
+        _attachment_out(item, source_batch_by_attachment_id.get(item.id))
+        for item in attachments
+    ]
+
+
+def delete_import_attachment(
+    db: Session,
+    quote_id: str,
+    attachment_id: str,
+    revision: int,
+    user: AuthContext,
+    request: Request | None = None,
+) -> None:
+    quote = _get_quote(db, quote_id)
+    _ensure_active(quote)
+    attachment = db.scalar(
+        select(InternalQuoteAttachment)
+        .where(
+            InternalQuoteAttachment.id == attachment_id,
+            InternalQuoteAttachment.quote_id == quote.id,
+        )
+        .with_for_update()
+    )
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    ensure_section_permission(db, user, quote.factory_id, attachment.department, "edit")
+    section = _get_section(db, quote.id, attachment.department)
+    _ensure_section_participates(section)
+    _check_revision(section.revision, revision)
+    if section.status not in MUTABLE_SECTION_STATUSES:
+        raise HTTPException(status_code=409, detail="当前分段已提交或审核完成，请先返回修改或合法重开后再删除导入附件")
+
+    candidate_batches = list(db.scalars(
+        select(InternalQuoteImportBatch)
+        .where(
+            InternalQuoteImportBatch.quote_id == quote.id,
+            InternalQuoteImportBatch.target_department == attachment.department,
+            InternalQuoteImportBatch.status == "confirmed",
+        )
+        .with_for_update()
+    ).all())
+    batches = []
+    for batch in candidate_batches:
+        preview = _json_object(batch.preview_json)
+        source_attachment_id = str(preview.get("source_workbook_attachment_id", ""))
+        if source_attachment_id == attachment.id or (
+            not source_attachment_id and batch.source_sha256 == attachment.sha256
+        ):
+            batches.append(batch)
+    if not batches:
+        raise HTTPException(status_code=409, detail="该附件不是结构化报价导入源文件，不能执行联动清除")
+
+    previous_dependency_hashes = _downstream_dependency_hashes(db, quote, section.department)
+    old_revision = section.revision
+    cleared_payload, imported_image_ids = _clear_import_generated_payload(
+        _json_object(section.payload_json),
+        batches,
+    )
+    section.payload_json = canonical_json(cleared_payload)
+    section.status = "draft"
+    section.revision += 1
+    section.filled_by = user.display_name
+    section.filled_at = now_text()
+    section.review_comment = ""
+    section.updated_at = now_text()
+    try:
+        _calculate_and_apply(db, quote, section, user)
+    except CalculationInputError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    reason = f"import_attachment_delete:{','.join(batch.id for batch in batches)}"
+    _add_revision(db, quote, section, user, reason=reason)
+    _invalidate_downstream_dependencies(
+        db,
+        quote,
+        user,
+        section.department,
+        request,
+        previous_dependency_hashes,
+    )
+    _derive_quote_status(db, quote)
+
+    for batch in batches:
+        preview = _json_object(batch.preview_json)
+        preview["deleted_attachment_id"] = attachment.id
+        preview["deleted_by"] = user.id
+        preview["deleted_at"] = now_text()
+        batch.preview_json = canonical_json(preview)
+        batch.status = "deleted"
+
+    db.delete(attachment)
+    if imported_image_ids:
+        remaining_payloads = [
+            _json_object(item.payload_json)
+            for item in db.scalars(
+                select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
+            ).all()
+        ]
+        referenced_ids = set().union(*(_collect_attachment_ids(item) for item in remaining_payloads))
+        for image_id in imported_image_ids - referenced_ids:
+            image_attachment = db.scalar(
+                select(InternalQuoteAttachment).where(
+                    InternalQuoteAttachment.id == image_id,
+                    InternalQuoteAttachment.quote_id == quote.id,
+                )
+            )
+            if image_attachment is not None:
+                db.delete(image_attachment)
+
+    _add_audit(
+        db,
+        quote,
+        user,
+        "delete_import_attachment",
+        department=section.department,
+        detail=json.dumps(
+            {
+                "attachment_id": attachment.id,
+                "file_name": attachment.file_name,
+                "batch_ids": [batch.id for batch in batches],
+                "import_types": sorted({batch.import_type for batch in batches}),
+                "removed_image_attachment_ids": sorted(imported_image_ids),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        old_revision=old_revision,
+        new_revision=section.revision,
+        reason=reason,
+        request=request,
+    )
+    db.commit()
 
 
 def get_attachment_download(
