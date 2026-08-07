@@ -4,6 +4,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -146,6 +147,7 @@ class InjectionSchedulingImportBatch(Base):
     template_signature: Mapped[str] = mapped_column(String(64), default="", index=True)
     mapping_fingerprint: Mapped[str] = mapped_column(String(64), default="", index=True)
     batch_state: Mapped[str] = mapped_column(String(32), default="LEGACY_PREVIEW", index=True)
+    preview_generation: Mapped[int] = mapped_column(Integer, default=1)
     target_draft_plan_id: Mapped[str] = mapped_column(String(96), default="", index=True)
     target_draft_plan_revision: Mapped[int] = mapped_column(Integer, default=0)
     reference_published_plan_id: Mapped[str] = mapped_column(
@@ -184,6 +186,59 @@ class InjectionSchedulingImportBatch(Base):
     confirmed_at: Mapped[str] = mapped_column(String(32), default="", index=True)
 
 
+class InjectionSchedulingUploadArtifact(Base):
+    __tablename__ = "injection_scheduling_upload_artifacts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["batch_id", "factory_id"],
+            [
+                "injection_scheduling_import_batches.id",
+                "injection_scheduling_import_batches.factory_id",
+            ],
+            name="fk_injection_scheduling_upload_artifact_batch_factory",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "batch_id",
+            name="uq_injection_scheduling_upload_artifact_batch",
+        ),
+        UniqueConstraint(
+            "storage_key",
+            name="uq_injection_scheduling_upload_artifact_storage_key",
+        ),
+        CheckConstraint(
+            "cleanup_status IN ('RETAINED', 'CLEANED')",
+            name="ck_injection_scheduling_upload_artifact_cleanup_status",
+        ),
+        CheckConstraint(
+            "size_bytes > 0",
+            name="ck_injection_scheduling_upload_artifact_size",
+        ),
+        Index(
+            "ix_injection_scheduling_upload_artifact_expiry_cleanup",
+            "expires_at",
+            "cleanup_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(96), index=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    storage_key: Mapped[str] = mapped_column(String(128))
+    source_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    detected_format: Mapped[str] = mapped_column(String(32), default="XLSX")
+    payload_blob: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    expires_at: Mapped[str] = mapped_column(String(32), index=True)
+    cleanup_status: Mapped[str] = mapped_column(
+        String(16), default="RETAINED", index=True
+    )
+    created_by: Mapped[str] = mapped_column(String(64), index=True)
+    created_by_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(32), index=True)
+    cleaned_at: Mapped[str] = mapped_column(String(32), default="")
+
+
 class InjectionSchedulingImportIssue(Base):
     __tablename__ = "injection_scheduling_import_issues"
     __table_args__ = (
@@ -211,6 +266,7 @@ class InjectionSchedulingImportIssue(Base):
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     batch_id: Mapped[str] = mapped_column(String(96), index=True)
     factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    preview_generation: Mapped[int] = mapped_column(Integer, default=1, index=True)
     severity: Mapped[str] = mapped_column(String(16), index=True)
     code: Mapped[str] = mapped_column(String(64), index=True)
     message: Mapped[str] = mapped_column(Text)
@@ -238,8 +294,9 @@ class InjectionSchedulingImportAction(Base):
         ),
         UniqueConstraint(
             "batch_id",
+            "preview_generation",
             "action_sha256",
-            name="uq_injection_scheduling_import_action_fingerprint",
+            name="uq_inj_sched_import_action_generation_fingerprint",
         ),
         Index(
             "ix_injection_scheduling_import_action_batch_type_row",
@@ -252,6 +309,7 @@ class InjectionSchedulingImportAction(Base):
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     batch_id: Mapped[str] = mapped_column(String(96), index=True)
     factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    preview_generation: Mapped[int] = mapped_column(Integer, default=1, index=True)
     action_type: Mapped[str] = mapped_column(String(64), index=True)
     stable_order_key: Mapped[str] = mapped_column(String(64), default="", index=True)
     stable_row_key: Mapped[str] = mapped_column(String(64), default="", index=True)

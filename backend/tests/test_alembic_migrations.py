@@ -37,6 +37,12 @@ INJECTION_SCHEDULING_TAKEOVER_MIGRATION_PATH = (
     / "versions"
     / "20260805_0057_injection_scheduling_takeover_phase2.py"
 )
+INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_PATH = (
+    BACKEND_DIR
+    / "alembic"
+    / "versions"
+    / "20260807_0058_injection_scheduling_public_planning.py"
+)
 BASE_MIGRATION_REVISION = "20260701_0001"
 NOTIFICATION_MIGRATION_REVISION = "20260703_0002"
 AUTH_MIGRATION_REVISION = "20260703_0003"
@@ -97,7 +103,8 @@ CARTON_CUSTOMER_MASTER_MIGRATION_REVISION = "20260805_0054"
 CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION = "20260805_0055"
 INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION = "20260805_0056"
 INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION = "20260805_0057"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION
+INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION = "20260807_0058"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -222,6 +229,13 @@ def test_alembic_has_single_molding_sample_head():
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
 
+    public_planning_revision = script.get_revision(
+        INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
+    )
+    assert (
+        public_planning_revision.down_revision
+        == INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION
+    )
     takeover_revision = script.get_revision(
         INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION
     )
@@ -4250,6 +4264,126 @@ def test_injection_scheduling_takeover_schema_gate_requires_0057(tmp_path):
     assert allowed_startup.returncode == 0, allowed_startup.stderr
 
 
+def test_injection_scheduling_public_planning_schema_gate_requires_0058(tmp_path):
+    database_path = tmp_path / "injection_scheduling_public_planning_gate.db"
+    initial_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION,
+    )
+    assert initial_upgrade.returncode == 0, initial_upgrade.stderr
+    schema_before_startup = _sqlite_schema_signature(database_path)
+
+    blocked_startup = _run_dispatch_init_db(database_path)
+    assert blocked_startup.returncode != 0
+    startup_output = f"{blocked_startup.stdout}\n{blocked_startup.stderr}"
+    assert INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION in startup_output
+    assert "injection_scheduling_export_audits" in startup_output
+    assert _sqlite_schema_signature(database_path) == schema_before_startup
+
+    migrated = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert migrated.returncode == 0, migrated.stderr
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert {
+            "injection_scheduling_export_audits",
+            "injection_scheduling_upload_artifacts",
+        } <= tables
+        expected_columns = {
+            "injection_scheduling_plans": {
+                "export_profile_id",
+                "export_profile_revision",
+                "export_profile_family",
+                "export_renderer_code",
+                "export_binding_source",
+                "calculation_version",
+            },
+            "injection_scheduling_import_batches": {"preview_generation"},
+            "injection_scheduling_import_issues": {"preview_generation"},
+            "injection_scheduling_import_actions": {"preview_generation"},
+            "injection_scheduling_export_audits": {
+                "rule_revision",
+                "mapping_fingerprint",
+                "reference_report_event_sequence",
+                "signed_row_manifest_digest",
+                "export_options_json",
+            },
+        }
+        for table_name, required in expected_columns.items():
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    f"PRAGMA table_info('{table_name}')"
+                ).fetchall()
+            }
+            assert required <= columns
+        triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            ).fetchall()
+        }
+        assert {
+            "trg_inj_sched_export_audit_no_update",
+            "trg_inj_sched_export_audit_no_delete",
+        } <= triggers
+        connection.execute(
+            """
+            INSERT INTO injection_scheduling_export_audits (
+                id, factory_id, plan_id, plan_revision, export_mode,
+                profile_revision, renderer_code, calculation_version,
+                file_name, file_sha256, size_bytes, manifest_json,
+                manifest_sha256, metadata_signature, signing_key_id,
+                payload_blob, request_id, request_payload_hash,
+                created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "isexport-immutable-test",
+                "huaxing",
+                "isplan-immutable-test",
+                1,
+                "SYSTEM_STANDARD",
+                1,
+                "system_standard_v1",
+                "projection-v1",
+                "test.xlsx",
+                "a" * 64,
+                1,
+                "{}",
+                "b" * 64,
+                "c" * 64,
+                "test-v1",
+                b"x",
+                "immutable-test-request",
+                "d" * 64,
+                "user-test",
+                "2026-08-07T08:00:00+08:00",
+            ),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "UPDATE injection_scheduling_export_audits "
+                "SET file_name = 'changed.xlsx' WHERE id = 'isexport-immutable-test'"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "DELETE FROM injection_scheduling_export_audits "
+                "WHERE id = 'isexport-immutable-test'"
+            )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+    allowed_startup = _run_dispatch_init_db(database_path)
+    assert allowed_startup.returncode == 0, allowed_startup.stderr
+
+
 def test_injection_scheduling_profile_downgrade_rejects_lifecycle_data(tmp_path):
     database_path = tmp_path / "injection_scheduling_profile_downgrade_guard.db"
     upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
@@ -4274,10 +4408,80 @@ def test_injection_scheduling_profile_downgrade_rejects_lifecycle_data(tmp_path)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION,)
         assert connection.execute(
             "SELECT COUNT(*) FROM injection_scheduling_import_profiles"
         ).fetchone() == (2,)
+
+
+def test_injection_scheduling_public_planning_downgrade_rejects_artifacts(tmp_path):
+    database_path = tmp_path / "injection_scheduling_public_planning_downgrade.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO injection_scheduling_import_batches (
+                id, factory_id, source_file_name, source_file_hash,
+                source_size_bytes, parser_version, preview_schema_version,
+                normalized_json, normalized_sha256, summary_json,
+                preview_request_id, preview_payload_hash,
+                created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "batch-retained-artifact",
+                "huaxing",
+                "retained.xlsx",
+                "a" * 64,
+                4,
+                "profile-v1",
+                "canonical-v1",
+                "{}",
+                "b" * 64,
+                "{}",
+                "retained-artifact-preview",
+                "c" * 64,
+                "user-test",
+                "2026-08-07T08:00:00+08:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO injection_scheduling_upload_artifacts (
+                id, batch_id, factory_id, storage_key, source_sha256,
+                size_bytes, payload_blob, expires_at, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "artifact-retained",
+                "batch-retained-artifact",
+                "huaxing",
+                "injection-import/retained",
+                "a" * 64,
+                4,
+                b"xlsx",
+                "2026-08-10T08:00:00+08:00",
+                "user-test",
+                "2026-08-07T08:00:00+08:00",
+            ),
+        )
+        connection.commit()
+
+    rejected = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION,
+    )
+    assert rejected.returncode != 0
+    assert "cannot be downgraded after upload artifacts" in rejected.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM injection_scheduling_upload_artifacts"
+        ).fetchone() == (1,)
 
 
 def test_injection_scheduling_profile_upgrade_preserves_existing_import_batch(tmp_path):

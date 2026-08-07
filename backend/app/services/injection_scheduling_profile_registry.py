@@ -69,6 +69,37 @@ def active_profiles_for_factory(
     )
 
 
+def profile_revision_for_factory(
+    db: Session,
+    *,
+    factory_id: str,
+    profile_id: str,
+    profile_revision: int,
+    allowed_statuses: tuple[str, ...] = ("ACTIVE",),
+) -> ImportProfile | None:
+    row = db.execute(
+        select(
+            InjectionSchedulingImportProfile,
+            InjectionSchedulingImportProfileFactory,
+        )
+        .join(
+            InjectionSchedulingImportProfileFactory,
+            InjectionSchedulingImportProfileFactory.profile_id
+            == InjectionSchedulingImportProfile.id,
+        )
+        .where(
+            InjectionSchedulingImportProfile.id == profile_id,
+            InjectionSchedulingImportProfile.revision == profile_revision,
+            InjectionSchedulingImportProfile.status.in_(allowed_statuses),
+            InjectionSchedulingImportProfileFactory.factory_id == factory_id,
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    profile, binding = row
+    return _profile_from_record(profile, (binding.factory_id,))
+
+
 def profile_record_out(
     db: Session, record: InjectionSchedulingImportProfile
 ) -> dict[str, Any]:

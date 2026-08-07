@@ -16,6 +16,9 @@ from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.injection_scheduling_execution import (
     router as injection_scheduling_execution_router,
 )
+from app.api.injection_scheduling_export import (
+    router as injection_scheduling_export_router,
+)
 from app.api.injection_scheduling_import import (
     router as injection_scheduling_import_router,
 )
@@ -106,6 +109,7 @@ app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(injection_scheduling_router)
 app.include_router(injection_scheduling_execution_router)
+app.include_router(injection_scheduling_export_router)
 app.include_router(injection_scheduling_import_router)
 app.include_router(injection_scheduling_matching_router)
 app.include_router(injection_scheduling_scheduler_router)

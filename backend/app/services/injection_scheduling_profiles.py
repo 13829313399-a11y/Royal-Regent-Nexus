@@ -389,6 +389,36 @@ def _huakang_b_fields() -> tuple[FieldRule, ...]:
     )
 
 
+def _system_standard_fields() -> tuple[FieldRule, ...]:
+    p = "system_standard_v1"
+    return (
+        _field(p, "machine_code", "A", ("机台编码",), "identifier", required=True),
+        _field(p, "mold_no", "B", ("模具编号",), "identifier", required=True),
+        _field(p, "product_name", "C", ("产品名称",), "text", required=True),
+        _field(p, "order_no", "D", ("订单号",), "identifier", required=True),
+        _field(p, "item_no", "E", ("货号",), "identifier"),
+        _field(p, "order_quantity", "F", ("订单数量",), "number", required=True),
+        _field(p, "completed_quantity", "G", ("累计完成数量",), "number", required=True),
+        _field(
+            p,
+            "shift_target_quantity",
+            "H",
+            ("班次目标数量",),
+            "number",
+            unit="pieces/shift",
+        ),
+        _field(p, "delivery_due_date", "I", ("交货完成期",), "date"),
+        _field(p, "planned_start", "J", ("计划开始",), "datetime"),
+        _field(p, "planned_finish", "K", ("计划完成",), "datetime"),
+        _field(p, "material_name", "L", ("材料",), "text"),
+        _field(p, "color_name", "M", ("颜色",), "text"),
+        _field(p, "warehouse_text", "N", ("仓库",), "identifier"),
+        _field(p, "remark", "O", ("备注",), "text"),
+        _field(p, "required_arm_type", "P", ("机械手",), "text"),
+        _field(p, "required_fixture_type", "Q", ("夹具",), "text"),
+    )
+
+
 BUILTIN_IMPORT_PROFILES: tuple[ImportProfile, ...] = (
     ImportProfile(
         profile_id="isprofile-huaxing-daily-v1",
@@ -441,6 +471,31 @@ BUILTIN_IMPORT_PROFILES: tuple[ImportProfile, ...] = (
         quantity_scope="ORDER_CUMULATIVE",
         renderer_code="huakang_b_daily_plan_v1",
     ),
+)
+
+SYSTEM_STANDARD_EXPORT_PROFILE = ImportProfile(
+    profile_id="isprofile-system-standard-v1",
+    profile_code="system_standard_v1",
+    profile_family="system_standard",
+    revision=1,
+    name="系统标准注塑排产 v1",
+    factories=(
+        "huaxing",
+        "huakang-a",
+        "huakang-b",
+        "huakang-c",
+        "huakang-d",
+        "huadeng",
+    ),
+    status="ACTIVE",
+    sheet_roles=(SheetRoleRule("CURRENT_PLAN", ("计划表",), True, 1),),
+    fields=_system_standard_fields(),
+    machine_adapter="system_master_only",
+    mold_adapter="system_master_only",
+    dynamic_shift_start="A",
+    dynamic_shift_end="A",
+    quantity_scope="ORDER_CUMULATIVE",
+    renderer_code="system_standard_v1",
 )
 
 
