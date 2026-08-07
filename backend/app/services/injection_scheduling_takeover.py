@@ -367,7 +367,76 @@ def build_reconciliation_preview(
             baseline = _decimal(state.takeover_source_completed_quantity)
             report_total = _decimal(state.report_increment_total)
             adjustment_total = _decimal(state.progress_adjustment_total)
-            if excel_completed != baseline:
+            signed_export = row.get("system_export")
+            if signed_export is not None:
+                exported_completed = _decimal(
+                    signed_export.get("completed_at_export")
+                )
+                exported_report_total = _decimal(
+                    signed_export.get("report_increment_total_at_export")
+                )
+                exported_adjustment_total = _decimal(
+                    signed_export.get("progress_adjustment_total_at_export")
+                )
+                if (
+                    report_total != exported_report_total
+                    or adjustment_total != exported_adjustment_total
+                    or _decimal(state.completed_quantity) != exported_completed
+                ):
+                    if excel_completed != _decimal(state.completed_quantity):
+                        actions.append(
+                            _action(
+                                "CONFLICT",
+                                row=row,
+                                target_order_id=state.order_id,
+                                target_task_id=task.id if task else "",
+                                reason_code="SIGNED_EXPORT_PROGRESS_STALE",
+                                detail={
+                                    "excel_value": float(excel_completed),
+                                    "completed_at_export": float(exported_completed),
+                                    "current_completed": float(
+                                        state.completed_quantity
+                                    ),
+                                    "report_increment_total_at_export": float(
+                                        exported_report_total
+                                    ),
+                                    "current_report_increment_total": float(
+                                        report_total
+                                    ),
+                                    "progress_adjustment_total_at_export": float(
+                                        exported_adjustment_total
+                                    ),
+                                    "current_progress_adjustment_total": float(
+                                        adjustment_total
+                                    ),
+                                },
+                            )
+                        )
+                        continue
+                elif excel_completed != exported_completed:
+                    actions.append(
+                        _action(
+                            "UPDATE_PROGRESS",
+                            row=row,
+                            target_order_id=state.order_id,
+                            target_task_id=task.id if task else "",
+                            reason_code="SIGNED_EXPORT_PROGRESS_DELTA",
+                            detail={
+                                "excel_value": float(excel_completed),
+                                "completed_at_export": float(exported_completed),
+                                "signed_quantity": float(
+                                    excel_completed - exported_completed
+                                ),
+                                "report_increment_total_at_export": float(
+                                    exported_report_total
+                                ),
+                                "progress_adjustment_total_at_export": float(
+                                    exported_adjustment_total
+                                ),
+                            },
+                        )
+                    )
+            elif excel_completed != baseline:
                 if excel_completed > baseline and report_total == 0 and adjustment_total == 0:
                     actions.append(
                         _action(
@@ -728,6 +797,12 @@ def clone_successor_draft(
         based_on_plan_id=source.id,
         based_on_event_sequence=event_watermark,
         based_on_report_watermark=report_watermark,
+        export_profile_id=source.export_profile_id,
+        export_profile_revision=source.export_profile_revision,
+        export_profile_family=source.export_profile_family,
+        export_renderer_code=source.export_renderer_code,
+        export_binding_source=source.export_binding_source,
+        calculation_version=source.calculation_version,
         rollback_request_id=rollback_request_id,
         created_by=user.id,
         created_by_name=_actor_name(user),
@@ -1126,6 +1201,12 @@ def prepare_takeover_plan(
         based_on_plan_id="",
         based_on_event_sequence=0,
         based_on_report_watermark=0,
+        export_profile_id="isprofile-system-standard-v1",
+        export_profile_revision=1,
+        export_profile_family="system_standard",
+        export_renderer_code="system_standard_v1",
+        export_binding_source="SYSTEM_STANDARD",
+        calculation_version="injection-scheduling-calculation-v2",
         rollback_request_id=None,
         created_by=user.id,
         created_by_name=_actor_name(user),

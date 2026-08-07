@@ -12,6 +12,10 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingCurrentPlanOut,
     InjectionSchedulingDraftCreate,
     InjectionSchedulingEventsOut,
+    InjectionSchedulingManualAppendConfirm,
+    InjectionSchedulingManualAppendPreview,
+    InjectionSchedulingManualAppendPreviewRequest,
+    InjectionSchedulingManualAppendResult,
     InjectionSchedulingOrderCreate,
     InjectionSchedulingOrderOut,
     InjectionSchedulingOrderUpdate,
@@ -63,6 +67,10 @@ from app.services.injection_scheduling_execution import (
     task_out,
     update_order,
     update_task,
+)
+from app.services.injection_scheduling_manual_append import (
+    confirm_manual_append,
+    preview_manual_append,
 )
 from app.services.injection_scheduling_takeover import (
     explicit_plan_context,
@@ -313,6 +321,53 @@ def get_plan_context(
         execution_published_plan=(plan_out(db, published) if published else None),
         planning_draft_plan=(plan_out(db, draft) if draft else None),
         polling_revision=latest_event_sequence(db, factory_id),
+    )
+
+
+@router.post(
+    "/plans/{plan_id}/manual-append/preview",
+    response_model=InjectionSchedulingManualAppendPreview,
+)
+def post_manual_append_preview(
+    plan_id: str,
+    payload: InjectionSchedulingManualAppendPreviewRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    return preview_manual_append(db, plan_id=plan_id, payload=payload)
+
+
+@router.post(
+    "/plans/{plan_id}/manual-append/confirm",
+    response_model=InjectionSchedulingManualAppendResult,
+)
+def post_manual_append_confirm(
+    plan_id: str,
+    payload: InjectionSchedulingManualAppendConfirm,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    can_override_review = any(
+        has_permission_in_scope(
+            current_user,
+            "injection_scheduling:publish",
+            factory_id,
+            department,
+        )
+        for department in SCHEDULING_DEPARTMENTS
+    )
+    return confirm_manual_append(
+        db,
+        plan_id=plan_id,
+        payload=payload,
+        user=current_user,
+        can_override_review=can_override_review,
     )
 
 

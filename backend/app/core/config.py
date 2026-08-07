@@ -26,6 +26,9 @@ class Settings(BaseSettings):
         BACKEND_DIR / "models" / "document-translation"
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
+    injection_scheduling_export_signing_key: str = ""
+    injection_scheduling_export_signing_key_id: str = "v1"
+    injection_scheduling_export_verification_keys_json: str = "{}"
 
     @property
     def effective_session_cookie_secure(self) -> bool:

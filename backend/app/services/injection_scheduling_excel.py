@@ -20,6 +20,8 @@ PREVIEW_SCHEMA_VERSION = "phase0-import-v2"
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
 MAX_ZIP_ENTRY_BYTES = 64 * 1024 * 1024
+MAX_ZIP_ENTRIES = 2_000
+MAX_COMPRESSION_RATIO = 1_000
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 DOC_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -205,13 +207,35 @@ class _WorkbookReader:
 
     def _validate_zip(self) -> None:
         entries = self.archive.infolist()
+        if len(entries) > MAX_ZIP_ENTRIES:
+            raise HTTPException(status_code=413, detail="Excel ZIP entry 数量超过 2000 限制")
         total_size = sum(entry.file_size for entry in entries)
         if total_size > MAX_UNCOMPRESSED_BYTES:
             raise HTTPException(status_code=413, detail="Excel 解压后体积超过 250 MB 限制")
         if any(entry.file_size > MAX_ZIP_ENTRY_BYTES for entry in entries):
             raise HTTPException(status_code=413, detail="Excel 内部单个文件超过 64 MB 限制")
-        required = {"xl/workbook.xml", "xl/_rels/workbook.xml.rels"}
-        if not required <= set(self.archive.namelist()):
+        if any(
+            entry.file_size > 0
+            and (
+                entry.compress_size == 0
+                or entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO
+            )
+            for entry in entries
+        ):
+            raise HTTPException(status_code=413, detail="Excel ZIP 压缩比异常")
+        names = set(self.archive.namelist())
+        if any(
+            name.lower().endswith(("vbaproject.bin", ".ocx", ".exe", ".dll"))
+            or "/activex/" in name.lower()
+            for name in names
+        ):
+            raise HTTPException(status_code=422, detail="Excel 包含不允许的主动内容")
+        required = {
+            "[Content_Types].xml",
+            "xl/workbook.xml",
+            "xl/_rels/workbook.xml.rels",
+        }
+        if not required <= names:
             raise HTTPException(status_code=422, detail="文件不是有效的 Excel .xlsx 工作簿")
 
     def _read_shared_strings(self) -> list[str]:

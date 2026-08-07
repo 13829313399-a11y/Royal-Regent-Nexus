@@ -52,6 +52,7 @@ class InjectionSchedulingImportBatchOut(BaseModel):
     preview_schema_version: str
     normalized_sha256: str
     batch_state: str
+    preview_generation: int
     profile: dict[str, Any] | None
     sheet_roles: list[dict[str, Any]]
     mapping: list[dict[str, Any]]
@@ -79,6 +80,8 @@ class InjectionSchedulingImportBatchOut(BaseModel):
     confirmed_by: str
     confirmed_by_name: str
     confirmed_at: str
+    artifact_available: bool
+    artifact_expires_at: str
     issues: list[InjectionSchedulingImportIssueOut]
     tasks: list[InjectionSchedulingImportTaskPreview]
     idempotent_replay: bool = False
@@ -149,3 +152,14 @@ class InjectionSchedulingMasterApproval(StrictWriteModel):
         if len(normalized) != len(values) or len(normalized) != len(set(normalized)):
             raise ValueError("主数据差异键不能为空或重复")
         return normalized
+
+
+class InjectionSchedulingImportRetry(StrictWriteModel):
+    factory_id: str
+    expected_revision: int = Field(ge=1)
+    request_id: str = Field(min_length=8, max_length=128)
+
+    @field_validator("factory_id", "request_id")
+    @classmethod
+    def strip_retry_text(cls, value: str) -> str:
+        return value.strip()

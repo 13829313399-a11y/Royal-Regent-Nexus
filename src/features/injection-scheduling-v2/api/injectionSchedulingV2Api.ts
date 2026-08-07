@@ -4,10 +4,15 @@ import type {
   AutoScheduleGenerationOptions,
   AutoScheduleRunRecord,
   AuditEvent,
+  ImportBatchRecord,
+  ImportIssueRecord,
   MachineRecord,
+  ManualAppendPreviewRecord,
   MoldRecord,
   OrderRecord,
   Phase5AnalyticsRecord,
+  PlanExportMode,
+  PlanExportResult,
   ScheduleTaskRecord,
   SchedulingPlanRecord,
   ShiftReportDraft,
@@ -116,6 +121,9 @@ export function mapPlan(source: UnknownRecord | null): { plan: SchedulingPlanRec
       ruleRevision: numberValue(source.rule_revision), businessDate: text(source.business_date),
       basedOnPlanId: text(source.based_on_plan_id), basedOnEventSequence: numberValue(source.based_on_event_sequence),
       basedOnReportWatermark: numberValue(source.based_on_report_watermark),
+      exportProfileId: text(source.export_profile_id) || null, exportProfileRevision: numberOrNull(source.export_profile_revision),
+      exportProfileFamily: text(source.export_profile_family), exportRendererCode: text(source.export_renderer_code),
+      exportBindingSource: text(source.export_binding_source), calculationVersion: text(source.calculation_version),
     },
     orders: (Array.isArray(source.orders) ? source.orders as UnknownRecord[] : []).map(mapOrder),
     tasks: (Array.isArray(source.tasks) ? source.tasks as UnknownRecord[] : []).map(mapTask),
@@ -262,8 +270,9 @@ export async function fetchSchedulingWorkspace(factoryId: string) {
   const mappedPlan = draftPlan.plan ? draftPlan : publishedPlan
   const planOrders = mappedPlan.orders
   const backlogItems = Array.isArray((backlogResponse.data as UnknownRecord).items) ? (backlogResponse.data as { items: UnknownRecord[] }).items : []
+  const mappedBacklogOrders = backlogItems.map(mapOrder)
   const orderMap = new Map<string, OrderRecord>()
-  for (const source of [...planOrders, ...backlogItems.map(mapOrder)]) {
+  for (const source of [...planOrders, ...mappedBacklogOrders]) {
     const order = source
     orderMap.set(order.id, order)
   }
@@ -273,9 +282,14 @@ export async function fetchSchedulingWorkspace(factoryId: string) {
     orders: [...orderMap.values()],
     tasks: mappedPlan.tasks,
     backlogOrderIds: backlogItems.map((source) => text(source.id)),
+    backlogOrders: mappedBacklogOrders,
     plan: mappedPlan.plan,
     executionPlan: publishedPlan.plan,
     planningPlan: draftPlan.plan,
+    executionOrders: publishedPlan.orders,
+    executionTasks: publishedPlan.tasks,
+    planningOrders: draftPlan.orders,
+    planningTasks: draftPlan.tasks,
     pollingRevision: numberValue(planPayload.polling_revision),
     events: (((eventsResponse.data as UnknownRecord).events as UnknownRecord[]) ?? []).map(mapEvent),
     autoScheduleRuns: (((runsResponse.data as UnknownRecord).items as UnknownRecord[]) ?? []).map(mapAutoScheduleRun),
@@ -447,6 +461,10 @@ export async function fetchCurrentSchedulingPlan(factoryId: string) {
     ...(draftPlan.plan ? draftPlan : publishedPlan),
     executionPlan: publishedPlan.plan,
     planningPlan: draftPlan.plan,
+    executionOrders: publishedPlan.orders,
+    executionTasks: publishedPlan.tasks,
+    planningOrders: draftPlan.orders,
+    planningTasks: draftPlan.tasks,
     pollingRevision: numberValue(payload.polling_revision),
   }
 }
@@ -456,4 +474,152 @@ function newRequestId(prefix: string) {
     ? crypto.randomUUID().replaceAll('-', '')
     : Math.random().toString(36).slice(2)
   return `${prefix}-${Date.now()}-${random}`.slice(0, 128)
+}
+
+function mapImportIssue(source: UnknownRecord): ImportIssueRecord {
+  return {
+    id: text(source.id), severity: (text(source.severity) || 'WARNING') as ImportIssueRecord['severity'],
+    code: text(source.code), message: text(source.message), sheetName: text(source.sheet_name),
+    sourceRow: numberOrNull(source.source_row), fieldName: text(source.field_name), cellRef: text(source.cell_ref),
+    rawValue: text(source.raw_value), blocking: Boolean(source.blocking),
+  }
+}
+
+export function mapImportBatch(source: UnknownRecord): ImportBatchRecord {
+  const records = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
+    : []
+  return {
+    id: text(source.id), factoryId: text(source.factory_id), sourceFileName: text(source.source_file_name),
+    sourceFileHash: text(source.source_file_hash), batchState: text(source.batch_state),
+    previewGeneration: numberValue(source.preview_generation),
+    profile: source.profile && typeof source.profile === 'object' ? source.profile as UnknownRecord : null,
+    sheetRoles: records(source.sheet_roles), mapping: records(source.mapping),
+    scheduledBaselineTasks: records(source.scheduled_baseline_tasks), backlogOrders: records(source.backlog_orders),
+    invalidRows: records(source.invalid_rows), masterDifferences: records(source.master_differences),
+    calculationComparisons: records(source.calculation_comparisons), reconciliationActions: records(source.reconciliation_actions),
+    planContext: source.plan_context && typeof source.plan_context === 'object' ? source.plan_context as UnknownRecord : {},
+    actionFingerprint: text(source.action_fingerprint),
+    summary: source.summary && typeof source.summary === 'object' ? source.summary as UnknownRecord : {},
+    status: (text(source.status) || 'PREVIEW') as ImportBatchRecord['status'], revision: numberValue(source.revision),
+    confirmedPlanId: text(source.confirmed_plan_id), confirmedPlanRevision: numberValue(source.confirmed_plan_revision),
+    result: source.result && typeof source.result === 'object' ? source.result as UnknownRecord : {},
+    artifactAvailable: Boolean(source.artifact_available), artifactExpiresAt: text(source.artifact_expires_at),
+    issues: records(source.issues).map(mapImportIssue), idempotentReplay: Boolean(source.idempotent_replay),
+  }
+}
+
+export async function listImportBatches(factoryId: string) {
+  const { data } = await http.get('/injection-scheduling/imports', { params: { factory_id: factoryId, limit: 20 } })
+  return (Array.isArray(data) ? data as UnknownRecord[] : []).map(mapImportBatch)
+}
+
+export async function recoverImportBatch(factoryId: string, batchId: string) {
+  const { data } = await http.get(`/injection-scheduling/imports/${batchId}`, { params: { factory_id: factoryId } })
+  return mapImportBatch(data as UnknownRecord)
+}
+
+export async function uploadImportPreview(factoryId: string, file: File) {
+  const body = new FormData()
+  body.set('factory_id', factoryId)
+  body.set('expected_revision', '0')
+  body.set('file', file)
+  const { data } = await http.post('/injection-scheduling/imports/preview', body, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      'X-Request-ID': newRequestId('import-preview'),
+    },
+  })
+  return mapImportBatch(data as UnknownRecord)
+}
+
+export async function retryImportPreview(factoryId: string, batch: ImportBatchRecord) {
+  const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/retry`, {
+    factory_id: factoryId, expected_revision: batch.revision, request_id: newRequestId('import-retry'),
+  })
+  return mapImportBatch(data as UnknownRecord)
+}
+
+export async function approveImportMasterDifferences(factoryId: string, batch: ImportBatchRecord, reason: string) {
+  const differences = batch.masterDifferences.map((item) => `${text(item.entity_type)}:${text(item.business_key)}`)
+  const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/master-differences/approve`, {
+    factory_id: factoryId, expected_revision: batch.revision, request_id: newRequestId('import-master'), reason, differences,
+  })
+  return mapImportBatch(data as UnknownRecord)
+}
+
+export async function confirmImportBatch(factoryId: string, batch: ImportBatchRecord, businessDate: string) {
+  const targetDraftRevision = numberValue(batch.planContext.target_draft_plan_revision)
+  const confirmMode = targetDraftRevision > 0 ? 'merge_draft' : 'create_draft'
+  const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/confirm`, {
+    factory_id: factoryId, expected_revision: batch.revision, expected_plan_revision: targetDraftRevision,
+    request_id: newRequestId('import-confirm'), confirm_mode: confirmMode, business_date: businessDate,
+    acknowledged_blocking_issue_ids: [], expected_action_fingerprint: batch.actionFingerprint, action_reasons: {},
+  })
+  return mapImportBatch(data as UnknownRecord)
+}
+
+export async function previewManualAppend(factoryId: string, plan: SchedulingPlanRecord, order: OrderRecord, machineId: string) {
+  const { data } = await http.post(`/injection-scheduling/plans/${plan.id}/manual-append/preview`, {
+    factory_id: factoryId, order_id: order.id, machine_id: machineId,
+    expected_plan_revision: plan.revision, expected_order_revision: order.revision, expected_rule_revision: plan.ruleRevision,
+  })
+  const source = data as UnknownRecord
+  return {
+    factoryId: text(source.factory_id), planId: text(source.plan_id), planRevision: numberValue(source.plan_revision),
+    orderId: text(source.order_id), orderRevision: numberValue(source.order_revision), machineId: text(source.machine_id),
+    sequence: numberValue(source.sequence_no), decision: text(source.decision) as ManualAppendPreviewRecord['decision'],
+    hardFailures: (source.hard_failures as UnknownRecord[]) ?? [], warnings: (source.warnings as UnknownRecord[]) ?? [],
+    advisories: (source.advisories as UnknownRecord[]) ?? [], plannedQuantity: numberValue(source.planned_quantity),
+    shiftTargetQuantity: numberValue(source.shift_target_quantity), plannedStart: text(source.planned_start), plannedFinish: text(source.planned_finish),
+    continuationAnchor: source.continuation_anchor as UnknownRecord ?? {}, calculation: source.calculation as UnknownRecord ?? {},
+    ruleRevision: numberValue(source.rule_revision), inputFingerprint: text(source.input_fingerprint),
+  } satisfies ManualAppendPreviewRecord
+}
+
+export async function confirmManualAppend(factoryId: string, plan: SchedulingPlanRecord, order: OrderRecord, preview: ManualAppendPreviewRecord, overrideReason: string) {
+  const { data } = await http.post(`/injection-scheduling/plans/${plan.id}/manual-append/confirm`, {
+    factory_id: factoryId, order_id: order.id, machine_id: preview.machineId,
+    expected_plan_revision: plan.revision, expected_order_revision: order.revision, expected_rule_revision: plan.ruleRevision,
+    request_id: newRequestId('manual-append'), expected_input_fingerprint: preview.inputFingerprint, override_reason: overrideReason,
+  })
+  return data as UnknownRecord
+}
+
+function exportFileName(contentDisposition: unknown, fallback: string) {
+  if (typeof contentDisposition !== 'string') return fallback
+  const encoded = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try { return decodeURIComponent(encoded) } catch { return fallback }
+  }
+  return contentDisposition.match(/filename="?([^";]+)"?/i)?.[1] ?? fallback
+}
+
+export async function downloadPlanExport(
+  factoryId: string,
+  plan: SchedulingPlanRecord,
+  mode: PlanExportMode,
+): Promise<PlanExportResult> {
+  const requestId = newRequestId('plan-export')
+  const sourceCompatible = mode === 'SOURCE_COMPATIBLE'
+  const response = await http.post<Blob>(`/injection-scheduling/plans/${plan.id}/exports`, {
+    factory_id: factoryId,
+    expected_plan_revision: plan.revision,
+    request_id: requestId,
+    export_mode: mode,
+    ...(sourceCompatible
+      ? { profile_id: plan.exportProfileId, profile_revision: plan.exportProfileRevision }
+      : {}),
+  }, { responseType: 'blob', timeout: 60_000 })
+  const headers = response.headers
+  return {
+    blob: response.data,
+    fileName: exportFileName(headers['content-disposition'], `injection-plan-${factoryId}-r${plan.revision}.xlsx`),
+    auditId: String(headers['x-export-audit-id'] ?? ''),
+    fileSha256: String(headers['x-export-sha256'] ?? ''),
+    mode: String(headers['x-export-mode'] ?? mode) as PlanExportMode,
+    profileId: String(headers['x-export-profile-id'] ?? ''),
+    profileRevision: Number(headers['x-export-profile-revision'] ?? 0),
+    rendererCode: String(headers['x-export-renderer'] ?? ''),
+  }
 }

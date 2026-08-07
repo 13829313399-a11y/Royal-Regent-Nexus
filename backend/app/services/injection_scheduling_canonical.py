@@ -32,6 +32,10 @@ from app.services.injection_scheduling_profiles import (
     profile_definition_digest,
     profiles_for_factory,
 )
+from app.services.injection_scheduling_projection import (
+    CALCULATION_VERSION,
+    quantity_metrics,
+)
 
 CANONICAL_SCHEMA_VERSION = "injection-scheduling-canonical-v1"
 PARSER_VERSION = "injection-scheduling-profile-parser-v1"
@@ -890,22 +894,40 @@ def _parse_plan_rows(
         else:
             current["source_rows"].append(row["source"]["source_row"])
 
-    comparisons = [
-        {
-            "stable_order_key": row["stable_order_key"],
-            "source_row": row["source"]["source_row"],
-            "field": "outstanding_quantity",
-            "excel_value": row.get("source_outstanding_quantity"),
-            "system_value": max(
-                float(row["order_quantity"])
-                - float(row.get("completed_quantity") or 0),
-                0.0,
-            ),
-            "adopted_source": "SYSTEM_DERIVED",
-            "calculation_version": "injection-scheduling-calculation-v1",
-        }
-        for row in [*scheduled, *backlog]
-    ]
+    comparisons: list[dict[str, Any]] = []
+    for row in [*scheduled, *backlog]:
+        metrics = quantity_metrics(
+            order_quantity=row["order_quantity"],
+            completed_quantity=row.get("completed_quantity") or 0,
+            shift_target_quantity=row.get("shift_target_quantity") or 0,
+        )
+        for field, source_field in (
+            ("outstanding_quantity", "source_outstanding_quantity"),
+            ("completion_rate", "source_completion_rate"),
+            ("overproduction_quantity", "source_overproduction_quantity"),
+            ("estimated_remaining_shifts", "source_remaining_shifts"),
+        ):
+            comparisons.append(
+                {
+                    "stable_order_key": row["stable_order_key"],
+                    "source_row": row["source"]["source_row"],
+                    "field": field,
+                    "excel_value": row.get(source_field),
+                    "system_value": metrics[field],
+                    "difference": None
+                    if row.get(source_field) is None
+                    else float(metrics[field]) - float(row[source_field]),
+                    "adopted_source": "SYSTEM_DERIVED",
+                    "calculation_version": CALCULATION_VERSION,
+                    "basis": {
+                        "order_quantity": metrics["order_quantity"],
+                        "completed_quantity": metrics["completed_quantity"],
+                        "shift_target_quantity": metrics[
+                            "shift_target_quantity"
+                        ],
+                    },
+                }
+            )
     return {
         "orders": list(orders.values()),
         "scheduled_baseline_tasks": scheduled,
@@ -1106,6 +1128,7 @@ def parse_canonical_workbook(
             "template_signature": template_signature,
             "definition_digest": profile_definition_digest(profile),
             "quantity_scope": profile.quantity_scope,
+            "renderer_code": profile.renderer_code,
         },
         "sheet_roles": list(roles.values()),
         "mapping": mapping,
