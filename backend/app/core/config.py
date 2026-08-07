@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     three_d_command_ttl_seconds: int = 120
     three_d_command_poll_interval_seconds: int = 3
     customer_order_test_duplicate_confirmation_enabled: bool | None = None
+    document_translation_model_dir: str = str(
+        BACKEND_DIR / "models" / "document-translation"
+    )
+    document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
 
     @property
     def effective_session_cookie_secure(self) -> bool:

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { FileSpreadsheet, FileText, Plus, Scissors, ShieldCheck } from '@lucide/vue'
+import { FileSpreadsheet, FileText, Languages, Plus, Scissors, ShieldCheck } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import DocumentTranslationTool from '@/components/tools/DocumentTranslationTool.vue'
 import PdfSplitTool from '@/components/tools/PdfSplitTool.vue'
 import PdfToExcelTool from '@/components/tools/PdfToExcelTool.vue'
 import PdfToWordTool from '@/components/tools/PdfToWordTool.vue'
@@ -10,11 +11,12 @@ import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
 const factoryContextLabel = computed(() => `${appStore.activeProductionFactory.shortName}厂区`)
-const activeTool = ref<'pdf-to-excel' | 'pdf-to-word' | 'pdf-split'>('pdf-to-excel')
+const activeTool = ref<'pdf-to-excel' | 'pdf-to-word' | 'pdf-split' | 'document-translation'>('pdf-to-excel')
 const toolItems = [
   { id: 'pdf-to-excel' as const, label: 'PDF 转 Excel', description: '表格与版式转换', icon: FileSpreadsheet },
   { id: 'pdf-to-word' as const, label: 'PDF 转 Word', description: '可编辑文档转换', icon: FileText },
   { id: 'pdf-split' as const, label: 'PDF 拆分', description: '逐页或页段拆分', icon: Scissors },
+  { id: 'document-translation' as const, label: '文档翻译', description: 'Excel / Word 中英互译', icon: Languages },
 ]
 </script>
 
@@ -40,7 +42,7 @@ const toolItems = [
           <p class="mt-1 text-xs leading-5 text-slate-500">后续公共工具会继续在这里增加。</p>
         </div>
 
-        <nav class="space-y-2" aria-label="PDF 工具">
+        <nav class="space-y-2" aria-label="公共工具">
           <button
             v-for="tool in toolItems"
             :key="tool.id"
@@ -79,7 +81,8 @@ const toolItems = [
       <div class="min-w-0">
         <PdfToExcelTool v-if="activeTool === 'pdf-to-excel'" :context-label="factoryContextLabel" />
         <PdfToWordTool v-else-if="activeTool === 'pdf-to-word'" :context-label="factoryContextLabel" />
-        <PdfSplitTool v-else :context-label="factoryContextLabel" />
+        <PdfSplitTool v-else-if="activeTool === 'pdf-split'" :context-label="factoryContextLabel" />
+        <DocumentTranslationTool v-else :context-label="factoryContextLabel" />
       </div>
     </section>
   </div>

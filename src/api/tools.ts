@@ -5,6 +5,24 @@ import { http } from '@/lib/http'
 export const PDF_TO_EXCEL_TIMEOUT_MS = 180_000
 export const PDF_TO_WORD_TIMEOUT_MS = 180_000
 export const PDF_SPLIT_TIMEOUT_MS = 60_000
+export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 600_000
+
+export type DocumentTranslationDirection = 'zh_to_en' | 'en_to_zh'
+
+export interface DocumentTranslationStatus {
+  available: boolean
+  engine: 'offline'
+  engineLabel: string
+  directions: Record<DocumentTranslationDirection, boolean>
+}
+
+export interface DocumentTranslationResult {
+  blob: Blob
+  fileName: string
+  translatedUnitCount: number
+  skippedUnitCount: number
+  processedPartCount: number
+}
 
 export interface PdfToExcelMetrics {
   pageCount: number
@@ -40,6 +58,10 @@ export interface PdfSplitResult {
 }
 
 export interface SharedToolsHttpClient {
+  get?<T = unknown>(
+    url: string,
+    config?: unknown,
+  ): Promise<{ data: T; headers?: Record<string, unknown> }>
   post<T = unknown>(
     url: string,
     data?: unknown,
@@ -87,6 +109,45 @@ async function parseBlobError(error: unknown): Promise<never> {
 
 export function createSharedToolsApi(client: SharedToolsHttpClient = http) {
   return {
+    async getDocumentTranslationStatus(): Promise<DocumentTranslationStatus> {
+      if (!client.get) throw new Error('当前 HTTP 客户端不支持读取翻译服务状态。')
+      const response = await client.get<DocumentTranslationStatus>('/tools/document-translation/status')
+      return response.data
+    },
+
+    async translateDocument(
+      documentFile: File,
+      direction: DocumentTranslationDirection,
+      selectedSheetNames?: string[],
+    ): Promise<DocumentTranslationResult> {
+      const payload = new FormData()
+      payload.append('document_file', documentFile)
+      payload.append('direction', direction)
+      if (selectedSheetNames) payload.append('sheet_names', JSON.stringify(selectedSheetNames))
+      const extension = documentFile.name.match(/\.(xlsx|xlsm|docx)$/i)?.[0].toLowerCase() ?? '.docx'
+      const stem = documentFile.name.replace(/\.(xlsx|xlsm|docx)$/i, '') || '文档'
+      const directionLabel = direction === 'zh_to_en' ? '中译英' : '英译中'
+      const fallbackFileName = `${stem}_${directionLabel}${extension}`
+
+      try {
+        const response = await client.post<Blob>('/tools/document-translation', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: DOCUMENT_TRANSLATION_TIMEOUT_MS,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, fallbackFileName),
+          translatedUnitCount: headerCount(response.headers, 'x-translation-unit-count'),
+          skippedUnitCount: headerCount(response.headers, 'x-translation-skipped-count'),
+          processedPartCount: headerCount(response.headers, 'x-translation-part-count'),
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
+    },
+
     async convertPdfToExcel(pdfFile: File): Promise<PdfToExcelResult> {
       const payload = new FormData()
       payload.append('pdf_file', pdfFile)
