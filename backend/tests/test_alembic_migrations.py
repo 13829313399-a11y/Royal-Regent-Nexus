@@ -104,7 +104,8 @@ CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION = "20260805_0055"
 INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION = "20260805_0056"
 INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION = "20260805_0057"
 INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION = "20260807_0058"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
+CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION = "20260807_0059"
+HEAD_MIGRATION_REVISION = CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -228,6 +229,23 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    manual_override_revision = script.get_revision(
+        CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION
+    )
+    assert (
+        manual_override_revision.down_revision
+        == INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
+    )
+    manual_override_content = Path(
+        manual_override_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        "manual_overrides_json",
+        "manual_override_count",
+        "cannot be downgraded after manual customer-order overrides exist",
+    ):
+        assert expected in manual_override_content
 
     public_planning_revision = script.get_revision(
         INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
@@ -776,6 +794,46 @@ def test_alembic_has_single_molding_sample_head():
     notification_revision = script.get_revision(NOTIFICATION_MIGRATION_REVISION)
     notification_migration_content = Path(notification_revision.path).read_text(encoding="utf-8")
     assert "molding_sample_notifications" in notification_migration_content
+
+
+def test_customer_order_manual_override_migration_adds_audit_columns(tmp_path):
+    database_path = tmp_path / "customer-order-manual-overrides.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE customer_order_export_audits (
+                id VARCHAR(96) PRIMARY KEY,
+                manual_seed TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            INSERT INTO alembic_version(version_num) VALUES ('20260807_0058');
+            """
+        )
+
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), "upgrade", "head"],
+        cwd=BACKEND_DIR,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]: row for row in connection.execute(
+                "PRAGMA table_info(customer_order_export_audits)"
+            )
+        }
+        assert columns["manual_overrides_json"][4] == "'[]'"
+        assert columns["manual_override_count"][4] == "'0'"
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION,)
 
 
 def test_internal_quote_customer_migration_seeds_factories_and_backfills_history(tmp_path):

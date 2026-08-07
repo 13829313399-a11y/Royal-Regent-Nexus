@@ -601,6 +601,47 @@ def test_dickie_duplicate_reference_requires_test_confirmation(monkeypatch):
     assert exported_preview["summary"]["blocked"] == 1
 
 
+def test_dickie_confirmed_missing_contract_skips_allocation_deduction():
+    class WorkbookStub:
+        def __init__(self):
+            self.set_calls = []
+
+        def read_rows(self, _sheet_name):
+            return {}
+
+        def set_cell(self, *args, **kwargs):
+            self.set_calls.append((args, kwargs))
+
+    workbook = WorkbookStub()
+    service._deduct_allocations(
+        workbook,
+        {
+            "item_sheet_name": service.ITEM_SHEET,
+            "product_no": "203302028",
+            "contract_no": "",
+            "quantity": Decimal("720"),
+        },
+    )
+
+    assert workbook.set_calls == []
+
+
+def test_dickie_confirmed_missing_unit_price_keeps_review_price_blank():
+    values = service._review_values(
+        {
+            "item_sheet_name": service.ITEM_SHEET,
+            "received_date": "2026-07-29",
+            "contract_no": "MC604951",
+            "reference_no": "SC700142026-1200",
+            "unit_price_hkd": "",
+        },
+        307,
+    )
+
+    assert values["S"] == {"value": None}
+    assert values["T"]["formula"] == "I307*S307"
+
+
 def test_customer_factory_mapping_rejects_cross_factory_imports():
     _ensure_customer_factory("buzzbee", "huaxing")
     _ensure_customer_factory("dickie", "huaxing")

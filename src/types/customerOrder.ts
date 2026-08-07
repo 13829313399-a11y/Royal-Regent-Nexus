@@ -6,6 +6,17 @@ export interface CustomerOrderIssue {
   can_skip: boolean
   skip_key: string
   skip_label: string
+  can_edit?: boolean
+  edit_field?: string
+  edit_label?: string
+  edit_input_type?: 'text' | 'number' | 'date' | string
+}
+
+export interface CustomerOrderManualOverride {
+  row_id: string
+  issue_key: string
+  field: string
+  value: string
 }
 
 export interface CustomerOrderPreviewRow {

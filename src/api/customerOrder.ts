@@ -1,6 +1,9 @@
 import axios from 'axios'
 import { http } from '@/lib/http'
-import type { CustomerOrderImportPreview } from '@/types/customerOrder'
+import type {
+  CustomerOrderImportPreview,
+  CustomerOrderManualOverride,
+} from '@/types/customerOrder'
 
 export interface CustomerOrderHttpClient {
   post<T = unknown>(
@@ -73,11 +76,13 @@ function appendExportControls(
   skippedIssueKeys: string[],
   previewFingerprint: string,
   confirmationReason: string,
+  manualOverrides: CustomerOrderManualOverride[],
 ) {
   payload.append('confirmed', 'true')
   payload.append('skipped_issue_keys', JSON.stringify(skippedIssueKeys))
   payload.append('preview_fingerprint', previewFingerprint)
   payload.append('confirmation_reason', confirmationReason)
+  payload.append('manual_overrides', JSON.stringify(manualOverrides))
 }
 
 function responseFileName(headers: Record<string, unknown> | undefined, fallback: string) {
@@ -152,9 +157,10 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       skippedIssueKeys: string[] = [],
       previewFingerprint = '',
       confirmationReason = '',
+      manualOverrides: CustomerOrderManualOverride[] = [],
     ) {
       const payload = buildFormData(poFile, scheduleFile, receivedDate, factoryId)
-      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, '/customer-orders/buzzbee/export', payload, 120_000,
       )
@@ -186,9 +192,10 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       skippedIssueKeys: string[] = [],
       previewFingerprint = '',
       confirmationReason = '',
+      manualOverrides: CustomerOrderManualOverride[] = [],
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, '/customer-orders/buzzbee/export-batch', payload, 180_000,
       )
@@ -220,9 +227,10 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       skippedIssueKeys: string[] = [],
       previewFingerprint = '',
       confirmationReason = '',
+      manualOverrides: CustomerOrderManualOverride[] = [],
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, '/customer-orders/dickie/export-batch', payload, 240_000,
       )
@@ -254,9 +262,10 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       skippedIssueKeys: string[] = [],
       previewFingerprint = '',
       confirmationReason = '',
+      manualOverrides: CustomerOrderManualOverride[] = [],
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, '/customer-orders/caixing/export-batch', payload, 240_000,
       )
@@ -290,9 +299,10 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       skippedIssueKeys: string[] = [],
       previewFingerprint = '',
       confirmationReason = '',
+      manualOverrides: CustomerOrderManualOverride[] = [],
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, `/customer-orders/${customerCode}/export-batch`, payload, 300_000,
       )
@@ -326,9 +336,10 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       skippedIssueKeys: string[] = [],
       previewFingerprint = '',
       confirmationReason = '',
+      manualOverrides: CustomerOrderManualOverride[] = [],
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
-      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason)
+      appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, `/customer-orders/${customerCode}/export-batch`, payload, 300_000,
       )

@@ -33,6 +33,11 @@ from app.services.legacy_excel_bridge import (
     convert_xlsx_to_legacy_xls,
     is_legacy_xls_workbook,
 )
+from app.services.customer_order_manual import (
+    apply_overrides_to_preview,
+    coerce_manual_value,
+    decorate_manual_resolution_policy,
+)
 
 
 PREVIEW_SCHEMA_VERSION = "customer-order-caixing-preview-v2"
@@ -1519,7 +1524,7 @@ def _validate_skips(preview: dict[str, Any], requested_skips: set[str]) -> None:
         issue["skip_key"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue["can_skip"]
+        if issue.get("skip_key")
     }
     if requested_skips - available:
         raise CustomerOrderWorkbookError(
@@ -1544,6 +1549,7 @@ def export_caixing_batch_schedule(
     schedule_file_name: str,
     schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_caixing_batch_preview(
         factory_id=factory_id,
@@ -1552,6 +1558,29 @@ def export_caixing_batch_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
+    decorate_manual_resolution_policy(preview)
+    apply_overrides_to_preview(preview, manual_overrides or [])
+    for override in manual_overrides or []:
+        if override["field"] != "unit_price_hkd":
+            continue
+        row = next(
+            (
+                candidate
+                for candidate in preview["rows"]
+                if candidate.get("id") == override["row_id"]
+            ),
+            None,
+        )
+        export_record = row.get("_export_record") if row else None
+        if not isinstance(export_record, dict):
+            continue
+        net_price = Decimal(coerce_manual_value("unit_price_hkd", override["value"]))
+        export_record["raw_unit_price_hkd"] = net_price / PRICE_FACTOR
+        export_record["unit_price_hkd"] = net_price
+        quantity = export_record.get("quantity")
+        export_record["amount_hkd"] = (
+            quantity * net_price if quantity is not None else None
+        )
     _validate_skips(preview, skipped_issue_keys or set())
     prepared_schedule = _prepare_caixing_schedule(
         schedule_file_name,

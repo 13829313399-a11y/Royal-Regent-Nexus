@@ -31,5 +31,7 @@ class CustomerOrderExportAudit(Base):
     output_template: Mapped[str] = mapped_column(String(128), default="")
     confirmed_issue_keys_json: Mapped[str] = mapped_column(Text, default="[]")
     confirmed_issue_count: Mapped[int] = mapped_column(Integer, default=0)
+    manual_overrides_json: Mapped[str] = mapped_column(Text, default="[]")
+    manual_override_count: Mapped[int] = mapped_column(Integer, default=0)
     confirmation_reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(32), index=True)

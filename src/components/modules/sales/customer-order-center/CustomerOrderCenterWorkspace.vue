@@ -36,6 +36,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import type {
   CustomerOrderImportPreview,
   CustomerOrderIssue,
+  CustomerOrderManualOverride,
   CustomerOrderPreviewRow,
 } from '@/types/customerOrder'
 import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView.vue'
@@ -432,6 +433,7 @@ const generatedScheduleBlob = ref<Blob | null>(null)
 const generatedScheduleFileName = ref('')
 const generatedPasswordRequired = ref(false)
 const skippedIssueKeys = ref<string[]>([])
+const manualOverrideValues = ref<Record<string, string>>({})
 const confirmationReason = ref('')
 const testDuplicateIssueCodes = new Set([
   'duplicate_reference',
@@ -448,11 +450,54 @@ function isConfirmationIssue(issue: CustomerOrderIssue) {
   return issue.severity === 'confirmation'
     || (issue.severity === 'blocked' && issue.can_skip && isTestDuplicateIssue(issue))
 }
+
+function isIssueManuallyOverridden(issue: CustomerOrderIssue) {
+  return Boolean(issue.skip_key && manualOverrideValues.value[issue.skip_key]?.trim())
+}
+
+function isIssueResolved(issue: CustomerOrderIssue) {
+  return isIssueManuallyOverridden(issue)
+    || (issue.can_skip && skippedIssueKeys.value.includes(issue.skip_key))
+}
+
+const manualRowFieldMap: Partial<Record<string, keyof OrderRow>> = {
+  po_no: 'poNo',
+  contract_no: 'contractNo',
+  customer_country: 'customerCountry',
+  product_no: 'productNo',
+  product_name_zh: 'productNameZh',
+  product_name_en: 'productNameEn',
+  quantity: 'quantity',
+  units_per_carton: 'unitsPerCarton',
+  carton_count: 'cartonCount',
+  standard: 'standard',
+  unit_price_hkd: 'unitPriceHkd',
+  amount_hkd: 'amountHkd',
+  packaging: 'packaging',
+  line_q: 'lineQ',
+  customer_q: 'customerQ',
+  requested_ship_date: 'requestedShipDate',
+  item: 'productNo',
+  item_no: 'productNo',
+  product_name: 'productNameZh',
+  description: 'productNameEn',
+  po_number: 'poNo',
+  customer_po: 'poNo',
+  customer: 'customerCountry',
+  ship_date: 'requestedShipDate',
+  factory_commit_date: 'requestedShipDate',
+  planned_inspection_date: 'lineQ',
+  case_pack: 'unitsPerCarton',
+  pack_qty: 'unitsPerCarton',
+  master_carton_qty: 'unitsPerCarton',
+  unit_price: 'unitPriceHkd',
+}
 const searchQuery = ref('')
 const includeValid = ref(true)
 const includeWarning = ref(true)
 const includeBlocked = ref(true)
 const traceRow = ref<OrderRow | null>(null)
+const blockingResolutionOpen = ref(false)
 const scheduleGenerated = ref(false)
 const selectedScheduleMonth = ref('all')
 const selectedScheduleCustomer = ref('all')
@@ -565,38 +610,48 @@ const orderRows = ref<OrderRow[]>([
 const activeOrderRows = computed(() => (
   props.activeSection === 'preview' && !previewBatch.value
     ? []
-    : orderRows.value.map((row) => {
+    : orderRows.value.map((sourceRow) => {
+        const row = { ...sourceRow }
         const issues = row.issues ?? []
+        for (const issue of issues) {
+          const value = manualOverrideValues.value[issue.skip_key]?.trim()
+          const target = issue.edit_field ? manualRowFieldMap[issue.edit_field] : undefined
+          if (value && target) row[target] = value as never
+        }
         if (issues.length === 0) return row
         const remainingBlockers = issues.filter(
           (issue) => issue.severity === 'blocked'
             && !isConfirmationIssue(issue)
-            && (!issue.can_skip || !skippedIssueKeys.value.includes(issue.skip_key)),
+            && !isIssueResolved(issue),
         )
         const unresolvedConfirmations = issues.filter(
           (issue) => isConfirmationIssue(issue)
-            && !skippedIssueKeys.value.includes(issue.skip_key),
+            && !isIssueResolved(issue),
         )
         const skippedIssues = issues.filter(
           (issue) => issue.can_skip && skippedIssueKeys.value.includes(issue.skip_key),
         )
+        const overriddenIssues = issues.filter(isIssueManuallyOverridden)
         if (remainingBlockers.length > 0) {
           return row
         }
         if (unresolvedConfirmations.length > 0) {
           return { ...row, status: 'warning' as const, statusLabel: '待确认' }
         }
-        if (issues.some((issue) => issue.severity === 'warning') || skippedIssues.length > 0) {
+        if (issues.some((issue) => issue.severity === 'warning') || skippedIssues.length > 0 || overriddenIssues.length > 0) {
           const confirmedDuplicates = skippedIssues.filter(isTestDuplicateIssue)
           const skippedDataIssues = skippedIssues.filter((issue) => !isTestDuplicateIssue(issue))
           return {
             ...row,
             status: 'warning' as const,
-            statusLabel: confirmedDuplicates.length > 0 && skippedDataIssues.length === 0
-              ? '已确认通过'
-              : skippedIssues.length > 0 ? '已跳过待补' : '警告',
+            statusLabel: overriddenIssues.length > 0
+              ? '已人工补录'
+              : confirmedDuplicates.length > 0 && skippedDataIssues.length === 0
+                ? '已确认通过'
+                : skippedIssues.length > 0 ? '已确认放行' : '警告',
             issue: [
               row.issue,
+              ...overriddenIssues.map((issue) => `人工补录${issue.edit_label || issue.field}`),
               ...confirmedDuplicates.map((issue) => `确认通过：${issue.skip_label}`),
               ...skippedDataIssues.map((issue) => `人工跳过：${issue.skip_label}`),
             ].filter(Boolean).join('；'),
@@ -606,7 +661,23 @@ const activeOrderRows = computed(() => (
       })
 ))
 
-const skippedIssueCount = computed(() => skippedIssueKeys.value.length)
+const manualOverrides = computed<CustomerOrderManualOverride[]>(() => (
+  (previewBatch.value?.rows ?? []).flatMap((row) => row.issues.flatMap((issue) => {
+    const value = manualOverrideValues.value[issue.skip_key]?.trim() ?? ''
+    if (!value || !issue.can_edit || !issue.edit_field) return []
+    return [{
+      row_id: row.id,
+      issue_key: issue.skip_key,
+      field: issue.edit_field,
+      value,
+    }]
+  }))
+))
+const resolvedIssueKeys = computed(() => [...new Set([
+  ...skippedIssueKeys.value,
+  ...manualOverrides.value.map((item) => item.issue_key),
+])])
+const skippedIssueCount = computed(() => resolvedIssueKeys.value.length)
 const confirmationReasonMissing = computed(() => (
   skippedIssueCount.value > 0 && confirmationReason.value.trim().length < 4
 ))
@@ -654,7 +725,7 @@ const unconfirmedDuplicateIssueCount = computed(() => (
     .filter((issue) => isConfirmationIssue(issue)
       && issue.can_skip
       && isTestDuplicateIssue(issue)
-      && !skippedIssueKeys.value.includes(issue.skip_key))
+      && !isIssueResolved(issue))
     .length
 ))
 
@@ -664,10 +735,10 @@ const blockingIssueDetails = computed(() => {
     .filter((issue) => (
       issue.severity === 'blocked'
       && !isConfirmationIssue(issue)
-      && (!issue.can_skip || !skippedIssueKeys.value.includes(issue.skip_key))
+      && !isIssueResolved(issue)
     ) || (
       isConfirmationIssue(issue)
-      && !skippedIssueKeys.value.includes(issue.skip_key)
+      && !isIssueResolved(issue)
     ))
     .flatMap((issue) => {
       const key = [row.source_po_file_name, issue.code, issue.field, issue.message].join('|')
@@ -676,6 +747,12 @@ const blockingIssueDetails = computed(() => {
       return [{ key, fileName: row.source_po_file_name, message: issue.message }]
     }))
 })
+
+const blockingResolutionItems = computed(() => (
+  (previewBatch.value?.rows ?? []).flatMap((row) => row.issues
+    .filter((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue))
+    .map((issue) => ({ row, issue })))
+))
 
 const scheduleReferenceDate = (() => {
   const today = new Date()
@@ -973,9 +1050,11 @@ function clearPreviewState() {
   generatedScheduleFileName.value = ''
   generatedPasswordRequired.value = false
   skippedIssueKeys.value = []
+  manualOverrideValues.value = {}
   confirmationReason.value = ''
   orderRows.value = []
   traceRow.value = null
+  blockingResolutionOpen.value = false
 }
 
 function resetImportBatch() {
@@ -1137,6 +1216,7 @@ async function parseSelectedFiles() {
   previewBatch.value = null
   orderRows.value = []
   skippedIssueKeys.value = []
+  manualOverrideValues.value = {}
   confirmationReason.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
@@ -1175,6 +1255,7 @@ async function parseSelectedFiles() {
     previewBatch.value = preview
     orderRows.value = preview.rows.map(mapPreviewRow)
     skippedIssueKeys.value = []
+    manualOverrideValues.value = {}
     notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，待确认 ${preview.confirmation_count ?? 0} 条，警告 ${preview.summary.warning} 条，阻断 ${preview.summary.blocked} 条。`)
     navigate('preview')
   } catch (error) {
@@ -1193,6 +1274,11 @@ function isIssueSkipped(issue: CustomerOrderIssue) {
 
 function toggleIssueSkip(issue: CustomerOrderIssue) {
   if (!issue.can_skip) return
+  if (!isIssueSkipped(issue)) {
+    const nextOverrides = { ...manualOverrideValues.value }
+    delete nextOverrides[issue.skip_key]
+    manualOverrideValues.value = nextOverrides
+  }
   skippedIssueKeys.value = isIssueSkipped(issue)
     ? skippedIssueKeys.value.filter((key) => key !== issue.skip_key)
     : [...skippedIssueKeys.value, issue.skip_key]
@@ -1204,20 +1290,43 @@ function toggleIssueSkip(issue: CustomerOrderIssue) {
   exportFailureMessage.value = ''
 }
 
+function updateManualOverride(issue: CustomerOrderIssue, event: Event) {
+  if (!issue.can_edit || !issue.edit_field) return
+  const value = (event.target as HTMLInputElement).value
+  manualOverrideValues.value = {
+    ...manualOverrideValues.value,
+    [issue.skip_key]: value,
+  }
+  if (value.trim()) {
+    skippedIssueKeys.value = skippedIssueKeys.value.filter((key) => key !== issue.skip_key)
+  }
+  if (resolvedIssueKeys.value.length === 0) confirmationReason.value = ''
+  scheduleGenerated.value = false
+  generatedScheduleBlob.value = null
+  generatedScheduleFileName.value = ''
+  generatedPasswordRequired.value = false
+  exportFailureMessage.value = ''
+}
+
 function resolveBlockedRow() {
-  const issues = orderRows.value.flatMap((row) => row.issues ?? [])
-  const confirmableDuplicates = issues
-    .filter((issue) => isConfirmationIssue(issue))
-    .filter((issue) => issue.can_skip && isTestDuplicateIssue(issue)).length
-  const skippable = issues
-    .filter((issue) => issue.severity === 'blocked')
-    .filter((issue) => issue.can_skip && !isTestDuplicateIssue(issue)).length
-  const required = issues
-    .filter((issue) => issue.severity === 'blocked' && !issue.can_skip).length
-  notify(
-    `当前重复订单可确认通过 ${confirmableDuplicates} 项，可人工跳过 ${skippable} 项，`
-    + `必须补齐 ${required} 项；请在表格“确认/阻断处理”列操作。`,
-  )
+  if (blockingResolutionItems.value.length === 0) {
+    notify('当前批次没有需要人工处理的阻断项。')
+    return
+  }
+  blockingResolutionOpen.value = true
+}
+
+function finishBlockingResolution() {
+  if (blockingIssueDetails.value.length > 0) {
+    notify(`仍有 ${blockingIssueDetails.value.length} 类阻断未处理，请逐项补录或确认放行。`)
+    return
+  }
+  if (confirmationReasonMissing.value) {
+    notify('请填写至少 4 个字的人工处理原因。')
+    return
+  }
+  blockingResolutionOpen.value = false
+  notify('人工处理结果已保留，可以生成客户排期。')
 }
 
 async function confirmAndGenerateSchedule() {
@@ -1226,7 +1335,7 @@ async function confirmAndGenerateSchedule() {
     return
   }
   if (orderSummary.value.blocked > 0) {
-    notify('仍有阻断项，不能生成排期；请修正来源文件后重新解析。')
+    notify('仍有未处理的阻断项；请人工补录，或确认资料暂缺并放行。')
     return
   }
   if (!previewBatch.value || poFiles.value.length === 0 || !scheduleFile.value) {
@@ -1243,7 +1352,8 @@ async function confirmAndGenerateSchedule() {
   const requestedScheduleFile = scheduleFile.value
   const requestedReceivedDate = receivedDate.value
   const requestedFactoryId = props.factoryId
-  const requestedSkippedIssueKeys = [...skippedIssueKeys.value]
+  const requestedSkippedIssueKeys = [...resolvedIssueKeys.value]
+  const requestedManualOverrides = [...manualOverrides.value]
   const requestedConfirmationReason = confirmationReason.value.trim()
   exportingSchedule.value = true
   exportFailureMessage.value = ''
@@ -1259,6 +1369,7 @@ async function confirmAndGenerateSchedule() {
           requestedSkippedIssueKeys,
           requestedPreview.preview_fingerprint,
           requestedConfirmationReason,
+          requestedManualOverrides,
         )
       : customerCode === 'caixing'
         ? await customerOrderApi.exportCaixingBatch(
@@ -1270,6 +1381,7 @@ async function confirmAndGenerateSchedule() {
             requestedSkippedIssueKeys,
             requestedPreview.preview_fingerprint,
             requestedConfirmationReason,
+            requestedManualOverrides,
           )
       : isMappedCustomerCode(customerCode)
         ? await customerOrderApi.exportMappedBatch(
@@ -1282,6 +1394,7 @@ async function confirmAndGenerateSchedule() {
             requestedSkippedIssueKeys,
             requestedPreview.preview_fingerprint,
             requestedConfirmationReason,
+            requestedManualOverrides,
           )
       : await customerOrderApi.exportBuzzbeeBatch(
           requestedPoFiles,
@@ -1292,6 +1405,7 @@ async function confirmAndGenerateSchedule() {
           requestedSkippedIssueKeys,
           requestedPreview.preview_fingerprint,
           requestedConfirmationReason,
+          requestedManualOverrides,
         )
     if (requestId !== exportRequestSequence) return
     generatedScheduleBlob.value = result.blob
@@ -1672,7 +1786,9 @@ onBeforeUnmount(() => {
             <p>来源：<b>{{ previewBatch?.input_template || '请先导入 PO 与排期' }}</b> · 输出目标：<b>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</b></p>
           </div>
           <div class="view-heading__actions">
-            <button v-if="blockingIssueDetails.length" type="button" class="button button--ghost" @click="resolveBlockedRow">查看待确认/阻断处理</button>
+            <button v-if="blockingResolutionItems.length" type="button" class="button button--ghost" @click="resolveBlockedRow">
+              {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : '查看已处理阻断项' }}
+            </button>
             <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
         </header>
@@ -1685,7 +1801,7 @@ onBeforeUnmount(() => {
         >
           <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
           <div class="persistent-parse-alert__content">
-            <h3>当前批次有 {{ blockingIssueDetails.length }} 项待确认/阻断，处理后可生成排期</h3>
+            <h3>当前批次有 {{ blockingIssueDetails.length }} 项待人工处理，补录或确认放行后可生成排期</h3>
             <ul>
               <li v-for="item in blockingIssueDetails" :key="item.key">
                 <b>{{ item.fileName }}</b>
@@ -1702,7 +1818,7 @@ onBeforeUnmount(() => {
         >
           <div>
             <strong>人工确认原因</strong>
-            <p>本批已选择 {{ skippedIssueCount }} 项确认/跳过。原因将与操作者、源文件哈希和输出文件哈希一起写入审计记录。</p>
+            <p>本批已处理 {{ skippedIssueCount }} 项，其中 {{ manualOverrides.length }} 项使用人工补录值。补录内容、原因、操作者和文件哈希会一起写入审计记录。</p>
           </div>
           <label>
             <span>确认原因（必填，4–500 字）</span>
@@ -1732,7 +1848,7 @@ onBeforeUnmount(() => {
           <span><FileCheck2 aria-hidden="true" /></span>
           <div>
             <strong>解析已完成，当前尚未输出排期</strong>
-            <p>请核对下方明细；完成重复订单确认并处理阻断项后，点击“生成并下载客户排期”写入新排期。</p>
+            <p>请核对下方明细；红色项可直接补录正确内容，确实无法取得时也可人工确认放行，再写入新排期。</p>
           </div>
           <button
             type="button"
@@ -1749,7 +1865,7 @@ onBeforeUnmount(() => {
           <article><span>总行数</span><strong>{{ orderSummary.total }}</strong><small>订单明细</small></article>
           <article class="valid"><span>有效项</span><strong>{{ orderSummary.valid }}</strong><small>可直接写入</small></article>
           <article class="warning"><span>警告/待确认</span><strong>{{ orderSummary.warning }}</strong><small>不形成阻断</small></article>
-          <article class="blocked"><span>阻断项</span><strong>{{ orderSummary.blocked }}</strong><small>不可生成</small></article>
+          <article class="blocked"><span>待人工处理</span><strong>{{ orderSummary.blocked }}</strong><small>补录或确认放行</small></article>
         </div>
 
         <div class="preview-layout">
@@ -1780,7 +1896,7 @@ onBeforeUnmount(() => {
               <table class="unified-table">
                 <thead>
                   <tr>
-                    <th class="sticky-left">状态</th><th class="resolution-column">确认/阻断处理</th>
+                    <th class="sticky-left">状态</th><th class="resolution-column">人工处理</th>
                     <th>来单日期</th><th>P/O#</th><th>Contract No.</th><th>客名/国家</th><th>产品编号</th>
                     <th>中文名称</th><th>产品名称</th><th>数量</th><th>装箱数</th><th>箱数</th>
                     <th>国家标准</th><th>单价HK</th><th>金额HK</th><th>包装</th><th>行Q</th><th>客Q</th><th>客要求走货期</th><th>溯源</th>
@@ -1796,15 +1912,29 @@ onBeforeUnmount(() => {
                     <td class="resolution-column">
                       <div v-if="row.issues?.some((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue))" class="issue-resolution-list">
                         <template v-for="issue in (row.issues ?? []).filter((item) => item.severity === 'blocked' || isConfirmationIssue(item))" :key="`${row.id}-${issue.code}-${issue.field}`">
+                          <div class="issue-resolution-item">
+                            <p class="issue-resolution-message">{{ issue.message }}</p>
+                            <label v-if="issue.can_edit" class="manual-override-field">
+                              <span><b>人工补录 {{ issue.edit_label }}</b><small>该值会写入新排期，不修改客户原 PO</small></span>
+                              <input
+                                :type="issue.edit_input_type || 'text'"
+                                :step="issue.edit_input_type === 'number' ? 'any' : undefined"
+                                :value="manualOverrideValues[issue.skip_key] || ''"
+                                :placeholder="`填写${issue.edit_label || '正确内容'}`"
+                                @input="updateManualOverride(issue, $event)"
+                              >
+                            </label>
                           <label v-if="issue.can_skip" class="skip-issue-option">
                             <input
                               type="checkbox"
                               :checked="isIssueSkipped(issue)"
+                              :disabled="isIssueManuallyOverridden(issue)"
                               @change="toggleIssueSkip(issue)"
                             >
-                            <span><b>{{ isTestDuplicateIssue(issue) ? '确认通过' : '允许跳过' }}</b>{{ issue.skip_label }}</span>
+                            <span><b>{{ isTestDuplicateIssue(issue) ? '确认重复订单' : '确认缺失并放行' }}</b>{{ issue.skip_label }}</span>
                           </label>
-                          <p v-else class="required-issue"><b>必须补齐</b>{{ issue.message }}</p>
+                          <p v-if="!issue.can_edit && !issue.can_skip" class="required-issue"><b>必须补齐</b>{{ issue.message }}</p>
+                          </div>
                         </template>
                       </div>
                       <span v-else class="no-resolution-needed">—</span>
@@ -2157,6 +2287,104 @@ onBeforeUnmount(() => {
           <div><b>厂区总排期是订单需求数据层，不是生产排产模块</b><span>生产部门读取已确认订单需求并在自己的模块排产；这里以后只接收只读进度反馈，用于提示业务哪些订单临期但生产尚未完成。</span></div>
         </div>
       </section>
+    </Transition>
+
+    <Transition name="drawer">
+      <div
+        v-if="blockingResolutionOpen"
+        class="blocker-resolution-backdrop"
+        @click.self="blockingResolutionOpen = false"
+      >
+        <section
+          class="blocker-resolution-dialog"
+          data-testid="blocker-resolution-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="blocker-resolution-title"
+        >
+          <header>
+            <div>
+              <span>客户订单人工处理</span>
+              <h3 id="blocker-resolution-title">补录缺失内容或人工确认放行</h3>
+              <p>共 {{ blockingResolutionItems.length }} 项；人工值写入新排期，客户原始 PO 不会被修改。</p>
+            </div>
+            <button type="button" aria-label="关闭人工处理窗口" @click="blockingResolutionOpen = false"><X aria-hidden="true" /></button>
+          </header>
+
+          <div class="blocker-resolution-dialog__body">
+            <div class="blocker-resolution-progress">
+              <span :class="{ done: blockingIssueDetails.length === 0 }">
+                {{ blockingIssueDetails.length === 0 ? '全部处理完成' : `仍有 ${blockingIssueDetails.length} 类问题待处理` }}
+              </span>
+              <small>每一订单行都需要分别补录或确认</small>
+            </div>
+
+            <div class="blocker-resolution-list">
+              <article
+                v-for="item in blockingResolutionItems"
+                :key="`${item.row.id}-${item.issue.skip_key}`"
+                :class="{ resolved: isIssueResolved(item.issue) }"
+              >
+                <div class="blocker-resolution-item__heading">
+                  <div>
+                    <b>{{ item.row.source_po_file_name }}</b>
+                    <span>PO {{ item.row.po_no || '—' }} · 产品 {{ item.row.product_no || '—' }}</span>
+                  </div>
+                  <em v-if="isIssueManuallyOverridden(item.issue)">已人工补录</em>
+                  <em v-else-if="isIssueResolved(item.issue)">已确认放行</em>
+                  <em v-else>待处理</em>
+                </div>
+                <p class="blocker-resolution-item__message">{{ item.issue.message }}</p>
+
+                <label v-if="item.issue.can_edit" class="manual-override-field manual-override-field--dialog">
+                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>填写正确内容后，本项立即解除阻断并写入新排期</small></span>
+                  <input
+                    :type="item.issue.edit_input_type || 'text'"
+                    :step="item.issue.edit_input_type === 'number' ? 'any' : undefined"
+                    :value="manualOverrideValues[item.issue.skip_key] || ''"
+                    :placeholder="`填写${item.issue.edit_label || '正确内容'}`"
+                    @input="updateManualOverride(item.issue, $event)"
+                  >
+                </label>
+
+                <label v-if="item.issue.can_skip" class="skip-issue-option skip-issue-option--dialog">
+                  <input
+                    type="checkbox"
+                    :checked="isIssueSkipped(item.issue)"
+                    :disabled="isIssueManuallyOverridden(item.issue)"
+                    @change="toggleIssueSkip(item.issue)"
+                  >
+                  <span><b>{{ isTestDuplicateIssue(item.issue) ? '确认重复订单' : '确认缺失并放行' }}</b>{{ item.issue.skip_label }}</span>
+                </label>
+                <p v-if="!item.issue.can_edit && !item.issue.can_skip" class="required-issue"><b>当前不能放行</b>{{ item.issue.message }}</p>
+              </article>
+            </div>
+
+            <label v-if="skippedIssueCount > 0" class="blocker-resolution-reason">
+              <span>人工处理原因（必填，4–500 字）</span>
+              <textarea
+                v-model="confirmationReason"
+                maxlength="500"
+                rows="3"
+                placeholder="例如：客户 PDF 无法修改，已与客户核对装箱数量并人工补录"
+              />
+              <small :class="{ invalid: confirmationReasonMissing }">{{ confirmationReason.trim().length }} / 500</small>
+            </label>
+          </div>
+
+          <footer>
+            <button type="button" class="button button--ghost" @click="blockingResolutionOpen = false">关闭，稍后处理</button>
+            <button
+              type="button"
+              class="button button--primary"
+              :disabled="blockingIssueDetails.length > 0 || confirmationReasonMissing"
+              @click="finishBlockingResolution"
+            >
+              {{ blockingIssueDetails.length > 0 ? '请先处理全部阻断' : confirmationReasonMissing ? '请填写处理原因' : '完成处理并返回预览' }}
+            </button>
+          </footer>
+        </section>
+      </div>
     </Transition>
 
     <Transition name="toast">
@@ -3836,6 +4064,63 @@ tbody tr:hover td {
   gap: 6px;
 }
 
+.issue-resolution-item {
+  display: grid;
+  gap: 6px;
+}
+
+.issue-resolution-message {
+  margin: 0;
+  color: #93000a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.manual-override-field {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #9bc5b2;
+  border-radius: 6px;
+  background: #effbf5;
+  padding: 8px;
+  color: #005235;
+}
+
+.manual-override-field span,
+.manual-override-field b,
+.manual-override-field small {
+  display: block;
+}
+
+.manual-override-field b {
+  font-size: 9px;
+}
+
+.manual-override-field small {
+  margin-top: 2px;
+  color: #3f6b59;
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.manual-override-field input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #91b6a5;
+  border-radius: 5px;
+  background: #fff;
+  padding: 7px 8px;
+  color: #18392c;
+  font-size: 10px;
+  outline: none;
+}
+
+.manual-override-field input:focus {
+  border-color: #007a58;
+  box-shadow: 0 0 0 2px rgb(0 122 88 / 12%);
+}
+
 .skip-issue-option,
 .required-issue {
   display: flex;
@@ -3858,6 +4143,11 @@ tbody tr:hover td {
 .skip-issue-option input {
   margin-top: 2px;
   accent-color: #006c4c;
+}
+
+.skip-issue-option:has(input:disabled) {
+  cursor: default;
+  opacity: .58;
 }
 
 .skip-issue-option span,
@@ -5354,6 +5644,238 @@ tbody tr:hover td {
   inset: 0;
   z-index: 100;
   background: rgb(25 27 35 / 24%);
+}
+
+.blocker-resolution-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: grid;
+  place-items: center;
+  background: rgb(25 27 35 / 42%);
+  padding: 24px;
+}
+
+.blocker-resolution-dialog {
+  display: grid;
+  width: min(860px, 100%);
+  max-height: min(820px, calc(100vh - 48px));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #d7d9e3;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(25 27 35 / 24%);
+}
+
+.blocker-resolution-dialog > header,
+.blocker-resolution-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+}
+
+.blocker-resolution-dialog > header {
+  border-bottom: 1px solid #e0e1e9;
+  background: #fff8f7;
+}
+
+.blocker-resolution-dialog > header span,
+.blocker-resolution-dialog > header h3,
+.blocker-resolution-dialog > header p {
+  display: block;
+  margin: 0;
+}
+
+.blocker-resolution-dialog > header span {
+  color: #93000a;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+
+.blocker-resolution-dialog > header h3 {
+  margin-top: 4px;
+  font-size: 18px;
+}
+
+.blocker-resolution-dialog > header p {
+  margin-top: 5px;
+  color: #596070;
+  font-size: 10px;
+}
+
+.blocker-resolution-dialog > header > button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: #f3f3fd;
+  color: #596070;
+}
+
+.blocker-resolution-dialog > header > button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.blocker-resolution-dialog__body {
+  overflow-y: auto;
+  padding: 18px 22px;
+}
+
+.blocker-resolution-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.blocker-resolution-progress span {
+  border-radius: 999px;
+  background: #ffdad6;
+  padding: 5px 9px;
+  color: #93000a;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.blocker-resolution-progress span.done {
+  background: #d5f9e6;
+  color: #005235;
+}
+
+.blocker-resolution-progress small {
+  color: #737685;
+  font-size: 9px;
+}
+
+.blocker-resolution-list {
+  display: grid;
+  gap: 10px;
+}
+
+.blocker-resolution-list > article {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #ffb4ab;
+  border-left: 4px solid #ba1a1a;
+  border-radius: 8px;
+  background: #fffafa;
+  padding: 13px;
+}
+
+.blocker-resolution-list > article.resolved {
+  border-color: #9bc5b2;
+  border-left-color: #007a58;
+  background: #f6fcf9;
+}
+
+.blocker-resolution-item__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.blocker-resolution-item__heading b,
+.blocker-resolution-item__heading span {
+  display: block;
+}
+
+.blocker-resolution-item__heading b {
+  font-size: 11px;
+}
+
+.blocker-resolution-item__heading span {
+  margin-top: 3px;
+  color: #596070;
+  font-size: 9px;
+}
+
+.blocker-resolution-item__heading em {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #ffdad6;
+  padding: 4px 7px;
+  color: #93000a;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.blocker-resolution-list > article.resolved .blocker-resolution-item__heading em {
+  background: #d5f9e6;
+  color: #005235;
+}
+
+.blocker-resolution-item__message {
+  margin: 0;
+  color: #93000a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.manual-override-field--dialog,
+.skip-issue-option--dialog {
+  font-size: 10px;
+}
+
+.blocker-resolution-reason {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  border: 1px solid #b2c5ff;
+  border-radius: 8px;
+  background: #f7f8ff;
+  padding: 12px;
+}
+
+.blocker-resolution-reason > span {
+  color: #003d9b;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.blocker-resolution-reason textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #aeb8d7;
+  border-radius: 6px;
+  background: #fff;
+  padding: 9px;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.blocker-resolution-reason textarea:focus {
+  border-color: #0052cc;
+  box-shadow: 0 0 0 2px rgb(0 82 204 / 12%);
+}
+
+.blocker-resolution-reason small {
+  color: #737685;
+  font-size: 8px;
+  text-align: right;
+}
+
+.blocker-resolution-reason small.invalid {
+  color: #ba1a1a;
+  font-weight: 900;
+}
+
+.blocker-resolution-dialog > footer {
+  justify-content: flex-end;
+  border-top: 1px solid #e0e1e9;
+  background: #f8f8ff;
 }
 
 .trace-drawer {
