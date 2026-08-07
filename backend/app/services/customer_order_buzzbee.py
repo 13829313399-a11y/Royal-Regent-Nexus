@@ -17,6 +17,11 @@ import msoffcrypto
 import openpyxl
 import xlrd
 
+from app.services.customer_order_manual import (
+    apply_overrides_to_preview,
+    decorate_manual_resolution_policy,
+)
+
 
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PREVIEW_SCHEMA_VERSION = "customer-order-buzzbee-preview-v1"
@@ -1562,6 +1567,7 @@ def export_buzzbee_batch_schedule(
     schedule_file_name: str,
     schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_buzzbee_batch_preview(
         factory_id=factory_id,
@@ -1570,12 +1576,14 @@ def export_buzzbee_batch_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
+    decorate_manual_resolution_policy(preview)
+    apply_overrides_to_preview(preview, manual_overrides or [])
     requested_skips = skipped_issue_keys or set()
     available_skips = {
         issue["skip_key"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue["can_skip"]
+        if issue.get("skip_key")
     }
     invalid_skips = requested_skips - available_skips
     if invalid_skips:
@@ -1636,6 +1644,7 @@ def export_buzzbee_schedule(
     schedule_file_name: str,
     schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     return export_buzzbee_batch_schedule(
         factory_id=factory_id,
@@ -1644,4 +1653,5 @@ def export_buzzbee_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
         skipped_issue_keys=skipped_issue_keys,
+        manual_overrides=manual_overrides,
     )

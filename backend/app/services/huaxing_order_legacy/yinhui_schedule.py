@@ -13,7 +13,7 @@ from typing import Any, BinaryIO, Iterable
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from .new_order_excel import create_new_order_workbook
+from .new_order_excel import append_records_to_workbook
 
 
 EXCHANGE_RATE = 7.75
@@ -327,6 +327,8 @@ def create_export(
     records: list[dict[str, Any]],
     output_path: Path,
     template_source: bytes | BinaryIO | str | Path | None = None,
+    *,
+    template_filename: str = "schedule.xlsx",
 ) -> Path:
     if template_source is not None:
         prepared = []
@@ -342,13 +344,21 @@ def create_export(
             )
             for field, title in FIELD_TITLES.items()
         }
-        create_new_order_workbook(
+        append_records_to_workbook(
             template_source,
             output_path,
             prepared,
             aliases,
-            filename="schedule.xlsx",
-            sheet_title="新单",
+            filename=template_filename,
+            sheet_names=("Iteam表", "ITEM表"),
+            field_formats={
+                **{field: "yyyy-mm-dd" for field in DATE_FIELDS},
+                **{field: "@" for field in ("so_no", "contract_no", "item_no", "date_code")},
+                **{field: "#,##0.##" for field in ("quantity", "case_pack", "cartons")},
+                **{field: "0.0000" for field in ("unit_price_usd", "unit_price_hkd", "factory_unit_price_hkd")},
+                **{field: "#,##0.00" for field in ("total_usd", "total_hkd", "factory_total_hkd")},
+            },
+            formula_fallback_fields=("cartons",),
         )
         return output_path
     wb = Workbook()

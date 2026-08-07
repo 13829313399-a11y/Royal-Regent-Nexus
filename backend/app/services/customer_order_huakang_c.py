@@ -11,6 +11,14 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from app.services.huakang_c_order_legacy import huakang_po_parser, huakang_schedule
+from app.services.huaxing_order_legacy.new_order_excel import (
+    append_column_records_to_workbook,
+)
+from app.services.customer_order_manual import (
+    apply_overrides_to_preview,
+    coerce_manual_value,
+    decorate_manual_resolution_policy,
+)
 
 
 PREVIEW_SCHEMA_VERSION = "customer-order-huakang-c-mapped-preview-v1"
@@ -49,27 +57,27 @@ _SCHEDULE_EXTENSIONS = (".xls", ".xlsx", ".xlsm")
 HUAKANG_C_CUSTOMER_MAPPINGS: dict[str, HuakangCCustomerMappingSpec] = {
     "index": HuakangCCustomerMappingSpec(
         "index", "index", "INDEX", _PO_EXTENSIONS, _SCHEDULE_EXTENSIONS,
-        "HUAKANG_C_INDEX_PO_V1", "HUAKANG_C_INDEX_NEW_ORDER_V1",
+        "HUAKANG_C_INDEX_PO_V1", "HUAKANG_C_INDEX_SCHEDULE_APPEND_V2",
         "读取 INDEX PO号、PO日期、Ex-Factory、产品、数量、箱规和USD价格；按货号继承唯一排期品名并以7.75换算港币。",
     ),
     "jazwares": HuakangCCustomerMappingSpec(
         "jazwares", "jazwares", "JAZAWARES", _PO_EXTENSIONS, _SCHEDULE_EXTENSIONS,
-        "HUAKANG_C_JAZWARES_PO_V1", "HUAKANG_C_JAZWARES_NEW_ORDER_V1",
+        "HUAKANG_C_JAZWARES_PO_V1", "HUAKANG_C_JAZWARES_SCHEDULE_APPEND_V2",
         "按旧版 JAZWARES 版式读取PO、版本、合同、产品、数量、PCS/CTN、走货日和USD价格；同PO保留最新修订版。",
     ),
     "maxx": HuakangCCustomerMappingSpec(
         "maxx", "maxx", "MAXX", _PO_EXTENSIONS, _SCHEDULE_EXTENSIONS,
-        "HUAKANG_C_MAXX_PO_V1", "HUAKANG_C_MAXX_NEW_ORDER_V1",
+        "HUAKANG_C_MAXX_PO_V1", "HUAKANG_C_MAXX_SCHEDULE_APPEND_V2",
         "读取 MAXX P.O.、S.C.合同、日期、货号、数量和USD价格；PO未提供装箱数时保持空白。",
     ),
     "strottman": HuakangCCustomerMappingSpec(
         "strottman", "strottman", "STROTTMAN", _PO_EXTENSIONS, _SCHEDULE_EXTENSIONS,
-        "HUAKANG_C_STROTTMAN_PO_V1", "HUAKANG_C_STROTTMAN_NEW_ORDER_V1",
+        "HUAKANG_C_STROTTMAN_PO_V1", "HUAKANG_C_STROTTMAN_SCHEDULE_APPEND_V2",
         "按Special Instructions把Case数量换算为PCS与每箱件数；多走货日取最早日期写主列，其余保留在备注。",
     ),
     "jp": HuakangCCustomerMappingSpec(
         "jp", "supplier", "JP", _PO_EXTENSIONS, _SCHEDULE_EXTENSIONS,
-        "HUAKANG_C_JP_SUPPLIER_PO_V1", "HUAKANG_C_JP_NEW_ORDER_V1",
+        "HUAKANG_C_JP_SUPPLIER_PO_V1", "HUAKANG_C_JP_SCHEDULE_APPEND_V2",
         "读取华康车衣中文采购单编号、日期、交货日、货号、数量和版本；只有原单明确提供的出厂价才写入JP内部排期。",
     ),
 }
@@ -124,7 +132,8 @@ def _schedule_quantity_column(profile_code: str) -> int:
 
 def _safe_output_name(schedule_file_name: str, customer_name: str) -> str:
     stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(schedule_file_name).stem).strip(" ._")
-    return f"{stem or '华康C排期'}_{customer_name}新单.xlsx"
+    suffix = ".xlsm" if Path(schedule_file_name).suffix.lower() == ".xlsm" else ".xlsx"
+    return f"{stem or '华康C排期'}_{customer_name}新单{suffix}"
 
 
 def _revision(file_name: str, order: dict[str, Any]) -> int:
@@ -492,7 +501,10 @@ def create_huakang_c_customer_preview(
         "warnings": list(dict.fromkeys([
             spec.rule_summary,
             "来单日期按旧系统的“邮件确认接单日期”规则覆盖PO Date。",
-            "美元价格按固定汇率7.75换算港币；导出只含本批新单，不覆盖原排期。",
+            "美元价格按固定汇率7.75换算港币。导出结果完整保留当前排期的所有 Sheet、"
+            "历史数据、格式、公式、图片和打印设置；仅在对应客户目标表明细末尾/合计行之前"
+            "插入本批新单，并从插入点向上选择最近的正常明细行继承格式、字体和公式逻辑，"
+            "跳过合计/小计、分组标题和空白分隔行；另存为新文件，不覆盖原排期。",
             *prepared.warnings,
         ])),
     }
@@ -507,6 +519,7 @@ def export_huakang_c_customer_schedule(
     schedule_file_name: str,
     schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_huakang_c_customer_preview(
         customer_code=customer_code,
@@ -516,12 +529,14 @@ def export_huakang_c_customer_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
+    decorate_manual_resolution_policy(preview)
+    apply_overrides_to_preview(preview, manual_overrides or [])
     requested_skips = set(skipped_issue_keys or set())
     skippable = {
         issue["skip_key"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue.get("can_skip")
+        if issue.get("skip_key")
     }
     if requested_skips - skippable:
         raise HuakangCCustomerOrderError("确认项已失效，请重新预览后再生成")
@@ -544,25 +559,66 @@ def export_huakang_c_customer_schedule(
         schedule_content=schedule_content,
         received_date=received_date,
     )
+    entries_by_row = {
+        str(row["id"]): entry
+        for row, entry in zip(preview["rows"], prepared.entries, strict=True)
+    }
+    order_aliases = {
+        "po_no": "po_number",
+        "contract_no": "contract_no",
+        "country": "ship_to",
+        "requested_ship_date": "ship_date",
+    }
+    line_aliases = {
+        "product_no": "item_code",
+        "product_name_zh": "description",
+        "product_name_en": "description",
+        "quantity": "qty",
+        "units_per_carton": "pcs_per_carton",
+        "carton_count": "carton_qty",
+        "unit_price_hkd": "unit_price_hkd",
+        "amount_hkd": "amount_hkd",
+    }
+    for override in manual_overrides or []:
+        entry = entries_by_row.get(override["row_id"])
+        if entry is None:
+            continue
+        order, line = entry
+        field = override["field"]
+        value = coerce_manual_value(field, override["value"])
+        if field in order_aliases:
+            order[order_aliases[field]] = value
+        else:
+            line[line_aliases.get(field, field)] = value
     with TemporaryDirectory(prefix=f"huakang-c-{customer_code}-output-") as temp_dir:
         root = Path(temp_dir)
-        schedule_path = root / (Path(schedule_file_name).name or "客户排期.xlsx")
-        schedule_path.write_bytes(schedule_content)
         output_path = root / preview["output_file_name"]
-        workbook, worksheet = _load_schedule(schedule_path, spec)
         try:
-            huakang_schedule._new_rows_workbook(
-                worksheet,
-                huakang_schedule.PROFILES[spec.legacy_code],
-                prepared.entries,
-                EXCHANGE_RATE,
+            profile = huakang_schedule.PROFILES[spec.legacy_code]
+
+            def row_values(entry: tuple[dict[str, Any], dict[str, Any]], row_no: int) -> dict[int, Any]:
+                order, line = entry
+                return huakang_schedule.compose_row(
+                    profile,
+                    order,
+                    line,
+                    row_no,
+                    EXCHANGE_RATE,
+                )
+
+            append_column_records_to_workbook(
+                schedule_content,
                 output_path,
-                prepared.inheritance,
+                prepared.entries,
+                filename=schedule_file_name,
+                sheet_names=(prepared.sheet_name, *profile.sheets),
+                header_row=profile.header_rows,
+                max_col=profile.max_col,
+                detail_columns=profile.scan_cols,
+                row_values_factory=row_values,
             )
         except Exception as exc:
             raise HuakangCCustomerOrderError(
                 f"生成{spec.name}新单失败：{exc}"
             ) from exc
-        finally:
-            workbook.close()
         return output_path.read_bytes(), preview["output_file_name"], preview

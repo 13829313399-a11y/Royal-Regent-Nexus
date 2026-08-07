@@ -144,6 +144,69 @@ def test_confirmation_reason_is_required_only_when_an_issue_is_confirmed():
     ) == "测试阶段人工核对"
 
 
+def test_hard_blocker_exposes_manual_edit_and_confirm_release_paths():
+    preview = {
+        "summary": {"total": 1, "valid": 0, "warning": 0, "blocked": 1},
+        "rows": [{
+            "id": "360-1",
+            "status": "blocked",
+            "status_label": "已阻断",
+            "issues": [{
+                "severity": "blocked",
+                "code": "missing_inspection_result",
+                "field": "inspection_result",
+                "message": "验货日期已过，结果未登记",
+                "can_skip": False,
+                "skip_key": "360-1:missing_inspection_result",
+                "skip_label": "",
+            }],
+        }],
+    }
+
+    finalized = customer_order._apply_customer_order_confirmation_policy(preview)
+    issue = finalized["rows"][0]["issues"][0]
+
+    assert issue["severity"] == "blocked"
+    assert issue["can_skip"] is True
+    assert issue["can_edit"] is True
+    assert issue["edit_field"] == "inspection_result"
+    assert issue["edit_label"] == "验货结果"
+    assert issue["skip_label"] == "资料暂缺，已人工核对并确认放行"
+
+
+def test_manual_override_payload_is_typed_and_bound_to_current_preview():
+    raw = json.dumps([{
+        "row_id": "360-1",
+        "issue_key": "360-1:missing_inspection_result",
+        "field": "inspection_result",
+        "value": "  合格  ",
+    }], ensure_ascii=False)
+    overrides = customer_order._parse_manual_overrides(raw)
+    preview = {
+        "rows": [{
+            "id": "360-1",
+            "issues": [{
+                "severity": "blocked",
+                "code": "missing_inspection_result",
+                "field": "inspection_result",
+                "message": "验货日期已过，结果未登记",
+                "can_skip": False,
+                "skip_key": "360-1:missing_inspection_result",
+                "skip_label": "",
+            }],
+        }],
+    }
+
+    assert overrides[0]["value"] == "合格"
+    assert customer_order._actual_manual_overrides(preview, overrides) == overrides
+
+    changed = deepcopy(overrides)
+    changed[0]["field"] = "quantity"
+    with pytest.raises(HTTPException) as exc_info:
+        customer_order._actual_manual_overrides(preview, changed)
+    assert exc_info.value.status_code == 409
+
+
 def test_preview_fingerprint_changes_when_source_version_or_received_date_changes():
     preview = {
         "preview_schema_version": "v1",

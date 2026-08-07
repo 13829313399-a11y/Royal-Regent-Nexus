@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -77,10 +78,10 @@ def test_huakang_a_360_registry_coexists_with_huaxing_360() -> None:
     )
     assert customer_order_api._get_mapped_customer_spec(
         "360", "huaxing"
-    ).target_template == "HUAXING_360_NEW_ORDER_V1"
+    ).target_template == "HUAXING_360_SCHEDULE_APPEND_V2"
     assert customer_order_api._get_mapped_customer_spec(
         "360", "huakang-a"
-    ).target_template == "HUAKANG_A_360_NEW_ORDER_V1"
+    ).target_template == "HUAKANG_A_360_SCHEDULE_APPEND_V2"
 
     with pytest.raises(service.HuakangACustomerOrderError, match="只属于华康A厂区"):
         service.create_huakang_a_customer_preview(
@@ -162,19 +163,14 @@ def test_huakang_a_360_preview_and_export_follow_legacy_mapping(monkeypatch) -> 
     )
     workbook = openpyxl.load_workbook(BytesIO(output), data_only=False)
     try:
-        assert workbook.sheetnames[0] == "360客排期表新单"
-        worksheet = workbook["360客排期表新单"]
-        assert worksheet.cell(4, 4).value == "03-Jul-2026"
-        assert worksheet.cell(4, 5).value == "RL-100-1"
-        assert worksheet.cell(4, 6).value == "60350"
-        assert worksheet.cell(4, 10).value == 240
-        assert worksheet.cell(4, 24).value == 20
-        assert all(
-            "OLD-HISTORY" not in str(cell.value)
-            for sheet in workbook
-            for cells in sheet.iter_rows()
-            for cell in cells
-        )
+        assert workbook.sheetnames == ["360客排期表"]
+        worksheet = workbook["360客排期表"]
+        assert worksheet.cell(5, 5).value == "OLD-HISTORY"
+        assert worksheet.cell(6, 4).value == datetime(2026, 7, 3)
+        assert worksheet.cell(6, 5).value == "RL-100-1"
+        assert worksheet.cell(6, 6).value == "60350"
+        assert worksheet.cell(6, 10).value == 240
+        assert worksheet.cell(6, 24).value == 20
     finally:
         workbook.close()
     assert file_name == preview["output_file_name"]

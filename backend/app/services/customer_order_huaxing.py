@@ -22,6 +22,11 @@ from app.services.huaxing_order_legacy import (
     yinhui_po_parser,
     yinhui_schedule,
 )
+from app.services.customer_order_manual import (
+    apply_overrides_to_preview,
+    apply_overrides_to_records,
+    decorate_manual_resolution_policy,
+)
 
 
 PREVIEW_SCHEMA_VERSION = "customer-order-huaxing-mapped-preview-v1"
@@ -52,33 +57,33 @@ class PreparedBatch:
 HUAXING_CUSTOMER_MAPPINGS: dict[str, HuaxingCustomerMappingSpec] = {
     "edu": HuaxingCustomerMappingSpec(
         "edu", "EDU", (".xls", ".xlsx", ".xlsm"), (".xls", ".xlsx", ".xlsm"),
-        "HUAXING_EDU_ORDER_V1", "HUAXING_EDU_NEW_ORDER_V1",
+        "HUAXING_EDU_ORDER_V1", "HUAXING_EDU_SCHEDULE_APPEND_V2",
         "按 PO 版本去重，自动续编 EDUHX 单号；验货期为走货期前 7 天并避开周末。",
     ),
     "360": HuaxingCustomerMappingSpec(
         "360", "360", (".pdf", ".xlsx", ".xlsm"), (".xlsx", ".xlsm"),
-        "HUAXING_360_CONTRACT_RELEASE_V1", "HUAXING_360_NEW_ORDER_V1",
+        "HUAXING_360_CONTRACT_RELEASE_V1", "HUAXING_360_SCHEDULE_APPEND_V2",
         "主合同补价格、Release 生成新单；按 RL 修订版去重并继承 360 排期主数据与日期码。",
     ),
     "yinhui": HuaxingCustomerMappingSpec(
         "yinhui", "银辉", (".pdf", ".xlsx", ".xlsm"), (".xlsx", ".xlsm"),
-        "HUAXING_YINHUI_ORDER_V1", "HUAXING_YINHUI_NEW_ORDER_V1",
+        "HUAXING_YINHUI_ORDER_V1", "HUAXING_YINHUI_SCHEDULE_APPEND_V2",
         "USD 按 7.75 换算 HKD，验货期为走货期前 5 天，并核对行金额及大写金额。",
     ),
     "seasons": HuaxingCustomerMappingSpec(
         "seasons", "SEASONS（施信）", (".pdf", ".xls", ".xlsx", ".xlsm"),
         (".xls", ".xlsx", ".xlsm"), "HUAXING_SEASONS_QF_PO_V1",
-        "HUAXING_SEASONS_NEW_ORDER_V1",
+        "HUAXING_SEASONS_SCHEDULE_APPEND_V2",
         "区分 QF 预备单与正式 PO；同单同货号去重，数量冲突按修改单拦截。",
     ),
     "maxx": HuaxingCustomerMappingSpec(
         "maxx", "Maxx", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
-        "HUAXING_MAXX_ORDER_V1", "HUAXING_MAXX_NEW_ORDER_V1",
+        "HUAXING_MAXX_ORDER_V1", "HUAXING_MAXX_SCHEDULE_APPEND_V2",
         "严格识别 Maxx 客户，按 PO 修订版及现有排期去重；完成及验货日期为 Shipment 前 7 天。",
     ),
     "shushupapa": HuaxingCustomerMappingSpec(
         "shushupapa", "Shushupapa", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
-        "HUAXING_SHUSHUPAPA_ORDER_V1", "HUAXING_SHUSHUPAPA_NEW_ORDER_V1",
+        "HUAXING_SHUSHUPAPA_ORDER_V1", "HUAXING_SHUSHUPAPA_SCHEDULE_APPEND_V2",
         "严格识别 Shushupapa 客户并隔离客户数据；按 PO 修订版去重，验货日期为走货期前 7 天。",
     ),
 }
@@ -160,7 +165,8 @@ def _mark_existing_order_lines(
 
 def _safe_output_name(schedule_file_name: str, customer_name: str) -> str:
     stem = re.sub(r"[\\/:*?\"<>|]+", "_", Path(schedule_file_name).stem).strip(" ._")
-    return f"{stem or '华兴客户排期'}_{customer_name}新单.xlsx"
+    suffix = ".xlsm" if Path(schedule_file_name).suffix.lower() == ".xlsm" else ".xlsx"
+    return f"{stem or '华兴客户排期'}_{customer_name}新单{suffix}"
 
 
 def _schedule_kind(parsed: dict[str, Any], file_name: str) -> str:
@@ -589,7 +595,7 @@ def _issues(record: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
         issues.append({
             "severity": severity,
             "code": code,
-            "field": code.removeprefix("missing_"),
+            "field": _text(flag.get("field")) or code.removeprefix("missing_"),
             "message": _text(flag.get("text")) or "该行需要人工复核",
             "can_skip": False,
             "skip_key": f"{row_id}:{code}",
@@ -710,6 +716,12 @@ def create_huaxing_customer_preview(
     ]
     file_names = [name for name, _ in po_files]
     po_hashes = [sha256(content).hexdigest() for _, content in po_files]
+    export_note = (
+        "导出结果完整保留当前排期的所有 Sheet、历史数据、格式、公式、图片和打印设置；"
+        "仅在对应目标表的明细末尾/合计行之前插入本批新单，并从插入点向上选择最近的"
+        "正常明细行继承格式、字体和公式逻辑，跳过合计/小计、分组标题和空白分隔行；"
+        "另存为新文件，不覆盖原排期。"
+    )
     return {
         "preview_schema_version": PREVIEW_SCHEMA_VERSION,
         "customer_code": customer_code,
@@ -733,7 +745,7 @@ def create_huaxing_customer_preview(
         "rows": rows,
         "warnings": list(dict.fromkeys([
             spec.rule_summary,
-            "导出结果为继承当前排期表头、格式和产品主数据的独立“新单”工作簿，不会覆盖原排期。",
+            export_note,
             *prepared.warnings,
         ])),
     }
@@ -744,32 +756,62 @@ def _export_prepared(
     schedule_content: bytes, output_path: Path,
 ) -> None:
     if customer_code == "edu":
-        schedule = edu_schedule.read_schedule(schedule_content, filename=schedule_file_name)
-        edu_schedule.create_import_workbook(
-            prepared.records, output_path, schedule.get("records", []), schedule_content,
+        rows = [edu_schedule.add_derived_fields(dict(record)) for record in prepared.records]
+        aliases = {
+            field: tuple(dict.fromkeys(
+                [title] + [alias for alias, target in edu_schedule.ALIASES.items() if target == field]
+            ))
+            for field, title in edu_schedule.FIELD_TITLES.items()
+        }
+        new_order_excel.append_records_to_workbook(
+            schedule_content,
+            output_path,
+            rows,
+            aliases,
+            filename=schedule_file_name,
+            sheet_names=(prepared.sheet_name,),
         )
         return
     if customer_code == "360":
         three_sixty_schedule.create_schedule_review_workbook(
-            schedule_content, prepared.records, output_path,
+            schedule_content,
+            prepared.records,
+            output_path,
+            template_filename=schedule_file_name,
         )
         return
     if customer_code == "yinhui":
-        yinhui_schedule.create_export(prepared.records, output_path, schedule_content)
+        yinhui_schedule.create_export(
+            prepared.records,
+            output_path,
+            schedule_content,
+            template_filename=schedule_file_name,
+        )
         return
     if customer_code == "seasons":
-        shixin_schedule.build_export(
-            prepared.records, output_path, template_source=schedule_content,
-            template_filename=schedule_file_name, sheet_names=shixin_schedule.SEASONS_SHEETS,
+        aliases: dict[str, list[str]] = {}
+        for label, field in shixin_schedule.FIELDS.items():
+            aliases.setdefault(field, []).append(label)
+        for field, label in shixin_schedule.EXPORT_FIELDS:
+            aliases.setdefault(field, []).append(label)
+        new_order_excel.append_records_to_workbook(
+            schedule_content,
+            output_path,
+            prepared.records,
+            aliases,
+            filename=schedule_file_name,
+            sheet_names=shixin_schedule.SEASONS_SHEETS,
+            formula_fallback_fields=("cartons",),
         )
         return
     with TemporaryDirectory(prefix=f"huaxing-{customer_code}-export-") as temp_dir:
         schedule_path = Path(temp_dir) / Path(schedule_file_name).name
         schedule_path.write_bytes(schedule_content)
-        new_order_excel.create_new_order_workbook(
+        new_order_excel.append_records_to_workbook(
             schedule_path, output_path, prepared.records, multi_schedule.ALIASES,
             filename=schedule_file_name,
-            sheet_names=multi_schedule.CLIENT_SHEETS[customer_code], sheet_title="新单",
+            sheet_names=multi_schedule.CLIENT_SHEETS[customer_code],
+            formula_fallback_fields=(("cartons",) if customer_code == "maxx" else ()),
         )
 
 
@@ -778,7 +820,7 @@ def _validate_skips(preview: dict[str, Any], requested_skips: set[str]) -> None:
         issue["skip_key"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue["can_skip"]
+        if issue.get("skip_key")
     }
     if requested_skips - available_skips:
         raise HuaxingCustomerOrderError("所选确认项已失效或不允许通过，请重新解析")
@@ -799,16 +841,24 @@ def export_huaxing_customer_schedule(
     *, customer_code: str, factory_id: str, received_date: str,
     po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_huaxing_customer_preview(
         customer_code=customer_code, factory_id=factory_id, received_date=received_date,
         po_files=po_files, schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
+    decorate_manual_resolution_policy(preview)
+    apply_overrides_to_preview(preview, manual_overrides or [])
     _validate_skips(preview, skipped_issue_keys or set())
     if not preview["rows"]:
         raise HuaxingCustomerOrderError("本批文件没有可安全生成的新单明细，请查看预览告警")
     prepared = _prepare_batch(customer_code, po_files, schedule_file_name, schedule_content)
+    apply_overrides_to_records(
+        prepared.records,
+        [str(row["id"]) for row in preview["rows"]],
+        manual_overrides or [],
+    )
     with TemporaryDirectory(prefix=f"huaxing-{customer_code}-output-") as temp_dir:
         output_path = Path(temp_dir) / preview["output_file_name"]
         try:

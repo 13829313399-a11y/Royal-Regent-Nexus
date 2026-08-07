@@ -379,6 +379,56 @@ def test_caixing_preview_and_export_write_review_order_and_item(monkeypatch):
     assert item_rows[7]["O"] == "2026/04/08"
 
 
+def test_caixing_manual_net_price_updates_exported_price_and_amount(monkeypatch):
+    monkeypatch.setattr(service, "_extract_pdf_text", lambda _content: PLAYMATES_PO_TEXT)
+    parsed_rows = service.parse_caixing_pdf("1931815.pdf", b"%PDF synthetic")
+    for parsed in parsed_rows:
+        parsed.raw_unit_price_hkd = None
+        parsed.raw_amount_hkd = None
+    monkeypatch.setattr(service, "parse_caixing_pdf", lambda *_args: parsed_rows)
+    po_files = [("1931815.pdf", b"%PDF synthetic")]
+    schedule_content = build_caixing_schedule()
+    preview = service.create_caixing_batch_preview(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星排期.xlsx",
+        schedule_content=schedule_content,
+    )
+    service.decorate_manual_resolution_policy(preview)
+    manual_overrides = []
+    for detail in (row for row in preview["rows"] if row["row_role"] == "detail"):
+        issue = next(
+            issue
+            for issue in detail["issues"]
+            if issue["code"] == "missing_unit_price"
+        )
+        manual_overrides.append({
+            "row_id": detail["id"],
+            "issue_key": issue["skip_key"],
+            "field": "unit_price_hkd",
+            "value": "20",
+        })
+
+    output, _, _ = service.export_caixing_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年彩星排期.xlsx",
+        schedule_content=schedule_content,
+        skipped_issue_keys={item["issue_key"] for item in manual_overrides},
+        manual_overrides=manual_overrides,
+    )
+
+    workbook = service.CaixingSchedule(output)
+    review_rows = workbook.read_rows(service.REVIEW_SHEET)
+    order_rows = workbook.read_rows(service.ORDER_SHEET)
+    assert review_rows[6]["AA"] == "20"
+    assert review_rows[6]["AB"] == "6000"
+    assert order_rows[6]["K"] == "20"
+    assert order_rows[6]["L"] == "6000"
+
+
 def test_caixing_three_po_batch_allows_missing_matrix_columns(monkeypatch):
     texts = {
         b"standard": PLAYMATES_PO_TEXT,
