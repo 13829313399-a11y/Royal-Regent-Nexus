@@ -12,6 +12,7 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 WORKDIR /app/backend
 
 COPY backend/requirements.prod.txt /tmp/requirements.prod.txt
+COPY backend/scripts/install_document_translation_models.py /tmp/install_document_translation_models.py
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgl1 \
@@ -21,7 +22,14 @@ RUN apt-get update \
         tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip \
-    && python -m pip install -r /tmp/requirements.prod.txt
+    && python -m pip install -r /tmp/requirements.prod.txt \
+    && python /tmp/install_document_translation_models.py \
+        --model-dir /app/backend/models/document-translation \
+        --download-dir /tmp/document-translation-downloads \
+    && rm -rf /tmp/document-translation-downloads
+
+ENV DOCUMENT_TRANSLATION_MODEL_DIR=/app/backend/models/document-translation \
+    DOCUMENT_TRANSLATION_DEVICE=cpu
 
 COPY backend/ ./
 
