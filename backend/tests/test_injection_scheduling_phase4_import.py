@@ -1,5 +1,6 @@
 import hashlib
 import importlib
+import json
 import os
 import re
 import sys
@@ -244,6 +245,87 @@ def test_phase4_parser_preserves_identifiers_and_reports_missing_formula_cache()
         )
 
 
+def test_phase4_import_batch_recovers_and_reidentifies_from_scoped_artifact(
+    monkeypatch,
+):
+    source = build_workbook()
+    source_hash = hashlib.sha256(source).hexdigest()
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={"factory_id": "huaxing", "expected_revision": "0"},
+            files={
+                "file": (
+                    "recoverable-plan.xlsx",
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "phase4-recoverable-preview-0001"},
+        )
+        assert preview.status_code == 201, preview.text
+        batch = preview.json()
+        assert batch["artifact_available"] is True
+        assert batch["artifact_expires_at"]
+        assert batch["preview_generation"] == 1
+        assert "storage_key" not in batch
+
+        recovered = client.get(
+            f"/api/injection-scheduling/imports/{batch['id']}",
+            params={"factory_id": "huaxing"},
+        )
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()["normalized_sha256"] == batch["normalized_sha256"]
+        assert recovered.json()["artifact_available"] is True
+        wrong_scope = client.get(
+            f"/api/injection-scheduling/imports/{batch['id']}",
+            params={"factory_id": "huakang-b"},
+        )
+        assert wrong_scope.status_code == 404
+
+        retried = client.post(
+            f"/api/injection-scheduling/imports/{batch['id']}/retry",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": batch["revision"],
+                "request_id": "phase4-reidentify-0001",
+            },
+        )
+        assert retried.status_code == 200, retried.text
+        retried_batch = retried.json()
+        assert retried_batch["revision"] == batch["revision"] + 1
+        assert retried_batch["preview_generation"] == 2
+        assert retried_batch["source_file_hash"] == source_hash
+        assert retried_batch["artifact_available"] is True
+
+        replay = client.post(
+            f"/api/injection-scheduling/imports/{batch['id']}/retry",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": batch["revision"],
+                "request_id": "phase4-reidentify-0001",
+            },
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["idempotent_replay"] is True
+
+        db_module = importlib.import_module("app.db")
+        import_models = importlib.import_module(
+            "app.models.injection_scheduling_import"
+        )
+        with db_module.SessionLocal() as db:
+            artifact = db.scalar(
+                select(import_models.InjectionSchedulingUploadArtifact).where(
+                    import_models.InjectionSchedulingUploadArtifact.batch_id
+                    == batch["id"]
+                )
+            )
+        assert artifact is not None
+        assert artifact.source_sha256 == source_hash
+        assert bytes(artifact.payload_blob) == source
+
+
 def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatch):
     source = build_workbook()
     source_hash = hashlib.sha256(source).hexdigest()
@@ -307,6 +389,38 @@ def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatc
         )
         assert stale_confirm.status_code == 409
         assert stale_confirm.json()["detail"]["current_revision"] == 1
+        blocked_for_master = client.post(
+            f"/api/injection-scheduling/imports/{batch['id']}/confirm",
+            json=confirm_payload,
+        )
+        assert blocked_for_master.status_code == 409
+        assert blocked_for_master.json()["detail"]["code"] == "CANONICAL_BATCH_NOT_READY"
+
+        client.post("/api/auth/logout")
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        difference_keys = [
+            f"{item['entity_type']}:{item['business_key']}"
+            for item in batch["master_differences"]
+        ]
+        approved = client.post(
+            f"/api/injection-scheduling/imports/{batch['id']}/master-differences/approve",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": 1,
+                "request_id": "phase4-master-approve-0001",
+                "reason": "管理员核对来源机台与模具",
+                "differences": difference_keys,
+            },
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["revision"] == 2
+
+        client.post("/api/auth/logout")
+        login(client, "phase4-clerk")
+        confirm_payload["expected_revision"] = 2
+        confirm_payload["expected_action_fingerprint"] = approved.json()[
+            "action_fingerprint"
+        ]
         confirmed = client.post(
             f"/api/injection-scheduling/imports/{batch['id']}/confirm",
             json=confirm_payload,
@@ -314,16 +428,19 @@ def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatc
         assert confirmed.status_code == 200, confirmed.text
         result = confirmed.json()
         assert result["status"] == "CONFIRMED"
-        assert result["revision"] == 2
+        assert result["revision"] == 3
         assert result["result"] == {
-            "acknowledged_blocking_issues": 0,
-            "created_machines": 1,
-            "created_molds": 1,
-            "created_orders": 1,
-            "created_tasks": 1,
+            "action_counts": {
+                "CREATE_BASELINE_TASK": 1,
+                "CREATE_ORDER": 1,
+            },
+            "action_fingerprint": approved.json()["action_fingerprint"],
+            "backlog_without_tasks": True,
+            "created_machines": 0,
+            "created_molds": 0,
+            "locked_baseline": True,
             "plan_created": True,
-            "reused_orders": 0,
-            "skipped_duplicate_tasks": 0,
+            "successor_created": False,
         }
         plan = client.get(
             "/api/injection-scheduling/plans/current",
@@ -338,6 +455,13 @@ def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatc
         assert task["source_sheet_name"] == "计划表"
         assert task["source_row"] == 5
         assert task["source_file_hash"] == source_hash
+
+        backlog = client.get(
+            "/api/injection-scheduling/backlog",
+            params={"factory_id": "huaxing"},
+        )
+        assert backlog.status_code == 200, backlog.text
+        assert backlog.json()["items"] == []
 
         confirm_replay = client.post(
             f"/api/injection-scheduling/imports/{batch['id']}/confirm",
@@ -358,15 +482,16 @@ def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatc
             f"/api/injection-scheduling/imports/{merge_batch['id']}/confirm",
             json={
                 **confirm_payload,
+                "expected_revision": 1,
                 "expected_plan_revision": result["confirmed_plan_revision"],
+                "expected_action_fingerprint": merge_batch["action_fingerprint"],
                 "request_id": "phase4-confirm-merge",
                 "confirm_mode": "merge_draft",
             },
         )
         assert merged.status_code == 200, merged.text
         assert merged.json()["confirmed_plan_revision"] == result["confirmed_plan_revision"]
-        assert merged.json()["result"]["created_tasks"] == 0
-        assert merged.json()["result"]["skipped_duplicate_tasks"] == 1
+        assert merged.json()["result"]["action_counts"] == {"SKIP_IDENTICAL": 1}
 
         client.post("/api/auth/logout")
         login(client, "admin", ADMIN_TEST_PASSWORD)
@@ -393,6 +518,8 @@ def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatc
             f"/api/injection-scheduling/imports/{next_batch['id']}/confirm",
             json={
                 **confirm_payload,
+                "expected_revision": 1,
+                "expected_action_fingerprint": next_batch["action_fingerprint"],
                 "request_id": "phase4-confirm-0002",
             },
         )
@@ -413,7 +540,7 @@ def test_phase4_preview_confirm_idempotency_lineage_and_factory_scope(monkeypatc
         assert hashlib.sha256(source).hexdigest() == source_hash
 
 
-def test_phase4_confirm_requires_explicit_blocking_issue_acknowledgement(monkeypatch):
+def test_canonical_formula_integrity_error_cannot_be_overridden(monkeypatch):
     source = build_workbook(missing_formula_cache=True)
     with make_client(monkeypatch) as client:
         login(client, "admin", ADMIN_TEST_PASSWORD)
@@ -440,7 +567,117 @@ def test_phase4_confirm_requires_explicit_blocking_issue_acknowledgement(monkeyp
             },
         )
         assert unacknowledged.status_code == 409
-        assert unacknowledged.json()["detail"]["unacknowledged_issue_ids"]
+        assert (
+            unacknowledged.json()["detail"]["code"]
+            == "NON_OVERRIDABLE_CANONICAL_ERRORS"
+        )
+        assert unacknowledged.json()["detail"]["issue_ids"]
+
+
+def test_canonical_confirm_requires_master_review_before_takeover(monkeypatch):
+    source = build_workbook()
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={"factory_id": "huaxing", "expected_revision": "0"},
+            files={
+                "file": (
+                    "公共Profile预览.xlsx",
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "profile-preview-before-phase2-confirm"},
+        )
+        assert preview.status_code == 201, preview.text
+        batch_id = preview.json()["id"]
+
+        db_module = importlib.import_module("app.db")
+        import_models = importlib.import_module(
+            "app.models.injection_scheduling_import"
+        )
+        import_service = importlib.import_module(
+            "app.services.injection_scheduling_import"
+        )
+        with db_module.SessionLocal() as db:
+            record = db.get(import_models.InjectionSchedulingImportBatch, batch_id)
+            normalized = json.loads(record.normalized_json)
+            normalized["profile"]["profile_family"] = "huakang_b_daily_plan"
+            unsigned = dict(normalized)
+            unsigned.pop("normalized_sha256", None)
+            normalized["normalized_sha256"] = import_service._payload_hash(unsigned)
+            record.normalized_json = import_service._json(normalized)
+            record.normalized_sha256 = normalized["normalized_sha256"]
+            db.commit()
+
+        confirm = client.post(
+            f"/api/injection-scheduling/imports/{batch_id}/confirm",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": 1,
+                "expected_plan_revision": 0,
+                "request_id": "profile-confirm-requires-phase2",
+                "confirm_mode": "create_draft",
+                "business_date": "2026-08-01",
+                "acknowledged_blocking_issue_ids": [],
+            },
+        )
+        assert confirm.status_code == 409
+        assert (
+            confirm.json()["detail"]["code"]
+            == "CANONICAL_BATCH_NOT_READY"
+        )
+
+
+def test_canonical_confirm_rejects_profile_revision_that_is_no_longer_active(
+    monkeypatch,
+):
+    source = build_workbook()
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={"factory_id": "huaxing", "expected_revision": "0"},
+            files={
+                "file": (
+                    "Profile版本变化.xlsx",
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "profile-preview-before-retire"},
+        )
+        assert preview.status_code == 201, preview.text
+        batch_id = preview.json()["id"]
+
+        db_module = importlib.import_module("app.db")
+        import_models = importlib.import_module(
+            "app.models.injection_scheduling_import"
+        )
+        with db_module.SessionLocal() as db:
+            profile = db.get(
+                import_models.InjectionSchedulingImportProfile,
+                "isprofile-huaxing-daily-v1",
+            )
+            profile.status = "RETIRED"
+            profile.lifecycle_revision += 1
+            db.commit()
+
+        confirm = client.post(
+            f"/api/injection-scheduling/imports/{batch_id}/confirm",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": 1,
+                "expected_plan_revision": 0,
+                "request_id": "profile-confirm-after-retire",
+                "confirm_mode": "create_draft",
+                "business_date": "2026-08-01",
+                "acknowledged_blocking_issue_ids": [],
+            },
+        )
+        assert confirm.status_code == 409
+        assert confirm.json()["detail"]["code"] == "IMPORT_PROFILE_STALE"
 
 
 @pytest.mark.skipif(
@@ -457,10 +694,12 @@ def test_phase4_real_huaxing_workbook_read_only_regression(monkeypatch):
     )
     after_stat = source_path.stat()
     assert normalized["source_file_hash"] == before_hash
-    assert {"计划表", "机安", "华兴机器设备"} <= set(normalized["sheet_names"])
-    assert normalized["summary"]["machine_count"] >= 69
+    assert {"计划表", "机安"} <= set(normalized["sheet_names"])
+    assert normalized["summary"]["profile_code"] == "huaxing_daily_plan_v1"
+    assert normalized["summary"]["machine_count"] == 0
     assert normalized["summary"]["mold_count"] >= 3300
-    assert normalized["summary"]["task_count"] >= 250
+    assert normalized["summary"]["order_count"] >= 30
+    assert normalized["summary"]["invalid_row_count"] >= 200
     assert any(item["code"] == "FORMULA_CACHE_MISSING" for item in issues)
     with make_client(monkeypatch) as client:
         login(client, "admin", ADMIN_TEST_PASSWORD)
@@ -479,7 +718,56 @@ def test_phase4_real_huaxing_workbook_read_only_regression(monkeypatch):
         assert preview.status_code == 201, preview.text
         payload = preview.json()
         assert payload["source_file_hash"] == before_hash
-        assert payload["summary"] == normalized["summary"]
+        assert all(
+            payload["summary"].get(key) == value
+            for key, value in normalized["summary"].items()
+        )
+    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
+    assert after_stat.st_size == before_stat.st_size
+    assert after_stat.st_mtime_ns == before_stat.st_mtime_ns
+
+
+@pytest.mark.skipif(
+    not os.getenv("INJECTION_SCHEDULING_HUAKANG_B_WORKBOOK"),
+    reason=(
+        "set INJECTION_SCHEDULING_HUAKANG_B_WORKBOOK for local Huakang B "
+        "real-template regression"
+    ),
+)
+def test_phase4_real_huakang_b_workbook_read_only_preview(monkeypatch):
+    source_path = Path(os.environ["INJECTION_SCHEDULING_HUAKANG_B_WORKBOOK"])
+    source = source_path.read_bytes()
+    before_hash = hashlib.sha256(source).hexdigest()
+    before_stat = source_path.stat()
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={"factory_id": "huakang-b", "expected_revision": "0"},
+            files={
+                "file": (
+                    source_path.name,
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "phase4-real-huakang-b-preview"},
+        )
+        assert preview.status_code == 201, preview.text
+        payload = preview.json()
+    summary = payload["summary"]
+    assert payload["source_file_hash"] == before_hash
+    assert payload["profile"]["profile_code"] == "huakang_b_daily_plan_v1"
+    assert payload["batch_state"] == "MASTER_REVIEW_REQUIRED"
+    assert summary["scheduled_baseline_count"] == 466
+    assert summary["order_count"] == 454
+    assert summary["invalid_row_count"] == 27
+    assert summary["ignored_row_count"] == 98
+    assert summary["issue_count"] == 126
+    assert summary["blocking_issue_count"] == 69
+    assert summary["master_difference_count"] == 419
+    assert len(payload["reconciliation_actions"]) == 920
+    after_stat = source_path.stat()
     assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
     assert after_stat.st_size == before_stat.st_size
     assert after_stat.st_mtime_ns == before_stat.st_mtime_ns

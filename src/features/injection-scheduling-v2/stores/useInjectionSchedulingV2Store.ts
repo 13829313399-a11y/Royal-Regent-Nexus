@@ -35,6 +35,7 @@ import type {
   MovePreview,
   OrderRecord,
   Phase5AnalyticsRecord,
+  PlanSliceKey,
   RevisionConflict,
   ScheduleGridRow,
   ScheduleTaskRecord,
@@ -42,6 +43,24 @@ import type {
   ShiftReportDraft,
   WorkspaceView,
 } from '../types'
+
+interface ExplicitPlanSlice {
+  plan: SchedulingPlanRecord | null
+  orders: OrderRecord[]
+  tasks: ScheduleTaskRecord[]
+  selectedTaskId: string | null
+  search: string
+  statusFilter: string
+  riskFilter: string
+  cellDrafts: Record<string, CellDraft>
+  timelineScrollLeft: number
+  timelineZoom: number
+}
+
+const emptyPlanSlice = (): ExplicitPlanSlice => ({
+  plan: null, orders: [], tasks: [], selectedTaskId: null, search: '', statusFilter: 'all', riskFilter: 'all',
+  cellDrafts: {}, timelineScrollLeft: 0, timelineZoom: 1,
+})
 
 const factoryNames: Record<FactoryId, string> = {
   huaxing: '华兴', 'huakang-a': '华康 A', 'huakang-b': '华康 B', 'huakang-c': '华康 C', 'huakang-d': '华康 D', huadeng: '华登',
@@ -64,6 +83,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const molds = ref<MoldRecord[]>([])
   const orders = ref<OrderRecord[]>([])
   const tasks = ref<ScheduleTaskRecord[]>([])
+  const backlogRecords = ref<OrderRecord[]>([])
   const backlogOrderIds = ref<string[]>([])
   const events = ref<AuditEvent[]>([])
   const autoScheduleRuns = ref<AutoScheduleRunRecord[]>([])
@@ -72,6 +92,11 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const autoScheduleLoading = ref(false)
   const autoScheduleError = ref('')
   const plan = ref<SchedulingPlanRecord | null>(null)
+  const executionPlan = ref<SchedulingPlanRecord | null>(null)
+  const planningPlan = ref<SchedulingPlanRecord | null>(null)
+  const executionPublishedPlan = ref<ExplicitPlanSlice>(emptyPlanSlice())
+  const planningDraftPlan = ref<ExplicitPlanSlice>(emptyPlanSlice())
+  const activePlanSlice = ref<PlanSliceKey>('execution')
   const pollingRevision = ref(0)
   const sourceMode = ref<'live' | 'fallback'>('live')
   const sourceMessage = ref('正式数据库')
@@ -106,11 +131,28 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
 
   const schedulingDepartments = ['production', 'molding', 'pmc-warehouse', 'warehouse', 'management']
   const hasScopedPermission = (permission: string) => schedulingDepartments.some((department) => authStore.can(permission, factoryId.value, department))
-  const canEdit = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:edit'))
-  const canReport = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:report'))
+  const canEdit = computed(() => sourceMode.value === 'live' && activePlanSlice.value === 'planning' && plan.value?.status === 'DRAFT' && hasScopedPermission('injection_scheduling:edit'))
+  const canReport = computed(() => sourceMode.value === 'live' && activePlanSlice.value === 'execution' && plan.value?.status === 'PUBLISHED' && hasScopedPermission('injection_scheduling:report'))
   const canOverride = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:publish'))
   const canManageRules = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:manage_rules'))
+  const canImport = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:import'))
+  const canExport = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:export'))
+  const canManageMaster = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:manage_master'))
   const pendingEditCount = computed(() => Object.keys(cellDrafts.value).length)
+  const timelineScrollLeft = computed({
+    get: () => (activePlanSlice.value === 'execution' ? executionPublishedPlan.value : planningDraftPlan.value).timelineScrollLeft,
+    set: (value: number) => {
+      const target = activePlanSlice.value === 'execution' ? executionPublishedPlan : planningDraftPlan
+      target.value = { ...target.value, timelineScrollLeft: value }
+    },
+  })
+  const timelineZoom = computed({
+    get: () => (activePlanSlice.value === 'execution' ? executionPublishedPlan.value : planningDraftPlan.value).timelineZoom,
+    set: (value: number) => {
+      const target = activePlanSlice.value === 'execution' ? executionPublishedPlan : planningDraftPlan
+      target.value = { ...target.value, timelineZoom: Math.max(.5, Math.min(3, value)) }
+    },
+  })
 
   const factoryName = computed(() => factoryNames[factoryId.value])
   const orderMap = computed(() => new Map(orders.value.map((item) => [item.id, item])))
@@ -214,19 +256,77 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     return result
   })
 
+  function syncActivePlanSlice() {
+    const target = activePlanSlice.value === 'execution' ? executionPublishedPlan : planningDraftPlan
+    target.value = {
+      ...target.value,
+      plan: plan.value,
+      orders: orders.value.filter((item) => !backlogOrderIds.value.includes(item.id)),
+      tasks: [...tasks.value],
+      selectedTaskId: selectedTaskId.value,
+      search: search.value,
+      statusFilter: statusFilter.value,
+      riskFilter: riskFilter.value,
+      cellDrafts: { ...cellDrafts.value },
+    }
+  }
+
+  function activatePlanSlice(targetKey: PlanSliceKey, force = false) {
+    if (!force && targetKey !== activePlanSlice.value && pendingEditCount.value) {
+      saveMessage.value = '当前规划切片有未保存修改，请先保存或放弃后再切换。'
+      return false
+    }
+    if (!force) syncActivePlanSlice()
+    activePlanSlice.value = targetKey
+    const target = targetKey === 'execution' ? executionPublishedPlan.value : planningDraftPlan.value
+    plan.value = target.plan
+    const merged = new Map<string, OrderRecord>()
+    ;[...target.orders, ...backlogRecords.value].forEach((item) => merged.set(item.id, item))
+    orders.value = [...merged.values()]
+    tasks.value = [...target.tasks]
+    selectedTaskId.value = target.selectedTaskId && target.tasks.some((item) => item.id === target.selectedTaskId)
+      ? target.selectedTaskId
+      : target.tasks[0]?.id ?? null
+    search.value = target.search
+    statusFilter.value = target.statusFilter
+    riskFilter.value = target.riskFilter
+    cellDrafts.value = { ...target.cellDrafts }
+    revisionConflict.value = null
+    return true
+  }
+
   function applyData(data: Awaited<ReturnType<typeof fetchSchedulingWorkspace>>) {
-    machines.value = data.machines; molds.value = data.molds; orders.value = data.orders; tasks.value = data.tasks
-    backlogOrderIds.value = data.backlogOrderIds; events.value = data.events; plan.value = data.plan; pollingRevision.value = data.pollingRevision
+    machines.value = data.machines; molds.value = data.molds
+    backlogOrderIds.value = data.backlogOrderIds; events.value = data.events; pollingRevision.value = data.pollingRevision
+    executionPlan.value = data.executionPlan; planningPlan.value = data.planningPlan
+    backlogRecords.value = data.backlogOrders
+    executionPublishedPlan.value = {
+      ...executionPublishedPlan.value,
+      plan: data.executionPlan,
+      orders: data.executionOrders,
+      tasks: data.executionTasks,
+    }
+    planningDraftPlan.value = {
+      ...planningDraftPlan.value,
+      plan: data.planningPlan,
+      orders: data.planningOrders,
+      tasks: data.planningTasks,
+    }
+    const target: PlanSliceKey = activePlanSlice.value === 'execution' && !data.executionPlan && data.planningPlan ? 'planning' : activePlanSlice.value
+    activatePlanSlice(target, true)
     autoScheduleRuns.value = data.autoScheduleRuns
     if (autoScheduleRun.value) autoScheduleRun.value = data.autoScheduleRuns.find((item) => item.id === autoScheduleRun.value?.id) ?? autoScheduleRun.value
     if (autoScheduleRun.value) autoScheduleComparisonRuns.value = data.autoScheduleRuns.filter((item) => item.scenarioGroupId === autoScheduleRun.value?.scenarioGroupId)
-    selectedTaskId.value = selectedTaskId.value && data.tasks.some((task) => task.id === selectedTaskId.value) ? selectedTaskId.value : data.tasks[0]?.id ?? null
   }
 
   function applyFallback(reason: string) {
     machines.value = demoMachines; molds.value = demoMolds; orders.value = demoOrders; tasks.value = demoTasks
+    backlogRecords.value = demoOrders.filter((order) => order.status === 'BACKLOG')
     backlogOrderIds.value = demoOrders.filter((order) => order.status === 'BACKLOG').map((order) => order.id)
-    events.value = demoEvents; plan.value = { id: 'DEMO-PLAN', status: 'PUBLISHED', revision: 7, ruleRevision: 1, businessDate: '2026-08-04' }; pollingRevision.value = 4
+    events.value = demoEvents; plan.value = { id: 'DEMO-PLAN', status: 'PUBLISHED', revision: 7, ruleRevision: 1, businessDate: '2026-08-04', basedOnPlanId: '', basedOnEventSequence: 0, basedOnReportWatermark: 0 }; pollingRevision.value = 4
+    executionPlan.value = plan.value; planningPlan.value = null
+    executionPublishedPlan.value = { ...emptyPlanSlice(), plan: plan.value, orders: demoOrders, tasks: demoTasks, selectedTaskId: demoTasks[0]?.id ?? null }
+    planningDraftPlan.value = emptyPlanSlice(); activePlanSlice.value = 'execution'
     autoScheduleRuns.value = []; autoScheduleRun.value = null; autoScheduleComparisonRuns.value = []; autoScheduleError.value = ''
     sourceMode.value = 'fallback'; sourceMessage.value = `后端暂不可用，当前显示只读演示数据 · ${reason}`; selectedTaskId.value = demoTasks[0]?.id ?? null
   }
@@ -274,6 +374,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     const index = tasks.value.findIndex((item) => item.id === task.id)
     if (index >= 0) tasks.value.splice(index, 1, task)
     else tasks.value.push(task)
+    syncActivePlanSlice()
   }
 
   function mergeOrder(order: OrderRecord) {
@@ -282,12 +383,18 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     else orders.value.push(order)
     if (order.status === 'BACKLOG' && !backlogOrderIds.value.includes(order.id)) backlogOrderIds.value.push(order.id)
     if (order.status !== 'BACKLOG') backlogOrderIds.value = backlogOrderIds.value.filter((id) => id !== order.id)
+    syncActivePlanSlice()
   }
 
   function mergePlanResult(data: { plan: SchedulingPlanRecord | null; tasks: ScheduleTaskRecord[]; orders: OrderRecord[] }) {
-    if (data.plan) plan.value = data.plan
+    if (data.plan) {
+      plan.value = data.plan
+      if (data.plan.status === 'DRAFT') planningPlan.value = data.plan
+      if (data.plan.status === 'PUBLISHED') executionPlan.value = data.plan
+    }
     tasks.value = data.tasks
     data.orders.forEach(mergeOrder)
+    syncActivePlanSlice()
   }
 
   function draftValue(taskId: string, key: EditableCellKey, fallback: string | number) {
@@ -332,6 +439,8 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   async function refreshPlanForConflict() {
     const latest = await fetchCurrentSchedulingPlan(factoryId.value)
     mergePlanResult(latest)
+    executionPlan.value = latest.executionPlan
+    planningPlan.value = latest.planningPlan
     pollingRevision.value = Math.max(pollingRevision.value, latest.pollingRevision)
   }
 
@@ -674,6 +783,8 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       if (needsPlanRefresh) {
         const latest = await fetchCurrentSchedulingPlan(factoryId.value)
         mergePlanResult(latest)
+        executionPlan.value = latest.executionPlan
+        planningPlan.value = latest.planningPlan
       }
       const merged = new Map(events.value.map((event) => [event.id, event]))
       response.events.forEach((event) => merged.set(event.id, event))
@@ -688,7 +799,11 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   }
 
   function setFactory(value: string) {
-    if (!(value in factoryNames)) return
+    if (!(value in factoryNames)) return false
+    if (pendingEditCount.value) {
+      saveMessage.value = '存在未保存的规划修改，切换厂区前请先保存或放弃。'
+      return false
+    }
     factoryId.value = value as FactoryId
     cellDrafts.value = {}
     revisionConflict.value = null
@@ -700,6 +815,10 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     saveMessage.value = ''
     phase5Analytics.value = null
     phase5AnalyticsError.value = ''
+    executionPublishedPlan.value = emptyPlanSlice()
+    planningDraftPlan.value = emptyPlanSlice()
+    activePlanSlice.value = 'execution'
+    return true
   }
   function setPreset(preset: ColumnPreset) { activePreset.value = preset; customVisibleColumns.value = {} }
   function toggleMachine(machineId: string) { collapsedMachineIds.value = collapsedMachineIds.value.includes(machineId) ? collapsedMachineIds.value.filter((id) => id !== machineId) : [...collapsedMachineIds.value, machineId] }
@@ -716,12 +835,12 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   function selectTask(taskId: string) { selectedTaskId.value = taskId }
   function cycleSort(key: string) { sort.value = sort.value?.key === key ? (sort.value.desc ? null : { key, desc: true }) : { key, desc: false } }
 
-  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
+  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, executionPlan, planningPlan, executionPublishedPlan, planningDraftPlan, activePlanSlice, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
     activeView, activePreset, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
     backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, gridRows,
-    cellDrafts, pendingEditCount, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride, canManageRules,
+    cellDrafts, pendingEditCount, timelineScrollLeft, timelineZoom, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride, canManageRules, canImport, canExport, canManageMaster,
     phase5Analytics, phase5AnalyticsLoading, phase5AnalyticsError,
-    load, setFactory, setPreset, toggleMachine, toggleColumn, moveColumn, resetColumns, selectTask, cycleSort,
+    load, setFactory, activatePlanSlice, setPreset, toggleMachine, toggleColumn, moveColumn, resetColumns, selectTask, cycleSort,
     draftValue, stageCellEdit, savePendingEdits, discardPendingEdits, prepareMove, updateMovePreview, confirmMove, moveByKeyboard, pollEvents,
     generateAutoSchedulePreview, generateAutoScheduleAlternatives, replayAutoScheduleRun, selectAutoScheduleRun, applyAutoScheduleRun,
     loadPhase5Analytics, calibratePhase5SpeedModels }

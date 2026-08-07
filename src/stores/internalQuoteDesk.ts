@@ -42,6 +42,7 @@ const actionTitles: Record<string, string> = {
   submit: '提交分段审核', withdraw: '提交人返回修改', approve: '分段审核通过', reject: '分段审核退回', request_na: '申请分段不适用',
   approve_na: '批准分段不适用', reopen: '合法重开分段', import_preview: '预览导入文件',
   import_confirm: '确认导入文件', upload_attachment: '上传分段附件', download_attachment: '下载分段附件',
+  delete_import_attachment: '删除导入附件并清除关联数据',
   reference_sync: '同步参考快照', reference_fx_update: '调整报价汇率', reference_recalculated: '按新参考重算',
   final_submit: '提交最终放行', final_approve: '最终放行通过',
   final_reject: '最终放行退回', export: '生成受控导出', download_export: '下载受控导出', archive: '归档报价',
@@ -115,6 +116,9 @@ function toAttachment(item: ApiInternalQuoteAttachment) {
     sha256: item.sha256,
     uploadedBy: item.uploaded_by_name || item.uploaded_by,
     uploadedAt: item.uploaded_at,
+    isImportSource: item.is_import_source,
+    importBatchId: item.import_batch_id,
+    importType: item.import_type,
   }
 }
 
@@ -1124,8 +1128,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         this.fileBusy = false
       }
     },
-    confirmImport(quoteId: string, batchId: string, revision: number, mode: 'append' | 'replace') {
-      return this.executeMutation(quoteId, () => internalQuoteApi.confirmImport(quoteId, batchId, revision, mode))
+    confirmImport(quoteId: string, batchId: string, revision: number) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.confirmImport(quoteId, batchId, revision))
     },
     uploadAttachment(quoteId: string, sectionCode: InternalQuoteSectionCode, file: File) {
       return this.executeMutation(quoteId, () => internalQuoteApi.uploadAttachment(quoteId, sectionCode, file))
@@ -1137,6 +1141,12 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       } finally {
         this.fileBusy = false
       }
+    },
+    deleteImportAttachment(quoteId: string, attachmentId: string, revision: number) {
+      return this.executeMutation(
+        quoteId,
+        () => internalQuoteApi.deleteImportAttachment(quoteId, attachmentId, revision),
+      )
     },
     createExport(quoteId: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.createExport(quoteId))

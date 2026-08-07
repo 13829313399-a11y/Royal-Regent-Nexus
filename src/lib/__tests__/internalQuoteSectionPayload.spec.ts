@@ -336,6 +336,26 @@ describe('internal quote section payload normalization', () => {
     })
   })
 
+  it('preserves server import batch lineage while users edit and save imported rows', () => {
+    const batchId = 'IQIMP-lineage-1'
+    const cases = [
+      ['engineering', { materials: [{ item: '螺丝', category: 'hardware', import_batch_id: batchId }], molds: [{ item: '主模', import_batch_id: batchId }] }, ['materials', 'molds']],
+      ['electronic', { components: [{ item: 'IC', import_batch_id: batchId }] }, ['components']],
+      ['molding', { injection_lines: [{ item: '主模', import_batch_id: batchId }], blow_lines: [{ item: '吹气件', import_batch_id: batchId }] }, ['injection_lines', 'blow_lines']],
+      ['painting', { rows: [{ item: '头部', import_batch_id: batchId }] }, ['rows']],
+      ['slush', { lines: [{ item: '手臂', import_batch_id: batchId }] }, ['lines']],
+      ['sewing', { groups: [{ name: '衣服', import_batch_id: batchId }] }, ['groups']],
+      ['assembly', { groups: [{ name: '组装', import_batch_id: batchId }] }, ['groups']],
+    ] as const
+
+    for (const [code, payload, fields] of cases) {
+      const normalized = normalizeInternalQuotePayload(code, payload)
+      for (const field of fields) {
+        expect((normalized[field] as Array<Record<string, unknown>>)[0].import_batch_id).toBe(batchId)
+      }
+    }
+  })
+
   it('calculates assembly and packaging labor per product group', () => {
     const payload = normalizeInternalQuotePayload('assembly', {
       labor_base_hkd: 260,

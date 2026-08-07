@@ -108,8 +108,9 @@ describe('internal quote API adapter', () => {
     await api.updateReferenceFx('quote-1', 3, '0.9', '7.9')
     await api.previewImport('quote-1', 'mold', file)
     await api.downloadImportTemplate('quote-1', 'mold')
-    await api.confirmImport('quote-1', 'batch-1', 9, 'replace')
+    await api.confirmImport('quote-1', 'batch-1', 9)
     await api.uploadAttachment('quote-1', 'engineering', file)
+    await api.deleteImportAttachment('quote-1', 'attachment-1', 10)
     await api.submitFinal('quote-1', 3)
     await api.reviewFinal('quote-1', 4, 'approve')
     await api.createExport('quote-1')
@@ -125,6 +126,10 @@ describe('internal quote API adapter', () => {
     expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/mold/template', {
       responseType: 'blob',
       timeout: 60_000,
+    })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/batch-1/confirm', { revision: 9 })
+    expect(http.delete).toHaveBeenCalledWith('/internal-quotes/quote-1/attachments/attachment-1', {
+      params: { revision: 10 },
     })
     const formCalls = http.post.mock.calls.filter(([, data]) => data instanceof FormData)
     expect(formCalls).toHaveLength(2)

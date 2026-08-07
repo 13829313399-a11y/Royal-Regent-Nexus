@@ -11,6 +11,7 @@ MaterialReadinessStatus = Literal["unknown", "ready", "partial", "blocked"]
 OrderStatus = Literal["BACKLOG", "SCHEDULED", "COMPLETED", "CANCELLED"]
 ShiftCode = Literal["DAY", "NIGHT"]
 QuantityMode = Literal["INCREMENTAL", "CUMULATIVE"]
+FitDecision = Literal["PASS", "REVIEW_REQUIRED", "FAIL"]
 
 
 class StrictWriteModel(BaseModel):
@@ -238,6 +239,56 @@ class InjectionSchedulingTaskBulkMove(StrictWriteModel):
         return value
 
 
+class InjectionSchedulingManualAppendPreviewRequest(StrictWriteModel):
+    factory_id: str
+    order_id: str = Field(min_length=1, max_length=96)
+    machine_id: str = Field(min_length=1, max_length=96)
+    expected_plan_revision: int = Field(ge=1)
+    expected_order_revision: int = Field(ge=1)
+    expected_rule_revision: int = Field(ge=1)
+
+    @field_validator("factory_id", "order_id", "machine_id")
+    @classmethod
+    def strip_manual_append_preview_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class InjectionSchedulingManualAppendConfirm(
+    InjectionSchedulingManualAppendPreviewRequest
+):
+    request_id: str = Field(min_length=8, max_length=128)
+    expected_input_fingerprint: str = Field(min_length=64, max_length=64)
+    override_reason: str = Field(default="", max_length=2000)
+
+    @field_validator("request_id", "expected_input_fingerprint", "override_reason")
+    @classmethod
+    def strip_manual_append_confirm_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class InjectionSchedulingManualAppendPreview(BaseModel):
+    factory_id: str
+    plan_id: str
+    plan_revision: int
+    order_id: str
+    order_revision: int
+    machine_id: str
+    sequence_no: int
+    decision: FitDecision
+    hard_failures: list[dict[str, Any]]
+    warnings: list[dict[str, Any]]
+    advisories: list[dict[str, Any]]
+    planned_quantity: float
+    shift_target_quantity: float
+    planned_start: str
+    planned_finish: str
+    continuation_anchor: dict[str, Any]
+    calculation: dict[str, Any]
+    rule_set_id: str
+    rule_revision: int
+    input_fingerprint: str
+
+
 class InjectionSchedulingTaskOut(BaseModel):
     id: str
     factory_id: str
@@ -263,6 +314,17 @@ class InjectionSchedulingTaskOut(BaseModel):
     source_sheet_name: str
     source_row: int | None
     source_file_hash: str
+    allocated_quantity: float
+    takeover_source_completed_quantity: float
+    origin: str
+    stable_order_key: str
+    stable_row_key: str
+    source_task_id: str | None
+    inherited_report_counter: float
+    completed_at_clone: float
+    report_event_watermark: int
+    profile_id: str | None
+    profile_revision: int | None
     setup_minutes: int
     production_minutes: int
     planned_downtime_minutes: int
@@ -280,6 +342,41 @@ class InjectionSchedulingTaskOut(BaseModel):
     updated_at: str
 
 
+class InjectionSchedulingManualAppendResult(BaseModel):
+    plan_id: str
+    plan_revision: int
+    task: InjectionSchedulingTaskOut
+    decision: FitDecision
+    calculation: dict[str, Any]
+    audit_sequence: int
+    input_fingerprint: str
+
+
+class InjectionSchedulingPlanOrderStateOut(BaseModel):
+    id: str
+    factory_id: str
+    plan_id: str
+    order_id: str
+    stable_order_key: str
+    order_quantity: float
+    delivery_start_date: str
+    delivery_due_date: str
+    takeover_source_completed_quantity: float
+    report_increment_total: float
+    progress_adjustment_total: float
+    completed_quantity: float
+    outstanding_quantity: float
+    status: OrderStatus
+    quantity_scope: Literal["ORDER_CUMULATIVE", "SPLIT_CUMULATIVE"]
+    source_batch_id: str | None
+    source_sheet_name: str
+    source_row: int | None
+    source_profile_id: str | None
+    source_profile_revision: int | None
+    source_lineage: dict[str, Any]
+    revision: int
+
+
 class InjectionSchedulingPlanOut(BaseModel):
     id: str
     factory_id: str
@@ -289,6 +386,14 @@ class InjectionSchedulingPlanOut(BaseModel):
     rule_set_id: str
     rule_revision: int
     based_on_plan_id: str
+    based_on_event_sequence: int
+    based_on_report_watermark: int
+    export_profile_id: str | None
+    export_profile_revision: int | None
+    export_profile_family: str
+    export_renderer_code: str
+    export_binding_source: str
+    calculation_version: str
     created_by: str
     created_by_name: str
     updated_by: str
@@ -300,6 +405,7 @@ class InjectionSchedulingPlanOut(BaseModel):
     published_at: str
     archived_at: str
     orders: list[InjectionSchedulingOrderOut]
+    plan_order_states: list[InjectionSchedulingPlanOrderStateOut]
     tasks: list[InjectionSchedulingTaskOut]
 
 
@@ -326,6 +432,13 @@ class InjectionSchedulingTaskBulkMoveResult(BaseModel):
 class InjectionSchedulingCurrentPlanOut(BaseModel):
     factory_id: str
     plan: InjectionSchedulingPlanOut | None
+    polling_revision: int
+
+
+class InjectionSchedulingPlanContextOut(BaseModel):
+    factory_id: str
+    execution_published_plan: InjectionSchedulingPlanOut | None
+    planning_draft_plan: InjectionSchedulingPlanOut | None
     polling_revision: int
 
 
@@ -451,6 +564,60 @@ class InjectionSchedulingShiftReportBulkCreate(StrictWriteModel):
 class InjectionSchedulingShiftReportBulkResult(BaseModel):
     results: list[InjectionSchedulingShiftReportResult]
     latest_sequence: int
+
+
+class InjectionSchedulingProgressAdjustmentCreate(StrictWriteModel):
+    factory_id: str
+    plan_id: str = Field(min_length=1, max_length=96)
+    order_id: str = Field(min_length=1, max_length=96)
+    task_id: str | None = Field(default=None, max_length=96)
+    expected_state_revision: int = Field(ge=1)
+    signed_quantity: float
+    reason: str = Field(min_length=4, max_length=500)
+    request_id: str = Field(min_length=8, max_length=128)
+
+    @field_validator("factory_id", "plan_id", "order_id", "reason", "request_id")
+    @classmethod
+    def strip_adjustment_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("task_id")
+    @classmethod
+    def strip_adjustment_task(cls, value: str | None) -> str | None:
+        return value.strip() if value else None
+
+    @model_validator(mode="after")
+    def require_nonzero_adjustment(self):
+        if self.signed_quantity == 0:
+            raise ValueError("进度更正数量不能为 0")
+        return self
+
+
+class InjectionSchedulingProgressAdjustmentOut(BaseModel):
+    id: str
+    factory_id: str
+    plan_id: str
+    order_id: str
+    task_id: str | None
+    signed_quantity: float
+    before_quantity: float
+    after_quantity: float
+    reason: str
+    source_kind: str
+    source_batch_id: str | None
+    source_sheet_name: str
+    source_row: int | None
+    request_id: str
+    adjusted_by: str
+    adjusted_by_name: str
+    created_at: str
+
+
+class InjectionSchedulingProgressAdjustmentResult(BaseModel):
+    adjustment: InjectionSchedulingProgressAdjustmentOut
+    state: InjectionSchedulingPlanOrderStateOut
+    audit_sequence: int
+    idempotent_replay: bool = False
 
 
 class InjectionSchedulingEventOut(BaseModel):

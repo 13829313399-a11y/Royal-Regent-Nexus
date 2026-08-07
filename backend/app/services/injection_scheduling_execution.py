@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from decimal import Decimal
 from itertools import pairwise
 from math import ceil, floor
@@ -24,7 +24,9 @@ from app.models.injection_scheduling_execution import (
     InjectionSchedulingAuditEvent,
     InjectionSchedulingOrder,
     InjectionSchedulingPlan,
+    InjectionSchedulingPlanOrderState,
     InjectionSchedulingPlanRevision,
+    InjectionSchedulingProgressAdjustment,
     InjectionSchedulingPublishedSnapshot,
     InjectionSchedulingShiftReport,
     InjectionSchedulingTask,
@@ -35,7 +37,9 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingOrderCreate,
     InjectionSchedulingOrderOut,
     InjectionSchedulingOrderUpdate,
+    InjectionSchedulingPlanOrderStateOut,
     InjectionSchedulingPlanOut,
+    InjectionSchedulingProgressAdjustmentOut,
     InjectionSchedulingPublishInput,
     InjectionSchedulingRollbackInput,
     InjectionSchedulingShiftReportBulkCreate,
@@ -83,6 +87,22 @@ def _load_json(value: str, fallback: Any) -> Any:
 
 def _payload_hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+
+def _stable_order_key(order: InjectionSchedulingOrder) -> str:
+    lineage = _load_json(order.lineage_json, {})
+    value = lineage.get("stable_order_key") if isinstance(lineage, dict) else None
+    if isinstance(value, str) and value:
+        return value
+    return _payload_hash(
+        [
+            order.factory_id,
+            order.order_no,
+            order.item_no,
+            order.mold_id or "",
+            order.product_name,
+        ]
+    )
 
 
 def _revision_conflict(
@@ -208,6 +228,19 @@ def task_out(record: InjectionSchedulingTask) -> InjectionSchedulingTaskOut:
         source_sheet_name=record.source_sheet_name,
         source_row=record.source_row,
         source_file_hash=record.source_file_hash,
+        allocated_quantity=_float(record.allocated_quantity),
+        takeover_source_completed_quantity=_float(
+            record.takeover_source_completed_quantity
+        ),
+        origin=record.origin,
+        stable_order_key=record.stable_order_key,
+        stable_row_key=record.stable_row_key,
+        source_task_id=record.source_task_id,
+        inherited_report_counter=_float(record.inherited_report_counter),
+        completed_at_clone=_float(record.completed_at_clone),
+        report_event_watermark=record.report_event_watermark,
+        profile_id=record.profile_id,
+        profile_revision=record.profile_revision,
         setup_minutes=record.setup_minutes,
         production_minutes=record.production_minutes,
         planned_downtime_minutes=record.planned_downtime_minutes,
@@ -254,6 +287,29 @@ def plan_orders(
     factory_id: str,
     plan_id: str,
 ) -> list[InjectionSchedulingOrder]:
+    overlay_order_ids = list(
+        db.scalars(
+            select(InjectionSchedulingPlanOrderState.order_id).where(
+                InjectionSchedulingPlanOrderState.factory_id == factory_id,
+                InjectionSchedulingPlanOrderState.plan_id == plan_id,
+            )
+        ).all()
+    )
+    if overlay_order_ids:
+        return list(
+            db.scalars(
+                select(InjectionSchedulingOrder)
+                .where(
+                    InjectionSchedulingOrder.factory_id == factory_id,
+                    InjectionSchedulingOrder.id.in_(overlay_order_ids),
+                )
+                .order_by(
+                    InjectionSchedulingOrder.order_no,
+                    InjectionSchedulingOrder.item_no,
+                    InjectionSchedulingOrder.id,
+                )
+            ).all()
+        )
     return list(
         db.scalars(
             select(InjectionSchedulingOrder)
@@ -276,7 +332,66 @@ def plan_orders(
     )
 
 
+def plan_order_state_out(
+    record: InjectionSchedulingPlanOrderState,
+) -> InjectionSchedulingPlanOrderStateOut:
+    completed = _decimal(record.completed_quantity)
+    quantity = _decimal(record.order_quantity)
+    return InjectionSchedulingPlanOrderStateOut(
+        id=record.id,
+        factory_id=record.factory_id,
+        plan_id=record.plan_id,
+        order_id=record.order_id,
+        stable_order_key=record.stable_order_key,
+        order_quantity=_float(quantity),
+        delivery_start_date=record.delivery_start_date,
+        delivery_due_date=record.delivery_due_date,
+        takeover_source_completed_quantity=_float(
+            record.takeover_source_completed_quantity
+        ),
+        report_increment_total=_float(record.report_increment_total),
+        progress_adjustment_total=_float(record.progress_adjustment_total),
+        completed_quantity=_float(completed),
+        outstanding_quantity=_float(max(quantity - completed, Decimal(0))),
+        status=record.status,
+        quantity_scope=record.quantity_scope,
+        source_batch_id=record.source_batch_id,
+        source_sheet_name=record.source_sheet_name,
+        source_row=record.source_row,
+        source_profile_id=record.source_profile_id,
+        source_profile_revision=record.source_profile_revision,
+        source_lineage=_load_json(record.source_lineage_json, {}),
+        revision=record.revision,
+    )
+
+
 def plan_out(db: Session, record: InjectionSchedulingPlan) -> InjectionSchedulingPlanOut:
+    from app.services.injection_scheduling_takeover import plan_order_states
+
+    states = plan_order_states(db, record.factory_id, record.id)
+    states_by_order = {item.order_id: item for item in states}
+    projected_orders: list[InjectionSchedulingOrderOut] = []
+    for item in plan_orders(db, record.factory_id, record.id):
+        projected = order_out(item)
+        state = states_by_order.get(item.id)
+        if state is not None:
+            quantity = _float(state.order_quantity)
+            completed = _float(state.completed_quantity)
+            projected = projected.model_copy(
+                update={
+                    "order_quantity": quantity,
+                    "completed_quantity": completed,
+                    "outstanding_quantity": max(quantity - completed, 0.0),
+                    "completion_rate": (
+                        min(completed / quantity, 1.0) if quantity else 0.0
+                    ),
+                    "delivery_start_date": state.delivery_start_date,
+                    "delivery_due_date": state.delivery_due_date,
+                    "status": state.status,
+                }
+            )
+        projected_orders.append(projected)
+
     return InjectionSchedulingPlanOut(
         id=record.id,
         factory_id=record.factory_id,
@@ -286,6 +401,14 @@ def plan_out(db: Session, record: InjectionSchedulingPlan) -> InjectionSchedulin
         rule_set_id=record.rule_set_id,
         rule_revision=record.rule_revision,
         based_on_plan_id=record.based_on_plan_id,
+        based_on_event_sequence=record.based_on_event_sequence,
+        based_on_report_watermark=record.based_on_report_watermark,
+        export_profile_id=record.export_profile_id,
+        export_profile_revision=record.export_profile_revision,
+        export_profile_family=record.export_profile_family,
+        export_renderer_code=record.export_renderer_code,
+        export_binding_source=record.export_binding_source,
+        calculation_version=record.calculation_version,
         created_by=record.created_by,
         created_by_name=record.created_by_name,
         updated_by=record.updated_by,
@@ -296,9 +419,10 @@ def plan_out(db: Session, record: InjectionSchedulingPlan) -> InjectionSchedulin
         updated_at=record.updated_at,
         published_at=record.published_at,
         archived_at=record.archived_at,
-        orders=[
-            order_out(item)
-            for item in plan_orders(db, record.factory_id, record.id)
+        orders=projected_orders,
+        plan_order_states=[
+            plan_order_state_out(item)
+            for item in states
         ],
         tasks=[task_out(item) for item in plan_tasks(db, record.factory_id, record.id)],
     )
@@ -490,11 +614,63 @@ def update_order(
     return refreshed, audit.sequence
 
 
+def progress_adjustment_out(
+    record: InjectionSchedulingProgressAdjustment,
+) -> InjectionSchedulingProgressAdjustmentOut:
+    return InjectionSchedulingProgressAdjustmentOut(
+        id=record.id,
+        factory_id=record.factory_id,
+        plan_id=record.plan_id,
+        order_id=record.order_id,
+        task_id=record.task_id,
+        signed_quantity=_float(record.signed_quantity),
+        before_quantity=_float(record.before_quantity),
+        after_quantity=_float(record.after_quantity),
+        reason=record.reason,
+        source_kind=record.source_kind,
+        source_batch_id=record.source_batch_id,
+        source_sheet_name=record.source_sheet_name,
+        source_row=record.source_row,
+        request_id=record.request_id,
+        adjusted_by=record.adjusted_by,
+        adjusted_by_name=record.adjusted_by_name,
+        created_at=record.created_at,
+    )
+
+
 def list_backlog_orders(
     db: Session,
     factory_id: str,
 ) -> list[InjectionSchedulingOrder]:
     factory_id = require_injection_scheduling_factory(factory_id)
+    draft_plan_id = db.scalar(
+        select(InjectionSchedulingPlan.id).where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+    )
+    if draft_plan_id is not None:
+        return list(
+            db.scalars(
+                select(InjectionSchedulingOrder)
+                .join(
+                    InjectionSchedulingPlanOrderState,
+                    InjectionSchedulingPlanOrderState.order_id
+                    == InjectionSchedulingOrder.id,
+                )
+                .where(
+                    InjectionSchedulingOrder.factory_id == factory_id,
+                    InjectionSchedulingPlanOrderState.factory_id == factory_id,
+                    InjectionSchedulingPlanOrderState.plan_id == draft_plan_id,
+                    InjectionSchedulingPlanOrderState.status == "BACKLOG",
+                )
+                .order_by(
+                    InjectionSchedulingPlanOrderState.delivery_due_date,
+                    InjectionSchedulingOrder.priority_code.desc(),
+                    InjectionSchedulingOrder.order_no,
+                )
+            ).all()
+        )
     return list(
         db.scalars(
             select(InjectionSchedulingOrder)
@@ -546,6 +722,12 @@ def create_draft_plan(
         rule_set_id=rules.id,
         rule_revision=rules.revision,
         based_on_plan_id="",
+        export_profile_id="isprofile-system-standard-v1",
+        export_profile_revision=1,
+        export_profile_family="system_standard",
+        export_renderer_code="system_standard_v1",
+        export_binding_source="SYSTEM_STANDARD",
+        calculation_version="injection-scheduling-calculation-v2",
         rollback_request_id=None,
         created_by=user.id,
         created_by_name=_actor_name(user),
@@ -658,6 +840,9 @@ def add_task(
     user: AuthContext,
     request_id: str,
     audit_detail: dict[str, Any] | None = None,
+    calculation: dict[str, Any] | None = None,
+    allocated_quantity: Decimal | None = None,
+    origin: str = "manual",
 ) -> tuple[InjectionSchedulingPlan, InjectionSchedulingTask, int]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     plan = _require_plan(db, factory_id, plan_id)
@@ -681,9 +866,47 @@ def add_task(
         planned_start=payload.planned_start,
         planned_finish=payload.planned_finish,
     )
+    from app.models.injection_scheduling_scheduler import (
+        InjectionSchedulingMachineCalendar,
+    )
+    from app.services.injection_scheduling_scheduler.anchor import (
+        build_machine_continuation_anchors,
+    )
+
+    requested_start = parse_business_timestamp(payload.planned_start)
+    if requested_start is None:
+        raise HTTPException(status_code=422, detail="计划开始时间无效")
+    calendars = list(
+        db.scalars(
+            select(InjectionSchedulingMachineCalendar).where(
+                InjectionSchedulingMachineCalendar.factory_id == factory_id,
+                InjectionSchedulingMachineCalendar.window_end > payload.planned_start,
+            )
+        ).all()
+    )
+    continuation = build_machine_continuation_anchors(
+        db,
+        factory_id=factory_id,
+        target_plan=plan,
+        target_tasks=plan_tasks(db, factory_id, plan.id),
+        calendars=calendars,
+        horizon_start=requested_start,
+    ).get(payload.machine_id)
+    if continuation is not None and requested_start < continuation.starts_at:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONTINUATION_ANCHOR_VIOLATION",
+                "message": "手工追加任务必须从机台接续点之后开始",
+                "machine_id": payload.machine_id,
+                "requested_start": payload.planned_start,
+                "continuation_anchor": continuation.as_dict(),
+            },
+        )
     timestamp = _now()
     target_quantity = _decimal(payload.shift_target_quantity)
     estimated_remaining_shifts = _remaining_shifts(order, target_quantity)
+    calculation_detail = calculation or {}
     record = InjectionSchedulingTask(
         id=f"istask-{uuid4().hex}",
         factory_id=factory_id,
@@ -708,6 +931,18 @@ def add_task(
         locked=payload.locked,
         manual_override_reason=payload.manual_override_reason,
         active_execution=False,
+        allocated_quantity=allocated_quantity or Decimal(0),
+        origin=origin,
+        setup_minutes=int(calculation_detail.get("setup_minutes", 0)),
+        production_minutes=int(calculation_detail.get("production_minutes", 0)),
+        planned_downtime_minutes=int(
+            calculation_detail.get("calendar_delay_minutes", 0)
+        ),
+        changeover_type=str(calculation_detail.get("changeover_type", "")),
+        auto_explanation_json=_json(
+            {"calculation": calculation_detail} if calculation_detail else {}
+        ),
+        manual_adjusted=origin == "manual_append",
         revision=1,
         created_by=user.id,
         created_by_name=_actor_name(user),
@@ -717,6 +952,50 @@ def add_task(
         updated_at=timestamp,
     )
     db.add(record)
+    state = db.scalar(
+        select(InjectionSchedulingPlanOrderState).where(
+            InjectionSchedulingPlanOrderState.factory_id == factory_id,
+            InjectionSchedulingPlanOrderState.plan_id == plan.id,
+            InjectionSchedulingPlanOrderState.order_id == order.id,
+        )
+    )
+    if state is None:
+        state = InjectionSchedulingPlanOrderState(
+            id=f"ispostate-{uuid4().hex}",
+            factory_id=factory_id,
+            plan_id=plan.id,
+            order_id=order.id,
+            stable_order_key=_stable_order_key(order),
+            order_quantity=order.order_quantity,
+            delivery_start_date=order.delivery_start_date,
+            delivery_due_date=order.delivery_due_date,
+            takeover_source_completed_quantity=order.source_completed_quantity,
+            report_increment_total=Decimal(0),
+            progress_adjustment_total=Decimal(0),
+            completed_quantity=order.source_completed_quantity,
+            status="SCHEDULED",
+            quantity_scope="ORDER_CUMULATIVE",
+            source_batch_id=None,
+            source_sheet_name="",
+            source_row=None,
+            source_profile_id=None,
+            source_profile_revision=None,
+            source_lineage_json=_json({"origin": origin}),
+            revision=1,
+            created_by=user.id,
+            created_by_name=_actor_name(user),
+            updated_by=user.id,
+            updated_by_name=_actor_name(user),
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        db.add(state)
+    elif state.status == "BACKLOG":
+        state.status = "SCHEDULED"
+        state.revision += 1
+        state.updated_by = user.id
+        state.updated_by_name = _actor_name(user)
+        state.updated_at = timestamp
     try:
         db.flush()
         result = db.execute(
@@ -790,6 +1069,8 @@ def update_task(
     payload: InjectionSchedulingTaskUpdate,
     user: AuthContext,
     request_id: str,
+    *,
+    can_override_baseline: bool = False,
 ) -> tuple[InjectionSchedulingPlan, InjectionSchedulingTask, int]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     plan = _require_plan(db, factory_id, plan_id)
@@ -807,6 +1088,34 @@ def update_task(
             task.revision,
             diff={"updated_at": task.updated_at},
         )
+    requested = payload.model_dump(exclude_none=True)
+    protected_fields = {
+        "machine_id",
+        "order_id",
+        "mold_id",
+        "mold_copy_no",
+        "sequence_no",
+        "planned_start",
+        "planned_finish",
+        "shift_target_quantity",
+    }
+    protected_change = any(
+        field in requested and requested[field] != getattr(task, field)
+        for field in protected_fields
+    )
+    unlocking = task.locked and payload.locked is False
+    if task.locked and (protected_change or unlocking):
+        if not can_override_baseline:
+            raise HTTPException(
+                status_code=403,
+                detail="修改或解除锁定基线需要发布权限",
+            )
+        reason = (payload.manual_override_reason or "").strip()
+        if not 4 <= len(reason) <= 500:
+            raise HTTPException(
+                status_code=422,
+                detail="修改或解除锁定基线必须填写 4-500 字的逐条原因",
+            )
     values = _task_update_values(task, payload)
     order = _validate_task_references(db, factory_id, values)
     values["estimated_start"] = values["planned_start"]
@@ -1005,7 +1314,16 @@ def move_tasks_bulk(
             idempotent_replay=True,
         )
 
-    plan = _require_plan(db, factory_id, plan_id)
+    plan = db.scalar(
+        select(InjectionSchedulingPlan)
+        .where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.id == plan_id,
+        )
+        .with_for_update()
+    )
+    if plan is None:
+        raise HTTPException(status_code=404, detail="排产计划不存在")
     _require_draft(plan)
     if plan.revision != payload.expected_plan_revision:
         raise _revision_conflict(
@@ -1013,7 +1331,20 @@ def move_tasks_bulk(
             payload.expected_plan_revision,
             plan.revision,
         )
-    tasks = plan_tasks(db, factory_id, plan.id)
+    tasks = list(
+        db.scalars(
+            select(InjectionSchedulingTask)
+            .where(
+                InjectionSchedulingTask.factory_id == factory_id,
+                InjectionSchedulingTask.plan_id == plan.id,
+            )
+            .order_by(
+                InjectionSchedulingTask.machine_id,
+                InjectionSchedulingTask.sequence_no,
+            )
+            .with_for_update()
+        ).all()
+    )
     task_by_id = {task.id: task for task in tasks}
     move_by_task_id = {move.task_id: move for move in payload.moves}
     missing = [task_id for task_id in move_by_task_id if task_id not in task_by_id]
@@ -1268,6 +1599,9 @@ def move_tasks_bulk(
             user=user,
         )
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="批量移动违反队列或时间约束") from exc
@@ -1310,27 +1644,72 @@ def publish_plan(
             True,
         )
 
-    plan = _require_plan(db, factory_id, plan_id)
+    plan = db.scalar(
+        select(InjectionSchedulingPlan)
+        .where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.id == plan_id,
+        )
+        .with_for_update()
+    )
+    if plan is None:
+        raise HTTPException(status_code=404, detail="排产计划不存在")
     _require_draft(plan)
     if plan.revision != payload.expected_revision:
         raise _revision_conflict("计划草案", payload.expected_revision, plan.revision)
-    tasks = plan_tasks(db, factory_id, plan.id)
+    tasks = list(
+        db.scalars(
+            select(InjectionSchedulingTask)
+            .where(
+                InjectionSchedulingTask.factory_id == factory_id,
+                InjectionSchedulingTask.plan_id == plan.id,
+            )
+            .order_by(
+                InjectionSchedulingTask.machine_id,
+                InjectionSchedulingTask.sequence_no,
+            )
+            .with_for_update()
+        ).all()
+    )
     if not tasks:
         raise HTTPException(status_code=409, detail="空计划不能发布")
     timestamp = _now()
     previous = db.scalar(
-        select(InjectionSchedulingPlan).where(
+        select(InjectionSchedulingPlan)
+        .where(
             InjectionSchedulingPlan.factory_id == factory_id,
             InjectionSchedulingPlan.status == "PUBLISHED",
             InjectionSchedulingPlan.id != plan.id,
         )
+        .with_for_update()
     )
     previous_order_ids = (
         {task.order_id for task in plan_tasks(db, factory_id, previous.id)}
         if previous is not None
         else set()
     )
+    rebase_detail: dict[str, Any] = {}
     try:
+        if plan.based_on_plan_id:
+            if previous is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "SUCCESSOR_BASE_PLAN_MISSING",
+                        "message": "接班草稿的来源执行计划已不存在",
+                    },
+                )
+            from app.services.injection_scheduling_takeover import (
+                rebase_successor_draft,
+            )
+
+            rebase_detail = rebase_successor_draft(
+                db,
+                draft=plan,
+                source=previous,
+                user=user,
+                timestamp=timestamp,
+            )
         if previous is not None:
             db.execute(
                 update(InjectionSchedulingTask)
@@ -1409,10 +1788,14 @@ def publish_plan(
                 "snapshot_id": snapshot.id,
                 "snapshot_sha256": snapshot_sha256,
                 "task_count": len(tasks),
+                "rebase": rebase_detail,
             },
             user=user,
         )
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except IntegrityError as exc:
         db.rollback()
         replay = db.scalar(
@@ -1476,75 +1859,18 @@ def rollback_plan(
         raise HTTPException(status_code=409, detail="只能从已发布计划创建回滚草案")
     if source.revision != payload.expected_revision:
         raise _revision_conflict("已发布计划", payload.expected_revision, source.revision)
-    source_tasks = plan_tasks(db, factory_id, source.id)
     timestamp = _now()
-    draft = InjectionSchedulingPlan(
-        id=f"isplan-{uuid4().hex}",
-        factory_id=factory_id,
+    from app.services.injection_scheduling_takeover import clone_successor_draft
+
+    draft = clone_successor_draft(
+        db,
+        source=source,
         business_date=business_date or source.business_date,
-        status="DRAFT",
-        revision=1,
-        rule_set_id=source.rule_set_id,
-        rule_revision=source.rule_revision,
-        based_on_plan_id=source.id,
+        user=user,
+        timestamp=timestamp,
         rollback_request_id=payload.request_id,
-        created_by=user.id,
-        created_by_name=_actor_name(user),
-        updated_by=user.id,
-        updated_by_name=_actor_name(user),
-        published_by="",
-        published_by_name="",
-        created_at=timestamp,
-        updated_at=timestamp,
-        published_at="",
-        archived_at="",
     )
-    db.add(draft)
-    db.flush()
-    for source_task in source_tasks:
-        source_order = _require_order(db, factory_id, source_task.order_id)
-        estimated_remaining_shifts = _remaining_shifts(
-            source_order,
-            source_task.shift_target_quantity,
-        )
-        db.add(
-            InjectionSchedulingTask(
-                id=f"istask-{uuid4().hex}",
-                factory_id=factory_id,
-                plan_id=draft.id,
-                machine_id=source_task.machine_id,
-                order_id=source_task.order_id,
-                mold_id=source_task.mold_id,
-                mold_copy_no=source_task.mold_copy_no,
-                sequence_no=source_task.sequence_no,
-                execution_status=(
-                    "BLOCKED"
-                    if source_task.execution_status == "BLOCKED"
-                    else "QUEUED"
-                ),
-                planned_start=source_task.planned_start,
-                planned_finish=source_task.planned_finish,
-                shift_target_quantity=source_task.shift_target_quantity,
-                reported_quantity=Decimal(0),
-                estimated_start=source_task.planned_start,
-                estimated_finish=source_task.planned_finish,
-                estimated_remaining_shifts=estimated_remaining_shifts,
-                delivery_slack_days=_delivery_slack_days(
-                    source_order.delivery_due_date,
-                    source_task.planned_finish,
-                ),
-                locked=source_task.locked,
-                manual_override_reason=source_task.manual_override_reason,
-                active_execution=False,
-                revision=1,
-                created_by=user.id,
-                created_by_name=_actor_name(user),
-                updated_by=user.id,
-                updated_by_name=_actor_name(user),
-                created_at=timestamp,
-                updated_at=timestamp,
-            )
-        )
+    source_tasks = plan_tasks(db, factory_id, source.id)
     try:
         db.flush()
         _record_plan_revision(
@@ -1665,6 +1991,46 @@ def _recalculate_machine_queue(
             )
         ).all()
     )
+    from app.models.injection_scheduling_scheduler import (
+        InjectionSchedulingMachineCalendar,
+    )
+    from app.services.injection_scheduling_projection import (
+        load_calculation_context,
+        project_task_window,
+    )
+
+    mold_ids = {item.mold_id for item in tasks if item.mold_id}
+    molds = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(InjectionSchedulingMold).where(
+                    InjectionSchedulingMold.factory_id == plan.factory_id,
+                    InjectionSchedulingMold.id.in_(mold_ids),
+                )
+            ).all()
+        }
+        if mold_ids
+        else {}
+    )
+    calendars = list(
+        db.scalars(
+            select(InjectionSchedulingMachineCalendar)
+            .where(
+                InjectionSchedulingMachineCalendar.factory_id == plan.factory_id,
+                InjectionSchedulingMachineCalendar.machine_id == machine_id,
+            )
+            .order_by(
+                InjectionSchedulingMachineCalendar.window_start,
+                InjectionSchedulingMachineCalendar.id,
+            )
+        ).all()
+    )
+    calculation_context = load_calculation_context(
+        db,
+        factory_id=plan.factory_id,
+        mold_ids=mold_ids,
+    )
     cursor: datetime | None = None
     affected_order_ids: set[str] = set()
     changed_task_ids: list[str] = []
@@ -1685,49 +2051,102 @@ def _recalculate_machine_queue(
         planned_finish = parse_business_timestamp(task.planned_finish)
         if planned_start is None or planned_finish is None:
             raise HTTPException(status_code=409, detail="排产任务计划时间无效")
-        projected_start = max(
+        earliest_start = max(
             value for value in (planned_start, cursor) if value is not None
         )
         if task.id == reported_task_id and anchor is not None:
-            projected_start = max(projected_start, anchor)
-        remaining_shifts = _remaining_shifts(order, task.shift_target_quantity)
-        planned_duration = max(
-            planned_finish - planned_start,
-            timedelta(minutes=1),
+            earliest_start = max(earliest_start, anchor)
+        planned_quantity = (
+            _decimal(task.allocated_quantity)
+            if _decimal(task.allocated_quantity) > 0
+            else _decimal(order.order_quantity)
+        )
+        completed_quantity = (
+            min(
+                planned_quantity,
+                _decimal(task.takeover_source_completed_quantity)
+                + max(
+                    _decimal(task.reported_quantity)
+                    - _decimal(task.inherited_report_counter),
+                    Decimal(0),
+                ),
+            )
+            if _decimal(task.allocated_quantity) > 0
+            else _decimal(order.completed_quantity)
+        )
+        previous_task = tasks[index - 1] if index > 0 else None
+        calculation = project_task_window(
+            order=order,
+            planned_quantity=planned_quantity,
+            completed_quantity=completed_quantity,
+            shift_target_quantity=task.shift_target_quantity,
+            previous_mold=(
+                molds.get(previous_task.mold_id or "")
+                if previous_task is not None
+                else None
+            ),
+            current_mold=molds.get(task.mold_id or ""),
+            earliest_start=earliest_start,
+            calendars=calendars,
+            context=calculation_context,
+            continuation_anchor={
+                "reported_task_id": reported_task_id,
+                "queue_predecessor_task_id": previous_task.id
+                if previous_task is not None
+                else "",
+                "earliest_start": _iso_seconds(earliest_start),
+            },
+            extra_downtime_minutes=(
+                reported_downtime_minutes if task.id == reported_task_id else 0
+            ),
         )
         if task.execution_status in {"COMPLETED", "CANCELLED"}:
-            remaining_shifts = 0
-            projected_finish = (
+            projected_start = (
                 anchor
                 if task.id == reported_task_id and anchor is not None
-                else projected_start
+                else earliest_start
             )
+            projected_finish = projected_start
+            calculation["estimated_start"] = _iso_seconds(projected_start)
+            calculation["estimated_finish"] = _iso_seconds(projected_finish)
+            calculation["estimated_remaining_shifts"] = 0
+            calculation["production_minutes"] = 0
+            calculation["setup_minutes"] = 0
+            calculation["changeover_type"] = "COMPLETED"
         else:
-            estimated_duration = (
-                timedelta(hours=12 * remaining_shifts)
-                if remaining_shifts > 0
-                else planned_duration
-            )
-            estimated_duration = max(estimated_duration, planned_duration)
-            if task.id == reported_task_id and reported_downtime_minutes:
-                estimated_duration += timedelta(minutes=reported_downtime_minutes)
-            projected_finish = projected_start + estimated_duration
-        estimated_start = _iso_seconds(projected_start)
-        estimated_finish = _iso_seconds(projected_finish)
-        slack_days = _delivery_slack_days(
-            order.delivery_due_date,
-            estimated_finish,
-        )
+            projected_start = parse_business_timestamp(calculation["estimated_start"])
+            projected_finish = parse_business_timestamp(calculation["estimated_finish"])
+            if projected_start is None or projected_finish is None:
+                raise HTTPException(status_code=409, detail="统一计算结果时间无效")
+        estimated_start = str(calculation["estimated_start"])
+        estimated_finish = str(calculation["estimated_finish"])
+        remaining_shifts = int(calculation["estimated_remaining_shifts"])
+        slack_days = calculation["delivery_slack_days"]
         changed = (
             task.estimated_start != estimated_start
             or task.estimated_finish != estimated_finish
             or task.estimated_remaining_shifts != remaining_shifts
             or task.delivery_slack_days != slack_days
+            or task.setup_minutes != int(calculation["setup_minutes"])
+            or task.production_minutes != int(calculation["production_minutes"])
+            or task.planned_downtime_minutes
+            != int(calculation["calendar_delay_minutes"])
+            + (
+                reported_downtime_minutes if task.id == reported_task_id else 0
+            )
+            or task.changeover_type != str(calculation["changeover_type"])
         )
         task.estimated_start = estimated_start
         task.estimated_finish = estimated_finish
         task.estimated_remaining_shifts = remaining_shifts
         task.delivery_slack_days = slack_days
+        task.setup_minutes = int(calculation["setup_minutes"])
+        task.production_minutes = int(calculation["production_minutes"])
+        task.planned_downtime_minutes = int(calculation["calendar_delay_minutes"]) + (
+            reported_downtime_minutes if task.id == reported_task_id else 0
+        )
+        task.changeover_type = str(calculation["changeover_type"])
+        task.auto_explanation_json = _json({"calculation": calculation})
         if changed:
             changed_task_ids.append(task.id)
             if increment_task_revisions and task.id != reported_task_id:
@@ -1772,6 +2191,103 @@ def _recalculate_plan_queues(
         )
 
 
+def _published_successor_task_id(
+    db: Session,
+    *,
+    factory_id: str,
+    stale_task: InjectionSchedulingTask,
+) -> str | None:
+    current = db.scalar(
+        select(InjectionSchedulingPlan).where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.status == "PUBLISHED",
+        )
+    )
+    if current is None or current.id == stale_task.plan_id:
+        return None
+    candidates = list(
+        db.scalars(
+            select(InjectionSchedulingTask).where(
+                InjectionSchedulingTask.factory_id == factory_id,
+                InjectionSchedulingTask.plan_id == current.id,
+                InjectionSchedulingTask.order_id == stale_task.order_id,
+            )
+        ).all()
+    )
+    task_cache: dict[str, InjectionSchedulingTask | None] = {}
+    for candidate in candidates:
+        source_id = candidate.source_task_id
+        visited: set[str] = set()
+        while source_id and source_id not in visited:
+            if source_id == stale_task.id:
+                return candidate.id
+            visited.add(source_id)
+            if source_id not in task_cache:
+                task_cache[source_id] = db.scalar(
+                    select(InjectionSchedulingTask).where(
+                        InjectionSchedulingTask.factory_id == factory_id,
+                        InjectionSchedulingTask.id == source_id,
+                    )
+                )
+            source = task_cache[source_id]
+            source_id = source.source_task_id if source is not None else None
+    return None
+
+
+def _require_or_create_plan_order_state(
+    db: Session,
+    *,
+    plan: InjectionSchedulingPlan,
+    task: InjectionSchedulingTask,
+    order: InjectionSchedulingOrder,
+    user: AuthContext,
+    timestamp: str,
+) -> InjectionSchedulingPlanOrderState:
+    state = db.scalar(
+        select(InjectionSchedulingPlanOrderState)
+        .where(
+            InjectionSchedulingPlanOrderState.factory_id == plan.factory_id,
+            InjectionSchedulingPlanOrderState.plan_id == plan.id,
+            InjectionSchedulingPlanOrderState.order_id == order.id,
+        )
+        .with_for_update()
+    )
+    if state is not None:
+        return state
+    state = InjectionSchedulingPlanOrderState(
+        id=f"ispostate-{uuid4().hex}",
+        factory_id=plan.factory_id,
+        plan_id=plan.id,
+        order_id=order.id,
+        stable_order_key=task.stable_order_key or _stable_order_key(order),
+        order_quantity=order.order_quantity,
+        delivery_start_date=order.delivery_start_date,
+        delivery_due_date=order.delivery_due_date,
+        takeover_source_completed_quantity=order.source_completed_quantity,
+        report_increment_total=Decimal(0),
+        progress_adjustment_total=Decimal(0),
+        completed_quantity=order.source_completed_quantity,
+        status="SCHEDULED",
+        quantity_scope="ORDER_CUMULATIVE",
+        source_batch_id=task.import_batch_id,
+        source_sheet_name=task.source_sheet_name,
+        source_row=task.source_row,
+        source_profile_id=task.profile_id,
+        source_profile_revision=task.profile_revision,
+        source_lineage_json=_json({"legacy_backfill": True}),
+        revision=1,
+        created_by=user.id,
+        created_by_name=_actor_name(user),
+        updated_by=user.id,
+        updated_by_name=_actor_name(user),
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    db.add(state)
+    db.flush()
+    return state
+
+
 def create_shift_report(
     db: Session,
     task_id: str,
@@ -1808,19 +2324,51 @@ def create_shift_report(
             audit.sequence,
             True,
         )
-    task = db.scalar(
+    task_locator = db.scalar(
         select(InjectionSchedulingTask)
         .where(
             InjectionSchedulingTask.factory_id == factory_id,
             InjectionSchedulingTask.id == task_id,
         )
+    )
+    if task_locator is None:
+        raise HTTPException(status_code=404, detail="排产任务不存在")
+    plan = db.scalar(
+        select(InjectionSchedulingPlan)
+        .where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.id == task_locator.plan_id,
+        )
+        .with_for_update()
+    )
+    if plan is None:
+        raise HTTPException(status_code=409, detail="任务关联计划不存在")
+    task = db.scalar(
+        select(InjectionSchedulingTask)
+        .where(
+            InjectionSchedulingTask.factory_id == factory_id,
+            InjectionSchedulingTask.id == task_id,
+            InjectionSchedulingTask.plan_id == plan.id,
+        )
         .with_for_update()
     )
     if task is None:
-        raise HTTPException(status_code=404, detail="排产任务不存在")
-    plan = _require_plan(db, factory_id, task.plan_id)
+        raise HTTPException(status_code=409, detail="排产任务已变化，请刷新后重试")
     if plan.status != "PUBLISHED" or not task.active_execution:
-        raise HTTPException(status_code=409, detail="只能对当前已发布计划回报生产数据")
+        successor_task_id = _published_successor_task_id(
+            db,
+            factory_id=factory_id,
+            stale_task=task,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STALE_EXECUTION_TASK",
+                "message": "只能对当前已发布计划回报生产数据",
+                "stale_task_id": task.id,
+                "successor_task_id": successor_task_id,
+            },
+        )
     if task.revision != payload.expected_revision:
         raise _revision_conflict(
             "排产任务", payload.expected_revision, task.revision
@@ -1855,6 +2403,14 @@ def create_shift_report(
         if running is not None:
             raise HTTPException(status_code=409, detail="同一机台已有正在生产任务")
     timestamp = _now()
+    state = _require_or_create_plan_order_state(
+        db,
+        plan=plan,
+        task=task,
+        order=order,
+        user=user,
+        timestamp=timestamp,
+    )
     report = InjectionSchedulingShiftReport(
         id=f"isreport-{uuid4().hex}",
         factory_id=factory_id,
@@ -1901,20 +2457,23 @@ def create_shift_report(
             raise _revision_conflict(
                 "排产任务", payload.expected_revision, latest.revision
             )
-        report_total = db.scalar(
-            select(
-                func.coalesce(
-                    func.sum(
-                        InjectionSchedulingShiftReport.normalized_increment_quantity
-                    ),
-                    0,
-                )
-            ).where(
-                InjectionSchedulingShiftReport.factory_id == factory_id,
-                InjectionSchedulingShiftReport.order_id == order.id,
-            )
+        state.report_increment_total = (
+            _decimal(state.report_increment_total) + increment
         )
-        completed = order.source_completed_quantity + _decimal(report_total)
+        completed = max(
+            _decimal(state.takeover_source_completed_quantity)
+            + _decimal(state.report_increment_total)
+            + _decimal(state.progress_adjustment_total),
+            Decimal(0),
+        )
+        state.completed_quantity = completed
+        state.status = (
+            "COMPLETED" if completed >= state.order_quantity else "SCHEDULED"
+        )
+        state.revision += 1
+        state.updated_by = user.id
+        state.updated_by_name = _actor_name(user)
+        state.updated_at = timestamp
         order.completed_quantity = completed
         order.status = "COMPLETED" if completed >= order.order_quantity else "SCHEDULED"
         order.revision += 1
@@ -2356,6 +2915,12 @@ def _plan_snapshot(
         "business_date": plan.business_date,
         "rule_set_id": plan.rule_set_id,
         "rule_revision": plan.rule_revision,
+        "export_profile_id": plan.export_profile_id,
+        "export_profile_revision": plan.export_profile_revision,
+        "export_profile_family": plan.export_profile_family,
+        "export_renderer_code": plan.export_renderer_code,
+        "export_binding_source": plan.export_binding_source,
+        "calculation_version": plan.calculation_version,
         "tasks": [task_out(item).model_dump(mode="json") for item in tasks],
         "orders": [order_out(item).model_dump(mode="json") for item in orders],
     }

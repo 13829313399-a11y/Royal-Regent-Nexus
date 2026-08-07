@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.db import Base
 from app.models import (
     auth,  # noqa: F401
+    carton_procurement,  # noqa: F401
     customer_order,  # noqa: F401
     injection_scheduling,  # noqa: F401
     injection_scheduling_execution,  # noqa: F401

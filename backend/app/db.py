@@ -252,6 +252,9 @@ INJECTION_SCHEDULING_V2_PHASE0_REVISION = "20260804_0048"
 INJECTION_SCHEDULING_V2_PHASE3_REVISION = "20260804_0050"
 INJECTION_SCHEDULING_V2_PHASE4_REVISION = "20260804_0051"
 INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
+INJECTION_SCHEDULING_PROFILE_REVISION = "20260805_0056"
+INJECTION_SCHEDULING_TAKEOVER_REVISION = "20260805_0057"
+INJECTION_SCHEDULING_PUBLIC_PLANNING_REVISION = "20260807_0058"
 INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
     "injection_scheduling_machines": {
         "machine_class_raw",
@@ -299,6 +302,78 @@ INJECTION_SCHEDULING_V2_PHASE5_REQUIRED_TABLES = {
     "injection_scheduling_external_events",
     "injection_scheduling_cycle_observations",
     "injection_scheduling_speed_models",
+}
+INJECTION_SCHEDULING_PROFILE_REQUIRED_TABLES = {
+    "injection_scheduling_import_profiles",
+    "injection_scheduling_import_profile_factories",
+}
+INJECTION_SCHEDULING_PROFILE_BATCH_COLUMNS = {
+    "profile_id",
+    "profile_revision",
+    "profile_definition_sha256",
+    "template_signature",
+    "mapping_fingerprint",
+    "batch_state",
+}
+INJECTION_SCHEDULING_TAKEOVER_REQUIRED_TABLES = {
+    "injection_scheduling_plan_order_states",
+    "injection_scheduling_progress_adjustments",
+    "injection_scheduling_import_actions",
+    "injection_scheduling_import_master_decisions",
+}
+INJECTION_SCHEDULING_TAKEOVER_REQUIRED_COLUMNS = {
+    "injection_scheduling_plans": {
+        "based_on_event_sequence",
+        "based_on_report_watermark",
+    },
+    "injection_scheduling_tasks": {
+        "allocated_quantity",
+        "takeover_source_completed_quantity",
+        "origin",
+        "stable_order_key",
+        "stable_row_key",
+        "source_task_id",
+        "inherited_report_counter",
+        "completed_at_clone",
+        "report_event_watermark",
+        "profile_id",
+        "profile_revision",
+    },
+    "injection_scheduling_import_batches": {
+        "target_draft_plan_id",
+        "target_draft_plan_revision",
+        "reference_published_plan_id",
+        "reference_published_plan_revision",
+        "reference_published_event_sequence",
+        "order_task_revision_digest",
+        "action_fingerprint",
+        "rule_revision",
+        "master_revision_digest",
+    },
+}
+INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_TABLES = {
+    "injection_scheduling_export_audits",
+    "injection_scheduling_upload_artifacts",
+}
+INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_COLUMNS = {
+    "injection_scheduling_export_audits": {
+        "rule_revision",
+        "mapping_fingerprint",
+        "reference_report_event_sequence",
+        "signed_row_manifest_digest",
+        "export_options_json",
+    },
+    "injection_scheduling_import_batches": {"preview_generation"},
+    "injection_scheduling_import_issues": {"preview_generation"},
+    "injection_scheduling_import_actions": {"preview_generation"},
+    "injection_scheduling_plans": {
+        "export_profile_id",
+        "export_profile_revision",
+        "export_profile_family",
+        "export_renderer_code",
+        "export_binding_source",
+        "calculation_version",
+    },
 }
 
 
@@ -627,6 +702,125 @@ def ensure_injection_scheduling_v2_phase5_schema_ready() -> None:
     )
 
 
+def ensure_injection_scheduling_profile_schema_ready() -> None:
+    """Refuse to let create_all silently bypass versioned import profiles."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(INJECTION_SCHEDULING_PROFILE_REQUIRED_TABLES - table_names)
+        missing_columns: list[str] = []
+        if "injection_scheduling_import_batches" in table_names:
+            batch_columns = {
+                column["name"]
+                for column in inspector.get_columns(
+                    "injection_scheduling_import_batches"
+                )
+            }
+            missing_columns = sorted(
+                INJECTION_SCHEDULING_PROFILE_BATCH_COLUMNS - batch_columns
+            )
+        if not missing and not missing_columns:
+            return
+
+    missing_items = [
+        *(f"table:{item}" for item in missing),
+        *(
+            f"column:injection_scheduling_import_batches.{item}"
+            for item in missing_columns
+        ),
+    ]
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产 Profile/Canonical 迁移 "
+        f"{INJECTION_SCHEDULING_PROFILE_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(missing_items)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_takeover_schema_ready() -> None:
+    """Refuse to let create_all bypass plan-aware takeover data contracts."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = [
+            f"table:{table_name}"
+            for table_name in sorted(
+                INJECTION_SCHEDULING_TAKEOVER_REQUIRED_TABLES - table_names
+            )
+        ]
+        for table_name, required_columns in (
+            INJECTION_SCHEDULING_TAKEOVER_REQUIRED_COLUMNS.items()
+        ):
+            if table_name not in table_names:
+                missing.append(f"table:{table_name}")
+                continue
+            columns = {column["name"] for column in inspector.get_columns(table_name)}
+            missing.extend(
+                f"column:{table_name}.{column_name}"
+                for column_name in sorted(required_columns - columns)
+            )
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产计划接管迁移 "
+        f"{INJECTION_SCHEDULING_TAKEOVER_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(dict.fromkeys(missing))}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_public_planning_schema_ready() -> None:
+    """Refuse startup when recoverable planning artifacts were not migrated."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = [
+            f"table:{table_name}"
+            for table_name in sorted(
+                INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_TABLES - table_names
+            )
+        ]
+        for table_name, required_columns in (
+            INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_COLUMNS.items()
+        ):
+            if table_name not in table_names:
+                missing.append(f"table:{table_name}")
+                continue
+            columns = {column["name"] for column in inspector.get_columns(table_name)}
+            missing.extend(
+                f"column:{table_name}.{column_name}"
+                for column_name in sorted(required_columns - columns)
+            )
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产公共计划迁移 "
+        f"{INJECTION_SCHEDULING_PUBLIC_PLANNING_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(dict.fromkeys(missing))}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -683,9 +877,11 @@ def ensure_sqlite_legacy_columns() -> None:
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
+        carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401
         injection_scheduling,  # noqa: F401
         injection_scheduling_execution,  # noqa: F401
+        injection_scheduling_export,  # noqa: F401
         injection_scheduling_import,  # noqa: F401
         injection_scheduling_phase5,  # noqa: F401
         injection_scheduling_scheduler,  # noqa: F401
@@ -696,7 +892,11 @@ def init_db() -> None:
         three_d_printing,  # noqa: F401
     )
     from app.services.auth import seed_auth_defaults
+    from app.services.carton_procurement import seed_carton_supplier_defaults
     from app.services.injection_scheduling import seed_injection_scheduling_defaults
+    from app.services.injection_scheduling_profile_registry import (
+        seed_builtin_import_profiles,
+    )
     from app.services.internal_quote_baseline import (
         seed_internal_quote_pricing_baseline_defaults,
     )
@@ -715,13 +915,18 @@ def init_db() -> None:
     ensure_injection_scheduling_v2_phase3_schema_ready()
     ensure_injection_scheduling_v2_phase4_schema_ready()
     ensure_injection_scheduling_v2_phase5_schema_ready()
+    ensure_injection_scheduling_profile_schema_ready()
+    ensure_injection_scheduling_takeover_schema_ready()
+    ensure_injection_scheduling_public_planning_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:
         seed_auth_defaults(db)
+        seed_carton_supplier_defaults(db)
         seed_internal_quote_pricing_baseline_defaults(db)
         seed_injection_scheduling_defaults(db)
+        seed_builtin_import_profiles(db)
         seed_molding_sample_defaults(db)
         seed_raw_material_defaults(db)
         seed_three_d_printing_defaults(db)

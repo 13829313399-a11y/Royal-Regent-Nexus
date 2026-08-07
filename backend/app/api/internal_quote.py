@@ -96,6 +96,7 @@ from app.services.internal_quote_artifacts import (
     list_attachments,
     list_export_files,
     list_import_batches,
+    delete_import_attachment,
     upload_attachment,
 )
 from app.services.internal_quote_release import (
@@ -702,6 +703,29 @@ def get_internal_quote_attachment_preview(
             "X-Content-SHA256": attachment.sha256,
         },
     )
+
+
+@router.delete(
+    "/{quote_id}/attachments/{attachment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_internal_quote_import_attachment(
+    quote_id: str,
+    attachment_id: str,
+    request: Request,
+    revision: int = Query(ge=1),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    delete_import_attachment(
+        db,
+        quote_id,
+        attachment_id,
+        revision,
+        current_user,
+        request,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
