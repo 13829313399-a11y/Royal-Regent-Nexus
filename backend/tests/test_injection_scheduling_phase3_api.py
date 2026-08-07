@@ -1546,3 +1546,150 @@ def test_v2_phase3_local_improvement_batches_same_mold_deterministically():
     assert [item.id for item in first] == ["order-a1", "order-a2", "order-b1"]
     assert [item.id for item in second] == [item.id for item in first]
     assert first_moves == second_moves == 2
+
+
+def test_v2_phase3_manual_append_uses_shared_projection_and_stale_guard(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        factory_id = "huaxing"
+        machine = client.post(
+            "/api/injection-scheduling/machines",
+            json=machine_payload(factory_id, "V2-P3-MANUAL-32A"),
+        ).json()
+        mold = client.post(
+            "/api/injection-scheduling/molds",
+            json=mold_payload(factory_id, "V2-P3-MANUAL-MOLD"),
+        ).json()
+        order_data = order_payload(factory_id, "V2-P3-MANUAL-ORDER", 100)
+        order_data["mold_id"] = mold["id"]
+        order = client.post(
+            "/api/injection-scheduling/orders",
+            json=order_data,
+        ).json()
+        plan = client.post(
+            "/api/injection-scheduling/plans/drafts",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": 0,
+                "business_date": "2026-08-04",
+            },
+        ).json()
+        preview_payload = {
+            "factory_id": factory_id,
+            "order_id": order["id"],
+            "machine_id": machine["id"],
+            "expected_plan_revision": plan["revision"],
+            "expected_order_revision": order["revision"],
+            "expected_rule_revision": plan["rule_revision"],
+        }
+        preview = client.post(
+            f"/api/injection-scheduling/plans/{plan['id']}/manual-append/preview",
+            json=preview_payload,
+        )
+        assert preview.status_code == 200, preview.text
+        preview_data = preview.json()
+        assert preview_data["decision"] == "PASS"
+        assert preview_data["planned_quantity"] == 90
+        assert preview_data["calculation"]["outstanding_quantity"] == 90
+        assert preview_data["calculation"]["estimated_remaining_shifts"] == 3
+        assert preview_data["calculation"]["production_minutes"] == 135
+        assert preview_data["calculation"]["calculation_version"] == (
+            "injection-scheduling-calculation-v2"
+        )
+        assert preview_data["calculation"]["speed_source"] == "RULE_DEFAULT"
+        assert {item["code"] for item in preview_data["warnings"]} >= {
+            "SPEED_MODEL_MISSING"
+        }
+        assert len(preview_data["input_fingerprint"]) == 64
+
+        stale = client.post(
+            f"/api/injection-scheduling/plans/{plan['id']}/manual-append/confirm",
+            json={
+                **preview_payload,
+                "request_id": "manual-append-stale-001",
+                "expected_input_fingerprint": "0" * 64,
+                "override_reason": "",
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "MANUAL_APPEND_PREVIEW_STALE"
+
+        confirmed = client.post(
+            f"/api/injection-scheduling/plans/{plan['id']}/manual-append/confirm",
+            json={
+                **preview_payload,
+                "request_id": "manual-append-confirm-001",
+                "expected_input_fingerprint": preview_data["input_fingerprint"],
+                "override_reason": "",
+            },
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        result = confirmed.json()
+        assert result["plan_revision"] == plan["revision"] + 1
+        assert result["task"]["mold_id"] == mold["id"]
+        assert result["task"]["origin"] == "manual_append"
+        assert result["task"]["allocated_quantity"] == 90
+        assert result["task"]["production_minutes"] == 135
+        assert result["task"]["manual_adjusted"] is True
+
+        duplicate = client.post(
+            f"/api/injection-scheduling/plans/{plan['id']}/manual-append/preview",
+            json={
+                **preview_payload,
+                "expected_plan_revision": result["plan_revision"],
+                "expected_order_revision": order["revision"] + 1,
+            },
+        )
+        assert duplicate.status_code == 409
+        assert "BACKLOG" in duplicate.json()["detail"]
+
+
+def test_v2_phase3_manual_append_advances_after_zero_sequence(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        factory_id = "huaxing"
+        machine = client.post(
+            "/api/injection-scheduling/machines",
+            json=machine_payload(factory_id, "V2-P3-SEQUENCE-32A"),
+        ).json()
+        mold = client.post(
+            "/api/injection-scheduling/molds",
+            json=mold_payload(factory_id, "V2-P3-SEQUENCE-MOLD"),
+        ).json()
+        first_payload = order_payload(factory_id, "V2-P3-SEQUENCE-FIRST", 100)
+        first_payload["mold_id"] = mold["id"]
+        first = client.post(
+            "/api/injection-scheduling/orders", json=first_payload
+        ).json()
+        second_payload = order_payload(factory_id, "V2-P3-SEQUENCE-SECOND", 80)
+        second_payload["mold_id"] = mold["id"]
+        second = client.post(
+            "/api/injection-scheduling/orders", json=second_payload
+        ).json()
+        plan = client.post(
+            "/api/injection-scheduling/plans/drafts",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": 0,
+                "business_date": "2026-08-01",
+            },
+        ).json()
+        with_first = client.post(
+            f"/api/injection-scheduling/plans/{plan['id']}/tasks",
+            json=task_payload(factory_id, plan["revision"], machine["id"], first["id"], 0),
+        )
+        assert with_first.status_code == 201, with_first.text
+        current_plan = with_first.json()
+        preview = client.post(
+            f"/api/injection-scheduling/plans/{plan['id']}/manual-append/preview",
+            json={
+                "factory_id": factory_id,
+                "order_id": second["id"],
+                "machine_id": machine["id"],
+                "expected_plan_revision": current_plan["revision"],
+                "expected_order_revision": second["revision"],
+                "expected_rule_revision": current_plan["rule_revision"],
+            },
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["sequence_no"] == 1

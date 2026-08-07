@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     three_d_command_ttl_seconds: int = 120
     three_d_command_poll_interval_seconds: int = 3
     customer_order_test_duplicate_confirmation_enabled: bool | None = None
+    injection_scheduling_export_signing_key: str = ""
+    injection_scheduling_export_signing_key_id: str = "v1"
+    injection_scheduling_export_verification_keys_json: str = "{}"
 
     @property
     def effective_session_cookie_secure(self) -> bool:

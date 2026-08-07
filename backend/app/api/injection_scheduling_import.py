@@ -2,13 +2,14 @@ import re
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportBatchOut,
     InjectionSchedulingImportConfirm,
+    InjectionSchedulingImportRetry,
     InjectionSchedulingMasterApproval,
 )
 from app.services.auth import (
@@ -25,8 +26,11 @@ from app.services.injection_scheduling_excel import MAX_SOURCE_BYTES
 from app.services.injection_scheduling_import import (
     approve_master_differences,
     confirm_import,
+    get_import_batch,
     import_batch_out,
+    list_import_batches,
     preview_import,
+    retry_import_batch,
 )
 
 router = APIRouter(
@@ -64,12 +68,44 @@ def _ensure_permission(
     return factory_id
 
 
+@router.get("", response_model=list[InjectionSchedulingImportBatchOut])
+def get_import_batches(
+    factory_id: Annotated[str, Query()],
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:read", factory_id
+    )
+    return [
+        import_batch_out(db, item)
+        for item in list_import_batches(db, factory_id=factory_id, limit=limit)
+    ]
+
+
+@router.get("/{batch_id}", response_model=InjectionSchedulingImportBatchOut)
+def get_import_batch_by_id(
+    batch_id: str,
+    factory_id: Annotated[str, Query()],
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:read", factory_id
+    )
+    return import_batch_out(
+        db,
+        get_import_batch(db, factory_id=factory_id, batch_id=batch_id),
+    )
+
+
 @router.post(
     "/preview",
     response_model=InjectionSchedulingImportBatchOut,
     status_code=201,
 )
-async def post_import_preview(
+def post_import_preview(
     request: Request,
     factory_id: Annotated[str, Form()],
     file: Annotated[UploadFile, File()],
@@ -83,7 +119,7 @@ async def post_import_preview(
         "injection_scheduling:import",
         factory_id,
     )
-    content = await file.read(MAX_SOURCE_BYTES + 1)
+    content = file.file.read(MAX_SOURCE_BYTES + 1)
     record, replay = preview_import(
         db,
         factory_id=factory_id,
@@ -127,6 +163,31 @@ def post_import_confirm(
         payload,
         current_user,
         can_publish=can_publish,
+    )
+    return import_batch_out(db, record, idempotent_replay=replay)
+
+
+@router.post(
+    "/{batch_id}/retry",
+    response_model=InjectionSchedulingImportBatchOut,
+)
+def post_import_retry(
+    batch_id: str,
+    payload: InjectionSchedulingImportRetry,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    _ensure_permission(
+        db,
+        current_user,
+        "injection_scheduling:import",
+        payload.factory_id,
+    )
+    record, replay = retry_import_batch(
+        db,
+        batch_id=batch_id,
+        payload=payload,
+        user=current_user,
     )
     return import_batch_out(db, record, idempotent_replay=replay)
 

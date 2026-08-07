@@ -3,6 +3,85 @@ export type WorkspaceView = 'plan' | 'timeline' | 'backlog' | 'alerts' | 'histor
 export type ColumnPreset = 'planner' | 'production' | 'fit' | 'full'
 export type TaskStatus = 'RUNNING' | 'QUEUED' | 'BLOCKED' | 'COMPLETED' | 'CANCELLED' | 'REVIEW'
 export type FitDecision = 'PASS' | 'REVIEW_REQUIRED' | 'FAIL'
+export type PlanSliceKey = 'execution' | 'planning'
+export type ImportBatchState = 'IDENTIFYING' | 'MAPPING_REQUIRED' | 'PROFILE_REVIEW_PENDING' | 'MASTER_REVIEW_REQUIRED' | 'RECONCILIATION_CONFLICT' | 'PREVIEW_READY' | 'CONFIRMED' | 'FAILED' | string
+export type PlanExportMode = 'SOURCE_COMPATIBLE' | 'SYSTEM_STANDARD'
+
+export interface PlanExportResult {
+  blob: Blob
+  fileName: string
+  auditId: string
+  fileSha256: string
+  mode: PlanExportMode
+  profileId: string
+  profileRevision: number
+  rendererCode: string
+}
+
+export interface ImportIssueRecord {
+  id: string
+  severity: 'ERROR' | 'WARNING'
+  code: string
+  message: string
+  sheetName: string
+  sourceRow: number | null
+  fieldName: string
+  cellRef: string
+  rawValue: string
+  blocking: boolean
+}
+
+export interface ImportBatchRecord {
+  id: string
+  factoryId: string
+  sourceFileName: string
+  sourceFileHash: string
+  batchState: ImportBatchState
+  previewGeneration: number
+  profile: Record<string, unknown> | null
+  sheetRoles: Array<Record<string, unknown>>
+  mapping: Array<Record<string, unknown>>
+  scheduledBaselineTasks: Array<Record<string, unknown>>
+  backlogOrders: Array<Record<string, unknown>>
+  invalidRows: Array<Record<string, unknown>>
+  masterDifferences: Array<Record<string, unknown>>
+  calculationComparisons: Array<Record<string, unknown>>
+  reconciliationActions: Array<Record<string, unknown>>
+  planContext: Record<string, unknown>
+  actionFingerprint: string
+  summary: Record<string, unknown>
+  status: 'PREVIEW' | 'CONFIRMED'
+  revision: number
+  confirmedPlanId: string
+  confirmedPlanRevision: number
+  result: Record<string, unknown>
+  artifactAvailable: boolean
+  artifactExpiresAt: string
+  issues: ImportIssueRecord[]
+  idempotentReplay: boolean
+}
+
+export interface ManualAppendPreviewRecord {
+  factoryId: string
+  planId: string
+  planRevision: number
+  orderId: string
+  orderRevision: number
+  machineId: string
+  sequence: number
+  decision: FitDecision
+  hardFailures: Array<Record<string, unknown>>
+  warnings: Array<Record<string, unknown>>
+  advisories: Array<Record<string, unknown>>
+  plannedQuantity: number
+  shiftTargetQuantity: number
+  plannedStart: string
+  plannedFinish: string
+  continuationAnchor: Record<string, unknown>
+  calculation: Record<string, unknown>
+  ruleRevision: number
+  inputFingerprint: string
+}
 
 export interface MachineRecord {
   id: string
@@ -360,6 +439,12 @@ export interface SchedulingPlanRecord {
   basedOnPlanId?: string
   basedOnEventSequence?: number
   basedOnReportWatermark?: number
+  exportProfileId?: string | null
+  exportProfileRevision?: number | null
+  exportProfileFamily?: string
+  exportRendererCode?: string
+  exportBindingSource?: 'LEGACY_UNKNOWN' | 'SYSTEM_STANDARD' | 'IMPORT_PROFILE' | string
+  calculationVersion?: string
 }
 
 export type EditableCellKey =

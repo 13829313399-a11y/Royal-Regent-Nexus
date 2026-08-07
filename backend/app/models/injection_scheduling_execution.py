@@ -118,6 +118,11 @@ class InjectionSchedulingPlan(Base):
             "revision >= 1",
             name="ck_injection_scheduling_plan_revision",
         ),
+        CheckConstraint(
+            "export_binding_source IN "
+            "('LEGACY_UNKNOWN', 'SYSTEM_STANDARD', 'IMPORT_PROFILE')",
+            name="ck_inj_sched_plan_export_binding_source",
+        ),
         Index(
             "uq_injection_scheduling_one_draft_per_factory",
             "factory_id",
@@ -158,6 +163,16 @@ class InjectionSchedulingPlan(Base):
     based_on_plan_id: Mapped[str] = mapped_column(String(96), default="", index=True)
     based_on_event_sequence: Mapped[int] = mapped_column(Integer, default=0)
     based_on_report_watermark: Mapped[int] = mapped_column(Integer, default=0)
+    export_profile_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    export_profile_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    export_profile_family: Mapped[str] = mapped_column(String(96), default="")
+    export_renderer_code: Mapped[str] = mapped_column(String(96), default="")
+    export_binding_source: Mapped[str] = mapped_column(
+        String(32), default="LEGACY_UNKNOWN"
+    )
+    calculation_version: Mapped[str] = mapped_column(String(64), default="")
     rollback_request_id: Mapped[str | None] = mapped_column(
         String(128), nullable=True, index=True
     )
