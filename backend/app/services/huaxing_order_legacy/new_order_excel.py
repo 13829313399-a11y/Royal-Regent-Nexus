@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Generate standalone new-order workbooks while preserving schedule formats.
-
-The source schedule is treated as a read-only template.  Only header rows and one
-representative data-row style are copied into the result, so no historical order
-data can leak into the exported workbook.
-"""
+"""Generate customer-order workbooks from the corresponding schedule template."""
 from __future__ import annotations
 
 import re
@@ -12,7 +7,7 @@ from copy import copy
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Mapping, Sequence
+from typing import Any, BinaryIO, Callable, Collection, Iterable, Mapping, Sequence
 
 import openpyxl
 import xlrd
@@ -20,6 +15,12 @@ from openpyxl import Workbook
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.cell_range import CellRange, MultiCellRange
+
+from app.services.legacy_excel_bridge import (
+    convert_legacy_xls_to_xlsx,
+    is_legacy_xls_workbook,
+)
 
 
 def _normalise(value: Any) -> str:
@@ -170,12 +171,43 @@ def load_workbook_compatible(
         if hasattr(source, "read"):
             source = source.read()
         return _load_xls(source, sheet_names)
+    workbook_options = {
+        "data_only": data_only,
+        "keep_links": True,
+        "keep_vba": suffix in {".xlsm", ".xltm"},
+    }
     if hasattr(source, "read"):
         payload = source.read()
-        return openpyxl.load_workbook(BytesIO(payload), data_only=data_only)
+        return openpyxl.load_workbook(BytesIO(payload), **workbook_options)
     if isinstance(source, bytes):
-        return openpyxl.load_workbook(BytesIO(source), data_only=data_only)
-    return openpyxl.load_workbook(source, data_only=data_only)
+        return openpyxl.load_workbook(BytesIO(source), **workbook_options)
+    return openpyxl.load_workbook(source, **workbook_options)
+
+
+def load_complete_workbook_compatible(
+    source: str | Path | bytes | BinaryIO,
+    *,
+    filename: str = "",
+) -> Workbook:
+    """Load a workbook for a full-copy export.
+
+    Legacy ``.xls`` files must be converted by Excel/LibreOffice before editing;
+    the lightweight xlrd reconstruction used by standalone exports cannot retain
+    drawings, formulas, print settings, or workbook-level metadata.
+    """
+    suffix = Path(filename).suffix.lower()
+    if suffix != ".xls":
+        return load_workbook_compatible(source, filename=filename)
+    if hasattr(source, "read"):
+        payload = source.read()
+    elif isinstance(source, bytes):
+        payload = source
+    else:
+        payload = Path(source).read_bytes()
+    if not is_legacy_xls_workbook(payload):
+        raise ValueError("上传文件扩展名为 .xls，但内容不是有效的旧版 Excel 工作簿")
+    converted = convert_legacy_xls_to_xlsx(payload)
+    return openpyxl.load_workbook(BytesIO(converted), data_only=False, keep_links=True)
 
 
 def _alias_lookup(field_aliases: Mapping[str, Sequence[str]]) -> dict[str, str]:
@@ -283,6 +315,32 @@ def _safe_value(value: Any) -> Any:
     if isinstance(value, (dict, list, tuple, set)):
         return " / ".join(str(item) for item in value)
     return value
+
+
+_DATE_FIELD_NAMES = {
+    "order_date", "po_date", "change_date", "inspection_date", "customer_inspection_date",
+    "factory_inspection", "customer_inspection", "complete_date", "finish_date", "ship_date",
+    "po_ship_date", "requested_ship_date", "fcd", "factory_commit_date", "line_start_date",
+    "booking_date", "warehouse_date", "material_ready_date", "plastic_ready_date",
+    "carton_ready_date", "injection_ready_date", "pre_chase_material_date", "revision_date",
+}
+
+
+def _safe_record_value(field: str, value: Any) -> Any:
+    if field == "date_code" or field not in _DATE_FIELD_NAMES:
+        return _safe_value(value)
+    if isinstance(value, (date, datetime)) or value in (None, ""):
+        return _safe_value(value)
+    text = str(value).strip()
+    for format_string in (
+        "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%d-%b-%Y", "%d-%B-%Y",
+        "%m/%d/%Y", "%d/%m/%Y",
+    ):
+        try:
+            return datetime.strptime(text, format_string)
+        except ValueError:
+            continue
+    return _safe_value(value)
 
 
 ITEM_FIELD_CANDIDATES = ("item_no", "item", "sku", "product_no", "material_no")
@@ -397,6 +455,584 @@ def inherit_product_names(
         "conflicts": conflicts,
         "rule": "same_schedule_same_item_unique_name",
     }
+
+
+_TOTAL_MARKERS = {_normalise(value) for value in ("合计", "總計", "总计", "小计", "小計")}
+_MAX_EXCEL_ROW = 1_048_576
+_FORMULA_RANGE = re.compile(
+    r"^(?:(?P<sheet>'(?:[^']|'')+'|[^!]+)!)?"
+    r"(?P<start>\$?[A-Z]{1,3}\$?\d+)"
+    r"(?::(?P<end>\$?[A-Z]{1,3}\$?\d+))?$"
+)
+_FORMULA_COORD = re.compile(r"^(?P<column>\$?[A-Z]{1,3})(?P<row_abs>\$?)(?P<row>\d+)$")
+
+
+_DETAIL_FIELDS = {
+    "po_no", "po_number", "customer_po", "contract", "contract_no", "huaxing_po",
+    "production_no", "customer_release_no", "item", "item_no", "item_full", "sku",
+    "product_no", "material_no", "quantity", "qty",
+}
+
+
+def _find_append_row(
+    ws,
+    header_row: int,
+    max_col: int,
+    *,
+    detail_columns: Sequence[int] = (),
+) -> int:
+    """Find the detail boundary before totals, subtotals, or summary sections."""
+    if detail_columns:
+        merged_rows = {
+            row_no
+            for merged in ws.merged_cells.ranges
+            if merged.max_col > merged.min_col
+            for row_no in range(merged.min_row, merged.max_row + 1)
+        }
+        detail_rows = []
+        for row_no in range(header_row + 1, (ws.max_row or header_row) + 1):
+            if row_no in merged_rows:
+                continue
+            values = [ws.cell(row_no, col_no).value for col_no in detail_columns]
+            if any(
+                isinstance(value, str) and not value.startswith("=")
+                and _normalise(value) in _TOTAL_MARKERS
+                for value in values
+            ):
+                continue
+            if any(
+                value not in (None, "")
+                and not (isinstance(value, str) and value.startswith("="))
+                for value in values
+            ):
+                detail_rows.append(row_no)
+        if detail_rows:
+            return detail_rows[-1] + 1
+
+    # Header-only templates and unusual layouts fall back to the first explicit
+    # total marker, which is the established boundary in the 360/Yinhui sheets.
+    for row_no in range(header_row + 1, (ws.max_row or header_row) + 1):
+        for col_no in range(1, max_col + 1):
+            value = ws.cell(row_no, col_no).value
+            if not isinstance(value, str) or value.startswith("="):
+                continue
+            if _normalise(value) in _TOTAL_MARKERS:
+                return row_no
+    populated = [
+        row_no
+        for row_no in range(header_row + 1, (ws.max_row or header_row) + 1)
+        if any(ws.cell(row_no, col_no).value not in (None, "") for col_no in range(1, max_col + 1))
+    ]
+    return (populated[-1] + 1) if populated else header_row + 1
+
+
+def _representative_data_row(
+    ws,
+    header_row: int,
+    append_row: int,
+    max_col: int,
+    column_map: Mapping[int, str],
+) -> int:
+    """Use the nearest preceding detail row, skipping totals and group headings."""
+    return _nearest_detail_row(
+        ws,
+        header_row,
+        append_row,
+        max_col,
+        column_map=column_map,
+    )
+
+
+def _nearest_detail_row(
+    ws,
+    header_row: int,
+    append_row: int,
+    max_col: int,
+    *,
+    column_map: Mapping[int, str] | None = None,
+) -> int:
+    """Find the closest real order-detail row above an insertion boundary."""
+    merged_rows = {
+        row_no
+        for merged in ws.merged_cells.ranges
+        if merged.max_col > merged.min_col
+        for row_no in range(merged.min_row, merged.max_row + 1)
+    }
+    mapped_columns = tuple((column_map or {}).keys())
+    for row_no in range(append_row - 1, header_row, -1):
+        values = [ws.cell(row_no, col_no).value for col_no in range(1, max_col + 1)]
+        text_values = [value for value in values if isinstance(value, str) and not value.startswith("=")]
+        if any(_normalise(value) in _TOTAL_MARKERS for value in text_values):
+            continue
+        if row_no in merged_rows:
+            continue
+        if mapped_columns:
+            if any(ws.cell(row_no, col_no).value not in (None, "") for col_no in mapped_columns):
+                return row_no
+            continue
+        if any(value not in (None, "") and not (isinstance(value, str) and value.startswith("=")) for value in values):
+            return row_no
+    return max(header_row, append_row - 1)
+
+
+def _shift_cell_range(
+    value: CellRange,
+    insert_row: int,
+    amount: int,
+    *,
+    expand_adjacent: bool = False,
+) -> CellRange:
+    shifted = CellRange(str(value))
+    if shifted.min_row >= insert_row:
+        shifted.min_row = min(shifted.min_row + amount, _MAX_EXCEL_ROW)
+        shifted.max_row = min(shifted.max_row + amount, _MAX_EXCEL_ROW)
+    elif shifted.max_row >= insert_row or (expand_adjacent and shifted.max_row == insert_row - 1):
+        shifted.max_row = min(shifted.max_row + amount, _MAX_EXCEL_ROW)
+    return shifted
+
+
+def _shift_multi_range(value: MultiCellRange, insert_row: int, amount: int) -> MultiCellRange:
+    shifted = MultiCellRange()
+    for cell_range in value.ranges:
+        shifted.add(str(_shift_cell_range(cell_range, insert_row, amount)))
+    return shifted
+
+
+def _formula_sheet_name(value: str | None) -> str:
+    if not value:
+        return ""
+    unquoted = value[1:-1].replace("''", "'") if value.startswith("'") and value.endswith("'") else value
+    return unquoted.strip()
+
+
+def _formula_coordinate(value: str) -> tuple[str, bool, int] | None:
+    match = _FORMULA_COORD.fullmatch(value)
+    if not match:
+        return None
+    return match.group("column"), bool(match.group("row_abs")), int(match.group("row"))
+
+
+def _formula_coordinate_with_row(value: str, row_no: int) -> str:
+    parsed = _formula_coordinate(value)
+    if not parsed:
+        return value
+    column, absolute, _ = parsed
+    return f"{column}{'$' if absolute else ''}{row_no}"
+
+
+def _rewrite_formula_for_insert(
+    formula: str,
+    *,
+    formula_sheet: str,
+    target_sheet: str,
+    formula_row: int,
+    insert_row: int,
+    amount: int,
+) -> str:
+    """Apply Excel-like row insertion updates to references targeting the edited sheet."""
+    from openpyxl.formula.tokenizer import Tokenizer
+
+    tokenizer = Tokenizer(formula)
+    for token in tokenizer.items:
+        if token.type != "OPERAND" or token.subtype != "RANGE":
+            continue
+        match = _FORMULA_RANGE.fullmatch(token.value)
+        if not match:
+            continue
+        referenced_sheet = _formula_sheet_name(match.group("sheet"))
+        if referenced_sheet:
+            if referenced_sheet.casefold() != target_sheet.casefold():
+                continue
+        elif formula_sheet.casefold() != target_sheet.casefold():
+            continue
+        start_value = match.group("start")
+        end_value = match.group("end")
+        start = _formula_coordinate(start_value)
+        end = _formula_coordinate(end_value) if end_value else None
+        if not start:
+            continue
+        start_row = start[2]
+        if end:
+            end_row = end[2]
+            if start_row >= insert_row:
+                start_row += amount
+                end_row += amount
+            elif end_row >= insert_row:
+                end_row += amount
+            elif formula_sheet.casefold() == target_sheet.casefold() and formula_row >= insert_row and end_row == insert_row - 1:
+                # A total formula directly below the detail range expands with the inserted rows.
+                end_row += amount
+            start_value = _formula_coordinate_with_row(start_value, start_row)
+            end_value = _formula_coordinate_with_row(end_value, end_row)
+        elif start_row >= insert_row:
+            start_value = _formula_coordinate_with_row(start_value, start_row + amount)
+        prefix = f"{match.group('sheet')}!" if match.group("sheet") else ""
+        token.value = prefix + start_value + (f":{end_value}" if end_value else "")
+    return tokenizer.render()
+
+
+def _extend_subtotal_to_previous_row(formula: str, target_row: int) -> str:
+    """Make a moved SUBTOTAL row include every newly inserted detail row above it."""
+    from openpyxl.formula.tokenizer import Tokenizer
+
+    if "SUBTOTAL" not in formula.upper():
+        return formula
+    tokenizer = Tokenizer(formula)
+    for token in tokenizer.items:
+        if token.type != "OPERAND" or token.subtype != "RANGE":
+            continue
+        match = _FORMULA_RANGE.fullmatch(token.value)
+        if not match or match.group("sheet") or not match.group("end"):
+            continue
+        start = _formula_coordinate(match.group("start"))
+        end = _formula_coordinate(match.group("end"))
+        if not start or not end or start[2] >= target_row or end[2] >= target_row:
+            continue
+        token.value = (
+            f"{match.group('start')}:"
+            f"{_formula_coordinate_with_row(match.group('end'), target_row)}"
+        )
+    return tokenizer.render()
+
+
+def _shift_target_sheet_structures(
+    ws,
+    insert_row: int,
+    amount: int,
+    moved_merges: Sequence[CellRange],
+) -> None:
+    """Move structures which openpyxl's insert_rows deliberately leaves untouched."""
+    for merged in moved_merges:
+        ws.merge_cells(str(_shift_cell_range(merged, insert_row, amount)))
+
+    moved_dimensions = {}
+    for row_no, dimension in list(ws.row_dimensions.items()):
+        if row_no >= insert_row:
+            del ws.row_dimensions[row_no]
+            moved = copy(dimension)
+            moved.index = row_no + amount
+            moved_dimensions[row_no + amount] = moved
+    for row_no, dimension in moved_dimensions.items():
+        ws.row_dimensions[row_no] = dimension
+
+    if ws.auto_filter.ref:
+        ws.auto_filter.ref = str(
+            _shift_cell_range(CellRange(ws.auto_filter.ref), insert_row, amount, expand_adjacent=True)
+        )
+    if ws.print_area:
+        shifted_areas = []
+        for area in str(ws.print_area).split(","):
+            local_area = area.rsplit("!", 1)[-1].replace("$", "")
+            shifted_areas.append(
+                str(_shift_cell_range(CellRange(local_area), insert_row, amount, expand_adjacent=True))
+            )
+        ws.print_area = ",".join(shifted_areas)
+    for table in ws.tables.values():
+        table.ref = str(_shift_cell_range(CellRange(table.ref), insert_row, amount, expand_adjacent=True))
+    for validation in ws.data_validations.dataValidation:
+        validation.sqref = _shift_multi_range(validation.sqref, insert_row, amount)
+
+    conditional_rules = list(ws.conditional_formatting._cf_rules.items())
+    ws.conditional_formatting._cf_rules.clear()
+    for conditional, rules in conditional_rules:
+        shifted = copy(conditional)
+        shifted.sqref = _shift_multi_range(conditional.sqref, insert_row, amount)
+        ws.conditional_formatting._cf_rules[shifted] = rules
+
+    for row_break in ws.row_breaks.brk:
+        if row_break.id >= insert_row:
+            row_break.id += amount
+    for drawing in [*ws._images, *ws._charts]:
+        anchor = getattr(drawing, "anchor", None)
+        for marker_name in ("_from", "_to"):
+            marker = getattr(anchor, marker_name, None)
+            if marker is not None and marker.row >= insert_row - 1:
+                marker.row += amount
+
+
+def append_records_to_workbook(
+    template: str | Path | bytes | BinaryIO,
+    output_path: str | Path | BinaryIO,
+    records: Iterable[Mapping[str, Any]],
+    field_aliases: Mapping[str, Sequence[str]],
+    *,
+    filename: str = "",
+    sheet_names: Sequence[str] = (),
+    field_formats: Mapping[str, str] | None = None,
+    formula_fallback_fields: Collection[str] = (),
+    new_row_font_color: str = "",
+) -> dict[str, Any]:
+    """Copy the complete workbook and insert new detail rows before its total row.
+
+    The supplied workbook is never modified in place.  Existing sheets, historical
+    rows, formulas, drawings, page settings, defined names and workbook metadata are
+    retained by editing the loaded workbook and saving it to ``output_path``.
+    """
+    workbook = load_complete_workbook_compatible(template, filename=filename)
+    rows = [dict(record) for record in records]
+    try:
+        target, header_row, column_map = select_sheet(workbook, field_aliases, sheet_names)
+        if not column_map:
+            raise ValueError(f"{target.title} 未识别到任何可写入列")
+        header_last_col = max(
+            (
+                col_no
+                for col_no in range(1, (target.max_column or 1) + 1)
+                if target.cell(header_row, col_no).value not in (None, "")
+            ),
+            default=max(column_map),
+        )
+        max_col = max(max(column_map), header_last_col)
+        detail_columns = tuple(
+            col_no
+            for col_no, field in column_map.items()
+            if field in _DETAIL_FIELDS
+        ) or tuple(column_map)
+        append_row = _find_append_row(
+            target,
+            header_row,
+            max_col,
+            detail_columns=detail_columns,
+        )
+        style_row = _representative_data_row(target, header_row, append_row, max_col, column_map)
+        inheritance = inherit_product_names(target, header_row, column_map, rows)
+
+        formulas = []
+        for sheet in workbook.worksheets:
+            for cell in sheet._cells.values():
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    formulas.append((sheet, cell.row, cell.column, cell.value))
+
+        if rows:
+            amount = len(rows)
+            moved_merges = [
+                CellRange(str(value))
+                for value in target.merged_cells.ranges
+                if value.max_row >= append_row
+            ]
+            for merged in moved_merges:
+                target.unmerge_cells(str(merged))
+            target.insert_rows(append_row, amount)
+            _shift_target_sheet_structures(target, append_row, amount, moved_merges)
+
+            for sheet, old_row, column, formula in formulas:
+                destination_row = old_row + amount if sheet is target and old_row >= append_row else old_row
+                sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
+                    formula,
+                    formula_sheet=sheet.title,
+                    target_sheet=target.title,
+                    formula_row=old_row,
+                    insert_row=append_row,
+                    amount=amount,
+                )
+
+            for offset, record in enumerate(rows):
+                row_no = append_row + offset
+                source_dimension = target.row_dimensions[style_row]
+                if source_dimension.height:
+                    target.row_dimensions[row_no].height = source_dimension.height
+                for col_no in range(1, max_col + 1):
+                    source_cell = target.cell(style_row, col_no)
+                    destination = target.cell(row_no, col_no)
+                    _copy_style(source_cell, destination)
+                    if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
+                        try:
+                            destination.value = Translator(
+                                source_cell.value,
+                                origin=source_cell.coordinate,
+                            ).translate_formula(destination.coordinate)
+                        except (TypeError, ValueError):
+                            destination.value = source_cell.value
+                    if new_row_font_color:
+                        font = copy(destination.font)
+                        font.color = new_row_font_color
+                        destination.font = font
+                for col_no, field in column_map.items():
+                    cell = target.cell(row_no, col_no)
+                    # A template formula is authoritative for calculated fields.
+                    has_formula = isinstance(cell.value, str) and cell.value.startswith("=")
+                    if has_formula and field in formula_fallback_fields:
+                        fallback = _safe_record_value(field, record.get(field, ""))
+                        if fallback in (None, ""):
+                            fallback_formula = '""'
+                        elif isinstance(fallback, bool):
+                            fallback_formula = "TRUE" if fallback else "FALSE"
+                        elif isinstance(fallback, (int, float)):
+                            fallback_formula = str(fallback)
+                        else:
+                            fallback_formula = '"' + str(fallback).replace('"', '""') + '"'
+                        cell.value = f"=IFERROR({cell.value[1:]},{fallback_formula})"
+                    elif not has_formula:
+                        inherited_number_format = cell.number_format
+                        safe_value = _safe_record_value(field, record.get(field, ""))
+                        cell.value = safe_value
+                        if isinstance(safe_value, datetime) and inherited_number_format == "General":
+                            cell.number_format = "yyyy-mm-dd"
+                    if field_formats and field in field_formats:
+                        cell.number_format = field_formats[field]
+
+            first_total_row = append_row + amount
+            for row_no in range(first_total_row, (target.max_row or first_total_row) + 1):
+                for col_no in range(1, max_col + 1):
+                    cell = target.cell(row_no, col_no)
+                    if isinstance(cell.value, str) and cell.value.startswith("="):
+                        cell.value = _extend_subtotal_to_previous_row(
+                            cell.value,
+                            first_total_row - 1,
+                        )
+
+        if hasattr(output_path, "write"):
+            workbook.save(output_path)
+            output_reference = "<memory>"
+        else:
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(output_file)
+            output_reference = str(output_file)
+        return {
+            "path": output_reference,
+            "template_sheet": target.title,
+            "header_row": header_row,
+            "style_row": style_row,
+            "insert_row": append_row,
+            "rows": len(rows),
+            "mapped_columns": {str(col): field for col, field in column_map.items()},
+            "inheritance": inheritance,
+            "mode": "full_workbook_append",
+        }
+    finally:
+        workbook.close()
+
+
+def append_column_records_to_workbook(
+    template: str | Path | bytes | BinaryIO,
+    output_path: str | Path | BinaryIO,
+    records: Iterable[Any],
+    *,
+    filename: str = "",
+    sheet_names: Sequence[str],
+    header_row: int,
+    max_col: int,
+    detail_columns: Sequence[int] = (),
+    row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
+) -> dict[str, Any]:
+    """Copy the complete workbook and append fixed-column records to one sheet.
+
+    Every inserted row inherits the nearest preceding real detail row; total,
+    subtotal, merged group-title, and blank separator rows are skipped.
+    Values returned by ``row_values_factory`` may include row-relative formulas.
+    Empty values are intentionally skipped so copied template formulas and blanks
+    remain authoritative.
+    """
+    workbook = load_complete_workbook_compatible(template, filename=filename)
+    rows = list(records)
+    try:
+        target = next(
+            (workbook[name] for name in sheet_names if name in workbook.sheetnames),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"模板缺少目标工作表：{' / '.join(sheet_names)}")
+        append_row = _find_append_row(
+            target,
+            header_row,
+            max_col,
+            detail_columns=detail_columns,
+        )
+        style_row = _nearest_detail_row(
+            target,
+            header_row,
+            append_row,
+            max_col,
+        )
+
+        formulas = []
+        for sheet in workbook.worksheets:
+            for cell in sheet._cells.values():
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    formulas.append((sheet, cell.row, cell.column, cell.value))
+
+        if rows:
+            amount = len(rows)
+            moved_merges = [
+                CellRange(str(value))
+                for value in target.merged_cells.ranges
+                if value.max_row >= append_row
+            ]
+            for merged in moved_merges:
+                target.unmerge_cells(str(merged))
+            target.insert_rows(append_row, amount)
+            _shift_target_sheet_structures(target, append_row, amount, moved_merges)
+
+            for sheet, old_row, column, formula in formulas:
+                destination_row = old_row + amount if sheet is target and old_row >= append_row else old_row
+                sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
+                    formula,
+                    formula_sheet=sheet.title,
+                    target_sheet=target.title,
+                    formula_row=old_row,
+                    insert_row=append_row,
+                    amount=amount,
+                )
+
+            for offset, record in enumerate(rows):
+                row_no = append_row + offset
+                source_dimension = target.row_dimensions[style_row]
+                if source_dimension.height:
+                    target.row_dimensions[row_no].height = source_dimension.height
+                for col_no in range(1, max_col + 1):
+                    source_cell = target.cell(style_row, col_no)
+                    destination = target.cell(row_no, col_no)
+                    _copy_style(source_cell, destination)
+                    if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
+                        try:
+                            destination.value = Translator(
+                                source_cell.value,
+                                origin=source_cell.coordinate,
+                            ).translate_formula(destination.coordinate)
+                        except (TypeError, ValueError):
+                            destination.value = source_cell.value
+
+                values = row_values_factory(record, row_no) if row_values_factory else record
+                if not isinstance(values, Mapping):
+                    raise ValueError("固定列写入记录必须是列号到值的映射")
+                for col_no, value in values.items():
+                    if value in (None, ""):
+                        continue
+                    cell = target.cell(row_no, int(col_no))
+                    cell.value = _safe_value(value)
+                    if isinstance(value, (date, datetime)):
+                        cell.number_format = "yyyy-mm-dd"
+
+            first_total_row = append_row + amount
+            for row_no in range(first_total_row, (target.max_row or first_total_row) + 1):
+                for col_no in range(1, max_col + 1):
+                    cell = target.cell(row_no, col_no)
+                    if isinstance(cell.value, str) and cell.value.startswith("="):
+                        cell.value = _extend_subtotal_to_previous_row(
+                            cell.value,
+                            first_total_row - 1,
+                        )
+
+        if hasattr(output_path, "write"):
+            workbook.save(output_path)
+            output_reference = "<memory>"
+        else:
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(output_file)
+            output_reference = str(output_file)
+        return {
+            "path": output_reference,
+            "template_sheet": target.title,
+            "header_row": header_row,
+            "style_row": style_row,
+            "insert_row": append_row,
+            "rows": len(rows),
+            "mode": "full_workbook_append",
+        }
+    finally:
+        workbook.close()
 
 
 def create_new_order_workbook(

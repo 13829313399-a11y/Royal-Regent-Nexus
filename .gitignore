@@ -29,6 +29,7 @@ backend/.pytest-tmp/
 backend/data/*.db
 backend/data/*.sqlite
 backend/data/*.sqlite3
+backend/models/document-translation/
 .env
 .env.*
 !.env.example

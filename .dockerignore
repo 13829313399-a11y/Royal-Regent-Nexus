@@ -14,6 +14,7 @@ backend/.venv
 backend/.pytest_cache
 backend/.pytest-tmp
 backend/data
+backend/models/document-translation
 backend/**/__pycache__
 backend/**/*.pyc
 

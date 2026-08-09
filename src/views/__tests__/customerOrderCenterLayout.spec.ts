@@ -57,6 +57,14 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).not.toContain('确认并发布至PMC')
   })
 
+  it('offers manual field entry and controlled release for hard blockers', () => {
+    expect(workspaceSource).toContain('人工补录 {{ issue.edit_label }}')
+    expect(workspaceSource).toContain('该值会写入新排期，不修改客户原 PO')
+    expect(workspaceSource).toContain('确认缺失并放行')
+    expect(workspaceSource).toContain('requestedManualOverrides')
+    expect(workspaceSource).not.toContain('请修正来源文件后重新解析')
+  })
+
   it('registers EDU, 360, Yinhui, SEASONS, Maxx and Shushupapa under Huaxing', () => {
     for (const code of ['edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa']) {
       expect(workspaceSource).toContain(`code: '${code}'`)
@@ -413,7 +421,12 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('2026年彩星生产排期表.xls')
   })
 
-  it('allows a missing price blocker to be explicitly skipped while keeping it visible', async () => {
+  it('writes a manual value for a missing field and clears the blocker', async () => {
+    customerOrderApiMock.exportBuzzbeeBatch.mockResolvedValueOnce({
+      blob: new Blob(['schedule']),
+      fileName: 'schedule.xlsx',
+      passwordRequired: false,
+    })
     customerOrderApiMock.previewBuzzbeeBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-buzzbee-preview-v1',
       customer_code: 'buzzbee',
@@ -466,6 +479,10 @@ describe('customer order center static frontend', () => {
           can_skip: true,
           skip_key: 'buzzbee-53138-67771-1|missing_unit_price|unit_price_hkd',
           skip_label: '单价及金额留空，稍后由跟客补充',
+          can_edit: true,
+          edit_field: 'unit_price_hkd',
+          edit_label: '单价 HKD',
+          edit_input_type: 'number',
         }],
       }],
     })
@@ -496,20 +513,46 @@ describe('customer order center static frontend', () => {
     await flushPromises()
     await wrapper.setProps({ activeSection: 'preview' })
 
-    expect(wrapper.text()).toContain('允许跳过')
+    const openResolutionButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('打开待确认/阻断处理'))
+    expect(openResolutionButton).toBeDefined()
+    await openResolutionButton!.trigger('click')
+    const resolutionDialog = wrapper.get('[data-testid="blocker-resolution-dialog"]')
+    expect(resolutionDialog.attributes('role')).toBe('dialog')
+    expect(resolutionDialog.text()).toContain('补录缺失内容或人工确认放行')
+    expect(resolutionDialog.text()).toContain('确认缺失并放行')
     expect(wrapper.text()).toContain('2 份PO')
     expect(wrapper.text()).toContain('单价及金额留空，稍后由跟客补充')
-    const skipCheckbox = wrapper.get('.skip-issue-option input')
-    await skipCheckbox.setValue(true)
-    expect(wrapper.text()).toContain('已跳过待补')
+    const manualInput = resolutionDialog.get('.manual-override-field input')
+    await manualInput.setValue('18.50')
+    expect(wrapper.text()).toContain('已人工补录')
+    expect(wrapper.text()).toContain('18.50')
     expect(wrapper.get('.summary-strip .blocked strong').text()).toBe('0')
     expect(wrapper.get('[data-testid="confirmation-reason-card"]').text()).toContain('人工确认原因')
     const generateButton = wrapper.get('[data-testid="preview-next-step"] .button')
     expect((generateButton.element as HTMLButtonElement).disabled).toBe(true)
     await wrapper.get('[data-testid="confirmation-reason-card"] textarea').setValue(
-      '测试阶段已核对单价留空',
+      '已向客户确认正确单价并人工补录',
     )
     expect((generateButton.element as HTMLButtonElement).disabled).toBe(false)
+    await generateButton.trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.exportBuzzbeeBatch).toHaveBeenLastCalledWith(
+      expect.any(Array),
+      expect.any(File),
+      expect.any(String),
+      'schedule.xlsx',
+      'huaxing',
+      ['buzzbee-53138-67771-1|missing_unit_price|unit_price_hkd'],
+      undefined,
+      '已向客户确认正确单价并人工补录',
+      [{
+        row_id: 'buzzbee-53138-67771-1',
+        issue_key: 'buzzbee-53138-67771-1|missing_unit_price|unit_price_hkd',
+        field: 'unit_price_hkd',
+        value: '18.50',
+      }],
+    )
   })
 
   it('keeps unconfirmed demand visible but unavailable to production consumers', async () => {
@@ -761,20 +804,20 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="import-parse-alert"]').text()).toContain('可人工确认后重复导入')
     await wrapper.setProps({ activeSection: 'preview' })
     const previewAlert = wrapper.get('[data-testid="preview-blocker-alert"]')
-    expect(previewAlert.text()).toContain('当前批次有 1 项待确认/阻断')
+    expect(previewAlert.text()).toContain('当前批次有 1 项待人工处理')
     expect(previewAlert.text()).toContain('SC700130503-200.pdf')
     expect(previewAlert.text()).toContain('Iteam表第 561 行')
     expect(wrapper.text()).toContain('待确认')
     const summaryCards = wrapper.findAll('.summary-strip article')
     expect(summaryCards[2]!.text()).toContain('警告/待确认1')
     expect(summaryCards[2]!.text()).toContain('不形成阻断')
-    expect(summaryCards[3]!.text()).toContain('阻断项0')
+    expect(summaryCards[3]!.text()).toContain('待人工处理0')
     const pendingGenerateButton = wrapper.findAll('button')
       .find((button) => button.text().includes('确认重复订单后生成'))
     expect(pendingGenerateButton?.attributes('disabled')).toBeDefined()
 
     const confirmation = wrapper.get('.skip-issue-option')
-    expect(confirmation.text()).toContain('确认通过')
+    expect(confirmation.text()).toContain('确认重复订单')
     await confirmation.get('input').trigger('change')
 
     expect(wrapper.find('[data-testid="preview-blocker-alert"]').exists()).toBe(false)

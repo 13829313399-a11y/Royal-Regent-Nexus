@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createSharedToolsApi,
+  DOCUMENT_TRANSLATION_TIMEOUT_MS,
   PDF_SPLIT_TIMEOUT_MS,
   PDF_TO_EXCEL_TIMEOUT_MS,
   PDF_TO_WORD_TIMEOUT_MS,
@@ -8,6 +9,51 @@ import {
 
 
 describe('shared tools api', () => {
+  it('uploads one Office document with the selected translation direction', async () => {
+    const blob = new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+    const post = vi.fn().mockResolvedValue({
+      data: blob,
+      headers: {
+        'content-disposition': "attachment; filename*=UTF-8''%E8%AE%A2%E5%8D%95_%E4%B8%AD%E8%AF%91%E8%8B%B1.docx",
+        'x-translation-unit-count': '18',
+        'x-translation-skipped-count': '7',
+        'x-translation-part-count': '3',
+      },
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+
+    const result = await api.translateDocument(file, 'zh_to_en')
+
+    const [url, payload, config] = post.mock.calls[0]!
+    expect(url).toBe('/tools/document-translation')
+    expect((payload as FormData).get('document_file')).toBe(file)
+    expect((payload as FormData).get('direction')).toBe('zh_to_en')
+    expect((payload as FormData).get('sheet_names')).toBeNull()
+    expect(config).toMatchObject({ responseType: 'blob', timeout: DOCUMENT_TRANSLATION_TIMEOUT_MS })
+    expect(result).toMatchObject({
+      fileName: '订单_中译英.docx',
+      translatedUnitCount: 18,
+      skippedUnitCount: 7,
+      processedPartCount: 3,
+    })
+  })
+
+  it('uploads the selected Excel worksheet names with the translation request', async () => {
+    const post = vi.fn().mockResolvedValue({
+      data: new Blob(['xlsx']),
+      headers: {},
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.xlsx')
+
+    await api.translateDocument(file, 'en_to_zh', ['报价单', '生产计划'])
+
+    const payload = post.mock.calls[0]![1] as FormData
+    expect(payload.get('direction')).toBe('en_to_zh')
+    expect(payload.get('sheet_names')).toBe('["报价单","生产计划"]')
+  })
+
   it('uploads one PDF and returns download metadata', async () => {
     const blob = new Blob(['xlsx'], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const post = vi.fn().mockResolvedValue({
@@ -33,6 +79,21 @@ describe('shared tools api', () => {
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TO_EXCEL_TIMEOUT_MS })
     expect(result.fileName).toBe('测试_转换结果.xlsx')
     expect(result.metrics).toEqual({ pageCount: 3, tableCount: 2, textPageCount: 1, ocrPageCount: 0 })
+  })
+
+  it('reads the offline translation service status', async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        available: true,
+        engine: 'offline',
+        engineLabel: '服务器离线中英模型',
+        directions: { zh_to_en: true, en_to_zh: true },
+      },
+    })
+    const api = createSharedToolsApi({ post: vi.fn(), get })
+
+    await expect(api.getDocumentTranslationStatus()).resolves.toMatchObject({ available: true })
+    expect(get).toHaveBeenCalledWith('/tools/document-translation/status')
   })
 
   it('converts one PDF to Word with conversion metrics', async () => {

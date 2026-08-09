@@ -39,12 +39,10 @@ ALIASES = {
 }
 
 
-def generate_new_order(
-    template_path: str | Path,
+def records_from_order(
     order: dict[str, Any],
-    output_path: str | Path,
     exchange_rate: float = 7.75,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     rows = []
     for line in order.get("lines", []):
         usd = float(line.get("unit_price_usd") or 0)
@@ -78,6 +76,16 @@ def generate_new_order(
             "source_file": line.get("source_file") or order.get("filename"),
             "unit": unit,
         })
+    return rows
+
+
+def generate_new_order(
+    template_path: str | Path,
+    order: dict[str, Any],
+    output_path: str | Path,
+    exchange_rate: float = 7.75,
+) -> dict[str, Any]:
+    rows = records_from_order(order, exchange_rate)
     output_path = Path(output_path)
     result = create_new_order_workbook(
         Path(template_path),

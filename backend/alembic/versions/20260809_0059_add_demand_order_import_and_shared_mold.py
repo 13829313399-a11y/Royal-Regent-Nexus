@@ -1,7 +1,7 @@
 """add demand order import and shared mold master data
 
 Revision ID: 20260809_0059
-Revises: 20260807_0058
+Revises: 20260807_0059
 Create Date: 2026-08-09
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260809_0059"
-down_revision: str | Sequence[str] | None = "20260807_0058"
+down_revision: str | Sequence[str] | None = "20260807_0059"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

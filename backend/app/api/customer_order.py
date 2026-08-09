@@ -66,6 +66,11 @@ from app.services.customer_order_huakang_c import (
     export_huakang_c_customer_schedule,
     get_huakang_c_customer_mapping,
 )
+from app.services.customer_order_manual import (
+    MANUAL_EDITABLE_FIELDS,
+    coerce_manual_value,
+    decorate_manual_resolution_policy,
+)
 
 
 router = APIRouter(prefix="/api/customer-orders", tags=["customer-orders"])
@@ -74,6 +79,8 @@ XLS_CONTENT_TYPE = "application/vnd.ms-excel"
 MAX_SKIPPED_ISSUE_KEYS = MAX_BATCH_PO_FILES * 200
 MAX_CONFIRMATION_REASON_LENGTH = 500
 MIN_CONFIRMATION_REASON_LENGTH = 4
+MAX_MANUAL_OVERRIDES = MAX_BATCH_PO_FILES * 200
+MAX_MANUAL_OVERRIDE_VALUE_LENGTH = 500
 PREVIEW_FINGERPRINT_VERSION = "customer-order-preview-fingerprint-v1"
 TEST_DUPLICATE_ISSUE_CODES = frozenset({
     "duplicate_reference",
@@ -231,6 +238,42 @@ def _parse_skipped_issue_keys(raw: str) -> set[str]:
     return {item.strip() for item in value}
 
 
+def _parse_manual_overrides(raw: str) -> list[dict[str, str]]:
+    try:
+        value = json.loads(raw or "[]")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="人工补录参数格式无效") from exc
+    if not isinstance(value, list) or len(value) > MAX_MANUAL_OVERRIDES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"人工补录参数必须是数组且不超过 {MAX_MANUAL_OVERRIDES} 项",
+        )
+    normalized: list[dict[str, str]] = []
+    seen_issue_keys: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="人工补录项格式无效")
+        override = {
+            key: str(item.get(key) or "").strip()
+            for key in ("row_id", "issue_key", "field", "value")
+        }
+        if not all(override.values()):
+            raise HTTPException(status_code=400, detail="人工补录项缺少行、问题、字段或补录值")
+        if override["field"] not in MANUAL_EDITABLE_FIELDS:
+            raise HTTPException(status_code=400, detail="人工补录字段不受支持")
+        if len(override["value"]) > MAX_MANUAL_OVERRIDE_VALUE_LENGTH:
+            raise HTTPException(status_code=400, detail="单项人工补录值不能超过 500 个字符")
+        if override["issue_key"] in seen_issue_keys:
+            raise HTTPException(status_code=400, detail="同一问题不能提交多个人工补录值")
+        try:
+            coerce_manual_value(override["field"], override["value"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        seen_issue_keys.add(override["issue_key"])
+        normalized.append(override)
+    return normalized
+
+
 def _is_test_duplicate_issue_key(issue_key: str) -> bool:
     return any(code in issue_key for code in TEST_DUPLICATE_ISSUE_CODES)
 
@@ -312,7 +355,7 @@ def _apply_customer_order_confirmation_policy(
         "warning": sum(row.get("status") == "warning" for row in rows),
         "blocked": sum(row.get("status") == "blocked" for row in rows),
     })
-    return preview
+    return decorate_manual_resolution_policy(preview)
 
 
 def _preview_fingerprint(preview: dict, received_date: str) -> str:
@@ -387,6 +430,7 @@ def _prepare_export_confirmation(
 
 
 def _actual_confirmed_issue_keys(preview: dict, requested_keys: set[str]) -> set[str]:
+    decorate_manual_resolution_policy(preview)
     available_keys = {
         str(issue.get("skip_key") or "")
         for row in preview.get("rows", [])
@@ -401,6 +445,27 @@ def _actual_confirmed_issue_keys(preview: dict, requested_keys: set[str]) -> set
             detail="预览中的确认项已经变化，请重新解析并确认当前批次",
         )
     return actual
+
+
+def _actual_manual_overrides(
+    preview: dict,
+    requested_overrides: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    decorate_manual_resolution_policy(preview)
+    available = {
+        (str(row.get("id") or ""), str(issue.get("skip_key") or "")): issue
+        for row in preview.get("rows", [])
+        for issue in row.get("issues", [])
+        if issue.get("can_edit") and issue.get("skip_key")
+    }
+    for override in requested_overrides:
+        issue = available.get((override["row_id"], override["issue_key"]))
+        if issue is None or issue.get("edit_field") != override["field"]:
+            raise HTTPException(
+                status_code=409,
+                detail="预览中的可补录项已经变化，请重新解析并填写当前批次",
+            )
+    return requested_overrides
 
 
 def _ensure_preview_fingerprint(
@@ -426,6 +491,7 @@ def _record_export_audit(
     received_date: str,
     preview_fingerprint: str,
     actual_issue_keys: set[str],
+    manual_overrides: list[dict[str, str]],
     confirmation_reason: str,
     output: bytes,
     file_name: str,
@@ -449,6 +515,8 @@ def _record_export_audit(
         output_template=str(preview.get("target_template") or ""),
         confirmed_issue_keys_json=json.dumps(sorted(actual_issue_keys), ensure_ascii=False),
         confirmed_issue_count=len(actual_issue_keys),
+        manual_overrides_json=json.dumps(manual_overrides, ensure_ascii=False),
+        manual_override_count=len(manual_overrides),
         confirmation_reason=confirmation_reason,
         created_at=now_text(),
     )
@@ -465,6 +533,7 @@ def _complete_export_control(
     received_date: str,
     submitted_fingerprint: str,
     requested_issue_keys: set[str],
+    requested_manual_overrides: list[dict[str, str]],
     confirmation_reason: str,
     output: bytes,
     file_name: str,
@@ -475,6 +544,10 @@ def _complete_export_control(
         submitted_fingerprint,
     )
     actual_issue_keys = _actual_confirmed_issue_keys(preview, requested_issue_keys)
+    actual_manual_overrides = _actual_manual_overrides(
+        preview,
+        requested_manual_overrides,
+    )
     audit = _record_export_audit(
         db,
         current_user,
@@ -482,6 +555,7 @@ def _complete_export_control(
         received_date=received_date,
         preview_fingerprint=validated_fingerprint,
         actual_issue_keys=actual_issue_keys,
+        manual_overrides=actual_manual_overrides,
         confirmation_reason=confirmation_reason,
         output=output,
         file_name=file_name,
@@ -509,6 +583,8 @@ def _audit_out(audit: CustomerOrderExportAudit) -> CustomerOrderExportAuditOut:
         output_template=audit.output_template,
         confirmed_issue_keys=json.loads(audit.confirmed_issue_keys_json or "[]"),
         confirmed_issue_count=audit.confirmed_issue_count,
+        manual_overrides=json.loads(audit.manual_overrides_json or "[]"),
+        manual_override_count=audit.manual_override_count,
         confirmation_reason=audit.confirmation_reason,
         created_at=audit.created_at,
     )
@@ -641,6 +717,7 @@ async def export_buzzbee_customer_schedule(
     received_date: str = Form(...),
     confirmed: bool = Form(...),
     skipped_issue_keys: str = Form("[]"),
+    manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(""),
     confirmation_reason: str = Form(""),
     po_file: UploadFile = File(...),
@@ -659,11 +736,15 @@ async def export_buzzbee_customer_schedule(
     if not confirmed:
         raise HTTPException(status_code=400, detail="请先完成预览并确认当前批次")
     normalized_skipped_issue_keys = _parse_skipped_issue_keys(skipped_issue_keys)
+    normalized_manual_overrides = _parse_manual_overrides(manual_overrides)
+    normalized_resolution_keys = normalized_skipped_issue_keys | {
+        item["issue_key"] for item in normalized_manual_overrides
+    }
     normalized_confirmation_reason = _prepare_export_confirmation(
         db,
         current_user,
         normalized_factory_id,
-        normalized_skipped_issue_keys,
+        normalized_resolution_keys,
         confirmation_reason,
     )
     _validate_upload(po_file, kind="PO")
@@ -681,7 +762,8 @@ async def export_buzzbee_customer_schedule(
             po_content=po_content,
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
-            skipped_issue_keys=normalized_skipped_issue_keys,
+            skipped_issue_keys=normalized_resolution_keys,
+            manual_overrides=normalized_manual_overrides,
         )
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -691,7 +773,8 @@ async def export_buzzbee_customer_schedule(
         preview=preview,
         received_date=received_date,
         submitted_fingerprint=preview_fingerprint,
-        requested_issue_keys=normalized_skipped_issue_keys,
+        requested_issue_keys=normalized_resolution_keys,
+        requested_manual_overrides=normalized_manual_overrides,
         confirmation_reason=normalized_confirmation_reason,
         output=output,
         file_name=file_name,
@@ -717,6 +800,7 @@ async def export_buzzbee_customer_schedule_batch(
     received_date: str = Form(...),
     confirmed: bool = Form(...),
     skipped_issue_keys: str = Form("[]"),
+    manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(""),
     confirmation_reason: str = Form(""),
     po_files: list[UploadFile] = File(...),
@@ -735,11 +819,15 @@ async def export_buzzbee_customer_schedule_batch(
     if not confirmed:
         raise HTTPException(status_code=400, detail="请先完成预览并确认当前批次")
     normalized_skipped_issue_keys = _parse_skipped_issue_keys(skipped_issue_keys)
+    normalized_manual_overrides = _parse_manual_overrides(manual_overrides)
+    normalized_resolution_keys = normalized_skipped_issue_keys | {
+        item["issue_key"] for item in normalized_manual_overrides
+    }
     normalized_confirmation_reason = _prepare_export_confirmation(
         db,
         current_user,
         normalized_factory_id,
-        normalized_skipped_issue_keys,
+        normalized_resolution_keys,
         confirmation_reason,
     )
     _validate_upload(schedule_file, kind="客户排期")
@@ -755,7 +843,8 @@ async def export_buzzbee_customer_schedule_batch(
             po_files=uploaded_po_files,
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
-            skipped_issue_keys=normalized_skipped_issue_keys,
+            skipped_issue_keys=normalized_resolution_keys,
+            manual_overrides=normalized_manual_overrides,
         )
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -765,7 +854,8 @@ async def export_buzzbee_customer_schedule_batch(
         preview=preview,
         received_date=received_date,
         submitted_fingerprint=preview_fingerprint,
-        requested_issue_keys=normalized_skipped_issue_keys,
+        requested_issue_keys=normalized_resolution_keys,
+        requested_manual_overrides=normalized_manual_overrides,
         confirmation_reason=normalized_confirmation_reason,
         output=output,
         file_name=file_name,
@@ -836,6 +926,7 @@ async def export_dickie_customer_schedule_batch(
     received_date: str = Form(...),
     confirmed: bool = Form(...),
     skipped_issue_keys: str = Form("[]"),
+    manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(""),
     confirmation_reason: str = Form(""),
     po_files: list[UploadFile] = File(...),
@@ -854,11 +945,15 @@ async def export_dickie_customer_schedule_batch(
     if not confirmed:
         raise HTTPException(status_code=400, detail="请先完成预览并确认当前批次")
     normalized_skipped_issue_keys = _parse_skipped_issue_keys(skipped_issue_keys)
+    normalized_manual_overrides = _parse_manual_overrides(manual_overrides)
+    normalized_resolution_keys = normalized_skipped_issue_keys | {
+        item["issue_key"] for item in normalized_manual_overrides
+    }
     normalized_confirmation_reason = _prepare_export_confirmation(
         db,
         current_user,
         normalized_factory_id,
-        normalized_skipped_issue_keys,
+        normalized_resolution_keys,
         confirmation_reason,
     )
     _validate_upload(schedule_file, kind="客户排期")
@@ -874,7 +969,8 @@ async def export_dickie_customer_schedule_batch(
             po_files=uploaded_po_files,
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
-            skipped_issue_keys=normalized_skipped_issue_keys,
+            skipped_issue_keys=normalized_resolution_keys,
+            manual_overrides=normalized_manual_overrides,
         )
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -884,7 +980,8 @@ async def export_dickie_customer_schedule_batch(
         preview=preview,
         received_date=received_date,
         submitted_fingerprint=preview_fingerprint,
-        requested_issue_keys=normalized_skipped_issue_keys,
+        requested_issue_keys=normalized_resolution_keys,
+        requested_manual_overrides=normalized_manual_overrides,
         confirmation_reason=normalized_confirmation_reason,
         output=output,
         file_name=file_name,
@@ -959,6 +1056,7 @@ async def export_caixing_customer_schedule_batch(
     received_date: str = Form(...),
     confirmed: bool = Form(...),
     skipped_issue_keys: str = Form("[]"),
+    manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(""),
     confirmation_reason: str = Form(""),
     po_files: list[UploadFile] = File(...),
@@ -977,11 +1075,15 @@ async def export_caixing_customer_schedule_batch(
     if not confirmed:
         raise HTTPException(status_code=400, detail="请先完成预览并确认当前批次")
     normalized_skipped_issue_keys = _parse_skipped_issue_keys(skipped_issue_keys)
+    normalized_manual_overrides = _parse_manual_overrides(manual_overrides)
+    normalized_resolution_keys = normalized_skipped_issue_keys | {
+        item["issue_key"] for item in normalized_manual_overrides
+    }
     normalized_confirmation_reason = _prepare_export_confirmation(
         db,
         current_user,
         normalized_factory_id,
-        normalized_skipped_issue_keys,
+        normalized_resolution_keys,
         confirmation_reason,
     )
     _validate_upload(
@@ -1001,7 +1103,8 @@ async def export_caixing_customer_schedule_batch(
             po_files=uploaded_po_files,
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
-            skipped_issue_keys=normalized_skipped_issue_keys,
+            skipped_issue_keys=normalized_resolution_keys,
+            manual_overrides=normalized_manual_overrides,
         )
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1011,7 +1114,8 @@ async def export_caixing_customer_schedule_batch(
         preview=preview,
         received_date=received_date,
         submitted_fingerprint=preview_fingerprint,
-        requested_issue_keys=normalized_skipped_issue_keys,
+        requested_issue_keys=normalized_resolution_keys,
+        requested_manual_overrides=normalized_manual_overrides,
         confirmation_reason=normalized_confirmation_reason,
         output=output,
         file_name=file_name,
@@ -1138,6 +1242,7 @@ async def export_mapped_customer_order_batch(
     received_date: str = Form(...),
     confirmed: bool = Form(...),
     skipped_issue_keys: str = Form("[]"),
+    manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(""),
     confirmation_reason: str = Form(""),
     po_files: list[UploadFile] = File(...),
@@ -1157,11 +1262,15 @@ async def export_mapped_customer_order_batch(
     if not confirmed:
         raise HTTPException(status_code=400, detail="请先完成预览并确认当前批次")
     normalized_skipped_issue_keys = _parse_skipped_issue_keys(skipped_issue_keys)
+    normalized_manual_overrides = _parse_manual_overrides(manual_overrides)
+    normalized_resolution_keys = normalized_skipped_issue_keys | {
+        item["issue_key"] for item in normalized_manual_overrides
+    }
     normalized_confirmation_reason = _prepare_export_confirmation(
         db,
         current_user,
         normalized_factory_id,
-        normalized_skipped_issue_keys,
+        normalized_resolution_keys,
         confirmation_reason,
     )
     _validate_upload(
@@ -1187,7 +1296,8 @@ async def export_mapped_customer_order_batch(
             po_files=uploaded_po_files,
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
-            skipped_issue_keys=normalized_skipped_issue_keys,
+            skipped_issue_keys=normalized_resolution_keys,
+            manual_overrides=normalized_manual_overrides,
         )
     except (
         HuaxingCustomerOrderError,
@@ -1202,7 +1312,8 @@ async def export_mapped_customer_order_batch(
         preview=preview,
         received_date=received_date,
         submitted_fingerprint=preview_fingerprint,
-        requested_issue_keys=normalized_skipped_issue_keys,
+        requested_issue_keys=normalized_resolution_keys,
+        requested_manual_overrides=normalized_manual_overrides,
         confirmation_reason=normalized_confirmation_reason,
         output=output,
         file_name=file_name,

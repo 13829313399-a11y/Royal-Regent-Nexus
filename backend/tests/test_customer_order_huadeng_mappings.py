@@ -6,6 +6,7 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+from openpyxl.utils import get_column_letter
 
 from app.api.customer_order import CUSTOMER_FACTORY_IDS
 from app.services import customer_order_huadeng as service
@@ -19,6 +20,8 @@ def _workbook_bytes(sheet_name: str, headers: dict[int, str], row: dict[int, obj
         worksheet.cell(1, column, value)
     for column, value in row.items():
         worksheet.cell(2, column, value)
+    for column in range(1, max(headers, default=1) + 1):
+        worksheet.column_dimensions[get_column_letter(column)].width = 16
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -128,9 +131,10 @@ def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypa
     )
     workbook = openpyxl.load_workbook(BytesIO(output), data_only=False)
     try:
-        assert workbook.sheetnames[:2] == ["新单数据", "仓单PO模版"]
-        assert workbook["新单数据"].cell(2, 6).value == "8395"
-        assert workbook["新单数据"].cell(2, 2).value == datetime(2026, 8, 3)
+        assert workbook.sheetnames == ["Casdon 排货表-总"]
+        assert workbook["Casdon 排货表-总"].cell(2, 6).value == "OLD"
+        assert workbook["Casdon 排货表-总"].cell(3, 6).value == "8395"
+        assert workbook["Casdon 排货表-总"].cell(3, 2).value == datetime(2026, 8, 3)
     finally:
         workbook.close()
     assert file_name == preview["output_file_name"]
@@ -248,8 +252,8 @@ def test_spin_master_uses_independent_schedule_and_composite_dedupe(monkeypatch)
 def test_spin_and_spin_master_specs_remain_separate() -> None:
     spin = service.get_huadeng_customer_mapping("spin")
     spin_master = service.get_huadeng_customer_mapping("spin-master")
-    assert spin.target_template == "HUADENG_SPIN_NEW_ORDER_V1"
-    assert spin_master.target_template == "HUADENG_SPIN_MASTER_NEW_ORDER_V1"
+    assert spin.target_template == "HUADENG_SPIN_SCHEDULE_APPEND_V2"
+    assert spin_master.target_template == "HUADENG_SPIN_MASTER_SCHEDULE_APPEND_V2"
     assert spin.schedule_extensions == (".xlsx",)
     assert spin_master.schedule_extensions == (".xls", ".xlsx")
 
@@ -288,7 +292,7 @@ def test_spin_preview_uses_spin_schedule_family_and_keeps_manual_dates_blank(mon
         schedule_content=schedule,
     )
     row = preview["rows"][0]
-    assert row["target_template"] == "HUADENG_SPIN_NEW_ORDER_V1"
+    assert row["target_template"] == "HUADENG_SPIN_SCHEDULE_APPEND_V2"
     assert row["contract_no"] == "45000001/10"
     assert row["product_name_zh"] == "Spin标准品名"
     assert row["units_per_carton"] == "4"
@@ -296,7 +300,7 @@ def test_spin_preview_uses_spin_schedule_family_and_keeps_manual_dates_blank(mon
     assert row["requested_ship_date"] == "2026-09-01"
 
 
-def test_remaining_huadeng_exporters_create_standalone_new_order_workbooks(tmp_path: Path) -> None:
+def test_remaining_huadeng_exporters_append_to_complete_schedule_workbooks(tmp_path: Path) -> None:
     jakks_template = _workbook_bytes(
         "26-Jakks排货表总 Ai",
         {1: "来单日期", 5: "客户PO", 6: "合同号", 7: "客名", 9: "货号", 10: "产品名称", 11: "数量"},
@@ -381,11 +385,19 @@ def test_remaining_huadeng_exporters_create_standalone_new_order_workbooks(tmp_p
         output_path=spin_output,
     )
 
-    for output in (jakks_output, simba_output, spin_master_output, spin_output):
+    expected = (
+        (jakks_output, "26-Jakks排货表总 Ai", 6, "J1"),
+        (simba_output, "Simba排期", 6, "S1"),
+        (spin_master_output, "SPIN排期", 5, "45001/10"),
+        (spin_output, service.spin_schedule.MASTER_SHEET, 6, "45001/10"),
+    )
+    for output, sheet_name, contract_column, new_contract in expected:
         assert output.exists()
         workbook = openpyxl.load_workbook(output, data_only=False)
         try:
-            assert any("新单" in name for name in workbook.sheetnames)
-            assert all("OLD" not in str(cell.value) for sheet in workbook for row in sheet for cell in row)
+            assert workbook.sheetnames == [sheet_name]
+            worksheet = workbook[sheet_name]
+            assert worksheet.cell(2, contract_column).value == "OLD"
+            assert worksheet.cell(3, contract_column).value == new_contract
         finally:
             workbook.close()
