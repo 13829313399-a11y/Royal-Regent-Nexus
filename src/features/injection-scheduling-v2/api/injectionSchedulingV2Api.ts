@@ -5,6 +5,7 @@ import type {
   AutoScheduleRunRecord,
   AuditEvent,
   ImportBatchRecord,
+  ImportDocumentKindChoice,
   ImportIssueRecord,
   MachineRecord,
   ManualAppendPreviewRecord,
@@ -20,9 +21,97 @@ import type {
 
 type UnknownRecord = Record<string, unknown>
 
+export interface SharedMoldCatalogOutput {
+  id: string
+  itemNo: string
+  productName: string
+  cavityCount: number | null
+}
+
+export interface SharedMoldCatalogItem {
+  id: string
+  canonicalMoldNo: string
+  displayMoldNo: string
+  standardName: string
+  moldAClass: number | null
+  recommendedMachineClassRaw: string
+  defaultArmType: string
+  defaultFixtureType: string
+  status: string
+  dataQuality: string
+  revision: number
+  outputCount: number
+  outputs: SharedMoldCatalogOutput[]
+  nominalDailyCapacity: number | null
+  factoryCapability: { machineClass: number | null; requiredArmType: string; requiredFixtureType: string } | null
+  price: { amount: number; currency: string; pricingBasis: string; taxMode: string } | null
+  factoryReadiness: { status: string; availableAssetCount: number; activeCapabilityCount: number }
+}
+
+export interface SharedMoldCatalogPage {
+  items: SharedMoldCatalogItem[]
+  page: number
+  pageSize: number
+  total: number
+  summary: {
+    totalDefinitions: number
+    factoryReady: number
+    notFactoryReady: number
+    pendingProposals: number
+    canReadPrices: boolean
+  }
+}
+
+export interface SharedMoldDetail extends SharedMoldCatalogItem {
+  aliases: Array<{ id: string; rawAlias: string; sourceNamespaceId: string }>
+  outputs: Array<SharedMoldCatalogOutput & {
+    variantCode: string
+    wholeShotNetWeightG: number | null
+    wholeShotGrossWeightG: number | null
+    defaultMaterial: string
+    defaultColor: string
+    nominalDailyCapacity: number | null
+    revision: number
+  }>
+  assets: Array<{ id: string; assetCode: string; serialNo: string; currentLocation: string; status: string; actualCavityCount: number | null; revision: number }>
+  capabilities: Array<{ id: string; machineClass: number | null; requiredArmType: string; requiredFixtureType: string; nominalDailyCapacity: number | null; priority: number; revision: number }>
+  prices: Array<{ id: string; moldOutputSpecId: string; amount: number; currency: string; pricingBasis: string; taxMode: string; revision: number }>
+  priceAccess: 'GRANTED' | 'RESTRICTED'
+}
+
+export interface SharedMoldProposalInput {
+  canonicalMoldNo: string
+  displayMoldNo: string
+  standardName: string
+  rawAliases: string[]
+  recommendedMachineClassRaw: string
+  moldAClass: number | null
+  defaultArmType: string
+  defaultFixtureType: string
+  outputs: Array<{
+    itemNo: string
+    variantCode: string
+    productName: string
+    cavityCount: number | null
+    wholeShotNetWeightG: number | null
+    wholeShotGrossWeightG: number | null
+    defaultMaterial: string
+    defaultColor: string
+    nominalDailyCapacity: number | null
+    unitPriceCny: number | null
+  }>
+  capability: { machineClass: number | null; machineClassRaw: string; requiredArmType: string; requiredFixtureType: string } | null
+  reason: string
+}
+
 const text = (value: unknown) => typeof value === 'string' ? value : ''
 const numberOrNull = (value: unknown) => typeof value === 'number' ? value : null
 const numberValue = (value: unknown) => typeof value === 'number' ? value : 0
+const numberLikeOrNull = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  return null
+}
 const strings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 
 function mapMachine(source: UnknownRecord): MachineRecord {
@@ -485,7 +574,23 @@ function mapImportIssue(source: UnknownRecord): ImportIssueRecord {
   }
 }
 
+function mapDemandImportRow(source: UnknownRecord) {
+  const strings = (value: unknown) => Array.isArray(value) ? value.map((item) => text(item)).filter(Boolean) : []
+  const record = (value: unknown) => value && typeof value === 'object' ? value as UnknownRecord : {}
+  return {
+    rowId: text(source.row_id),
+    source: record(source.source),
+    canonical: record(source.canonical),
+    resolutionStatus: text(source.resolution_status),
+    resolutionReasons: strings(source.resolution_reasons),
+    resolvedValues: record(source.resolved_values),
+    confirmationState: text(source.confirmation_state) || 'PENDING',
+    resolutionDigest: text(source.resolution_digest),
+  }
+}
+
 export function mapImportBatch(source: UnknownRecord): ImportBatchRecord {
+  const record = (value: unknown) => value && typeof value === 'object' ? value as UnknownRecord : {}
   const records = (value: unknown) => Array.isArray(value)
     ? value.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
     : []
@@ -493,11 +598,23 @@ export function mapImportBatch(source: UnknownRecord): ImportBatchRecord {
     id: text(source.id), factoryId: text(source.factory_id), sourceFileName: text(source.source_file_name),
     sourceFileHash: text(source.source_file_hash), batchState: text(source.batch_state),
     previewGeneration: numberValue(source.preview_generation),
+    documentKind: (text(source.document_kind) || 'PLANNED_SCHEDULE') as ImportBatchRecord['documentKind'],
+    sourceNamespaceId: text(source.source_namespace_id),
     profile: source.profile && typeof source.profile === 'object' ? source.profile as UnknownRecord : null,
     sheetRoles: records(source.sheet_roles), mapping: records(source.mapping),
     scheduledBaselineTasks: records(source.scheduled_baseline_tasks), backlogOrders: records(source.backlog_orders),
     invalidRows: records(source.invalid_rows), masterDifferences: records(source.master_differences),
     calculationComparisons: records(source.calculation_comparisons), reconciliationActions: records(source.reconciliation_actions),
+    demandRows: records(source.demand_rows).map(mapDemandImportRow),
+    masterDataRows: records(source.master_data_rows).map((row) => ({
+      rowId: text(row.row_id), entityType: text(row.entity_type),
+      source: record(row.source), canonical: record(row.canonical),
+      resolutionStatus: text(row.resolution_status), confirmationState: text(row.confirmation_state) || 'PENDING',
+      activationBlockers: strings(row.activation_blockers), rowDigest: text(row.row_digest),
+    })),
+    resolutionDigest: text(source.resolution_digest),
+    mappingDraft: source.mapping_draft && typeof source.mapping_draft === 'object' ? source.mapping_draft as UnknownRecord : {},
+    partialConfirmation: source.partial_confirmation && typeof source.partial_confirmation === 'object' ? source.partial_confirmation as UnknownRecord : {},
     planContext: source.plan_context && typeof source.plan_context === 'object' ? source.plan_context as UnknownRecord : {},
     actionFingerprint: text(source.action_fingerprint),
     summary: source.summary && typeof source.summary === 'object' ? source.summary as UnknownRecord : {},
@@ -519,10 +636,11 @@ export async function recoverImportBatch(factoryId: string, batchId: string) {
   return mapImportBatch(data as UnknownRecord)
 }
 
-export async function uploadImportPreview(factoryId: string, file: File) {
+export async function uploadImportPreview(factoryId: string, file: File, documentKind: ImportDocumentKindChoice = 'AUTO') {
   const body = new FormData()
   body.set('factory_id', factoryId)
   body.set('expected_revision', '0')
+  body.set('document_kind', documentKind)
   body.set('file', file)
   const { data } = await http.post('/injection-scheduling/imports/preview', body, {
     headers: {
@@ -540,6 +658,217 @@ export async function retryImportPreview(factoryId: string, batch: ImportBatchRe
   return mapImportBatch(data as UnknownRecord)
 }
 
+export async function updateImportMappingDraft(factoryId: string, batch: ImportBatchRecord, mappings: Record<string, string>) {
+  const { data } = await http.patch(`/injection-scheduling/imports/${batch.id}/mapping-draft`, {
+    factory_id: factoryId,
+    expected_revision: batch.revision,
+    request_id: newRequestId('import-mapping'),
+    mappings,
+  })
+  return mapImportBatch(data as UnknownRecord)
+}
+
+export async function proposeImportProfile(factoryId: string, batch: ImportBatchRecord, name: string, reason: string) {
+  const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/profile-proposal`, {
+    factory_id: factoryId,
+    expected_revision: batch.revision,
+    request_id: newRequestId('import-profile-proposal'),
+    name,
+    reason,
+  })
+  return mapImportBatch(data as UnknownRecord)
+}
+
+export async function listImportProfiles(factoryId: string) {
+  const { data } = await http.get('/injection-scheduling/import-profiles', { params: { factory_id: factoryId } })
+  const source = data as UnknownRecord
+  return Array.isArray(source.items)
+    ? source.items.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
+    : []
+}
+
+export async function transitionImportProfile(factoryId: string, profile: UnknownRecord, target: 'activate' | 'retire', reason: string) {
+  const { data } = await http.post(`/injection-scheduling/import-profiles/${text(profile.id)}/${target}`, {
+    factory_id: factoryId,
+    expected_lifecycle_revision: numberValue(profile.lifecycle_revision),
+    request_id: newRequestId(`import-profile-${target}`),
+    reason,
+  })
+  return data as UnknownRecord
+}
+
+export async function listMasterDataProposals(factoryId: string) {
+  const { data } = await http.get('/injection-scheduling/master-data-proposals', { params: { factory_id: factoryId } })
+  return Array.isArray(data)
+    ? data.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
+    : []
+}
+
+function mapSharedMoldCatalogItem(source: UnknownRecord): SharedMoldCatalogItem {
+  const capability = source.factory_capability && typeof source.factory_capability === 'object'
+    ? source.factory_capability as UnknownRecord
+    : null
+  const price = source.price && typeof source.price === 'object' ? source.price as UnknownRecord : null
+  const readiness = source.factory_readiness && typeof source.factory_readiness === 'object'
+    ? source.factory_readiness as UnknownRecord
+    : {}
+  const outputs = Array.isArray(source.outputs)
+    ? source.outputs.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
+    : []
+  return {
+    id: text(source.id),
+    canonicalMoldNo: text(source.canonical_mold_no),
+    displayMoldNo: text(source.display_mold_no),
+    standardName: text(source.standard_name),
+    moldAClass: numberLikeOrNull(source.mold_a_class),
+    recommendedMachineClassRaw: text(source.recommended_machine_class_raw),
+    defaultArmType: text(source.default_arm_type),
+    defaultFixtureType: text(source.default_fixture_type),
+    status: text(source.status),
+    dataQuality: text(source.data_quality),
+    revision: numberValue(source.revision),
+    outputCount: numberValue(source.output_count),
+    outputs: outputs.map((item) => ({
+      id: text(item.id),
+      itemNo: text(item.item_no),
+      productName: text(item.product_name),
+      cavityCount: numberLikeOrNull(item.cavity_count),
+    })),
+    nominalDailyCapacity: numberLikeOrNull(source.nominal_daily_capacity),
+    factoryCapability: capability ? {
+      machineClass: numberLikeOrNull(capability.machine_class),
+      requiredArmType: text(capability.required_arm_type),
+      requiredFixtureType: text(capability.required_fixture_type),
+    } : null,
+    price: price && numberLikeOrNull(price.amount) !== null ? {
+      amount: numberLikeOrNull(price.amount) as number,
+      currency: text(price.currency),
+      pricingBasis: text(price.pricing_basis),
+      taxMode: text(price.tax_mode),
+    } : null,
+    factoryReadiness: {
+      status: text(readiness.status),
+      availableAssetCount: numberValue(readiness.available_asset_count),
+      activeCapabilityCount: numberValue(readiness.active_capability_count),
+    },
+  }
+}
+
+export async function listSharedMoldCatalog(factoryId: string, options: { q?: string; readiness?: string; page?: number; pageSize?: number } = {}): Promise<SharedMoldCatalogPage> {
+  const { data } = await http.get('/injection-scheduling/shared-molds/catalog', {
+    params: {
+      factory_id: factoryId,
+      q: options.q ?? '',
+      readiness: options.readiness ?? 'ALL',
+      page: options.page ?? 1,
+      page_size: options.pageSize ?? 30,
+    },
+  })
+  const source = data as UnknownRecord
+  const summary = source.summary && typeof source.summary === 'object' ? source.summary as UnknownRecord : {}
+  const items = Array.isArray(source.items)
+    ? source.items.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
+    : []
+  return {
+    items: items.map(mapSharedMoldCatalogItem),
+    page: numberValue(source.page),
+    pageSize: numberValue(source.page_size),
+    total: numberValue(source.total),
+    summary: {
+      totalDefinitions: numberValue(summary.total_definitions),
+      factoryReady: numberValue(summary.factory_ready),
+      notFactoryReady: numberValue(summary.not_factory_ready),
+      pendingProposals: numberValue(summary.pending_proposals),
+      canReadPrices: Boolean(summary.can_read_prices),
+    },
+  }
+}
+
+export async function getSharedMoldDetail(factoryId: string, definitionId: string): Promise<SharedMoldDetail> {
+  const { data } = await http.get(`/injection-scheduling/shared-molds/catalog/${definitionId}`, { params: { factory_id: factoryId } })
+  const source = data as UnknownRecord
+  const base = mapSharedMoldCatalogItem(source)
+  const records = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
+    : []
+  return {
+    ...base,
+    aliases: records(source.aliases).map((item) => ({ id: text(item.id), rawAlias: text(item.raw_alias), sourceNamespaceId: text(item.source_namespace_id) })),
+    outputs: records(source.outputs).map((item) => ({
+      id: text(item.id), itemNo: text(item.item_no), variantCode: text(item.variant_code), productName: text(item.product_name), cavityCount: numberLikeOrNull(item.cavity_count),
+      wholeShotNetWeightG: numberLikeOrNull(item.whole_shot_net_weight_g), wholeShotGrossWeightG: numberLikeOrNull(item.whole_shot_gross_weight_g),
+      defaultMaterial: text(item.default_material), defaultColor: text(item.default_color), nominalDailyCapacity: numberLikeOrNull(item.nominal_daily_capacity), revision: numberValue(item.revision),
+    })),
+    assets: records(source.assets).map((item) => ({ id: text(item.id), assetCode: text(item.asset_code), serialNo: text(item.serial_no), currentLocation: text(item.current_location), status: text(item.status), actualCavityCount: numberLikeOrNull(item.actual_cavity_count), revision: numberValue(item.revision) })),
+    capabilities: records(source.capabilities).map((item) => ({ id: text(item.id), machineClass: numberLikeOrNull(item.machine_class), requiredArmType: text(item.required_arm_type), requiredFixtureType: text(item.required_fixture_type), nominalDailyCapacity: numberLikeOrNull(item.nominal_daily_capacity), priority: numberValue(item.priority), revision: numberValue(item.revision) })),
+    prices: records(source.prices).map((item) => ({ id: text(item.id), moldOutputSpecId: text(item.mold_output_spec_id), amount: numberLikeOrNull(item.amount) ?? 0, currency: text(item.currency), pricingBasis: text(item.pricing_basis), taxMode: text(item.tax_mode), revision: numberValue(item.revision) })),
+    priceAccess: text(source.price_access) === 'GRANTED' ? 'GRANTED' : 'RESTRICTED',
+  }
+}
+
+export async function createSharedMoldProposal(factoryId: string, input: SharedMoldProposalInput) {
+  const { data } = await http.post('/injection-scheduling/shared-molds/proposals', {
+    factory_id: factoryId,
+    request_id: newRequestId('shared-mold-proposal'),
+    reason: input.reason,
+    canonical_mold_no: input.canonicalMoldNo,
+    display_mold_no: input.displayMoldNo,
+    standard_name: input.standardName,
+    raw_aliases: input.rawAliases,
+    recommended_machine_class_raw: input.recommendedMachineClassRaw,
+    mold_a_class: input.moldAClass,
+    default_arm_type: input.defaultArmType,
+    default_fixture_type: input.defaultFixtureType,
+    outputs: input.outputs.map((item) => ({
+      item_no: item.itemNo, variant_code: item.variantCode, product_name: item.productName, cavity_count: item.cavityCount,
+      whole_shot_net_weight_g: item.wholeShotNetWeightG, whole_shot_gross_weight_g: item.wholeShotGrossWeightG,
+      default_material: item.defaultMaterial, default_color: item.defaultColor, nominal_daily_capacity: item.nominalDailyCapacity, unit_price_cny: item.unitPriceCny,
+    })),
+    capability: input.capability ? {
+      machine_class: input.capability.machineClass,
+      machine_class_raw: input.capability.machineClassRaw,
+      required_arm_type: input.capability.requiredArmType,
+      required_fixture_type: input.capability.requiredFixtureType,
+    } : null,
+  })
+  const source = data as UnknownRecord
+  return Array.isArray(source.proposals)
+    ? source.proposals.filter((item): item is UnknownRecord => Boolean(item) && typeof item === 'object')
+    : []
+}
+
+export async function reviewMasterDataProposal(factoryId: string, proposal: UnknownRecord, action: 'approve' | 'activate', reason: string) {
+  const activatesWorkbookPrice = action === 'activate' && text(proposal.entity_type) === 'COMMERCIAL_RATE_RULE'
+  const { data } = await http.post(`/injection-scheduling/master-data-proposals/${text(proposal.id)}/${action}`, {
+    factory_id: factoryId,
+    expected_revision: numberValue(proposal.revision),
+    request_id: newRequestId(`master-proposal-${action}`),
+    reason,
+    ...(activatesWorkbookPrice ? {
+      price_confirmation: {
+        pricing_basis: 'PER_SHOT',
+        currency: 'CNY',
+        tax_mode: 'AS_LISTED',
+        owner_scope_type: 'FACTORY',
+        applicable_factory_mode: 'SPECIFIC',
+        applicable_customer_mode: 'ANY',
+        contract_mode: 'ANY',
+        confirmed_business_signoff: true,
+      },
+    } : {}),
+  })
+  return data as UnknownRecord
+}
+
+export async function enrichDemandOrderMolds(factoryId: string) {
+  const { data } = await http.post('/injection-scheduling/demand-orders/enrich-molds', {
+    factory_id: factoryId,
+    request_id: newRequestId('demand-mold-enrich'),
+    reason: '啤机文员重新匹配待排订单模具资料',
+  })
+  return data as UnknownRecord
+}
+
 export async function approveImportMasterDifferences(factoryId: string, batch: ImportBatchRecord, reason: string) {
   const differences = batch.masterDifferences.map((item) => `${text(item.entity_type)}:${text(item.business_key)}`)
   const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/master-differences/approve`, {
@@ -548,13 +877,28 @@ export async function approveImportMasterDifferences(factoryId: string, batch: I
   return mapImportBatch(data as UnknownRecord)
 }
 
-export async function confirmImportBatch(factoryId: string, batch: ImportBatchRecord, businessDate: string) {
-  const targetDraftRevision = numberValue(batch.planContext.target_draft_plan_revision)
+export async function confirmImportBatch(factoryId: string, batch: ImportBatchRecord, businessDate: string, selectedRowIds: string[] = []) {
+  const targetDraftRevision = batch.status === 'PARTIALLY_CONFIRMED'
+    ? batch.confirmedPlanRevision
+    : numberValue(batch.planContext.target_draft_plan_revision)
   const confirmMode = targetDraftRevision > 0 ? 'merge_draft' : 'create_draft'
+  const isDemandOrder = batch.documentKind === 'DEMAND_ORDER'
+  const isMasterData = batch.documentKind === 'MASTER_DATA'
   const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/confirm`, {
     factory_id: factoryId, expected_revision: batch.revision, expected_plan_revision: targetDraftRevision,
-    request_id: newRequestId('import-confirm'), confirm_mode: confirmMode, business_date: businessDate,
+    request_id: newRequestId('import-confirm'), confirm_mode: isMasterData ? 'propose_master_data' : confirmMode, business_date: businessDate,
     acknowledged_blocking_issue_ids: [], expected_action_fingerprint: batch.actionFingerprint, action_reasons: {},
+    document_kind: batch.documentKind,
+    ...((isDemandOrder || isMasterData) ? {
+      expected_preview_generation: batch.previewGeneration,
+      expected_resolution_digest: batch.resolutionDigest,
+      confirm_scope: 'SELECTED',
+      selected_row_ids: selectedRowIds,
+    } : {}),
+    ...(isDemandOrder ? {
+      target_draft_plan_id: batch.confirmedPlanId || text(batch.planContext.target_draft_plan_id),
+      reference_published_plan_id: text(batch.planContext.reference_published_plan_id),
+    } : {}),
   })
   return mapImportBatch(data as UnknownRecord)
 }

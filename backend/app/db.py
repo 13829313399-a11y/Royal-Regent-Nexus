@@ -255,6 +255,7 @@ INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
 INJECTION_SCHEDULING_PROFILE_REVISION = "20260805_0056"
 INJECTION_SCHEDULING_TAKEOVER_REVISION = "20260805_0057"
 INJECTION_SCHEDULING_PUBLIC_PLANNING_REVISION = "20260807_0058"
+INJECTION_SCHEDULING_DEMAND_SHARED_REVISION = "20260809_0060"
 INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
     "injection_scheduling_machines": {
         "machine_class_raw",
@@ -373,6 +374,51 @@ INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_COLUMNS = {
         "export_renderer_code",
         "export_binding_source",
         "calculation_version",
+    },
+}
+INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_TABLES = {
+    "injection_scheduling_company_scopes",
+    "injection_scheduling_company_factory_memberships",
+    "injection_scheduling_customer_identities",
+    "injection_scheduling_customer_aliases",
+    "injection_scheduling_mold_definitions",
+    "injection_scheduling_mold_aliases",
+    "injection_scheduling_mold_output_specs",
+    "injection_scheduling_physical_mold_assets",
+    "injection_scheduling_mold_asset_movements",
+    "injection_scheduling_mold_reservations",
+    "injection_scheduling_factory_mold_capabilities",
+    "injection_scheduling_commercial_rate_rules",
+    "injection_scheduling_master_data_proposals",
+    "injection_scheduling_field_evidence",
+    "injection_scheduling_demand_order_identities",
+    "injection_scheduling_demand_order_versions",
+    "injection_scheduling_demand_import_rows",
+    "injection_scheduling_demand_resolution_snapshots",
+    "injection_scheduling_legacy_mold_copy_bindings",
+    "injection_scheduling_rollout_policies",
+}
+INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_COLUMNS = {
+    "injection_scheduling_import_profiles": {
+        "document_kind",
+        "source_namespace_id",
+        "recognition_json",
+    },
+    "injection_scheduling_import_batches": {
+        "document_kind",
+        "source_namespace_id",
+        "resolution_digest",
+        "mapping_draft_json",
+        "ui_state_json",
+        "partial_confirmation_json",
+        "artifact_rebind_count",
+    },
+    "injection_scheduling_molds": {"definition_id"},
+    "injection_scheduling_tasks": {"physical_mold_asset_id"},
+    "injection_scheduling_run_assignments": {"physical_mold_asset_id"},
+    "injection_scheduling_plan_order_states": {
+        "order_revision_id",
+        "factory_readiness_status",
     },
 }
 
@@ -760,9 +806,10 @@ def ensure_injection_scheduling_takeover_schema_ready() -> None:
                 INJECTION_SCHEDULING_TAKEOVER_REQUIRED_TABLES - table_names
             )
         ]
-        for table_name, required_columns in (
-            INJECTION_SCHEDULING_TAKEOVER_REQUIRED_COLUMNS.items()
-        ):
+        for (
+            table_name,
+            required_columns,
+        ) in INJECTION_SCHEDULING_TAKEOVER_REQUIRED_COLUMNS.items():
             if table_name not in table_names:
                 missing.append(f"table:{table_name}")
                 continue
@@ -799,9 +846,10 @@ def ensure_injection_scheduling_public_planning_schema_ready() -> None:
                 INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_TABLES - table_names
             )
         ]
-        for table_name, required_columns in (
-            INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_COLUMNS.items()
-        ):
+        for (
+            table_name,
+            required_columns,
+        ) in INJECTION_SCHEDULING_PUBLIC_PLANNING_REQUIRED_COLUMNS.items():
             if table_name not in table_names:
                 missing.append(f"table:{table_name}")
                 continue
@@ -816,6 +864,46 @@ def ensure_injection_scheduling_public_planning_schema_ready() -> None:
     raise RuntimeError(
         "检测到数据库尚未完成注塑排产公共计划迁移 "
         f"{INJECTION_SCHEDULING_PUBLIC_PLANNING_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(dict.fromkeys(missing))}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_injection_scheduling_demand_shared_schema_ready() -> None:
+    """Refuse startup when demand/shared-mold contracts were not migrated."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = [
+            f"table:{table_name}"
+            for table_name in sorted(
+                INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_TABLES - table_names
+            )
+        ]
+        for (
+            table_name,
+            required_columns,
+        ) in INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_COLUMNS.items():
+            if table_name not in table_names:
+                missing.append(f"table:{table_name}")
+                continue
+            columns = {column["name"] for column in inspector.get_columns(table_name)}
+            missing.extend(
+                f"column:{table_name}.{column_name}"
+                for column_name in sorted(required_columns - columns)
+            )
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成注塑排产需求单/共享模具迁移 "
+        f"{INJECTION_SCHEDULING_DEMAND_SHARED_REVISION}；当前版本：{current_revision}；"
         f"缺少：{', '.join(dict.fromkeys(missing))}。"
         "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
     )
@@ -885,6 +973,7 @@ def init_db() -> None:
         injection_scheduling_import,  # noqa: F401
         injection_scheduling_phase5,  # noqa: F401
         injection_scheduling_scheduler,  # noqa: F401
+        injection_scheduling_shared,  # noqa: F401
         internal_quote,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
@@ -918,6 +1007,7 @@ def init_db() -> None:
     ensure_injection_scheduling_profile_schema_ready()
     ensure_injection_scheduling_takeover_schema_ready()
     ensure_injection_scheduling_public_planning_schema_ready()
+    ensure_injection_scheduling_demand_shared_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

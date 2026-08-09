@@ -20,6 +20,7 @@ from app.services.injection_scheduling_execution import _actor_name, _audit, _no
 from app.services.injection_scheduling_profiles import (
     BUILTIN_IMPORT_PROFILES,
     ImportProfile,
+    profile_config,
     profile_config_json,
     profile_definition_digest,
     profile_from_config,
@@ -39,11 +40,15 @@ def _profile_from_record(
     profile = profile_from_config(config)
     if profile_definition_digest(profile) != record.definition_sha256:
         raise RuntimeError(f"Profile {record.id} 定义摘要不一致，拒绝用于导入")
+    if profile.document_kind != record.document_kind:
+        raise RuntimeError(f"Profile {record.id} document_kind 与受控列不一致")
     return replace(profile, status=record.status, factories=factories)
 
 
 def active_profiles_for_factory(
-    db: Session, factory_id: str
+    db: Session,
+    factory_id: str,
+    document_kind: str = "PLANNED_SCHEDULE",
 ) -> tuple[ImportProfile, ...]:
     rows = db.execute(
         select(
@@ -57,6 +62,7 @@ def active_profiles_for_factory(
         .where(
             InjectionSchedulingImportProfileFactory.factory_id == factory_id,
             InjectionSchedulingImportProfile.status == "ACTIVE",
+            InjectionSchedulingImportProfile.document_kind == document_kind,
         )
         .order_by(
             InjectionSchedulingImportProfile.profile_family,
@@ -125,6 +131,9 @@ def profile_record_out(
         "template_signature": record.template_signature,
         "header_fingerprint": record.header_fingerprint,
         "renderer_code": record.renderer_code,
+        "document_kind": record.document_kind,
+        "source_namespace_id": record.source_namespace_id,
+        "recognition": json.loads(record.recognition_json),
         "config": json.loads(record.config_json),
         "created_by": record.created_by,
         "created_by_name": record.created_by_name,
@@ -228,6 +237,14 @@ def create_profile_revision(
         template_signature=profile_template_signature(profile),
         header_fingerprint=profile_header_fingerprint(profile),
         renderer_code=profile.renderer_code,
+        document_kind=profile.document_kind,
+        source_namespace_id=profile.source_namespace_id,
+        recognition_json=json.dumps(
+            profile_config(profile).get("recognition", {}),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         created_by=user.id,
         created_by_name=actor_name,
         created_at=timestamp,
@@ -311,8 +328,16 @@ def transition_profile(
                 "current_revision": record.lifecycle_revision,
             },
         )
-    if target_status == "ACTIVE" and record.status != "PROFILE_DRAFT":
-        raise HTTPException(status_code=409, detail="只有 PROFILE_DRAFT 可以激活")
+    previous_status = record.status
+    if target_status == "ACTIVE" and previous_status not in {
+        "PROFILE_DRAFT",
+        "RETIRED",
+    }:
+        raise HTTPException(
+            status_code=409, detail="只有 PROFILE_DRAFT 或 RETIRED Profile 可以激活"
+        )
+    if target_status == "ACTIVE" and record.created_by == user.id:
+        raise HTTPException(status_code=403, detail="Profile 提交人与审核激活人必须分离")
     if target_status == "RETIRED" and record.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="只有 ACTIVE Profile 可以停用")
     timestamp = _now()
@@ -356,6 +381,9 @@ def transition_profile(
         record.reviewed_by = user.id
         record.reviewed_by_name = actor_name
         record.reviewed_at = timestamp
+        record.retired_by = ""
+        record.retired_by_name = ""
+        record.retired_at = ""
     else:
         record.retired_by = user.id
         record.retired_by_name = actor_name
@@ -366,7 +394,11 @@ def transition_profile(
         db,
         factory_id=factory_id,
         event_type=(
-            "import_profile_activated"
+            (
+                "import_profile_reactivated"
+                if previous_status == "RETIRED"
+                else "import_profile_activated"
+            )
             if target_status == "ACTIVE"
             else "import_profile_retired"
         ),
@@ -402,6 +434,14 @@ def seed_builtin_import_profiles(db: Session) -> None:
                 template_signature=profile_template_signature(profile),
                 header_fingerprint=profile_header_fingerprint(profile),
                 renderer_code=profile.renderer_code,
+                document_kind=profile.document_kind,
+                source_namespace_id=profile.source_namespace_id,
+                recognition_json=json.dumps(
+                    profile_config(profile).get("recognition", {}),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
                 created_by="system-seed",
                 created_by_name="系统初始化",
                 created_at=timestamp,

@@ -136,6 +136,14 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const canOverride = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:publish'))
   const canManageRules = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:manage_rules'))
   const canImport = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:import'))
+  const canConfirmDemand = computed(() => canImport.value && hasScopedPermission('injection_scheduling:edit'))
+  const canProposeImportProfile = computed(() => canImport.value && hasScopedPermission('injection_scheduling:propose_import_profiles'))
+  const canProposeMasterData = computed(() => sourceMode.value === 'live' && hasScopedPermission('shared_mold:propose') && hasScopedPermission('shared_mold_price:propose'))
+  const canManageImportProfiles = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:manage_import_profiles'))
+  const canManageFactoryCapabilities = computed(() => sourceMode.value === 'live' && hasScopedPermission('factory_mold_capability:manage'))
+  const canManageSharedMoldPrices = computed(() => sourceMode.value === 'live' && hasScopedPermission('shared_mold_price:manage'))
+  const canReviewSharedMolds = computed(() => sourceMode.value === 'live' && (hasScopedPermission('shared_mold:review') || hasScopedPermission('shared_mold_price:approve') || canManageFactoryCapabilities.value))
+  const canActivateSharedMolds = computed(() => sourceMode.value === 'live' && hasScopedPermission('shared_mold:manage'))
   const canExport = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:export'))
   const canManageMaster = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:manage_master'))
   const pendingEditCount = computed(() => Object.keys(cellDrafts.value).length)
@@ -207,13 +215,13 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       rowType: 'task', id: task.id, machine, task, order, mold, status: task.status, sequence: task.sequence,
       position: machine.position, machineCode: machine.code, automation: readLineage(order, 'automation', '全自动') as string,
       marker: task.locked ? '锁定' : String(readLineage(order, 'marker', '')), moldA: mold ? formatA(mold.aClass, mold.aClassRaw) : '待补充',
-      moldNo: mold?.moldNo ?? '未关联', productName: order?.productName ?? '', orderNo: order?.orderNo ?? '', itemNo: order?.itemNo ?? '',
-      setQuantity: gridValue(order, 'set_quantity'), orderQuantity: total, completedQuantity: completed,
+      moldNo: String(readLineage(order, 'source_mold_no', mold?.moldNo ?? '未关联')), productName: order?.productName ?? '', orderNo: order?.orderNo ?? '', itemNo: order?.itemNo ?? '',
+      setQuantity: total, orderQuantity: total, completedQuantity: completed,
       outstandingQuantity: order?.outstandingQuantity ?? 0, progress: total ? Math.round(completed / total * 100) : 0,
       targetQuantity: task.targetQuantity, shiftCompleted: task.reportedQuantity, sprueRatio: String(readLineage(order, 'sprue_ratio')),
-      color: mold?.colorProfile || String(readLineage(order, 'color')), powder: String(readLineage(order, 'powder')),
-      material: mold?.materialName || String(readLineage(order, 'material')), netWeightG: mold?.netWeightG ?? '—', grossWeightG: mold?.grossWeightG ?? '—',
-      materialKg: gridValue(order, 'material_kg'), unitPrice: gridValue(order, 'unit_price'), outsourcePrice: gridValue(order, 'outsource_price'),
+      color: String(readLineage(order, 'color_name', mold?.colorProfile || '—')), powder: String(readLineage(order, 'color_powder_code')),
+      material: String(readLineage(order, 'material_name', mold?.materialName || '—')), netWeightG: gridValue(order, 'whole_shot_net_weight_g', mold?.netWeightG ?? '—'), grossWeightG: gridValue(order, 'total_gross_weight', mold?.grossWeightG ?? '—'),
+      materialKg: gridValue(order, 'material_kg'), unitPrice: gridValue(order, 'unit_price'),
       ratio: String(readLineage(order, 'ratio')), orderDate: String(readLineage(order, 'order_date')), deliveryStart: order?.deliveryStartDate || '—',
       deliveryDue: order?.deliveryDueDate || '—', moldChangeRef: String(readLineage(order, 'mold_change_ref', '0.6h')),
       colorChangeRef: String(readLineage(order, 'color_change_ref', '0.4h')), setupTime: String(readLineage(order, 'setup_time', '0h')),
@@ -221,8 +229,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       plannedStart: task.plannedStart, plannedFinish: task.plannedFinish,
       planMonth: task.plannedFinish ? task.plannedFinish.slice(0, 7) : '—', warehouseDate: String(readLineage(order, 'warehouse_date')),
       slack: order?.deliverySlackDays ?? '—', spray: String(readLineage(order, 'spray', '否')), productionDays: gridValue(order, 'production_days'),
-      shiftEnd: String(readLineage(order, 'shift_end', task.plannedFinish.slice(11, 16) || '—')), duration: String(readLineage(order, 'duration', '—')),
-      shiftPlan: task.targetQuantity, machineA: formatA(machine.aClass, machine.aClassRaw), shotCapacity: machine.injectionCapacityG ?? '—', fit,
+      machineA: formatA(machine.aClass, machine.aClassRaw), shotCapacity: machine.injectionCapacityG ?? '—', fit,
       warehouse: order?.warehouseText ?? '', remark: order?.remark ?? '', shipDate: String(readLineage(order, 'ship_date')),
       arm: mold?.requiredArmType || '待补充', fixture: mold?.requiredFixtureType || '待补充', priority: order?.priorityCode ?? 'NORMAL',
       materialReadiness: order?.materialReadinessStatus ?? 'unknown',
@@ -838,7 +845,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, executionPlan, planningPlan, executionPublishedPlan, planningDraftPlan, activePlanSlice, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
     activeView, activePreset, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
     backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, gridRows,
-    cellDrafts, pendingEditCount, timelineScrollLeft, timelineZoom, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride, canManageRules, canImport, canExport, canManageMaster,
+    cellDrafts, pendingEditCount, timelineScrollLeft, timelineZoom, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride, canManageRules, canImport, canConfirmDemand, canProposeImportProfile, canProposeMasterData, canManageImportProfiles, canReviewSharedMolds, canActivateSharedMolds, canManageFactoryCapabilities, canManageSharedMoldPrices, canExport, canManageMaster,
     phase5Analytics, phase5AnalyticsLoading, phase5AnalyticsError,
     load, setFactory, activatePlanSlice, setPreset, toggleMachine, toggleColumn, moveColumn, resetColumns, selectTask, cycleSort,
     draftValue, stageCellEdit, savePendingEdits, discardPendingEdits, prepareMove, updateMovePreview, confirmMove, moveByKeyboard, pollEvents,

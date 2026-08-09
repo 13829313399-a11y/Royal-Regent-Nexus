@@ -161,7 +161,13 @@ def _select_profile(
         profiles
         if profiles is not None
         else (
-            profiles_for_factory(factory_id) if factory_id else BUILTIN_IMPORT_PROFILES
+            profiles_for_factory(factory_id)
+            if factory_id
+            else tuple(
+                item
+                for item in BUILTIN_IMPORT_PROFILES
+                if item.document_kind == "PLANNED_SCHEDULE"
+            )
         )
     )
     compatible: list[
@@ -922,9 +928,7 @@ def _parse_plan_rows(
                     "basis": {
                         "order_quantity": metrics["order_quantity"],
                         "completed_quantity": metrics["completed_quantity"],
-                        "shift_target_quantity": metrics[
-                            "shift_target_quantity"
-                        ],
+                        "shift_target_quantity": metrics["shift_target_quantity"],
                     },
                 }
             )

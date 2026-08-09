@@ -1,42 +1,57 @@
-# Injection Scheduling V2 Phase 1 Design QA
+# Shared Mold Database Design QA
 
-## Comparison truth
+- source visual truth path: `C:\Users\匡树杰\AppData\Local\Temp\codex-clipboard-2085c240-8fbc-44ce-b90e-f13f60cc97f3.png`
+- implementation screenshot path: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-implementation-revised-1280x720.png`
+- focused detail screenshot: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-detail-1280x720.png`
+- focused proposal screenshot: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-proposal-1280x720.png`
+- normalized comparison: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-side-by-side-revised.png`
+- viewport: 1280 x 720 CSS px, device pixel ratio 1
+- source pixels: 1918 x 934
+- implementation pixels: 1280 x 720
+- density normalization: the source was proportionally reduced to 1280 x 623 and vertically centered in a 1280 x 720 frame; the implementation was captured at native 1280 x 720. The two frames were combined into one 2560 x 720 comparison image.
+- state: authenticated Huaxing user, formal database, shared mold catalog page 1 with 4,971 active definitions
 
-- Source prototype: `C:\Users\匡树杰\Desktop\啤机部项目资料\注塑排产中枢_交付文件\注塑排产中枢_HTML前端原型.html`
-- Source screenshot: `D:\RR\royal-regent-nexus\.codex-phase1-qa\reference-1514x850.png`
-- Implementation screenshot: `D:\RR\royal-regent-nexus\.codex-phase1-qa\implementation-1514x850.png`
-- Side-by-side comparison: `D:\RR\royal-regent-nexus\.codex-phase1-qa\side-by-side-1514x850.png`
-- Focused modal evidence: `D:\RR\royal-regent-nexus\.codex-phase1-qa\auto-schedule-modal-1514x850.png`
-- Responsive evidence: `D:\RR\royal-regent-nexus\.codex-phase1-qa\responsive-1280x720.png`
-- Primary viewport: 1514 x 850 CSS pixels.
-- Responsive viewport: 1280 x 720 CSS pixels.
-- State: authenticated `huaxing` factory, current published plan, one running task, machine plan view, planner column preset, task inspector open, backlog dock open.
-- Data: isolated local SQLite with real Phase 0 APIs; no production database was used.
+## Comparison Scope
 
-## Fidelity and behavior
+The supplied screenshot is the visual-language truth for the existing injection-scheduling product, not an exact mock of the new mold-database route. The comparison therefore checks shared shell, density, tokens, typography, table treatment and command hierarchy. The catalog, detail drawer and proposal drawer are new product states and were checked for consistency with that system rather than false pixel-for-pixel identity.
 
-- Layout: passed. The implementation preserves the full-page dark product bar, compact command row, single-row KPI strip at the primary viewport, five-view workspace, dense machine-grouped grid, right inspector and bottom backlog dock. At 1280 px the KPI strip intentionally becomes 4 x 2 and the inspector narrows to 320 px, matching the prototype breakpoint strategy.
-- Typography and density: passed. System UI fonts, compact 9–13 px operational labels, restrained weights, truncation and high-density row rhythm match the source intent.
-- Colors and surfaces: passed. Navy shell, cool gray canvas, white cards, teal active states and restrained blue/amber/red/violet status accents are mapped consistently. Borders and shadows stay subtle.
-- Icons: passed. All controls use the existing Lucide icon family; no emoji, custom SVG replacement or raster placeholder was introduced.
-- Content: passed. Dynamic counts come from the API. Intentional Phase 1 differences are explicit: import/save/publish, drag assignment, production report submission and solver execution are omitted or disabled rather than imitated.
-- Plan grid: passed. Machine grouping, current-task-first queue ordering, 53 configurable columns covering the 47 uploaded business fields, four presets, sorting, filtering, search, column widths, frozen identifiers and virtual rows were verified.
-- Task inspector: passed. Order/mold, six eligibility checks, read-only production report and history/audit tabs render from the selected task.
-- Views: passed. Plan grid, timeline, backlog, alerts and history all rendered with current snapshot data.
-- Auto schedule: passed. The preview dialog opens, identifies Phase 3 ownership and keeps the solve action disabled.
-- Module entry: passed. The production-module card links to the factory-scoped V2 route.
-- Responsiveness: passed. At 1280 x 720 there was no document-level horizontal overflow; the grid retained intentional internal horizontal scrolling and the workspace stayed within the viewport.
-- Accessibility: passed. Semantic navigation/table/dialog structure, labelled icon buttons, disabled-state semantics, visible keyboard focus, reduced-motion handling and practical control sizes were checked.
-- Console: passed. Browser console contained zero warnings or errors during the final interaction pass.
+## Full-view Comparison Evidence
 
-## QA history
+- Fonts and typography: both use the existing Segoe UI / PingFang SC / Microsoft YaHei stack, compact 9–13 px operational text, bold numeric KPI hierarchy and truncated dense-table copy.
+- Spacing and layout rhythm: the 58 px dark top bar, compact white command bar, card strip, dense workspace, 7–11 px radii and shallow elevation match the scheduling page. The new page intentionally uses four master-data KPIs in one row instead of the scheduler's eight execution KPIs.
+- Colors and visual tokens: navy shell, teal primary action, blue/amber/violet semantic cards, white work surface, cool gray grid and amber readiness chips use the same product tokens.
+- Image quality and asset fidelity: no new raster illustrations or product images are required. Existing product mark, account menu and the installed Lucide icon set are reused; no placeholder or handcrafted replacement assets were introduced.
+- Copy and content: the page uses production Chinese labels, separates company definition from factory readiness and clearly states that proposals do not directly activate data.
 
-1. Initial implementation used the target component hierarchy and live API contract.
-2. TypeScript identified mixed nullish/boolean precedence, TanStack column generics and cell style typing issues; all were corrected before browser QA.
-3. Browser QA found missing explicit focus-visible and reduced-motion treatments. Both were added to the feature stylesheet.
-4. Full-field preset exposed 53 headers, including all 47 uploaded-plan fields. Six eligibility checks rendered. All five workspace views and the disabled Phase 3 solver guard were exercised.
-5. The 1514 x 850 source and implementation were inspected side by side. Remaining differences are intentional Phase 1 capability boundaries or dynamic dataset differences, not fidelity defects.
+## Focused Region Evidence
 
-## Final result
+- Detail drawer: captured separately and verified for basic definition, outputs, Huaxing capability/assets, permission-aware CNY pricing and governance notice. The source screenshot has no drawer state, so the check is internal token and hierarchy consistency.
+- Proposal drawer: captured separately and verified for required fields, repeatable product outputs, optional capability, permission-aware per-shot CNY price, governance copy and sticky actions. The source screenshot has no proposal state, so the check is interaction density and consistency with the existing import dialog language.
 
-passed
+## Comparison History
+
+### Iteration 1
+
+- [P1] Catalog search was hidden at the 1280 px browser viewport by an inherited scheduler breakpoint. This removed a core interaction from the new page.
+  - Fix: added a more specific mold-database breakpoint override that keeps the search field visible with a 190 px minimum width.
+- [P2] Imported machine-arm, fixture and data-quality codes were shown as `single`, `suction_cup` and `APPROVED_SOURCE`.
+  - Fix: mapped those values to `单臂`, `吸盘` and `已审核来源` in the catalog and detail drawer.
+
+### Iteration 2
+
+The revised combined image shows the search field above the fold, localized operational labels, aligned command controls, readable table density and no clipped persistent actions. No actionable P0, P1 or P2 differences remain.
+
+## Browser Verification
+
+- Opened the page from the scheduling command-bar `正式数据库` control.
+- Loaded 4,971 active definitions through the paginated catalog API.
+- Opened and closed a real mold detail drawer.
+- Opened the proposal drawer, filled required mold/product/reason fields, confirmed the submit action became enabled, then cancelled without writing production data.
+- Verified the price and capability fields appear only with their scoped permissions.
+- Browser console contained only Vite connection debug messages; zero warnings and zero errors.
+
+## Residual Test Gap
+
+The supplied visual target is the parent scheduling workspace rather than an exact mold-database mock. This prevents exact content-level comparison of the new catalog and drawers, but does not leave a P0/P1/P2 implementation issue.
+
+final result: passed

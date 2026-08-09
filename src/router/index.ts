@@ -96,6 +96,18 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/injection-scheduling/mold-database',
+    name: 'injection-scheduling-mold-database',
+    component: () => import('@/views/InjectionSchedulingMoldDatabaseView.vue'),
+    meta: {
+      title: '共享模具数据库',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['shared_mold:read'],
+      enforcePermissions: true,
+    },
+  },
+  {
     path: '/change-password',
     name: 'change-password',
     component: () => import('@/views/ForcePasswordChangeView.vue'),

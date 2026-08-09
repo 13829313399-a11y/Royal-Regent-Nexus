@@ -140,6 +140,7 @@ class InjectionSchedulingTaskCreate(StrictWriteModel):
     machine_id: str = Field(min_length=1, max_length=96)
     order_id: str = Field(min_length=1, max_length=96)
     mold_id: str | None = Field(default=None, max_length=96)
+    physical_mold_asset_id: str | None = Field(default=None, max_length=96)
     mold_copy_no: int = Field(default=1, ge=1, le=100)
     sequence_no: int = Field(default=0, ge=0)
     execution_status: DraftTaskStatus = "QUEUED"
@@ -149,7 +150,7 @@ class InjectionSchedulingTaskCreate(StrictWriteModel):
     locked: bool = False
     manual_override_reason: str = Field(default="", max_length=2000)
 
-    @field_validator("mold_id")
+    @field_validator("mold_id", "physical_mold_asset_id")
     @classmethod
     def normalize_optional_id(cls, value: str | None) -> str | None:
         if value is None:
@@ -296,6 +297,7 @@ class InjectionSchedulingTaskOut(BaseModel):
     machine_id: str
     order_id: str
     mold_id: str | None
+    physical_mold_asset_id: str | None
     mold_copy_no: int
     sequence_no: int
     execution_status: TaskStatus
@@ -476,9 +478,7 @@ class InjectionSchedulingShiftReportCreate(StrictWriteModel):
     downtime_minutes: int = Field(default=0, ge=0, le=1440)
     exception_code: str = Field(default="", max_length=64)
     exception_detail: str = Field(default="", max_length=2000)
-    reported_status: Literal["QUEUED", "RUNNING", "BLOCKED", "COMPLETED"] = (
-        "RUNNING"
-    )
+    reported_status: Literal["QUEUED", "RUNNING", "BLOCKED", "COMPLETED"] = "RUNNING"
 
     @field_validator("request_id", "exception_code", "exception_detail")
     @classmethod
@@ -527,9 +527,7 @@ class InjectionSchedulingShiftReportBulkItem(StrictWriteModel):
     downtime_minutes: int = Field(default=0, ge=0, le=1440)
     exception_code: str = Field(default="", max_length=64)
     exception_detail: str = Field(default="", max_length=2000)
-    reported_status: Literal["QUEUED", "RUNNING", "BLOCKED", "COMPLETED"] = (
-        "RUNNING"
-    )
+    reported_status: Literal["QUEUED", "RUNNING", "BLOCKED", "COMPLETED"] = "RUNNING"
 
     @field_validator("task_id", "request_id", "exception_code", "exception_detail")
     @classmethod
@@ -551,7 +549,9 @@ class InjectionSchedulingShiftReportBulkCreate(StrictWriteModel):
 
     @field_validator("reports")
     @classmethod
-    def unique_report_requests(cls, value: list[InjectionSchedulingShiftReportBulkItem]):
+    def unique_report_requests(
+        cls, value: list[InjectionSchedulingShiftReportBulkItem]
+    ):
         request_ids = [item.request_id for item in value]
         if len(request_ids) != len(set(request_ids)):
             raise ValueError("批量回报 request_id 不能重复")

@@ -60,12 +60,19 @@ INJECTION_SCHEDULING_CLERK_PERMISSION_CODES = (
     "injection_scheduling:edit",
     "injection_scheduling:report",
     "injection_scheduling:export",
+    "shared_mold:read",
+    "shared_mold_price:read",
+    "injection_scheduling:propose_import_profiles",
 )
 INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
     *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
     "injection_scheduling:publish",
     "injection_scheduling:rollback",
     "injection_scheduling:manage_import_profiles",
+    "shared_mold:propose",
+    "factory_mold:manage",
+    "factory_mold_asset:manage",
+    "factory_mold_capability:manage",
 )
 CARTON_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_procurement:customer_manage"
 CARTON_OPERATION_PERMISSION_CODES = tuple(
@@ -167,6 +174,13 @@ GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
         "injection_scheduling:manage_master",
         "injection_scheduling:manage_rules",
         "injection_scheduling:manage_import_profiles",
+        "shared_mold:approve",
+        "shared_mold:review",
+        "shared_mold:manage",
+        "shared_mold_price:propose",
+        "shared_mold_price:write",
+        "shared_mold_price:approve",
+        "shared_mold_price:manage",
     )
 )
 
@@ -756,7 +770,10 @@ def validate_system_position_definitions() -> None:
         GENERAL_MANAGER_PERMISSION_CODES
         | GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
     )
-    if GENERAL_MANAGER_PERMISSION_CODES & GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES:
+    if (
+        GENERAL_MANAGER_PERMISSION_CODES
+        & GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
+    ):
         raise RuntimeError("总经理允许与排除的业务权限不能重叠")
     if decided_general_manager_codes != all_business_codes:
         undecided = sorted(all_business_codes - decided_general_manager_codes)

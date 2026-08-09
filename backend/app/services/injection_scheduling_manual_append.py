@@ -43,6 +43,7 @@ from app.services.injection_scheduling_projection import (
 from app.services.injection_scheduling_scheduler.anchor import (
     build_machine_continuation_anchors,
 )
+from app.services.injection_scheduling_scheduler.duration import default_shift_target
 
 
 def _json(value: Any) -> str:
@@ -93,6 +94,14 @@ def _preview(
 ) -> InjectionSchedulingManualAppendPreview:
     plan = _require_plan(db, payload.factory_id, plan_id)
     order = _require_order(db, payload.factory_id, payload.order_id)
+    if order.source_type == "DEMAND_ORDER_VERSION" and order.mold_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEMAND_MOLD_ENRICHMENT_PENDING",
+                "message": "订单已进入待排池，但模具资料尚未补齐，暂不能追加到机台",
+            },
+        )
     if plan.revision != payload.expected_plan_revision:
         raise HTTPException(
             status_code=409,
@@ -203,7 +212,7 @@ def _preview(
     )
     if planned_quantity <= 0:
         raise HTTPException(status_code=409, detail="订单已无可排欠数")
-    shift_target = min(planned_quantity, Decimal(40))
+    shift_target = min(planned_quantity, default_shift_target(order))
     mold_ids = {item for item in (order.mold_id,) if item}
     context = load_calculation_context(
         db, factory_id=payload.factory_id, mold_ids=mold_ids
@@ -345,6 +354,7 @@ def confirm_manual_append(
             status_code=403,
             detail="REVIEW_REQUIRED 需要 publish 权限和非空覆盖原因",
         )
+    order = _require_order(db, payload.factory_id, payload.order_id)
     plan, task, audit_sequence = add_task(
         db,
         plan_id,
@@ -353,7 +363,7 @@ def confirm_manual_append(
             expected_revision=payload.expected_plan_revision,
             machine_id=payload.machine_id,
             order_id=payload.order_id,
-            mold_id=None,
+            mold_id=order.mold_id,
             mold_copy_no=1,
             sequence_no=preview.sequence_no,
             execution_status="QUEUED",

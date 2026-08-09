@@ -38,8 +38,7 @@ class InjectionSchedulingOrder(Base):
             name="ck_injection_scheduling_order_priority",
         ),
         CheckConstraint(
-            "material_readiness_status IN "
-            "('unknown', 'ready', 'partial', 'blocked')",
+            "material_readiness_status IN ('unknown', 'ready', 'partial', 'blocked')",
             name="ck_injection_scheduling_order_material_readiness",
         ),
         CheckConstraint(
@@ -229,6 +228,12 @@ class InjectionSchedulingTask(Base):
             ["injection_scheduling_molds.id", "injection_scheduling_molds.factory_id"],
             name="fk_injection_scheduling_task_mold_factory",
         ),
+        ForeignKeyConstraint(
+            ["physical_mold_asset_id"],
+            ["injection_scheduling_physical_mold_assets.id"],
+            name="fk_inj_sched_task_physical_mold_asset",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "execution_status IN "
             "('QUEUED', 'RUNNING', 'BLOCKED', 'COMPLETED', 'CANCELLED')",
@@ -251,9 +256,7 @@ class InjectionSchedulingTask(Base):
             "factory_id",
             "machine_id",
             unique=True,
-            sqlite_where=text(
-                "active_execution = 1 AND execution_status = 'RUNNING'"
-            ),
+            sqlite_where=text("active_execution = 1 AND execution_status = 'RUNNING'"),
             postgresql_where=text(
                 "active_execution = true AND execution_status = 'RUNNING'"
             ),
@@ -289,6 +292,9 @@ class InjectionSchedulingTask(Base):
     machine_id: Mapped[str] = mapped_column(String(96), index=True)
     order_id: Mapped[str] = mapped_column(String(96), index=True)
     mold_id: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)
+    physical_mold_asset_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
     mold_copy_no: Mapped[int] = mapped_column(Integer, default=1)
     sequence_no: Mapped[int] = mapped_column(Integer, default=0)
     execution_status: Mapped[str] = mapped_column(
@@ -345,9 +351,7 @@ class InjectionSchedulingTask(Base):
     auto_schedule_run_id: Mapped[str | None] = mapped_column(
         String(96), nullable=True, index=True
     )
-    auto_score: Mapped[Decimal | None] = mapped_column(
-        Numeric(14, 3), nullable=True
-    )
+    auto_score: Mapped[Decimal | None] = mapped_column(Numeric(14, 3), nullable=True)
     auto_explanation_json: Mapped[str] = mapped_column(Text, default="{}")
     manual_adjusted: Mapped[bool] = mapped_column(Boolean, default=False)
     revision: Mapped[int] = mapped_column(Integer, default=1)
@@ -448,8 +452,17 @@ class InjectionSchedulingPlanOrderState(Base):
         ),
         ForeignKeyConstraint(
             ["order_id", "factory_id"],
-            ["injection_scheduling_orders.id", "injection_scheduling_orders.factory_id"],
+            [
+                "injection_scheduling_orders.id",
+                "injection_scheduling_orders.factory_id",
+            ],
             name="fk_injection_scheduling_plan_order_state_order_factory",
+        ),
+        ForeignKeyConstraint(
+            ["order_revision_id"],
+            ["injection_scheduling_demand_order_versions.id"],
+            name="fk_inj_sched_plan_order_state_order_revision",
+            ondelete="RESTRICT",
         ),
         CheckConstraint(
             "order_quantity > 0 AND takeover_source_completed_quantity >= 0 "
@@ -472,6 +485,10 @@ class InjectionSchedulingPlanOrderState(Base):
             "ix_injection_scheduling_plan_order_state_plan_status",
             "plan_id",
             "status",
+        ),
+        Index(
+            "ix_inj_sched_plan_order_state_readiness",
+            "factory_readiness_status",
         ),
     )
 
@@ -496,9 +513,7 @@ class InjectionSchedulingPlanOrderState(Base):
         Numeric(14, 3), default=Decimal(0)
     )
     status: Mapped[str] = mapped_column(String(32), default="BACKLOG", index=True)
-    quantity_scope: Mapped[str] = mapped_column(
-        String(32), default="ORDER_CUMULATIVE"
-    )
+    quantity_scope: Mapped[str] = mapped_column(String(32), default="ORDER_CUMULATIVE")
     source_batch_id: Mapped[str | None] = mapped_column(
         String(96), nullable=True, index=True
     )
@@ -509,6 +524,12 @@ class InjectionSchedulingPlanOrderState(Base):
     )
     source_profile_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_lineage_json: Mapped[str] = mapped_column(Text, default="{}")
+    order_revision_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    factory_readiness_status: Mapped[str] = mapped_column(
+        String(32), default="LEGACY_UNKNOWN"
+    )
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(64), index=True)
     created_by_name: Mapped[str] = mapped_column(String(128), default="")
@@ -533,7 +554,10 @@ class InjectionSchedulingProgressAdjustment(Base):
         ),
         ForeignKeyConstraint(
             ["order_id", "factory_id"],
-            ["injection_scheduling_orders.id", "injection_scheduling_orders.factory_id"],
+            [
+                "injection_scheduling_orders.id",
+                "injection_scheduling_orders.factory_id",
+            ],
             name="fk_injection_scheduling_progress_adjustment_order_factory",
         ),
         CheckConstraint(
@@ -674,3 +698,9 @@ class InjectionSchedulingAuditEvent(Base):
     actor_user_id: Mapped[str] = mapped_column(String(64), index=True)
     actor_name: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[str] = mapped_column(String(32), index=True)
+
+
+# These tables are part of the same scheduling metadata graph. Importing them
+# here keeps focused test metadata complete when this model module is imported
+# without going through app.db.init_db or Alembic's model registry.
+from app.models import injection_scheduling_shared as _shared_models  # noqa: F401

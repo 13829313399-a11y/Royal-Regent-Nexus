@@ -4,7 +4,9 @@ export type ColumnPreset = 'planner' | 'production' | 'fit' | 'full'
 export type TaskStatus = 'RUNNING' | 'QUEUED' | 'BLOCKED' | 'COMPLETED' | 'CANCELLED' | 'REVIEW'
 export type FitDecision = 'PASS' | 'REVIEW_REQUIRED' | 'FAIL'
 export type PlanSliceKey = 'execution' | 'planning'
-export type ImportBatchState = 'IDENTIFYING' | 'MAPPING_REQUIRED' | 'PROFILE_REVIEW_PENDING' | 'MASTER_REVIEW_REQUIRED' | 'RECONCILIATION_CONFLICT' | 'PREVIEW_READY' | 'CONFIRMED' | 'FAILED' | string
+export type ImportDocumentKind = 'DEMAND_ORDER' | 'PLANNED_SCHEDULE' | 'SYSTEM_ROUND_TRIP' | 'MASTER_DATA'
+export type ImportDocumentKindChoice = ImportDocumentKind | 'AUTO'
+export type ImportBatchState = 'IDENTIFYING' | 'MAPPING_REQUIRED' | 'PROFILE_REVIEW_PENDING' | 'MASTER_REVIEW_REQUIRED' | 'RESOLUTION_REVIEW_REQUIRED' | 'RECONCILIATION_CONFLICT' | 'PREVIEW_READY' | 'PARTIALLY_CONFIRMED' | 'CONFIRMED' | 'FAILED' | string
 export type PlanExportMode = 'SOURCE_COMPATIBLE' | 'SYSTEM_STANDARD'
 
 export interface PlanExportResult {
@@ -31,6 +33,28 @@ export interface ImportIssueRecord {
   blocking: boolean
 }
 
+export interface DemandImportRowRecord {
+  rowId: string
+  source: Record<string, unknown>
+  canonical: Record<string, unknown>
+  resolutionStatus: string
+  resolutionReasons: string[]
+  resolvedValues: Record<string, unknown>
+  confirmationState: string
+  resolutionDigest: string
+}
+
+export interface MasterDataImportRowRecord {
+  rowId: string
+  entityType: string
+  source: Record<string, unknown>
+  canonical: Record<string, unknown>
+  resolutionStatus: string
+  confirmationState: string
+  activationBlockers: string[]
+  rowDigest: string
+}
+
 export interface ImportBatchRecord {
   id: string
   factoryId: string
@@ -38,6 +62,8 @@ export interface ImportBatchRecord {
   sourceFileHash: string
   batchState: ImportBatchState
   previewGeneration: number
+  documentKind: ImportDocumentKind
+  sourceNamespaceId: string
   profile: Record<string, unknown> | null
   sheetRoles: Array<Record<string, unknown>>
   mapping: Array<Record<string, unknown>>
@@ -47,10 +73,15 @@ export interface ImportBatchRecord {
   masterDifferences: Array<Record<string, unknown>>
   calculationComparisons: Array<Record<string, unknown>>
   reconciliationActions: Array<Record<string, unknown>>
+  demandRows: DemandImportRowRecord[]
+  masterDataRows: MasterDataImportRowRecord[]
+  resolutionDigest: string
+  mappingDraft: Record<string, unknown>
+  partialConfirmation: Record<string, unknown>
   planContext: Record<string, unknown>
   actionFingerprint: string
   summary: Record<string, unknown>
-  status: 'PREVIEW' | 'CONFIRMED'
+  status: 'PREVIEW' | 'PARTIALLY_CONFIRMED' | 'CONFIRMED'
   revision: number
   confirmedPlanId: string
   confirmedPlanRevision: number
@@ -375,7 +406,6 @@ export interface ScheduleGridRow {
   grossWeightG: number | string
   materialKg: number | string
   unitPrice: number | string
-  outsourcePrice: number | string
   ratio: string
   orderDate: string
   deliveryStart: string
@@ -392,9 +422,6 @@ export interface ScheduleGridRow {
   slack: number | string
   spray: string
   productionDays: number | string
-  shiftEnd: string
-  duration: string
-  shiftPlan: number | string
   machineA: string
   shotCapacity: number | string
   fit: FitDecision
