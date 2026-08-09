@@ -144,9 +144,7 @@ def _revision_snapshot(
     target_plan: InjectionSchedulingPlan | None,
     reference_plan: InjectionSchedulingPlan | None,
 ) -> tuple[str, str]:
-    plan_ids = [
-        item.id for item in (target_plan, reference_plan) if item is not None
-    ]
+    plan_ids = [item.id for item in (target_plan, reference_plan) if item is not None]
     tasks = (
         list(
             db.scalars(
@@ -369,9 +367,7 @@ def build_reconciliation_preview(
             adjustment_total = _decimal(state.progress_adjustment_total)
             signed_export = row.get("system_export")
             if signed_export is not None:
-                exported_completed = _decimal(
-                    signed_export.get("completed_at_export")
-                )
+                exported_completed = _decimal(signed_export.get("completed_at_export"))
                 exported_report_total = _decimal(
                     signed_export.get("report_increment_total_at_export")
                 )
@@ -437,7 +433,11 @@ def build_reconciliation_preview(
                         )
                     )
             elif excel_completed != baseline:
-                if excel_completed > baseline and report_total == 0 and adjustment_total == 0:
+                if (
+                    excel_completed > baseline
+                    and report_total == 0
+                    and adjustment_total == 0
+                ):
                     actions.append(
                         _action(
                             "UPDATE_PROGRESS",
@@ -484,10 +484,10 @@ def build_reconciliation_preview(
                     (
                         _decimal(state.order_quantity)
                         == _decimal(row.get("order_quantity")),
-                        state.delivery_start_date
-                        == row.get("delivery_start_date", ""),
+                        state.delivery_start_date == row.get("delivery_start_date", ""),
                         state.delivery_due_date == row.get("delivery_due_date", ""),
-                        state.status == (
+                        state.status
+                        == (
                             "COMPLETED"
                             if _decimal(state.completed_quantity)
                             >= _decimal(state.order_quantity)
@@ -497,7 +497,9 @@ def build_reconciliation_preview(
                 )
                 actions.append(
                     _action(
-                        "SKIP_IDENTICAL" if unchanged else "UPDATE_NON_EXECUTED_BASELINE",
+                        "SKIP_IDENTICAL"
+                        if unchanged
+                        else "UPDATE_NON_EXECUTED_BASELINE",
                         row=row,
                         target_order_id=state.order_id,
                         requires_publish=not unchanged,
@@ -527,10 +529,10 @@ def build_reconciliation_preview(
                     target_task_id=task.id,
                 )
             )
-        elif (
-            task.reported_quantity > 0
-            or task.execution_status in {"RUNNING", "COMPLETED"}
-        ):
+        elif task.reported_quantity > 0 or task.execution_status in {
+            "RUNNING",
+            "COMPLETED",
+        }:
             actions.append(
                 _action(
                     "CONFLICT_REPORTED_OR_RUNNING_TASK",
@@ -562,7 +564,10 @@ def build_reconciliation_preview(
             continue
         if _task_source_profile_family(task) not in {"", profile_family}:
             continue
-        if task.reported_quantity > 0 or task.execution_status in {"RUNNING", "COMPLETED"}:
+        if task.reported_quantity > 0 or task.execution_status in {
+            "RUNNING",
+            "COMPLETED",
+        }:
             actions.append(
                 _action(
                     "CONFLICT_REPORTED_OR_RUNNING_TASK",
@@ -617,16 +622,14 @@ def build_reconciliation_preview(
         "rule_revision": rule.revision if rule else 0,
     }
     action_payload = [
-        {key: value for key, value in item.items() if key != "id"}
-        for item in actions
+        {key: value for key, value in item.items() if key != "id"} for item in actions
     ]
     action_fingerprint = _hash(
         {"plan_context": plan_context, "actions": action_payload}
     )
     counts = Counter(item["action_type"] for item in actions)
     conflicts = sum(
-        counts[item]
-        for item in ("CONFLICT", "CONFLICT_REPORTED_OR_RUNNING_TASK")
+        counts[item] for item in ("CONFLICT", "CONFLICT_REPORTED_OR_RUNNING_TASK")
     )
     return {
         "reconciliation_actions": actions,
@@ -749,7 +752,9 @@ def _create_plan_state(
             if scheduled
             else "BACKLOG"
         ),
-        quantity_scope=(batch.profile_id and (row.get("quantity_scope") or "ORDER_CUMULATIVE"))
+        quantity_scope=(
+            batch.profile_id and (row.get("quantity_scope") or "ORDER_CUMULATIVE")
+        )
         or "ORDER_CUMULATIVE",
         source_batch_id=batch.id,
         source_sheet_name=row["source"].get("sheet_name", ""),
@@ -818,7 +823,8 @@ def clone_successor_draft(
     db.add(draft)
     db.flush()
     source_states = {
-        item.order_id: item for item in plan_order_states(db, source.factory_id, source.id)
+        item.order_id: item
+        for item in plan_order_states(db, source.factory_id, source.id)
     }
     source_tasks = list(
         db.scalars(
@@ -827,26 +833,43 @@ def clone_successor_draft(
                 InjectionSchedulingTask.factory_id == source.factory_id,
                 InjectionSchedulingTask.plan_id == source.id,
             )
-            .order_by(InjectionSchedulingTask.machine_id, InjectionSchedulingTask.sequence_no)
+            .order_by(
+                InjectionSchedulingTask.machine_id, InjectionSchedulingTask.sequence_no
+            )
         ).all()
     )
     order_ids = {item.order_id for item in source_tasks} | set(source_states)
-    orders = {
-        item.id: item
-        for item in db.scalars(
-            select(InjectionSchedulingOrder).where(
-                InjectionSchedulingOrder.factory_id == source.factory_id,
-                InjectionSchedulingOrder.id.in_(order_ids),
-            )
-        ).all()
-    } if order_ids else {}
+    orders = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(InjectionSchedulingOrder).where(
+                    InjectionSchedulingOrder.factory_id == source.factory_id,
+                    InjectionSchedulingOrder.id.in_(order_ids),
+                )
+            ).all()
+        }
+        if order_ids
+        else {}
+    )
     for order_id in sorted(order_ids):
         source_state = source_states.get(order_id)
         order = orders[order_id]
         report_total = _decimal(
             db.scalar(
-                select(func.coalesce(func.sum(InjectionSchedulingShiftReport.normalized_increment_quantity), 0))
-                .join(InjectionSchedulingTask, InjectionSchedulingTask.id == InjectionSchedulingShiftReport.task_id)
+                select(
+                    func.coalesce(
+                        func.sum(
+                            InjectionSchedulingShiftReport.normalized_increment_quantity
+                        ),
+                        0,
+                    )
+                )
+                .join(
+                    InjectionSchedulingTask,
+                    InjectionSchedulingTask.id
+                    == InjectionSchedulingShiftReport.task_id,
+                )
                 .where(
                     InjectionSchedulingTask.plan_id == source.id,
                     InjectionSchedulingShiftReport.factory_id == source.factory_id,
@@ -863,31 +886,61 @@ def clone_successor_draft(
             source_state.progress_adjustment_total if source_state is not None else 0
         )
         completed = max(takeover + report_total + adjustments, Decimal(0))
-        quantity = _decimal(source_state.order_quantity if source_state else order.order_quantity)
+        quantity = _decimal(
+            source_state.order_quantity if source_state else order.order_quantity
+        )
         state = InjectionSchedulingPlanOrderState(
             id=f"ispostate-{uuid4().hex}",
             factory_id=source.factory_id,
             plan_id=draft.id,
             order_id=order_id,
-            stable_order_key=(source_state.stable_order_key if source_state else _lineage_stable_order(order)),
+            stable_order_key=(
+                source_state.stable_order_key
+                if source_state
+                else _lineage_stable_order(order)
+            ),
             order_quantity=quantity,
-            delivery_start_date=(source_state.delivery_start_date if source_state else order.delivery_start_date),
-            delivery_due_date=(source_state.delivery_due_date if source_state else order.delivery_due_date),
+            delivery_start_date=(
+                source_state.delivery_start_date
+                if source_state
+                else order.delivery_start_date
+            ),
+            delivery_due_date=(
+                source_state.delivery_due_date
+                if source_state
+                else order.delivery_due_date
+            ),
             takeover_source_completed_quantity=takeover,
             report_increment_total=report_total,
             progress_adjustment_total=adjustments,
             completed_quantity=completed,
-            status=("COMPLETED" if completed >= quantity else source_state.status if source_state else order.status),
-            quantity_scope=source_state.quantity_scope if source_state else "ORDER_CUMULATIVE",
+            status=(
+                "COMPLETED"
+                if completed >= quantity
+                else source_state.status
+                if source_state
+                else order.status
+            ),
+            quantity_scope=source_state.quantity_scope
+            if source_state
+            else "ORDER_CUMULATIVE",
             source_batch_id=source_state.source_batch_id if source_state else None,
             source_sheet_name=source_state.source_sheet_name if source_state else "",
             source_row=source_state.source_row if source_state else None,
             source_profile_id=source_state.source_profile_id if source_state else None,
-            source_profile_revision=source_state.source_profile_revision if source_state else None,
+            source_profile_revision=source_state.source_profile_revision
+            if source_state
+            else None,
             source_lineage_json=_json(
                 {
-                    **(_load_json(source_state.source_lineage_json, {}) if source_state else {}),
-                    "source_plan_order_state_id": source_state.id if source_state else "",
+                    **(
+                        _load_json(source_state.source_lineage_json, {})
+                        if source_state
+                        else {}
+                    ),
+                    "source_plan_order_state_id": source_state.id
+                    if source_state
+                    else "",
                     "source_plan_id": source.id,
                     "report_increment_at_clone": str(report_total),
                     "progress_adjustment_at_clone": str(adjustments),
@@ -912,6 +965,7 @@ def clone_successor_draft(
                 machine_id=source_task.machine_id,
                 order_id=source_task.order_id,
                 mold_id=source_task.mold_id,
+                physical_mold_asset_id=source_task.physical_mold_asset_id,
                 mold_copy_no=source_task.mold_copy_no,
                 sequence_no=source_task.sequence_no,
                 execution_status=source_task.execution_status,
@@ -1098,9 +1152,7 @@ def rebase_successor_draft(
         ).all()
     )
     scheduled_order_ids = {
-        item.order_id
-        for item in draft_tasks
-        if item.execution_status != "CANCELLED"
+        item.order_id for item in draft_tasks if item.execution_status != "CANCELLED"
     }
     rebased_states = 0
     for state in draft_states:
@@ -1130,9 +1182,7 @@ def rebase_successor_draft(
         lineage.update(
             report_increment_at_clone=str(source_state.report_increment_total),
             progress_adjustment_at_clone=str(source_state.progress_adjustment_total),
-            rebased_from_event_sequence=_latest_event_sequence(
-                db, draft.factory_id
-            ),
+            rebased_from_event_sequence=_latest_event_sequence(db, draft.factory_id),
         )
         state.source_lineage_json = _json(lineage)
         state.revision += 1
@@ -1398,7 +1448,9 @@ def apply_takeover_actions(
     state_by_order = {item.stable_order_key: item for item in states}
     max_sequences: defaultdict[str, int] = defaultdict(lambda: -1)
     for task in tasks:
-        max_sequences[task.machine_id] = max(max_sequences[task.machine_id], task.sequence_no)
+        max_sequences[task.machine_id] = max(
+            max_sequences[task.machine_id], task.sequence_no
+        )
 
     result_counts: Counter[str] = Counter()
     order_cache: dict[str, InjectionSchedulingOrder] = {}
@@ -1419,17 +1471,19 @@ def apply_takeover_actions(
                     for item in tasks
                     if item.id == action["target_task_id"]
                     or item.source_task_id == action["target_task_id"]
-                    or (
-                        stable_row
-                        and item.stable_row_key == stable_row
-                    )
+                    or (stable_row and item.stable_row_key == stable_row)
                 ),
                 None,
             )
             if task is None:
                 raise HTTPException(status_code=409, detail="待取消基线任务已变化")
-            if task.reported_quantity > 0 or task.execution_status in {"RUNNING", "COMPLETED"}:
-                raise HTTPException(status_code=409, detail="已有执行水位的基线不能取消")
+            if task.reported_quantity > 0 or task.execution_status in {
+                "RUNNING",
+                "COMPLETED",
+            }:
+                raise HTTPException(
+                    status_code=409, detail="已有执行水位的基线不能取消"
+                )
             task.execution_status = "CANCELLED"
             task.revision += 1
             task.manual_override_reason = action_reasons[action["id"]]
@@ -1488,7 +1542,10 @@ def apply_takeover_actions(
             )
             continue
         machine = machines.get(row.get("machine_code", ""))
-        if action_type in {"CREATE_BASELINE_TASK", "UPDATE_NON_EXECUTED_BASELINE"} and machine is None:
+        if (
+            action_type in {"CREATE_BASELINE_TASK", "UPDATE_NON_EXECUTED_BASELINE"}
+            and machine is None
+        ):
             raise HTTPException(status_code=409, detail="来源机台尚未通过主数据审批")
         if action_type == "UPDATE_NON_EXECUTED_BASELINE":
             state.order_quantity = _decimal(row.get("order_quantity"))
@@ -1499,8 +1556,13 @@ def apply_takeover_actions(
             state.updated_by_name = _actor_name(user)
             state.updated_at = timestamp
             if task is not None:
-                if task.reported_quantity > 0 or task.execution_status in {"RUNNING", "COMPLETED"}:
-                    raise HTTPException(status_code=409, detail="已有执行水位的基线不能更新")
+                if task.reported_quantity > 0 or task.execution_status in {
+                    "RUNNING",
+                    "COMPLETED",
+                }:
+                    raise HTTPException(
+                        status_code=409, detail="已有执行水位的基线不能更新"
+                    )
                 task.machine_id = machine.id
                 task.mold_id = mold.id if mold else None
                 task.planned_start = row.get("planned_start", "")
@@ -1524,7 +1586,9 @@ def apply_takeover_actions(
                 Decimal(0),
             )
         source_lineage = {
-            "profile_family": (normalized.get("profile") or {}).get("profile_family", ""),
+            "profile_family": (normalized.get("profile") or {}).get(
+                "profile_family", ""
+            ),
             "stable_order_key": stable_order,
             "stable_row_key": stable_row,
             "field_lineage": row["source"].get("field_lineage", {}),
@@ -1631,7 +1695,9 @@ def manual_progress_adjustment(
     )
     if replay is not None:
         if replay.payload_hash != payload_hash:
-            raise HTTPException(status_code=409, detail="相同 request_id 已用于其他进度更正")
+            raise HTTPException(
+                status_code=409, detail="相同 request_id 已用于其他进度更正"
+            )
         state = db.scalar(
             select(InjectionSchedulingPlanOrderState).where(
                 InjectionSchedulingPlanOrderState.plan_id == replay.plan_id,
@@ -1658,7 +1724,9 @@ def manual_progress_adjustment(
         .with_for_update()
     )
     if plan is None:
-        raise HTTPException(status_code=409, detail="只能更正当前 PUBLISHED 执行计划进度")
+        raise HTTPException(
+            status_code=409, detail="只能更正当前 PUBLISHED 执行计划进度"
+        )
     state = db.scalar(
         select(InjectionSchedulingPlanOrderState)
         .where(
@@ -1688,7 +1756,9 @@ def manual_progress_adjustment(
             )
         )
         if task is None:
-            raise HTTPException(status_code=404, detail="进度更正任务不属于指定计划订单")
+            raise HTTPException(
+                status_code=404, detail="进度更正任务不属于指定计划订单"
+            )
     timestamp = _now()
     record = _progress_adjustment(
         db,

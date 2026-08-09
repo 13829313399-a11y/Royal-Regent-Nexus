@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -30,6 +31,11 @@ from app.models.injection_scheduling_scheduler import (
     InjectionSchedulingRunAssignment,
     InjectionSchedulingTransitionRule,
 )
+from app.models.injection_scheduling_shared import (
+    InjectionSchedulingMoldReservation,
+    InjectionSchedulingPhysicalMoldAsset,
+    InjectionSchedulingRolloutPolicy,
+)
 from app.schemas.injection_scheduling_scheduler import (
     InjectionSchedulingRunApply,
     InjectionSchedulingRunApplyOut,
@@ -46,9 +52,12 @@ from app.services.injection_scheduling import (
 from app.services.injection_scheduling_execution import (
     _audit,
     _delivery_slack_days,
+    _ensure_physical_reservation_window_available,
+    _physical_asset_for_new_task,
     _record_plan_revision,
     _remaining_shifts,
     _stable_order_key,
+    _sync_task_reservation_window,
     _validate_proposed_task_windows,
     plan_out,
 )
@@ -74,6 +83,33 @@ def _now() -> str:
     return business_now().isoformat(timespec="seconds")
 
 
+def _expire_tentative_reservations(db: Session, *, factory_id: str) -> int:
+    timestamp = _now()
+    result = db.execute(
+        update(InjectionSchedulingMoldReservation)
+        .where(
+            InjectionSchedulingMoldReservation.factory_id == factory_id,
+            InjectionSchedulingMoldReservation.status == "TENTATIVE",
+            InjectionSchedulingMoldReservation.expires_at != "",
+            InjectionSchedulingMoldReservation.expires_at <= timestamp,
+        )
+        .values(
+            status="EXPIRED",
+            revision=InjectionSchedulingMoldReservation.revision + 1,
+            released_at=timestamp,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def _tentative_hold_expires_at(db: Session, factory_id: str) -> str:
+    policy = db.get(InjectionSchedulingRolloutPolicy, factory_id)
+    ttl_minutes = policy.tentative_hold_ttl_minutes if policy is not None else 30
+    return (business_now() + timedelta(minutes=ttl_minutes)).isoformat(
+        timespec="seconds"
+    )
+
+
 def _actor_name(user: AuthContext) -> str:
     return user.display_name or user.username
 
@@ -94,6 +130,7 @@ def assignment_out(
         order_id=record.order_id,
         existing_task_id=record.existing_task_id,
         mold_id=record.mold_id,
+        physical_mold_asset_id=record.physical_mold_asset_id,
         mold_copy_no=record.mold_copy_no,
         machine_id=record.machine_id,
         sequence_no=record.sequence_no,
@@ -193,6 +230,7 @@ def _selected_orders(
     db: Session,
     *,
     factory_id: str,
+    plan_id: str,
     plan_tasks: list[InjectionSchedulingTask],
     requested_order_ids: list[str],
 ) -> list[InjectionSchedulingOrder]:
@@ -245,6 +283,37 @@ def _selected_orders(
             status_code=409,
             detail={"message": "已完成或已取消订单不可排期", "order_ids": invalid},
         )
+    demand_order_ids = {
+        item.id for item in orders if item.source_type == "DEMAND_ORDER_VERSION"
+    }
+    if demand_order_ids:
+        ready_demand_order_ids = set(
+            db.scalars(
+                select(InjectionSchedulingPlanOrderState.order_id).where(
+                    InjectionSchedulingPlanOrderState.factory_id == factory_id,
+                    InjectionSchedulingPlanOrderState.plan_id == plan_id,
+                    InjectionSchedulingPlanOrderState.order_id.in_(demand_order_ids),
+                    InjectionSchedulingPlanOrderState.factory_readiness_status
+                    == "FACTORY_READY",
+                )
+            ).all()
+        )
+        blocked = sorted(demand_order_ids - ready_demand_order_ids)
+        if blocked and requested_order_ids:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DEMAND_ORDERS_NOT_FACTORY_READY",
+                    "message": "需求订单可留在 BACKLOG，但本厂实物或能力未就绪，不能自动排产",
+                    "order_ids": blocked,
+                },
+            )
+        orders = [item for item in orders if item.id not in blocked]
+        order_ids = [item for item in order_ids if item not in blocked]
+        if not orders:
+            raise HTTPException(
+                status_code=409, detail="当前草案没有本厂就绪的可排订单"
+            )
     order_by_id = {item.id: item for item in orders}
     return [order_by_id[item] for item in order_ids]
 
@@ -272,6 +341,20 @@ def create_run(
                 status_code=409, detail="相同 request_id 已用于不同自动排期请求"
             )
         return replay
+    expired_hold_count = _expire_tentative_reservations(db, factory_id=factory_id)
+    if expired_hold_count:
+        _audit(
+            db,
+            factory_id=factory_id,
+            event_type="tentative_mold_holds_expired",
+            entity_type="mold_reservation",
+            entity_id=factory_id,
+            entity_revision=expired_hold_count,
+            request_id=f"{request_id}:tentative-expiry"[:128],
+            detail={"expired_count": expired_hold_count},
+            user=user,
+        )
+        db.commit()
     plan = _require_plan(db, factory_id, payload.plan_id)
     if plan.status != "DRAFT":
         raise HTTPException(
@@ -369,9 +452,11 @@ def create_run(
         orders = _selected_orders(
             db,
             factory_id=factory_id,
+            plan_id=plan.id,
             plan_tasks=plan_tasks,
             requested_order_ids=payload.order_ids,
         )
+        order_by_id = {item.id: item for item in orders}
         machines = list(
             db.scalars(
                 select(InjectionSchedulingMachine)
@@ -594,33 +679,80 @@ def create_run(
                 )
             ],
         }
+        task_by_id = {item.id: item for item in plan_tasks}
+        tentative_hold_count = 0
+        hold_expires_at = _tentative_hold_expires_at(db, factory_id)
         for item in result.assignments:
-            db.add(
-                InjectionSchedulingRunAssignment(
-                    id=f"isassignment-{uuid4().hex}",
+            assignment_id = f"isassignment-{uuid4().hex}"
+            physical_asset_id = None
+            if item["existing_task_id"]:
+                existing_task = task_by_id.get(item["existing_task_id"])
+                physical_asset_id = (
+                    existing_task.physical_mold_asset_id if existing_task else None
+                )
+            elif item["decision"] in {"PASS", "REVIEW_REQUIRED"} and item["machine_id"]:
+                order = order_by_id[item["order_id"]]
+                physical_asset = _physical_asset_for_new_task(
+                    db,
+                    order=order,
                     factory_id=factory_id,
-                    run_id=record.id,
-                    order_id=item["order_id"],
-                    existing_task_id=item["existing_task_id"],
-                    mold_id=item["mold_id"],
+                    requested_asset_id=None,
                     mold_copy_no=item["mold_copy_no"],
-                    machine_id=item["machine_id"],
-                    sequence_no=item["sequence_no"],
                     planned_start=item["planned_start"],
                     planned_finish=item["planned_finish"],
-                    setup_minutes=item["setup_minutes"],
-                    production_minutes=item["production_minutes"],
-                    planned_downtime_minutes=item["planned_downtime_minutes"],
-                    changeover_type=item["changeover_type"],
-                    decision=item["decision"],
-                    score=Decimal(str(item["score"]))
-                    if item["score"] is not None
-                    else None,
-                    explanation_json=_json(item["explanation"]),
-                    unassigned_reason_code=item["unassigned_reason_code"],
-                    created_at=timestamp,
                 )
+                physical_asset_id = physical_asset.id if physical_asset else None
+            assignment = InjectionSchedulingRunAssignment(
+                id=assignment_id,
+                factory_id=factory_id,
+                run_id=record.id,
+                order_id=item["order_id"],
+                existing_task_id=item["existing_task_id"],
+                mold_id=item["mold_id"],
+                physical_mold_asset_id=physical_asset_id,
+                mold_copy_no=item["mold_copy_no"],
+                machine_id=item["machine_id"],
+                sequence_no=item["sequence_no"],
+                planned_start=item["planned_start"],
+                planned_finish=item["planned_finish"],
+                setup_minutes=item["setup_minutes"],
+                production_minutes=item["production_minutes"],
+                planned_downtime_minutes=item["planned_downtime_minutes"],
+                changeover_type=item["changeover_type"],
+                decision=item["decision"],
+                score=Decimal(str(item["score"]))
+                if item["score"] is not None
+                else None,
+                explanation_json=_json(item["explanation"]),
+                unassigned_reason_code=item["unassigned_reason_code"],
+                created_at=timestamp,
             )
+            db.add(assignment)
+            if physical_asset_id and not item["existing_task_id"]:
+                db.add(
+                    InjectionSchedulingMoldReservation(
+                        id=f"ismoldreservation-{uuid4().hex}",
+                        physical_asset_id=physical_asset_id,
+                        factory_id=factory_id,
+                        plan_id=plan.id,
+                        task_id=None,
+                        window_start=item["planned_start"],
+                        window_end=item["planned_finish"],
+                        status="TENTATIVE",
+                        revision=1,
+                        expires_at=hold_expires_at,
+                        idempotency_key=f"run:{record.id}:{assignment_id}",
+                        source_kind="SCHEDULING_PREVIEW",
+                        created_by=user.id,
+                        created_at=timestamp,
+                        released_at="",
+                    )
+                )
+                tentative_hold_count += 1
+        summary["tentative_hold_count"] = tentative_hold_count
+        summary["tentative_hold_expires_at"] = (
+            hold_expires_at if tentative_hold_count else ""
+        )
         record.summary_json = _json(summary)
         record.status = (
             "SUCCEEDED"
@@ -777,6 +909,21 @@ def apply_run(
             audit_sequence=replay.sequence,
             idempotent_replay=True,
         )
+
+    expired_hold_count = _expire_tentative_reservations(db, factory_id=factory_id)
+    if expired_hold_count:
+        _audit(
+            db,
+            factory_id=factory_id,
+            event_type="tentative_mold_holds_expired",
+            entity_type="mold_reservation",
+            entity_id=factory_id,
+            entity_revision=expired_hold_count,
+            request_id=f"{payload.request_id}:tentative-expiry"[:128],
+            detail={"expired_count": expired_hold_count},
+            user=user,
+        )
+        db.commit()
 
     run = _require_run(db, factory_id, run_id)
     if run.status not in {"SUCCEEDED", "PARTIAL"}:
@@ -1029,9 +1176,64 @@ def apply_run(
                     raise HTTPException(
                         status_code=409, detail="排产任务 revision 已变化"
                     )
+                _sync_task_reservation_window(
+                    db,
+                    task_id=task.id,
+                    plan_id=plan.id,
+                    planned_start=assignment.planned_start,
+                    planned_finish=assignment.planned_finish,
+                )
             else:
                 order = db.get(InjectionSchedulingOrder, assignment.order_id)
                 stable_order_key = _stable_order_key(order)
+                tentative_reservation = None
+                physical_asset = None
+                if assignment.physical_mold_asset_id:
+                    physical_asset = db.get(
+                        InjectionSchedulingPhysicalMoldAsset,
+                        assignment.physical_mold_asset_id,
+                    )
+                    tentative_reservation = db.scalar(
+                        select(InjectionSchedulingMoldReservation)
+                        .where(
+                            InjectionSchedulingMoldReservation.factory_id == factory_id,
+                            InjectionSchedulingMoldReservation.idempotency_key
+                            == f"run:{run.id}:{assignment.id}",
+                            InjectionSchedulingMoldReservation.status == "TENTATIVE",
+                        )
+                        .with_for_update()
+                    )
+                    if (
+                        physical_asset is None
+                        or physical_asset.current_factory_id != factory_id
+                        or physical_asset.status != "AVAILABLE"
+                        or tentative_reservation is None
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "TENTATIVE_MOLD_HOLD_EXPIRED_OR_STALE",
+                                "message": "排期预览的实物模具占用已过期或资产状态已变化，请重新生成预览",
+                                "assignment_id": assignment.id,
+                            },
+                        )
+                    _ensure_physical_reservation_window_available(
+                        db,
+                        physical_asset_id=physical_asset.id,
+                        planned_start=assignment.planned_start,
+                        planned_finish=assignment.planned_finish,
+                        exclude_reservation_ids={tentative_reservation.id},
+                    )
+                else:
+                    physical_asset = _physical_asset_for_new_task(
+                        db,
+                        order=order,
+                        factory_id=factory_id,
+                        requested_asset_id=None,
+                        mold_copy_no=assignment.mold_copy_no,
+                        planned_start=assignment.planned_start,
+                        planned_finish=assignment.planned_finish,
+                    )
                 task = InjectionSchedulingTask(
                     id=f"istask-{uuid4().hex}",
                     factory_id=factory_id,
@@ -1039,6 +1241,9 @@ def apply_run(
                     machine_id=assignment.machine_id or "",
                     order_id=assignment.order_id,
                     mold_id=assignment.mold_id,
+                    physical_mold_asset_id=(
+                        physical_asset.id if physical_asset else None
+                    ),
                     mold_copy_no=assignment.mold_copy_no,
                     sequence_no=assignment.sequence_no or 0,
                     execution_status="QUEUED",
@@ -1070,9 +1275,7 @@ def apply_run(
                     takeover_source_completed_quantity=order.source_completed_quantity,
                     origin="auto_schedule",
                     stable_order_key=stable_order_key,
-                    stable_row_key=_hash(
-                        [run.id, assignment.order_id, assignment.id]
-                    ),
+                    stable_row_key=_hash([run.id, assignment.order_id, assignment.id]),
                     source_task_id=None,
                     inherited_report_counter=Decimal(0),
                     completed_at_clone=Decimal(0),
@@ -1096,6 +1299,34 @@ def apply_run(
                     updated_at=timestamp,
                 )
                 db.add(task)
+                if tentative_reservation is not None:
+                    tentative_reservation.plan_id = plan.id
+                    tentative_reservation.task_id = task.id
+                    tentative_reservation.status = "ACTIVE"
+                    tentative_reservation.expires_at = ""
+                    tentative_reservation.source_kind = "AUTO_SCHEDULE"
+                    tentative_reservation.revision += 1
+                    tentative_reservation.released_at = ""
+                elif physical_asset is not None:
+                    db.add(
+                        InjectionSchedulingMoldReservation(
+                            id=f"ismoldreservation-{uuid4().hex}",
+                            physical_asset_id=physical_asset.id,
+                            factory_id=factory_id,
+                            plan_id=plan.id,
+                            task_id=task.id,
+                            window_start=assignment.planned_start,
+                            window_end=assignment.planned_finish,
+                            status="ACTIVE",
+                            revision=1,
+                            expires_at="",
+                            idempotency_key=f"task:{task.id}",
+                            source_kind="AUTO_SCHEDULE",
+                            created_by=user.id,
+                            created_at=timestamp,
+                            released_at="",
+                        )
+                    )
             state = states.get(assignment.order_id)
             order = db.get(InjectionSchedulingOrder, assignment.order_id)
             if state is None:
@@ -1168,6 +1399,23 @@ def apply_run(
         run.applied_by = user.id
         run.applied_by_name = _actor_name(user)
         run.revision += 1
+        stale_holds = list(
+            db.scalars(
+                select(InjectionSchedulingMoldReservation)
+                .where(
+                    InjectionSchedulingMoldReservation.factory_id == factory_id,
+                    InjectionSchedulingMoldReservation.status == "TENTATIVE",
+                    InjectionSchedulingMoldReservation.idempotency_key.like(
+                        f"run:{run.id}:%"
+                    ),
+                )
+                .with_for_update()
+            ).all()
+        )
+        for hold in stale_holds:
+            hold.status = "RELEASED"
+            hold.revision += 1
+            hold.released_at = timestamp
         db.flush()
         refreshed_plan = _require_plan(db, factory_id, plan.id)
         _record_plan_revision(db, plan=refreshed_plan, user=user, timestamp=timestamp)

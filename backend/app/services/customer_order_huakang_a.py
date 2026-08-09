@@ -12,8 +12,13 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from app.services.huakang_a_order_legacy import schedule_parser
-from app.services.huakang_a_order_legacy.common_new_order_excel import (
-    create_new_order_workbook,
+from app.services.huaxing_order_legacy.new_order_excel import (
+    append_records_to_workbook,
+)
+from app.services.customer_order_manual import (
+    apply_overrides_to_preview,
+    apply_overrides_to_records,
+    decorate_manual_resolution_policy,
 )
 
 
@@ -49,7 +54,7 @@ HUAKANG_A_CUSTOMER_MAPPINGS: dict[str, HuakangACustomerMappingSpec] = {
         po_extensions=(".pdf", ".xls", ".xlsx", ".xlsm"),
         schedule_extensions=(".xlsx", ".xlsm"),
         input_template="HUAKANG_A_360_PO_RELEASE_V1",
-        target_template="HUAKANG_A_360_NEW_ORDER_V1",
+        target_template="HUAKANG_A_360_SCHEDULE_APPEND_V2",
         rule_summary=(
             "读取 ThreeSixty PURCHASE ORDER RELEASE 的 RL 合同号、修订日期、客户 PO、"
             "货号、数量、装箱、验货日、FCD、柜型和卸货港，并写入“360客排期表新单”。"
@@ -122,7 +127,8 @@ def _quantity_key(value: Any) -> str:
 
 def _safe_output_name(schedule_file_name: str) -> str:
     stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(schedule_file_name).stem).strip(" ._")
-    return f"{stem or '华康A排期'}_360新单.xlsx"
+    suffix = ".xlsm" if Path(schedule_file_name).suffix.lower() == ".xlsm" else ".xlsx"
+    return f"{stem or '华康A排期'}_360新单{suffix}"
 
 
 def _temporary_name(index: int, file_name: str) -> str:
@@ -397,7 +403,10 @@ def create_huakang_a_customer_preview(
         "warnings": list(dict.fromkeys([
             spec.rule_summary,
             "入单日期沿用 PO 的 Revision Date；来单日期仅作为本次导入追踪日期。",
-            "导出结果只包含本批新单，不复制历史排期明细，也不会覆盖原排期。",
+            "导出结果完整保留当前排期的所有 Sheet、历史数据、格式、公式、图片和打印设置；"
+            "仅在“360客排期表”明细末尾/合计行之前插入本批新单，并从插入点向上选择"
+            "最近的正常明细行继承格式、字体和公式逻辑，跳过合计/小计、分组标题和空白"
+            "分隔行；另存为新文件，不覆盖原排期。",
             *prepared.warnings,
         ])),
     }
@@ -434,6 +443,7 @@ def export_huakang_a_customer_schedule(
     schedule_file_name: str,
     schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_huakang_a_customer_preview(
         customer_code=customer_code,
@@ -443,12 +453,14 @@ def export_huakang_a_customer_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
+    decorate_manual_resolution_policy(preview)
+    apply_overrides_to_preview(preview, manual_overrides or [])
     requested_skips = set(skipped_issue_keys or set())
     skippable = {
         issue["skip_key"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue.get("can_skip")
+        if issue.get("skip_key")
     }
     if requested_skips - skippable:
         raise HuakangACustomerOrderError("确认项已失效，请重新预览后再生成")
@@ -464,20 +476,30 @@ def export_huakang_a_customer_schedule(
         raise HuakangACustomerOrderError("本批文件没有可安全生成的新单明细")
 
     prepared = _prepare_batch(po_files, schedule_file_name, schedule_content)
-    records = [_new_order_record(record) for record in prepared.records if record.get("parse_ok")]
+    apply_overrides_to_records(
+        prepared.records,
+        [str(row["id"]) for row in preview["rows"]],
+        manual_overrides or [],
+        field_aliases={
+            "product_no": "item_no",
+            "product_name_en": "description",
+            "units_per_carton": "master_carton_qty",
+            "line_q": "planned_inspection_date",
+            "requested_ship_date": "factory_commit_date",
+            "po_no": "customer_po",
+        },
+    )
+    records = [_new_order_record(record) for record in prepared.records]
     with TemporaryDirectory(prefix="huakang-a-360-output-") as temp_dir:
         output_path = Path(temp_dir) / preview["output_file_name"]
         try:
-            create_new_order_workbook(
+            append_records_to_workbook(
                 schedule_content,
                 output_path,
                 records,
                 NEW_ORDER_ALIASES,
                 filename=schedule_file_name,
                 sheet_names=(schedule_parser.SCHEDULE_SHEET,),
-                header_rows=3,
-                style_row=5,
-                sheet_title="360客排期表新单",
             )
         except Exception as exc:
             raise HuakangACustomerOrderError(f"生成华康A 360新单失败：{exc}") from exc

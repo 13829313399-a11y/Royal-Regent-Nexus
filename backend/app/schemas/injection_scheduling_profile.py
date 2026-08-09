@@ -24,6 +24,8 @@ class InjectionSchedulingImportProfileOut(BaseModel):
     template_signature: str
     header_fingerprint: str
     renderer_code: str
+    document_kind: str
+    source_namespace_id: str
     config: dict[str, Any]
     created_by: str
     created_by_name: str

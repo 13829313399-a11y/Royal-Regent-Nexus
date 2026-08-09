@@ -71,10 +71,10 @@ def test_huakang_c_registry_is_factory_scoped_and_keeps_maxx_separate() -> None:
     )
     assert customer_order_api._get_mapped_customer_spec(
         "maxx", "huaxing"
-    ).target_template == "HUAXING_MAXX_NEW_ORDER_V1"
+    ).target_template == "HUAXING_MAXX_SCHEDULE_APPEND_V2"
     assert customer_order_api._get_mapped_customer_spec(
         "maxx", "huakang-c"
-    ).target_template == "HUAKANG_C_MAXX_NEW_ORDER_V1"
+    ).target_template == "HUAKANG_C_MAXX_SCHEDULE_APPEND_V2"
 
     with pytest.raises(service.HuakangCCustomerOrderError, match="只属于华康C厂区"):
         service.create_huakang_c_customer_preview(
@@ -173,11 +173,11 @@ def test_legacy_parser_recognizes_each_huakang_c_customer(
 @pytest.mark.parametrize(
     ("customer_code", "contract_column", "item_column", "quantity_column", "data_row"),
     [
-        ("index", 5, 6, 10, 4),
-        ("jazwares", 5, 9, 11, 2),
-        ("maxx", 5, 8, 11, 2),
-        ("strottman", 5, 8, 11, 3),
-        ("jp", 4, 5, 7, 3),
+        ("index", 5, 6, 10, 7),
+        ("jazwares", 5, 9, 11, 3),
+        ("maxx", 5, 8, 11, 3),
+        ("strottman", 5, 8, 11, 4),
+        ("jp", 4, 5, 7, 4),
     ],
 )
 def test_preview_and_export_follow_each_customer_schedule_profile(
@@ -226,17 +226,15 @@ def test_preview_and_export_follow_each_customer_schedule_profile(
     )
     workbook = openpyxl.load_workbook(BytesIO(output), data_only=False)
     try:
-        assert workbook.sheetnames[:2] == ["新增排期", "解析明细"]
-        worksheet = workbook["新增排期"]
+        profile = service.huakang_schedule.PROFILES[
+            service.get_huakang_c_customer_mapping(customer_code).legacy_code
+        ]
+        assert workbook.sheetnames == [profile.sheets[0]]
+        worksheet = workbook[profile.sheets[0]]
+        assert worksheet.cell(profile.style_row, profile.key_cols[0]).value == "OLD-CONTRACT"
         assert worksheet.cell(data_row, contract_column).value == "SC-100"
         assert worksheet.cell(data_row, item_column).value == "ITEM-1"
         assert worksheet.cell(data_row, quantity_column).value == 120
-        assert all(
-            "OLD-CONTRACT" not in str(cell.value)
-            for sheet in workbook
-            for cells in sheet.iter_rows()
-            for cell in cells
-        )
     finally:
         workbook.close()
     assert file_name == preview["output_file_name"]

@@ -19,9 +19,12 @@ describe('injection scheduling V2 workspace foundation', () => {
     expect(viewSource).not.toContain('InjectionSchedulingWorkspaceView')
   })
 
-  it('exposes all uploaded-plan fields and required frozen defaults', () => {
-    expect(uploadedPlanFieldCount).toBe(47)
+  it('exposes the retained uploaded-plan fields and required frozen defaults', () => {
+    expect(uploadedPlanFieldCount).toBe(43)
     expect(schedulingColumns.length).toBeGreaterThanOrEqual(uploadedPlanFieldCount)
+    expect(schedulingColumns.map((column) => column.key)).not.toEqual(expect.arrayContaining([
+      'outsourcePrice', 'shiftEnd', 'duration', 'shiftPlan',
+    ]))
     expect(schedulingColumns.filter((column) => column.frozen).map((column) => column.key)).toEqual([
       'status', 'sequence', 'machineCode', 'moldA', 'moldNo', 'productName', 'orderNo', 'itemNo',
     ])
@@ -41,5 +44,17 @@ describe('injection scheduling V2 workspace foundation', () => {
     expect(storeSource).toContain("a.status === 'RUNNING'")
     expect(storeSource).toContain("b.status === 'RUNNING'")
     expect(storeSource).toContain('function moveColumn')
+  })
+
+  it('projects demand-order planning facts with the agreed plan-column mapping', () => {
+    expect(storeSource).toContain("readLineage(order, 'source_mold_no'")
+    expect(storeSource).toContain('setQuantity: total')
+    expect(storeSource).toContain("readLineage(order, 'color_name'")
+    expect(storeSource).toContain("readLineage(order, 'color_powder_code'")
+    expect(storeSource).toContain("readLineage(order, 'material_name'")
+    expect(storeSource).toContain("gridValue(order, 'whole_shot_net_weight_g'")
+    expect(storeSource).toContain("gridValue(order, 'total_gross_weight'")
+    expect(storeSource).toContain("readLineage(order, 'sprue_ratio'")
+    expect(storeSource).toContain("readLineage(order, 'order_date'")
   })
 })

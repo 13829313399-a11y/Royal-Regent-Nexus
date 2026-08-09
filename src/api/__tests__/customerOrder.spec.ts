@@ -45,6 +45,12 @@ describe('customer order api', () => {
       ['row-1|missing_unit_price|unit_price_hkd'],
       'preview-fingerprint-1',
       '测试阶段已核对单价留空',
+      [{
+        row_id: 'row-1',
+        issue_key: 'row-1|missing_unit_price|unit_price_hkd',
+        field: 'unit_price_hkd',
+        value: '18.50',
+      }],
     )
 
     expect(result.blob).toBe(blob)
@@ -56,6 +62,12 @@ describe('customer order api', () => {
     )
     expect(payload.get('preview_fingerprint')).toBe('preview-fingerprint-1')
     expect(payload.get('confirmation_reason')).toBe('测试阶段已核对单价留空')
+    expect(payload.get('manual_overrides')).toBe(JSON.stringify([{
+      row_id: 'row-1',
+      issue_key: 'row-1|missing_unit_price|unit_price_hkd',
+      field: 'unit_price_hkd',
+      value: '18.50',
+    }]))
     expect(post.mock.calls[0]![2]).toEqual(expect.objectContaining({
       responseType: 'blob',
       timeout: 120_000,
@@ -109,6 +121,7 @@ describe('customer order api', () => {
     const exportPayload = post.mock.calls[1]![1] as FormData
     expect(exportPayload.getAll('po_files')).toEqual(poFiles)
     expect(exportPayload.get('confirmed')).toBe('true')
+    expect(exportPayload.get('manual_overrides')).toBe('[]')
     expect(post.mock.calls[1]![0]).toBe('/customer-orders/buzzbee/export-batch')
     expect(post.mock.calls[1]![2]).toEqual(expect.objectContaining({
       responseType: 'blob',

@@ -104,7 +104,10 @@ CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION = "20260805_0055"
 INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION = "20260805_0056"
 INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION = "20260805_0057"
 INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION = "20260807_0058"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
+CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION = "20260807_0059"
+INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
+INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
+HEAD_MIGRATION_REVISION = "20260810_0061"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -228,6 +231,23 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    manual_override_revision = script.get_revision(
+        CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION
+    )
+    assert (
+        manual_override_revision.down_revision
+        == INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
+    )
+    manual_override_content = Path(
+        manual_override_revision.path
+    ).read_text(encoding="utf-8")
+    for expected in (
+        "manual_overrides_json",
+        "manual_override_count",
+        "cannot be downgraded after manual customer-order overrides exist",
+    ):
+        assert expected in manual_override_content
 
     public_planning_revision = script.get_revision(
         INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
@@ -776,6 +796,54 @@ def test_alembic_has_single_molding_sample_head():
     notification_revision = script.get_revision(NOTIFICATION_MIGRATION_REVISION)
     notification_migration_content = Path(notification_revision.path).read_text(encoding="utf-8")
     assert "molding_sample_notifications" in notification_migration_content
+
+
+def test_customer_order_manual_override_migration_adds_audit_columns(tmp_path):
+    database_path = tmp_path / "customer-order-manual-overrides.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE customer_order_export_audits (
+                id VARCHAR(96) PRIMARY KEY,
+                manual_seed TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            INSERT INTO alembic_version(version_num) VALUES ('20260807_0058');
+            """
+        )
+
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION,
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]: row for row in connection.execute(
+                "PRAGMA table_info(customer_order_export_audits)"
+            )
+        }
+        assert columns["manual_overrides_json"][4] == "'[]'"
+        assert columns["manual_override_count"][4] == "'0'"
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION,)
 
 
 def test_internal_quote_customer_migration_seeds_factories_and_backfills_history(tmp_path):
@@ -4088,6 +4156,28 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
             "injection_scheduling_progress_adjustments",
             "injection_scheduling_import_actions",
             "injection_scheduling_import_master_decisions",
+            "injection_scheduling_upload_artifacts",
+            "injection_scheduling_export_audits",
+            "injection_scheduling_company_scopes",
+            "injection_scheduling_demand_order_identities",
+            "injection_scheduling_master_data_proposals",
+            "injection_scheduling_company_factory_memberships",
+            "injection_scheduling_customer_identities",
+            "injection_scheduling_demand_import_rows",
+            "injection_scheduling_field_evidence",
+            "injection_scheduling_mold_definitions",
+            "injection_scheduling_customer_aliases",
+            "injection_scheduling_demand_resolution_snapshots",
+            "injection_scheduling_mold_aliases",
+            "injection_scheduling_mold_output_specs",
+            "injection_scheduling_physical_mold_assets",
+            "injection_scheduling_commercial_rate_rules",
+            "injection_scheduling_demand_order_versions",
+            "injection_scheduling_factory_mold_capabilities",
+            "injection_scheduling_legacy_mold_copy_bindings",
+            "injection_scheduling_mold_asset_movements",
+            "injection_scheduling_mold_reservations",
+            "injection_scheduling_rollout_policies",
         }
         machine_columns = {
             row[1]

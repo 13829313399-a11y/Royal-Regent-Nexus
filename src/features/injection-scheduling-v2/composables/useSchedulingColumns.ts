@@ -27,7 +27,6 @@ export const schedulingColumns: SchedulingColumnDefinition[] = [
   { key: 'grossWeightG', title: '毛重(g)', group: '颜色与物料', width: 84, align: 'right', presets: ['full'] },
   { key: 'materialKg', title: '用料重(KG)', group: '颜色与物料', width: 100, align: 'right', presets: ['full'] },
   { key: 'unitPrice', title: '单价/啤', group: '价格', width: 84, align: 'right', presets: ['full'] },
-  { key: 'outsourcePrice', title: '外发单价', group: '价格', width: 90, align: 'right', presets: ['full'] },
   { key: 'ratio', title: '比例', group: '价格', width: 74, align: 'right', presets: ['full'] },
   { key: 'orderDate', title: '下单期', group: '货期与计划', width: 102, presets: ['full'] },
   { key: 'deliveryStart', title: '开始交货期', group: '货期与计划', width: 106, presets: ['full'] },
@@ -44,9 +43,6 @@ export const schedulingColumns: SchedulingColumnDefinition[] = [
   { key: 'slack', title: '交期差', group: '货期与计划', width: 78, align: 'right', presets: ['planner', 'production', 'full'] },
   { key: 'spray', title: '是否喷油', group: '生产辅助', width: 84, presets: ['planner', 'full'] },
   { key: 'productionDays', title: '啤货天数', group: '生产辅助', width: 84, align: 'right', presets: ['full'] },
-  { key: 'shiftEnd', title: '每班结束时间', group: '生产辅助', width: 122, presets: ['full'] },
-  { key: 'duration', title: '时间', group: '生产辅助', width: 78, align: 'right', presets: ['full'] },
-  { key: 'shiftPlan', title: '每班计划啤数', group: '生产辅助', width: 104, align: 'right', presets: ['full'] },
   { key: 'machineA', title: '机台安数', group: '生产辅助', width: 86, presets: ['fit', 'full'] },
   { key: 'shotCapacity', title: '射胶量(g)', group: '生产辅助', width: 90, align: 'right', presets: ['fit', 'full'] },
   { key: 'fit', title: '适配结论', group: '生产辅助', width: 98, presets: ['fit', 'full'] },
@@ -57,4 +53,4 @@ export const schedulingColumns: SchedulingColumnDefinition[] = [
   { key: 'fixture', title: '夹具', group: '生产辅助', width: 78, presets: ['fit', 'full'] },
 ]
 
-export const uploadedPlanFieldCount = 47
+export const uploadedPlanFieldCount = 43

@@ -3,10 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
 
-from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import Session
-
 from app.db import Base
 from app.models import (
     injection_scheduling as _injection_scheduling_models,  # noqa: F401
@@ -31,6 +27,9 @@ from app.services.injection_scheduling_profiles import (
     profile_config,
     profile_from_config,
 )
+from openpyxl import Workbook
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import Session
 
 
 def _bytes(workbook: Workbook) -> bytes:
@@ -258,7 +257,7 @@ def test_builtin_profile_registry_is_idempotent_and_factory_scoped():
             db.scalar(
                 select(func.count()).select_from(InjectionSchedulingImportProfile)
             )
-            == 2
+            == 4
         )
         assert (
             db.scalar(
@@ -266,17 +265,23 @@ def test_builtin_profile_registry_is_idempotent_and_factory_scoped():
                     InjectionSchedulingImportProfileFactory
                 )
             )
-            == 2
+            == 14
         )
         assert (
             db.scalar(select(func.count()).select_from(InjectionSchedulingAuditEvent))
-            == 2
+            == 14
         )
         huakang_profiles = active_profiles_for_factory(db, "huakang-b")
         assert [item.profile_code for item in huakang_profiles] == [
             "huakang_b_daily_plan_v1"
         ]
         assert active_profiles_for_factory(db, "huakang-c") == ()
+        assert [
+            item.profile_code
+            for item in active_profiles_for_factory(
+                db, "huakang-c", document_kind="DEMAND_ORDER"
+            )
+        ] == ["demand_order_shared_v1"]
         record = db.get(
             InjectionSchedulingImportProfile, "isprofile-huakang-b-daily-v1"
         )
@@ -292,6 +297,16 @@ def test_profile_revision_activation_retires_predecessor_and_audits():
         id="user-profile-reviewer",
         username="profile-reviewer",
         display_name="模板审核员",
+        roles=("molding_supervisor",),
+        role_codes=("molding_supervisor",),
+        permissions=frozenset({"injection_scheduling:manage_import_profiles"}),
+        factory_scopes=("huakang-b",),
+        department_scopes=("molding",),
+    )
+    reviewer = AuthContext(
+        id="user-profile-approver",
+        username="profile-approver",
+        display_name="另一位模板审核员",
         roles=("molding_supervisor",),
         role_codes=("molding_supervisor",),
         permissions=frozenset({"injection_scheduling:manage_import_profiles"}),
@@ -315,7 +330,7 @@ def test_profile_revision_activation_retires_predecessor_and_audits():
             expected_family_revision=1,
             request_id="profile-create-v2",
             config=profile_config(source),
-            user=actor,
+            user=reviewer,
         )
         assert draft.revision == 2
         assert draft.status == "PROFILE_DRAFT"

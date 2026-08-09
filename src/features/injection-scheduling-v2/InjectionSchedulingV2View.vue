@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlertOctagon, Boxes, Clock3, Columns3, Filter, History, ListChecks, PanelBottomOpen, Search, ShieldAlert, SlidersHorizontal, Sparkles } from '@lucide/vue'
 import { useInjectionSchedulingV2Store } from './stores/useInjectionSchedulingV2Store'
+import { enrichDemandOrderMolds } from './api/injectionSchedulingV2Api'
 import { useScheduleLiveEvents } from './composables/useScheduleLiveEvents'
 import AutoSchedulePreviewDialog from './components/AutoSchedulePreviewDialog.vue'
 import BacklogDock from './components/BacklogDock.vue'
@@ -31,8 +32,13 @@ const route = useRoute()
 const router = useRouter()
 const store = useInjectionSchedulingV2Store()
 const importWizardOpen = ref(false)
+const importBatchId = computed(() => {
+  const value = Array.isArray(route.query.batch) ? route.query.batch[0] : route.query.batch
+  return typeof value === 'string' ? value.trim() : ''
+})
 const exportDialogOpen = ref(false)
 const manualAppendOrderId = ref<string | null>(null)
+const enrichingMolds = ref(false)
 const manualAppendOrder = computed(() => store.orders.find((item) => item.id === manualAppendOrderId.value) ?? null)
 const appendDisabledReason = computed(() => !store.planningPlan ? '尚无 planning DRAFT，请先导入或创建接续草案' : !store.canEdit ? '请切换到规划 DRAFT，或检查编辑权限' : '')
 const tabs: Array<{ key: WorkspaceView; label: string; icon: typeof ListChecks }> = [
@@ -54,9 +60,20 @@ const presetLabels: Record<ColumnPreset, string> = { planner: '计划员视图',
 
 async function changeFactory(value: string) {
   if (!store.setFactory(value)) return
-  await router.replace({ query: { ...route.query, factory: value } })
+  importWizardOpen.value = false
+  const { batch: _batch, ...query } = route.query
+  await router.replace({ query: { ...query, factory: value } })
   await store.load()
   if (store.activeView === 'analytics') await store.loadPhase5Analytics()
+}
+async function trackImportBatch(batchId: string) {
+  if (importBatchId.value === batchId) return
+  await router.replace({ query: { ...route.query, batch: batchId } })
+}
+async function closeImportWizard() {
+  importWizardOpen.value = false
+  const { batch: _batch, ...query } = route.query
+  await router.replace({ query })
 }
 function goHome() {
   if (store.pendingEditCount) {
@@ -64,6 +81,14 @@ function goHome() {
     return
   }
   void router.push({ name: 'dashboard' })
+}
+
+function openMasterData() {
+  if (store.pendingEditCount) {
+    store.saveMessage = '存在未保存的规划修改，请先保存或放弃后再打开模具数据库。'
+    return
+  }
+  void router.push({ name: 'injection-scheduling-mold-database', query: { factory: store.factoryId } })
 }
 async function importConfirmed() {
   await store.load({ quiet: true })
@@ -79,6 +104,30 @@ function selectView(view: WorkspaceView) { store.activeView = view; if (view ===
 function resizeColumn(key: string, width: number) { store.columnWidths = { ...store.columnWidths, [key]: Math.max(54, Math.min(420, width)) } }
 function closeInspector() { store.selectedTaskId = null }
 function openBacklogOrder(orderId: string) { store.activeView = 'backlog'; const order = store.orders.find((item) => item.id === orderId); store.search = order?.orderNo ?? '' }
+function sourceMoldNo(order: { moldId: string | null; lineage: Record<string, unknown> }) { return store.molds.find((mold) => mold.id === order.moldId)?.moldNo || String(order.lineage.source_mold_no || '待补模具') }
+function sharedMoldMatched(order: { lineage: Record<string, unknown> }) { return order.lineage.mold_enrichment_status === 'MATCHED' }
+function moldEnrichmentLabel(order: { moldId: string | null; lineage: Record<string, unknown> }) { return sharedMoldMatched(order) ? '共享资料已补齐' : order.moldId ? '旧模具已关联' : '待补齐' }
+function moldReadinessLabel(order: { moldId: string | null; lineage: Record<string, unknown> }) {
+  if (order.lineage.factory_readiness_status === 'FACTORY_READY') return '可排机'
+  return sharedMoldMatched(order) ? '待实体模具' : '待复核'
+}
+function backlogAppendTitle(order: { moldId: string | null; lineage: Record<string, unknown> }) {
+  if (!order.moldId) return sharedMoldMatched(order) ? '共享模具资料已补齐；正式排机仍需关联实体模具' : '共享模具资料待补齐，暂不能排到机台'
+  return appendDisabledReason.value
+}
+async function enrichBacklogMolds() {
+  if (enrichingMolds.value || !store.canEdit) return
+  enrichingMolds.value = true
+  try {
+    const result = await enrichDemandOrderMolds(store.factoryId)
+    await store.load({ quiet: true })
+    store.saveMessage = `共享模具补齐完成：匹配 ${Number(result.matched ?? 0)} 条，待补 ${Number(result.pending ?? 0)} 条，歧义 ${Number(result.ambiguous ?? 0)} 条；其中可直接排机 ${Number(result.execution_ready ?? 0)} 条。`
+  } catch (cause) {
+    store.saveMessage = `模具补齐失败：${cause instanceof Error ? cause.message : '请稍后重试'}`
+  } finally {
+    enrichingMolds.value = false
+  }
+}
 function stageReport(edits: Array<{ key: EditableCellKey; value: string | number }>) {
   if (!store.selectedTaskId) return
   edits.forEach((edit) => store.stageCellEdit(store.selectedTaskId!, edit.key, edit.value))
@@ -94,10 +143,14 @@ watch(() => route.query.factory, async (value) => {
     if (store.activeView === 'analytics') await store.loadPhase5Analytics()
   }
 })
+watch(importBatchId, (value) => {
+  if (value) importWizardOpen.value = true
+})
 onMounted(async () => {
   const requested = Array.isArray(route.query.factory) ? route.query.factory[0] : route.query.factory
   if (typeof requested === 'string') store.setFactory(requested)
   await store.load()
+  if (importBatchId.value) importWizardOpen.value = true
   window.addEventListener('beforeunload', guardBeforeUnload)
 })
 function guardBeforeUnload(event: BeforeUnloadEvent) {
@@ -110,7 +163,7 @@ useScheduleLiveEvents(store.pollEvents)
 
 <template>
   <div class="injection-scheduling-v2" :class="{ 'has-backlog-dock': store.backlogDockOpen && store.activeView === 'plan' }">
-    <SchedulingCommandBar :factory-id="store.factoryId as FactoryId" :factory-name="store.factoryName" :source-mode="store.sourceMode" :source-message="store.sourceMessage" :refreshing="store.refreshing" :search="store.search" :last-synced-at="store.lastSyncedAt" :plan-status="store.plan?.status ?? ''" :pending-count="store.pendingEditCount" :saving="store.savingEdits" :can-save="store.canEdit || store.canReport" :can-import="store.canImport" :can-export="store.canExport && Boolean(store.plan)" :save-message="store.saveMessage" @update:factory-id="changeFactory" @update:search="store.search = $event" @home="goHome" @refresh="store.load({ quiet: true })" @open-auto-schedule="store.autoScheduleDialogOpen = true" @open-import="importWizardOpen = true" @open-export="exportDialogOpen = true" @save="store.savePendingEdits" @discard="store.discardPendingEdits" />
+    <SchedulingCommandBar :factory-id="store.factoryId as FactoryId" :factory-name="store.factoryName" :source-mode="store.sourceMode" :source-message="store.sourceMessage" :refreshing="store.refreshing" :search="store.search" :last-synced-at="store.lastSyncedAt" :plan-status="store.plan?.status ?? ''" :pending-count="store.pendingEditCount" :saving="store.savingEdits" :can-save="store.canEdit || store.canReport" :can-import="store.canImport" :can-export="store.canExport && Boolean(store.plan)" :save-message="store.saveMessage" @update:factory-id="changeFactory" @update:search="store.search = $event" @home="goHome" @refresh="store.load({ quiet: true })" @open-auto-schedule="store.autoScheduleDialogOpen = true" @open-import="importWizardOpen = true" @open-export="exportDialogOpen = true" @open-master-data="openMasterData" @save="store.savePendingEdits" @discard="store.discardPendingEdits" />
     <main>
       <div v-if="store.sourceMode === 'fallback'" class="fallback-banner"><AlertOctagon :size="15" /><strong>只读演示：</strong><span>{{ store.sourceMessage }}</span></div>
       <SchedulingKpiStrip :summary="store.summary" :class="{ 'is-loading': store.loading }" />
@@ -147,7 +200,7 @@ useScheduleLiveEvents(store.pollEvents)
 
         <ScheduleTimeline v-else-if="store.activeView === 'timeline'" :machines="store.machines" :tasks="store.tasks" :orders="store.orders" :business-date="store.plan?.businessDate || new Date().toISOString().slice(0, 10)" :scroll-left="store.timelineScrollLeft" :zoom="store.timelineZoom" @update:scroll-left="store.timelineScrollLeft = $event" @update:zoom="store.timelineZoom = $event" />
 
-        <section v-else-if="store.activeView === 'backlog'" class="backlog-view"><header><div><span class="view-icon"><Boxes :size="18" /></span><div><strong>待排订单</strong><p>查看订单资格与候选机台解释；正式入计划只写 planning DRAFT</p></div></div><label><Search :size="15" /><input v-model="store.search" placeholder="搜索订单、货号、产品" /></label></header><div class="backlog-list"><article v-for="order in store.backlogOrders.filter((item) => !store.search || [item.orderNo, item.itemNo, item.productName].join(' ').toLowerCase().includes(store.search.toLowerCase()))" :key="order.id"><span class="priority" :class="order.priorityCode.toLowerCase()">{{ order.priorityCode === 'CRITICAL' ? '特急' : order.priorityCode === 'URGENT' ? '加急' : '普通' }}</span><div><strong>{{ order.orderNo }} · {{ order.productName }}</strong><p>{{ order.itemNo }} · 欠 {{ order.outstandingQuantity.toLocaleString('zh-CN') }} · {{ order.deliveryDueDate || '交期待补充' }}</p></div><dl><div><dt>物料状态</dt><dd>{{ order.materialReadinessStatus }}</dd></div><div><dt>资格状态</dt><dd>{{ store.molds.find((mold) => mold.id === order.moldId)?.normalizationStatus === 'COMPLETE' ? '可评估' : '待复核' }}</dd></div></dl><button :disabled="!store.planningPlan" :title="appendDisabledReason" @click="openManualAppend(order.id)">追加到机台末尾</button></article><p v-if="!store.backlogOrders.length" class="empty-copy">当前没有待排订单</p></div></section>
+        <section v-else-if="store.activeView === 'backlog'" class="backlog-view"><header><div><span class="view-icon"><Boxes :size="18" /></span><div><strong>待排订单</strong><p>先接收下单需求，再从共享模具库补字段；实体模具仅在正式排机时校验</p></div></div><button :disabled="!store.canEdit || enrichingMolds" @click="enrichBacklogMolds"><Sparkles :size="15" />{{ enrichingMolds ? '匹配中' : '从模具库补齐' }}</button><label><Search :size="15" /><input v-model="store.search" placeholder="搜索订单、模号、货号、产品" /></label></header><div class="backlog-list"><article v-for="order in store.backlogOrders.filter((item) => !store.search || [item.orderNo, sourceMoldNo(item), item.itemNo, item.productName].join(' ').toLowerCase().includes(store.search.toLowerCase()))" :key="order.id"><span class="priority" :class="order.priorityCode.toLowerCase()">{{ order.priorityCode === 'CRITICAL' ? '特急' : order.priorityCode === 'URGENT' ? '加急' : '普通' }}</span><div><strong>{{ sourceMoldNo(order) }} · {{ order.productName }}</strong><p>{{ order.orderNo }} · {{ order.itemNo }} · 欠 {{ order.outstandingQuantity.toLocaleString('zh-CN') }} · {{ order.deliveryDueDate || '交期待补充' }}</p></div><dl><div><dt>模具补齐</dt><dd>{{ moldEnrichmentLabel(order) }}</dd></div><div><dt>资格状态</dt><dd>{{ moldReadinessLabel(order) }}</dd></div></dl><button :disabled="!store.planningPlan || !order.moldId" :title="backlogAppendTitle(order)" @click="openManualAppend(order.id)">追加到机台末尾</button></article><p v-if="!store.backlogOrders.length" class="empty-copy">当前没有待排订单</p></div></section>
 
         <section v-else-if="store.activeView === 'alerts'" class="alert-view"><header><div><span class="view-icon danger"><ShieldAlert :size="18" /></span><div><strong>异常预警</strong><p>按当前快照聚合交期、资料与机台风险</p></div></div></header><div class="alert-list"><article v-for="alert in store.alerts" :key="alert.title" :class="alert.tone"><span><AlertOctagon v-if="alert.tone === 'danger'" :size="18" /><ShieldAlert v-else :size="18" /></span><div><strong>{{ alert.title }}</strong><p>{{ alert.description }}</p></div><button @click="store.activeView = 'plan'; store.riskFilter = alert.tone === 'danger' ? 'overdue' : alert.tone === 'warning' ? 'review' : 'all'">查看计划</button></article></div></section>
 
@@ -160,7 +213,7 @@ useScheduleLiveEvents(store.pollEvents)
     <AutoSchedulePreviewDialog :open="store.autoScheduleDialogOpen" :backlog-count="store.backlogOrders.length" :machine-count="store.machines.length" :plan-status="store.plan?.status ?? ''" :can-edit="store.canEdit" :can-override="store.canOverride" :run="store.autoScheduleRun" :comparison-runs="store.autoScheduleComparisonRuns" :loading="store.autoScheduleLoading" :error="store.autoScheduleError" :orders="store.orders" :machines="store.machines" @close="store.autoScheduleDialogOpen = false" @generate="store.generateAutoSchedulePreview" @compare="store.generateAutoScheduleAlternatives" @select="store.selectAutoScheduleRun" @replay="store.replayAutoScheduleRun" @apply="store.applyAutoScheduleRun" />
     <ManualMoveDialog :preview="store.movePreview" :machines="store.machines" :loading="store.moveLoading" :can-override="store.canOverride" @close="store.movePreview = null" @update="store.updateMovePreview" @confirm="store.confirmMove" />
     <RevisionConflictDialog :conflict="store.revisionConflict" :loading="store.savingEdits || store.moveLoading" @close="store.revisionConflict = null" @use-server="store.discardPendingEdits" @reapply="reapplyConflict" />
-    <InjectionSchedulingImportWizard :open="importWizardOpen" :factory-id="store.factoryId as FactoryId" :business-date="store.planningPlan?.businessDate || store.plan?.businessDate || new Date().toISOString().slice(0, 10)" :can-import="store.canImport" :can-manage-master="store.canManageMaster" :source-mode="store.sourceMode" @close="importWizardOpen = false" @confirmed="importConfirmed" />
+    <InjectionSchedulingImportWizard :open="importWizardOpen" :factory-id="store.factoryId as FactoryId" :business-date="store.planningPlan?.businessDate || store.plan?.businessDate || new Date().toISOString().slice(0, 10)" :can-import="store.canImport" :can-confirm-demand="store.canConfirmDemand" :can-propose-profile="store.canProposeImportProfile" :can-propose-master-data="store.canProposeMasterData" :can-manage-profiles="store.canManageImportProfiles" :can-review-shared-molds="store.canReviewSharedMolds" :can-activate-shared-molds="store.canActivateSharedMolds" :can-manage-factory-capabilities="store.canManageFactoryCapabilities" :can-manage-shared-mold-prices="store.canManageSharedMoldPrices" :can-manage-master="store.canManageMaster" :initial-batch-id="importBatchId" :source-mode="store.sourceMode" @close="closeImportWizard" @batch-change="trackImportBatch" @confirmed="importConfirmed" />
     <InjectionSchedulingExportDialog :open="exportDialogOpen" :factory-id="store.factoryId as FactoryId" :plan="store.plan" :can-export="store.canExport" :source-mode="store.sourceMode" :pending-count="store.pendingEditCount" @close="exportDialogOpen = false" @exported="store.saveMessage = `导出完成：${$event.fileName}`" />
     <ManualAppendDialog :open="Boolean(manualAppendOrderId)" :factory-id="store.factoryId as FactoryId" :plan="store.planningPlan" :order="manualAppendOrder" :machines="store.machines" :can-edit="store.canEdit" @close="manualAppendOrderId = null" @confirmed="manualAppendConfirmed" />
     <div v-if="store.refreshing" class="sync-progress" aria-hidden="true"><span></span></div>

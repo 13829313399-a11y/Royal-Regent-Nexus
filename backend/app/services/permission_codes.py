@@ -78,7 +78,21 @@ INJECTION_SCHEDULING_PERMISSION_CODES = (
     "injection_scheduling:manage_master",
     "injection_scheduling:manage_rules",
     "injection_scheduling:manage_import_profiles",
+    "injection_scheduling:propose_import_profiles",
     "injection_scheduling:export",
+    "shared_mold:read",
+    "shared_mold:propose",
+    "shared_mold:review",
+    "shared_mold:manage",
+    "shared_mold:approve",
+    "factory_mold:manage",
+    "factory_mold_asset:manage",
+    "factory_mold_capability:manage",
+    "shared_mold_price:read",
+    "shared_mold_price:propose",
+    "shared_mold_price:write",
+    "shared_mold_price:approve",
+    "shared_mold_price:manage",
 )
 
 INTERNAL_QUOTE_SECTION_CODES = (

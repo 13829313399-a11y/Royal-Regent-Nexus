@@ -25,6 +25,10 @@ from app.services.customer_order_buzzbee import (
     _excel_serial,
     _format_iso_date,
 )
+from app.services.customer_order_manual import (
+    apply_overrides_to_preview,
+    decorate_manual_resolution_policy,
+)
 
 
 PREVIEW_SCHEMA_VERSION = "customer-order-dickie-preview-v1"
@@ -1151,11 +1155,18 @@ def _deduct_allocations(
     sheet_name = _item_sheet_for_row(row)
     product_no = _product_key(row["product_no"])
     rows = workbook.read_rows(sheet_name)
-    allocations = row.get("_allocations") or [
-        (row["contract_no"].splitlines()[0], Decimal(row["quantity"]))
-    ]
+    allocations = row.get("_allocations") or []
+    if not allocations:
+        contract_lines = _clean_text(row.get("contract_no")).splitlines()
+        if not contract_lines:
+            # A confirmed missing contract can still be written for manual
+            # review, but there is no safe system allocation to deduct.
+            return
+        allocations = [(contract_lines[0], Decimal(row["quantity"]))]
     for master_contract, allocation_quantity in allocations:
         master_base = _contract_base(master_contract)
+        if not master_base:
+            continue
         target_row = next(
             (
                 row_number
@@ -1225,6 +1236,7 @@ def _review_values(row: dict[str, Any], insert_row: int) -> dict[str, dict[str, 
     ship_index = 14 if is_dino else 15
     requested_range_end = "R" if is_dino else "O"
     requested_index = 16 if is_dino else 13
+    unit_price = _decimal(row.get("unit_price_hkd"))
     return {
         "B": {"value": _excel_serial(row["received_date"])},
         "C": {"value": row["contract_no"], "inline": True},
@@ -1242,7 +1254,7 @@ def _review_values(row: dict[str, Any], insert_row: int) -> dict[str, dict[str, 
         "R": _formula_payload(
             f"VLOOKUP(D{insert_row},'{item_sheet}'!C:{requested_range_end},{requested_index},0)"
         ),
-        "S": {"value": Decimal(row["unit_price_hkd"])},
+        "S": {"value": unit_price},
         "T": _formula_payload(f"I{insert_row}*S{insert_row}"),
     }
 
@@ -1252,7 +1264,7 @@ def _validate_skips(preview: dict[str, Any], requested_skips: set[str]) -> None:
         issue["skip_key"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue["can_skip"]
+        if issue.get("skip_key")
     }
     if requested_skips - available:
         raise CustomerOrderWorkbookError("所选跳过项已失效或不允许跳过，请重新解析后再确认")
@@ -1275,6 +1287,7 @@ def export_dickie_batch_schedule(
     schedule_file_name: str,
     schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_dickie_batch_preview(
         factory_id=factory_id,
@@ -1283,6 +1296,8 @@ def export_dickie_batch_schedule(
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
+    decorate_manual_resolution_policy(preview)
+    apply_overrides_to_preview(preview, manual_overrides or [])
     _validate_skips(preview, skipped_issue_keys or set())
     plain_schedule, _ = _decrypt_schedule(schedule_content)
     workbook = DickieSchedule(plain_schedule)

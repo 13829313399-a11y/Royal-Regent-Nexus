@@ -17,7 +17,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
-from .new_order_excel import create_new_order_workbook
+from .new_order_excel import append_records_to_workbook, create_new_order_workbook
 
 
 FIELD_TITLES: dict[str, str] = {
@@ -187,29 +187,53 @@ def build_flags(record: dict[str, Any], today: date | None = None) -> list[dict[
                          ("unit_price_usd", "订单单价USD")))
     for field, label in required:
         if not record.get(field):
-            flags.append({"level": "medium", "text": f"缺{label}"})
+            flags.append({
+                "level": "medium", "code": f"missing_{field}",
+                "field": field, "text": f"缺{label}",
+            })
     expected = record.get("expected_date_code") or build_360_date_code(
         record.get("inspection_date") or record.get("fcd_date"),
         record.get("factory_no"),
     )
     actual = str(record.get("date_code") or "").strip()
     if expected and not actual:
-        flags.append({"level": "medium", "text": f"缺日期码，建议{expected}"})
+        flags.append({
+            "level": "medium", "code": "missing_date_code", "field": "date_code",
+            "text": f"缺日期码，建议{expected}",
+        })
     elif expected and actual != expected:
-        flags.append({"level": "medium", "text": f"日期码应复核，建议{expected}"})
+        flags.append({
+            "level": "medium", "code": "date_code_mismatch", "field": "date_code",
+            "text": f"日期码应复核，建议{expected}",
+        })
     qty, outer, cartons = (coerce_number(record.get(key)) for key in ("quantity", "outer_pack", "cartons"))
     if qty is not None and not outer:
-        flags.append({"level": "medium", "text": "缺外箱装箱数"})
+        flags.append({
+            "level": "medium", "code": "missing_outer_pack", "field": "outer_pack",
+            "text": "缺外箱装箱数",
+        })
     if qty is not None and outer and cartons is not None and abs(cartons - qty / outer) > .02:
-        flags.append({"level": "high", "text": "箱数与PO数量/装箱数不一致"})
+        flags.append({
+            "level": "high", "code": "carton_count_mismatch", "field": "cartons",
+            "text": "箱数与PO数量/装箱数不一致",
+        })
     inspection = parse_iso_date(record.get("inspection_date"))
     ship = parse_iso_date(record.get("po_ship_date"))
     if inspection and inspection < today and not record.get("inspection_result"):
-        flags.append({"level": "high", "text": "验货日期已过，结果未登记"})
+        flags.append({
+            "level": "high", "code": "missing_inspection_result",
+            "field": "inspection_result", "text": "验货日期已过，结果未登记",
+        })
     if ship and inspection and ship < inspection:
-        flags.append({"level": "high", "text": "走货期早于验货日期"})
+        flags.append({
+            "level": "high", "code": "ship_before_inspection", "field": "po_ship_date",
+            "text": "走货期早于验货日期",
+        })
     if not ship and record.get("source_sheet") != "接单表":
-        flags.append({"level": "medium", "text": "缺走货期"})
+        flags.append({
+            "level": "medium", "code": "missing_po_ship_date", "field": "po_ship_date",
+            "text": "缺走货期",
+        })
     if contains_pending(record.get("special_remark")):
         flags.append({"level": "medium", "text": "备注含待办事项"})
     return flags
@@ -606,20 +630,25 @@ def warm_schedule_template(template: bytes) -> None:
     _slim_export_template(template)
 
 
-def create_schedule_review_workbook(template: bytes, records: list[dict[str, Any]], output_path: Path) -> Path:
-    """Generate a standalone new-order workbook in the original 接单表 format."""
+def create_schedule_review_workbook(
+    template: bytes,
+    records: list[dict[str, Any]],
+    output_path: Path,
+    *,
+    template_filename: str = "schedule.xlsx",
+) -> Path:
+    """Copy the complete schedule and append rows to its actual Iteam detail sheet."""
     if not template:
         raise ValueError("缺少当前360排期底表，无法生成回填副本。")
     prepared = [add_derived_fields(dict(record)) for record in records]
     aliases = _new_order_aliases()
-    create_new_order_workbook(
-        _slim_export_template(template),
+    append_records_to_workbook(
+        template,
         output_path,
         prepared,
         aliases,
-        filename="schedule.xlsx",
-        sheet_names=("360客排期表", "接单表"),
-        sheet_title="360新单",
+        filename=template_filename,
+        sheet_names=("Iteam表", "ITEM表"),
         field_formats={
             **{
                 field: "@"

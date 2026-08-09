@@ -315,10 +315,16 @@ def _canonical_rows(
         machine = machines.get(task.machine_id)
         mold = molds.get(task.mold_id or "")
         if order is None or machine is None:
-            raise HTTPException(status_code=409, detail="计划任务引用的订单或机台不存在")
+            raise HTTPException(
+                status_code=409, detail="计划任务引用的订单或机台不存在"
+            )
         state = states.get(order.id)
-        completed = float(state.completed_quantity if state is not None else order.completed_quantity)
-        order_quantity = float(state.order_quantity if state is not None else order.order_quantity)
+        completed = float(
+            state.completed_quantity if state is not None else order.completed_quantity
+        )
+        order_quantity = float(
+            state.order_quantity if state is not None else order.order_quantity
+        )
         lineage = _lineage(order)
         reports = reports_by_task.get(task.id, [])
         adjustments = adjustments_by_order.get(order.id, [])
@@ -413,6 +419,8 @@ def _canonical_rows(
                     "machine_id": task.machine_id,
                     "order_id": task.order_id,
                     "task_id": task.id,
+                    "physical_mold_asset_id": task.physical_mold_asset_id,
+                    "mold_copy_no": task.mold_copy_no,
                     "stable_order_key": task.stable_order_key,
                     "stable_row_key": task.stable_row_key,
                     "split_key": task.stable_row_key,
@@ -466,9 +474,9 @@ def _dynamic_shift_values(
             cursor = datetime.fromisoformat(str(row.get("planned_start", ""))).replace(
                 tzinfo=None
             )
-            finish = datetime.fromisoformat(
-                str(row.get("planned_finish", ""))
-            ).replace(tzinfo=None)
+            finish = datetime.fromisoformat(str(row.get("planned_finish", ""))).replace(
+                tzinfo=None
+            )
         except ValueError:
             continue
         remaining = float(row.get("planned_quantity") or 0)
@@ -658,11 +666,15 @@ def _render_workbook(
         for column, _label, key in dynamic_columns:
             sheet[f"{column}{row_number}"] = allocations.get(key, "")
     sheet.freeze_panes = f"A{header_row + 1}"
-    final_column = dynamic_columns[-1][0] if dynamic_columns else profile.fields[-1].column
+    final_column = (
+        dynamic_columns[-1][0] if dynamic_columns else profile.fields[-1].column
+    )
     sheet.auto_filter.ref = f"A{header_row}:{final_column}{header_row + len(rows)}"
     sheet.sheet_view.showGridLines = False
     for field in profile.fields:
-        sheet.column_dimensions[field.column].width = max(12, min(28, len(field.headers[0]) * 2 + 4))
+        sheet.column_dimensions[field.column].width = max(
+            12, min(28, len(field.headers[0]) * 2 + 4)
+        )
     for column, _label, _key in dynamic_columns:
         sheet.column_dimensions[column].width = 13
     sheet.print_title_rows = f"{header_row}:{header_row}"
@@ -716,7 +728,9 @@ def export_plan_workbook(
     payload: InjectionSchedulingExportRequest,
     user: AuthContext,
 ) -> ExportedWorkbook:
-    request_payload_hash = _payload_hash(payload.model_dump(mode="json") | {"plan_id": plan_id})
+    request_payload_hash = _payload_hash(
+        payload.model_dump(mode="json") | {"plan_id": plan_id}
+    )
     replay = db.scalar(
         select(InjectionSchedulingExportAudit).where(
             InjectionSchedulingExportAudit.factory_id == payload.factory_id,
@@ -724,8 +738,13 @@ def export_plan_workbook(
         )
     )
     if replay is not None:
-        if replay.plan_id != plan_id or replay.request_payload_hash != request_payload_hash:
-            raise HTTPException(status_code=409, detail="相同导出 request_id 已用于其他请求")
+        if (
+            replay.plan_id != plan_id
+            or replay.request_payload_hash != request_payload_hash
+        ):
+            raise HTTPException(
+                status_code=409, detail="相同导出 request_id 已用于其他请求"
+            )
         return ExportedWorkbook(
             audit_id=replay.id,
             file_name=replay.file_name,
@@ -821,7 +840,11 @@ def export_plan_workbook(
         key_id=key_id,
     )
     file_sha256 = _hash(content)
-    mode_suffix = "source-compatible" if payload.export_mode == "SOURCE_COMPATIBLE" else "system-standard"
+    mode_suffix = (
+        "source-compatible"
+        if payload.export_mode == "SOURCE_COMPATIBLE"
+        else "system-standard"
+    )
     file_name = f"injection-plan-{plan.factory_id}-{plan.business_date}-r{plan.revision}-{mode_suffix}.xlsx"
     audit = InjectionSchedulingExportAudit(
         id=audit_id,
@@ -909,9 +932,7 @@ def verify_signed_system_meta(
                 raise ValueError
             rows = []
             for offset in range(task_count):
-                row_json = str(
-                    sheet.cell(META_ROW_START + offset, 1).value or ""
-                )
+                row_json = str(sheet.cell(META_ROW_START + offset, 1).value or "")
                 row = json.loads(row_json)
                 if not isinstance(row, dict):
                     raise TypeError
@@ -925,13 +946,19 @@ def verify_signed_system_meta(
         workbook.close()
         raise HTTPException(
             status_code=409,
-            detail={"code": "SYSTEM_META_INVALID", "message": "_SYSTEM_META 结构或摘要无效"},
+            detail={
+                "code": "SYSTEM_META_INVALID",
+                "message": "_SYSTEM_META 结构或摘要无效",
+            },
         ) from None
     workbook.close()
     if marker != META_MARKER or _hash(manifest_json) != supplied_manifest_hash:
         raise HTTPException(
             status_code=409,
-            detail={"code": "SYSTEM_META_INVALID", "message": "_SYSTEM_META 结构或摘要无效"},
+            detail={
+                "code": "SYSTEM_META_INVALID",
+                "message": "_SYSTEM_META 结构或摘要无效",
+            },
         )
     key = _verification_key(supplied_key_id)
     if not hmac.compare_digest(
@@ -940,9 +967,15 @@ def verify_signed_system_meta(
     ):
         raise HTTPException(
             status_code=409,
-            detail={"code": "SYSTEM_META_SIGNATURE_INVALID", "message": "_SYSTEM_META 签名校验失败"},
+            detail={
+                "code": "SYSTEM_META_SIGNATURE_INVALID",
+                "message": "_SYSTEM_META 签名校验失败",
+            },
         )
-    if manifest.get("schema_version") != META_SCHEMA or manifest.get("factory_id") != factory_id:
+    if (
+        manifest.get("schema_version") != META_SCHEMA
+        or manifest.get("factory_id") != factory_id
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -982,10 +1015,7 @@ def verify_signed_system_meta(
         "progress_adjustment_total_at_export",
         "report_ledger_digest",
     }
-    if any(
-        not isinstance(row, dict) or required_row_fields - set(row)
-        for row in rows
-    ):
+    if any(not isinstance(row, dict) or required_row_fields - set(row) for row in rows):
         raise HTTPException(
             status_code=409,
             detail={

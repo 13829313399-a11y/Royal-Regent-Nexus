@@ -11,11 +11,16 @@ from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 
+from app.services.customer_order_manual import (
+    apply_overrides_to_preview,
+    apply_overrides_to_records,
+    decorate_manual_resolution_policy,
+)
 from app.services.huadeng_order_legacy import (
     casdon_po_parser,
     casdon_schedule,
-    common_new_order_excel,
     jakks_new_order_writer,
     jakks_po_parser,
     jakks_schedule,
@@ -25,6 +30,10 @@ from app.services.huadeng_order_legacy import (
     spin_master_parser,
     spin_po_parser,
     spin_schedule,
+)
+from app.services.huaxing_order_legacy.new_order_excel import (
+    append_column_records_to_workbook,
+    append_records_to_workbook,
 )
 
 
@@ -54,33 +63,34 @@ class PreparedBatch:
     legacy_rows: list[dict[int, Any]] = field(default_factory=list)
     export_payload: dict[str, Any] = field(default_factory=dict)
     inheritance: dict[str, Any] = field(default_factory=dict)
+    header_row: int = 1
 
 
 HUADENG_CUSTOMER_MAPPINGS: dict[str, HuadengCustomerMappingSpec] = {
     "casdon": HuadengCustomerMappingSpec(
         "casdon", "Casdon", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
-        "HUADENG_CASDON_PO_V1", "HUADENG_CASDON_NEW_ORDER_V1",
+        "HUADENG_CASDON_PO_V1", "HUADENG_CASDON_SCHEDULE_APPEND_V2",
         "按 PO 修订版和字段完整度去重；USD 按 7.75 换算 HKD，验货期为走货期前 7 天并避开周末。",
     ),
     "jakks": HuadengCustomerMappingSpec(
         "jakks", "Jakks", (".pdf", ".xlsx", ".xlsm"), (".xls", ".xlsx"),
-        "HUADENG_JAKKS_CONTRACT_V1", "HUADENG_JAKKS_NEW_ORDER_V1",
+        "HUADENG_JAKKS_CONTRACT_V1", "HUADENG_JAKKS_SCHEDULE_APPEND_V2",
         "拦截文件名含 CXL/SUP 的修改、补充或取消单；同合同、客户 PO、货号明细去重并继承唯一产品名称。",
     ),
     "simba": HuadengCustomerMappingSpec(
         "simba", "Simba", (".pdf", ".xlsx", ".xlsm"), (".xlsx", ".xlsm"),
-        "HUADENG_SIMBA_RELEASE_ORDER_V1", "HUADENG_SIMBA_NEW_ORDER_V1",
+        "HUADENG_SIMBA_RELEASE_ORDER_V1", "HUADENG_SIMBA_SCHEDULE_APPEND_V2",
         "同名 PDF 与 WPS Excel 优先采用 Excel；按修订版、文件类型及字段完整度合并，并从排期安全继承客户资料。",
     ),
     "spin": HuadengCustomerMappingSpec(
         "spin", "Spin", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
-        "HUADENG_SPIN_PO_V1", "HUADENG_SPIN_NEW_ORDER_V1",
+        "HUADENG_SPIN_PO_V1", "HUADENG_SPIN_SCHEDULE_APPEND_V2",
         "按 PO 修订版去重，按客户与货号继承排期主数据；USD 按 7.75 换算 HKD，人工排期字段保持空白。",
     ),
     "spin-master": HuadengCustomerMappingSpec(
         "spin-master", "Spin Master", (".pdf", ".xls", ".xlsx", ".xlsm"),
         (".xls", ".xlsx"), "HUADENG_SPIN_MASTER_PO_V1",
-        "HUADENG_SPIN_MASTER_NEW_ORDER_V1",
+        "HUADENG_SPIN_MASTER_SCHEDULE_APPEND_V2",
         "使用独立 SPIN排期 / SPIN总汇模板；按合同、客户 PO、货号、数量、交期及金额组合去重。",
     ),
 }
@@ -193,7 +203,8 @@ def _mark_records_from_schedule(
 
 def _safe_output_name(schedule_file_name: str, customer_name: str) -> str:
     stem = re.sub(r"[\\/:*?\"<>|]+", "_", Path(schedule_file_name).stem).strip(" ._")
-    return f"{stem or '华登客户排期'}_{customer_name}新单.xlsx"
+    suffix = ".xlsm" if Path(schedule_file_name).suffix.lower() == ".xlsm" else ".xlsx"
+    return f"{stem or '华登客户排期'}_{customer_name}新单{suffix}"
 
 
 def _revision(file_name: str) -> int:
@@ -250,7 +261,7 @@ def _schedule_evidence(file_name: str, sheet_name: str, customers: list[Any]) ->
     return " ".join([file_name, sheet_name, *[_text(item) for item in customers]]).upper()
 
 
-def _casdon_schedule_context(schedule_path: Path) -> tuple[Any, str]:
+def _casdon_schedule_context(schedule_path: Path) -> tuple[Any, str, int]:
     workbook = openpyxl.load_workbook(schedule_path, read_only=True, data_only=True)
     try:
         worksheet, header_row = casdon_schedule._select_master_sheet(workbook)
@@ -260,12 +271,12 @@ def _casdon_schedule_context(schedule_path: Path) -> tuple[Any, str]:
         ]
         if "CASDON" not in _schedule_evidence(schedule_path.name, worksheet.title, customers):
             raise HuadengCustomerOrderError("当前排期未识别到 Casdon 客户标识，已拦截跨客户模板")
-        return casdon_schedule.build_index(str(schedule_path)), worksheet.title
+        return casdon_schedule.build_index(str(schedule_path)), worksheet.title, header_row
     finally:
         workbook.close()
 
 
-def _spin_schedule_context(schedule_path: Path) -> tuple[Any, str]:
+def _spin_schedule_context(schedule_path: Path) -> tuple[Any, str, int]:
     workbook = openpyxl.load_workbook(schedule_path, read_only=True, data_only=True)
     try:
         if spin_schedule.MASTER_SHEET not in workbook.sheetnames:
@@ -279,7 +290,7 @@ def _spin_schedule_context(schedule_path: Path) -> tuple[Any, str]:
         ]
         if "SPIN" not in _schedule_evidence(schedule_path.name, worksheet.title, customers):
             raise HuadengCustomerOrderError("当前排期未识别到 Spin 客户标识，已拦截跨客户模板")
-        return spin_schedule.build_index(str(schedule_path)), worksheet.title
+        return spin_schedule.build_index(str(schedule_path)), worksheet.title, 1
     finally:
         workbook.close()
 
@@ -352,7 +363,7 @@ def _prepare_casdon_or_spin(
         schedule_path = Path(temp_dir) / Path(schedule_file_name).name
         schedule_path.write_bytes(schedule_content)
         try:
-            index, sheet_name = (
+            index, sheet_name, header_row = (
                 _casdon_schedule_context(schedule_path)
                 if is_casdon else _spin_schedule_context(schedule_path)
             )
@@ -444,7 +455,14 @@ def _prepare_casdon_or_spin(
             warnings.append(
                 f"当前排期有 {existing_conflicts} 行相同订单但数量不同，已按修改/补单阻断。"
             )
-        return PreparedBatch(records, warnings, sheet_name, legacy_rows, inheritance=inheritance)
+        return PreparedBatch(
+            records,
+            warnings,
+            sheet_name,
+            legacy_rows,
+            inheritance=inheritance,
+            header_row=header_row,
+        )
 
 
 def _jakks_item_key(value: Any) -> str:
@@ -874,7 +892,7 @@ def _issues(record: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
         issues.append({
             "severity": severity,
             "code": code,
-            "field": code.removeprefix("missing_"),
+            "field": _text(flag.get("field")) or code.removeprefix("missing_"),
             "message": _text(flag.get("text") or flag.get("label")) or "该行需要人工复核",
             "can_skip": False,
             "skip_key": f"{row_id}:{code}",
@@ -994,7 +1012,10 @@ def create_huadeng_customer_preview(
         "rows": rows,
         "warnings": list(dict.fromkeys([
             spec.rule_summary,
-            "导出结果为继承当前客户排期表头、格式和产品主数据的独立“新单”工作簿，不会覆盖原排期。",
+            "导出结果完整保留当前排期的所有 Sheet、历史数据、格式、公式、图片和打印设置；"
+            "仅在对应目标表明细末尾/合计行之前插入本批新单，并从插入点向上选择最近的"
+            "正常明细行继承格式、字体和公式逻辑，跳过合计/小计、分组标题和空白分隔行；"
+            "另存为新文件，不覆盖原排期。",
             *prepared.warnings,
         ])),
     }
@@ -1006,27 +1027,74 @@ def _export_prepared(
 ) -> None:
     if customer_code in {"casdon", "spin"}:
         schedule_module = casdon_schedule if customer_code == "casdon" else spin_schedule
-        schedule_path = output_path.parent / Path(schedule_file_name).name
-        schedule_path.write_bytes(schedule_content)
-        generated_name = schedule_module.generate_new_rows_excel(
-            prepared.legacy_rows, str(schedule_path), str(output_path.parent), prepared.inheritance,
+        qty_col = schedule_module.COL["qty"]
+        outer_col = schedule_module.COL["outer"]
+        total_col = schedule_module.COL["total_box"]
+
+        def row_values(record: dict[int, Any], row_no: int) -> dict[int, Any]:
+            values = dict(record)
+            date_columns = {
+                column
+                for key, column in schedule_module.COL.items()
+                if key.endswith("_date") or key == "po_date"
+            }
+            for column in date_columns:
+                value = values.get(column)
+                if isinstance(value, (int, float)):
+                    values[column] = datetime(1899, 12, 30) + timedelta(days=float(value))
+            if values.get(qty_col) not in (None, ""):
+                qty = get_column_letter(qty_col)
+                outer = get_column_letter(outer_col)
+                values[total_col] = f'=IF({outer}{row_no}=0,"",{qty}{row_no}/{outer}{row_no})'
+            return values
+
+        append_column_records_to_workbook(
+            schedule_content,
+            output_path,
+            prepared.legacy_rows,
+            filename=schedule_file_name,
+            sheet_names=(prepared.sheet_name,),
+            header_row=prepared.header_row,
+            max_col=schedule_module.EXPORT_END_COL,
+            detail_columns=(
+                schedule_module.COL["contract"],
+                schedule_module.COL["item"],
+                schedule_module.COL["qty"],
+            ),
+            row_values_factory=row_values,
         )
-        (output_path.parent / generated_name).replace(output_path)
         return
     if customer_code == "jakks":
-        schedule_path = output_path.parent / Path(schedule_file_name).name
-        schedule_path.write_bytes(schedule_content)
-        jakks_new_order_writer.generate_new_order(
-            schedule_path, prepared.export_payload, output_path,
+        rows = jakks_new_order_writer.records_from_order(prepared.export_payload)
+        append_records_to_workbook(
+            schedule_content,
+            output_path,
+            rows,
+            jakks_new_order_writer.ALIASES,
+            filename=schedule_file_name,
+            sheet_names=(prepared.sheet_name, "Sheet1"),
         )
         return
     if customer_code == "simba":
-        simba_schedule.create_import_workbook(prepared.records, output_path, schedule_content)
+        aliases = {
+            field: tuple(dict.fromkeys(
+                [title] + [alias for alias, target in simba_schedule.FIELD_ALIASES.items() if target == field]
+            ))
+            for field, title in simba_schedule.FIELD_TITLES.items()
+        }
+        append_records_to_workbook(
+            schedule_content,
+            output_path,
+            prepared.records,
+            aliases,
+            filename=schedule_file_name,
+            sheet_names=(prepared.sheet_name,),
+        )
         return
-    common_new_order_excel.create_new_order_workbook(
+    append_records_to_workbook(
         schedule_content, output_path, prepared.records,
         spin_master_new_order_writer.FIELD_ALIASES,
-        filename=schedule_file_name, sheet_names=("SPIN排期", "SPIN总汇"), sheet_title="新单",
+        filename=schedule_file_name, sheet_names=(prepared.sheet_name, "SPIN总汇"),
     )
 
 
@@ -1034,18 +1102,21 @@ def export_huadeng_customer_schedule(
     *, customer_code: str, factory_id: str, received_date: str,
     po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
+    manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_huadeng_customer_preview(
         customer_code=customer_code, factory_id=factory_id, received_date=received_date,
         po_files=po_files, schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
     )
+    decorate_manual_resolution_policy(preview)
+    apply_overrides_to_preview(preview, manual_overrides or [])
     requested_skips = set(skipped_issue_keys or set())
     skippable = {
         issue["skip_key"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue.get("can_skip")
+        if issue.get("skip_key")
     }
     unknown_skips = requested_skips - skippable
     if unknown_skips:
@@ -1061,6 +1132,37 @@ def export_huadeng_customer_schedule(
     prepared = _prepare_batch(
         customer_code, po_files, schedule_file_name, schedule_content, received_date,
     )
+    apply_overrides_to_records(
+        prepared.records,
+        [str(row["id"]) for row in preview["rows"]],
+        manual_overrides or [],
+    )
+    if customer_code in {"casdon", "spin"}:
+        schedule_module = casdon_schedule if customer_code == "casdon" else spin_schedule
+        column_by_field = {
+            "po_no": "customer_po",
+            "contract_no": "contract",
+            "customer_name": "customer",
+            "country": "ship_country",
+            "product_no": "item",
+            "product_name_zh": "cn_name",
+            "product_name_en": "english_name",
+            "quantity": "qty",
+            "units_per_carton": "outer",
+            "standard": "version",
+            "unit_price_hkd": "unit_hkd",
+            "amount_hkd": "total_hkd",
+            "packaging": "special_note",
+            "line_q": "inspection_date",
+            "requested_ship_date": "ship_date",
+        }
+        for record in prepared.records:
+            values = record.get("_legacy_values")
+            if not isinstance(values, dict):
+                continue
+            for field, column_key in column_by_field.items():
+                if field in record:
+                    values[schedule_module.COL[column_key]] = record[field]
     with TemporaryDirectory(prefix=f"huadeng-{customer_code}-output-") as temp_dir:
         output_path = Path(temp_dir) / preview["output_file_name"]
         try:

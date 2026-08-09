@@ -183,7 +183,21 @@ INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         "injection_scheduling:manage_master",
         "injection_scheduling:manage_rules",
         "injection_scheduling:manage_import_profiles",
+        "injection_scheduling:propose_import_profiles",
         "injection_scheduling:export",
+        "shared_mold:read",
+        "shared_mold:propose",
+        "shared_mold:review",
+        "shared_mold:manage",
+        "shared_mold:approve",
+        "factory_mold:manage",
+        "factory_mold_asset:manage",
+        "factory_mold_capability:manage",
+        "shared_mold_price:read",
+        "shared_mold_price:propose",
+        "shared_mold_price:write",
+        "shared_mold_price:approve",
+        "shared_mold_price:manage",
     )
 }
 
@@ -199,20 +213,36 @@ ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         guidance="必须绑定到全部厂区 / 全部部门，外厂只读且默认隐藏成本",
     ),
     "engineer": ScopePolicy(ENGINEERING_DEPARTMENTS, guidance="仅适用于工程部范围"),
-    "engineering_supervisor": ScopePolicy(ENGINEERING_DEPARTMENTS, guidance="仅适用于工程部范围"),
+    "engineering_supervisor": ScopePolicy(
+        ENGINEERING_DEPARTMENTS, guidance="仅适用于工程部范围"
+    ),
     "manager": ScopePolicy(MANAGEMENT_DEPARTMENTS, guidance="仅适用于总务范围"),
-    "warehouse_keeper": ScopePolicy(WAREHOUSE_DEPARTMENTS, guidance="仅适用于 PMC/仓库范围"),
-    "carton_warehouse_keeper": ScopePolicy(WAREHOUSE_DEPARTMENTS, guidance="仅适用于 PMC/仓库范围"),
+    "warehouse_keeper": ScopePolicy(
+        WAREHOUSE_DEPARTMENTS, guidance="仅适用于 PMC/仓库范围"
+    ),
+    "carton_warehouse_keeper": ScopePolicy(
+        WAREHOUSE_DEPARTMENTS, guidance="仅适用于 PMC/仓库范围"
+    ),
     "qa_inspector": ScopePolicy(("qa",), guidance="仅适用于品质部范围"),
-    "molding_clerk": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"),
+    "molding_clerk": ScopePolicy(
+        PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"
+    ),
     "molding_production_observer": ScopePolicy(
         PRODUCTION_DEPARTMENTS,
         guidance="仅适用于生产部（啤喷装）范围，只读查看生产任务和进度",
     ),
-    "molding_operator": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"),
-    "molding_supervisor": ScopePolicy(PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"),
-    "sales_customer_owner": ScopePolicy(("sales-business",), guidance="仅适用于营业部范围"),
-    "sales_customer_supervisor": ScopePolicy(("sales-business",), guidance="仅适用于营业部范围"),
+    "molding_operator": ScopePolicy(
+        PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"
+    ),
+    "molding_supervisor": ScopePolicy(
+        PRODUCTION_DEPARTMENTS, guidance="仅适用于生产部（啤喷装）范围"
+    ),
+    "sales_customer_owner": ScopePolicy(
+        ("sales-business",), guidance="仅适用于营业部范围"
+    ),
+    "sales_customer_supervisor": ScopePolicy(
+        ("sales-business",), guidance="仅适用于营业部范围"
+    ),
 }
 
 ROLE_SCOPE_POLICIES.update(

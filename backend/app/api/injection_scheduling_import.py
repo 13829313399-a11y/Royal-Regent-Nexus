@@ -10,7 +10,9 @@ from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportBatchOut,
     InjectionSchedulingImportConfirm,
     InjectionSchedulingImportRetry,
+    InjectionSchedulingMappingDraftUpdate,
     InjectionSchedulingMasterApproval,
+    InjectionSchedulingProfileProposalCreate,
 )
 from app.services.auth import (
     AuthContext,
@@ -29,8 +31,11 @@ from app.services.injection_scheduling_import import (
     get_import_batch,
     import_batch_out,
     list_import_batches,
+    master_import_required_permissions,
     preview_import,
+    propose_import_profile_from_batch,
     retry_import_batch,
+    update_import_mapping_draft,
 )
 
 router = APIRouter(
@@ -112,6 +117,7 @@ def post_import_preview(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[AuthContext, Depends(get_current_user)],
     expected_revision: Annotated[int, Form()] = 0,
+    document_kind: Annotated[str | None, Form()] = None,
 ):
     factory_id = _ensure_permission(
         db,
@@ -128,8 +134,66 @@ def post_import_preview(
         content=content,
         preview_request_id=_request_id(request),
         user=current_user,
+        document_kind=document_kind,
     )
     return import_batch_out(db, record, idempotent_replay=replay)
+
+
+@router.patch(
+    "/{batch_id}/mapping-draft",
+    response_model=InjectionSchedulingImportBatchOut,
+)
+def patch_import_mapping_draft(
+    batch_id: str,
+    payload: InjectionSchedulingMappingDraftUpdate,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:import", payload.factory_id
+    )
+    record = update_import_mapping_draft(
+        db,
+        batch_id=batch_id,
+        factory_id=factory_id,
+        expected_revision=payload.expected_revision,
+        request_id=payload.request_id,
+        mappings=payload.mappings,
+        user=current_user,
+    )
+    return import_batch_out(db, record)
+
+
+@router.post(
+    "/{batch_id}/profile-proposal",
+    response_model=InjectionSchedulingImportBatchOut,
+)
+def post_import_profile_proposal(
+    batch_id: str,
+    payload: InjectionSchedulingProfileProposalCreate,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:import", payload.factory_id
+    )
+    _ensure_permission(
+        db,
+        current_user,
+        "injection_scheduling:propose_import_profiles",
+        factory_id,
+    )
+    record = propose_import_profile_from_batch(
+        db,
+        batch_id=batch_id,
+        factory_id=factory_id,
+        expected_revision=payload.expected_revision,
+        request_id=payload.request_id,
+        name=payload.name,
+        reason=payload.reason,
+        user=current_user,
+    )
+    return import_batch_out(db, record)
 
 
 @router.post(
@@ -148,6 +212,24 @@ def post_import_confirm(
         "injection_scheduling:import",
         payload.factory_id,
     )
+    batch = get_import_batch(
+        db,
+        factory_id=payload.factory_id,
+        batch_id=batch_id,
+    )
+    if batch.document_kind == "DEMAND_ORDER":
+        _ensure_permission(
+            db,
+            current_user,
+            "injection_scheduling:edit",
+            payload.factory_id,
+        )
+    elif batch.document_kind == "MASTER_DATA":
+        for permission in master_import_required_permissions(
+            batch,
+            payload.selected_row_ids if payload.confirm_scope == "SELECTED" else None,
+        ):
+            _ensure_permission(db, current_user, permission, payload.factory_id)
     can_publish = any(
         has_permission_in_scope(
             current_user,

@@ -3,6 +3,7 @@ from decimal import Decimal
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -113,6 +114,12 @@ class InjectionSchedulingMold(Base):
             "factory_id",
             name="uq_injection_scheduling_mold_id_factory",
         ),
+        ForeignKeyConstraint(
+            ["definition_id"],
+            ["injection_scheduling_mold_definitions.id"],
+            name="fk_inj_sched_mold_shared_definition",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "status IN ('available', 'maintenance', 'not_arrived', "
             "'occupied', 'retired')",
@@ -148,6 +155,9 @@ class InjectionSchedulingMold(Base):
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    definition_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
     mold_no: Mapped[str] = mapped_column(String(128), index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
     length_mm: Mapped[Decimal | None] = mapped_column(Numeric(12, 3), nullable=True)

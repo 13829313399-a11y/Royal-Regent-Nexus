@@ -92,6 +92,15 @@ def number(value: Any) -> float | int:
         return 0
 
 
+def outer_pack_number(value: Any) -> float | int:
+    """Return the outer-carton quantity from numeric or composite pack text."""
+    direct = number(value)
+    if direct > 0:
+        return direct
+    matches = re.findall(r"\d+(?:\.\d+)?", clean(value).replace(",", ""))
+    return number(matches[-1]) if matches else 0
+
+
 def excel_date(value: Any, datemode: int = 0) -> str:
     if not value:
         return ""
@@ -576,7 +585,7 @@ def _enrich_order_records(
         for field in ("unit_price", "amount"):
             if not number(record.get(field)) and number(matched.get(field)):
                 record[field] = number(matched.get(field))
-        pack_qty = number(record.get("pack_qty"))
+        pack_qty = outer_pack_number(record.get("pack_qty"))
         if record.get("quantity") and pack_qty > 0 and not record.get("cartons"):
             record["cartons"] = math.ceil(number(record["quantity"]) / pack_qty)
     return records, list(dict.fromkeys(warnings))

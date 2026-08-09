@@ -9,6 +9,10 @@ class CustomerOrderIssueOut(BaseModel):
     can_skip: bool
     skip_key: str
     skip_label: str
+    can_edit: bool = False
+    edit_field: str = ""
+    edit_label: str = ""
+    edit_input_type: str = "text"
 
 
 class CustomerOrderLineOut(BaseModel):
@@ -93,5 +97,7 @@ class CustomerOrderExportAuditOut(BaseModel):
     output_template: str
     confirmed_issue_keys: list[str]
     confirmed_issue_count: int
+    manual_overrides: list[dict[str, str]]
+    manual_override_count: int
     confirmation_reason: str
     created_at: str
